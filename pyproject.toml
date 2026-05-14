@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "factor-research"
+version = "0.1.0"
+requires-python = ">=3.10,<3.13"
+description = "单因子研究框架 — 覆盖日/周/月频（daily）、日内分钟频（intraday）和 Tick 预留（tick）"
+dependencies = [
+    "polars>=1.0.0",
+    "pyarrow>=14.0.0",
+    "tushare>=1.4.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "statsmodels>=0.14.0",
+    "matplotlib>=3.7.0",
+    "jinja2>=3.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.3.0",
+    "jupyterlab>=4.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+# 声明所有顶层包；注意 config 是自定义包，editable install 下优先于 PyPI 同名包
+packages = ["common", "config", "lft", "mft", "hft", "reporting"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",   # 行长度由 formatter 管理
+    "B008",   # 函数默认参数中的函数调用
+    "SIM108", # 三元运算符（有时可读性更差）
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["common", "config", "lft", "mft", "hft", "reporting"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

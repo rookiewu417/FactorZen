@@ -1,4 +1,4 @@
-"""LFT 单因子完整评估。用法: python scripts/run_lft_single.py --factor momentum_20d --start 20250101 --end 20250513"""
+﻿"""LFT 单因子完整评估。用法: python scripts/run_lft_single.py --factor momentum_20d --start 20250101 --end 20250513"""
 
 import argparse
 import sys
@@ -14,12 +14,12 @@ from common.logger import setup_logging, get_logger
 from common.loader import fetch_daily
 from common.calendar import get_trade_dates
 from common.universe import get_universe
-from lft.data.context import FactorDataContext
-from lft.factors.registry import get_factor
-from lft.preprocessing.pipeline import quick_preprocess
-from lft.evaluation.ic_analysis import compute_rank_ic, compute_fwd_returns
-from lft.evaluation.backtest import run_stratified_backtest
-from lft.evaluation.turnover import compute_turnover
+from daily.data.context import FactorDataContext
+from daily.factors.registry import get_factor
+from daily.preprocessing.pipeline import quick_preprocess
+from daily.evaluation.ic_analysis import compute_rank_ic, compute_fwd_returns
+from daily.evaluation.backtest import run_stratified_backtest
+from daily.evaluation.turnover import compute_turnover
 
 setup_logging()
 logger = get_logger(__name__)

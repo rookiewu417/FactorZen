@@ -1,0 +1,44 @@
+Task 4 - TDD RED Phase (2026-05-14)
+====================================
+Created 7 test stub files under tests/ importing from lft.evaluation.advanced
+(which does NOT exist yet). All 7 tests fail with ModuleNotFoundError.
+
+Files created:
+  1. tests/test_advanced.py      — IC Decay (compute_ic_decay, ICDecayResult)
+  2. tests/test_monotonicity.py   — Factor Monotonicity (compute_monotonicity, MonotonicityResult)
+  3. tests/test_sector_ic.py      — Sector IC (compute_sector_ic, SectorICResult)
+  4. tests/test_size_ic.py        — Size IC (compute_size_ic, SizeICResult)
+  5. tests/test_factor_crowding.py — Factor Crowding (compute_factor_crowding, CrowdingResult)
+  6. tests/test_market_regime_ic.py — Market Regime IC (compute_market_regime_ic, MarketRegimeICResult)
+  7. tests/test_rank_autocorr.py  — Rank Autocorrelation (compute_rank_autocorr, RankAutocorrResult)
+
+pytest result: 7 errors during collection — all ModuleNotFoundError: No module named 'lft.evaluation.advanced'
+✅ RED phase confirmed.
+
+Verbose output:
+────────────────────────────────────────────────────────
+pixi run pytest tests/ -v
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: E:\code\量化研究\因子研究
+collected 9 items / 7 errors
+
+ERROR tests/test_advanced.py          → ModuleNotFoundError: No module named 'lft.evaluation.advanced'
+ERROR tests/test_factor_crowding.py   → ModuleNotFoundError: No module named 'lft.evaluation.advanced'
+ERROR tests/test_market_regime_ic.py  → ModuleNotFoundError: No module named 'lft.evaluation.advanced'
+ERROR tests/test_monotonicity.py      → ModuleNotFoundError: No module named 'lft.evaluation.advanced'
+ERROR tests/test_rank_autocorr.py     → ModuleNotFoundError: No module named 'lft.evaluation.advanced'
+ERROR tests/test_sector_ic.py         → ModuleNotFoundError: No module named 'lft.evaluation.advanced'
+ERROR tests/test_size_ic.py           → ModuleNotFoundError: No module named 'lft.evaluation.advanced'
+!!!!!!!!!!!!!!!!!!! Interrupted: 7 errors during collection !!!!!!!!!!!!!!!!!!!
+============================== 7 errors in 0.85s ==============================
+
+Each test file contains:
+  - Module docstring (Chinese)
+  - Import from lft.evaluation.advanced with real function/class names
+  - Synthetic polars DataFrame(s) as input
+  - Meaningful pytest assertions (not assert True)
+  - At least 3 tests per file (behavioral coverage)
+
+Next step (Task 5-11): Create lft/evaluation/advanced.py to make all tests pass.

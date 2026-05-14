@@ -1,0 +1,8 @@
+TASK 0 - stk_mins API Verification
+===================================
+Test: pro.stk_mins(ts_code='000001.SZ', freq='1min', start_date='20260501', end_date='20260510')
+Result: PASS
+Rows: 723
+Columns: ['ts_code', 'trade_time', 'close', 'open', 'high', 'low', 'vol', 'amount']
+Date range: 2026-05-06 09:30:00 to 2026-05-08 15:00:00
+Note: May 1-5 are holidays, May 9-10 is weekend. Data exists for available trade days.

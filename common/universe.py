@@ -1,0 +1,538 @@
+"""股票池构建与过滤系统。
+
+提供预设股票池与可组合的过滤链：
+- ``get_universe(date_str, universe_name)`` — 从 6 种预设池中选取
+- ``create_universe(date_str, base, filters)`` — 自定义过滤链
+- 5 个独立过滤器可单独使用
+
+使用示例::
+
+    from common.universe import get_universe, create_universe
+
+    # 预设 LFT 股票池
+    lft = get_universe("20260513", "lft_default")
+
+    # 自定义过滤：全A + 剔除ST + 剔除次新
+    custom = create_universe("20260513", filters=["st", "new_listing"])
+"""
+
+import calendar
+
+from datetime import datetime, date, timedelta
+
+import polars as pl
+
+from config.settings import DATA_CACHE
+from common.loader import fetch_daily, fetch_stock_basic
+from common.logger import get_logger
+from common.calendar import is_trade_date
+
+logger = get_logger(__name__)
+
+
+# ══════════════════════════════════════════════════════════
+# 基础数据
+# ══════════════════════════════════════════════════════════
+
+def get_stock_basic(use_cache: bool = True) -> pl.DataFrame:
+    """获取全量 A 股股票列表。
+
+    Returns
+    -------
+    pl.DataFrame
+        列: ts_code, symbol, name, area, industry, market, list_date, delist_date。
+    """
+    return fetch_stock_basic()
+
+
+# ══════════════════════════════════════════════════════════
+# 预设股票池
+# ══════════════════════════════════════════════════════════
+
+_UNIVERSE_REGISTRY: dict[str, str] = {
+    "all_a": "全 A 股（仅上市状态，无额外过滤）",
+    "csi300": "沪深 300 成分股",
+    "csi500": "中证 500 成分股",
+    "csi800": "沪深 300 + 中证 500",
+    "lft_default": "全A → 过滤 ST/次新/停牌/涨跌停",
+    "mft_default": "LFT 默认池 → 流动性过滤（日成交额 >= 1000 万）",
+}
+
+# universe_name → Tushare index_code
+_INDEX_CODE_MAP: dict[str, str] = {
+    "csi300": "000300.SH",
+    "csi500": "000905.SH",
+}
+
+
+# ══════════════════════════════════════════════════════════
+# 指数成分股加载
+# ══════════════════════════════════════════════════════════
+
+def _load_index_members(index_code: str, date_str: str) -> list[str]:
+    """从 Tushare ``index_weight`` 加载指数成分股，按月缓存。
+
+    Parameters
+    ----------
+    index_code : str
+        Tushare 指数代码，如 ``"000300.SH"``。
+    date_str : str
+        日期 ``"YYYYMMDD"``，用于确定拉取月份。
+
+    Returns
+    -------
+    list[str]
+        ``ts_code`` 列表（成分股代码，如 ``"000001.SZ"``）。
+
+    Raises
+    ------
+    Exception
+        Tushare API 调用失败时直接抛出，由调用方处理降级。
+    """
+    from common.loader import init_tushare, _retry
+
+    # 计算当月第一天及最后一天
+    dt = datetime.strptime(date_str, "%Y%m%d")
+    year_month = date_str[:6]
+    last_day = calendar.monthrange(dt.year, dt.month)[1]
+    start_date = f"{year_month}01"
+    end_date = f"{year_month}{last_day:02d}"
+
+    # 缓存检查
+    safe_name = index_code.replace(".", "_")
+    cache_file = DATA_CACHE / f"index_member_{safe_name}_{year_month}.parquet"
+
+    if cache_file.exists():
+        logger.info(
+            f"[index_member] {index_code} {year_month} 缓存命中"
+        )
+        return pl.read_parquet(cache_file)["con_code"].to_list()
+
+    # 从 Tushare 拉取
+    pro = init_tushare()
+    df_pd = _retry(
+        pro.index_weight,
+        index_code=index_code,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    if df_pd is None or df_pd.empty:
+        logger.warning(
+            f"[index_member] {index_code} {year_month} 无成分股数据"
+        )
+        return []
+
+    df = pl.from_pandas(df_pd)
+
+    # 写入缓存
+    DATA_CACHE.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(str(cache_file))
+    logger.info(
+        f"[index_member] {index_code} {year_month}: "
+        f"{len(df)} 只成分股，已缓存"
+    )
+
+    return df["con_code"].to_list()
+
+
+def get_universe(
+    date_str: str,
+    universe_name: str = "all_a",
+) -> pl.DataFrame:
+    """获取指定日期的预设股票池。
+
+    Parameters
+    ----------
+    date_str : str
+        日期，格式 ``"YYYYMMDD"``。
+    universe_name : str, default ``"all_a"``
+        股票池名称，可选值:
+
+        - ``"all_a"``: 全 A 股（仅上市状态，无额外过滤）
+        - ``"csi300"``: 沪深 300 成分股（Tushare 动态拉取）
+        - ``"csi500"``: 中证 500 成分股（Tushare 动态拉取）
+        - ``"csi800"``: 沪深 300 + 中证 500（csi300 ∪ csi500）
+        - ``"lft_default"``: 全A → 过滤 ST/次新/停牌/涨跌停
+        - ``"mft_default"``: lft_default → 流动性过滤
+
+    Returns
+    -------
+    pl.DataFrame
+        列: ts_code, symbol, name, area, industry, market, list_date。
+    """
+    if universe_name not in _UNIVERSE_REGISTRY:
+        valid = ", ".join(_UNIVERSE_REGISTRY.keys())
+        raise ValueError(
+            f"未知 universe_name: '{universe_name}'。可选: {valid}"
+        )
+
+    logger.info(f"[universe] 获取股票池: {universe_name} ({date_str})")
+
+    # --- all_a: 全 A 股基础池 ---
+    all_a = get_stock_basic()
+
+    if universe_name == "all_a":
+        return all_a
+
+    # --- CSI 指数成分股 ---
+    if universe_name in ("csi300", "csi500", "csi800"):
+        try:
+            members: set[str] = set()
+            for uname in ("csi300", "csi500"):
+                if universe_name in (uname, "csi800"):
+                    code = _INDEX_CODE_MAP[uname]
+                    fresh = _load_index_members(code, date_str)
+                    members.update(fresh)
+
+            logger.info(
+                f"[universe] {universe_name}: 加载 {len(members)} 只成分股"
+            )
+
+            result = all_a.filter(
+                pl.col("ts_code").is_in(list(members))
+            )
+            return result
+
+        except Exception as e:
+            logger.warning(
+                f"[universe] {universe_name} 指数成分股加载失败 "
+                f"({e})，降级为全 A 股"
+            )
+            return all_a
+
+    # --- lft_default ---
+    if universe_name == "lft_default":
+        result = all_a
+        result = filter_st(result, date_str)
+        result = filter_new_listing(result, date_str)
+        result = filter_suspended(result, date_str)
+        result = filter_limit(result, date_str)
+        return result
+
+    # --- mft_default ---
+    if universe_name == "mft_default":
+        result = get_universe(date_str, "lft_default")
+        result = filter_liquidity(result, date_str)
+        return result
+
+    # 不应到达此处
+    return all_a
+
+
+# ══════════════════════════════════════════════════════════
+# 自定义股票池
+# ══════════════════════════════════════════════════════════
+
+def create_universe(
+    date_str: str,
+    base: str = "all_a",
+    filters: list[str] | None = None,
+    min_days: int = 250,
+    min_amount: float = 10_000_000,
+) -> pl.DataFrame:
+    """自定义股票池：指定基础池 + 过滤链。
+
+    Parameters
+    ----------
+    date_str : str
+        日期，格式 ``"YYYYMMDD"``。
+    base : str, default ``"all_a"``
+        基础池名称，同 ``get_universe`` 的 ``universe_name`` 参数。
+    filters : list[str] | None, optional
+        过滤链，按顺序依次应用。可选过滤项:
+
+        - ``"st"``: 剔除 ST / *ST / PT
+        - ``"new_listing"``: 剔除上市不足 ``min_days`` 天的次新股
+        - ``"suspended"``: 剔除当日停牌股票
+        - ``"limit"``: 剔除当日涨跌停股票
+        - ``"liquidity"``: 剔除日成交额低于 ``min_amount`` 的股票
+
+        为 ``None`` 或空列表时仅返回基础池，不做过滤。
+    min_days : int, default 250
+        ``"new_listing"`` 过滤的最小上市天数（自然日）。
+    min_amount : float, default 10_000_000
+        ``"liquidity"`` 过滤的最低日成交额（元）。
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    result = get_universe(date_str, base)
+
+    if not filters:
+        logger.info(f"[universe] create_universe: base={base}, 无过滤链")
+        return result
+
+    filter_map = {
+        "st": filter_st,
+        "new_listing": lambda df, ds: filter_new_listing(df, ds, min_days=min_days),
+        "suspended": filter_suspended,
+        "limit": filter_limit,
+        "liquidity": lambda df, ds: filter_liquidity(df, ds, min_amount=min_amount),
+    }
+
+    for f_name in filters:
+        if f_name not in filter_map:
+            logger.warning(f"[universe] 未知过滤项 '{f_name}'，跳过")
+            continue
+        func = filter_map[f_name]
+        result = func(result, date_str)
+        logger.debug(f"[universe] 应用过滤 '{f_name}' 后: {len(result)} 只")
+
+    logger.info(
+        f"[universe] create_universe: base={base}, "
+        f"filters={filters}, 最终 {len(result)} 只"
+    )
+    return result
+
+
+# ══════════════════════════════════════════════════════════
+# 过滤器
+# ══════════════════════════════════════════════════════════
+
+def filter_st(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
+    """剔除 ST / *ST / PT 股票。基于 name 字段包含 ``"ST"`` 或 ``"PT"``。
+
+    Parameters
+    ----------
+    stocks : pl.DataFrame
+        待过滤股票池，必须包含 ``name`` 列。
+    date_str : str
+        日期（仅用于接口签名一致性，实际不依赖）。
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    before = len(stocks)
+    result = stocks.filter(~pl.col("name").str.contains("ST|PT"))
+    after = len(result)
+    if before > after:
+        logger.info(f"[filter_st] 剔除 {before - after} 只 ST/PT 股票")
+    return result
+
+
+def filter_new_listing(
+    stocks: pl.DataFrame,
+    date_str: str,
+    min_days: int = 250,
+) -> pl.DataFrame:
+    """剔除上市不足 ``min_days`` 个自然日的次新股。
+
+    Parameters
+    ----------
+    stocks : pl.DataFrame
+        待过滤股票池，必须包含 ``list_date`` 列（``pl.Date`` 类型）。
+    date_str : str
+        基准日期 ``"YYYYMMDD"``。
+    min_days : int, default 250
+        最小上市天数（自然日）。
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    target_date = datetime.strptime(date_str, "%Y%m%d").date()
+    cutoff = target_date - timedelta(days=min_days)
+
+    before = len(stocks)
+    # list_date 已由 fetch_stock_basic 转换为 pl.Date
+    result = stocks.filter(pl.col("list_date") <= cutoff)
+    after = len(result)
+    if before > after:
+        logger.info(
+            f"[filter_new_listing] 剔除 {before - after} 只次新股 "
+            f"(上市日期 > {cutoff})"
+        )
+    return result
+
+
+def filter_suspended(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
+    """剔除当日停牌股票。通过检查当日日线数据中 ``vol > 0`` 的股票。
+
+    如果无法读取日线数据（数据未准备好等），优雅降级：不过滤。
+
+    Parameters
+    ----------
+    stocks : pl.DataFrame
+        待过滤股票池，必须包含 ``ts_code`` 列。
+    date_str : str
+        交易日 ``"YYYYMMDD"``。
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    from common.storage import load_parquet
+
+    try:
+        daily = load_parquet("daily", start=date_str, end=date_str).collect()
+        if daily.is_empty():
+            logger.warning(f"[filter_suspended] {date_str} 无日线数据，不过滤")
+            return stocks
+
+        active = (
+            daily.filter(pl.col("vol") > 0)
+            .select("ts_code")
+            .unique()
+        )
+        before = len(stocks)
+        result = stocks.join(active, on="ts_code", how="inner")
+        after = len(result)
+        if before > after:
+            logger.info(
+                f"[filter_suspended] 剔除 {before - after} 只停牌股票"
+            )
+        return result
+
+    except Exception as e:
+        logger.warning(
+            f"[filter_suspended] 读取日线失败 ({e})，优雅降级：不过滤"
+        )
+        return stocks
+
+
+def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
+    """剔除当日涨跌停股票。
+
+    使用 ``pct_chg`` 阈值判断：主板 ±10%，创业板/科创板 ±20%，
+    统一用 ``(-9.8%, 9.8%)`` 区间覆盖大部分情况。
+
+    如果无法读取日线数据，优雅降级：不过滤。
+
+    Parameters
+    ----------
+    stocks : pl.DataFrame
+        待过滤股票池，必须包含 ``ts_code`` 列。
+    date_str : str
+        交易日 ``"YYYYMMDD"``。
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    from common.storage import load_parquet
+
+    try:
+        daily = load_parquet("daily", start=date_str, end=date_str).collect()
+        if daily.is_empty():
+            logger.warning(f"[filter_limit] {date_str} 无日线数据，不过滤")
+            return stocks
+
+        not_limit = (
+            daily.filter(
+                (pl.col("pct_chg") > -9.8) & (pl.col("pct_chg") < 9.8)
+            )
+            .select("ts_code")
+            .unique()
+        )
+        before = len(stocks)
+        result = stocks.join(not_limit, on="ts_code", how="inner")
+        after = len(result)
+        if before > after:
+            logger.info(
+                f"[filter_limit] 剔除 {before - after} 只涨跌停股票"
+            )
+        return result
+
+    except Exception as e:
+        logger.warning(
+            f"[filter_limit] 读取日线失败 ({e})，优雅降级：不过滤"
+        )
+        return stocks
+
+
+def filter_liquidity(
+    stocks: pl.DataFrame,
+    date_str: str,
+    min_amount: float = 10_000_000.0,
+) -> pl.DataFrame:
+    """剔除日成交额低于 ``min_amount`` 的股票（中频交易用，默认 1000 万）。
+
+    如果无法读取日线数据，优雅降级：不过滤。
+
+    Parameters
+    ----------
+    stocks : pl.DataFrame
+        待过滤股票池，必须包含 ``ts_code`` 列。
+    date_str : str
+        交易日 ``"YYYYMMDD"``。
+    min_amount : float, default 10_000_000.0
+        最低日成交额（元）。
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    from common.storage import load_parquet
+
+    try:
+        daily = load_parquet("daily", start=date_str, end=date_str).collect()
+        if daily.is_empty():
+            logger.warning(
+                f"[filter_liquidity] {date_str} 无日线数据，不过滤"
+            )
+            return stocks
+
+        liquid = (
+            daily.filter(pl.col("amount") >= min_amount)
+            .select("ts_code")
+            .unique()
+        )
+        before = len(stocks)
+        result = stocks.join(liquid, on="ts_code", how="inner")
+        after = len(result)
+        if before > after:
+            logger.info(
+                f"[filter_liquidity] 剔除 {before - after} 只低流动性股票 "
+                f"(amount < {min_amount:.0f})"
+            )
+        return result
+
+    except Exception as e:
+        logger.warning(
+            f"[filter_liquidity] 读取日线失败 ({e})，优雅降级：不过滤"
+        )
+        return stocks
+
+
+# ══════════════════════════════════════════════════════════
+# 辅助函数
+# ══════════════════════════════════════════════════════════
+
+def get_index_members(index_code: str, date_str: str) -> pl.DataFrame:
+    """获取指数成分股。
+
+    先从 Tushare ``index_weight`` 拉取成分代码，再与全量股票信息 join
+    以保留 ``name``、``industry`` 等字段。
+
+    Parameters
+    ----------
+    index_code : str
+        指数代码，如 ``"000300.SH"``（沪深 300）。
+    date_str : str
+        日期 ``"YYYYMMDD"``。
+
+    Returns
+    -------
+    pl.DataFrame
+        成分股信息，列: ts_code, symbol, name, area, industry, market, list_date。
+    """
+    try:
+        codes = _load_index_members(index_code, date_str)
+        if not codes:
+            logger.warning(
+                f"[universe] {index_code} {date_str[:6]} 无成分股，返回全市场"
+            )
+            return get_universe(date_str, "all_a")
+
+        all_a = get_stock_basic()
+        result = all_a.filter(pl.col("ts_code").is_in(codes))
+        return result
+
+    except Exception as e:
+        logger.warning(
+            f"[universe] {index_code} 成分股加载失败 ({e})，返回全市场"
+        )
+        return get_universe(date_str, "all_a")

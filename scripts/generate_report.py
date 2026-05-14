@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 """因子 Tear Sheet 报告生成器。
 
 整合因子计算、基础评价、高级评价与 HTML 报告输出。
@@ -17,12 +17,12 @@ from common.logger import setup_logging, get_logger
 from common.loader import fetch_daily
 from common.calendar import get_trade_dates
 from common.universe import get_universe
-from lft.data.context import FactorDataContext
-from lft.factors.registry import get_factor
-from lft.preprocessing.pipeline import quick_preprocess
-from lft.evaluation.ic_analysis import compute_rank_ic, compute_fwd_returns
-from lft.evaluation.backtest import run_stratified_backtest
-from lft.evaluation.turnover import compute_turnover
+from daily.data.context import FactorDataContext
+from daily.factors.registry import get_factor
+from daily.preprocessing.pipeline import quick_preprocess
+from daily.evaluation.ic_analysis import compute_rank_ic, compute_fwd_returns
+from daily.evaluation.backtest import run_stratified_backtest
+from daily.evaluation.turnover import compute_turnover
 from reporting.tear_sheet import generate_tear_sheet
 
 setup_logging()
@@ -39,7 +39,7 @@ def _run_advanced_evaluation(clean_df, ret_df, frequency):
 
     # ── IC Decay 增强分析 ──
     try:
-        from lft.evaluation.advanced import compute_ic_decay
+        from daily.evaluation.advanced import compute_ic_decay
         advanced["decay_results"] = compute_ic_decay(
             clean_df, ret_df, factor_col="factor_clean"
         )
@@ -51,7 +51,7 @@ def _run_advanced_evaluation(clean_df, ret_df, frequency):
 
     # ── 单调性分析 ──
     try:
-        from lft.evaluation.advanced import compute_monotonicity
+        from daily.evaluation.advanced import compute_monotonicity
         # 合并因子与 fwd_ret_1d 用于单调性
         mono_df = clean_df.join(
             ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]),
@@ -68,7 +68,7 @@ def _run_advanced_evaluation(clean_df, ret_df, frequency):
 
     # ── 排名自相关 ──
     try:
-        from lft.evaluation.advanced import compute_rank_autocorr
+        from daily.evaluation.advanced import compute_rank_autocorr
         advanced["autocorr"] = compute_rank_autocorr(
             clean_df, factor_col="factor_clean", lags=[1, 5, 10]
         )
@@ -83,7 +83,7 @@ def _run_advanced_evaluation(clean_df, ret_df, frequency):
 
     # ── 市场状态 IC ──
     try:
-        from lft.evaluation.advanced import compute_market_regime_ic
+        from daily.evaluation.advanced import compute_market_regime_ic
         advanced["regime"] = compute_market_regime_ic(
             clean_df.join(
                 ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]),

@@ -1,4 +1,4 @@
-"""LFT 多因子 IC 对比。用法: python scripts/run_lft_compare.py --factors momentum_20d,reversal_5d --start 20250101 --end 20250513"""
+﻿"""LFT 多因子 IC 对比。用法: python scripts/run_lft_compare.py --factors momentum_20d,reversal_5d --start 20250101 --end 20250513"""
 
 import argparse
 
@@ -7,11 +7,11 @@ import polars as pl
 from common.logger import setup_logging, get_logger
 from common.loader import fetch_daily
 from common.universe import get_universe
-from lft.data.context import FactorDataContext
-from lft.factors.registry import get_factor
-from lft.preprocessing.pipeline import quick_preprocess
-from lft.evaluation.ic_analysis import compute_rank_ic, compute_fwd_returns
-from lft.evaluation.correlation import compute_factor_correlation
+from daily.data.context import FactorDataContext
+from daily.factors.registry import get_factor
+from daily.preprocessing.pipeline import quick_preprocess
+from daily.evaluation.ic_analysis import compute_rank_ic, compute_fwd_returns
+from daily.evaluation.correlation import compute_factor_correlation
 
 setup_logging()
 logger = get_logger(__name__)

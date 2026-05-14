@@ -28,7 +28,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 # 声明所有顶层包；注意 config 是自定义包，editable install 下优先于 PyPI 同名包
-packages = ["common", "config", "lft", "mft", "hft", "reporting"]
+packages = ["common", "config", "daily", "intraday", "tick", "reporting"]
 
 [tool.ruff]
 target-version = "py310"

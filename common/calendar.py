@@ -18,7 +18,7 @@ from pathlib import Path
 import polars as pl
 
 from config.settings import DATA_CACHE
-from config.tushare_config import TUSHARE_TOKEN, CACHE_EXPIRE_DAYS
+from config.tushare_config import CACHE_EXPIRE_DAYS, TUSHARE_TOKEN
 
 # ── 常量 ─────────────────────────────────────────────────
 _CAL_FILE: Path = DATA_CACHE / "trade_cal.parquet"

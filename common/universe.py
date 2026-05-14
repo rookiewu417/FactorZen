@@ -17,15 +17,13 @@
 """
 
 import calendar
-
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 
 import polars as pl
 
-from config.settings import DATA_CACHE
-from common.loader import fetch_daily, fetch_stock_basic
+from common.loader import fetch_stock_basic
 from common.logger import get_logger
-from common.calendar import is_trade_date
+from config.settings import DATA_CACHE
 
 logger = get_logger(__name__)
 
@@ -89,7 +87,7 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
     Exception
         Tushare API 调用失败时直接抛出，由调用方处理降级。
     """
-    from common.loader import init_tushare, _retry
+    from common.loader import _retry, init_tushare
 
     # 计算当月第一天及最后一天
     dt = datetime.strptime(date_str, "%Y%m%d")

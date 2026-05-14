@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import polars as pl
 
@@ -18,11 +18,11 @@ class LFTFactor(BaseFactor):
 
     category: str = "daily"
     frequency: str = "daily"
-    required_data: list[str] = ["daily"]
+    required_data: ClassVar[list[str]] = ["daily"]
     lookback_days: int = 20
 
     @abstractmethod
-    def compute(self, ctx: "FactorDataContext") -> pl.DataFrame:
+    def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         """计算因子值，返回列: trade_date, ts_code, factor_value"""
         ...
 

@@ -1,13 +1,12 @@
 ﻿"""测试 MFT Demo 因子 Momentum1Min。"""
 
-import pytest
-import polars as pl
 from dataclasses import dataclass, field
+
+import polars as pl
+import pytest
 
 from intraday.factors.base import MFTFactor
 from intraday.factors.demo.momentum_1min import Momentum1Min
-from intraday.data.context import MFTDataContext
-
 
 # ── Import & Class Structure ─────────────────────────────────────────────────
 

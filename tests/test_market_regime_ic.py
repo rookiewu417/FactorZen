@@ -1,7 +1,8 @@
 ﻿"""测试分市场状态 IC：按市场上涨/下跌/高波等状态分组计算 IC。"""
 
 import polars as pl
-from daily.evaluation.advanced import compute_market_regime_ic, MarketRegimeICResult
+
+from daily.evaluation.advanced import MarketRegimeICResult, compute_market_regime_ic
 
 
 def _make_regime_data() -> tuple[pl.DataFrame, pl.DataFrame]:

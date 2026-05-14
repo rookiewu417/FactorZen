@@ -1,11 +1,13 @@
 ﻿"""因子预处理管线。配置驱动的多步处理流程。"""
 
 from dataclasses import dataclass, field
+
 import polars as pl
-from daily.preprocessing.outlier import mad_clip
+
 from daily.preprocessing.missing import fill_cross_sectional_median
-from daily.preprocessing.normalizer import cross_sectional_zscore
 from daily.preprocessing.neutralizer import neutralize_ols
+from daily.preprocessing.normalizer import cross_sectional_zscore
+from daily.preprocessing.outlier import mad_clip
 
 
 @dataclass

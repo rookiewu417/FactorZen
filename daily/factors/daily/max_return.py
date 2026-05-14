@@ -1,8 +1,9 @@
 """5-day max return factor (lottery effect anomaly)."""
 
 import polars as pl
-from daily.factors.base import LFTFactor
+
 from daily.data.context import FactorDataContext
+from daily.factors.base import LFTFactor
 
 
 class MaxReturn5D(LFTFactor):

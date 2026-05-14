@@ -7,7 +7,6 @@ import pytest
 
 from intraday.data.context import MFTDataContext
 
-
 # ── 构造与默认值 ──────────────────────────────────────────────────────────
 
 def test_construction_defaults():

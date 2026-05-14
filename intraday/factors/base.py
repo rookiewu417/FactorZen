@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -29,7 +29,7 @@ class MFTFactor(BaseFactor):
     description: str = ""
 
     @abstractmethod
-    def compute(self, ctx: "MFTDataContext") -> pl.DataFrame:
+    def compute(self, ctx: MFTDataContext) -> pl.DataFrame:
         """计算因子值，返回: trade_time, ts_code, factor_value"""
         ...
 

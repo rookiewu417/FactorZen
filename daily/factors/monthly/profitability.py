@@ -1,11 +1,12 @@
 ﻿"""月频 ROE TTM 因子。使用 PIT 对齐确保无未来信息。"""
 
 import polars as pl
-from daily.factors.base import LFTFactor
+
+from common.logger import get_logger
+from common.storage import scan_parquet
 from daily.data.context import FactorDataContext
 from daily.data.pit import pit_align
-from common.storage import scan_parquet
-from common.logger import get_logger
+from daily.factors.base import LFTFactor
 
 logger = get_logger(__name__)
 

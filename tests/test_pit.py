@@ -7,7 +7,6 @@ import polars as pl
 
 from daily.data.pit import pit_align
 
-
 # ── helpers ────────────────────────────────────────────────────────────────
 
 def _make_fina(rows: list[tuple]) -> pl.DataFrame:

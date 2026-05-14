@@ -1,6 +1,7 @@
 """MAD 去极值。每个截面做 median ± n_sigma * MAD 截尾。"""
 
 import polars as pl
+
 from config.constants import MAD_GAUSSIAN_CONST
 
 

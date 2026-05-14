@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable
 
 import numpy as np
 import polars as pl

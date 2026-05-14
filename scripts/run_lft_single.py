@@ -9,17 +9,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import polars as pl
 
-from config.settings import OUTPUT_LFT_FACTORS, OUTPUT_LFT_RESULTS
-from common.logger import setup_logging, get_logger
-from common.loader import fetch_daily
 from common.calendar import get_trade_dates
+from common.loader import fetch_daily
+from common.logger import get_logger, setup_logging
 from common.universe import get_universe
+from config.settings import OUTPUT_LFT_FACTORS, OUTPUT_LFT_RESULTS
 from daily.data.context import FactorDataContext
+from daily.evaluation.backtest import run_stratified_backtest
+from daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
+from daily.evaluation.turnover import compute_turnover
 from daily.factors.registry import get_factor
 from daily.preprocessing.pipeline import quick_preprocess
-from daily.evaluation.ic_analysis import compute_rank_ic, compute_fwd_returns
-from daily.evaluation.backtest import run_stratified_backtest
-from daily.evaluation.turnover import compute_turnover
 
 setup_logging()
 logger = get_logger(__name__)
@@ -102,7 +102,7 @@ def main():
         (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1).alias("ret")
     )
     ret_df = compute_fwd_returns(ret_df, ret_col="ret")
-    logger.info(f"前向收益计算完成 (horizons: 1/5/10/20d)")
+    logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
 
     # ── 7. IC 分析 ──
     ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)

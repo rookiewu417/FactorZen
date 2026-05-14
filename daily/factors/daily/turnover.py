@@ -1,8 +1,9 @@
 ﻿"""5日平均换手率因子。"""
 
 import polars as pl
-from daily.factors.base import LFTFactor
+
 from daily.data.context import FactorDataContext
+from daily.factors.base import LFTFactor
 
 
 class Turnover5D(LFTFactor):

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from typing import Any, Type
 
 from common.factor import BaseFactor
 from common.logger import get_logger
@@ -31,13 +30,13 @@ logger = get_logger(__name__)
 class FactorRegistry:
     """线程不安全（单进程使用），同一进程中可多次实例化不同频率的注册表。"""
 
-    def __init__(self, base_cls: Type[BaseFactor], scan_packages: list[str]) -> None:
+    def __init__(self, base_cls: type[BaseFactor], scan_packages: list[str]) -> None:
         self._base_cls = base_cls
         self._scan_packages = scan_packages
-        self._registry: dict[str, Type[BaseFactor]] = {}
+        self._registry: dict[str, type[BaseFactor]] = {}
         self._discovered = False
 
-    def discover(self) -> dict[str, Type[BaseFactor]]:
+    def discover(self) -> dict[str, type[BaseFactor]]:
         """扫描所有配置包，注册 base_cls 的子类。结果缓存，只扫描一次。"""
         if self._discovered:
             return self._registry
@@ -70,7 +69,7 @@ class FactorRegistry:
         self._discovered = True
         return self._registry
 
-    def get(self, name: str) -> Type[BaseFactor]:
+    def get(self, name: str) -> type[BaseFactor]:
         """按名称获取因子类。若未找到抛出 KeyError。"""
         self.discover()
         if name not in self._registry:

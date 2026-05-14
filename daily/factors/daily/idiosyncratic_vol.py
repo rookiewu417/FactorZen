@@ -1,8 +1,9 @@
 """20-day idiosyncratic volatility factor (residual after market beta)."""
 
 import polars as pl
-from daily.factors.base import LFTFactor
+
 from daily.data.context import FactorDataContext
+from daily.factors.base import LFTFactor
 
 
 class IdiosyncraticVol20D(LFTFactor):

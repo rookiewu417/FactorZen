@@ -12,23 +12,21 @@
 """
 
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import polars as pl
 import tushare as ts
 
+from common.logger import get_logger
+from common.storage import load_parquet, partition_exists, save_parquet
 from config.settings import DATA_CACHE
 from config.tushare_config import (
-    BATCH_SIZE,
     CACHE_EXPIRE_DAYS,
     MAX_RETRIES,
     MAX_RPS,
     RETRY_DELAY,
     ensure_token,
 )
-from common.logger import get_logger
-from common.storage import load_parquet, partition_exists, save_parquet
 
 logger = get_logger(__name__)
 

@@ -4,7 +4,6 @@ from datetime import date
 
 import numpy as np
 import polars as pl
-import pytest
 
 from daily.evaluation.backtest import BacktestResult, run_stratified_backtest
 

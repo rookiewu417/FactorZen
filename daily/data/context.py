@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional
 
 import polars as pl
 
@@ -16,16 +15,16 @@ class FactorDataContext:
     end: str                         # "YYYYMMDD"
     required_data: list[str] = field(default_factory=lambda: ["daily"])
     lookback_days: int = 20
-    universe: Optional[list[str]] = None   # 股票池 ts_code 列表
+    universe: list[str] | None = None   # 股票池 ts_code 列表
     snapshot_mode: str = "daily"          # "daily" | "weekly" | "monthly"
 
     # 私有：惰性缓存
-    _daily: Optional[pl.LazyFrame] = field(default=None, repr=False)
-    _daily_basic: Optional[pl.LazyFrame] = field(default=None, repr=False)
-    _weekly_snapshot: Optional[pl.LazyFrame] = field(default=None, repr=False)
-    _monthly_snapshot: Optional[pl.LazyFrame] = field(default=None, repr=False)
-    _weekly_basic: Optional[pl.LazyFrame] = field(default=None, repr=False)
-    _monthly_basic: Optional[pl.LazyFrame] = field(default=None, repr=False)
+    _daily: pl.LazyFrame | None = field(default=None, repr=False)
+    _daily_basic: pl.LazyFrame | None = field(default=None, repr=False)
+    _weekly_snapshot: pl.LazyFrame | None = field(default=None, repr=False)
+    _monthly_snapshot: pl.LazyFrame | None = field(default=None, repr=False)
+    _weekly_basic: pl.LazyFrame | None = field(default=None, repr=False)
+    _monthly_basic: pl.LazyFrame | None = field(default=None, repr=False)
 
     @property
     def expanded_start(self) -> str:
@@ -59,7 +58,11 @@ class FactorDataContext:
     @property
     def snapshot_dates(self) -> list[date]:
         """根据 snapshot_mode 返回快照日期列表。"""
-        from common.calendar import get_trade_dates, get_weekly_snapshot_dates, get_monthly_snapshot_dates
+        from common.calendar import (
+            get_monthly_snapshot_dates,
+            get_trade_dates,
+            get_weekly_snapshot_dates,
+        )
         if self.snapshot_mode == "weekly":
             return get_weekly_snapshot_dates(self.start, self.end)
         elif self.snapshot_mode == "monthly":

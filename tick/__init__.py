@@ -1,6 +1,6 @@
 """HFT framework — high-frequency / tick-level factors (RESERVED, not yet implemented)."""
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import Any
 
 import polars as pl
@@ -15,9 +15,10 @@ class HFTFactor(ABC):
     name: str = ""
     frequency: str = "tick"
 
+    @abstractmethod
     def compute(self, ctx: Any) -> pl.DataFrame:
         """Compute HFT factor values."""
-        raise NotImplementedError("HFT framework not yet implemented")
+        ...
 
     def validate(self, result: Any) -> dict[str, Any]:
         """Validate HFT factor computation result."""

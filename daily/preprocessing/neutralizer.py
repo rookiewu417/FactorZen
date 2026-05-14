@@ -3,6 +3,7 @@
 import numpy as np
 import polars as pl
 import statsmodels.api as sm
+
 from common.logger import get_logger
 
 logger = get_logger(__name__)
@@ -53,7 +54,7 @@ def neutralize_ols(
     if stock_basic is not None:
         industry_map = dict(zip(
             stock_basic["ts_code"].to_list(),
-            stock_basic["industry"].to_list()
+            stock_basic["industry"].to_list(), strict=False
         ))
 
     # 对每个日期做截面回归
@@ -89,11 +90,11 @@ def neutralize_ols(
 
         if daily_basic is not None:
             mv_cross = daily_basic.filter(
-                (pl.col("trade_date") == d)
+                pl.col("trade_date") == d
             ).select(["ts_code", "total_mv"])
             mv_map = dict(zip(
                 mv_cross["ts_code"].to_list(),
-                mv_cross["total_mv"].to_list()
+                mv_cross["total_mv"].to_list(), strict=False
             ))
             log_mv = np.array([
                 np.log(max(mv_map.get(c, 1e8), 1e6)) for c in codes

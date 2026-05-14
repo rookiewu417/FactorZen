@@ -1,6 +1,7 @@
 ﻿"""测试截面 Z-score 标准化。"""
 
 import polars as pl
+
 from daily.preprocessing.normalizer import cross_sectional_zscore
 
 

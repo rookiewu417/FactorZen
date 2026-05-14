@@ -20,8 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import polars as pl
 
-from config.settings import OUTPUT_INTRADAY_FACTORS, OUTPUT_INTRADAY_RESULTS, OUTPUT_INTRADAY_REPORTS
-from common.logger import setup_logging, get_logger
+from common.logger import get_logger, setup_logging
+from config.settings import (
+    OUTPUT_INTRADAY_FACTORS,
+    OUTPUT_INTRADAY_REPORTS,
+    OUTPUT_INTRADAY_RESULTS,
+)
 from intraday.evaluation.ic_analysis import compute_intraday_rank_ic
 
 setup_logging()
@@ -85,7 +89,6 @@ def _load_real_data(
     universe: list[str] | None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Load minute-bar factor data and compute next-bar returns from storage."""
-    from common.storage import load_parquet
     from intraday.data.context import MFTDataContext
     from intraday.factors.registry import get_factor as get_intraday_factor
 
@@ -116,7 +119,6 @@ def _chart_daily_ic(daily_ic: pl.DataFrame) -> str | None:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
 
         if daily_ic.is_empty():
             return None
@@ -160,6 +162,7 @@ def _chart_daily_ic(daily_ic: pl.DataFrame) -> str | None:
 def _render_html(result, factor_name: str, bar_size: str, universe_label: str, date_range: str) -> str:
     """Render intraday IC result to HTML using Jinja2 template."""
     from datetime import datetime as dt
+
     from jinja2 import Environment, FileSystemLoader
 
     template_dir = Path(__file__).resolve().parent.parent / "reporting" / "templates"
@@ -215,7 +218,7 @@ def main():
     if args.demo:
         logger.info("Demo mode: generating synthetic minute-bar data")
         factor_df, ret_df = _make_demo_data(args.start, args.end)
-        universe_label = f"synthetic (50 stocks)"
+        universe_label = "synthetic (50 stocks)"
     else:
         universe = args.universe.split(",") if args.universe else None
         try:

@@ -1,15 +1,13 @@
 """Unit tests for new daily factors (using synthetic data, no disk I/O)."""
 
-from datetime import date, timedelta
 from dataclasses import dataclass, field
-from typing import Optional
+from datetime import date, timedelta
 
 import numpy as np
 import polars as pl
 import pytest
 
 from daily.factors.base import LFTFactor
-
 
 # ── Synthetic data helpers ───────────────────────────────────────────────────
 
@@ -68,10 +66,10 @@ class MockFactorDataContext:
     end: str = "20240430"
     required_data: list = field(default_factory=lambda: ["daily"])
     lookback_days: int = 20
-    universe: Optional[list] = None
+    universe: list | None = None
     snapshot_mode: str = "daily"
-    _daily_lf: Optional[pl.LazyFrame] = field(default=None, repr=False)
-    _monthly_basic_lf: Optional[pl.LazyFrame] = field(default=None, repr=False)
+    _daily_lf: pl.LazyFrame | None = field(default=None, repr=False)
+    _monthly_basic_lf: pl.LazyFrame | None = field(default=None, repr=False)
 
     @property
     def daily(self) -> pl.LazyFrame:
@@ -218,8 +216,8 @@ def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
 
 
 def test_asset_growth(ctx, monkeypatch):
-    from daily.factors.monthly.asset_growth import AssetGrowthMonthly
     import daily.factors.monthly.asset_growth as ag_mod
+    from daily.factors.monthly.asset_growth import AssetGrowthMonthly
 
     synthetic_lf = _make_finance_lf()
     monkeypatch.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
@@ -235,8 +233,8 @@ def test_asset_growth(ctx, monkeypatch):
 
 def test_asset_growth_empty_when_no_finance(ctx, monkeypatch):
     """When finance data unavailable, factor returns empty DataFrame gracefully."""
-    from daily.factors.monthly.asset_growth import AssetGrowthMonthly
     import daily.factors.monthly.asset_growth as ag_mod
+    from daily.factors.monthly.asset_growth import AssetGrowthMonthly
 
     def _raise(_):
         raise FileNotFoundError("no data")

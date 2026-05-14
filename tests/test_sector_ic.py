@@ -1,7 +1,8 @@
 ﻿"""测试分行业 IC：按行业分组计算 Rank IC。"""
 
 import polars as pl
-from daily.evaluation.advanced import compute_sector_ic, SectorICResult
+
+from daily.evaluation.advanced import SectorICResult, compute_sector_ic
 
 
 def _make_sector_data(n_stocks: int = 60) -> pl.DataFrame:

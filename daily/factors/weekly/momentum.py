@@ -1,8 +1,9 @@
 ﻿"""周频动量因子。复用日频 20 日动量公式，下采样到周频快照。"""
 
 import polars as pl
-from daily.factors.base import LFTFactor
+
 from daily.data.context import FactorDataContext
+from daily.factors.base import LFTFactor
 
 
 class MomentumWeekly(LFTFactor):

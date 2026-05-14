@@ -9,20 +9,21 @@
 """
 
 import argparse
+import sys
 
 import polars as pl
 
-from config.settings import OUTPUT_DIR, OUTPUT_LFT_REPORTS
-from common.logger import setup_logging, get_logger
-from common.loader import fetch_daily
 from common.calendar import get_trade_dates
+from common.loader import fetch_daily
+from common.logger import get_logger, setup_logging
 from common.universe import get_universe
+from config.settings import OUTPUT_LFT_REPORTS
 from daily.data.context import FactorDataContext
+from daily.evaluation.backtest import run_stratified_backtest
+from daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
+from daily.evaluation.turnover import compute_turnover
 from daily.factors.registry import get_factor
 from daily.preprocessing.pipeline import quick_preprocess
-from daily.evaluation.ic_analysis import compute_rank_ic, compute_fwd_returns
-from daily.evaluation.backtest import run_stratified_backtest
-from daily.evaluation.turnover import compute_turnover
 from reporting.tear_sheet import generate_tear_sheet
 
 setup_logging()

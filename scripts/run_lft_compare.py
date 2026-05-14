@@ -1,17 +1,18 @@
 ﻿"""LFT 多因子 IC 对比。用法: python scripts/run_lft_compare.py --factors momentum_20d,reversal_5d --start 20250101 --end 20250513"""
 
 import argparse
+import sys
 
 import polars as pl
 
-from common.logger import setup_logging, get_logger
 from common.loader import fetch_daily
+from common.logger import get_logger, setup_logging
 from common.universe import get_universe
 from daily.data.context import FactorDataContext
+from daily.evaluation.correlation import compute_factor_correlation
+from daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
 from daily.factors.registry import get_factor
 from daily.preprocessing.pipeline import quick_preprocess
-from daily.evaluation.ic_analysis import compute_rank_ic, compute_fwd_returns
-from daily.evaluation.correlation import compute_factor_correlation
 
 setup_logging()
 logger = get_logger(__name__)
@@ -66,7 +67,7 @@ def main():
         (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1).alias("ret")
     )
     ret_df = compute_fwd_returns(ret_df, ret_col="ret")
-    logger.info(f"前向收益计算完成 (horizons: 1/5/10/20d)")
+    logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
 
     factor_dict = {}
 

@@ -13,8 +13,8 @@
 
 import argparse
 
-from common.logger import setup_logging, get_logger
 from common.loader import fetch_daily_basic, fetch_finance
+from common.logger import get_logger, setup_logging
 
 setup_logging()
 logger = get_logger(__name__)

@@ -1,8 +1,9 @@
 ﻿"""月频估值因子：pe_ttm 和 pb。直接从 daily_basic 月末快照提取。"""
 
 import polars as pl
-from daily.factors.base import LFTFactor
+
 from daily.data.context import FactorDataContext
+from daily.factors.base import LFTFactor
 
 
 class PeTtmMonthly(LFTFactor):

@@ -1,8 +1,10 @@
 """分层回测。按因子值分组，计算各组收益与多空对冲表现。"""
 
 from dataclasses import dataclass
-import polars as pl
+
 import numpy as np
+import polars as pl
+
 from config.constants import TRADING_DAYS_PER_YEAR
 
 

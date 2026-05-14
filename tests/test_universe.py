@@ -4,8 +4,7 @@ import os
 
 import pytest
 
-from common.universe import get_universe, get_index_members
-
+from common.universe import get_universe
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -50,8 +49,6 @@ def test_csi800_is_union():
         get_universe(FIXTURE_DATE, "csi800")["ts_code"].to_list()
     )
 
-    n300 = len(csi300_codes)
-    n500 = len(csi500_codes)
     n800 = len(csi800_codes)
 
     # CSI800 应为 union 去重

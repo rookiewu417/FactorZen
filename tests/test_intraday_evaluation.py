@@ -1,6 +1,6 @@
 """Tests for intraday/evaluation/ic_analysis.py."""
 
-from datetime import datetime, date
+from datetime import datetime
 
 import numpy as np
 import polars as pl
@@ -8,8 +8,8 @@ import pytest
 
 from intraday.evaluation.ic_analysis import (
     IntradayICResult,
-    compute_intraday_rank_ic,
     _assign_segment,
+    compute_intraday_rank_ic,
 )
 
 

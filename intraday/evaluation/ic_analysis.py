@@ -9,11 +9,10 @@ but groups on (trade_date, trade_time) rather than just trade_date.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
-
 
 _MIN_CROSS_SAMPLES = 10  # lower threshold for intraday cross-sections
 

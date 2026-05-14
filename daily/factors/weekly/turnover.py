@@ -1,8 +1,9 @@
 ﻿"""周频换手率因子。日频公式 + 周频采样。"""
 
 import polars as pl
-from daily.factors.base import LFTFactor
+
 from daily.data.context import FactorDataContext
+from daily.factors.base import LFTFactor
 
 
 class TurnoverWeekly(LFTFactor):

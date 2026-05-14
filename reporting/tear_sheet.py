@@ -13,7 +13,7 @@ import base64
 import io
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import jinja2
 import matplotlib
@@ -21,11 +21,9 @@ import matplotlib
 matplotlib.use("Agg")  # 非交互后端，不弹窗
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-import numpy as np
-import polars as pl
 
 from common.logger import get_logger
-from config.constants import MIN_IC_SAMPLES, STAR_RATING_THRESHOLDS, MIN_BACKTEST_IR
+from config.constants import MIN_BACKTEST_IR, STAR_RATING_THRESHOLDS
 
 logger = get_logger(__name__)
 
@@ -56,7 +54,7 @@ def _safe_attr(obj: Any, attr: str, default: Any = None) -> Any:
 
 # ── 图表生成 ──────────────────────────────────────────────────────────
 
-def _make_returns_chart(bt_result: Any, factor_name: str) -> Optional[str]:
+def _make_returns_chart(bt_result: Any, factor_name: str) -> str | None:
     """分层回测 NAV 曲线图。"""
     if bt_result is None:
         return None
@@ -88,7 +86,7 @@ def _make_returns_chart(bt_result: Any, factor_name: str) -> Optional[str]:
     return _fig_to_base64(fig)
 
 
-def _make_ic_chart(ic_result: Any) -> Optional[str]:
+def _make_ic_chart(ic_result: Any) -> str | None:
     """IC 时序棒图 + 滚动均值。"""
     if ic_result is None:
         return None
@@ -98,7 +96,7 @@ def _make_ic_chart(ic_result: Any) -> Optional[str]:
 
     fig, ax = plt.subplots(figsize=(10, 4))
     ic_pd = ic_series.to_pandas()
-    ic_col = "ic" if "ic" in ic_pd.columns else [c for c in ic_pd.columns if c != "trade_date"][0]
+    ic_col = "ic" if "ic" in ic_pd.columns else next(c for c in ic_pd.columns if c != "trade_date")
     date_col = "trade_date" if "trade_date" in ic_pd.columns else ic_pd.columns[0]
 
     ax.bar(ic_pd[date_col], ic_pd[ic_col], width=1.0, color="#bdc3c7", alpha=0.6, label="IC")
@@ -115,7 +113,7 @@ def _make_ic_chart(ic_result: Any) -> Optional[str]:
     return _fig_to_base64(fig)
 
 
-def _make_turnover_chart(to_result: Any) -> Optional[str]:
+def _make_turnover_chart(to_result: Any) -> str | None:
     """换手率填充图。"""
     if to_result is None:
         return None
@@ -126,7 +124,7 @@ def _make_turnover_chart(to_result: Any) -> Optional[str]:
     fig, ax = plt.subplots(figsize=(10, 4))
     dt_pd = dt.to_pandas()
     date_col = "trade_date" if "trade_date" in dt_pd.columns else dt_pd.columns[0]
-    val_col = [c for c in dt_pd.columns if c != date_col][0]
+    val_col = next(c for c in dt_pd.columns if c != date_col)
     ax.fill_between(dt_pd[date_col], dt_pd[val_col], alpha=0.3, color="#9b59b6")
     ax.plot(dt_pd[date_col], dt_pd[val_col], linewidth=1.2, color="#8e44ad")
     ax.set_title("Periodic Turnover", fontsize=12)
@@ -164,9 +162,9 @@ def _build_bt_summary_table(stats: dict) -> list:
     return rows
 
 
-def _extract_metrics(ic_result, bt_result, to_result, advanced_results) -> Dict[str, Any]:
+def _extract_metrics(ic_result, bt_result, to_result, advanced_results) -> dict[str, Any]:
     """提取所有关键指标为扁平字典。"""
-    m: Dict[str, Any] = {}
+    m: dict[str, Any] = {}
 
     m["ic_mean"] = _safe_attr(ic_result, "ic_mean", 0) or 0
     m["ic_std"] = _safe_attr(ic_result, "ic_std", 0) or 0
@@ -237,7 +235,7 @@ def _extract_metrics(ic_result, bt_result, to_result, advanced_results) -> Dict[
     return m
 
 
-def _compute_star_rating(metrics: Dict[str, Any]) -> int:
+def _compute_star_rating(metrics: dict[str, Any]) -> int:
     """根据指标计算 1-5 星级评分。"""
     stars = 3
     ic_mean = abs(metrics.get("ic_mean", 0))
@@ -256,7 +254,7 @@ def _compute_star_rating(metrics: Dict[str, Any]) -> int:
     return min(5, max(1, stars))
 
 
-def _generate_summary_text(factor_name: str, metrics: Dict[str, Any]) -> str:
+def _generate_summary_text(factor_name: str, metrics: dict[str, Any]) -> str:
     """生成总结解读文本，包含星级评级。"""
     star_char = chr(9733)  # ★
     stars = _compute_star_rating(metrics)
@@ -302,7 +300,7 @@ def generate_tear_sheet(
     *,
     frequency: str = "daily",
     date_range: str = "",
-    advanced_results: Optional[Dict[str, Any]] = None,
+    advanced_results: dict[str, Any] | None = None,
     universe: str = "lft_default",
 ) -> str:
     """生成因子 Tear Sheet HTML 报告。
@@ -336,7 +334,7 @@ def generate_tear_sheet(
     str
         完整的 HTML 报告字符串。
     """
-    charts: Dict[str, str] = {}
+    charts: dict[str, str] = {}
 
     if bt_result is not None:
         try:
@@ -364,7 +362,7 @@ def generate_tear_sheet(
 
     metrics = _extract_metrics(ic_result, bt_result, to_result, advanced_results)
 
-    warnings: List[str] = []
+    warnings: list[str] = []
     if metrics.get("n_periods", 0) < 30:
         warnings.append(f"样本量较少（{metrics['n_periods']} 期），IC 估计可能不稳定。")
     if metrics.get("ic_mean") is not None and abs(metrics["ic_mean"]) < 0.01:

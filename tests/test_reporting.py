@@ -18,9 +18,6 @@ import numpy as np
 import polars as pl
 import pytest
 
-from daily.evaluation.ic_analysis import ICAnalysisResult
-from daily.evaluation.backtest import BacktestResult
-from daily.evaluation.turnover import TurnoverResult
 from daily.evaluation.advanced import (
     ICDecayResult,
     MonotonicityResult,
@@ -28,8 +25,10 @@ from daily.evaluation.advanced import (
     SectorICResult,
     SizeICResult,
 )
+from daily.evaluation.backtest import BacktestResult
+from daily.evaluation.ic_analysis import ICAnalysisResult
+from daily.evaluation.turnover import TurnoverResult
 from reporting.tear_sheet import generate_tear_sheet
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -80,7 +79,7 @@ def bt_result() -> BacktestResult:
             nav_records.append({"trade_date": d, "group": g, "nav": float(cum[i])})
 
     # Long-short
-    for i, d in enumerate(dates):
+    for _i, d in enumerate(dates):
         day_rets_i = {r["group"]: r["ret"] for r in records if r["trade_date"] == d}
         long_ret = day_rets_i.get(n_groups - 1, 0)
         short_ret = day_rets_i.get(0, 0)

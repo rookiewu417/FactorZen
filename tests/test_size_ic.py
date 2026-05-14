@@ -1,7 +1,8 @@
 ﻿"""测试分市值 IC：按市值分组（大盘/中盘/小盘）计算 Rank IC。"""
 
 import polars as pl
-from daily.evaluation.advanced import compute_size_ic, SizeICResult
+
+from daily.evaluation.advanced import SizeICResult, compute_size_ic
 
 
 def _make_size_data(n_stocks: int = 60) -> pl.DataFrame:

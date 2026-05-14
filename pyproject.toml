@@ -40,10 +40,14 @@ ignore = [
     "E501",   # 行长度由 formatter 管理
     "B008",   # 函数默认参数中的函数调用
     "SIM108", # 三元运算符（有时可读性更差）
+    "RUF001", # 中文字符被误判为 ambiguous Unicode（正常中文注释/字符串）
+    "RUF002", # 同上
+    "RUF003", # 同上
+    "RUF012", # ClassVar 在基类已声明，子类覆盖不需要重复注解
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["common", "config", "lft", "mft", "hft", "reporting"]
+known-first-party = ["common", "config", "daily", "intraday", "tick", "reporting"]
 
 [tool.ruff.format]
 quote-style = "double"

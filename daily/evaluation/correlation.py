@@ -1,8 +1,9 @@
 """因子截面相关性分析。"""
 
 from dataclasses import dataclass
-import polars as pl
+
 import numpy as np
+import polars as pl
 
 
 @dataclass

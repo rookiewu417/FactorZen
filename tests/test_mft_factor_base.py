@@ -1,11 +1,11 @@
 ﻿"""测试 MFTFactor 抽象基类。"""
 
-import pytest
-import polars as pl
 from dataclasses import dataclass
 
-from intraday.factors.base import MFTFactor
+import polars as pl
+import pytest
 
+from intraday.factors.base import MFTFactor
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 

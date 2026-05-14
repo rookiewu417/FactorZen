@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy import stats
 import polars as pl
+from scipy import stats
 
 # 最少截面样本数（低于此值的交易日跳过）
 _MIN_CROSS_SAMPLES = 30

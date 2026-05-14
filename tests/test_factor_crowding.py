@@ -1,9 +1,10 @@
 ﻿"""测试因子拥挤度：衡量多个因子间的信号相似度。"""
 
 import polars as pl
+
 from daily.evaluation.advanced import (
-    compute_factor_crowding,
     CrowdingResult,
+    compute_factor_crowding,
 )
 
 

@@ -371,7 +371,7 @@ packages:
 - pypi: ./
   name: factor-research
   version: 0.1.0
-  sha256: 0cbf6edde96cab43395f1cd58caddb01a3f235388114911a53716e9a6f88e1bf
+  sha256: 61101553630c92263cba5d47a374cac8c5103e4a8fb1dc07a150f542f5e56050
   requires_dist:
   - polars>=1.0.0
   - pyarrow>=14.0.0

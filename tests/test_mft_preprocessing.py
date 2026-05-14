@@ -2,14 +2,12 @@
 
 import polars as pl
 import polars.testing as pl_testing
-import pytest
 
 from intraday.preprocessing.pipeline import (
     MFTPreprocessingPipeline,
     clip_outliers,
     fill_missing_bars,
 )
-
 
 # ── fill_missing_bars ───────────────────────────────────────────────────────
 

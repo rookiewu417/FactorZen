@@ -1,7 +1,8 @@
 ﻿"""测试因子排名自相关性：衡量因子排序的跨期稳定性。"""
 
 import polars as pl
-from daily.evaluation.advanced import compute_rank_autocorr, RankAutocorrResult
+
+from daily.evaluation.advanced import RankAutocorrResult, compute_rank_autocorr
 
 
 def _make_factor_data() -> pl.DataFrame:

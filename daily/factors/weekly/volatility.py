@@ -24,7 +24,7 @@ class VolatilityWeekly(LFTFactor):
                 .alias("log_ret")
             )
             .with_columns(
-                pl.col("log_ret").rolling_std(20, min_periods=10).over("ts_code")
+                pl.col("log_ret").rolling_std(20, min_samples=10).over("ts_code")
                 .alias("factor_value")
             )
             .filter(

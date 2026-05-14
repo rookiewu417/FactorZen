@@ -1,14 +1,14 @@
-﻿"""20日波动率因子。"""
+"""Amihud non-liquidity factor."""
 
 import polars as pl
 from daily.factors.base import LFTFactor
 from daily.data.context import FactorDataContext
 
 
-class Volatility20D(LFTFactor):
-    name = "volatility_20d"
+class AmihudIlliquidity(LFTFactor):
+    name = "amihud_illiquidity"
     category = "daily"
-    description = "20日波动率：std(log_return) over 20 days"
+    description = "Amihud (2002) illiquidity: 20-day mean of |ret|/amount, higher = less liquid"
     lookback_days = 25
 
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
@@ -16,12 +16,16 @@ class Volatility20D(LFTFactor):
         result = (
             daily
             .sort(["ts_code", "trade_date"])
+            .with_columns([
+                (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0)
+                .abs()
+                .alias("_abs_ret"),
+                (pl.col("amount") + 1e-6).alias("_amount"),
+            ])
             .with_columns(
-                (pl.col("close") / pl.col("close").shift(1).over("ts_code")).log()
-                .alias("log_ret")
-            )
-            .with_columns(
-                pl.col("log_ret").rolling_std(20, min_samples=10).over("ts_code")
+                (pl.col("_abs_ret") / pl.col("_amount"))
+                .rolling_mean(20, min_samples=10)
+                .over("ts_code")
                 .alias("factor_value")
             )
             .filter(pl.col("trade_date") >= pl.lit(ctx.start).str.strptime(pl.Date, "%Y%m%d"))
@@ -31,5 +35,4 @@ class Volatility20D(LFTFactor):
         return result
 
 
-# 模块级实例化，供 registry 自动发现
-Volatility20D()
+AmihudIlliquidity()

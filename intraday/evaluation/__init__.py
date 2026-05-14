@@ -1,15 +1,5 @@
-"""MFT evaluation stubs — placeholder dataclasses for future implementation."""
+"""Intraday (minute-frequency) factor evaluation."""
 
-from dataclasses import dataclass
+from intraday.evaluation.ic_analysis import IntradayICResult, compute_intraday_rank_ic
 
-
-@dataclass
-class MFTICResult:
-    """Minute-frequency IC analysis result (not yet implemented)."""
-    pass
-
-
-@dataclass
-class MFTBacktestResult:
-    """Minute-frequency backtest result (not yet implemented)."""
-    pass
+__all__ = ["IntradayICResult", "compute_intraday_rank_ic"]

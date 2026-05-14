@@ -19,7 +19,7 @@ class TurnoverWeekly(LFTFactor):
             daily
             .sort(["ts_code", "trade_date"])
             .with_columns(
-                pl.col("vol").rolling_mean(5, min_periods=3).over("ts_code")
+                pl.col("vol").rolling_mean(5, min_samples=3).over("ts_code")
                 .log1p()
                 .alias("factor_value")
             )

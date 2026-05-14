@@ -178,6 +178,71 @@ def test_registry_has_new_factors():
     expected = [
         "amihud_illiquidity", "max_return_5d", "skewness_20d",
         "beta_60d", "idiosyncratic_vol_20d", "bm_ratio", "ep_ratio",
+        "asset_growth",
     ]
     for name in expected:
         assert name in factors, f"Factor '{name}' not registered"
+
+
+def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
+    """Synthetic quarterly finance data with total_assets.
+
+    Announcement dates are set to be well before the test snapshot dates
+    (2024-03-29, 2024-04-30) so PIT alignment finds valid records.
+    """
+    rng = np.random.default_rng(7)
+    stocks = [f"{i:06d}.SH" for i in range(n_stocks)]
+    # 6 quarters: Q1/2023 through Q2/2024.
+    # Announcement dates are set ~1 month after quarter end, but Q1/2024 and
+    # Q2/2024 are announced before our snapshot dates (2024-03-29 / 2024-04-30).
+    quarter_ann = [
+        (date(2023, 3, 31), date(2023, 4, 28)),
+        (date(2023, 6, 30), date(2023, 7, 28)),
+        (date(2023, 9, 30), date(2023, 10, 28)),
+        (date(2023, 12, 31), date(2024, 1, 28)),
+        (date(2024, 3, 31), date(2024, 3, 15)),  # announced before 2024-03-29
+        (date(2024, 6, 30), date(2024, 4, 15)),  # announced before 2024-04-30
+    ]
+    rows = []
+    for s in stocks:
+        assets = float(abs(rng.standard_normal() * 1e9 + 5e9))
+        for q, ann in quarter_ann:
+            assets = assets * (1 + rng.standard_normal() * 0.05)
+            rows.append({
+                "ts_code": s,
+                "end_date": q,
+                "ann_date": ann,
+                "total_assets": float(assets),
+            })
+    return pl.DataFrame(rows).lazy()
+
+
+def test_asset_growth(ctx, monkeypatch):
+    from daily.factors.monthly.asset_growth import AssetGrowthMonthly
+    import daily.factors.monthly.asset_growth as ag_mod
+
+    synthetic_lf = _make_finance_lf()
+    monkeypatch.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
+
+    factor = AssetGrowthMonthly()
+    assert isinstance(factor, LFTFactor)
+    result = factor.compute(ctx)
+    _check_result(result, "asset_growth")
+    # YoY growth can be positive or negative, but should be finite
+    non_null = result["factor_value"].drop_nulls().to_numpy()
+    assert np.all(np.isfinite(non_null)), "Asset growth should be finite"
+
+
+def test_asset_growth_empty_when_no_finance(ctx, monkeypatch):
+    """When finance data unavailable, factor returns empty DataFrame gracefully."""
+    from daily.factors.monthly.asset_growth import AssetGrowthMonthly
+    import daily.factors.monthly.asset_growth as ag_mod
+
+    def _raise(_):
+        raise FileNotFoundError("no data")
+    monkeypatch.setattr(ag_mod, "scan_parquet", _raise)
+
+    factor = AssetGrowthMonthly()
+    result = factor.compute(ctx)
+    assert isinstance(result, pl.DataFrame)
+    assert result.is_empty()

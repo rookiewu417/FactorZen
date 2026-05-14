@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ factor_name }} — Intraday IC Report</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f6fa; color: #2d3436; line-height: 1.6; }
+  .container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 24px; color: #2c3e50; margin-bottom: 5px; }
+  h2 { font-size: 18px; color: #34495e; margin: 20px 0 12px 0; padding-bottom: 6px; border-bottom: 2px solid #e67e22; }
+  .meta { color: #7f8c8d; font-size: 13px; margin-bottom: 20px; }
+  .panel { background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); padding: 20px; margin-bottom: 20px; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #ecf0f1; }
+  th { background: #f8f9fa; font-weight: 600; color: #2c3e50; }
+  tr:hover { background: #f8f9fa; }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .metric-card { background: #f8f9fa; padding: 12px; border-radius: 6px; border-left: 3px solid #e67e22; }
+  .metric-card .label { font-size: 12px; color: #7f8c8d; text-transform: uppercase; }
+  .metric-card .value { font-size: 20px; font-weight: 700; color: #2c3e50; }
+  .chart-img { width: 100%; margin: 10px 0; border-radius: 4px; }
+  .no-data { color: #bdc3c7; font-style: italic; padding: 20px; text-align: center; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+  .badge-intraday { background: #fef9e7; color: #d68910; border: 1px solid #f9ca24; }
+  .footer { text-align: center; color: #bdc3c7; font-size: 12px; margin-top: 30px; padding: 15px; border-top: 1px solid #ecf0f1; }
+  .sig { color: #e74c3c; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- 1. Overview -->
+<div class="panel">
+  <h1>{{ factor_name }} <span class="badge badge-intraday">Intraday</span></h1>
+  <div class="meta">
+    Bar Size: {{ bar_size }} | Universe: {{ universe }} | Generated: {{ generated_at }}
+    {% if date_range %}| Range: {{ date_range }}{% endif %}
+  </div>
+
+  <div class="metric-grid">
+    <div class="metric-card"><div class="label">IC Mean</div><div class="value">{{ "%.4f"|format(metrics.ic_mean or 0) }}</div></div>
+    <div class="metric-card"><div class="label">IC Std</div><div class="value">{{ "%.4f"|format(metrics.ic_std or 0) }}</div></div>
+    <div class="metric-card"><div class="label">IR</div><div class="value">{{ "%.2f"|format(metrics.ir or 0) }}</div></div>
+    <div class="metric-card"><div class="label">IC &gt; 0 Ratio</div><div class="value">{{ "%.1f%%"|format((metrics.ic_positive_ratio or 0) * 100) }}</div></div>
+    <div class="metric-card"><div class="label">Minute-Bars</div><div class="value">{{ metrics.n_periods or 0 }}</div></div>
+  </div>
+</div>
+
+<!-- 2. Daily IC -->
+<div class="panel">
+  <h2>Daily IC Trend</h2>
+  {% if charts.daily_ic_chart %}
+  <img class="chart-img" src="data:image/png;base64,{{ charts.daily_ic_chart }}" alt="Daily IC Chart">
+  {% else %}
+  <div class="no-data">No daily IC chart</div>
+  {% endif %}
+
+  {% if metrics.daily_ic_table %}
+  <table>
+    <tr><th>Trade Date</th><th>IC</th></tr>
+    {% for row in metrics.daily_ic_table %}
+    <tr><td>{{ row.trade_date }}</td><td>{{ "%.4f"|format(row.ic) }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+<!-- 3. Segment IC -->
+<div class="panel">
+  <h2>Time-of-Day Segment IC</h2>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">
+    Open: 09:30–10:00 &nbsp;|&nbsp; Close: 14:30–15:00 &nbsp;|&nbsp; Midday: rest of session
+  </p>
+  {% if metrics.segment_table %}
+  <table>
+    <tr><th>Segment</th><th>IC Mean</th></tr>
+    {% for row in metrics.segment_table %}
+    <tr><td>{{ row.segment }}</td><td>{{ "%.4f"|format(row.ic) }}</td></tr>
+    {% endfor %}
+  {% else %}
+  <div class="no-data">No segment data</div>
+  {% endif %}
+  </table>
+</div>
+
+<!-- 4. Note -->
+<div class="panel">
+  <h2>Usage Note</h2>
+  <p>This intraday IC report is intended as a <strong>multi-frequency validation</strong> tool.
+  When a daily factor shows suspicious IC, run the corresponding intraday factor to verify
+  intraday consistency. Intraday backtest (with transaction cost modeling) is out of scope.</p>
+</div>
+
+<div class="footer">
+  Intraday Factor Research &mdash; Generated {{ generated_at }}
+</div>
+
+</div>
+</body>
+</html>

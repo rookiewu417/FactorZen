@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+from scipy import stats
 import polars as pl
 
 # 最少截面样本数（低于此值的交易日跳过）
@@ -53,19 +54,34 @@ class ICAnalysisResult:
     ic_series: pl.DataFrame  # trade_date, ic
     decay: dict[int, float] = field(default_factory=dict)  # {horizon_days: ic_mean}
     frequency: str = "daily"
+    ic_tstat: float = 0.0
+    ic_pvalue: float = 1.0
+    # Multi-period IC: {horizon: ICAnalysisResult-like fields} for consistency check
+    multi_period: dict[int, dict[str, float]] = field(default_factory=dict)
+    # Out-of-sample split IC: {"train": ic_mean, "test": ic_mean}
+    oos_ic: dict[str, float] = field(default_factory=dict)
 
     def summary(self) -> str:
         freq_label = {"daily": "日频", "weekly": "周频", "monthly": "月频"}.get(
             self.frequency, self.frequency
         )
+        sig_label = "***" if self.ic_pvalue < 0.01 else ("**" if self.ic_pvalue < 0.05 else ("*" if self.ic_pvalue < 0.1 else ""))
         lines = [
             f"Factor: {self.factor_name} [{freq_label}]",
             f"  IC Mean: {self.ic_mean:.4f}  |  IC Std: {self.ic_std:.4f}  |  IR: {self.ir:.2f}",
+            f"  t-stat: {self.ic_tstat:.2f}{sig_label}  |  p-value: {self.ic_pvalue:.4f}",
             f"  IC > 0 Ratio: {self.ic_positive_ratio:.1%}  |  Periods: {self.n_periods}",
         ]
         if self.decay:
             decay_parts = [f"{h}d={v:.4f}" for h, v in sorted(self.decay.items())]
             lines.append(f"  IC Decay: {', '.join(decay_parts)}")
+        if self.multi_period:
+            mp_parts = [f"{h}d: IC={v['ic_mean']:.4f},IR={v['ir']:.2f}" for h, v in sorted(self.multi_period.items())]
+            lines.append(f"  Multi-period: {', '.join(mp_parts)}")
+        if self.oos_ic:
+            train_ic = self.oos_ic.get("train", float("nan"))
+            test_ic = self.oos_ic.get("test", float("nan"))
+            lines.append(f"  OOS: train IC={train_ic:.4f}, test IC={test_ic:.4f}")
         return "\n".join(lines)
 
 
@@ -116,41 +132,54 @@ def _rank_ic_by_date(
     return ic_df
 
 
+def _ic_stats(ic_values: np.ndarray) -> tuple[float, float, float, float, float, float]:
+    """Compute (ic_mean, ic_std, ir, ic_pos, tstat, pvalue) from IC array."""
+    if len(ic_values) == 0:
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 1.0
+    ic_mean = float(np.mean(ic_values))
+    ic_std = float(np.std(ic_values, ddof=1)) if len(ic_values) > 1 else 0.0
+    ir = ic_mean / ic_std if ic_std > 0 else 0.0
+    ic_pos = float(np.mean(ic_values > 0))
+    if len(ic_values) > 1 and ic_std > 0:
+        tstat, pvalue = stats.ttest_1samp(ic_values, popmean=0.0)
+    else:
+        tstat, pvalue = 0.0, 1.0
+    return ic_mean, ic_std, ir, ic_pos, float(tstat), float(pvalue)
+
+
 def compute_rank_ic(
     factor_df: pl.DataFrame,
     daily_ret: pl.DataFrame,
     factor_col: str = "factor_clean",
     horizons: list[int] | None = None,
     frequency: str = "daily",
+    oos_split: float = 0.7,
 ) -> ICAnalysisResult:
-    """计算 Rank IC（polars vectorized，消除逐日 Python for 循环）。
+    """Compute Rank IC (polars vectorized).
 
     Args:
-        factor_df: 含 trade_date, ts_code, {factor_col} 的 DataFrame。
-        daily_ret: 含 trade_date, ts_code, fwd_ret_{h}d 的 DataFrame
-                   （通过 compute_fwd_returns() 预计算）。
-        factor_col: 因子列名。
-        horizons: IC decay 的时间窗口，默认 [1, 5, 10, 20]。
-        frequency: 频率标签，用于 summary 显示。
+        factor_df: DataFrame with trade_date, ts_code, {factor_col}.
+        daily_ret: DataFrame with trade_date, ts_code, fwd_ret_{h}d columns
+                   (precomputed by compute_fwd_returns()).
+        factor_col: Factor column name.
+        horizons: IC decay horizons in trading days (default [1, 5, 10, 20]).
+        frequency: Frequency label for summary display.
+        oos_split: Fraction of dates used as in-sample training (default 0.7).
 
     Returns:
-        ICAnalysisResult。
+        ICAnalysisResult with IC stats, t-stat, p-value, multi-period IC, and OOS split.
     """
     if horizons is None:
         horizons = [1, 5, 10, 20]
 
     merged = factor_df.join(daily_ret, on=["trade_date", "ts_code"], how="inner")
 
-    # ---------- 主 IC（horizon=1d）----------
+    # ---------- Primary IC (horizon=1d) ----------
     ic_series = _rank_ic_by_date(merged, factor_col, "fwd_ret_1d")
     ic_values = ic_series["ic"].drop_nulls().to_numpy()
+    ic_mean, ic_std, ir, ic_pos, tstat, pvalue = _ic_stats(ic_values)
 
-    ic_mean = float(np.mean(ic_values)) if len(ic_values) > 0 else 0.0
-    ic_std = float(np.std(ic_values, ddof=1)) if len(ic_values) > 1 else 0.0
-    ir = ic_mean / ic_std if ic_std > 0 else 0.0
-    ic_pos = float(np.mean(ic_values > 0)) if len(ic_values) > 0 else 0.0
-
-    # ---------- IC Decay（所有 horizon）----------
+    # ---------- IC Decay (all horizons) ----------
     decay: dict[int, float] = {}
     for h in horizons:
         ret_col = f"fwd_ret_{h}d"
@@ -160,6 +189,29 @@ def compute_rank_ic(
         h_vals = h_ic_df["ic"].drop_nulls().to_numpy()
         if len(h_vals) > 0:
             decay[h] = float(np.mean(h_vals))
+
+    # ---------- Multi-period IC consistency ----------
+    multi_period: dict[int, dict[str, float]] = {}
+    for h in horizons:
+        ret_col = f"fwd_ret_{h}d"
+        if ret_col not in merged.columns:
+            continue
+        h_ic_df = _rank_ic_by_date(merged, factor_col, ret_col)
+        h_vals = h_ic_df["ic"].drop_nulls().to_numpy()
+        if len(h_vals) > 0:
+            h_mean, h_std, h_ir, h_pos, h_t, h_p = _ic_stats(h_vals)
+            multi_period[h] = {
+                "ic_mean": h_mean, "ic_std": h_std,
+                "ir": h_ir, "ic_positive_ratio": h_pos,
+                "tstat": h_t, "pvalue": h_p,
+            }
+
+    # ---------- Out-of-sample split ----------
+    oos_ic: dict[str, float] = {}
+    if len(ic_values) >= 4:
+        n_train = max(2, int(len(ic_values) * oos_split))
+        oos_ic["train"] = float(np.mean(ic_values[:n_train]))
+        oos_ic["test"] = float(np.mean(ic_values[n_train:]))
 
     return ICAnalysisResult(
         factor_name=factor_col,
@@ -171,4 +223,8 @@ def compute_rank_ic(
         ic_series=ic_series,
         decay=decay,
         frequency=frequency,
+        ic_tstat=tstat,
+        ic_pvalue=pvalue,
+        multi_period=multi_period,
+        oos_ic=oos_ic,
     )

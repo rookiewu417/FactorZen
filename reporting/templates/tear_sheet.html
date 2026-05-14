@@ -49,6 +49,7 @@
     <div class="metric-card"><div class="label">IC Std</div><div class="value">{{ "%.4f"|format(metrics.ic_std or 0) }}</div></div>
     <div class="metric-card"><div class="label">IR</div><div class="value">{{ "%.2f"|format(metrics.ir or 0) }}</div></div>
     <div class="metric-card"><div class="label">IC > 0 Ratio</div><div class="value">{{ "%.1f%%"|format((metrics.ic_positive_ratio or 0) * 100) }}</div></div>
+    <div class="metric-card"><div class="label">t-stat</div><div class="value">{{ "%.2f"|format(metrics.ic_tstat or 0) }}{% if (metrics.ic_pvalue or 1) < 0.01 %}<span style="color:#e74c3c;font-size:14px">***</span>{% elif (metrics.ic_pvalue or 1) < 0.05 %}<span style="color:#e67e22;font-size:14px">**</span>{% elif (metrics.ic_pvalue or 1) < 0.1 %}<span style="color:#f39c12;font-size:14px">*</span>{% endif %}</div></div>
     <div class="metric-card"><div class="label">Periods</div><div class="value">{{ metrics.n_periods or 0 }}</div></div>
     <div class="metric-card"><div class="label">Avg Turnover</div><div class="value">{{ "%.1f%%"|format((metrics.avg_turnover or 0) * 100) }}</div></div>
   </div>
@@ -97,6 +98,41 @@
   </table>
   {% endif %}
 </div>
+
+<!-- 3b. Multi-Period Consistency -->
+{% if metrics.get('multi_period_table') %}
+<div class="panel">
+  <h2>Multi-Period Consistency</h2>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">IC across holding periods — a robust factor should show consistent direction across horizons.</p>
+  <table>
+    <tr><th>Horizon</th><th>IC Mean</th><th>IC Std</th><th>IR</th><th>IC&gt;0 Ratio</th><th>t-stat</th><th>p-value</th></tr>
+    {% for row in metrics.multi_period_table %}
+    <tr>
+      <td>{{ row.horizon }}</td>
+      <td>{{ "%.4f"|format(row.ic_mean) }}</td>
+      <td>{{ "%.4f"|format(row.ic_std) }}</td>
+      <td>{{ "%.2f"|format(row.ir) }}</td>
+      <td>{{ "%.1f%%"|format(row.ic_pos * 100) }}</td>
+      <td>{{ "%.2f"|format(row.tstat) }}{% if row.pvalue < 0.01 %}<span style="color:#e74c3c">***</span>{% elif row.pvalue < 0.05 %}<span style="color:#e67e22">**</span>{% elif row.pvalue < 0.1 %}<span style="color:#f39c12">*</span>{% endif %}</td>
+      <td>{{ "%.4f"|format(row.pvalue) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<!-- 3c. Out-of-Sample Robustness -->
+{% if metrics.get('oos_train_ic') is not none %}
+<div class="panel">
+  <h2>Out-of-Sample Robustness</h2>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">In-sample (first 70%) vs out-of-sample (last 30%) IC split — consistent IC direction indicates factor is not overfitted to a specific period.</p>
+  <table>
+    <tr><th>Split</th><th>IC Mean</th></tr>
+    <tr><td>In-Sample (Train)</td><td>{{ "%.4f"|format(metrics.oos_train_ic) }}</td></tr>
+    <tr><td>Out-of-Sample (Test)</td><td>{{ "%.4f"|format(metrics.oos_test_ic) }}</td></tr>
+  </table>
+</div>
+{% endif %}
 
 <!-- 4. Turnover Analysis -->
 <div class="panel">

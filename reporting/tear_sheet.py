@@ -174,6 +174,28 @@ def _extract_metrics(ic_result, bt_result, to_result, advanced_results) -> Dict[
     m["ic_positive_ratio"] = _safe_attr(ic_result, "ic_positive_ratio", 0) or 0
     m["n_periods"] = _safe_attr(ic_result, "n_periods", 0) or 0
     m["decay"] = _safe_attr(ic_result, "decay", {})
+    m["ic_tstat"] = _safe_attr(ic_result, "ic_tstat", 0.0) or 0.0
+    m["ic_pvalue"] = _safe_attr(ic_result, "ic_pvalue", 1.0)
+    # Multi-period consistency: {horizon: {ic_mean, ic_std, ir, ic_positive_ratio}}
+    multi_period = _safe_attr(ic_result, "multi_period", {})
+    if multi_period:
+        m["multi_period_table"] = [
+            {
+                "horizon": f"{h}d",
+                "ic_mean": v.get("ic_mean", 0),
+                "ic_std": v.get("ic_std", 0),
+                "ir": v.get("ir", 0),
+                "ic_pos": v.get("ic_positive_ratio", 0),
+                "tstat": v.get("tstat", 0),
+                "pvalue": v.get("pvalue", 1.0),
+            }
+            for h, v in sorted(multi_period.items())
+        ]
+    # Out-of-sample split
+    oos_ic = _safe_attr(ic_result, "oos_ic", {})
+    if oos_ic:
+        m["oos_train_ic"] = oos_ic.get("train", 0)
+        m["oos_test_ic"] = oos_ic.get("test", 0)
 
     m["bt_stats"] = []
     if bt_result is not None:

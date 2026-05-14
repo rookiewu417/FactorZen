@@ -52,3 +52,16 @@ def quick_preprocess(df: pl.DataFrame, col: str = "factor_value") -> pl.DataFram
         steps=["outlier", "missing", "normalize"],
         neutralize=False,
     ).run(df, col=col)
+
+
+def full_preprocess(
+    df: pl.DataFrame,
+    col: str = "factor_value",
+    stock_basic: "pl.DataFrame | None" = None,
+    daily_basic: "pl.DataFrame | None" = None,
+) -> pl.DataFrame:
+    """完整预处理：去极值 + 填充 + 标准化 + 行业/市值中性化"""
+    return PreprocessingPipeline(
+        steps=["outlier", "missing", "normalize"],
+        neutralize=True,
+    ).run(df, col=col, stock_basic=stock_basic, daily_basic=daily_basic)

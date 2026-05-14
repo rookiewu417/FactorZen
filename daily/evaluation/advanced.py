@@ -18,7 +18,47 @@ from typing import Callable
 
 import numpy as np
 import polars as pl
-from scipy.stats import spearmanr
+
+from daily.evaluation.ic_analysis import _rank_ic_by_date
+
+
+def _grouped_ic(
+    df: pl.DataFrame,
+    factor_col: str,
+    ret_col: str,
+    group_col: str,
+    min_per_cell: int = 2,
+) -> pl.DataFrame:
+    """在分组标签上计算截面 Rank IC，返回 (group_col_renamed_to_group → ic) DataFrame。
+
+    原理：rank within (group, date) → pearson_corr grouped by (group, date) → mean by group。
+    """
+    valid_df = df.filter(
+        pl.col(factor_col).is_not_null()
+        & pl.col(ret_col).is_not_null()
+        & pl.col(ret_col).is_finite()
+    )
+    if valid_df.is_empty():
+        return pl.DataFrame({"regime": [], "ic": []})
+
+    ranked = valid_df.with_columns([
+        pl.col(factor_col).rank(method="average").over([group_col, "trade_date"]).alias("_factor_rank"),
+        pl.col(ret_col).rank(method="average").over([group_col, "trade_date"]).alias("_ret_rank"),
+    ])
+    out_col = "regime" if group_col != "regime" else group_col
+    return (
+        ranked.group_by([group_col, "trade_date"])
+        .agg([
+            pl.corr("_factor_rank", "_ret_rank").alias("ic"),
+            pl.len().alias("_n"),
+        ])
+        .filter(pl.col("_n") >= min_per_cell)
+        .drop("_n")
+        .group_by(group_col)
+        .agg(pl.col("ic").mean())
+        .rename({group_col: out_col} if group_col != out_col else {})
+        .sort(out_col)
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -67,33 +107,20 @@ def compute_ic_decay(
     if not horizons:
         return []
 
-    # 合并因子和收益
     merged = factor_df.join(daily_ret, on=["trade_date", "ts_code"], how="inner")
-    trade_dates = merged["trade_date"].unique().sort().to_list()
 
     results: list[ICDecayResult] = []
     for h in horizons:
         ret_col = f"fwd_ret_{h}d"
         if ret_col not in merged.columns:
             continue
-        h_ics: list[float] = []
-        for d in trade_dates:
-            cross = merged.filter(pl.col("trade_date") == d)
-            x = cross[factor_col].drop_nulls().to_numpy()
-            mask = cross[factor_col].is_not_null()
-            y_arr = cross.filter(mask)[ret_col].to_numpy()
-            valid = ~np.isnan(x) & ~np.isnan(y_arr)
-            if valid.sum() < 30:
-                continue
-            ic, _ = spearmanr(x[valid], y_arr[valid])
-            h_ics.append(float(ic) if not np.isnan(ic) else 0.0)
-
-        ic_arr = np.array(h_ics)
+        h_ic_df = _rank_ic_by_date(merged, factor_col, ret_col)
+        ic_arr = h_ic_df["ic"].drop_nulls().to_numpy()
         results.append(ICDecayResult(
             horizon=h,
             ic_mean=float(np.mean(ic_arr)) if len(ic_arr) > 0 else float("nan"),
-            ic_std=float(np.std(ic_arr, ddof=1)) if len(ic_arr) > 0 else float("nan"),
-            ic_series=h_ics,
+            ic_std=float(np.std(ic_arr, ddof=1)) if len(ic_arr) > 1 else float("nan"),
+            ic_series=ic_arr.tolist(),
         ))
 
     return results
@@ -250,34 +277,40 @@ def compute_sector_ic(
     Returns:
         pl.DataFrame (sector, ic) 或 SectorICResult
     """
-    sectors = factor_df[sector_col].unique().to_list()
-    ic_rows: list[dict] = []
+    valid_df = factor_df.filter(
+        pl.col(factor_col).is_not_null()
+        & pl.col(ret_col).is_not_null()
+        & pl.col(ret_col).is_finite()
+    )
+
     warnings: list[str] = []
+    sector_counts = factor_df.group_by(sector_col).agg(pl.len().alias("_n"))
+    for row in sector_counts.iter_rows(named=True):
+        if row["_n"] < min_samples:
+            warnings.append(
+                f"Sector '{row[sector_col]}' has only {row['_n']} samples (< {min_samples})"
+            )
 
-    trade_dates = factor_df["trade_date"].unique().sort().to_list()
-    for sector in sectors:
-        sec_df = factor_df.filter(pl.col(sector_col) == sector)
-        sec_ics: list[float] = []
-        for d in trade_dates:
-            cross = sec_df.filter(pl.col("trade_date") == d)
-            if len(cross) < 2:
-                continue
-            x = cross[factor_col].drop_nulls().to_numpy()
-            mask = cross[factor_col].is_not_null()
-            y_arr = cross.filter(mask)[ret_col].to_numpy()
-            valid = ~np.isnan(x) & ~np.isnan(y_arr)
-            if valid.sum() < 2:
-                continue
-            ic, _ = spearmanr(x[valid], y_arr[valid])
-            sec_ics.append(float(ic) if not np.isnan(ic) else 0.0)
-
-        ic_mean = float(np.mean(sec_ics)) if sec_ics else float("nan")
-        ic_rows.append({"sector": sector, "ic": ic_mean})
-
-        if len(sec_df) < min_samples:
-            warnings.append(f"Sector '{sector}' has only {len(sec_df)} samples (< {min_samples})")
-
-    result_df = pl.DataFrame(ic_rows)
+    if valid_df.is_empty():
+        result_df = pl.DataFrame({"sector": [], "ic": []})
+    else:
+        ranked = valid_df.with_columns([
+            pl.col(factor_col).rank(method="average").over([sector_col, "trade_date"]).alias("_factor_rank"),
+            pl.col(ret_col).rank(method="average").over([sector_col, "trade_date"]).alias("_ret_rank"),
+        ])
+        result_df = (
+            ranked.group_by([sector_col, "trade_date"])
+            .agg([
+                pl.corr("_factor_rank", "_ret_rank").alias("ic"),
+                pl.len().alias("_n"),
+            ])
+            .filter(pl.col("_n") >= 2)
+            .drop("_n")
+            .group_by(sector_col)
+            .agg(pl.col("ic").mean())
+            .rename({sector_col: "sector"} if sector_col != "sector" else {})
+            .sort("sector")
+        )
 
     if return_object:
         return SectorICResult(
@@ -350,32 +383,41 @@ def compute_size_ic(
     else:
         labels = {i: f"Bucket{i}" for i in range(n_buckets)}
 
-    trade_dates = df["trade_date"].unique().sort().to_list()
+    valid_df = df.filter(
+        pl.col(factor_col).is_not_null()
+        & pl.col(ret_col).is_not_null()
+        & pl.col(ret_col).is_finite()
+    )
+
     ic_rows: list[dict] = []
     buckets_dict: dict[str, float] = {}
 
-    for bucket_id in range(n_buckets):
-        bucket_df = df.filter(pl.col("cap_bucket") == bucket_id)
-        bucket_ics: list[float] = []
-        for d in trade_dates:
-            cross = bucket_df.filter(pl.col("trade_date") == d)
-            if len(cross) < 2:
-                continue
-            x = cross[factor_col].drop_nulls().to_numpy()
-            mask = cross[factor_col].is_not_null()
-            y_arr = cross.filter(mask)[ret_col].to_numpy()
-            valid = ~np.isnan(x) & ~np.isnan(y_arr)
-            if valid.sum() < 2:
-                continue
-            ic, _ = spearmanr(x[valid], y_arr[valid])
-            bucket_ics.append(float(ic) if not np.isnan(ic) else 0.0)
+    if valid_df.is_empty():
+        result_df = pl.DataFrame({"cap_bucket": [], "ic": []})
+    else:
+        ranked = valid_df.with_columns([
+            pl.col(factor_col).rank(method="average").over(["cap_bucket", "trade_date"]).alias("_factor_rank"),
+            pl.col(ret_col).rank(method="average").over(["cap_bucket", "trade_date"]).alias("_ret_rank"),
+        ])
+        bucket_ic_df = (
+            ranked.group_by(["cap_bucket", "trade_date"])
+            .agg([
+                pl.corr("_factor_rank", "_ret_rank").alias("ic"),
+                pl.len().alias("_n"),
+            ])
+            .filter(pl.col("_n") >= 2)
+            .drop("_n")
+            .group_by("cap_bucket")
+            .agg(pl.col("ic").mean())
+            .sort("cap_bucket")
+        )
 
-        ic_mean = float(np.mean(bucket_ics)) if bucket_ics else float("nan")
-        label = labels.get(bucket_id, f"Bucket{bucket_id}")
-        ic_rows.append({"cap_bucket": label, "ic": ic_mean})
-        buckets_dict[label] = ic_mean
+        for row in bucket_ic_df.iter_rows(named=True):
+            label = labels.get(row["cap_bucket"], f"Bucket{row['cap_bucket']}")
+            ic_rows.append({"cap_bucket": label, "ic": row["ic"]})
+            buckets_dict[label] = row["ic"]
 
-    result_df = pl.DataFrame(ic_rows)
+        result_df = pl.DataFrame(ic_rows)
 
     if return_object:
         lines = [f"Size IC: {factor_col}"]
@@ -615,47 +657,27 @@ def compute_market_regime_ic(
 
     # 合并市场状态和因子数据
     merged = factor_df.join(market_ret, on="trade_date", how="inner")
-    trade_dates = merged["trade_date"].unique().sort().to_list()
 
     if regime_type == "direction":
-        # 按市场方向分组
-        regimes: dict[str, list[str]] = {"up": [], "down": []}
-        for d in trade_dates:
-            mret = merged.filter(pl.col("trade_date") == d)["market_return"].mean()
-            if mret is not None and mret > 0:
-                regimes["up"].append(d)
-            else:
-                regimes["down"].append(d)
-
-        ic_rows: list[dict] = []
-        for regime_name in ["up", "down"]:
-            regime_dates = regimes[regime_name]
-            regime_ics: list[float] = []
-            for d in regime_dates:
-                cross = merged.filter(pl.col("trade_date") == d)
-                x = cross[factor_col].drop_nulls().to_numpy()
-                mask = cross[factor_col].is_not_null()
-                y_arr = cross.filter(mask)[ret_col].to_numpy()
-                valid = ~np.isnan(x) & ~np.isnan(y_arr)
-                if valid.sum() < 2:
-                    continue
-                ic, _ = spearmanr(x[valid], y_arr[valid])
-                regime_ics.append(float(ic) if not np.isnan(ic) else 0.0)
-
-            ic_mean = float(np.mean(regime_ics)) if regime_ics else float("nan")
-            ic_rows.append({"regime": regime_name, "ic": ic_mean})
-
-        result_df = pl.DataFrame(ic_rows)
+        # 标记每个交易日的涨跌方向
+        date_regime = (
+            market_ret.with_columns(
+                pl.when(pl.col("market_return") > 0)
+                .then(pl.lit("up"))
+                .otherwise(pl.lit("down"))
+                .alias("regime")
+            )
+            .select(["trade_date", "regime"])
+        )
+        merged_r = merged.join(date_regime, on="trade_date", how="inner")
+        result_df = _grouped_ic(merged_r, factor_col, ret_col, group_col="regime")
 
     elif regime_type == "volatility":
-        # 按波动率分位分组
         if "market_volatility" not in merged.columns:
-            # 如果没有波动率数据，用日收益绝对值作为代理
             merged = merged.with_columns(
                 pl.col("market_return").abs().alias("market_volatility")
             )
 
-        # 计算分位阈值
         vol_values = merged["market_volatility"].unique().drop_nulls().sort().to_numpy()
         if len(vol_values) < n_regimes:
             n_regimes = max(1, len(vol_values))
@@ -663,50 +685,22 @@ def compute_market_regime_ic(
         quantiles = np.linspace(0, 1, n_regimes + 1)[1:-1]
         thresholds = np.quantile(vol_values, quantiles) if len(vol_values) > 0 else np.array([])
 
-        # 为每个日期分配波动率状态
         date_vol = merged.group_by("trade_date").agg(
             pl.col("market_volatility").first()
-        ).sort("trade_date")
+        )
 
-        regime_labels = ["low_vol", "mid_vol", "high_vol"][:n_regimes]
-        if n_regimes > 3:
-            regime_labels = [f"vol_{i}" for i in range(n_regimes)]
+        base_labels = ["low_vol", "mid_vol", "high_vol"]
+        regime_labels = base_labels[:n_regimes] if n_regimes <= 3 else [f"vol_{i}" for i in range(n_regimes)]
 
-        ic_rows = []
-        for ri in range(n_regimes):
-            regime_name = regime_labels[ri] if ri < len(regime_labels) else f"vol_{ri}"
-            if len(thresholds) == 0:
-                regime_dates = trade_dates
-            elif ri == 0:
-                mask = date_vol["market_volatility"] <= thresholds[0]
-                regime_dates = date_vol.filter(mask)["trade_date"].to_list()
-            elif ri == n_regimes - 1:
-                mask = date_vol["market_volatility"] > thresholds[-1]
-                regime_dates = date_vol.filter(mask)["trade_date"].to_list()
-            else:
-                mask = (date_vol["market_volatility"] > thresholds[ri - 1]) & (
-                    date_vol["market_volatility"] <= thresholds[ri]
-                )
-                regime_dates = date_vol.filter(mask)["trade_date"].to_list()
+        # 用 polars 条件表达式分配 regime
+        expr = pl.lit(regime_labels[-1])
+        for ri in range(n_regimes - 2, -1, -1):
+            threshold = thresholds[ri] if ri < len(thresholds) else float("inf")
+            expr = pl.when(pl.col("market_volatility") <= threshold).then(pl.lit(regime_labels[ri])).otherwise(expr)
 
-            regime_ics: list[float] = []
-            for d in regime_dates:
-                cross = merged.filter(pl.col("trade_date") == d)
-                if len(cross) < 2:
-                    continue
-                x = cross[factor_col].drop_nulls().to_numpy()
-                mask_f = cross[factor_col].is_not_null()
-                y_arr = cross.filter(mask_f)[ret_col].to_numpy()
-                valid = ~np.isnan(x) & ~np.isnan(y_arr)
-                if valid.sum() < 2:
-                    continue
-                ic, _ = spearmanr(x[valid], y_arr[valid])
-                regime_ics.append(float(ic) if not np.isnan(ic) else 0.0)
-
-            ic_mean = float(np.mean(regime_ics)) if regime_ics else float("nan")
-            ic_rows.append({"regime": regime_name, "ic": ic_mean})
-
-        result_df = pl.DataFrame(ic_rows)
+        date_regime = date_vol.with_columns(expr.alias("regime")).select(["trade_date", "regime"])
+        merged_r = merged.join(date_regime, on="trade_date", how="inner")
+        result_df = _grouped_ic(merged_r, factor_col, ret_col, group_col="regime")
     else:
         result_df = pl.DataFrame()
 
@@ -792,33 +786,23 @@ def compute_rank_autocorr(
     autocorr_values: list[float] = []
 
     for lag in lags:
-        # 对每个股票，计算当前排名与 lag 期前排名的相关性
+        lag_col = f"_rank_lag{lag}"
         df_lag = df.with_columns(
-            pl.col("_rank").shift(lag).over("ts_code").alias(f"_rank_lag{lag}")
+            pl.col("_rank").shift(lag).over("ts_code").alias(lag_col)
         )
-
-        # 每天计算截面 Spearman 相关
-        trade_dates = df_lag["trade_date"].unique().sort().to_list()
-        lag_ics: list[float] = []
-        for d in trade_dates:
-            cross = df_lag.filter(pl.col("trade_date") == d)
-            rank_col = cross["_rank"].drop_nulls()
-            lag_col = cross[f"_rank_lag{lag}"].drop_nulls()
-            # 用内部 join 确保配对
-            valid_cross = cross.filter(
-                pl.col("_rank").is_not_null() & pl.col(f"_rank_lag{lag}").is_not_null()
-            )
-            if len(valid_cross) < 2:
-                continue
-            x = valid_cross["_rank"].to_numpy()
-            y = valid_cross[f"_rank_lag{lag}"].to_numpy()
-            valid = ~np.isnan(x) & ~np.isnan(y)
-            if valid.sum() < 2:
-                continue
-            ic, _ = spearmanr(x[valid], y[valid])
-            lag_ics.append(float(ic) if not np.isnan(ic) else 0.0)
-
-        ac_mean = float(np.mean(lag_ics)) if lag_ics else 0.0
+        # _rank 已经是截面内排名，直接对两列排名求 pearson_corr = Spearman 自相关
+        ac_df = (
+            df_lag.filter(pl.col("_rank").is_not_null() & pl.col(lag_col).is_not_null())
+            .group_by("trade_date")
+            .agg([
+                pl.corr("_rank", lag_col).alias("ac"),
+                pl.len().alias("_n"),
+            ])
+            .filter(pl.col("_n") >= 2)
+            .drop("_n")
+        )
+        ac_arr = ac_df["ac"].drop_nulls().to_numpy()
+        ac_mean = float(np.mean(ac_arr)) if len(ac_arr) > 0 else 0.0
         lag_to_autocorr[lag] = ac_mean
         autocorr_values.append(ac_mean)
 

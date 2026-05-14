@@ -25,6 +25,7 @@ import numpy as np
 import polars as pl
 
 from common.logger import get_logger
+from config.constants import MIN_IC_SAMPLES, STAR_RATING_THRESHOLDS, MIN_BACKTEST_IR
 
 logger = get_logger(__name__)
 
@@ -221,13 +222,13 @@ def _compute_star_rating(metrics: Dict[str, Any]) -> int:
     ir = metrics.get("ir", 0)
     ls_sharpe = metrics.get("ls_sharpe", 0)
 
-    if ic_mean > 0.04:
+    if ic_mean > STAR_RATING_THRESHOLDS[4]:  # > 0.04 → +1
         stars += 1
-    if ir > 0.5:
+    if ir > MIN_BACKTEST_IR:  # > 0.5 → +1
         stars += 1
     if ls_sharpe > 1.0:
         stars += 1
-    if ic_mean < 0.015 and ir < 0.2:
+    if ic_mean < STAR_RATING_THRESHOLDS[2] and ir < 0.2:  # < 0.02 弱因子降星
         stars = max(1, stars - 1)
 
     return min(5, max(1, stars))

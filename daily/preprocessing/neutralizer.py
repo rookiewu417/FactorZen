@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 
 def neutralize_ols(
     df: pl.DataFrame,
-    col: str = "factor_value_clip_fill_z",
+    col: str = "factor_value",
     stock_basic: pl.DataFrame | None = None,
     daily_basic: pl.DataFrame | None = None,
 ) -> pl.DataFrame:

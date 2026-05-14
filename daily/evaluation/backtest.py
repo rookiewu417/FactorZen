@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import polars as pl
 import numpy as np
+from config.constants import TRADING_DAYS_PER_YEAR
 
 
 @dataclass
@@ -18,11 +19,12 @@ class BacktestResult:
     def summary(self) -> str:
         freq_label = {"daily": "日频", "weekly": "周频", "monthly": "月频"}.get(self.frequency, self.frequency)
         lines = []
-        for g, stats in sorted(self.summary_stats.items()):
-            if g == "long_short":
-                lines.append(f"  Long-Short: Sharpe={stats['sharpe']:.2f} MaxDD={stats['max_dd']:.1%}")
-            else:
-                lines.append(f"  G{g}: ret={stats['ann_ret']:.2%} Sharpe={stats['sharpe']:.2f}")
+        int_groups = sorted((k, v) for k, v in self.summary_stats.items() if isinstance(k, int))
+        for g, stats in int_groups:
+            lines.append(f"  G{g}: ret={stats['ann_ret']:.2%} Sharpe={stats['sharpe']:.2f}")
+        if "long_short" in self.summary_stats:
+            stats = self.summary_stats["long_short"]
+            lines.append(f"  Long-Short: Sharpe={stats['sharpe']:.2f} MaxDD={stats['max_dd']:.1%}")
         return f"Backtest ({self.n_groups} groups, {freq_label}):\n" + "\n".join(lines)
 
 
@@ -32,6 +34,7 @@ def run_stratified_backtest(
     factor_col: str = "factor_clean",
     n_groups: int = 10,
     frequency: str = "daily",
+    factor_name: str = "",
 ) -> BacktestResult:
     """分层回测。
     
@@ -85,23 +88,23 @@ def run_stratified_backtest(
     summary_stats = {}
     for g in range(n_groups):
         rets = group_ret.filter(pl.col("group") == g)["ret"].to_numpy()
-        ann_ret = float(np.mean(rets) * 252)
-        ann_vol = float(np.std(rets) * np.sqrt(252))
+        ann_ret = float(np.mean(rets) * TRADING_DAYS_PER_YEAR)
+        ann_vol = float(np.std(rets) * np.sqrt(TRADING_DAYS_PER_YEAR))
         sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
         cum = np.cumprod(1 + rets)
         max_dd = float(np.min(cum / np.maximum.accumulate(cum) - 1))
         summary_stats[g] = {"ann_ret": ann_ret, "ann_vol": ann_vol, "sharpe": sharpe, "max_dd": max_dd}
     
     ls_rets = ls_nav["ret"].to_numpy()
-    ls_ann_ret = float(np.mean(ls_rets) * 252)
-    ls_ann_vol = float(np.std(ls_rets) * np.sqrt(252))
+    ls_ann_ret = float(np.mean(ls_rets) * TRADING_DAYS_PER_YEAR)
+    ls_ann_vol = float(np.std(ls_rets) * np.sqrt(TRADING_DAYS_PER_YEAR))
     ls_sharpe = ls_ann_ret / ls_ann_vol if ls_ann_vol > 0 else 0
     ls_cum = np.cumprod(1 + ls_rets)
     ls_max_dd = float(np.min(ls_cum / np.maximum.accumulate(ls_cum) - 1))
     summary_stats["long_short"] = {"ann_ret": ls_ann_ret, "ann_vol": ls_ann_vol, "sharpe": ls_sharpe, "max_dd": ls_max_dd}
     
     return BacktestResult(
-        factor_name="",
+        factor_name=factor_name,
         n_groups=n_groups,
         daily_returns=group_ret,
         nav=nav,

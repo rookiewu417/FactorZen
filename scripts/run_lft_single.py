@@ -111,9 +111,9 @@ def main():
 
     # ── 8. 分层回测 ──
     bt_result = run_stratified_backtest(
-        clean_df, ret_df.select(["trade_date", "ts_code", "ret"]), frequency=args.frequency
+        clean_df, ret_df.select(["trade_date", "ts_code", "ret"]),
+        frequency=args.frequency, factor_name=factor.name,
     )
-    bt_result.factor_name = factor.name
     logger.info(f"\n{bt_result.summary()}")
 
     # ── 9. 换手率 ──

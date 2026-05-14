@@ -1,6 +1,7 @@
 """MAD 去极值。每个截面做 median ± n_sigma * MAD 截尾。"""
 
 import polars as pl
+from config.constants import MAD_GAUSSIAN_CONST
 
 
 def mad_clip(
@@ -35,7 +36,7 @@ def mad_clip(
                 pl.col(col)
                 >= pl.col(col).median().over("trade_date")
                 - n_sigma
-                * 1.4826
+                * MAD_GAUSSIAN_CONST
                 * (pl.col(col) - pl.col(col).median().over("trade_date"))
                 .abs()
                 .median()
@@ -45,7 +46,7 @@ def mad_clip(
                 pl.col(col)
                 <= pl.col(col).median().over("trade_date")
                 + n_sigma
-                * 1.4826
+                * MAD_GAUSSIAN_CONST
                 * (pl.col(col) - pl.col(col).median().over("trade_date"))
                 .abs()
                 .median()

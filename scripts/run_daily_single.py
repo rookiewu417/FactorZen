@@ -9,13 +9,14 @@ from common.calendar import get_trade_dates
 from common.loader import fetch_daily
 from common.logger import get_logger, setup_logging
 from common.universe import get_universe
-from config.settings import OUTPUT_DAILY_FACTORS, OUTPUT_DAILY_RESULTS
+from config.settings import OUTPUT_DAILY_FACTORS, OUTPUT_DAILY_REPORTS, OUTPUT_DAILY_RESULTS
 from daily.data.context import FactorDataContext
 from daily.evaluation.backtest import run_stratified_backtest
 from daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
 from daily.evaluation.turnover import compute_turnover
 from daily.factors.registry import get_factor
 from daily.preprocessing.pipeline import quick_preprocess
+from reporting.tear_sheet import generate_tear_sheet
 
 setup_logging()
 logger = get_logger(__name__)
@@ -29,6 +30,11 @@ def main():
     parser.add_argument("--universe", default="csi300", help="股票池")
     parser.add_argument(
         "--frequency", default="daily", choices=["daily", "weekly", "monthly"], help="因子频率"
+    )
+    parser.add_argument(
+        "--benchmark",
+        default=None,
+        help="基准指数代码（如 000300.SH），若指定则计算超额收益并生成 HTML 报告",
     )
     args = parser.parse_args()
 
@@ -131,6 +137,37 @@ def main():
     ic_result.ic_series.write_parquet(
         str(OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_ic.parquet")
     )
+
+    # ── 11. Benchmark 对比（可选）──
+    benchmark_result = None
+    if args.benchmark:
+        try:
+            from daily.evaluation.benchmark import compute_excess_return
+
+            benchmark_result = compute_excess_return(
+                bt_result.returns, args.benchmark, args.start, args.end
+            )
+            logger.info(f"Benchmark: {benchmark_result.summary()}")
+        except Exception as e:
+            logger.warning(f"Benchmark 计算失败（跳过）: {e}")
+
+    # ── 12. HTML 报告（当 --benchmark 提供时生成，或始终生成）──
+    date_range = f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ {args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
+    html = generate_tear_sheet(
+        factor_name=factor.name,
+        ic_result=ic_result,
+        bt_result=bt_result,
+        to_result=to_result,
+        frequency=args.frequency,
+        date_range=date_range,
+        universe=args.universe,
+        benchmark_result=benchmark_result,
+        attribution_result=None,
+    )
+    OUTPUT_DAILY_REPORTS.mkdir(parents=True, exist_ok=True)
+    report_path = OUTPUT_DAILY_REPORTS / f"{factor.name}_{args.start}_{args.end}.html"
+    report_path.write_text(html, encoding="utf-8")
+    logger.info(f"报告已生成: {report_path}")
     logger.info("完成!")
 
 

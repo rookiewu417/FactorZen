@@ -339,6 +339,11 @@ def main():
     parser.add_argument(
         "--reuse", action="store_true", help="复用已有 parquet 结果，跳过重新计算（需先跑过一次）"
     )
+    parser.add_argument(
+        "--benchmark",
+        default=None,
+        help="基准指数代码（如 000300.SH），若指定则计算超额收益与 benchmark 对比",
+    )
     args = parser.parse_args()
 
     logger.info(f"──── 因子报告生成: {args.factor} | {args.start} ~ {args.end} ────")
@@ -467,6 +472,19 @@ def main():
         # ── 持久化中间结果 ──
         _save_results(args.factor, args.start, args.end, clean_df, ic_result, bt_result, to_result)
 
+    # ── (Optional) Benchmark 对比 ──
+    benchmark_result = None
+    if args.benchmark:
+        try:
+            from daily.evaluation.benchmark import compute_excess_return
+
+            benchmark_result = compute_excess_return(
+                bt_result.returns, args.benchmark, args.start, args.end
+            )
+            logger.info(f"Benchmark: {benchmark_result.summary()}")
+        except Exception as e:
+            logger.warning(f"Benchmark 计算失败（跳过）: {e}")
+
     # ── 11. 生成 HTML 报告 ──
     date_range = f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ {args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
     html = generate_tear_sheet(
@@ -478,6 +496,8 @@ def main():
         date_range=date_range,
         advanced_results=advanced_results,
         universe=args.universe,
+        benchmark_result=benchmark_result,
+        attribution_result=None,  # Brinson requires index constituent data; deferred
     )
 
     # ── 12. 落盘 HTML ──

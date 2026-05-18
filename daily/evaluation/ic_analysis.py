@@ -7,11 +7,12 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
 import polars as pl
-from scipy import stats
+import statsmodels.api as sm
 
 # 最少截面样本数（低于此值的交易日跳过）
 _MIN_CROSS_SAMPLES = 30
@@ -21,13 +22,19 @@ def compute_fwd_returns(
     price_df: pl.DataFrame,
     horizons: list[int] | None = None,
     ret_col: str = "ret_1d",
+    price_col: str = "close",
+    code_col: str = "ts_code",
+    date_col: str = "trade_date",
 ) -> pl.DataFrame:
-    """预计算各时间窗口的前向收益。
+    """预计算各时间窗口的前向持有期收益。
 
     Args:
-        price_df: 含 trade_date, ts_code, {ret_col} 的日收益 DataFrame。
+        price_df: 含 trade_date, ts_code，以及 close 或 {ret_col} 的 DataFrame。
         horizons: 前向窗口（交易日），默认 [1, 5, 10, 20]。
         ret_col: 单日收益列名。
+        price_col: 价格列名。存在时优先使用 close[t+h] / close[t] - 1。
+        code_col: 股票代码列名。
+        date_col: 日期列名。
 
     Returns:
         含 fwd_ret_{h}d 列的 DataFrame。
@@ -35,11 +42,16 @@ def compute_fwd_returns(
     if horizons is None:
         horizons = [1, 5, 10, 20]
 
-    df = price_df.sort(["ts_code", "trade_date"])
+    df = price_df.sort([code_col, date_col])
     for h in horizons:
-        df = df.with_columns(
-            pl.col(ret_col).shift(-h).over("ts_code").alias(f"fwd_ret_{h}d")
-        )
+        if price_col in df.columns:
+            future_price = pl.col(price_col).shift(-h).over(code_col)
+            df = df.with_columns((future_price / pl.col(price_col) - 1.0).alias(f"fwd_ret_{h}d"))
+        else:
+            compounded = pl.lit(1.0)
+            for step in range(1, h + 1):
+                compounded = compounded * (1.0 + pl.col(ret_col).shift(-step).over(code_col))
+            df = df.with_columns((compounded - 1.0).alias(f"fwd_ret_{h}d"))
     return df
 
 
@@ -58,14 +70,20 @@ class ICAnalysisResult:
     ic_pvalue: float = 1.0
     # Multi-period IC: {horizon: ICAnalysisResult-like fields} for consistency check
     multi_period: dict[int, dict[str, float]] = field(default_factory=dict)
-    # Out-of-sample split IC: {"train": ic_mean, "test": ic_mean}
+    # Out-of-sample split IC: {"train": ic_mean, "test": ic_mean}（向后兼容）
     oos_ic: dict[str, float] = field(default_factory=dict)
+    # Walk-forward cross-validation: list of {"train_ic": float, "test_ic": float}
+    walk_forward_ic: list[dict[str, float]] = field(default_factory=list)
 
     def summary(self) -> str:
         freq_label = {"daily": "日频", "weekly": "周频", "monthly": "月频"}.get(
             self.frequency, self.frequency
         )
-        sig_label = "***" if self.ic_pvalue < 0.01 else ("**" if self.ic_pvalue < 0.05 else ("*" if self.ic_pvalue < 0.1 else ""))
+        sig_label = (
+            "***"
+            if self.ic_pvalue < 0.01
+            else ("**" if self.ic_pvalue < 0.05 else ("*" if self.ic_pvalue < 0.1 else ""))
+        )
         lines = [
             f"Factor: {self.factor_name} [{freq_label}]",
             f"  IC Mean: {self.ic_mean:.4f}  |  IC Std: {self.ic_std:.4f}  |  IR: {self.ir:.2f}",
@@ -76,7 +94,10 @@ class ICAnalysisResult:
             decay_parts = [f"{h}d={v:.4f}" for h, v in sorted(self.decay.items())]
             lines.append(f"  IC Decay: {', '.join(decay_parts)}")
         if self.multi_period:
-            mp_parts = [f"{h}d: IC={v['ic_mean']:.4f},IR={v['ir']:.2f}" for h, v in sorted(self.multi_period.items())]
+            mp_parts = [
+                f"{h}d: IC={v['ic_mean']:.4f},IR={v['ir']:.2f}"
+                for h, v in sorted(self.multi_period.items())
+            ]
             lines.append(f"  Multi-period: {', '.join(mp_parts)}")
         if self.oos_ic:
             train_ic = self.oos_ic.get("train", float("nan"))
@@ -113,18 +134,22 @@ def _rank_ic_by_date(
         )
 
     # 截面内排名（average 方法，与 scipy.stats.spearmanr 默认一致）
-    ranked = valid_df.with_columns([
-        pl.col(factor_col).rank(method="average").over("trade_date").alias("_factor_rank"),
-        pl.col(ret_col).rank(method="average").over("trade_date").alias("_ret_rank"),
-    ])
+    ranked = valid_df.with_columns(
+        [
+            pl.col(factor_col).rank(method="average").over("trade_date").alias("_factor_rank"),
+            pl.col(ret_col).rank(method="average").over("trade_date").alias("_ret_rank"),
+        ]
+    )
 
     # group_by 日期，计算排名 Pearson 相关（= Spearman），过滤样本不足的日期
     ic_df = (
         ranked.group_by("trade_date")
-        .agg([
-            pl.corr("_factor_rank", "_ret_rank").alias("ic"),
-            pl.len().alias("_n"),
-        ])
+        .agg(
+            [
+                pl.corr("_factor_rank", "_ret_rank").alias("ic"),
+                pl.len().alias("_n"),
+            ]
+        )
         .filter(pl.col("_n") >= min_samples)
         .drop("_n")
         .sort("trade_date")
@@ -132,19 +157,90 @@ def _rank_ic_by_date(
     return ic_df
 
 
+def _hac_maxlags(n: int) -> int:
+    """Newey-West 最优滞后阶数：floor(4*(N/100)^(2/9))，最少 1。"""
+    return max(1, math.floor(4 * (n / 100) ** (2 / 9)))
+
+
 def _ic_stats(ic_values: np.ndarray) -> tuple[float, float, float, float, float, float]:
-    """Compute (ic_mean, ic_std, ir, ic_pos, tstat, pvalue) from IC array."""
-    if len(ic_values) == 0:
+    """Compute (ic_mean, ic_std, ir, ic_pos, tstat, pvalue) from IC array.
+
+    使用 Newey-West HAC 标准误计算 t 统计量，修正 IC 序列自相关导致的 t-stat 高估。
+
+    Filters both NaN and inf before computing statistics.
+    polars pl.corr() returns float NaN (not null) for degenerate cases,
+    so drop_nulls() alone is not sufficient — we must strip NaN explicitly.
+    """
+    valid = ic_values[np.isfinite(ic_values)]
+    if len(valid) == 0:
         return 0.0, 0.0, 0.0, 0.0, 0.0, 1.0
-    ic_mean = float(np.mean(ic_values))
-    ic_std = float(np.std(ic_values, ddof=1)) if len(ic_values) > 1 else 0.0
+    ic_mean = float(np.mean(valid))
+    ic_std = float(np.std(valid, ddof=1)) if len(valid) > 1 else 0.0
     ir = ic_mean / ic_std if ic_std > 0 else 0.0
-    ic_pos = float(np.mean(ic_values > 0))
-    if len(ic_values) > 1 and ic_std > 0:
-        tstat, pvalue = stats.ttest_1samp(ic_values, popmean=0.0)
+    ic_pos = float(np.mean(valid > 0))
+
+    if len(valid) > 4 and ic_std > 0:
+        # Newey-West HAC OLS：被解释变量 = IC 序列，解释变量 = 常数项
+        # H_0: IC 均值 = 0，HAC 标准误修正序列相关
+        X = np.ones(len(valid))
+        model = sm.OLS(valid, X)
+        maxlags = _hac_maxlags(len(valid))
+        results = model.fit(cov_type="HAC", cov_kwds={"maxlags": maxlags})
+        tstat = float(results.tvalues[0])
+        pvalue = float(results.pvalues[0])
     else:
         tstat, pvalue = 0.0, 1.0
-    return ic_mean, ic_std, ir, ic_pos, float(tstat), float(pvalue)
+
+    return ic_mean, ic_std, ir, ic_pos, tstat, pvalue
+
+
+def _compute_walk_forward_ic(
+    ic_values: np.ndarray,
+    n_folds: int = 5,
+    embargo: int = 5,
+) -> list[dict[str, float]]:
+    """Walk-forward 5 折 IC 交叉验证。
+
+    Args:
+        ic_values: 时序 IC 数组（已过滤 nan/inf）。
+        n_folds: 折数。
+        embargo: 训练集末尾到测试集开头之间的 gap（防时序泄漏）。
+
+    Returns:
+        list of {"fold": int, "train_ic": float, "test_ic": float}，
+        若样本太少（< n_folds * 2 + embargo）则返回空列表。
+    """
+    n = len(ic_values)
+    min_required = n_folds * 2 + embargo
+    if n < min_required:
+        return []
+
+    results: list[dict[str, float]] = []
+    fold_size = n // (n_folds + 1)
+
+    for fold in range(n_folds):
+        train_end = fold_size * (fold + 1)
+        test_start = train_end + embargo
+        test_end = test_start + fold_size
+
+        if test_end > n:
+            break
+
+        train_vals = ic_values[:train_end]
+        test_vals = ic_values[test_start:test_end]
+
+        if len(train_vals) < 2 or len(test_vals) < 2:
+            continue
+
+        results.append(
+            {
+                "fold": fold + 1,
+                "train_ic": float(np.mean(train_vals)),
+                "test_ic": float(np.mean(test_vals)),
+            }
+        )
+
+    return results
 
 
 def compute_rank_ic(
@@ -176,7 +272,9 @@ def compute_rank_ic(
 
     # ---------- Primary IC (horizon=1d) ----------
     ic_series = _rank_ic_by_date(merged, factor_col, "fwd_ret_1d")
-    ic_values = ic_series["ic"].drop_nulls().to_numpy()
+    # drop_nulls() only removes polars nulls; pl.corr() can also return float NaN
+    # for degenerate cases (constant column). Filter both here.
+    ic_values = ic_series["ic"].drop_nulls().drop_nans().to_numpy()
     ic_mean, ic_std, ir, ic_pos, tstat, pvalue = _ic_stats(ic_values)
 
     # ---------- IC Decay (all horizons) ----------
@@ -186,7 +284,7 @@ def compute_rank_ic(
         if ret_col not in merged.columns:
             continue
         h_ic_df = _rank_ic_by_date(merged, factor_col, ret_col)
-        h_vals = h_ic_df["ic"].drop_nulls().to_numpy()
+        h_vals = h_ic_df["ic"].drop_nulls().drop_nans().to_numpy()
         if len(h_vals) > 0:
             decay[h] = float(np.mean(h_vals))
 
@@ -197,21 +295,27 @@ def compute_rank_ic(
         if ret_col not in merged.columns:
             continue
         h_ic_df = _rank_ic_by_date(merged, factor_col, ret_col)
-        h_vals = h_ic_df["ic"].drop_nulls().to_numpy()
+        h_vals = h_ic_df["ic"].drop_nulls().drop_nans().to_numpy()
         if len(h_vals) > 0:
             h_mean, h_std, h_ir, h_pos, h_t, h_p = _ic_stats(h_vals)
             multi_period[h] = {
-                "ic_mean": h_mean, "ic_std": h_std,
-                "ir": h_ir, "ic_positive_ratio": h_pos,
-                "tstat": h_t, "pvalue": h_p,
+                "ic_mean": h_mean,
+                "ic_std": h_std,
+                "ir": h_ir,
+                "ic_positive_ratio": h_pos,
+                "tstat": h_t,
+                "pvalue": h_p,
             }
 
-    # ---------- Out-of-sample split ----------
+    # ---------- Out-of-sample split (向后兼容，单次切分) ----------
     oos_ic: dict[str, float] = {}
     if len(ic_values) >= 4:
         n_train = max(2, int(len(ic_values) * oos_split))
         oos_ic["train"] = float(np.mean(ic_values[:n_train]))
         oos_ic["test"] = float(np.mean(ic_values[n_train:]))
+
+    # ---------- Walk-forward cross-validation ----------
+    walk_forward_ic = _compute_walk_forward_ic(ic_values, n_folds=5, embargo=5)
 
     return ICAnalysisResult(
         factor_name=factor_col,
@@ -227,4 +331,5 @@ def compute_rank_ic(
         ic_pvalue=pvalue,
         multi_period=multi_period,
         oos_ic=oos_ic,
+        walk_forward_ic=walk_forward_ic,
     )

@@ -22,7 +22,11 @@ logger = get_logger(__name__)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="补全基础数据")
-    parser.add_argument("--start", default="20240101", help="起始日期 YYYYMMDD（默认 20240101，财务数据需要至少 4 季度历史）")
+    parser.add_argument(
+        "--start",
+        default="20240101",
+        help="起始日期 YYYYMMDD（默认 20240101，财务数据需要至少 4 季度历史）",
+    )
     parser.add_argument("--end", default="20260513", help="截止日期 YYYYMMDD")
     args = parser.parse_args()
 

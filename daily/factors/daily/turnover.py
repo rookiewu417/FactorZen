@@ -1,4 +1,4 @@
-﻿"""5日平均换手率因子。"""
+"""5日平均换手率因子。"""
 
 import polars as pl
 
@@ -15,10 +15,11 @@ class Turnover5D(LFTFactor):
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         daily = ctx.daily
         result = (
-            daily
-            .sort(["ts_code", "trade_date"])
+            daily.sort(["ts_code", "trade_date"])
             .with_columns(
-                pl.col("vol").rolling_mean(5, min_samples=3).over("ts_code")
+                pl.col("vol")
+                .rolling_mean(5, min_samples=3)
+                .over("ts_code")
                 .log1p()
                 .alias("factor_value")
             )

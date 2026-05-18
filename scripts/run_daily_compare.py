@@ -1,4 +1,4 @@
-﻿"""LFT 多因子 IC 对比。用法: python scripts/run_lft_compare.py --factors momentum_20d,reversal_5d --start 20250101 --end 20250513"""
+"""日频多因子 IC 对比。用法: python scripts/run_daily_compare.py --factors momentum_20d,reversal_5d --start 20250101 --end 20250513"""
 
 import argparse
 import sys
@@ -19,17 +19,15 @@ logger = get_logger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LFT 多因子对比")
+    parser = argparse.ArgumentParser(description="日频多因子对比")
     parser.add_argument("--factors", required=True, help="逗号分隔的因子名")
     parser.add_argument("--start", required=True, help="起始日期 YYYYMMDD")
     parser.add_argument("--end", required=True, help="截止日期 YYYYMMDD")
-    parser.add_argument("--universe", default="lft_default", help="股票池")
+    parser.add_argument("--universe", default="csi300", help="股票池")
     args = parser.parse_args()
 
     factor_names = [f.strip() for f in args.factors.split(",")]
-    logger.info(
-        f"──── 多因子对比: {', '.join(factor_names)} | {args.start} ~ {args.end} ────"
-    )
+    logger.info(f"──── 多因子对比: {', '.join(factor_names)} | {args.start} ~ {args.end} ────")
 
     # ── 验证因子存在 ──
     valid_factors = []

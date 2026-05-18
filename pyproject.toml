@@ -57,3 +57,12 @@ indent-style = "space"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = false
+ignore_missing_imports = true
+# 渐进式：仅强制 common/ 和 daily/evaluation/ daily/preprocessing/
+files = ["common", "daily/evaluation", "daily/preprocessing"]

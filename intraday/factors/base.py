@@ -11,12 +11,12 @@ import polars as pl
 from common.factor import BaseFactor
 
 if TYPE_CHECKING:
-    from intraday.data.context import MFTDataContext
+    from intraday.data.context import IntradayDataContext
 
 
 @dataclass
-class MFTFactor(BaseFactor):
-    """分钟频因子基类（历史名称保留，继承自 BaseFactor）。
+class IntradayFactor(BaseFactor):
+    """分钟频因子基类，继承自 BaseFactor。
 
     子类必须设置 name、bar_size，并实现 compute() 方法。
     """
@@ -29,9 +29,13 @@ class MFTFactor(BaseFactor):
     description: str = ""
 
     @abstractmethod
-    def compute(self, ctx: MFTDataContext) -> pl.DataFrame:
+    def compute(self, ctx: IntradayDataContext) -> pl.DataFrame:
         """计算因子值，返回: trade_time, ts_code, factor_value"""
         ...
 
     def validate(self, result: pl.DataFrame, time_col: str = "trade_time") -> dict[str, Any]:
         return super().validate(result, time_col=time_col)
+
+
+# 向后兼容别名
+MFTFactor = IntradayFactor

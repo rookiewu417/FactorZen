@@ -1,4 +1,4 @@
-﻿"""MFT 分钟频数据上下文。为分钟频因子提供 lazy 数据加载。
+"""Intraday 分钟频数据上下文。为分钟频因子提供 lazy 数据加载。
 
 通过 common.storage.load_parquet("minute", ...) 惰性加载分钟线数据，
 支持 universe 过滤和 max_bars 安全上限。
@@ -13,7 +13,7 @@ from common.storage import load_parquet
 
 
 @dataclass
-class MFTDataContext:
+class IntradayDataContext:
     """分钟频因子计算的数据上下文。
 
     Attributes:
@@ -59,11 +59,7 @@ class MFTDataContext:
             lf = (
                 lf.sort(["ts_code", "trade_time"])
                 .with_row_index("_mft_row_idx")
-                .with_columns(
-                    pl.int_range(0, pl.len())
-                    .over("ts_code")
-                    .alias("_mft_bar_idx")
-                )
+                .with_columns(pl.int_range(0, pl.len()).over("ts_code").alias("_mft_bar_idx"))
                 .filter(
                     pl.col("_mft_bar_idx")
                     >= pl.col("_mft_bar_idx").max().over("ts_code") - self.max_bars
@@ -78,3 +74,7 @@ class MFTDataContext:
         for data_type in self.required_data:
             if data_type == "minute":
                 _ = self.minute
+
+
+# 向后兼容别名
+MFTDataContext = IntradayDataContext

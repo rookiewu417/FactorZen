@@ -1,10 +1,10 @@
 """Daily 因子注册中心（代理到 common.registry.FactorRegistry）。"""
 
 from common.registry import FactorRegistry
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 _registry = FactorRegistry(
-    base_cls=LFTFactor,
+    base_cls=DailyFactor,
     scan_packages=[
         "daily.factors.daily",
         "daily.factors.weekly",

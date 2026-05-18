@@ -1,11 +1,7 @@
-﻿"""LFT 单因子完整评估。用法: python scripts/run_lft_single.py --factor momentum_20d --start 20250101 --end 20250513"""
+"""日频单因子完整评估。用法: python scripts/run_daily_single.py --factor momentum_20d --start 20250101 --end 20250513"""
 
 import argparse
 import sys
-from pathlib import Path
-
-# 添加项目根到 sys.path，确保 scripts/ 目录下运行时能导入 config/common/lft
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import polars as pl
 
@@ -13,7 +9,7 @@ from common.calendar import get_trade_dates
 from common.loader import fetch_daily
 from common.logger import get_logger, setup_logging
 from common.universe import get_universe
-from config.settings import OUTPUT_LFT_FACTORS, OUTPUT_LFT_RESULTS
+from config.settings import OUTPUT_DAILY_FACTORS, OUTPUT_DAILY_RESULTS
 from daily.data.context import FactorDataContext
 from daily.evaluation.backtest import run_stratified_backtest
 from daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
@@ -26,12 +22,14 @@ logger = get_logger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LFT 单因子评估")
+    parser = argparse.ArgumentParser(description="日频单因子评估")
     parser.add_argument("--factor", required=True, help="因子名称")
     parser.add_argument("--start", required=True, help="起始日期 YYYYMMDD")
     parser.add_argument("--end", required=True, help="截止日期 YYYYMMDD")
-    parser.add_argument("--universe", default="lft_default", help="股票池")
-    parser.add_argument("--frequency", default="daily", choices=["daily", "weekly", "monthly"], help="因子频率")
+    parser.add_argument("--universe", default="csi300", help="股票池")
+    parser.add_argument(
+        "--frequency", default="daily", choices=["daily", "weekly", "monthly"], help="因子频率"
+    )
     args = parser.parse_args()
 
     # ── 1. 获取因子类 ──
@@ -50,7 +48,6 @@ def main():
     if len(trade_dates) < 30:
         logger.warning("交易日不足 30 天，IC 分析可能不稳定")
 
-    # 确保日线数据已缓存
     try:
         fetch_daily(args.start, args.end)
     except Exception as e:
@@ -110,9 +107,12 @@ def main():
     logger.info(f"\n{ic_result.summary()}")
 
     # ── 8. 分层回测 ──
+    bt_input = ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename({"fwd_ret_1d": "ret"})
     bt_result = run_stratified_backtest(
-        clean_df, ret_df.select(["trade_date", "ts_code", "ret"]),
-        frequency=args.frequency, factor_name=factor.name,
+        clean_df,
+        bt_input,
+        frequency=args.frequency,
+        factor_name=factor.name,
     )
     logger.info(f"\n{bt_result.summary()}")
 
@@ -122,15 +122,15 @@ def main():
     logger.info(f"\n{to_result.summary()}")
 
     # ── 10. 落盘 ──
-    OUTPUT_LFT_FACTORS.mkdir(parents=True, exist_ok=True)
-    OUTPUT_LFT_RESULTS.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DAILY_FACTORS.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
 
-    factor_path = OUTPUT_LFT_FACTORS / f"{factor.name}_{args.start}_{args.end}.parquet"
+    factor_path = OUTPUT_DAILY_FACTORS / f"{factor.name}_{args.start}_{args.end}.parquet"
     clean_df.write_parquet(str(factor_path))
     logger.info(f"因子已保存: {factor_path}")
 
     ic_result.ic_series.write_parquet(
-        str(OUTPUT_LFT_RESULTS / f"{factor.name}_ic.parquet")
+        str(OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_ic.parquet")
     )
     logger.info("完成!")
 

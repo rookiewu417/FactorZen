@@ -1,4 +1,4 @@
-﻿"""周频换手率因子。日频公式 + 周频采样。"""
+"""周频换手率因子。日频公式 + 周频采样。"""
 
 import polars as pl
 
@@ -17,16 +17,15 @@ class TurnoverWeekly(LFTFactor):
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         daily = ctx.daily
         result = (
-            daily
-            .sort(["ts_code", "trade_date"])
+            daily.sort(["ts_code", "trade_date"])
             .with_columns(
-                pl.col("vol").rolling_mean(5, min_samples=3).over("ts_code")
+                pl.col("vol")
+                .rolling_mean(5, min_samples=3)
+                .over("ts_code")
                 .log1p()
                 .alias("factor_value")
             )
-            .filter(
-                pl.col("trade_date") >= pl.lit(ctx.start).str.strptime(pl.Date, "%Y%m%d")
-            )
+            .filter(pl.col("trade_date") >= pl.lit(ctx.start).str.strptime(pl.Date, "%Y%m%d"))
             .select(["trade_date", "ts_code", "factor_value"])
             .collect()
         )

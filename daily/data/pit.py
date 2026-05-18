@@ -10,7 +10,7 @@ def pit_align(
     snapshot_dates: list[date],
 ) -> pl.DataFrame:
     """对财务数据做 Point-In-Time 对齐。
-    
+
     对每个月频快照日期，找出每只股票「最新已公告」的财务报告——
     即 ann_date <= snapshot_date 中 end_date 最大的那条。
 
@@ -23,6 +23,12 @@ def pit_align(
     """
     if fina_df.is_empty() or not snapshot_dates:
         return pl.DataFrame()
+
+    # ann_date 在存储中为 String "YYYYMMDD"，比较前统一转成 Date
+    if fina_df["ann_date"].dtype == pl.Utf8:
+        fina_df = fina_df.with_columns(
+            pl.col("ann_date").str.strptime(pl.Date, "%Y%m%d", strict=False)
+        )
 
     # 过滤掉 ann_date 为 null 的记录（未公告的财报）
     fina_df = fina_df.filter(pl.col("ann_date").is_not_null())
@@ -39,8 +45,7 @@ def pit_align(
 
         # 每个 ts_code 取 end_date 最大的那条（已排好序，first() 即是）
         best = (
-            valid
-            .group_by("ts_code")
+            valid.group_by("ts_code")
             .first()
             .with_columns(pl.lit(sd).cast(pl.Date).alias("snapshot_date"))
         )

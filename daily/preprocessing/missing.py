@@ -9,7 +9,5 @@ def fill_cross_sectional_median(
 ) -> pl.DataFrame:
     out_col = f"{col}_fill"
     return df.with_columns(
-        pl.col(col).fill_null(
-            pl.col(col).median().over("trade_date")
-        ).alias(out_col)
+        pl.col(col).fill_null(pl.col(col).median().over("trade_date")).alias(out_col)
     )

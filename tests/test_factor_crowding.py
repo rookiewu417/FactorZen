@@ -1,4 +1,4 @@
-﻿"""测试因子拥挤度：衡量多个因子间的信号相似度。"""
+"""测试因子拥挤度：衡量多个因子间的信号相似度。"""
 
 import polars as pl
 
@@ -11,10 +11,12 @@ from daily.evaluation.advanced import (
 def _make_factor_dict() -> dict[str, pl.DataFrame]:
     """构造多个因子数据的字典。"""
     stocks = [f"s{i}" for i in range(50)]
-    base = pl.DataFrame({
-        "trade_date": ["2026-01-05"] * 50,
-        "ts_code": stocks,
-    })
+    base = pl.DataFrame(
+        {
+            "trade_date": ["2026-01-05"] * 50,
+            "ts_code": stocks,
+        }
+    )
     # 因子 A 和 B 强相关（线性相关），因子 C 独立
     return {
         "momentum": base.with_columns(pl.lit(0.5).alias("factor_clean")),
@@ -37,6 +39,7 @@ def test_crowding_has_corr_matrix():
     assert hasattr(result, "corr_matrix")
     assert hasattr(result, "factor_names")
     import numpy as np
+
     assert isinstance(result.corr_matrix, np.ndarray)
     assert result.corr_matrix.shape == (3, 3)
 

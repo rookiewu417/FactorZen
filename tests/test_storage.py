@@ -14,11 +14,13 @@ def tmp_dir(tmp_path):
 
 
 def _make_df(n: int = 10) -> pl.DataFrame:
-    return pl.DataFrame({
-        "trade_date": [date(2024, 1, d + 1) for d in range(n)],
-        "ts_code": [f"{i:06d}.SH" for i in range(n)],
-        "value": list(range(n)),
-    })
+    return pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, d + 1) for d in range(n)],
+            "ts_code": [f"{i:06d}.SH" for i in range(n)],
+            "value": list(range(n)),
+        }
+    )
 
 
 def test_save_and_load_roundtrip(tmp_dir):
@@ -56,14 +58,14 @@ def test_hive_partitions_created(tmp_dir):
 
 
 def test_load_with_date_filter(tmp_dir):
-    df = pl.DataFrame({
-        "trade_date": [date(2024, 1, 5), date(2024, 2, 10), date(2024, 3, 15)],
-        "ts_code": ["A", "B", "C"],
-        "value": [1, 2, 3],
-    })
+    df = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 5), date(2024, 2, 10), date(2024, 3, 15)],
+            "ts_code": ["A", "B", "C"],
+            "value": [1, 2, 3],
+        }
+    )
     save_parquet(df, "test_data", base_dir=tmp_dir)
-    loaded = load_parquet(
-        "test_data", start="20240201", end="20240228", base_dir=tmp_dir
-    ).collect()
+    loaded = load_parquet("test_data", start="20240201", end="20240228", base_dir=tmp_dir).collect()
     assert loaded.shape[0] == 1
     assert loaded["ts_code"][0] == "B"

@@ -40,17 +40,27 @@ def _grouped_ic(
     if valid_df.is_empty():
         return pl.DataFrame({"regime": [], "ic": []})
 
-    ranked = valid_df.with_columns([
-        pl.col(factor_col).rank(method="average").over([group_col, "trade_date"]).alias("_factor_rank"),
-        pl.col(ret_col).rank(method="average").over([group_col, "trade_date"]).alias("_ret_rank"),
-    ])
+    ranked = valid_df.with_columns(
+        [
+            pl.col(factor_col)
+            .rank(method="average")
+            .over([group_col, "trade_date"])
+            .alias("_factor_rank"),
+            pl.col(ret_col)
+            .rank(method="average")
+            .over([group_col, "trade_date"])
+            .alias("_ret_rank"),
+        ]
+    )
     out_col = "regime" if group_col != "regime" else group_col
     return (
         ranked.group_by([group_col, "trade_date"])
-        .agg([
-            pl.corr("_factor_rank", "_ret_rank").alias("ic"),
-            pl.len().alias("_n"),
-        ])
+        .agg(
+            [
+                pl.corr("_factor_rank", "_ret_rank").alias("ic"),
+                pl.len().alias("_n"),
+            ]
+        )
         .filter(pl.col("_n") >= min_per_cell)
         .drop("_n")
         .group_by(group_col)
@@ -64,19 +74,18 @@ def _grouped_ic(
 # 1. IC Decay 增强分析
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class ICDecayResult:
     """单个持有期的 IC 衰减结果。"""
+
     horizon: int
     ic_mean: float
     ic_std: float
     ic_series: list[float] = field(default_factory=list)
 
     def summary(self) -> str:
-        return (
-            f"Horizon {self.horizon}d: IC_mean={self.ic_mean:.4f}, "
-            f"IC_std={self.ic_std:.4f}"
-        )
+        return f"Horizon {self.horizon}d: IC_mean={self.ic_mean:.4f}, IC_std={self.ic_std:.4f}"
 
 
 def compute_ic_decay(
@@ -100,8 +109,12 @@ def compute_ic_decay(
     """
     # 自动检测 horizons
     if horizons is None:
-        ret_cols = [c for c in daily_ret.columns if re.match(r"fwd_ret_(\d+)d", c)]
-        horizons = sorted(int(re.match(r"fwd_ret_(\d+)d", c).group(1)) for c in ret_cols)
+        detected: list[int] = []
+        for c in daily_ret.columns:
+            match = re.fullmatch(r"fwd_ret_(\d+)d", c)
+            if match is not None:
+                detected.append(int(match.group(1)))
+        horizons = sorted(detected)
 
     if not horizons:
         return []
@@ -115,12 +128,14 @@ def compute_ic_decay(
             continue
         h_ic_df = _rank_ic_by_date(merged, factor_col, ret_col)
         ic_arr = h_ic_df["ic"].drop_nulls().to_numpy()
-        results.append(ICDecayResult(
-            horizon=h,
-            ic_mean=float(np.mean(ic_arr)) if len(ic_arr) > 0 else float("nan"),
-            ic_std=float(np.std(ic_arr, ddof=1)) if len(ic_arr) > 1 else float("nan"),
-            ic_series=ic_arr.tolist(),
-        ))
+        results.append(
+            ICDecayResult(
+                horizon=h,
+                ic_mean=float(np.mean(ic_arr)) if len(ic_arr) > 0 else float("nan"),
+                ic_std=float(np.std(ic_arr, ddof=1)) if len(ic_arr) > 1 else float("nan"),
+                ic_series=ic_arr.tolist(),
+            )
+        )
 
     return results
 
@@ -128,6 +143,7 @@ def compute_ic_decay(
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. Monotonicity 分析
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class MonotonicityResult:
@@ -139,6 +155,7 @@ class MonotonicityResult:
         group_means: 各分组的平均收益
         direction: 方向 ("positive" / "negative")
     """
+
     factor_name: str = ""
     monotonicity_score: float = 0.0
     group_means: list[float] = field(default_factory=list)
@@ -172,19 +189,20 @@ def compute_monotonicity(
     Returns:
         MonotonicityResult
     """
-    df = factor_df.with_columns(
-        pl.col(factor_col).rank("ordinal", descending=False).over("trade_date").alias("_rank")
-    ).with_columns(
-        ((pl.col("_rank") - 1) * n_groups // pl.col("_rank").max().over("trade_date"))
-        .cast(pl.Int32)
-        .alias("group")
-    ).drop("_rank")
+    df = (
+        factor_df.with_columns(
+            pl.col(factor_col).rank("ordinal", descending=False).over("trade_date").alias("_rank")
+        )
+        .with_columns(
+            ((pl.col("_rank") - 1) * n_groups // pl.col("_rank").max().over("trade_date"))
+            .cast(pl.Int32)
+            .alias("group")
+        )
+        .drop("_rank")
+    )
 
     # 每组平均收益
-    group_ret = (
-        df.group_by(["trade_date", "group"])
-        .agg(pl.col(ret_col).mean().alias("mean_ret"))
-    )
+    group_ret = df.group_by(["trade_date", "group"]).agg(pl.col(ret_col).mean().alias("mean_ret"))
 
     # 各分组全局平均收益
     means_df = group_ret.group_by("group").agg(pl.col("mean_ret").mean()).sort("group")
@@ -230,6 +248,7 @@ def compute_monotonicity(
 # 3. Sector-stratified IC
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class SectorICResult:
     """行业分层 IC 结果。
@@ -239,6 +258,7 @@ class SectorICResult:
         sector_ic_df: 行业 IC DataFrame (sector, ic)
         low_sample_warnings: 低样本量警告列表
     """
+
     factor_name: str = ""
     sector_ic_df: pl.DataFrame = field(default_factory=pl.DataFrame)
     low_sample_warnings: list[str] = field(default_factory=list)
@@ -293,16 +313,26 @@ def compute_sector_ic(
     if valid_df.is_empty():
         result_df = pl.DataFrame({"sector": [], "ic": []})
     else:
-        ranked = valid_df.with_columns([
-            pl.col(factor_col).rank(method="average").over([sector_col, "trade_date"]).alias("_factor_rank"),
-            pl.col(ret_col).rank(method="average").over([sector_col, "trade_date"]).alias("_ret_rank"),
-        ])
+        ranked = valid_df.with_columns(
+            [
+                pl.col(factor_col)
+                .rank(method="average")
+                .over([sector_col, "trade_date"])
+                .alias("_factor_rank"),
+                pl.col(ret_col)
+                .rank(method="average")
+                .over([sector_col, "trade_date"])
+                .alias("_ret_rank"),
+            ]
+        )
         result_df = (
             ranked.group_by([sector_col, "trade_date"])
-            .agg([
-                pl.corr("_factor_rank", "_ret_rank").alias("ic"),
-                pl.len().alias("_n"),
-            ])
+            .agg(
+                [
+                    pl.corr("_factor_rank", "_ret_rank").alias("ic"),
+                    pl.len().alias("_n"),
+                ]
+            )
             .filter(pl.col("_n") >= 2)
             .drop("_n")
             .group_by(sector_col)
@@ -324,6 +354,7 @@ def compute_sector_ic(
 # 4. Size-stratified IC
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class SizeICResult:
     """市值分层 IC 结果。
@@ -333,6 +364,7 @@ class SizeICResult:
         buckets: 市值分桶关键词典 {bucket_name: ic_mean}
         summary: 文本摘要
     """
+
     factor_name: str = ""
     buckets: dict[str, float] = field(default_factory=dict)
     summary: str = ""
@@ -366,13 +398,17 @@ def compute_size_ic(
         pl.DataFrame (cap_bucket, ic) 或 SizeICResult
     """
     # 按市值排序分桶
-    df = factor_df.with_columns(
-        pl.col(cap_col).rank("ordinal", descending=False).over("trade_date").alias("_cap_rank")
-    ).with_columns(
-        ((pl.col("_cap_rank") - 1) * n_buckets // pl.col("_cap_rank").max().over("trade_date"))
-        .cast(pl.Int32)
-        .alias("cap_bucket")
-    ).drop("_cap_rank")
+    df = (
+        factor_df.with_columns(
+            pl.col(cap_col).rank("ordinal", descending=False).over("trade_date").alias("_cap_rank")
+        )
+        .with_columns(
+            ((pl.col("_cap_rank") - 1) * n_buckets // pl.col("_cap_rank").max().over("trade_date"))
+            .cast(pl.Int32)
+            .alias("cap_bucket")
+        )
+        .drop("_cap_rank")
+    )
 
     # bucket labels
     if n_buckets == 2:
@@ -394,16 +430,26 @@ def compute_size_ic(
     if valid_df.is_empty():
         result_df = pl.DataFrame({"cap_bucket": [], "ic": []})
     else:
-        ranked = valid_df.with_columns([
-            pl.col(factor_col).rank(method="average").over(["cap_bucket", "trade_date"]).alias("_factor_rank"),
-            pl.col(ret_col).rank(method="average").over(["cap_bucket", "trade_date"]).alias("_ret_rank"),
-        ])
+        ranked = valid_df.with_columns(
+            [
+                pl.col(factor_col)
+                .rank(method="average")
+                .over(["cap_bucket", "trade_date"])
+                .alias("_factor_rank"),
+                pl.col(ret_col)
+                .rank(method="average")
+                .over(["cap_bucket", "trade_date"])
+                .alias("_ret_rank"),
+            ]
+        )
         bucket_ic_df = (
             ranked.group_by(["cap_bucket", "trade_date"])
-            .agg([
-                pl.corr("_factor_rank", "_ret_rank").alias("ic"),
-                pl.len().alias("_n"),
-            ])
+            .agg(
+                [
+                    pl.corr("_factor_rank", "_ret_rank").alias("ic"),
+                    pl.len().alias("_n"),
+                ]
+            )
             .filter(pl.col("_n") >= 2)
             .drop("_n")
             .group_by("cap_bucket")
@@ -434,6 +480,7 @@ def compute_size_ic(
 # 5. Factor Crowding（因子拥挤度 - 实验性）
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class CrowdingResult:
     """因子拥挤度检测结果（**实验性指标**）。
@@ -447,6 +494,7 @@ class CrowdingResult:
         interpretation: 拥挤度解读 ("Low" / "Moderate" / "High")
         warnings: 警告列表
     """
+
     factor_name: str = ""
     crowding_score: float = 0.0
     corr_matrix: np.ndarray = field(default_factory=lambda: np.eye(1))
@@ -527,8 +575,13 @@ def compute_factor_crowding(
         if len(cross) < 2:
             continue
         arr = np.column_stack([cross[name].to_numpy() for name in names])
+        # 过滤常量列（std=0），避免 corrcoef 产生除零 warning
+        stds = arr.std(axis=0)
+        if np.any(stds == 0):
+            continue
         try:
-            corr = np.corrcoef(arr.T)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                corr = np.corrcoef(arr.T)
             if not np.any(np.isnan(corr)):
                 cum_corr += corr
                 count += 1
@@ -560,11 +613,13 @@ def compute_factor_crowding(
     pairwise_rows: list[dict] = []
     for i in range(n):
         for j in range(i + 1, n):
-            pairwise_rows.append({
-                "factor_a": names[i],
-                "factor_b": names[j],
-                "corr": cum_corr[i][j],
-            })
+            pairwise_rows.append(
+                {
+                    "factor_a": names[i],
+                    "factor_b": names[j],
+                    "corr": cum_corr[i][j],
+                }
+            )
     pairwise_df = pl.DataFrame(pairwise_rows)
 
     warnings: list[str] = []
@@ -590,6 +645,7 @@ def compute_factor_crowding(
 # 6. Market Regime IC
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class MarketRegimeICResult:
     """市场状态分层 IC 结果。
@@ -599,6 +655,7 @@ class MarketRegimeICResult:
         regime_ic: 各状态 IC DataFrame (regime, ic)
         regime_type: 状态类型 ("direction" / "volatility")
     """
+
     factor_name: str = ""
     regime_ic: pl.DataFrame = field(default_factory=pl.DataFrame)
     regime_type: str = ""
@@ -640,18 +697,16 @@ def compute_market_regime_ic(
     """
     # 如果没有市场状态数据，从因子数据中计算等权市场收益
     if market_df is None:
-        market_ret = (
-            factor_df.group_by("trade_date")
-            .agg(pl.col(ret_col).mean().alias("market_return"))
+        market_ret = factor_df.group_by("trade_date").agg(
+            pl.col(ret_col).mean().alias("market_return")
         )
     else:
         if "market_return" in market_df.columns:
             market_ret = market_df
         else:
             # 从因子数据计算
-            market_ret = (
-                factor_df.group_by("trade_date")
-                .agg(pl.col(ret_col).mean().alias("market_return"))
+            market_ret = factor_df.group_by("trade_date").agg(
+                pl.col(ret_col).mean().alias("market_return")
             )
 
     # 合并市场状态和因子数据
@@ -659,23 +714,18 @@ def compute_market_regime_ic(
 
     if regime_type == "direction":
         # 标记每个交易日的涨跌方向
-        date_regime = (
-            market_ret.with_columns(
-                pl.when(pl.col("market_return") > 0)
-                .then(pl.lit("up"))
-                .otherwise(pl.lit("down"))
-                .alias("regime")
-            )
-            .select(["trade_date", "regime"])
-        )
+        date_regime = market_ret.with_columns(
+            pl.when(pl.col("market_return") > 0)
+            .then(pl.lit("up"))
+            .otherwise(pl.lit("down"))
+            .alias("regime")
+        ).select(["trade_date", "regime"])
         merged_r = merged.join(date_regime, on="trade_date", how="inner")
         result_df = _grouped_ic(merged_r, factor_col, ret_col, group_col="regime")
 
     elif regime_type == "volatility":
         if "market_volatility" not in merged.columns:
-            merged = merged.with_columns(
-                pl.col("market_return").abs().alias("market_volatility")
-            )
+            merged = merged.with_columns(pl.col("market_return").abs().alias("market_volatility"))
 
         vol_values = merged["market_volatility"].unique().drop_nulls().sort().to_numpy()
         if len(vol_values) < n_regimes:
@@ -684,18 +734,22 @@ def compute_market_regime_ic(
         quantiles = np.linspace(0, 1, n_regimes + 1)[1:-1]
         thresholds = np.quantile(vol_values, quantiles) if len(vol_values) > 0 else np.array([])
 
-        date_vol = merged.group_by("trade_date").agg(
-            pl.col("market_volatility").first()
-        )
+        date_vol = merged.group_by("trade_date").agg(pl.col("market_volatility").first())
 
         base_labels = ["low_vol", "mid_vol", "high_vol"]
-        regime_labels = base_labels[:n_regimes] if n_regimes <= 3 else [f"vol_{i}" for i in range(n_regimes)]
+        regime_labels = (
+            base_labels[:n_regimes] if n_regimes <= 3 else [f"vol_{i}" for i in range(n_regimes)]
+        )
 
         # 用 polars 条件表达式分配 regime
         expr = pl.lit(regime_labels[-1])
         for ri in range(n_regimes - 2, -1, -1):
             threshold = thresholds[ri] if ri < len(thresholds) else float("inf")
-            expr = pl.when(pl.col("market_volatility") <= threshold).then(pl.lit(regime_labels[ri])).otherwise(expr)
+            expr = (
+                pl.when(pl.col("market_volatility") <= threshold)
+                .then(pl.lit(regime_labels[ri]))
+                .otherwise(expr)
+            )
 
         date_regime = date_vol.with_columns(expr.alias("regime")).select(["trade_date", "regime"])
         merged_r = merged.join(date_regime, on="trade_date", how="inner")
@@ -716,6 +770,7 @@ def compute_market_regime_ic(
 # 7. Rank Autocorrelation
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class RankAutocorrResult:
     """因子排名自相关结果。
@@ -727,6 +782,7 @@ class RankAutocorrResult:
         half_life_est: 估计半衰期（期数）
         _lag_to_autocorr: 内部映射 {lag: autocorr}
     """
+
     factor_name: str = ""
     autocorr_values: list[float] = field(default_factory=list)
     mean_autocorr: float = 0.0
@@ -786,17 +842,17 @@ def compute_rank_autocorr(
 
     for lag in lags:
         lag_col = f"_rank_lag{lag}"
-        df_lag = df.with_columns(
-            pl.col("_rank").shift(lag).over("ts_code").alias(lag_col)
-        )
+        df_lag = df.with_columns(pl.col("_rank").shift(lag).over("ts_code").alias(lag_col))
         # _rank 已经是截面内排名，直接对两列排名求 pearson_corr = Spearman 自相关
         ac_df = (
             df_lag.filter(pl.col("_rank").is_not_null() & pl.col(lag_col).is_not_null())
             .group_by("trade_date")
-            .agg([
-                pl.corr("_rank", lag_col).alias("ac"),
-                pl.len().alias("_n"),
-            ])
+            .agg(
+                [
+                    pl.corr("_rank", lag_col).alias("ac"),
+                    pl.len().alias("_n"),
+                ]
+            )
             .filter(pl.col("_n") >= 2)
             .drop("_n")
         )
@@ -824,3 +880,32 @@ def compute_rank_autocorr(
         half_life_est=half_life_est,
         _lag_to_autocorr=lag_to_autocorr,
     )
+
+
+def apply_fdr_correction(
+    p_values: dict[str, float],
+    method: str = "fdr_bh",
+) -> dict[str, float]:
+    """对多因子批量评估的 p 值进行多重检验校正。
+
+    Args:
+        p_values: {因子名: p_value} 字典。
+        method: statsmodels multipletests 支持的方法，如：
+            "fdr_bh"（Benjamini-Hochberg，控制 FDR，默认）、
+            "bonferroni"（Bonferroni，控制 FWER，更保守）、
+            "fdr_by"（Benjamini-Yekutieli）。
+
+    Returns:
+        {因子名: 校正后 p 值} 字典，键顺序与输入一致。
+    """
+    from statsmodels.stats.multitest import multipletests
+
+    if not p_values:
+        return {}
+
+    names = list(p_values.keys())
+    raw_pvals = np.array([p_values[n] for n in names])
+
+    _, pvals_corrected, _, _ = multipletests(raw_pvals, method=method)
+
+    return {n: float(p) for n, p in zip(names, pvals_corrected, strict=True)}

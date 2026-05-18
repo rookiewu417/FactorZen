@@ -21,6 +21,7 @@ FIXTURE_INDEX_CSI500 = "000905.SH"
 
 # ── index members ──────────────────────────────────────────────────────────
 
+
 @needs_tushare
 def test_get_index_members_csi300():
     """CSI300 成分股应返回 200-350 只股票（而非全 A 股 ~5500 只）。"""
@@ -31,31 +32,21 @@ def test_get_index_members_csi300():
     assert "name" in result.columns
 
     count = result.height
-    assert 200 <= count <= 350, (
-        f"CSI300 预期 200-350 只，实际 {count} 只"
-    )
+    assert 200 <= count <= 350, f"CSI300 预期 200-350 只，实际 {count} 只"
 
 
 @needs_tushare
 def test_csi800_is_union():
     """CSI800 = CSI300 ∪ CSI500，去重后数量应 ≈ CSI300 + CSI500。"""
-    csi300_codes = set(
-        get_universe(FIXTURE_DATE, "csi300")["ts_code"].to_list()
-    )
-    csi500_codes = set(
-        get_universe(FIXTURE_DATE, "csi500")["ts_code"].to_list()
-    )
-    csi800_codes = set(
-        get_universe(FIXTURE_DATE, "csi800")["ts_code"].to_list()
-    )
+    csi300_codes = set(get_universe(FIXTURE_DATE, "csi300")["ts_code"].to_list())
+    csi500_codes = set(get_universe(FIXTURE_DATE, "csi500")["ts_code"].to_list())
+    csi800_codes = set(get_universe(FIXTURE_DATE, "csi800")["ts_code"].to_list())
 
     n800 = len(csi800_codes)
 
     # CSI800 应为 union 去重
     expected_union = csi300_codes | csi500_codes
-    assert expected_union == csi800_codes, (
-        "CSI800 应为 CSI300 ∪ CSI500"
-    )
+    assert expected_union == csi800_codes, "CSI800 应为 CSI300 ∪ CSI500"
 
     assert n800 == len(expected_union), (
         f"CSI800({n800}) 应等于 union 去重结果({len(expected_union)})"

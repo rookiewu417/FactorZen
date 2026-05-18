@@ -1,4 +1,4 @@
-﻿"""MFT Demo: 1分钟 5-bar 动量因子。
+"""MFT Demo: 1分钟 5-bar 动量因子。
 
 Momentum1Min = close(t) / close(t-5) - 1
 基于 ctx.minute 提供的 1 分钟 K 线数据计算。
@@ -9,14 +9,14 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from intraday.factors.base import MFTFactor
+from intraday.factors.base import IntradayFactor
 
 if TYPE_CHECKING:
-    from intraday.data.context import MFTDataContext
+    from intraday.data.context import IntradayDataContext
 
 
 @dataclass
-class Momentum1Min(MFTFactor):
+class Momentum1Min(IntradayFactor):
     """1分钟 5-bar 动量因子。
 
     计算: factor_value = close(t) / close(t-5) - 1
@@ -34,7 +34,7 @@ class Momentum1Min(MFTFactor):
     lookback_bars: int = 6
     description: str = "5-bar momentum: close(t) / close(t-5) - 1"
 
-    def compute(self, ctx: "MFTDataContext") -> pl.DataFrame:
+    def compute(self, ctx: "IntradayDataContext") -> pl.DataFrame:
         """计算 5-bar 动量因子。
 
         公式: factor_value = close(t) / close(t-5) - 1
@@ -50,10 +50,10 @@ class Momentum1Min(MFTFactor):
         """
         lf = ctx.minute
         result = (
-            lf
-            .with_columns(
-                (pl.col("close") / pl.col("close").shift(5).over("ts_code") - 1.0)
-                .alias("factor_value")
+            lf.with_columns(
+                (pl.col("close") / pl.col("close").shift(5).over("ts_code") - 1.0).alias(
+                    "factor_value"
+                )
             )
             .select(["trade_time", "ts_code", "factor_value"])
             .filter(pl.col("factor_value").is_not_null())

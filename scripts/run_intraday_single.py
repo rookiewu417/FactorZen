@@ -15,8 +15,6 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import numpy as np
 import polars as pl
 
@@ -35,6 +33,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Synthetic data generator (demo / offline mode)
 # ---------------------------------------------------------------------------
+
 
 def _make_demo_data(
     start: str,
@@ -64,16 +63,20 @@ def _make_demo_data(
             ts = day + timedelta(hours=9, minutes=30 + offset)
             for i in range(n_stocks):
                 code = f"{i:06d}.SH"
-                factor_rows.append({
-                    "trade_time": ts,
-                    "ts_code": code,
-                    "factor_value": float(rng.standard_normal()),
-                })
-                ret_rows.append({
-                    "trade_time": ts,
-                    "ts_code": code,
-                    "fwd_ret_1bar": float(rng.standard_normal() * 0.002),
-                })
+                factor_rows.append(
+                    {
+                        "trade_time": ts,
+                        "ts_code": code,
+                        "factor_value": float(rng.standard_normal()),
+                    }
+                )
+                ret_rows.append(
+                    {
+                        "trade_time": ts,
+                        "ts_code": code,
+                        "fwd_ret_1bar": float(rng.standard_normal() * 0.002),
+                    }
+                )
 
     return pl.DataFrame(factor_rows), pl.DataFrame(ret_rows)
 
@@ -82,6 +85,7 @@ def _make_demo_data(
 # Real data loader (requires data/raw/minute/ parquet files)
 # ---------------------------------------------------------------------------
 
+
 def _load_real_data(
     factor_name: str,
     start: str,
@@ -89,21 +93,19 @@ def _load_real_data(
     universe: list[str] | None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Load minute-bar factor data and compute next-bar returns from storage."""
-    from intraday.data.context import MFTDataContext
+    from intraday.data.context import IntradayDataContext
+    from intraday.evaluation.returns import compute_intraday_fwd_returns
     from intraday.factors.registry import get_factor as get_intraday_factor
 
     factor_cls = get_intraday_factor(factor_name)
-    ctx = MFTDataContext(start=start, end=end, universe=universe)
+    ctx = IntradayDataContext(start=start, end=end, universe=universe)
     factor_df = factor_cls().compute(ctx)
 
-    # Build 1-bar forward return from minute close prices
-    minute_df = ctx.minute.collect().sort(["ts_code", "trade_time"])
-    ret_df = minute_df.with_columns(
-        pl.col("close").shift(-1).over("ts_code").alias("_next_close")
-    ).with_columns(
-        ((pl.col("_next_close") / pl.col("close")) - 1.0).alias("fwd_ret_1bar")
-    ).select(["trade_time", "ts_code", "fwd_ret_1bar"]).filter(
-        pl.col("fwd_ret_1bar").is_not_null()
+    minute_df = ctx.minute.collect().select(["trade_time", "ts_code", "close"])
+    ret_df = (
+        compute_intraday_fwd_returns(minute_df, periods=[1])
+        .select(["trade_time", "ts_code", "fwd_ret_1bar"])
+        .filter(pl.col("fwd_ret_1bar").is_not_null())
     )
 
     return factor_df, ret_df
@@ -113,10 +115,12 @@ def _load_real_data(
 # Chart helpers
 # ---------------------------------------------------------------------------
 
+
 def _chart_daily_ic(daily_ic: pl.DataFrame) -> str | None:
     """Render daily IC series as base64 PNG."""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
@@ -139,10 +143,7 @@ def _chart_daily_ic(daily_ic: pl.DataFrame) -> str | None:
         ax2.axhline(0, color="black", linewidth=0.5, linestyle="--")
         ax2.set_ylabel("Cumulative IC", fontsize=10)
         ax2.set_xticks(range(len(dates)))
-        ax2.set_xticklabels(
-            [str(d) for d in dates],
-            rotation=45, ha="right", fontsize=8
-        )
+        ax2.set_xticklabels([str(d) for d in dates], rotation=45, ha="right", fontsize=8)
 
         plt.tight_layout()
         buf = io.BytesIO()
@@ -159,7 +160,10 @@ def _chart_daily_ic(daily_ic: pl.DataFrame) -> str | None:
 # HTML rendering
 # ---------------------------------------------------------------------------
 
-def _render_html(result, factor_name: str, bar_size: str, universe_label: str, date_range: str) -> str:
+
+def _render_html(
+    result, factor_name: str, bar_size: str, universe_label: str, date_range: str
+) -> str:
     """Render intraday IC result to HTML using Jinja2 template."""
     from datetime import datetime as dt
 
@@ -204,13 +208,16 @@ def _render_html(result, factor_name: str, bar_size: str, universe_label: str, d
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(description="Intraday single-factor IC evaluation")
     parser.add_argument("--factor", default="momentum_1min", help="Factor name")
     parser.add_argument("--start", required=True, help="Start date YYYYMMDD")
     parser.add_argument("--end", required=True, help="End date YYYYMMDD")
     parser.add_argument("--universe", default=None, help="Comma-separated ts_codes or preset name")
-    parser.add_argument("--demo", action="store_true", help="Use synthetic data (no real data needed)")
+    parser.add_argument(
+        "--demo", action="store_true", help="Use synthetic data (no real data needed)"
+    )
     args = parser.parse_args()
 
     logger.info(f"==== Intraday IC Evaluation: {args.factor} | {args.start}~{args.end} ====")
@@ -231,18 +238,9 @@ def main():
     logger.info(f"Factor rows: {len(factor_df):,} | Return rows: {len(ret_df):,}")
 
     result = compute_intraday_rank_ic(factor_df, ret_df)
-    result_with_name = result.__class__(
-        factor_name=args.factor,
-        ic_mean=result.ic_mean,
-        ic_std=result.ic_std,
-        ir=result.ir,
-        ic_positive_ratio=result.ic_positive_ratio,
-        n_periods=result.n_periods,
-        daily_ic=result.daily_ic,
-        segment_ic=result.segment_ic,
-    )
+    result.factor_name = args.factor
 
-    logger.info(f"\n{result_with_name.summary()}")
+    logger.info(f"\n{result.summary()}")
 
     # Save outputs
     OUTPUT_INTRADAY_FACTORS.mkdir(parents=True, exist_ok=True)
@@ -258,9 +256,85 @@ def main():
             str(OUTPUT_INTRADAY_RESULTS / f"{args.factor}_daily_ic.parquet")
         )
 
-    # Render HTML
+    # ── 步骤 A：分层回测（失败则跳过）──
+    bt_result = None
+    try:
+        from common.loader import fetch_daily as _fetch_daily
+        from common.storage import load_parquet as _load_pq
+        from intraday.evaluation.backtest import run_intraday_backtest
+
+        _fetch_daily(args.start, args.end)
+        _daily_raw = _load_pq("daily", start=args.start, end=args.end).collect()
+        if not _daily_raw.is_empty():
+            _daily_ret = (
+                _daily_raw.select(["trade_date", "ts_code", "close"])
+                .sort(["ts_code", "trade_date"])
+                .with_columns(
+                    (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1).alias("ret")
+                )
+                .select(["trade_date", "ts_code", "ret"])
+            )
+            bt_result = run_intraday_backtest(
+                factor_df,
+                _daily_ret,
+                factor_col="factor_value",
+                n_groups=5,
+                factor_name=args.factor,
+            )
+            logger.info(f"\n{bt_result.summary()}")
+    except Exception as _e:
+        logger.warning(f"分层回测跳过: {_e}")
+
+    # ── 步骤 B：换手率（失败则跳过）──
+    to_result = None
+    try:
+        from daily.evaluation.turnover import compute_turnover as _compute_to
+        from intraday.evaluation.backtest import aggregate_intraday_factor
+
+        _daily_factor = aggregate_intraday_factor(factor_df, factor_col="factor_value")
+        to_result = _compute_to(_daily_factor, factor_col="factor_value", frequency="daily")
+        to_result.factor_name = args.factor
+        logger.info(f"\n{to_result.summary()}")
+    except Exception as _e:
+        logger.warning(f"换手率计算跳过: {_e}")
+
+    # ── 步骤 C：生成 Tear Sheet HTML，fallback 到现有 _render_html ──
     date_range = f"{args.start} ~ {args.end}"
-    html = _render_html(result_with_name, args.factor, "1min", universe_label, date_range)
+    html = None
+    try:
+        from daily.evaluation.ic_analysis import ICAnalysisResult as _ICResult
+
+        _ic_series = result.daily_ic
+        if "ic_mean" in _ic_series.columns:
+            _ic_series = _ic_series.rename({"ic_mean": "ic"})
+        _adapted_ic = _ICResult(
+            factor_name=args.factor,
+            ic_mean=result.ic_mean,
+            ic_std=result.ic_std,
+            ir=result.ir,
+            ic_positive_ratio=result.ic_positive_ratio,
+            n_periods=result.n_periods,
+            ic_series=_ic_series,
+            frequency="daily",
+        )
+        from reporting.tear_sheet import generate_tear_sheet as _gen_ts
+
+        html = _gen_ts(
+            factor_name=args.factor,
+            ic_result=_adapted_ic,
+            bt_result=bt_result,
+            to_result=to_result,
+            frequency="daily",
+            date_range=date_range,
+            universe=args.universe or "all",
+        )
+        logger.info("Tear Sheet HTML generated via generate_tear_sheet")
+    except Exception as _e:
+        logger.warning(f"generate_tear_sheet 失败，回退到 _render_html: {_e}")
+
+    if html is None:
+        html = _render_html(result, args.factor, "1min", universe_label, date_range)
+
     report_path = OUTPUT_INTRADAY_REPORTS / f"{args.factor}_{args.start}_{args.end}.html"
     report_path.write_text(html, encoding="utf-8")
     logger.info(f"Report saved: {report_path}")

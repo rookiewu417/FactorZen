@@ -19,9 +19,9 @@ MIN_IC_SAMPLES: int = 30
 DEFAULT_N_QUANTILES: int = 5
 
 # ── 涨跌停限制（用于 Universe 过滤）───────────────────────────────────────────────
-PRICE_LIMIT_MAIN: float = 0.098    # 主板/中小板（10% - 0.2%）
+PRICE_LIMIT_MAIN: float = 0.098  # 主板/中小板（10% - 0.2%）
 PRICE_LIMIT_GROWTH: float = 0.198  # 科创板/创业板（20% - 0.2%）
-PRICE_LIMIT_ST: float = 0.048      # ST 股（5% - 0.2%）
+PRICE_LIMIT_ST: float = 0.048  # ST 股（5% - 0.2%）
 
 # ── 星级评分阈值（IC 均值绝对值）────────────────────────────────────────────────
 STAR_RATING_THRESHOLDS: dict[int, float] = {
@@ -29,13 +29,19 @@ STAR_RATING_THRESHOLDS: dict[int, float] = {
     4: 0.04,  # ★★★★
     3: 0.02,  # ★★★
     2: 0.01,  # ★★
-    1: 0.0,   # ★
+    1: 0.0,  # ★
 }
 
 # ── 回测绩效阈值 ────────────────────────────────────────────────────────────────
-MIN_BACKTEST_IR: float = 0.5       # 认为因子有效的最低 IR 阈值
+MIN_BACKTEST_IR: float = 0.5  # 认为因子有效的最低 IR 阈值
 MIN_IC_POSITIVE_RATIO: float = 0.55  # 认为方向稳定的最低 IC>0 比例
 
 # ── Universe 默认参数 ───────────────────────────────────────────────────────────
-MIN_MARKET_CAP_CNY: float = 3e8    # 最小市值过滤（3 亿人民币）
-MIN_PRICE: float = 1.0             # 最小股价过滤（1 元）
+MIN_MARKET_CAP_CNY: float = 3e8  # 最小市值过滤（3 亿人民币）
+MIN_PRICE: float = 1.0  # 最小股价过滤（1 元）
+
+# ── 交易成本（用于 CostModel，A 股市场典型参数）─────────────────────────────────────
+COMMISSION_RATE: float = 0.00025  # 单边佣金率（万 2.5）
+STAMP_TAX_RATE: float = 0.001  # 卖出印花税（千 1）
+SLIPPAGE_RATE: float = 0.0005  # 单边冲击成本/滑点（万 5，保守估计）
+BORROW_RATE_ANNUAL: float = 0.085  # 融券年化利率（8.5%，做空时使用）

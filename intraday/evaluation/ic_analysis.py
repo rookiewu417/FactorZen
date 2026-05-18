@@ -25,7 +25,7 @@ class IntradayICResult:
     ir: float
     ic_positive_ratio: float
     n_periods: int
-    daily_ic: pl.DataFrame    # trade_date, ic_mean (daily aggregate)
+    daily_ic: pl.DataFrame  # trade_date, ic_mean (daily aggregate)
     segment_ic: pl.DataFrame  # segment, ic_mean (open/midday/close)
 
     def summary(self) -> str:
@@ -48,11 +48,10 @@ def _assign_segment(df: pl.DataFrame, time_col: str = "trade_time") -> pl.DataFr
         pl.when(
             pl.col(time_col).dt.hour().eq(9)
             | (pl.col(time_col).dt.hour().eq(10) & pl.col(time_col).dt.minute().lt(1))
-        ).then(pl.lit("open"))
-        .when(
-            pl.col(time_col).dt.hour().eq(14)
-            & pl.col(time_col).dt.minute().ge(30)
-        ).then(pl.lit("close"))
+        )
+        .then(pl.lit("open"))
+        .when(pl.col(time_col).dt.hour().eq(14) & pl.col(time_col).dt.minute().ge(30))
+        .then(pl.lit("close"))
         .otherwise(pl.lit("midday"))
         .alias("segment")
     )
@@ -96,24 +95,32 @@ def compute_intraday_rank_ic(
         )
         return IntradayICResult(
             factor_name=factor_col,
-            ic_mean=0.0, ic_std=0.0, ir=0.0,
-            ic_positive_ratio=0.0, n_periods=0,
-            daily_ic=empty_daily, segment_ic=empty_seg,
+            ic_mean=0.0,
+            ic_std=0.0,
+            ir=0.0,
+            ic_positive_ratio=0.0,
+            n_periods=0,
+            daily_ic=empty_daily,
+            segment_ic=empty_seg,
         )
 
     # Rank within each (trade_time) cross-section
-    ranked = valid.with_columns([
-        pl.col(factor_col).rank(method="average").over(time_col).alias("_f_rank"),
-        pl.col(ret_col).rank(method="average").over(time_col).alias("_r_rank"),
-    ])
+    ranked = valid.with_columns(
+        [
+            pl.col(factor_col).rank(method="average").over(time_col).alias("_f_rank"),
+            pl.col(ret_col).rank(method="average").over(time_col).alias("_r_rank"),
+        ]
+    )
 
     # Per-bar IC
     bar_ic = (
         ranked.group_by(time_col)
-        .agg([
-            pl.corr("_f_rank", "_r_rank").alias("ic"),
-            pl.len().alias("_n"),
-        ])
+        .agg(
+            [
+                pl.corr("_f_rank", "_r_rank").alias("ic"),
+                pl.len().alias("_n"),
+            ]
+        )
         .filter(pl.col("_n") >= min_samples)
         .drop("_n")
         .sort(time_col)
@@ -127,9 +134,7 @@ def compute_intraday_rank_ic(
 
     # Daily aggregate IC: mean of bar ICs within each date
     daily_ic = (
-        bar_ic.with_columns(
-            pl.col(time_col).dt.date().alias("trade_date")
-        )
+        bar_ic.with_columns(pl.col(time_col).dt.date().alias("trade_date"))
         .group_by("trade_date")
         .agg(pl.col("ic").mean())
         .sort("trade_date")
@@ -137,11 +142,7 @@ def compute_intraday_rank_ic(
 
     # Segment IC: assign open/midday/close
     bar_with_seg = _assign_segment(bar_ic, time_col)
-    segment_ic = (
-        bar_with_seg.group_by("segment")
-        .agg(pl.col("ic").mean())
-        .sort("segment")
-    )
+    segment_ic = bar_with_seg.group_by("segment").agg(pl.col("ic").mean()).sort("segment")
 
     return IntradayICResult(
         factor_name=factor_col,

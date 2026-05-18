@@ -17,13 +17,14 @@ class BmRatioMonthly(LFTFactor):
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         monthly_basic = ctx.monthly_basic
         result = (
-            monthly_basic
-            .filter(pl.col("pb").is_not_null() & (pl.col("pb") > 0))
-            .select([
-                pl.col("trade_date"),
-                pl.col("ts_code"),
-                (1.0 / (pl.col("pb") + 1e-8)).alias("factor_value"),
-            ])
+            monthly_basic.filter(pl.col("pb").is_not_null() & (pl.col("pb") > 0))
+            .select(
+                [
+                    pl.col("trade_date"),
+                    pl.col("ts_code"),
+                    (1.0 / (pl.col("pb") + 1e-8)).alias("factor_value"),
+                ]
+            )
             .collect()
         )
         return result

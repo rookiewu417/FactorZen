@@ -1,4 +1,4 @@
-﻿"""测试 Point-In-Time 财务数据对齐。"""
+"""测试 Point-In-Time 财务数据对齐。"""
 
 import time
 from datetime import date, timedelta
@@ -8,6 +8,7 @@ import polars as pl
 from daily.data.pit import pit_align
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
 
 def _make_fina(rows: list[tuple]) -> pl.DataFrame:
     """从 (ts_code, end_date, ann_date, roe) 元组列表构造财务数据。"""
@@ -20,18 +21,21 @@ def _make_fina(rows: list[tuple]) -> pl.DataFrame:
 
 # ── correctness ─────────────────────────────────────────────────────────────
 
+
 def test_pit_align_correctness():
     """验证无前视偏差：快照日只使用「已公告」的财报中 end_date 最新的那条。"""
     # Stock A:
     #   Q2 report: end_date=2024-06-30, ann_date=2024-08-15
     #   Q3 report: end_date=2024-09-30, ann_date=2024-10-30
-    fina = _make_fina([
-        ("000001.SZ", date(2024, 6, 30), date(2024, 8, 15), 12.0),
-        ("000001.SZ", date(2024, 9, 30), date(2024, 10, 30), 15.0),
-    ])
+    fina = _make_fina(
+        [
+            ("000001.SZ", date(2024, 6, 30), date(2024, 8, 15), 12.0),
+            ("000001.SZ", date(2024, 9, 30), date(2024, 10, 30), 15.0),
+        ]
+    )
 
     snapshots = [
-        date(2024, 8, 31),   # Q2 已公告，Q3 未公告 → 应取 Q2（roe=12.0）
+        date(2024, 8, 31),  # Q2 已公告，Q3 未公告 → 应取 Q2（roe=12.0）
         date(2024, 10, 31),  # Q2/Q3 均已公告 → 应取 Q3（roe=15.0）
     ]
 
@@ -54,14 +58,16 @@ def test_pit_align_correctness():
 def test_pit_align_multiple_stocks():
     """多股票场景：各自独立取最新已公告财报。"""
     d1, d2, d3 = date(2024, 3, 31), date(2024, 6, 30), date(2024, 9, 30)
-    fina = _make_fina([
-        ("A", d1, date(2024, 4, 25), 10.0),
-        ("A", d2, date(2024, 8, 28), 12.0),
-        ("A", d3, date(2024, 10, 30), 14.0),
-        ("B", d1, date(2024, 4, 25), 20.0),
-        ("B", d2, date(2024, 8, 30), 22.0),
-        # B 没有 Q3
-    ])
+    fina = _make_fina(
+        [
+            ("A", d1, date(2024, 4, 25), 10.0),
+            ("A", d2, date(2024, 8, 28), 12.0),
+            ("A", d3, date(2024, 10, 30), 14.0),
+            ("B", d1, date(2024, 4, 25), 20.0),
+            ("B", d2, date(2024, 8, 30), 22.0),
+            # B 没有 Q3
+        ]
+    )
 
     snapshots = [date(2024, 9, 1), date(2024, 11, 1)]
 
@@ -84,11 +90,14 @@ def test_pit_align_multiple_stocks():
 
 # ── empty input ─────────────────────────────────────────────────────────────
 
+
 def test_pit_align_empty_input():
     """空 DataFrame 或空 snapshot 列表 → 返回空 DataFrame。"""
-    fina = _make_fina([
-        ("A", date(2024, 6, 30), date(2024, 8, 1), 10.0),
-    ])
+    fina = _make_fina(
+        [
+            ("A", date(2024, 6, 30), date(2024, 8, 1), 10.0),
+        ]
+    )
 
     # 空 fina_df
     assert pit_align(pl.DataFrame(), [date(2024, 9, 1)]).is_empty()
@@ -101,6 +110,7 @@ def test_pit_align_empty_input():
 
 
 # ── performance ─────────────────────────────────────────────────────────────
+
 
 def test_pit_align_performance():
     """1000 只股票 × 40 个月频快照 → 2 秒内完成。"""

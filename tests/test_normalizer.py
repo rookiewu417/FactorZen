@@ -1,4 +1,4 @@
-﻿"""测试截面 Z-score 标准化。"""
+"""测试截面 Z-score 标准化。"""
 
 import polars as pl
 
@@ -10,11 +10,13 @@ def _make_test_data(values: list[float], stocks: list[str] | None = None):
     n = len(values)
     if stocks is None:
         stocks = [f"stock_{i}" for i in range(n)]
-    return pl.DataFrame({
-        "stock_code": stocks,
-        "trade_date": ["2026-01-05"] * n,
-        "factor_value_clip_fill": values,
-    })
+    return pl.DataFrame(
+        {
+            "stock_code": stocks,
+            "trade_date": ["2026-01-05"] * n,
+            "factor_value_clip_fill": values,
+        }
+    )
 
 
 def test_zero_std():

@@ -11,8 +11,9 @@ from daily.factors.base import LFTFactor
 
 # ── Synthetic data helpers ───────────────────────────────────────────────────
 
+
 def _make_daily_lf(n_stocks: int = 20, n_days: int = 60, seed: int = 42) -> pl.LazyFrame:
-    """Generates a daily LazyFrame with close/amount/vol columns."""
+    """Generates a daily LazyFrame with close/amount/vol + *_adj columns."""
     rng = np.random.default_rng(seed)
     start = date(2024, 1, 2)
 
@@ -29,16 +30,23 @@ def _make_daily_lf(n_stocks: int = 20, n_days: int = 60, seed: int = 42) -> pl.L
         price = 10.0
         for day in days:
             price = float(max(price * (1 + rng.standard_normal() * 0.02), 0.1))
-            rows.append({
-                "trade_date": day,
-                "ts_code": s,
-                "close": price,
-                "open": float(max(price * 0.99, 0.1)),
-                "high": float(max(price * 1.01, 0.1)),
-                "low": float(max(price * 0.98, 0.1)),
-                "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6),
-                "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4),
-            })
+            rows.append(
+                {
+                    "trade_date": day,
+                    "ts_code": s,
+                    "close": price,
+                    "open": float(max(price * 0.99, 0.1)),
+                    "high": float(max(price * 1.01, 0.1)),
+                    "low": float(max(price * 0.98, 0.1)),
+                    # adj 列与原始价格相同（测试用，无分红除权）
+                    "close_adj": price,
+                    "open_adj": float(max(price * 0.99, 0.1)),
+                    "high_adj": float(max(price * 1.01, 0.1)),
+                    "low_adj": float(max(price * 0.98, 0.1)),
+                    "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6),
+                    "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4),
+                }
+            )
     return pl.DataFrame(rows).lazy()
 
 
@@ -50,13 +58,15 @@ def _make_monthly_basic_lf(n_stocks: int = 20) -> pl.LazyFrame:
     rows = []
     for s in stocks:
         for d in months:
-            rows.append({
-                "trade_date": d,
-                "ts_code": s,
-                "pe_ttm": float(abs(rng.standard_normal() * 10 + 20)),
-                "pb": float(abs(rng.standard_normal() * 1 + 2)),
-                "total_mv": float(abs(rng.standard_normal() * 1e9 + 5e9)),
-            })
+            rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": s,
+                    "pe_ttm": float(abs(rng.standard_normal() * 10 + 20)),
+                    "pb": float(abs(rng.standard_normal() * 1 + 2)),
+                    "total_mv": float(abs(rng.standard_normal() * 1e9 + 5e9)),
+                }
+            )
     return pl.DataFrame(rows).lazy()
 
 
@@ -94,6 +104,7 @@ def ctx():
 
 # ── Generic result checker ───────────────────────────────────────────────────
 
+
 def _check_result(result: pl.DataFrame, factor_name: str):
     assert isinstance(result, pl.DataFrame), f"{factor_name}: result must be a DataFrame"
     assert "trade_date" in result.columns, f"{factor_name}: missing trade_date column"
@@ -104,8 +115,10 @@ def _check_result(result: pl.DataFrame, factor_name: str):
 
 # ── Individual factor tests ──────────────────────────────────────────────────
 
+
 def test_amihud_illiquidity(ctx):
     from daily.factors.daily.amihud import AmihudIlliquidity
+
     factor = AmihudIlliquidity()
     assert isinstance(factor, LFTFactor)
     result = factor.compute(ctx)
@@ -116,6 +129,7 @@ def test_amihud_illiquidity(ctx):
 
 def test_max_return_5d(ctx):
     from daily.factors.daily.max_return import MaxReturn5D
+
     factor = MaxReturn5D()
     assert isinstance(factor, LFTFactor)
     result = factor.compute(ctx)
@@ -124,6 +138,7 @@ def test_max_return_5d(ctx):
 
 def test_skewness_20d(ctx):
     from daily.factors.daily.skewness import Skewness20D
+
     factor = Skewness20D()
     assert isinstance(factor, LFTFactor)
     result = factor.compute(ctx)
@@ -134,6 +149,7 @@ def test_skewness_20d(ctx):
 
 def test_beta_60d(ctx):
     from daily.factors.daily.beta import Beta60D
+
     factor = Beta60D()
     assert isinstance(factor, LFTFactor)
     result = factor.compute(ctx)
@@ -142,6 +158,7 @@ def test_beta_60d(ctx):
 
 def test_idiosyncratic_vol_20d(ctx):
     from daily.factors.daily.idiosyncratic_vol import IdiosyncraticVol20D
+
     factor = IdiosyncraticVol20D()
     assert isinstance(factor, LFTFactor)
     result = factor.compute(ctx)
@@ -152,6 +169,7 @@ def test_idiosyncratic_vol_20d(ctx):
 
 def test_bm_ratio(ctx):
     from daily.factors.monthly.bm_ratio import BmRatioMonthly
+
     factor = BmRatioMonthly()
     assert isinstance(factor, LFTFactor)
     result = factor.compute(ctx)
@@ -162,6 +180,7 @@ def test_bm_ratio(ctx):
 
 def test_ep_ratio(ctx):
     from daily.factors.monthly.ep_ratio import EpRatioMonthly
+
     factor = EpRatioMonthly()
     assert isinstance(factor, LFTFactor)
     result = factor.compute(ctx)
@@ -172,10 +191,16 @@ def test_ep_ratio(ctx):
 
 def test_registry_has_new_factors():
     from daily.factors.registry import list_factors
+
     factors = list_factors()
     expected = [
-        "amihud_illiquidity", "max_return_5d", "skewness_20d",
-        "beta_60d", "idiosyncratic_vol_20d", "bm_ratio", "ep_ratio",
+        "amihud_illiquidity",
+        "max_return_5d",
+        "skewness_20d",
+        "beta_60d",
+        "idiosyncratic_vol_20d",
+        "bm_ratio",
+        "ep_ratio",
         "asset_growth",
     ]
     for name in expected:
@@ -183,7 +208,7 @@ def test_registry_has_new_factors():
 
 
 def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
-    """Synthetic quarterly finance data with total_assets.
+    """Synthetic quarterly finance data with assets_yoy.
 
     Announcement dates are set to be well before the test snapshot dates
     (2024-03-29, 2024-04-30) so PIT alignment finds valid records.
@@ -203,15 +228,15 @@ def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
     ]
     rows = []
     for s in stocks:
-        assets = float(abs(rng.standard_normal() * 1e9 + 5e9))
         for q, ann in quarter_ann:
-            assets = assets * (1 + rng.standard_normal() * 0.05)
-            rows.append({
-                "ts_code": s,
-                "end_date": q,
-                "ann_date": ann,
-                "total_assets": float(assets),
-            })
+            rows.append(
+                {
+                    "ts_code": s,
+                    "end_date": q,
+                    "ann_date": ann,
+                    "assets_yoy": float(rng.standard_normal() * 10),  # YoY growth %
+                }
+            )
     return pl.DataFrame(rows).lazy()
 
 
@@ -238,6 +263,7 @@ def test_asset_growth_empty_when_no_finance(ctx, monkeypatch):
 
     def _raise(_):
         raise FileNotFoundError("no data")
+
     monkeypatch.setattr(ag_mod, "scan_parquet", _raise)
 
     factor = AssetGrowthMonthly()

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ factor_name }} — Factor Tear Sheet</title>
+<title>{{ factor_name }} — 因子研究报告</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f6fa; color: #2d3436; line-height: 1.6; }
@@ -34,8 +34,8 @@
 <div class="panel">
   <h1>{{ factor_name }}</h1>
   <div class="meta">
-    Frequency: {{ frequency }} | Universe: {{ universe }} | Generated: {{ generated_at }}
-    {% if date_range %}| Range: {{ date_range }}{% endif %}
+    频率：{{ frequency }} | 股票池：{{ universe }} | 生成时间：{{ generated_at }}
+    {% if date_range %}| 日期范围：{{ date_range }}{% endif %}
   </div>
 
   {% if warnings %}
@@ -45,28 +45,28 @@
   {% endif %}
 
   <div class="metric-grid">
-    <div class="metric-card"><div class="label">IC Mean</div><div class="value">{{ "%.4f"|format(metrics.ic_mean or 0) }}</div></div>
-    <div class="metric-card"><div class="label">IC Std</div><div class="value">{{ "%.4f"|format(metrics.ic_std or 0) }}</div></div>
-    <div class="metric-card"><div class="label">IR</div><div class="value">{{ "%.2f"|format(metrics.ir or 0) }}</div></div>
-    <div class="metric-card"><div class="label">IC > 0 Ratio</div><div class="value">{{ "%.1f%%"|format((metrics.ic_positive_ratio or 0) * 100) }}</div></div>
-    <div class="metric-card"><div class="label">t-stat</div><div class="value">{{ "%.2f"|format(metrics.ic_tstat or 0) }}{% if (metrics.ic_pvalue or 1) < 0.01 %}<span style="color:#e74c3c;font-size:14px">***</span>{% elif (metrics.ic_pvalue or 1) < 0.05 %}<span style="color:#e67e22;font-size:14px">**</span>{% elif (metrics.ic_pvalue or 1) < 0.1 %}<span style="color:#f39c12;font-size:14px">*</span>{% endif %}</div></div>
-    <div class="metric-card"><div class="label">Periods</div><div class="value">{{ metrics.n_periods or 0 }}</div></div>
-    <div class="metric-card"><div class="label">Avg Turnover</div><div class="value">{{ "%.1f%%"|format((metrics.avg_turnover or 0) * 100) }}</div></div>
+    <div class="metric-card"><div class="label">IC 均值</div><div class="value">{{ "%.4f"|format(metrics.ic_mean or 0) }}</div></div>
+    <div class="metric-card"><div class="label">IC 标准差</div><div class="value">{{ "%.4f"|format(metrics.ic_std or 0) }}</div></div>
+    <div class="metric-card"><div class="label">信息比率 (IR)</div><div class="value">{{ "%.2f"|format(metrics.ir or 0) }}</div></div>
+    <div class="metric-card"><div class="label">IC 胜率</div><div class="value">{{ "%.1f%%"|format((metrics.ic_positive_ratio or 0) * 100) }}</div></div>
+    <div class="metric-card"><div class="label">t 统计量</div><div class="value">{{ "%.2f"|format(metrics.ic_tstat or 0) }}{% if (metrics.ic_pvalue or 1) < 0.01 %}<span style="color:#e74c3c;font-size:14px">***</span>{% elif (metrics.ic_pvalue or 1) < 0.05 %}<span style="color:#e67e22;font-size:14px">**</span>{% elif (metrics.ic_pvalue or 1) < 0.1 %}<span style="color:#f39c12;font-size:14px">*</span>{% endif %}</div></div>
+    <div class="metric-card"><div class="label">样本期数</div><div class="value">{{ metrics.n_periods or 0 }}</div></div>
+    <div class="metric-card"><div class="label">平均换手率</div><div class="value">{{ "%.1f%%"|format((metrics.avg_turnover or 0) * 100) }}</div></div>
   </div>
 </div>
 
 <!-- 2. Returns Analysis -->
 <div class="panel">
-  <h2>Returns Analysis</h2>
+  <h2>收益分析</h2>
   {% if charts.returns_chart %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.returns_chart }}" alt="NAV Chart">
+  <img class="chart-img" src="data:image/png;base64,{{ charts.returns_chart }}" alt="NAV 曲线">
   {% else %}
-  <div class="no-data">No backtest data</div>
+  <div class="no-data">无回测数据</div>
   {% endif %}
 
   {% if metrics.bt_stats %}
   <table>
-    <tr><th>Group</th><th>Ann Return</th><th>Ann Vol</th><th>Sharpe</th><th>Max DD</th></tr>
+    <tr><th>分组</th><th>年化收益</th><th>年化波动</th><th>夏普比率</th><th>最大回撤</th></tr>
     {% for row in metrics.bt_stats %}
     <tr>
       <td>{{ row.group }}</td>
@@ -82,18 +82,18 @@
 
 <!-- 3. IC Analysis -->
 <div class="panel">
-  <h2>IC Analysis</h2>
+  <h2>IC 分析</h2>
   {% if charts.ic_chart %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.ic_chart }}" alt="IC Chart">
+  <img class="chart-img" src="data:image/png;base64,{{ charts.ic_chart }}" alt="IC 时序图">
   {% else %}
-  <div class="no-data">No IC data</div>
+  <div class="no-data">无 IC 数据</div>
   {% endif %}
 
   {% if metrics.get('decay_table') %}
   <table>
-    <tr><th>Horizon</th><th>IC Mean</th><th>IC Std</th></tr>
+    <tr><th>持有期</th><th>IC 均值</th><th>IC 标准差</th></tr>
     {% for d in metrics.decay_table %}
-    <tr><td>{{ d.horizon }}d</td><td>{{ "%.4f"|format(d.ic_mean) }}</td><td>{{ "%.4f"|format(d.ic_std) }}</td></tr>
+    <tr><td>{{ d.horizon }}天</td><td>{{ "%.4f"|format(d.ic_mean) }}</td><td>{{ "%.4f"|format(d.ic_std) }}</td></tr>
     {% endfor %}
   </table>
   {% endif %}
@@ -102,10 +102,10 @@
 <!-- 3b. Multi-Period Consistency -->
 {% if metrics.get('multi_period_table') %}
 <div class="panel">
-  <h2>Multi-Period Consistency</h2>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">IC across holding periods — a robust factor should show consistent direction across horizons.</p>
+  <h2>多持有期一致性</h2>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">跨持有期 IC —— 稳健因子在各持有期应保持方向一致。</p>
   <table>
-    <tr><th>Horizon</th><th>IC Mean</th><th>IC Std</th><th>IR</th><th>IC&gt;0 Ratio</th><th>t-stat</th><th>p-value</th></tr>
+    <tr><th>持有期</th><th>IC 均值</th><th>IC 标准差</th><th>信息比率</th><th>IC 胜率</th><th>t 统计量</th><th>p 值</th></tr>
     {% for row in metrics.multi_period_table %}
     <tr>
       <td>{{ row.horizon }}</td>
@@ -124,60 +124,80 @@
 <!-- 3c. Out-of-Sample Robustness -->
 {% if metrics.get('oos_train_ic') is not none %}
 <div class="panel">
-  <h2>Out-of-Sample Robustness</h2>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">In-sample (first 70%) vs out-of-sample (last 30%) IC split — consistent IC direction indicates factor is not overfitted to a specific period.</p>
+  <h2>样本外稳健性</h2>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">样本内（前 70%）与样本外（后 30%）IC 分割 —— IC 方向一致说明因子未过拟合特定时段。</p>
   <table>
-    <tr><th>Split</th><th>IC Mean</th></tr>
-    <tr><td>In-Sample (Train)</td><td>{{ "%.4f"|format(metrics.oos_train_ic) }}</td></tr>
-    <tr><td>Out-of-Sample (Test)</td><td>{{ "%.4f"|format(metrics.oos_test_ic) }}</td></tr>
+    <tr><th>区间</th><th>IC 均值</th></tr>
+    <tr><td>样本内（训练集）</td><td>{{ "%.4f"|format(metrics.oos_train_ic) }}</td></tr>
+    <tr><td>样本外（测试集）</td><td>{{ "%.4f"|format(metrics.oos_test_ic) }}</td></tr>
   </table>
 </div>
 {% endif %}
 
 <!-- 4. Turnover Analysis -->
 <div class="panel">
-  <h2>Turnover Analysis</h2>
+  <h2>换手率分析</h2>
   {% if charts.turnover_chart %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.turnover_chart }}" alt="Turnover Chart">
+  <img class="chart-img" src="data:image/png;base64,{{ charts.turnover_chart }}" alt="换手率图">
   {% else %}
-  <div class="no-data">No turnover data</div>
+  <div class="no-data">无换手率数据</div>
   {% endif %}
 </div>
 
 <!-- 5. Risk Attribution -->
 <div class="panel">
-  <h2>Risk Attribution</h2>
-  {% if metrics.get('sector_ic') is not none %}
-  <p>Sector-stratified IC analysis available ({{ metrics.sector_ic.height }} sectors).</p>
+  <h2>风险归因</h2>
+
+  {% if metrics.get('sector_ic') is not none and metrics.sector_ic.height > 0 %}
+  <h3 style="font-size:15px;color:#34495e;margin:12px 0 8px 0">行业分层 IC</h3>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">各行业内部因子预测能力 —— IC 值接近的行业说明因子并非行业敞口伪装。</p>
+  <table>
+    <tr><th>行业</th><th>IC 均值</th></tr>
+    {% for row in metrics.sector_ic.iter_rows(named=True) %}
+    <tr>
+      <td>{{ row['sector'] }}</td>
+      <td style="color: {% if row['ic'] > 0.02 %}#27ae60{% elif row['ic'] < -0.02 %}#e74c3c{% else %}#7f8c8d{% endif %}">
+        {{ "%.4f"|format(row['ic']) }}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
   {% else %}
-  <div class="no-data">No sector breakdown data</div>
+  <div class="no-data" style="margin-bottom:12px">无行业分解数据</div>
   {% endif %}
 
   {% if metrics.get('size_buckets') %}
+  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">市值分层 IC</h3>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">因子在不同市值段的预测能力 —— 大小盘 IC 差异大说明因子有规模敞口。</p>
   <table>
-    <tr><th>Size Bucket</th><th>IC Mean</th></tr>
-    {% for key, val in (metrics.size_buckets|dictsort if metrics.size_buckets is mapping else metrics.size_buckets) %}
-    <tr><td>{{ key }}</td><td>{{ "%.4f"|format(val) }}</td></tr>
+    <tr><th>市值分组</th><th>IC 均值</th></tr>
+    {% for key, val in metrics.size_buckets.items() %}
+    <tr>
+      <td>{{ key }}</td>
+      <td style="color: {% if val > 0.02 %}#27ae60{% elif val < -0.02 %}#e74c3c{% else %}#7f8c8d{% endif %}">
+        {{ "%.4f"|format(val) }}
+      </td>
+    </tr>
     {% endfor %}
   </table>
   {% endif %}
 
   {% if metrics.get('monotonicity_score') is not none %}
-  <p><strong>Monotonicity Score:</strong> {{ "%.3f"|format(metrics.monotonicity_score) }}</p>
+  <p style="margin-top:12px"><strong>单调性得分：</strong>{{ "%.3f"|format(metrics.monotonicity_score) }}</p>
   {% endif %}
 </div>
 
 <!-- 6. Summary -->
 <div class="panel">
-  <h2>Summary</h2>
-  {{ summary_html }}
+  <h2>综合评估</h2>
+  {{ summary_html | safe }}
   {% if metrics.get('rank_autocorr') is not none %}
-  <p>Rank Autocorrelation: {{ "%.3f"|format(metrics.rank_autocorr) }} | Half-life: {{ "%.1f"|format(metrics.half_life or 0) }} periods</p>
+  <p>排名自相关：{{ "%.3f"|format(metrics.rank_autocorr) }} | 半衰期：{{ "%.1f"|format(metrics.half_life or 0) }} 期</p>
   {% endif %}
 </div>
 
 <div class="footer">
-  Factor Research Platform &mdash; Generated {{ generated_at }} &mdash; Phase 4-6
+  因子研究平台 &mdash; 生成时间 {{ generated_at }}
 </div>
 
 </div>

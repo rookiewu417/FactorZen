@@ -15,14 +15,15 @@ class AmihudIlliquidity(LFTFactor):
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         daily = ctx.daily
         result = (
-            daily
-            .sort(["ts_code", "trade_date"])
-            .with_columns([
-                (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0)
-                .abs()
-                .alias("_abs_ret"),
-                (pl.col("amount") + 1e-6).alias("_amount"),
-            ])
+            daily.sort(["ts_code", "trade_date"])
+            .with_columns(
+                [
+                    (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0)
+                    .abs()
+                    .alias("_abs_ret"),
+                    (pl.col("amount") + 1e-6).alias("_amount"),
+                ]
+            )
             .with_columns(
                 (pl.col("_abs_ret") / pl.col("_amount"))
                 .rolling_mean(20, min_samples=10)

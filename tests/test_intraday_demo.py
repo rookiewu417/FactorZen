@@ -1,14 +1,15 @@
-﻿"""测试 MFT Demo 因子 Momentum1Min。"""
+"""测试 Intraday Demo 因子 Momentum1Min。"""
 
 from dataclasses import dataclass, field
 
 import polars as pl
 import pytest
 
-from intraday.factors.base import MFTFactor
+from intraday.factors.base import IntradayFactor
 from intraday.factors.demo.momentum_1min import Momentum1Min
 
 # ── Import & Class Structure ─────────────────────────────────────────────────
+
 
 def test_import_clean():
     """Momentum1Min 可正常导入。"""
@@ -16,16 +17,16 @@ def test_import_clean():
     assert Momentum1Min.__name__ == "Momentum1Min"
 
 
-def test_extends_mftfactor():
-    """Momentum1Min 继承自 MFTFactor。"""
+def test_extends_intraday_factor():
+    """Momentum1Min 继承自 IntradayFactor。"""
     factor = Momentum1Min()
-    assert isinstance(factor, MFTFactor)
+    assert isinstance(factor, IntradayFactor)
 
 
 def test_cannot_instantiate_abstract():
-    """MFTFactor 本身不可直接实例化。"""
+    """IntradayFactor 本身不可直接实例化。"""
     with pytest.raises(TypeError, match="abstract"):
-        MFTFactor()  # type: ignore[abstract]
+        IntradayFactor()  # type: ignore[abstract]
 
 
 def test_default_attributes():
@@ -41,14 +42,16 @@ def test_default_attributes():
 
 def test_is_dataclass():
     """Momentum1Min 是 dataclass，可按位置/关键字实例化。"""
-    assert hasattr(Momentum1Min, '__dataclass_fields__')
+    assert hasattr(Momentum1Min, "__dataclass_fields__")
 
 
 # ── compute() 结构测试 ───────────────────────────────────────────────────────
 
+
 @dataclass
 class _MockContext:
-    """模拟 MFTDataContext，提供 minute LazyFrame。"""
+    """模拟 IntradayDataContext，提供 minute LazyFrame。"""
+
     _minute_data: pl.DataFrame = field(default_factory=pl.DataFrame)
 
     @property
@@ -67,17 +70,19 @@ def _make_mock_minute(n_bars: int = 20, ts_codes: list[str] | None = None) -> pl
             hour = 9 + (i + 30) // 60
             minute = (i + 30) % 60
             trade_time = f"2026-05-14 {hour:02d}:{minute:02d}:00"
-            close = base_close + i * 1.0  # 每 bar 涨 1
-            rows.append({
-                "trade_time": trade_time,
-                "ts_code": code,
-                "open": close - 0.5,
-                "high": close + 0.5,
-                "low": close - 0.5,
-                "close": close,
-                "vol": 1000.0,
-                "amount": close * 1000.0,
-            })
+            close = base_close + i * 1.0
+            rows.append(
+                {
+                    "trade_time": trade_time,
+                    "ts_code": code,
+                    "open": close - 0.5,
+                    "high": close + 0.5,
+                    "low": close - 0.5,
+                    "close": close,
+                    "vol": 1000.0,
+                    "amount": close * 1000.0,
+                }
+            )
     df = pl.DataFrame(rows)
     return df.sort(["ts_code", "trade_time"])
 
@@ -92,7 +97,7 @@ def test_compute_returns_correct_schema():
     assert "trade_time" in result.columns
     assert "ts_code" in result.columns
     assert "factor_value" in result.columns
-    assert result.height > 0  # 至少有一行有效数据
+    assert result.height > 0
 
 
 def test_compute_factor_range():
@@ -101,9 +106,8 @@ def test_compute_factor_range():
     mock_data = _make_mock_minute(n_bars=20)
     ctx = _MockContext(_minute_data=mock_data)
     result = factor.compute(ctx)
-    assert result["factor_value"].min() > -1.0  # 至少不是 -100%
-    assert result["factor_value"].max() < 10.0  # 不会出现极端值
-    # 持续上涨场景下 factor_value 应为正
+    assert result["factor_value"].min() > -1.0
+    assert result["factor_value"].max() < 10.0
     assert result["factor_value"].mean() > 0
 
 
@@ -114,7 +118,6 @@ def test_compute_multi_stock():
     mock_data = _make_mock_minute(n_bars=20, ts_codes=ts_codes)
     ctx = _MockContext(_minute_data=mock_data)
     result = factor.compute(ctx)
-    # 每只股票都应出现在结果中
     codes_in_result = result["ts_code"].unique().to_list()
     for code in ts_codes:
         assert code in codes_in_result

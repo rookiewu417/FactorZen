@@ -1,4 +1,4 @@
-﻿"""Tear Sheet 报告引擎测试。
+"""Tear Sheet 报告引擎测试。
 
 验证:
 - HTML 输出非空、包含因子名
@@ -9,10 +9,7 @@
 - 导入和模板文件存在
 """
 
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import polars as pl
@@ -31,6 +28,7 @@ from daily.evaluation.turnover import TurnoverResult
 from reporting.tear_sheet import generate_tear_sheet
 
 # ── Fixtures ──────────────────────────────────────────────────────────
+
 
 def _make_dates(n: int = 60) -> list:
     return [f"2025-{(i // 20 + 1):02d}-{(i % 20 + 1):02d}" for i in range(n)]
@@ -86,9 +84,13 @@ def bt_result() -> BacktestResult:
         ls_r = long_ret - short_ret
         ls_ret.append(ls_r)
     ls_cum = np.cumprod(1 + np.array(ls_ret))
-    long_short_nav = pl.DataFrame({
-        "trade_date": dates, "ret": ls_ret, "nav": ls_cum,
-    })
+    long_short_nav = pl.DataFrame(
+        {
+            "trade_date": dates,
+            "ret": ls_ret,
+            "nav": ls_cum,
+        }
+    )
 
     # Summary stats
     summary_stats = {}
@@ -160,10 +162,12 @@ def advanced_results() -> dict:
         ),
         "sector": SectorICResult(
             factor_name="test_factor",
-            sector_ic_df=pl.DataFrame({
-                "sector": ["fin", "tech", "cons"],
-                "ic": [0.028, 0.035, 0.022],
-            }),
+            sector_ic_df=pl.DataFrame(
+                {
+                    "sector": ["fin", "tech", "cons"],
+                    "ic": [0.028, 0.035, 0.022],
+                }
+            ),
         ),
         "size": SizeICResult(
             factor_name="test_factor",
@@ -174,11 +178,15 @@ def advanced_results() -> dict:
 
 # ── Tests: generate_tear_sheet ────────────────────────────────────────
 
+
 class TestGenerateTearSheet:
     def test_basic_generation(self, ic_result, bt_result, to_result):
         """Smoke test: 生成 HTML 无错误。"""
         html = generate_tear_sheet(
-            "momentum_20d", ic_result, bt_result, to_result,
+            "momentum_20d",
+            ic_result,
+            bt_result,
+            to_result,
             frequency="daily",
             date_range="2025-01-01 ~ 2025-05-13",
         )
@@ -198,7 +206,6 @@ class TestGenerateTearSheet:
         assert "Summary" in html
         assert "</html>" in html
 
-
     def test_generate_html_contains_factor_name(self, ic_result, bt_result, to_result):
         """生成 HTML 包含因子名称。"""
         html = generate_tear_sheet("momentum_20d", ic_result, bt_result, to_result)
@@ -210,10 +217,14 @@ class TestGenerateTearSheet:
         html = generate_tear_sheet("momentum_20d", ic_result, bt_result, to_result)
         size_bytes = len(html.encode("utf-8"))
         assert size_bytes < 5 * 1024 * 1024, f"HTML size {size_bytes} exceeds 5MB"
+
     def test_html_contains_chart_base64(self, ic_result, bt_result, to_result):
         """图表以 base64 嵌入 HTML。"""
         html = generate_tear_sheet(
-            "test_factor", ic_result, bt_result, to_result,
+            "test_factor",
+            ic_result,
+            bt_result,
+            to_result,
             date_range="2025-01-01 ~ 2025-05-13",
         )
         assert "data:image/png;base64," in html
@@ -221,25 +232,34 @@ class TestGenerateTearSheet:
     def test_none_backtest(self, ic_result, to_result):
         """None backtest 优雅处理。"""
         html = generate_tear_sheet(
-            "test_factor", ic_result, None, to_result,
+            "test_factor",
+            ic_result,
+            None,
+            to_result,
             date_range="2025-01-01 ~ 2025-05-13",
         )
         assert isinstance(html, str)
-        assert "No backtest data" in html
+        assert "无回测数据" in html
 
     def test_none_turnover(self, ic_result, bt_result):
         """None turnover 优雅处理。"""
         html = generate_tear_sheet(
-            "test_factor", ic_result, bt_result, None,
+            "test_factor",
+            ic_result,
+            bt_result,
+            None,
             date_range="2025-01-01 ~ 2025-05-13",
         )
         assert isinstance(html, str)
-        assert "No turnover data" in html
+        assert "无换手率数据" in html
 
     def test_all_none_results(self):
         """全部 None 仍生成有效 HTML。"""
         html = generate_tear_sheet(
-            "empty_factor", None, None, None,
+            "empty_factor",
+            None,
+            None,
+            None,
             date_range="2025-01-01 ~ 2025-01-02",
         )
         assert isinstance(html, str)
@@ -249,7 +269,10 @@ class TestGenerateTearSheet:
     def test_summary_has_stars(self, ic_result, bt_result, to_result):
         """Summary 面板包含星级评级。"""
         html = generate_tear_sheet(
-            "test_factor", ic_result, bt_result, to_result,
+            "test_factor",
+            ic_result,
+            bt_result,
+            to_result,
             date_range="2025-01-01 ~ 2025-05-13",
         )
         assert chr(9733) in html  # ★
@@ -258,8 +281,12 @@ class TestGenerateTearSheet:
         """不同频率标签正确渲染。"""
         for freq in ["daily", "weekly", "monthly"]:
             html = generate_tear_sheet(
-                f"test_{freq}", ic_result, bt_result, to_result,
-                frequency=freq, date_range="2025-01-01 ~ 2025-05-13",
+                f"test_{freq}",
+                ic_result,
+                bt_result,
+                to_result,
+                frequency=freq,
+                date_range="2025-01-01 ~ 2025-05-13",
             )
             assert freq in html
 
@@ -268,7 +295,10 @@ class TestGenerateTearSheet:
         names = ["momentum_20d", "value_ep", "My_Custom_Factor"]
         for name in names:
             html = generate_tear_sheet(
-                name, ic_result, bt_result, to_result,
+                name,
+                ic_result,
+                bt_result,
+                to_result,
                 date_range="2025-01-01 ~ 2025-05-13",
             )
             assert name in html
@@ -276,11 +306,14 @@ class TestGenerateTearSheet:
     def test_with_advanced_results(self, ic_result, bt_result, to_result, advanced_results):
         """高级评价结果被包含进报告。"""
         html = generate_tear_sheet(
-            "momentum_20d", ic_result, bt_result, to_result,
+            "momentum_20d",
+            ic_result,
+            bt_result,
+            to_result,
             advanced_results=advanced_results,
             date_range="2025-01-01 ~ 2025-05-13",
         )
-        assert "Monotonicity" in html or "monotonicity" in html.lower()
+        assert "单调性" in html or "monotonicity_score" in html.lower()
 
     def test_html_non_empty(self, ic_result, bt_result, to_result):
         """报告 HTML 应非空。"""
@@ -294,6 +327,7 @@ class TestTearSheetImports:
 
     def test_tear_sheet_import(self):
         from reporting.tear_sheet import generate_tear_sheet
+
         assert callable(generate_tear_sheet)
 
     def test_template_dir_exists(self):
@@ -301,5 +335,7 @@ class TestTearSheetImports:
         assert template_dir.is_dir()
 
     def test_template_file_exists(self):
-        template_file = Path(__file__).resolve().parent.parent / "reporting" / "templates" / "tear_sheet.html"
+        template_file = (
+            Path(__file__).resolve().parent.parent / "reporting" / "templates" / "tear_sheet.html"
+        )
         assert template_file.is_file()

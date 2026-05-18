@@ -18,16 +18,20 @@ def _make_factor_ret(n_dates: int = 60, n_stocks: int = 50, seed: int = 42):
     rows_ret = []
     for d in dates:
         for s in stocks:
-            rows_factor.append({
-                "trade_date": d,
-                "ts_code": s,
-                "factor_clean": float(rng.standard_normal()),
-            })
-            rows_ret.append({
-                "trade_date": d,
-                "ts_code": s,
-                "ret": float(rng.standard_normal() * 0.01),
-            })
+            rows_factor.append(
+                {
+                    "trade_date": d,
+                    "ts_code": s,
+                    "factor_clean": float(rng.standard_normal()),
+                }
+            )
+            rows_ret.append(
+                {
+                    "trade_date": d,
+                    "ts_code": s,
+                    "ret": float(rng.standard_normal() * 0.01),
+                }
+            )
 
     return pl.DataFrame(rows_factor), pl.DataFrame(rows_ret)
 

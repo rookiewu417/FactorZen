@@ -1,11 +1,11 @@
 """Intraday 因子注册中心（代理到 common.registry.FactorRegistry）。"""
 
 from common.registry import FactorRegistry
-from intraday.factors.base import MFTFactor
+from intraday.factors.base import IntradayFactor
 
 _registry = FactorRegistry(
-    base_cls=MFTFactor,
-    scan_packages=["intraday.factors.demo"],
+    base_cls=IntradayFactor,
+    scan_packages=["intraday.factors.demo", "intraday.factors.technical"],
 )
 _registry.discover()
 

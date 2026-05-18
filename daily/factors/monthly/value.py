@@ -1,4 +1,4 @@
-﻿"""月频估值因子：pe_ttm 和 pb。直接从 daily_basic 月末快照提取。"""
+"""月频估值因子：pe_ttm 和 pb。直接从 daily_basic 月末快照提取。"""
 
 import polars as pl
 
@@ -17,12 +17,13 @@ class PeTtmMonthly(LFTFactor):
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         monthly_basic = ctx.monthly_basic
         result = (
-            monthly_basic
-            .select([
-                pl.col("trade_date"),
-                pl.col("ts_code"),
-                pl.col("pe_ttm").alias("factor_value"),
-            ])
+            monthly_basic.select(
+                [
+                    pl.col("trade_date"),
+                    pl.col("ts_code"),
+                    pl.col("pe_ttm").alias("factor_value"),
+                ]
+            )
             .filter(pl.col("factor_value").is_not_null())
             .collect()
         )
@@ -40,12 +41,13 @@ class PbMonthly(LFTFactor):
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         monthly_basic = ctx.monthly_basic
         result = (
-            monthly_basic
-            .select([
-                pl.col("trade_date"),
-                pl.col("ts_code"),
-                pl.col("pb").alias("factor_value"),
-            ])
+            monthly_basic.select(
+                [
+                    pl.col("trade_date"),
+                    pl.col("ts_code"),
+                    pl.col("pb").alias("factor_value"),
+                ]
+            )
             .filter(pl.col("factor_value").is_not_null())
             .collect()
         )

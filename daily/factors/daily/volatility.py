@@ -1,4 +1,4 @@
-﻿"""20日波动率因子。"""
+"""20日波动率因子。"""
 
 import polars as pl
 
@@ -15,14 +15,16 @@ class Volatility20D(LFTFactor):
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         daily = ctx.daily
         result = (
-            daily
-            .sort(["ts_code", "trade_date"])
+            daily.sort(["ts_code", "trade_date"])
             .with_columns(
-                (pl.col("close") / pl.col("close").shift(1).over("ts_code")).log()
+                (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code"))
+                .log()
                 .alias("log_ret")
             )
             .with_columns(
-                pl.col("log_ret").rolling_std(20, min_samples=10).over("ts_code")
+                pl.col("log_ret")
+                .rolling_std(20, min_samples=15)
+                .over("ts_code")
                 .alias("factor_value")
             )
             .filter(pl.col("trade_date") >= pl.lit(ctx.start).str.strptime(pl.Date, "%Y%m%d"))

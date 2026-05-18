@@ -15,15 +15,14 @@ class MaxReturn5D(LFTFactor):
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         daily = ctx.daily
         result = (
-            daily
-            .sort(["ts_code", "trade_date"])
+            daily.sort(["ts_code", "trade_date"])
             .with_columns(
-                (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0)
-                .alias("_ret")
+                (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0).alias(
+                    "_ret"
+                )
             )
             .with_columns(
-                pl.col("_ret").rolling_max(5, min_samples=3).over("ts_code")
-                .alias("factor_value")
+                pl.col("_ret").rolling_max(5, min_samples=3).over("ts_code").alias("factor_value")
             )
             .filter(pl.col("trade_date") >= pl.lit(ctx.start).str.strptime(pl.Date, "%Y%m%d"))
             .select(["trade_date", "ts_code", "factor_value"])

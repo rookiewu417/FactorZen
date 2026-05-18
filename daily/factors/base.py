@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import polars as pl
@@ -13,8 +14,9 @@ if TYPE_CHECKING:
     from daily.data.context import FactorDataContext
 
 
-class LFTFactor(BaseFactor):
-    """日/周/月频因子基类（历史名称保留，继承自 BaseFactor）。"""
+@dataclass
+class DailyFactor(BaseFactor):
+    """日/周/月频因子基类，继承自 BaseFactor。"""
 
     category: str = "daily"
     frequency: str = "daily"
@@ -28,3 +30,7 @@ class LFTFactor(BaseFactor):
 
     def validate(self, result: pl.DataFrame, time_col: str = "trade_date") -> dict[str, Any]:
         return super().validate(result, time_col=time_col)
+
+
+# 向后兼容别名
+LFTFactor = DailyFactor

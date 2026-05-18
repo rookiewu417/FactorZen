@@ -1,4 +1,4 @@
-﻿"""测试分市场状态 IC：按市场上涨/下跌/高波等状态分组计算 IC。"""
+"""测试分市场状态 IC：按市场上涨/下跌/高波等状态分组计算 IC。"""
 
 import polars as pl
 
@@ -13,16 +13,20 @@ def _make_regime_data() -> tuple[pl.DataFrame, pl.DataFrame]:
     for d in dates:
         for s in stocks:
             factor_rows.append({"trade_date": d, "ts_code": s})
-    factor = pl.DataFrame(factor_rows).with_columns([
-        pl.Series("factor_value", [i / 30 for i in range(30)] * 3),
-        pl.Series("fwd_ret", [i / 30 * 0.02 for i in range(30)] * 3),
-    ])
+    factor = pl.DataFrame(factor_rows).with_columns(
+        [
+            pl.Series("factor_value", [i / 30 for i in range(30)] * 3),
+            pl.Series("fwd_ret", [i / 30 * 0.02 for i in range(30)] * 3),
+        ]
+    )
     # 市场状态：上涨日、下跌日、震荡日
-    market = pl.DataFrame({
-        "trade_date": dates,
-        "market_return": [0.02, -0.02, 0.001],
-        "market_volatility": [0.15, 0.25, 0.08],
-    })
+    market = pl.DataFrame(
+        {
+            "trade_date": dates,
+            "market_return": [0.02, -0.02, 0.001],
+            "market_volatility": [0.15, 0.25, 0.08],
+        }
+    )
     return factor, market
 
 
@@ -45,8 +49,10 @@ def test_market_regime_ic_two_directions():
     """direction 模式应包含 up 和 down 两个状态。"""
     factor_df, market_df = _make_regime_data()
     result = compute_market_regime_ic(
-        factor_df=factor_df, market_df=market_df,
-        factor_col="factor_value", ret_col="fwd_ret",
+        factor_df=factor_df,
+        market_df=market_df,
+        factor_col="factor_value",
+        ret_col="fwd_ret",
         regime_type="direction",
     )
     regimes = set(result["regime"].to_list())
@@ -58,9 +64,12 @@ def test_market_regime_ic_returns_result_object():
     """compute_market_regime_ic 可返回 MarketRegimeICResult 对象。"""
     factor_df, market_df = _make_regime_data()
     result = compute_market_regime_ic(
-        factor_df=factor_df, market_df=market_df,
-        factor_col="factor_value", ret_col="fwd_ret",
-        regime_type="direction", return_object=True,
+        factor_df=factor_df,
+        market_df=market_df,
+        factor_col="factor_value",
+        ret_col="fwd_ret",
+        regime_type="direction",
+        return_object=True,
     )
     assert isinstance(result, MarketRegimeICResult)
     assert hasattr(result, "regime_ic")
@@ -71,9 +80,12 @@ def test_market_regime_ic_by_volatility():
     """volatility 模式按波动率状态分组。"""
     factor_df, market_df = _make_regime_data()
     result = compute_market_regime_ic(
-        factor_df=factor_df, market_df=market_df,
-        factor_col="factor_value", ret_col="fwd_ret",
-        regime_type="volatility", n_regimes=3,
+        factor_df=factor_df,
+        market_df=market_df,
+        factor_col="factor_value",
+        ret_col="fwd_ret",
+        regime_type="volatility",
+        n_regimes=3,
     )
     assert isinstance(result, pl.DataFrame)
     assert result.height <= 3

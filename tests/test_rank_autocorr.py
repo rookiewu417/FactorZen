@@ -1,4 +1,4 @@
-﻿"""测试因子排名自相关性：衡量因子排序的跨期稳定性。"""
+"""测试因子排名自相关性：衡量因子排序的跨期稳定性。"""
 
 import polars as pl
 
@@ -17,7 +17,7 @@ def _make_factor_data() -> pl.DataFrame:
         # 因子值有序但每天略有波动
         pl.Series(
             "factor_clean",
-            [i / 20 for i in range(20)] * 3,    # 完全稳定
+            [i / 20 for i in range(20)] * 3,  # 完全稳定
         )
     )
 

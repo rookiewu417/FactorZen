@@ -1,4 +1,4 @@
-﻿"""周频动量因子。复用日频 20 日动量公式，下采样到周频快照。"""
+"""周频动量因子。复用日频 20 日动量公式，下采样到周频快照。"""
 
 import polars as pl
 
@@ -17,11 +17,11 @@ class MomentumWeekly(LFTFactor):
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         daily = ctx.daily
         result = (
-            daily
-            .sort(["ts_code", "trade_date"])
+            daily.sort(["ts_code", "trade_date"])
             .with_columns(
-                (pl.col("close") / pl.col("close").shift(20).over("ts_code") - 1.0)
-                .alias("factor_value")
+                (pl.col("close") / pl.col("close").shift(20).over("ts_code") - 1.0).alias(
+                    "factor_value"
+                )
             )
             .filter(pl.col("trade_date") >= pl.lit(ctx.start).str.strptime(pl.Date, "%Y%m%d"))
             .select(["trade_date", "ts_code", "factor_value"])

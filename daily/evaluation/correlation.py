@@ -9,14 +9,15 @@ import polars as pl
 @dataclass
 class CorrelationResult:
     factor_names: list[str]
-    corr_matrix: np.ndarray      # 相关性矩阵
+    corr_matrix: np.ndarray  # 相关性矩阵
 
     def summary(self) -> str:
         lines = ["Factor Correlation:"]
         for i, name in enumerate(self.factor_names):
             corrs = ", ".join(
                 f"{self.factor_names[j]}={self.corr_matrix[i][j]:.3f}"
-                for j in range(len(self.factor_names)) if i != j
+                for j in range(len(self.factor_names))
+                if i != j
             )
             lines.append(f"  {name}: {corrs}")
         return "\n".join(lines)
@@ -62,7 +63,13 @@ def compute_factor_correlation(
         if len(cross) < 30:
             continue
         arr = np.column_stack([cross[name].to_numpy() for name in names])
-        corr = np.corrcoef(arr.T)
+        stds = arr.std(axis=0)
+        if np.any(stds == 0):
+            continue
+        with np.errstate(invalid="ignore", divide="ignore"):
+            corr = np.corrcoef(arr.T)
+        if np.any(np.isnan(corr)):
+            continue
         cum_corr += corr
         count += 1
 

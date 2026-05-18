@@ -1,4 +1,4 @@
-"""MFT 因子预处理管线。分钟频因子的缺失值填充与异常值截尾。"""
+"""Intraday 因子预处理管线。分钟频因子的缺失值填充与异常值截尾。"""
 
 from dataclasses import dataclass
 
@@ -6,8 +6,8 @@ import polars as pl
 
 
 @dataclass
-class MFTPreprocessingPipeline:
-    """MFT 因子预处理管线。
+class IntradayPreprocessingPipeline:
+    """Intraday 因子预处理管线。
 
     配置驱动的处理流程：缺失值填充 → 异常值截尾 → 产出 factor_clean 列。
     不包含 Z-score 标准化（待后续实现）。
@@ -38,7 +38,9 @@ class MFTPreprocessingPipeline:
         if self.do_fill_missing:
             result = fill_missing_bars(result)
         if self.do_clip_outliers:
-            result = clip_outliers(result, col=col, lower_pct=self.clip_lower_pct, upper_pct=self.clip_upper_pct)
+            result = clip_outliers(
+                result, col=col, lower_pct=self.clip_lower_pct, upper_pct=self.clip_upper_pct
+            )
         result = result.with_columns(pl.col(col).alias("factor_clean"))
         return result
 
@@ -48,9 +50,9 @@ def fill_missing_bars(
     time_col: str = "trade_time",
     group_col: str = "ts_code",
 ) -> pl.DataFrame:
-    """Forward-fill 缺失的分钟 bar 因子值。
+    """Forward-fill 缺失的分钟 bar 因子值，但不跨交易日。
 
-    按股票分组、时间排序后，对 factor_value 做 forward-fill。
+    按股票和交易日期分组、时间排序后，对 factor_value 做 forward-fill。
 
     Args:
         df: 输入 DataFrame，必须包含 factor_value, ts_code, trade_time 列。
@@ -60,8 +62,12 @@ def fill_missing_bars(
     Returns:
         填充后的 DataFrame（factor_value 列已原地更新）。
     """
-    return df.sort([group_col, time_col]).with_columns(
-        pl.col("factor_value").forward_fill().over(group_col)
+    helper_col = "_trade_date_for_fill"
+    return (
+        df.sort([group_col, time_col])
+        .with_columns(pl.col(time_col).dt.date().alias(helper_col))
+        .with_columns(pl.col("factor_value").forward_fill().over([group_col, helper_col]))
+        .drop(helper_col)
     )
 
 
@@ -87,6 +93,8 @@ def clip_outliers(
     """
     lo = df[col].quantile(lower_pct / 100.0)
     hi = df[col].quantile(upper_pct / 100.0)
-    return df.with_columns(
-        pl.col(col).clip(lo, hi)
-    )
+    return df.with_columns(pl.col(col).clip(lo, hi))
+
+
+# 向后兼容别名
+MFTPreprocessingPipeline = IntradayPreprocessingPipeline

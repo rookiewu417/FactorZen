@@ -32,6 +32,7 @@ logger = get_logger(__name__)
 # 基础数据
 # ══════════════════════════════════════════════════════════
 
+
 def get_stock_basic(use_cache: bool = True) -> pl.DataFrame:
     """获取全量 A 股股票列表。
 
@@ -67,6 +68,7 @@ _INDEX_CODE_MAP: dict[str, str] = {
 # 指数成分股加载
 # ══════════════════════════════════════════════════════════
 
+
 def _load_index_members(index_code: str, date_str: str) -> list[str]:
     """从 Tushare ``index_weight`` 加载指数成分股，按月缓存。
 
@@ -101,9 +103,7 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
     cache_file = DATA_CACHE / f"index_member_{safe_name}_{year_month}.parquet"
 
     if cache_file.exists():
-        logger.info(
-            f"[index_member] {index_code} {year_month} 缓存命中"
-        )
+        logger.info(f"[index_member] {index_code} {year_month} 缓存命中")
         return pl.read_parquet(cache_file)["con_code"].to_list()
 
     # 从 Tushare 拉取
@@ -116,9 +116,7 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
     )
 
     if df_pd is None or df_pd.empty:
-        logger.warning(
-            f"[index_member] {index_code} {year_month} 无成分股数据"
-        )
+        logger.warning(f"[index_member] {index_code} {year_month} 无成分股数据")
         return []
 
     df = pl.from_pandas(df_pd)
@@ -126,10 +124,7 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
     # 写入缓存
     DATA_CACHE.mkdir(parents=True, exist_ok=True)
     df.write_parquet(str(cache_file))
-    logger.info(
-        f"[index_member] {index_code} {year_month}: "
-        f"{len(df)} 只成分股，已缓存"
-    )
+    logger.info(f"[index_member] {index_code} {year_month}: {len(df)} 只成分股，已缓存")
 
     return df["con_code"].to_list()
 
@@ -161,14 +156,23 @@ def get_universe(
     """
     if universe_name not in _UNIVERSE_REGISTRY:
         valid = ", ".join(_UNIVERSE_REGISTRY.keys())
-        raise ValueError(
-            f"未知 universe_name: '{universe_name}'。可选: {valid}"
-        )
+        raise ValueError(f"未知 universe_name: '{universe_name}'。可选: {valid}")
 
     logger.info(f"[universe] 获取股票池: {universe_name} ({date_str})")
 
-    # --- all_a: 全 A 股基础池 ---
+    # --- all_a: PIT 全 A 股基础池 ---
+    # fetch_stock_basic 默认拉全量（L+D+P），PIT 过滤保留在 date_str 时实际在市股票
     all_a = get_stock_basic()
+
+    snapshot = datetime.strptime(date_str, "%Y%m%d").date()
+    all_a = all_a.filter(
+        (pl.col("list_date").is_not_null())
+        & (pl.col("list_date").cast(pl.Date) <= pl.lit(snapshot))
+        & (
+            pl.col("delist_date").is_null()
+            | (pl.col("delist_date").cast(pl.Date) > pl.lit(snapshot))
+        )
+    )
 
     if universe_name == "all_a":
         return all_a
@@ -183,20 +187,13 @@ def get_universe(
                     fresh = _load_index_members(code, date_str)
                     members.update(fresh)
 
-            logger.info(
-                f"[universe] {universe_name}: 加载 {len(members)} 只成分股"
-            )
+            logger.info(f"[universe] {universe_name}: 加载 {len(members)} 只成分股")
 
-            result = all_a.filter(
-                pl.col("ts_code").is_in(list(members))
-            )
+            result = all_a.filter(pl.col("ts_code").is_in(list(members)))
             return result
 
         except Exception as e:
-            logger.warning(
-                f"[universe] {universe_name} 指数成分股加载失败 "
-                f"({e})，降级为全 A 股"
-            )
+            logger.warning(f"[universe] {universe_name} 指数成分股加载失败 ({e})，降级为全 A 股")
             return all_a
 
     # --- lft_default ---
@@ -221,6 +218,7 @@ def get_universe(
 # ══════════════════════════════════════════════════════════
 # 自定义股票池
 # ══════════════════════════════════════════════════════════
+
 
 def create_universe(
     date_str: str,
@@ -279,8 +277,7 @@ def create_universe(
         logger.debug(f"[universe] 应用过滤 '{f_name}' 后: {len(result)} 只")
 
     logger.info(
-        f"[universe] create_universe: base={base}, "
-        f"filters={filters}, 最终 {len(result)} 只"
+        f"[universe] create_universe: base={base}, filters={filters}, 最终 {len(result)} 只"
     )
     return result
 
@@ -288,6 +285,7 @@ def create_universe(
 # ══════════════════════════════════════════════════════════
 # 过滤器
 # ══════════════════════════════════════════════════════════
+
 
 def filter_st(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
     """剔除 ST / *ST / PT 股票。基于 name 字段包含 ``"ST"`` 或 ``"PT"``。
@@ -339,10 +337,7 @@ def filter_new_listing(
     result = stocks.filter(pl.col("list_date") <= cutoff)
     after = len(result)
     if before > after:
-        logger.info(
-            f"[filter_new_listing] 剔除 {before - after} 只次新股 "
-            f"(上市日期 > {cutoff})"
-        )
+        logger.info(f"[filter_new_listing] 剔除 {before - after} 只次新股 (上市日期 > {cutoff})")
     return result
 
 
@@ -370,24 +365,16 @@ def filter_suspended(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
             logger.warning(f"[filter_suspended] {date_str} 无日线数据，不过滤")
             return stocks
 
-        active = (
-            daily.filter(pl.col("vol") > 0)
-            .select("ts_code")
-            .unique()
-        )
+        active = daily.filter(pl.col("vol") > 0).select("ts_code").unique()
         before = len(stocks)
         result = stocks.join(active, on="ts_code", how="inner")
         after = len(result)
         if before > after:
-            logger.info(
-                f"[filter_suspended] 剔除 {before - after} 只停牌股票"
-            )
+            logger.info(f"[filter_suspended] 剔除 {before - after} 只停牌股票")
         return result
 
     except Exception as e:
-        logger.warning(
-            f"[filter_suspended] 读取日线失败 ({e})，优雅降级：不过滤"
-        )
+        logger.warning(f"[filter_suspended] 读取日线失败 ({e})，优雅降级：不过滤")
         return stocks
 
 
@@ -419,9 +406,7 @@ def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
             return stocks
 
         not_limit = (
-            daily.filter(
-                (pl.col("pct_chg") > -9.8) & (pl.col("pct_chg") < 9.8)
-            )
+            daily.filter((pl.col("pct_chg") > -9.8) & (pl.col("pct_chg") < 9.8))
             .select("ts_code")
             .unique()
         )
@@ -429,15 +414,11 @@ def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
         result = stocks.join(not_limit, on="ts_code", how="inner")
         after = len(result)
         if before > after:
-            logger.info(
-                f"[filter_limit] 剔除 {before - after} 只涨跌停股票"
-            )
+            logger.info(f"[filter_limit] 剔除 {before - after} 只涨跌停股票")
         return result
 
     except Exception as e:
-        logger.warning(
-            f"[filter_limit] 读取日线失败 ({e})，优雅降级：不过滤"
-        )
+        logger.warning(f"[filter_limit] 读取日线失败 ({e})，优雅降级：不过滤")
         return stocks
 
 
@@ -468,16 +449,10 @@ def filter_liquidity(
     try:
         daily = load_parquet("daily", start=date_str, end=date_str).collect()
         if daily.is_empty():
-            logger.warning(
-                f"[filter_liquidity] {date_str} 无日线数据，不过滤"
-            )
+            logger.warning(f"[filter_liquidity] {date_str} 无日线数据，不过滤")
             return stocks
 
-        liquid = (
-            daily.filter(pl.col("amount") >= min_amount)
-            .select("ts_code")
-            .unique()
-        )
+        liquid = daily.filter(pl.col("amount") >= min_amount).select("ts_code").unique()
         before = len(stocks)
         result = stocks.join(liquid, on="ts_code", how="inner")
         after = len(result)
@@ -489,15 +464,14 @@ def filter_liquidity(
         return result
 
     except Exception as e:
-        logger.warning(
-            f"[filter_liquidity] 读取日线失败 ({e})，优雅降级：不过滤"
-        )
+        logger.warning(f"[filter_liquidity] 读取日线失败 ({e})，优雅降级：不过滤")
         return stocks
 
 
 # ══════════════════════════════════════════════════════════
 # 辅助函数
 # ══════════════════════════════════════════════════════════
+
 
 def get_index_members(index_code: str, date_str: str) -> pl.DataFrame:
     """获取指数成分股。
@@ -520,9 +494,7 @@ def get_index_members(index_code: str, date_str: str) -> pl.DataFrame:
     try:
         codes = _load_index_members(index_code, date_str)
         if not codes:
-            logger.warning(
-                f"[universe] {index_code} {date_str[:6]} 无成分股，返回全市场"
-            )
+            logger.warning(f"[universe] {index_code} {date_str[:6]} 无成分股，返回全市场")
             return get_universe(date_str, "all_a")
 
         all_a = get_stock_basic()
@@ -530,7 +502,5 @@ def get_index_members(index_code: str, date_str: str) -> pl.DataFrame:
         return result
 
     except Exception as e:
-        logger.warning(
-            f"[universe] {index_code} 成分股加载失败 ({e})，返回全市场"
-        )
+        logger.warning(f"[universe] {index_code} 成分股加载失败 ({e})，返回全市场")
         return get_universe(date_str, "all_a")

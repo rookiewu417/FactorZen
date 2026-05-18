@@ -1,4 +1,4 @@
-﻿"""测试 IC Decay 分析：因子 IC 随持有期的衰减。"""
+"""测试 IC Decay 分析：因子 IC 随持有期的衰减。"""
 
 import polars as pl
 
@@ -13,15 +13,15 @@ def _make_factor_and_returns() -> tuple[pl.DataFrame, pl.DataFrame]:
     for d in dates:
         for s in stocks:
             rows.append({"trade_date": d, "ts_code": s})
-    factor = pl.DataFrame(rows).with_columns(
-        pl.lit(1.0).alias("factor_clean")
-    )
+    factor = pl.DataFrame(rows).with_columns(pl.lit(1.0).alias("factor_clean"))
     # 前向收益：fwd_ret_1d, fwd_ret_5d, fwd_ret_10d
-    ret = pl.DataFrame(rows).with_columns([
-        pl.Series("fwd_ret_1d", [0.02, 0.01, -0.01] * 3, dtype=pl.Float64),
-        pl.Series("fwd_ret_5d", [0.05, 0.03, -0.02] * 3, dtype=pl.Float64),
-        pl.Series("fwd_ret_10d", [0.08, 0.04, -0.03] * 3, dtype=pl.Float64),
-    ])
+    ret = pl.DataFrame(rows).with_columns(
+        [
+            pl.Series("fwd_ret_1d", [0.02, 0.01, -0.01] * 3, dtype=pl.Float64),
+            pl.Series("fwd_ret_5d", [0.05, 0.03, -0.02] * 3, dtype=pl.Float64),
+            pl.Series("fwd_ret_10d", [0.08, 0.04, -0.03] * 3, dtype=pl.Float64),
+        ]
+    )
     return factor, ret
 
 

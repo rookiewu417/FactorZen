@@ -41,15 +41,18 @@ def _make_large_dataset(n_years: int = 5, n_stocks: int = 3000, seed: int = 42):
     dates_repeated.sort()  # 按日期排序更接近实际
 
     from datetime import date as date_t
+
     # 使用 from_epoch 绕过 object dtype 问题
     epoch_days = [(d - date_t(1970, 1, 1)).days for d in np.repeat(trade_dates, n_stocks)]
 
-    return pl.DataFrame({
-        "trade_date": pl.Series(epoch_days).cast(pl.Int32).cast(pl.Date),
-        "ts_code": np.tile(stocks, n_days),
-        "factor_clean": factor_vals,
-        "fwd_ret_1d": ret_vals,
-    })
+    return pl.DataFrame(
+        {
+            "trade_date": pl.Series(epoch_days).cast(pl.Int32).cast(pl.Date),
+            "ts_code": np.tile(stocks, n_days),
+            "factor_clean": factor_vals,
+            "fwd_ret_1d": ret_vals,
+        }
+    )
 
 
 @pytest.fixture(scope="module")
@@ -118,5 +121,7 @@ def test_speedup_report(large_df):
     legacy_time = time.perf_counter() - t0
 
     speedup = legacy_time / polars_time if polars_time > 0 else float("inf")
-    print(f"\n  polars: {polars_time:.3f}s  |  legacy loop: {legacy_time:.3f}s  |  加速比: {speedup:.1f}x")
+    print(
+        f"\n  polars: {polars_time:.3f}s  |  legacy loop: {legacy_time:.3f}s  |  加速比: {speedup:.1f}x"
+    )
     assert speedup > 5, f"期望加速比 > 5x，实际 {speedup:.1f}x"

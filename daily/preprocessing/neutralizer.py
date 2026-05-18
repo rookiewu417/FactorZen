@@ -1,5 +1,7 @@
 """行业+市值中性化。截面 OLS 回归取残差。"""
 
+from __future__ import annotations
+
 import numpy as np
 import polars as pl
 import statsmodels.api as sm
@@ -52,10 +54,9 @@ def neutralize_ols(
     # 构建行业映射
     industry_map = {}
     if stock_basic is not None:
-        industry_map = dict(zip(
-            stock_basic["ts_code"].to_list(),
-            stock_basic["industry"].to_list(), strict=False
-        ))
+        industry_map = dict(
+            zip(stock_basic["ts_code"].to_list(), stock_basic["industry"].to_list(), strict=False)
+        )
 
     # 对每个日期做截面回归
     dates = df["trade_date"].unique().sort().to_list()
@@ -68,15 +69,13 @@ def neutralize_ols(
         valid = ~np.isnan(y)
 
         if valid.sum() < 30:
-            logger.warning(
-                f"neutralize_ols: {d} 有效样本数 {valid.sum()} < 30，跳过"
-            )
+            logger.warning(f"neutralize_ols: {d} 有效样本数 {valid.sum()} < 30，跳过")
             cross = cross.with_columns(pl.lit(None).alias(out_col))
             results.append(cross)
             continue
 
         # 构建设计矩阵
-        X_parts = [np.ones(len(codes))]
+        X_parts: list[np.ndarray] = [np.ones((len(codes), 1), dtype=float)]
 
         if industry_map:
             industries = [industry_map.get(c, "未知") for c in codes]
@@ -89,19 +88,14 @@ def neutralize_ols(
             X_parts.append(ind_dummies)
 
         if daily_basic is not None:
-            mv_cross = daily_basic.filter(
-                pl.col("trade_date") == d
-            ).select(["ts_code", "total_mv"])
-            mv_map = dict(zip(
-                mv_cross["ts_code"].to_list(),
-                mv_cross["total_mv"].to_list(), strict=False
-            ))
-            log_mv = np.array([
-                np.log(max(mv_map.get(c, 1e8), 1e6)) for c in codes
-            ])
+            mv_cross = daily_basic.filter(pl.col("trade_date") == d).select(["ts_code", "total_mv"])
+            mv_map = dict(
+                zip(mv_cross["ts_code"].to_list(), mv_cross["total_mv"].to_list(), strict=False)
+            )
+            log_mv = np.array([np.log(max(mv_map.get(c, 1e8), 1e6)) for c in codes])
             X_parts.append(log_mv.reshape(-1, 1))
 
-        X = np.column_stack(X_parts)
+        X = np.hstack(X_parts)
 
         try:
             model = sm.OLS(y[valid], X[valid]).fit()
@@ -110,9 +104,99 @@ def neutralize_ols(
             logger.warning(f"neutralize_ols: {d} 回归失败 ({e})，使用原值")
             residuals = y
 
-        cross = cross.with_columns(
-            pl.Series(out_col, residuals)
-        )
+        cross = cross.with_columns(pl.Series(out_col, residuals))
         results.append(cross)
+
+    return pl.concat(results)
+
+
+def neutralize_by_styles(
+    factor_df: pl.DataFrame,
+    style_dfs: list[pl.DataFrame],
+    industry_map: dict[str, str] | None = None,
+    col: str = "factor_value",
+) -> pl.DataFrame:
+    """Barra-style 多因子中性化：截面 OLS(factor ~ style_1 + ... + industry_dummies)，取残差。
+
+    Args:
+        factor_df: 含 trade_date, ts_code, {col} 的因子 DataFrame。
+        style_dfs: style 因子 DataFrame 列表，每个含 trade_date, ts_code, factor_value 列。
+                   按传入顺序作为解释变量（style_0, style_1, ...）。
+        industry_map: {ts_code: industry_name}，若提供则加入行业哑变量。
+        col: 待中性化的因子列名。
+
+    Returns:
+        输入 DataFrame + 新增列 {col}_style_neutral（OLS 残差）。
+    """
+    out_col = f"{col}_style_neutral"
+
+    if not style_dfs:
+        logger.warning("neutralize_by_styles: style_dfs 为空，直接返回原值")
+        return factor_df.with_columns(pl.col(col).alias(out_col))
+
+    # 合并所有 style 因子（rename factor_value 避免列名冲突）
+    merged = factor_df
+    for i, sdf in enumerate(style_dfs):
+        style_col = f"_style_{i}"
+        sdf_renamed = sdf.rename({"factor_value": style_col}).select(
+            ["trade_date", "ts_code", style_col]
+        )
+        merged = merged.join(sdf_renamed, on=["trade_date", "ts_code"], how="left")
+
+    style_cols = [f"_style_{i}" for i in range(len(style_dfs))]
+    dates = merged["trade_date"].unique().sort().to_list()
+    results = []
+
+    for d in dates:
+        cross = merged.filter(pl.col("trade_date") == d)
+        codes = cross["ts_code"].to_list()
+        y = cross[col].to_numpy().astype(float)
+        valid_mask = np.isfinite(y)
+
+        # style 列
+        style_matrix = []
+        for sc in style_cols:
+            sv = cross[sc].to_numpy().astype(float)
+            style_matrix.append(sv)
+            valid_mask &= np.isfinite(sv)
+
+        if valid_mask.sum() < 30:
+            cross = cross.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
+            results.append(
+                cross.select([c for c in cross.columns if not c.startswith("_style_")] + [out_col])
+            )
+            continue
+
+        # 构建设计矩阵
+        X_parts: list[np.ndarray] = [np.ones((len(codes), 1), dtype=float)]
+        for sv in style_matrix:
+            X_parts.append(sv.reshape(-1, 1))
+
+        if industry_map:
+            industries = [industry_map.get(c, "未知") for c in codes]
+            unique_ind = sorted(set(industries))
+            ind_to_idx = {ind: i for i, ind in enumerate(unique_ind)}
+            if len(unique_ind) > 1:
+                ind_dummies = np.zeros((len(codes), len(unique_ind) - 1))
+                for i, ind in enumerate(industries):
+                    if ind_to_idx[ind] > 0:
+                        ind_dummies[i, ind_to_idx[ind] - 1] = 1
+                X_parts.append(ind_dummies)
+
+        X = np.hstack(X_parts)
+        residuals = y.copy()
+
+        try:
+            model = sm.OLS(y[valid_mask], X[valid_mask]).fit()
+            residuals[valid_mask] = y[valid_mask] - model.predict(X[valid_mask])
+            residuals[~valid_mask] = np.nan
+        except Exception as e:
+            logger.warning(f"neutralize_by_styles: {d} 回归失败 ({e})，使用原值")
+            residuals[~valid_mask] = np.nan
+
+        cross = cross.with_columns(pl.Series(out_col, residuals))
+        results.append(
+            cross.select([c for c in cross.columns if not c.startswith("_style_")] + [out_col])
+        )
 
     return pl.concat(results)

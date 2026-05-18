@@ -11,12 +11,12 @@ from common.storage import load_parquet
 
 @dataclass
 class FactorDataContext:
-    start: str                       # "YYYYMMDD"
-    end: str                         # "YYYYMMDD"
+    start: str  # "YYYYMMDD"
+    end: str  # "YYYYMMDD"
     required_data: list[str] = field(default_factory=lambda: ["daily"])
     lookback_days: int = 20
-    universe: list[str] | None = None   # 股票池 ts_code 列表
-    snapshot_mode: str = "daily"          # "daily" | "weekly" | "monthly"
+    universe: list[str] | None = None  # 股票池 ts_code 列表
+    snapshot_mode: str = "daily"  # "daily" | "weekly" | "monthly"
 
     # 私有：惰性缓存
     _daily: pl.LazyFrame | None = field(default=None, repr=False)
@@ -33,13 +33,31 @@ class FactorDataContext:
 
     @property
     def daily(self) -> pl.LazyFrame:
-        """惰性加载日线行情（含扩展区间），按需过滤 universe。"""
+        """惰性加载日线行情（含扩展区间），自动 join 复权因子列，按需过滤 universe。
+
+        返回的 LazyFrame 包含原始列 + close_adj / open_adj / high_adj / low_adj。
+        若 adj_factor 数据不存在，close_adj 等列回退为原始价格（无中断）。
+        """
         if "daily" not in self.required_data:
             raise ValueError("daily data not declared in required_data")
         if self._daily is None:
             lf = load_parquet("daily", start=self.expanded_start, end=self.end)
             if self.universe:
                 lf = lf.filter(pl.col("ts_code").is_in(self.universe))
+
+            # 尝试 join 复权因子
+            try:
+                adj_lf = load_parquet("adj_factor", start=self.expanded_start, end=self.end)
+                adj_lf = adj_lf.select(["ts_code", "trade_date", "adj_factor"])
+                lf = lf.join(adj_lf, on=["ts_code", "trade_date"], how="left")
+                for col in ("close", "open", "high", "low"):
+                    lf = lf.with_columns((pl.col(col) * pl.col("adj_factor")).alias(f"{col}_adj"))
+                lf = lf.drop("adj_factor")
+            except Exception:
+                # adj_factor 未落盘时优雅回退
+                for col in ("close", "open", "high", "low"):
+                    lf = lf.with_columns(pl.col(col).alias(f"{col}_adj"))
+
             self._daily = lf
         return self._daily
 
@@ -63,6 +81,7 @@ class FactorDataContext:
             get_trade_dates,
             get_weekly_snapshot_dates,
         )
+
         if self.snapshot_mode == "weekly":
             return get_weekly_snapshot_dates(self.start, self.end)
         elif self.snapshot_mode == "monthly":

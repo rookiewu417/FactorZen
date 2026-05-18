@@ -22,8 +22,14 @@ matplotlib.use("Agg")  # 非交互后端，不弹窗
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
-from common.logger import get_logger
-from config.constants import MIN_BACKTEST_IR, STAR_RATING_THRESHOLDS
+# Windows 中文字体支持（优先 Microsoft YaHei，回退 SimHei）
+for _font in ["Microsoft YaHei", "SimHei", "sans-serif"]:
+    matplotlib.rcParams["font.family"] = _font
+    matplotlib.rcParams["axes.unicode_minus"] = False
+    break
+
+from common.logger import get_logger  # noqa: E402
+from config.constants import MIN_BACKTEST_IR, STAR_RATING_THRESHOLDS  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -54,6 +60,7 @@ def _safe_attr(obj: Any, attr: str, default: Any = None) -> Any:
 
 # ── 图表生成 ──────────────────────────────────────────────────────────
 
+
 def _make_returns_chart(bt_result: Any, factor_name: str) -> str | None:
     """分层回测 NAV 曲线图。"""
     if bt_result is None:
@@ -68,9 +75,10 @@ def _make_returns_chart(bt_result: Any, factor_name: str) -> str | None:
         for g, grp_data in nav_pd.groupby("group"):
             grp_data = grp_data.sort_values("trade_date")
             ax.plot(
-                grp_data["trade_date"], grp_data["nav"],
+                grp_data["trade_date"],
+                grp_data["nav"],
                 linewidth=1.2,
-                label=f"Q{g+1}" if isinstance(g, (int, float)) else str(g),
+                label=f"Q{g + 1}" if isinstance(g, (int, float)) else str(g),
             )
     else:
         for col in nav_pd.columns:
@@ -79,7 +87,7 @@ def _make_returns_chart(bt_result: Any, factor_name: str) -> str | None:
             ax.plot(nav_pd["trade_date"], nav_pd[col], linewidth=1.2, label=str(col))
 
     ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.set_title(f"Stratified Backtest NAV &mdash; {factor_name}", fontsize=12)
+    ax.set_title(f"分层回测 NAV — {factor_name}", fontsize=12)
     ax.legend(fontsize=8, loc="upper left")
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
     fig.autofmt_xdate()
@@ -103,11 +111,12 @@ def _make_ic_chart(ic_result: Any) -> str | None:
     if len(ic_pd) >= 5:
         window = min(20, max(3, len(ic_pd) // 3))
         rolling = ic_pd[ic_col].rolling(window=window, min_periods=1).mean()
-        ax.plot(ic_pd[date_col], rolling, color="#e74c3c", linewidth=1.2,
-                label=f"Rolling Mean({window})")
+        ax.plot(
+            ic_pd[date_col], rolling, color="#e74c3c", linewidth=1.2, label=f"滚动均值({window}期)"
+        )
 
     ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
-    ax.set_title("Rank IC Time Series", fontsize=12)
+    ax.set_title("Rank IC 时序", fontsize=12)
     ax.legend(fontsize=8)
     fig.autofmt_xdate()
     return _fig_to_base64(fig)
@@ -127,13 +136,14 @@ def _make_turnover_chart(to_result: Any) -> str | None:
     val_col = next(c for c in dt_pd.columns if c != date_col)
     ax.fill_between(dt_pd[date_col], dt_pd[val_col], alpha=0.3, color="#9b59b6")
     ax.plot(dt_pd[date_col], dt_pd[val_col], linewidth=1.2, color="#8e44ad")
-    ax.set_title("Periodic Turnover", fontsize=12)
+    ax.set_title("周期换手率", fontsize=12)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.1%}"))
     fig.autofmt_xdate()
     return _fig_to_base64(fig)
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────
+
 
 def _build_bt_summary_table(stats: dict) -> list:
     """构建回测分组统计表格行。"""
@@ -143,22 +153,26 @@ def _build_bt_summary_table(stats: dict) -> list:
         gs = stats[key]
         if not isinstance(gs, dict):
             continue
-        rows.append({
-            "group": f"Q{key+1}",
-            "ann_ret": f"{gs.get('ann_ret', 0)*100:.2f}%",
-            "ann_vol": f"{gs.get('ann_vol', 0)*100:.2f}%",
-            "sharpe": f"{gs.get('sharpe', 0):.3f}",
-            "max_dd": f"{gs.get('max_dd', 0)*100:.2f}%",
-        })
+        rows.append(
+            {
+                "group": f"Q{key + 1}",
+                "ann_ret": f"{gs.get('ann_ret', 0) * 100:.2f}%",
+                "ann_vol": f"{gs.get('ann_vol', 0) * 100:.2f}%",
+                "sharpe": f"{gs.get('sharpe', 0):.3f}",
+                "max_dd": f"{gs.get('max_dd', 0) * 100:.2f}%",
+            }
+        )
     if "long_short" in stats:
         ls = stats["long_short"]
-        rows.append({
-            "group": "L/S",
-            "ann_ret": f"{ls.get('ann_ret', 0)*100:.2f}%",
-            "ann_vol": f"{ls.get('ann_vol', 0)*100:.2f}%",
-            "sharpe": f"{ls.get('sharpe', 0):.3f}",
-            "max_dd": f"{ls.get('max_dd', 0)*100:.2f}%",
-        })
+        rows.append(
+            {
+                "group": "L/S",
+                "ann_ret": f"{ls.get('ann_ret', 0) * 100:.2f}%",
+                "ann_vol": f"{ls.get('ann_vol', 0) * 100:.2f}%",
+                "sharpe": f"{ls.get('sharpe', 0):.3f}",
+                "max_dd": f"{ls.get('max_dd', 0) * 100:.2f}%",
+            }
+        )
     return rows
 
 
@@ -228,8 +242,7 @@ def _extract_metrics(ic_result, bt_result, to_result, advanced_results) -> dict[
         decay_list = advanced_results.get("decay_results", [])
         if decay_list:
             m["decay_table"] = [
-                {"horizon": d.horizon, "ic_mean": d.ic_mean, "ic_std": d.ic_std}
-                for d in decay_list
+                {"horizon": d.horizon, "ic_mean": d.ic_mean, "ic_std": d.ic_std} for d in decay_list
             ]
 
     return m
@@ -268,9 +281,13 @@ def _generate_summary_text(factor_name: str, metrics: dict[str, Any]) -> str:
     if abs(ic_mean) < 0.01:
         lines.append("<p>IC 均值极低（|IC| &lt; 0.01），因子对收益的预测能力非常有限。</p>")
     elif ic_mean > 0.03:
-        lines.append(f"<p>IC 均值 {ic_mean:.4f}（Spearman &rho;），因子展现出较强的正向预测能力。</p>")
+        lines.append(
+            f"<p>IC 均值 {ic_mean:.4f}（Spearman &rho;），因子展现出较强的正向预测能力。</p>"
+        )
     elif ic_mean < -0.03:
-        lines.append(f"<p>IC 均值 {ic_mean:.4f}，因子呈现显著的负向预测能力（可用作反向因子）。</p>")
+        lines.append(
+            f"<p>IC 均值 {ic_mean:.4f}，因子呈现显著的负向预测能力（可用作反向因子）。</p>"
+        )
     else:
         lines.append(f"<p>IC 均值 {ic_mean:.4f}，因子具备一定的预测能力。</p>")
 
@@ -281,9 +298,11 @@ def _generate_summary_text(factor_name: str, metrics: dict[str, Any]) -> str:
 
     ls_ret = metrics.get("ls_ann_ret") or 0
     if ls_ret > 0.05:
-        lines.append(f"<p>多空年化收益 {ls_ret*100:.1f}%，分层效果显著，Top-Bottom 区分度高。</p>")
+        lines.append(
+            f"<p>多空年化收益 {ls_ret * 100:.1f}%，分层效果显著，Top-Bottom 区分度高。</p>"
+        )
     elif ls_ret > 0:
-        lines.append(f"<p>多空年化收益 {ls_ret*100:.1f}%，分层效果较弱。</p>")
+        lines.append(f"<p>多空年化收益 {ls_ret * 100:.1f}%，分层效果较弱。</p>")
     elif ls_ret < 0:
         lines.append("<p>多空收益为负，分层回测不理想，因子分组单调性需关注。</p>")
 
@@ -291,6 +310,7 @@ def _generate_summary_text(factor_name: str, metrics: dict[str, Any]) -> str:
 
 
 # ── 主函数 ────────────────────────────────────────────────────────────
+
 
 def generate_tear_sheet(
     factor_name: str,

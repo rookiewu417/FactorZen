@@ -666,14 +666,15 @@ def fetch_index_daily(index_code: str, start: str, end: str) -> pl.DataFrame:
 
     Returns:
         pl.DataFrame，包含列:
-        trade_date, ts_code, close, open, high, low, pre_close, change, pct_chg, vol, amount。
+        trade_date, ts_code, open, high, low, close, pre_close, change, pct_chg, vol, amount。
     """
     pro = init_tushare()
     start_year = int(start[:4])
     end_year = int(end[:4])
+    _data_type = f"index_daily_{index_code.replace('.', '_')}"
 
     for year in range(start_year, end_year + 1):
-        if all(partition_exists("index_daily", year, q_month) for q_month in (1, 4, 7, 10)):
+        if all(partition_exists(_data_type, year, q_month) for q_month in (1, 4, 7, 10)):
             logger.info(f"[index_daily] {index_code} {year} 已缓存，跳过")
             continue
 
@@ -704,10 +705,10 @@ def fetch_index_daily(index_code: str, start: str, end: str) -> pl.DataFrame:
         std_cols = [
             "trade_date",
             "ts_code",
-            "close",
             "open",
             "high",
             "low",
+            "close",
             "pre_close",
             "change",
             "pct_chg",
@@ -716,10 +717,10 @@ def fetch_index_daily(index_code: str, start: str, end: str) -> pl.DataFrame:
         ]
         merged = merged.select([c for c in std_cols if c in merged.columns])
 
-        save_parquet(merged, data_type="index_daily")
+        save_parquet(merged, data_type=_data_type)
         logger.info(f"[index_daily] {index_code} {year} 已保存 ({len(merged)} 行)")
 
-    return load_parquet("index_daily", start=start, end=end).collect()
+    return load_parquet(_data_type, start=start, end=end).collect()
 
 
 def fetch_trade_cal(start: str, end: str) -> pl.DataFrame:

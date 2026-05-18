@@ -107,10 +107,9 @@ def main():
     logger.info(f"\n{ic_result.summary()}")
 
     # ── 8. 分层回测 ──
-    bt_input = ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename({"fwd_ret_1d": "ret"})
     bt_result = run_stratified_backtest(
         clean_df,
-        bt_input,
+        daily,
         frequency=args.frequency,
         factor_name=factor.name,
     )

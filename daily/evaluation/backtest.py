@@ -1,6 +1,17 @@
-"""分层回测。按因子值分组，计算各组收益与多空对冲表现。"""
+"""策略化回测引擎。
 
-from dataclasses import dataclass
+核心口径：
+- t 日因子生成目标权重。
+- t+1 开盘按约束调仓。
+- 旧持仓承担隔夜收益，成交后持仓承担开盘到收盘收益。
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import asdict, dataclass
+from datetime import date
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -21,179 +32,649 @@ class CostModel:
     所有费率均为小数（非百分比），例如 commission=0.00025 表示万 2.5。
     """
 
-    commission: float = COMMISSION_RATE  # 单边佣金
-    stamp_tax: float = STAMP_TAX_RATE  # 卖出印花税（仅卖出）
-    slippage: float = SLIPPAGE_RATE  # 单边冲击成本/滑点
-    borrow_annual: float = BORROW_RATE_ANNUAL  # 融券年化利率（做空时）
+    commission: float = COMMISSION_RATE
+    stamp_tax: float = STAMP_TAX_RATE
+    slippage: float = SLIPPAGE_RATE
+    borrow_annual: float = BORROW_RATE_ANNUAL
 
     def one_way_cost(self) -> float:
-        """单边成本率（买入或卖出各自的成本）。"""
+        """单边买入成本率。"""
         return self.commission + self.slippage
+
+    def sell_cost(self) -> float:
+        """单边卖出成本率。"""
+        return self.commission + self.slippage + self.stamp_tax
 
     def round_trip_cost(self) -> float:
         """一次完整换手（卖旧 + 买新）的成本率。"""
-        sell = self.commission + self.slippage + self.stamp_tax
-        buy = self.commission + self.slippage
-        return sell + buy
+        return self.sell_cost() + self.one_way_cost()
 
     def borrow_rate_per_period(self, frequency: str = "daily") -> float:
         """融券日/周/月费率（按年化利率折算）。"""
         days = {"daily": 1, "weekly": 5, "monthly": 21}.get(frequency, 1)
         return self.borrow_annual * days / TRADING_DAYS_PER_YEAR
 
+    def trade_cost(self, delta_weight: float) -> float:
+        """按权重变动方向计算单笔成交成本。"""
+        if delta_weight > 0:
+            return abs(delta_weight) * self.one_way_cost()
+        if delta_weight < 0:
+            return abs(delta_weight) * self.sell_cost()
+        return 0.0
+
 
 @dataclass
-class BacktestResult:
-    factor_name: str
-    n_groups: int
-    daily_returns: pl.DataFrame  # trade_date, group, ret
-    nav: pl.DataFrame  # trade_date, group, nav (累计净值)
-    long_short_nav: pl.DataFrame  # trade_date, nav
-    summary_stats: dict[int | str, dict[str, float]]  # {group: {ann_ret, ann_vol, sharpe, max_dd}}
+class BacktestConfig:
+    """策略回测配置。"""
+
+    factor_col: str = "factor_clean"
     frequency: str = "daily"
-    ret_definition: str = "fwd_ret_1d"  # 记录输入收益类型，防止误用同日 ret
+    initial_capital: float = 100_000_000.0
+    max_participation_rate: float = 0.05
+    max_gross_exposure: float = 2.0
+    max_abs_weight: float = 1.0
+    limit_up_pct: float = 9.8
+    limit_down_pct: float = -9.8
+    execution_price: str = "next_open"
+    ret_definition: str = "open_to_close_with_overnight_carry"
+
+
+@dataclass
+class BacktestContext:
+    """策略生成目标权重时可见的上下文。"""
+
+    signal_date: date
+    execution_date: date
+    factor_slice: pl.DataFrame
+    price_slice: pl.DataFrame
+    current_positions: pl.DataFrame
+    factor_col: str = "factor_clean"
+
+
+class Strategy(ABC):
+    """策略抽象类。用户实现 generate_weights 返回目标权重。"""
+
+    name: str = "strategy"
+
+    @abstractmethod
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        """返回列 ts_code, target_weight。"""
+
+
+@dataclass
+class StrategyBacktestResult:
+    """策略回测结果。"""
+
+    factor_name: str
+    strategy_name: str
+    n_groups: int
+    returns: pl.DataFrame
+    nav: pl.DataFrame
+    positions: pl.DataFrame
+    trades: pl.DataFrame
+    summary_stats: dict[int | str, dict[str, float]]
+    config: dict[str, Any]
+    frequency: str = "daily"
+    ret_definition: str = "open_to_close_with_overnight_carry"
+
+    @property
+    def daily_returns(self) -> pl.DataFrame:
+        """兼容旧报告落盘字段。"""
+        return self.returns
+
+    @property
+    def long_short_nav(self) -> pl.DataFrame:
+        """兼容旧报告字段：策略净值即组合净值。"""
+        return self.nav.select(["trade_date", pl.col("net_return").alias("ret"), "nav"])
 
     def summary(self) -> str:
         freq_label = {"daily": "日频", "weekly": "周频", "monthly": "月频"}.get(
             self.frequency, self.frequency
         )
-        lines = []
-        int_groups = sorted((k, v) for k, v in self.summary_stats.items() if isinstance(k, int))
-        for g, stats in int_groups:
-            lines.append(f"  G{g}: ret={stats['ann_ret']:.2%} Sharpe={stats['sharpe']:.2f}")
-        if "long_short" in self.summary_stats:
-            stats = self.summary_stats["long_short"]
-            lines.append(f"  Long-Short: Sharpe={stats['sharpe']:.2f} MaxDD={stats['max_dd']:.1%}")
-        return f"Backtest ({self.n_groups} groups, {freq_label}):\n" + "\n".join(lines)
+        stats = self.summary_stats.get("long_short") or self.summary_stats.get("portfolio", {})
+        return (
+            f"Strategy Backtest ({self.strategy_name}, {freq_label}):\n"
+            f"  Portfolio: ret={stats.get('ann_ret', 0):.2%} "
+            f"Sharpe={stats.get('sharpe', 0):.2f} "
+            f"MaxDD={stats.get('max_dd', 0):.1%}"
+        )
+
+
+BacktestResult = StrategyBacktestResult
+
+
+class QuantileLongShortStrategy(Strategy):
+    """做多最高分组、做空最低分组。"""
+
+    name = "quantile_long_short"
+
+    def __init__(self, n_groups: int = 10, factor_col: str = "factor_clean") -> None:
+        self.n_groups = n_groups
+        self.factor_col = factor_col
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        factor_col = context.factor_col or self.factor_col
+        df = _valid_factor_slice(context.factor_slice, factor_col)
+        if df.is_empty():
+            return _empty_weights()
+
+        grouped = (
+            df.with_columns(
+                pl.col(factor_col).rank("ordinal", descending=False).alias("_rank")
+            )
+            .with_columns(
+                ((pl.col("_rank") - 1) * self.n_groups // pl.col("_rank").max())
+                .cast(pl.Int32)
+                .alias("_group")
+            )
+            .select(["ts_code", "_group"])
+        )
+        long_df = grouped.filter(pl.col("_group") == self.n_groups - 1)
+        short_df = grouped.filter(pl.col("_group") == 0)
+        parts: list[pl.DataFrame] = []
+        if not long_df.is_empty():
+            parts.append(
+                long_df.select(["ts_code"]).with_columns(
+                    pl.lit(1.0 / long_df.height).alias("target_weight")
+                )
+            )
+        if not short_df.is_empty():
+            parts.append(
+                short_df.select(["ts_code"]).with_columns(
+                    pl.lit(-1.0 / short_df.height).alias("target_weight")
+                )
+            )
+        return pl.concat(parts) if parts else _empty_weights()
+
+
+class TopNLongOnlyStrategy(Strategy):
+    """做多因子值最高的 N 只股票。"""
+
+    name = "topn_long_only"
+
+    def __init__(self, n: int = 50, factor_col: str = "factor_clean") -> None:
+        self.n = n
+        self.factor_col = factor_col
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        factor_col = context.factor_col or self.factor_col
+        top = _valid_factor_slice(context.factor_slice, factor_col).sort(
+            factor_col, descending=True
+        ).head(self.n)
+        if top.is_empty():
+            return _empty_weights()
+        return top.select(["ts_code"]).with_columns(pl.lit(1.0 / top.height).alias("target_weight"))
+
+
+class FactorWeightedStrategy(Strategy):
+    """按因子强度生成权重。"""
+
+    name = "factor_weighted"
+
+    def __init__(
+        self,
+        long_only: bool = False,
+        gross_exposure: float = 2.0,
+        long_exposure: float = 1.0,
+        factor_col: str = "factor_clean",
+    ) -> None:
+        self.long_only = long_only
+        self.gross_exposure = gross_exposure
+        self.long_exposure = long_exposure
+        self.factor_col = factor_col
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        factor_col = context.factor_col or self.factor_col
+        df = _valid_factor_slice(context.factor_slice, factor_col)
+        if df.is_empty():
+            return _empty_weights()
+
+        if self.long_only:
+            weighted = df.with_columns(
+                pl.when(pl.col(factor_col) > 0).then(pl.col(factor_col)).otherwise(0).alias("_w")
+            )
+            total = weighted["_w"].sum()
+            if total is None or total <= 0:
+                return _empty_weights()
+            return weighted.select(
+                ["ts_code", (pl.col("_w") / total * self.long_exposure).alias("target_weight")]
+            )
+
+        mean_val = df[factor_col].mean()
+        demeaned = df.with_columns((pl.col(factor_col) - mean_val).alias("_score"))
+        _long_raw = demeaned.filter(pl.col("_score") > 0)["_score"].sum()
+        _short_raw = demeaned.filter(pl.col("_score") < 0)["_score"].sum()
+        long_sum: float = float(_long_raw) if _long_raw is not None else 0.0  # type: ignore[arg-type]
+        short_sum: float = abs(float(_short_raw) if _short_raw is not None else 0.0)  # type: ignore[arg-type]
+        if long_sum <= 0 or short_sum <= 0:
+            return _empty_weights()
+        side_exposure = self.gross_exposure / 2
+        return demeaned.select(
+            [
+                "ts_code",
+                pl.when(pl.col("_score") > 0)
+                .then(pl.col("_score") / long_sum * side_exposure)
+                .when(pl.col("_score") < 0)
+                .then(pl.col("_score") / short_sum * side_exposure)
+                .otherwise(0.0)
+                .alias("target_weight"),
+            ]
+        )
+
+
+def run_strategy_backtest(
+    strategy: Strategy,
+    factor_df: pl.DataFrame,
+    price_df: pl.DataFrame,
+    config: BacktestConfig | None = None,
+    cost_model: CostModel | None = None,
+    factor_name: str = "",
+) -> StrategyBacktestResult:
+    """运行策略回测。"""
+    cfg = config or BacktestConfig()
+    factor = _prepare_factor_df(factor_df, cfg.factor_col)
+    price = _prepare_price_df(price_df)
+    trade_dates = price.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
+
+    current_weights: dict[str, float] = {}
+    nav_value = 1.0
+    nav_rows: list[dict[str, Any]] = []
+    position_rows: list[dict[str, Any]] = []
+    trade_rows: list[dict[str, Any]] = []
+
+    price_by_date = _group_frames_by_date(price)
+    factor_by_date = _group_frames_by_date(factor)
+
+    for i, execution_date in enumerate(trade_dates):
+        price_slice = price_by_date[execution_date]
+        price_map = _price_records(price_slice)
+        signal_date = trade_dates[i - 1] if i > 0 else None
+
+        overnight_return = _weighted_return(current_weights, price_map, "overnight_ret")
+        open_weights = _drift_weights(current_weights, price_map, overnight_return)
+
+        target_weights: dict[str, float] = {}
+        if signal_date is not None and signal_date in factor_by_date:
+            context = BacktestContext(
+                signal_date=signal_date,
+                execution_date=execution_date,
+                factor_slice=factor_by_date[signal_date],
+                price_slice=price_slice,
+                current_positions=_positions_frame(open_weights, nav_value, cfg.initial_capital),
+                factor_col=cfg.factor_col,
+            )
+            target_df = _validate_target_weights(strategy.generate_weights(context), cfg)
+            target_weights = dict(zip(target_df["ts_code"], target_df["target_weight"], strict=True))
+        else:
+            target_weights = dict(open_weights)
+
+        all_codes = sorted(set(open_weights) | set(target_weights))
+        next_weights = dict(open_weights)
+        trade_cost = 0.0
+        turnover = 0.0
+        for code in all_codes:
+            prev_weight = open_weights.get(code, 0.0)
+            target_weight = target_weights.get(code, 0.0)
+            filled_delta, reason = _apply_trade_constraints(
+                code=code,
+                delta=target_weight - prev_weight,
+                price_map=price_map,
+                portfolio_value=nav_value * cfg.initial_capital,
+                config=cfg,
+            )
+            next_weight = prev_weight + filled_delta
+            if abs(next_weight) < 1e-12:
+                next_weights.pop(code, None)
+            else:
+                next_weights[code] = next_weight
+            cost = cost_model.trade_cost(filled_delta) if cost_model is not None else 0.0
+            trade_cost += cost
+            turnover += abs(filled_delta)
+            if abs(filled_delta) > 0 or abs(target_weight - prev_weight) > 1e-12:
+                trade_rows.append(
+                    {
+                        "trade_date": execution_date,
+                        "ts_code": code,
+                        "prev_weight": prev_weight,
+                        "target_weight": target_weight,
+                        "filled_delta_weight": filled_delta,
+                        "turnover": abs(filled_delta),
+                        "cost": cost,
+                        "block_reason": reason,
+                    }
+                )
+
+        intraday_return = _weighted_return(next_weights, price_map, "intraday_ret")
+        borrow_cost = 0.0
+        if cost_model is not None:
+            short_exposure = sum(abs(w) for w in next_weights.values() if w < 0)
+            borrow_cost = short_exposure * cost_model.borrow_rate_per_period(cfg.frequency)
+        gross_return = overnight_return + intraday_return
+        net_return = gross_return - trade_cost - borrow_cost
+        nav_value *= 1.0 + net_return
+        cash_weight = 1.0 - sum(next_weights.values())
+        nav_rows.append(
+            {
+                "trade_date": execution_date,
+                "gross_return": gross_return,
+                "cost": trade_cost,
+                "borrow_cost": borrow_cost,
+                "net_return": net_return,
+                "nav": nav_value,
+                "cash_weight": cash_weight,
+                "turnover": turnover,
+            }
+        )
+        for code, weight in sorted(next_weights.items()):
+            position_rows.append(
+                {
+                    "trade_date": execution_date,
+                    "ts_code": code,
+                    "weight": weight,
+                    "market_value": weight * nav_value * cfg.initial_capital,
+                }
+            )
+        current_weights = next_weights
+
+    returns = pl.DataFrame(nav_rows, schema=_returns_schema())
+    nav = returns.select(
+        ["trade_date", "gross_return", "cost", "borrow_cost", "net_return", "nav", "cash_weight"]
+    )
+    positions = (
+        pl.DataFrame(position_rows, schema=_positions_schema())
+        if position_rows
+        else pl.DataFrame(schema=_positions_schema())
+    )
+    trades = (
+        pl.DataFrame(trade_rows, schema=_trades_schema())
+        if trade_rows
+        else pl.DataFrame(schema=_trades_schema())
+    )
+    summary = _summary_stats(returns, trades)
+    n_groups = getattr(strategy, "n_groups", 1)
+
+    return StrategyBacktestResult(
+        factor_name=factor_name,
+        strategy_name=strategy.name,
+        n_groups=n_groups,
+        returns=returns,
+        nav=nav,
+        positions=positions,
+        trades=trades,
+        summary_stats=summary,
+        config=asdict(cfg),
+        frequency=cfg.frequency,
+        ret_definition=cfg.ret_definition,
+    )
 
 
 def run_stratified_backtest(
     factor_df: pl.DataFrame,
-    daily_ret: pl.DataFrame,
+    price_df: pl.DataFrame,
     factor_col: str = "factor_clean",
     n_groups: int = 10,
     frequency: str = "daily",
     factor_name: str = "",
-    cost_model: "CostModel | None" = None,
-) -> BacktestResult:
-    """分层回测。
+    cost_model: CostModel | None = None,
+    config: BacktestConfig | None = None,
+) -> StrategyBacktestResult:
+    """分层多空策略回测入口。"""
+    cfg = config or BacktestConfig(factor_col=factor_col, frequency=frequency)
+    strategy = QuantileLongShortStrategy(n_groups=n_groups, factor_col=factor_col)
+    result = run_strategy_backtest(strategy, factor_df, price_df, cfg, cost_model, factor_name)
+    return result
 
-    Args:
-        factor_df: 因子值，列: trade_date, ts_code, {factor_col}
-        daily_ret: **前向收益**，列: trade_date, ts_code, ret
-            ret 必须是 t 日因子可见时能实现的下一期收益（如 fwd_ret_1d），
-            不能是 t 日 close-to-close ret，否则引入同日 look-ahead bias。
-        factor_col: 使用的因子列
-        n_groups: 分组数
-        cost_model: 成本模型。为 None 时不扣成本（兼容旧调用）。
-    """
-    # 合并因子和收益，过滤无效收益
-    merged = factor_df.join(daily_ret, on=["trade_date", "ts_code"], how="inner").filter(
-        pl.col("ret").is_not_null() & pl.col("ret").is_finite()
+
+def _valid_factor_slice(df: pl.DataFrame, factor_col: str) -> pl.DataFrame:
+    return df.filter(pl.col(factor_col).is_not_null() & pl.col(factor_col).is_finite()).select(
+        ["ts_code", factor_col]
     )
 
-    # 每日截面分组 (qcut)
-    merged = (
-        merged.with_columns(
-            pl.col(factor_col).rank("ordinal", descending=False).over("trade_date").alias("_rank")
-        )
-        .with_columns(
-            ((pl.col("_rank") - 1) * n_groups // pl.col("_rank").max().over("trade_date"))
-            .cast(pl.Int32)
-            .alias("group")
-        )
-        .drop("_rank")
+
+def _empty_weights() -> pl.DataFrame:
+    return pl.DataFrame(schema={"ts_code": pl.Utf8, "target_weight": pl.Float64})
+
+
+def _prepare_factor_df(df: pl.DataFrame, factor_col: str) -> pl.DataFrame:
+    if "trade_date" not in df.columns or "ts_code" not in df.columns or factor_col not in df.columns:
+        raise ValueError(f"factor_df must contain trade_date, ts_code, {factor_col}")
+    return _ensure_date(df, "trade_date").select(["trade_date", "ts_code", factor_col])
+
+
+def _prepare_price_df(df: pl.DataFrame) -> pl.DataFrame:
+    if "trade_date" not in df.columns or "ts_code" not in df.columns or "close" not in df.columns:
+        raise ValueError("price_df must contain trade_date, ts_code, close")
+    out = _ensure_date(df, "trade_date")
+    if "open" not in out.columns:
+        out = out.with_columns(pl.col("close").alias("open"))
+    out = out.sort(["ts_code", "trade_date"])
+    if "pre_close" not in out.columns:
+        out = out.with_columns(pl.col("close").shift(1).over("ts_code").alias("pre_close"))
+    out = out.with_columns(
+        [
+            pl.col("pre_close").fill_null(pl.col("open")).alias("pre_close"),
+            pl.col("open").cast(pl.Float64),
+            pl.col("close").cast(pl.Float64),
+        ]
+    )
+    if "pct_chg" not in out.columns:
+        out = out.with_columns(((pl.col("close") / pl.col("pre_close") - 1.0) * 100).alias("pct_chg"))
+    if "vol" not in out.columns:
+        out = out.with_columns(pl.lit(1.0).alias("vol"))
+    if "amount" not in out.columns:
+        out = out.with_columns(pl.lit(1.0e30).alias("amount"))
+    out = out.with_columns(
+        [
+            (pl.col("open") / pl.col("pre_close") - 1.0).fill_null(0.0).alias("overnight_ret"),
+            (pl.col("close") / pl.col("open") - 1.0).fill_null(0.0).alias("intraday_ret"),
+            pl.col("pct_chg").cast(pl.Float64),
+            pl.col("vol").cast(pl.Float64),
+            pl.col("amount").cast(pl.Float64),
+        ]
+    )
+    return out.select(
+        [
+            "trade_date",
+            "ts_code",
+            "open",
+            "close",
+            "pre_close",
+            "pct_chg",
+            "vol",
+            "amount",
+            "overnight_ret",
+            "intraday_ret",
+        ]
     )
 
-    # ── 换手率计算（仅在启用成本模型时）──────────────────────────────────
-    turnover_by_date: pl.DataFrame | None = None
-    if cost_model is not None:
-        # 按 (ts_code, trade_date) 排序，获取上期组别
-        merged = merged.sort(["ts_code", "trade_date"])
-        merged = merged.with_columns(pl.col("group").shift(1).over("ts_code").alias("_prev_group"))
-        # 换手 = 本期组别与上期不同（或首次出现）的比例
-        merged = merged.with_columns(
-            (pl.col("group").ne(pl.col("_prev_group")).fill_null(True)).alias("_changed")
-        )
-        turnover_by_date = (
-            merged.group_by("trade_date")
-            .agg(pl.col("_changed").mean().alias("turnover"))
-            .sort("trade_date")
-        )
-        merged = merged.drop(["_prev_group", "_changed"])
 
-    # 组日收益（等权）
-    group_ret = (
-        merged.group_by(["trade_date", "group"])
-        .agg(pl.col("ret").mean().alias("ret"))
-        .sort(["trade_date", "group"])
+def _ensure_date(df: pl.DataFrame, col: str) -> pl.DataFrame:
+    dtype = df.schema[col]
+    if dtype == pl.Date:
+        return df
+    if dtype == pl.Datetime:
+        return df.with_columns(pl.col(col).dt.date().alias(col))
+    if dtype == pl.Utf8:
+        parsed_dash = pl.col(col).str.strptime(pl.Date, "%Y-%m-%d", strict=False)
+        parsed_plain = pl.col(col).str.strptime(pl.Date, "%Y%m%d", strict=False)
+        return df.with_columns(parsed_dash.fill_null(parsed_plain).alias(col))
+    return df
+
+
+def _validate_target_weights(weights: pl.DataFrame, config: BacktestConfig) -> pl.DataFrame:
+    if "ts_code" not in weights.columns or "target_weight" not in weights.columns:
+        raise ValueError("strategy output must contain ts_code and target_weight")
+    try:
+        out = weights.select(
+            [pl.col("ts_code").cast(pl.Utf8), pl.col("target_weight").cast(pl.Float64)]
+        )
+    except Exception as exc:
+        raise ValueError("target_weight must be numeric") from exc
+    if out["ts_code"].n_unique() != out.height:
+        raise ValueError("strategy output contains duplicate ts_code")
+    invalid = out.filter(pl.col("target_weight").is_null() | ~pl.col("target_weight").is_finite())
+    if not invalid.is_empty():
+        raise ValueError("target_weight must be finite")
+    if not out.is_empty():
+        max_abs = out["target_weight"].abs().max()
+        gross = out["target_weight"].abs().sum()
+        if max_abs is not None and float(max_abs) > config.max_abs_weight + 1e-12:  # type: ignore[arg-type]
+            raise ValueError("target_weight exceeds max_abs_weight")
+        if gross is not None and float(gross) > config.max_gross_exposure + 1e-12:  # type: ignore[arg-type]
+            raise ValueError("gross exposure exceeds max_gross_exposure")
+    return out
+
+
+def _price_records(price_slice: pl.DataFrame) -> dict[str, dict[str, Any]]:
+    return {row["ts_code"]: row for row in price_slice.to_dicts()}
+
+
+def _group_frames_by_date(df: pl.DataFrame) -> dict[date, pl.DataFrame]:
+    grouped: dict[date, pl.DataFrame] = {}
+    for key, frame in df.group_by("trade_date"):
+        group_date = key[0] if isinstance(key, tuple) else key
+        grouped[group_date] = frame
+    return grouped
+
+
+def _positions_frame(
+    weights: dict[str, float], nav_value: float, initial_capital: float
+) -> pl.DataFrame:
+    if not weights:
+        return pl.DataFrame(schema=_positions_schema())
+    return pl.DataFrame(
+        [
+            {
+                "ts_code": code,
+                "weight": weight,
+                "market_value": weight * nav_value * initial_capital,
+            }
+            for code, weight in sorted(weights.items())
+        ]
     )
 
-    # ── 扣除交易成本 ──────────────────────────────────────────────────────
-    if cost_model is not None and turnover_by_date is not None:
-        cost_per_turnover = cost_model.round_trip_cost()
-        group_ret = (
-            group_ret.join(turnover_by_date, on="trade_date", how="left")
-            .with_columns(
-                (pl.col("ret") - pl.col("turnover").fill_null(0.0) * cost_per_turnover).alias("ret")
-            )
-            .drop("turnover")
-        )
 
-    # 累计净值
-    nav = group_ret.with_columns((1 + pl.col("ret")).cum_prod().over("group").alias("nav"))
+def _weighted_return(weights: dict[str, float], price_map: dict[str, dict[str, Any]], col: str) -> float:
+    total = 0.0
+    for code, weight in weights.items():
+        rec = price_map.get(code)
+        if rec is not None and rec.get(col) is not None:
+            total += weight * float(rec[col])
+    return total
 
-    # Long-Short: group 0 vs group n_groups-1
-    ls_ret = (
-        group_ret.filter(pl.col("group").is_in([0, n_groups - 1]))
-        .group_by("trade_date")
-        .agg(
-            [
-                (
-                    pl.when(pl.col("group") == n_groups - 1)
-                    .then(pl.col("ret"))
-                    .otherwise(-pl.col("ret"))
-                )
-                .sum()
-                .alias("ret")
-            ]
-        )
-        .sort("trade_date")
-    )
 
-    # ── 多空对冲额外扣融券费率 ─────────────────────────────────────────────
-    if cost_model is not None:
-        borrow_per_period = cost_model.borrow_rate_per_period(frequency)
-        ls_ret = ls_ret.with_columns((pl.col("ret") - borrow_per_period).alias("ret"))
+def _drift_weights(
+    weights: dict[str, float], price_map: dict[str, dict[str, Any]], portfolio_return: float
+) -> dict[str, float]:
+    denom = 1.0 + portfolio_return
+    if abs(denom) < 1e-12:
+        return dict(weights)
+    drifted = {}
+    for code, weight in weights.items():
+        rec = price_map.get(code)
+        asset_ret = float(rec["overnight_ret"]) if rec is not None else 0.0
+        drifted[code] = weight * (1.0 + asset_ret) / denom
+    return drifted
 
-    ls_nav = ls_ret.with_columns((1 + pl.col("ret")).cum_prod().alias("nav"))
 
-    def _group_stats(rets: np.ndarray) -> dict[str, float]:
-        valid = rets[np.isfinite(rets)]
-        if len(valid) == 0:
-            return {"ann_ret": 0.0, "ann_vol": 0.0, "sharpe": 0.0, "max_dd": 0.0}
+def _apply_trade_constraints(
+    *,
+    code: str,
+    delta: float,
+    price_map: dict[str, dict[str, Any]],
+    portfolio_value: float,
+    config: BacktestConfig,
+) -> tuple[float, str]:
+    if abs(delta) < 1e-12:
+        return 0.0, ""
+    rec = price_map.get(code)
+    if rec is None or rec.get("open") is None or rec.get("close") is None:
+        return 0.0, "missing_price"
+    if float(rec.get("vol") or 0.0) <= 0:
+        return 0.0, "suspended"
+    pct = float(rec.get("pct_chg") or 0.0)
+    if delta > 0 and pct >= config.limit_up_pct:
+        return 0.0, "limit_up"
+    if delta < 0 and pct <= config.limit_down_pct:
+        return 0.0, "limit_down"
+    amount = float(rec.get("amount") or 0.0)
+    max_trade_value = amount * config.max_participation_rate
+    if portfolio_value <= 0:
+        return 0.0, "invalid_portfolio_value"
+    max_delta = max_trade_value / portfolio_value
+    if abs(delta) > max_delta + 1e-12:
+        return float(np.sign(delta) * max_delta), "capacity"
+    return delta, ""
+
+
+def _summary_stats(
+    returns: pl.DataFrame, trades: pl.DataFrame
+) -> dict[int | str, dict[str, float]]:
+    if returns.is_empty():
+        stats = {
+            "ann_ret": 0.0,
+            "ann_vol": 0.0,
+            "sharpe": 0.0,
+            "max_dd": 0.0,
+            "avg_turnover": 0.0,
+            "total_cost": 0.0,
+            "ann_turnover": 0.0,
+        }
+        return {"portfolio": stats, "long_short": stats}
+    rets = returns["net_return"].to_numpy()
+    valid = rets[np.isfinite(rets)]
+    if len(valid) == 0:
+        ann_ret = ann_vol = sharpe = max_dd = 0.0
+    else:
         ann_ret = float(np.mean(valid) * TRADING_DAYS_PER_YEAR)
         ann_vol = float(np.std(valid) * np.sqrt(TRADING_DAYS_PER_YEAR))
         sharpe = ann_ret / ann_vol if ann_vol > 0 else 0.0
         cum = np.cumprod(1 + valid)
         max_dd = float(np.min(cum / np.maximum.accumulate(cum) - 1))
-        return {"ann_ret": ann_ret, "ann_vol": ann_vol, "sharpe": sharpe, "max_dd": max_dd}
+    avg_turnover = float(returns["turnover"].mean() or 0.0)  # type: ignore[arg-type]
+    total_cost = float(trades["cost"].sum() or 0.0) if not trades.is_empty() else 0.0  # type: ignore[arg-type]
+    stats = {
+        "ann_ret": ann_ret,
+        "ann_vol": ann_vol,
+        "sharpe": sharpe,
+        "max_dd": max_dd,
+        "avg_turnover": avg_turnover,
+        "total_cost": total_cost,
+        "ann_turnover": avg_turnover * TRADING_DAYS_PER_YEAR,
+    }
+    return {"portfolio": stats, "long_short": stats}
 
-    summary_stats: dict[int | str, dict[str, float]] = {}
-    for g in range(n_groups):
-        rets = group_ret.filter(pl.col("group") == g)["ret"].to_numpy()
-        summary_stats[g] = _group_stats(rets)
 
-    ls_rets = ls_nav["ret"].to_numpy()
-    summary_stats["long_short"] = _group_stats(ls_rets)
+def _returns_schema() -> dict[str, Any]:
+    return {
+        "trade_date": pl.Date,
+        "gross_return": pl.Float64,
+        "cost": pl.Float64,
+        "borrow_cost": pl.Float64,
+        "net_return": pl.Float64,
+        "nav": pl.Float64,
+        "cash_weight": pl.Float64,
+        "turnover": pl.Float64,
+    }
 
-    return BacktestResult(
-        factor_name=factor_name,
-        n_groups=n_groups,
-        daily_returns=group_ret,
-        nav=nav,
-        long_short_nav=ls_nav,
-        summary_stats=summary_stats,
-        frequency=frequency,
-        ret_definition="fwd_ret_1d",
-    )
+
+def _positions_schema() -> dict[str, Any]:
+    return {
+        "trade_date": pl.Date,
+        "ts_code": pl.Utf8,
+        "weight": pl.Float64,
+        "market_value": pl.Float64,
+    }
+
+
+def _trades_schema() -> dict[str, Any]:
+    return {
+        "trade_date": pl.Date,
+        "ts_code": pl.Utf8,
+        "prev_weight": pl.Float64,
+        "target_weight": pl.Float64,
+        "filled_delta_weight": pl.Float64,
+        "turnover": pl.Float64,
+        "cost": pl.Float64,
+        "block_reason": pl.Utf8,
+    }

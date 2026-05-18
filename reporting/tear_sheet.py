@@ -80,6 +80,9 @@ def _make_returns_chart(bt_result: Any, factor_name: str) -> str | None:
                 linewidth=1.2,
                 label=f"Q{g + 1}" if isinstance(g, (int, float)) else str(g),
             )
+    elif "trade_date" in nav_pd.columns and "nav" in nav_pd.columns:
+        nav_pd = nav_pd.sort_values("trade_date")
+        ax.plot(nav_pd["trade_date"], nav_pd["nav"], linewidth=1.4, label="Portfolio")
     else:
         for col in nav_pd.columns:
             if col == "trade_date":

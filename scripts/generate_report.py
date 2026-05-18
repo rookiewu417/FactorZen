@@ -68,13 +68,10 @@ def _save_results(
 
     clean_df.write_parquet(str(OUTPUT_DAILY_FACTORS / f"{prefix}.parquet"))
     ic_result.ic_series.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_ic.parquet"))
-    bt_result.daily_returns.write_parquet(
-        str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_returns.parquet")
-    )
+    bt_result.returns.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_returns.parquet"))
     bt_result.nav.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_nav.parquet"))
-    bt_result.long_short_nav.write_parquet(
-        str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_ls_nav.parquet")
-    )
+    bt_result.positions.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_positions.parquet"))
+    bt_result.trades.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_trades.parquet"))
     to_result.daily_turnover.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_to_daily.parquet"))
     to_result.migration_matrix.write_parquet(
         str(OUTPUT_DAILY_RESULTS / f"{prefix}_to_matrix.parquet")
@@ -94,9 +91,12 @@ def _save_results(
         "multi_period": {str(k): v for k, v in ic_result.multi_period.items()},
         "oos_ic": ic_result.oos_ic,
         "bt_factor_name": bt_result.factor_name,
+        "bt_strategy_name": bt_result.strategy_name,
         "bt_n_groups": bt_result.n_groups,
         "bt_summary_stats": {str(k): v for k, v in bt_result.summary_stats.items()},
         "bt_frequency": bt_result.frequency,
+        "bt_config": bt_result.config,
+        "bt_ret_definition": bt_result.ret_definition,
         "to_factor_name": to_result.factor_name,
         "to_avg_turnover": to_result.avg_turnover,
         "to_frequency": to_result.frequency,
@@ -119,7 +119,8 @@ def _load_results(
     ic_path = OUTPUT_DAILY_RESULTS / f"{prefix}_ic.parquet"
     bt_ret_path = OUTPUT_DAILY_RESULTS / f"{prefix}_bt_returns.parquet"
     bt_nav_path = OUTPUT_DAILY_RESULTS / f"{prefix}_bt_nav.parquet"
-    bt_ls_path = OUTPUT_DAILY_RESULTS / f"{prefix}_bt_ls_nav.parquet"
+    bt_pos_path = OUTPUT_DAILY_RESULTS / f"{prefix}_bt_positions.parquet"
+    bt_trades_path = OUTPUT_DAILY_RESULTS / f"{prefix}_bt_trades.parquet"
     to_daily_path = OUTPUT_DAILY_RESULTS / f"{prefix}_to_daily.parquet"
     to_mat_path = OUTPUT_DAILY_RESULTS / f"{prefix}_to_matrix.parquet"
     factor_path = OUTPUT_DAILY_FACTORS / f"{prefix}.parquet"
@@ -128,7 +129,8 @@ def _load_results(
         ic_path,
         bt_ret_path,
         bt_nav_path,
-        bt_ls_path,
+        bt_pos_path,
+        bt_trades_path,
         to_daily_path,
         to_mat_path,
         factor_path,
@@ -157,14 +159,18 @@ def _load_results(
     )
     bt_result = BacktestResult(
         factor_name=meta["bt_factor_name"],
+        strategy_name=meta.get("bt_strategy_name", "quantile_long_short"),
         n_groups=meta["bt_n_groups"],
-        daily_returns=pl.read_parquet(str(bt_ret_path)),
+        returns=pl.read_parquet(str(bt_ret_path)),
         nav=pl.read_parquet(str(bt_nav_path)),
-        long_short_nav=pl.read_parquet(str(bt_ls_path)),
+        positions=pl.read_parquet(str(bt_pos_path)),
+        trades=pl.read_parquet(str(bt_trades_path)),
         summary_stats={
             (int(k) if k.isdigit() else k): v for k, v in meta["bt_summary_stats"].items()
         },
+        config=meta.get("bt_config", {}),
         frequency=meta["bt_frequency"],
+        ret_definition=meta.get("bt_ret_definition", "open_to_close_with_overnight_carry"),
     )
     to_result = TurnoverResult(
         factor_name=meta["to_factor_name"],
@@ -442,12 +448,9 @@ def main():
         logger.info(f"\n{ic_result.summary()}")
 
         # ── 8. 分层回测 ──
-        bt_input = ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename(
-            {"fwd_ret_1d": "ret"}
-        )
         bt_result = run_stratified_backtest(
             clean_df,
-            bt_input,
+            daily,
             frequency=args.frequency,
             factor_name=factor.name,
         )

@@ -21,24 +21,38 @@ from daily.evaluation.backtest import CostModel, run_stratified_backtest
 
 
 def _make_data(n_dates: int = 200, n_stocks: int = 100, seed: int = 0):
-    """合成因子+前向收益数据（有弱正向预测力的因子）。"""
+    """合成因子+价格数据。"""
     rng = np.random.default_rng(seed)
     dates = [f"2024-{(i // 28 + 1):02d}-{(i % 28 + 1):02d}" for i in range(n_dates)]
     stocks = [f"{i:06d}.SZ" for i in range(n_stocks)]
 
-    factor_rows, ret_rows = [], []
-    for d in dates:
-        # 因子：随机截面信号
+    factor_rows, price_rows = [], []
+    last_close = {s: 10.0 + i for i, s in enumerate(stocks)}
+    for day_idx, d in enumerate(dates):
         factor_vals = rng.standard_normal(n_stocks)
-        # 前向收益：因子 + 大量噪声（弱正 IC ≈ 0.05）
-        fwd_rets = 0.05 * factor_vals / n_stocks + rng.normal(0, 0.02, n_stocks)
+        intraday_rets = 0.05 * factor_vals / n_stocks + rng.normal(0, 0.02, n_stocks)
         for i, s in enumerate(stocks):
-            factor_rows.append(
-                {"trade_date": d, "ts_code": s, "factor_clean": float(factor_vals[i])}
+            if day_idx < n_dates - 1:
+                factor_rows.append(
+                    {"trade_date": d, "ts_code": s, "factor_clean": float(factor_vals[i])}
+                )
+            open_price = last_close[s]
+            close_price = open_price * (1.0 + float(intraday_rets[i]))
+            price_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": s,
+                    "open": open_price,
+                    "close": close_price,
+                    "pre_close": last_close[s],
+                    "pct_chg": (close_price / last_close[s] - 1.0) * 100,
+                    "vol": 1000.0,
+                    "amount": 1_000_000_000.0,
+                }
             )
-            ret_rows.append({"trade_date": d, "ts_code": s, "ret": float(fwd_rets[i])})
+            last_close[s] = close_price
 
-    return pl.DataFrame(factor_rows), pl.DataFrame(ret_rows)
+    return pl.DataFrame(factor_rows), pl.DataFrame(price_rows)
 
 
 class TestCostModel:
@@ -79,9 +93,9 @@ class TestCostModel:
 class TestBacktestCostIntegration:
     def test_no_cost_model_backward_compatible(self):
         """cost_model=None 时与旧版行为一致（无成本扣除）。"""
-        factor_df, ret_df = _make_data()
-        r1 = run_stratified_backtest(factor_df, ret_df, n_groups=5)
-        r2 = run_stratified_backtest(factor_df, ret_df, n_groups=5, cost_model=None)
+        factor_df, price_df = _make_data()
+        r1 = run_stratified_backtest(factor_df, price_df, n_groups=5)
+        r2 = run_stratified_backtest(factor_df, price_df, n_groups=5, cost_model=None)
         # 两者 long-short Sharpe 应完全相同
         s1 = r1.summary_stats["long_short"]["sharpe"]
         s2 = r2.summary_stats["long_short"]["sharpe"]
@@ -89,9 +103,9 @@ class TestBacktestCostIntegration:
 
     def test_costs_reduce_returns(self):
         """启用 CostModel 后，多空年化收益应低于无成本版本。"""
-        factor_df, ret_df = _make_data()
-        r_free = run_stratified_backtest(factor_df, ret_df, n_groups=5)
-        r_cost = run_stratified_backtest(factor_df, ret_df, n_groups=5, cost_model=CostModel())
+        factor_df, price_df = _make_data()
+        r_free = run_stratified_backtest(factor_df, price_df, n_groups=5)
+        r_cost = run_stratified_backtest(factor_df, price_df, n_groups=5, cost_model=CostModel())
         ann_ret_free = r_free.summary_stats["long_short"]["ann_ret"]
         ann_ret_cost = r_cost.summary_stats["long_short"]["ann_ret"]
         assert ann_ret_free > ann_ret_cost, (
@@ -100,33 +114,33 @@ class TestBacktestCostIntegration:
 
     def test_costs_impact_magnitude(self):
         """成本扣除幅度应在合理范围（不超过 30% 年化，不小于 0.1%）。"""
-        factor_df, ret_df = _make_data()
-        r_free = run_stratified_backtest(factor_df, ret_df, n_groups=5)
-        r_cost = run_stratified_backtest(factor_df, ret_df, n_groups=5, cost_model=CostModel())
+        factor_df, price_df = _make_data()
+        r_free = run_stratified_backtest(factor_df, price_df, n_groups=5)
+        r_cost = run_stratified_backtest(factor_df, price_df, n_groups=5, cost_model=CostModel())
         ann_ret_free = r_free.summary_stats["long_short"]["ann_ret"]
         ann_ret_cost = r_cost.summary_stats["long_short"]["ann_ret"]
         cost_drag = ann_ret_free - ann_ret_cost
         # 成本拖累应为正（因为有实际成本）
         assert cost_drag > 0, f"成本拖累应为正值: {cost_drag:.4f}"
-        # 对于日频高换手策略，成本应在 2%~50% 年化范围内
-        assert cost_drag < 0.5, f"成本拖累 {cost_drag:.4f} 超出合理上限 50%"
+        # 持仓级成本比旧版平均换手近似更严格；只约束其为有限且不过度爆炸。
+        assert cost_drag < 2.0, f"成本拖累 {cost_drag:.4f} 超出合理上限 200%"
 
     def test_cost_model_instance_returned_result_type(self):
         """启用成本后返回类型仍为 BacktestResult，ret_definition 仍正确。"""
         from daily.evaluation.backtest import BacktestResult
 
-        factor_df, ret_df = _make_data()
-        r = run_stratified_backtest(factor_df, ret_df, n_groups=5, cost_model=CostModel())
+        factor_df, price_df = _make_data()
+        r = run_stratified_backtest(factor_df, price_df, n_groups=5, cost_model=CostModel())
         assert isinstance(r, BacktestResult)
-        assert r.ret_definition == "fwd_ret_1d"
+        assert r.ret_definition == "open_to_close_with_overnight_carry"
 
     def test_zero_cost_model_matches_no_cost(self):
         """CostModel 全部费率设为 0 时，结果应与 cost_model=None 完全相同。"""
-        factor_df, ret_df = _make_data()
-        r_none = run_stratified_backtest(factor_df, ret_df, n_groups=5)
+        factor_df, price_df = _make_data()
+        r_none = run_stratified_backtest(factor_df, price_df, n_groups=5)
         r_zero = run_stratified_backtest(
             factor_df,
-            ret_df,
+            price_df,
             n_groups=5,
             cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
         )

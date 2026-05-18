@@ -34,18 +34,18 @@ def aggregate_intraday_factor(
 
 def run_intraday_backtest(
     minute_factor: pl.DataFrame,
-    daily_ret: pl.DataFrame,
+    daily_price: pl.DataFrame,
     factor_col: str = "factor_value",
     n_groups: int = 10,
     factor_name: str = "",
 ) -> BacktestResult:
     """日内因子分层回测。
 
-    将分钟因子聚合到日频后，对齐日频收益进行分层回测。
+    将分钟因子聚合到日频后，对齐日频价格进行分层回测。
 
     Args:
         minute_factor: 分钟级因子 DataFrame，含 trade_time/trade_date、ts_code、{factor_col}。
-        daily_ret: 日频收益 DataFrame，含 trade_date、ts_code、ret。
+        daily_price: 日频价格 DataFrame，含 trade_date、ts_code、open/close 等价格列。
         factor_col: 因子列名。
         n_groups: 分组数。
         factor_name: 因子名称。
@@ -56,7 +56,7 @@ def run_intraday_backtest(
     daily_factor = aggregate_intraday_factor(minute_factor, factor_col=factor_col)
     return run_stratified_backtest(
         daily_factor,
-        daily_ret,
+        daily_price,
         factor_col=factor_col,
         n_groups=n_groups,
         factor_name=factor_name,

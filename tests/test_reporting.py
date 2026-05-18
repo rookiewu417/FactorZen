@@ -67,8 +67,6 @@ def bt_result() -> BacktestResult:
             records.append({"trade_date": d, "group": g, "ret": ret})
             day_rets[g] = ret
 
-    daily_returns = pl.DataFrame(records)
-
     # NAV by group
     for g in range(n_groups):
         g_rets = [r["ret"] for r in records if r["group"] == g]
@@ -112,13 +110,46 @@ def bt_result() -> BacktestResult:
         "max_dd": float(np.min(ls_cum_arr / np.maximum.accumulate(ls_cum_arr) - 1)),
     }
 
+    returns = long_short_nav.rename({"ret": "net_return"}).with_columns(
+        [
+            pl.col("net_return").alias("gross_return"),
+            pl.lit(0.0).alias("cost"),
+            pl.lit(0.0).alias("borrow_cost"),
+            pl.lit(0.0).alias("cash_weight"),
+            pl.lit(0.0).alias("turnover"),
+        ]
+    )
+    positions = pl.DataFrame(
+        {
+            "trade_date": dates,
+            "ts_code": ["000001.SZ"] * len(dates),
+            "weight": [1.0] * len(dates),
+            "market_value": [1.0] * len(dates),
+        }
+    )
+    trades = pl.DataFrame(
+        {
+            "trade_date": dates[:1],
+            "ts_code": ["000001.SZ"],
+            "prev_weight": [0.0],
+            "target_weight": [1.0],
+            "filled_delta_weight": [1.0],
+            "turnover": [1.0],
+            "cost": [0.0],
+            "block_reason": [""],
+        }
+    )
+
     return BacktestResult(
         factor_name="test_factor",
+        strategy_name="quantile_long_short",
         n_groups=n_groups,
-        daily_returns=daily_returns,
+        returns=returns,
         nav=pl.DataFrame(nav_records),
-        long_short_nav=long_short_nav,
+        positions=positions,
+        trades=trades,
         summary_stats=summary_stats,
+        config={},
         frequency="daily",
     )
 

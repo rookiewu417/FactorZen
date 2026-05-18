@@ -35,17 +35,24 @@ def _make_minute_factor(
     )
 
 
-def _make_daily_ret(n_stocks: int = 5, n_days: int = 10) -> pl.DataFrame:
+def _make_daily_price(n_stocks: int = 5, n_days: int = 10) -> pl.DataFrame:
     random.seed(0)
     rows = []
     for day in range(n_days):
         trade_date = (datetime.date(2026, 1, 2) + datetime.timedelta(days=day)).strftime("%Y%m%d")
         for stock_i in range(1, n_stocks + 1):
+            open_price = 10.0 + stock_i
+            close_price = open_price * (1.0 + random.gauss(0, 0.02))
             rows.append(
                 {
                     "trade_date": trade_date,
                     "ts_code": f"00000{stock_i}.SZ",
-                    "ret": random.gauss(0, 0.02),
+                    "open": open_price,
+                    "close": close_price,
+                    "pre_close": open_price,
+                    "pct_chg": (close_price / open_price - 1.0) * 100,
+                    "vol": 1000.0,
+                    "amount": 1_000_000.0,
                 }
             )
     return pl.DataFrame(rows).with_columns(pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d"))
@@ -71,12 +78,12 @@ def test_aggregate_takes_last_value():
 
 
 def test_run_intraday_backtest_returns_backtest_result():
-    result = run_intraday_backtest(_make_minute_factor(), _make_daily_ret(), n_groups=5)
+    result = run_intraday_backtest(_make_minute_factor(), _make_daily_price(), n_groups=5)
     assert isinstance(result, BacktestResult)
     assert result.n_groups == 5
 
 
 def test_run_intraday_backtest_has_long_short():
-    result = run_intraday_backtest(_make_minute_factor(), _make_daily_ret(), n_groups=5)
+    result = run_intraday_backtest(_make_minute_factor(), _make_daily_price(), n_groups=5)
     assert "long_short" in result.summary_stats
     assert not result.nav.is_empty()

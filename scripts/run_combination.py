@@ -97,10 +97,9 @@ def main():
     cost_model = None if args.no_cost else CostModel()
     from daily.evaluation.backtest import run_stratified_backtest
 
-    bt_input = ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename({"fwd_ret_1d": "ret"})
     bt_result = run_stratified_backtest(
         combined,
-        bt_input,
+        price_df,
         factor_col="factor_clean",
         n_groups=args.n_groups,
         cost_model=cost_model,

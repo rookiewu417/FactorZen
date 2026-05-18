@@ -59,10 +59,9 @@ def combine_and_evaluate(
     )
 
     # 回测
-    bt_input = ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename({"fwd_ret_1d": "ret"})
     bt_result = run_stratified_backtest(
         combined,
-        bt_input,
+        price_df,
         factor_col="factor_clean",
         n_groups=5,
         cost_model=cost_model,

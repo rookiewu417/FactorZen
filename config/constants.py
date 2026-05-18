@@ -45,3 +45,11 @@ COMMISSION_RATE: float = 0.00025  # 单边佣金率（万 2.5）
 STAMP_TAX_RATE: float = 0.001  # 卖出印花税（千 1）
 SLIPPAGE_RATE: float = 0.0005  # 单边冲击成本/滑点（万 5，保守估计）
 BORROW_RATE_ANNUAL: float = 0.085  # 融券年化利率（8.5%，做空时使用）
+
+# ── 基准指数 ────────────────────────────────────────────────────────────────────
+BENCHMARK_INDICES: dict[str, str] = {
+    "000300.SH": "HS300",
+    "000905.SH": "CSI500",
+    "000852.SH": "CSI1000",
+    "000001.SH": "上证综指",
+}

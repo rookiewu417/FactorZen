@@ -656,6 +656,72 @@ def fetch_adj_factor(
     return load_parquet("adj_factor", start=start, end=end).collect()
 
 
+def fetch_index_daily(index_code: str, start: str, end: str) -> pl.DataFrame:
+    """拉取指数日线行情。按年分段，自动缓存。
+
+    Args:
+        index_code: 指数代码，如 "000300.SH"。
+        start: 起始日期 "YYYYMMDD"。
+        end: 截止日期 "YYYYMMDD"。
+
+    Returns:
+        pl.DataFrame，包含列:
+        trade_date, ts_code, close, open, high, low, pre_close, change, pct_chg, vol, amount。
+    """
+    pro = init_tushare()
+    start_year = int(start[:4])
+    end_year = int(end[:4])
+
+    for year in range(start_year, end_year + 1):
+        if all(partition_exists("index_daily", year, q_month) for q_month in (1, 4, 7, 10)):
+            logger.info(f"[index_daily] {index_code} {year} 已缓存，跳过")
+            continue
+
+        year_start = max(f"{year}0101", start)
+        year_end = min(f"{year}1231", end)
+
+        try:
+            df_pd = _retry(
+                pro.index_daily,
+                ts_code=index_code,
+                start_date=year_start,
+                end_date=year_end,
+            )
+        except Exception as e:
+            logger.error(f"[index_daily] {index_code} {year} 拉取失败: {e}")
+            continue
+
+        if df_pd is None or df_pd.empty:
+            logger.warning(f"[index_daily] {index_code} {year} 无数据")
+            continue
+
+        merged = (
+            pl.from_pandas(df_pd)
+            .with_columns(_str_to_date(pl.col("trade_date")))
+            .sort(["trade_date", "ts_code"])
+        )
+
+        std_cols = [
+            "trade_date",
+            "ts_code",
+            "close",
+            "open",
+            "high",
+            "low",
+            "pre_close",
+            "change",
+            "pct_chg",
+            "vol",
+            "amount",
+        ]
+        merged = merged.select([c for c in std_cols if c in merged.columns])
+
+        save_parquet(merged, data_type="index_daily")
+        logger.info(f"[index_daily] {index_code} {year} 已保存 ({len(merged)} 行)")
+
+    return load_parquet("index_daily", start=start, end=end).collect()
+
+
 def fetch_trade_cal(start: str, end: str) -> pl.DataFrame:
     """拉取交易日历。
 

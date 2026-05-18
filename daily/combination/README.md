@@ -1,41 +1,47 @@
-# daily/combination/ — 多因子合成（预留位）
+# daily/combination/ — 多因子合成
 
-## 当前状态
+> 状态：实验性研究工具。`ic_weighted` 和 `max_ir` 当前使用样本内 IC 估计权重，适合方法对比和候选因子筛选，不应用作无偏的样本外组合表现。
 
-**未实现** — 此目录为预留占位。
+## 实现的合成方法
 
-## 为什么预留
+| 方法 | 模块 | 说明 |
+|------|------|------|
+| 等权平均 | `methods.equal_weight` | 各因子截面 z-score 后取均值 |
+| IC 加权 | `methods.ic_weighted` | 历史 IC 均值为权重（仅取正向 IC 因子）|
+| 最大化 IR | `methods.max_ir` | 闭式解 w = Σ^{-1}·μ，Ledoit-Wolf 协方差收缩 |
 
-本项目当前阶段**专注于单因子研究**：
-- 理解单个因子的 IC、稳健性、IC 衰减、换手率特征
-- 在日频和分钟频率上交叉验证同一因子的有效性
-
-多因子合成是**下一阶段**的产物，要求先有充分经过检验的单因子库。
-
-## 接口草稿
+## 快速使用
 
 ```python
-class FactorCombiner(ABC):
-    """多因子合成器基类。"""
+from daily.combination.methods import equal_weight, ic_weighted, max_ir
 
-    @abstractmethod
-    def combine(
-        self,
-        factor_dict: dict[str, pl.DataFrame],  # {factor_name: factor_df}
-        ret_df: pl.DataFrame,
-    ) -> pl.DataFrame:
-        """返回合成因子 DataFrame: trade_date, ts_code, factor_value"""
-        ...
+# factor_dfs: dict[str, pl.DataFrame]，每个 df 含 trade_date, ts_code, factor_value
+# ret_df: 含 trade_date, ts_code, ret 的前向收益
+
+combined = equal_weight(factor_dfs)
+combined = ic_weighted(factor_dfs, ret_df, ic_window=60)
+combined = max_ir(factor_dfs, ret_df, lookback=120)
 ```
 
-## 合成方法参考
+## 一体化评估
 
-| 方法 | 说明 | 适用场景 |
-|------|------|---------|
-| IC 加权 | 以历史滚动 IC 均值为权重 | 因子 IC 差异较大时 |
-| 等权平均 | 直接平均 z-score 化后的因子值 | 快速基线 |
-| PCA 第一主成分 | 捕捉因子共同信息 | 因子高度相关时降维 |
-| Fama-MacBeth | 截面回归系数加权 | 学术验证 |
+```python
+from daily.combination.pipeline import combine_and_evaluate
+
+combined_df, ic_result, bt_result = combine_and_evaluate(
+    factor_dfs, price_df, method="ic_weighted"
+)
+print(ic_result.summary())
+```
+
+## CLI
+
+```bash
+pixi run python scripts/run_combination.py \
+    --factors momentum_20d reversal_5d volatility_20d \
+    --method ic_weighted \
+    --start 20240101 --end 20250101
+```
 
 ## 参考文献
 

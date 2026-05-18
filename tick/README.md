@@ -14,12 +14,12 @@ Tick 数据因子属于更高复杂度的下一阶段工作。
 - 需要接入 CTP、Wind 或其他行情终端
 - 订单簿重建、逐笔成交分析的存储方案需要单独设计
 
-## 接口草稿
+## 接口草稿（设计规划，代码未实现）
 
-`tick/factors/base.py` 中定义了 `HFTFactor` 抽象基类，继承自 `common.factor.BaseFactor`：
+未来实现时，`tick/factors/base.py` 将定义 `TickFactor` 抽象基类：
 
 ```python
-class HFTFactor(BaseFactor):
+class TickFactor(BaseFactor):
     frequency: str = "tick"
     required_data: list[str] = ["tick"]
 

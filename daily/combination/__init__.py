@@ -1,1 +1,1 @@
-# lft/combination/ - LFT 因子合成
+# daily/combination/ - 实验性多因子合成

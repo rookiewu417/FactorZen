@@ -185,6 +185,46 @@
   {% if metrics.get('monotonicity_score') is not none %}
   <p style="margin-top:12px"><strong>单调性得分：</strong>{{ "%.3f"|format(metrics.monotonicity_score) }}</p>
   {% endif %}
+
+  <!-- 5b. Benchmark Comparison -->
+  {% if benchmark_result is not none %}
+  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">Benchmark Comparison</h3>
+  <div class="metric-grid" style="margin-bottom:10px">
+    <div class="metric-card">
+      <div class="label">年化超额收益</div>
+      <div class="value">{{ "%.2f%%"|format(benchmark_result.ann_excess_ret * 100) }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">信息比率 (IR)</div>
+      <div class="value">{{ "%.2f"|format(benchmark_result.information_ratio) }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">跟踪误差</div>
+      <div class="value">{{ "%.2f%%"|format(benchmark_result.tracking_error * 100) }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">超额最大回撤</div>
+      <div class="value">{{ "%.2f%%"|format(benchmark_result.excess_max_dd * 100) }}</div>
+    </div>
+  </div>
+  {% if charts.benchmark_chart %}
+  <img class="chart-img" src="data:image/png;base64,{{ charts.benchmark_chart }}" alt="基准对比图">
+  {% endif %}
+  {% endif %}
+
+  <!-- 5c. Style/Sector Attribution -->
+  {% if charts.attribution_chart %}
+  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">Style/Sector Attribution</h3>
+  <img class="chart-img" src="data:image/png;base64,{{ charts.attribution_chart }}" alt="归因分析图">
+  {% if attribution_result is not none and 'brinson' in attribution_result and attribution_result['brinson'] is not none %}
+  <p style="color:#7f8c8d;font-size:13px;margin-top:8px">
+    年化超额: {{ "%.2f%%"|format(attribution_result['brinson'].ann_active_return * 100) }}
+    &nbsp;|&nbsp; 配置: {{ "%.2f%%"|format(attribution_result['brinson'].ann_allocation * 100) }}
+    &nbsp;|&nbsp; 选股: {{ "%.2f%%"|format(attribution_result['brinson'].ann_selection * 100) }}
+    &nbsp;|&nbsp; 交互: {{ "%.2f%%"|format(attribution_result['brinson'].ann_interaction * 100) }}
+  </p>
+  {% endif %}
+  {% endif %}
 </div>
 
 <!-- 6. Summary -->

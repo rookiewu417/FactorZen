@@ -125,6 +125,138 @@ def _make_ic_chart(ic_result: Any) -> str | None:
     return _fig_to_base64(fig)
 
 
+def _make_benchmark_chart(benchmark_result: Any) -> str | None:
+    """基准对比图：策略 NAV vs 基准 NAV（上）+ 超额 NAV（下）。"""
+    if benchmark_result is None:
+        return None
+    daily = _safe_attr(benchmark_result, "daily")
+    if daily is None or daily.is_empty():
+        return None
+
+    df = daily.to_pandas()
+    if "trade_date" not in df.columns:
+        return None
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+
+    benchmark_name = _safe_attr(benchmark_result, "benchmark_name", "Benchmark")
+
+    if "strategy_nav" in df.columns:
+        df_sorted = df.sort_values("trade_date")
+        ax1.plot(df_sorted["trade_date"], df_sorted["strategy_nav"], linewidth=1.4, label="策略")
+    if "benchmark_nav" in df.columns:
+        df_sorted = df.sort_values("trade_date")
+        ax1.plot(
+            df_sorted["trade_date"],
+            df_sorted["benchmark_nav"],
+            linewidth=1.2,
+            linestyle="--",
+            label=benchmark_name,
+        )
+    ax1.axhline(y=1.0, color="gray", linestyle=":", linewidth=0.6, alpha=0.5)
+    ax1.set_title(f"基准对比 — {benchmark_name}", fontsize=12)
+    ax1.legend(fontsize=8, loc="upper left")
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
+
+    if "excess_nav" in df.columns:
+        df_sorted = df.sort_values("trade_date")
+        ax2.plot(
+            df_sorted["trade_date"],
+            df_sorted["excess_nav"],
+            linewidth=1.2,
+            color="#e74c3c",
+            label="超额 NAV",
+        )
+        ax2.axhline(y=1.0, color="gray", linestyle=":", linewidth=0.6, alpha=0.5)
+        ax2.set_title("超额净值", fontsize=11)
+        ax2.legend(fontsize=8, loc="upper left")
+        ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
+
+    fig.autofmt_xdate()
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+def _make_attribution_chart(brinson_result: Any, barra_result: Any) -> str | None:
+    """归因分析图：Brinson 行业堆积条形（上）+ Barra 风格暴露（下）。"""
+    if brinson_result is None and barra_result is None:
+        return None
+
+    n_panels = (1 if brinson_result is not None else 0) + (1 if barra_result is not None else 0)
+    fig, axes = plt.subplots(n_panels, 1, figsize=(10, 4.5 * n_panels))
+    if n_panels == 1:
+        axes = [axes]
+
+    ax_idx = 0
+
+    if brinson_result is not None:
+        sector_df = _safe_attr(brinson_result, "sector_df")
+        if sector_df is not None and not sector_df.is_empty():
+            sdf = sector_df.to_pandas()
+            ax = axes[ax_idx]
+            ax_idx += 1
+            sectors = sdf["sector"].tolist() if "sector" in sdf.columns else list(range(len(sdf)))
+            alloc = sdf["allocation"].tolist() if "allocation" in sdf.columns else [0] * len(sdf)
+            selection = (
+                sdf["selection"].tolist() if "selection" in sdf.columns else [0] * len(sdf)
+            )
+            interaction = (
+                sdf["interaction"].tolist() if "interaction" in sdf.columns else [0] * len(sdf)
+            )
+            y_pos = range(len(sectors))
+            ax.barh(
+                list(y_pos),
+                alloc,
+                label="配置效应",
+                color="#3498db",
+                alpha=0.8,
+            )
+            ax.barh(
+                list(y_pos),
+                selection,
+                left=alloc,
+                label="选股效应",
+                color="#2ecc71",
+                alpha=0.8,
+            )
+            left_interaction = [a + s for a, s in zip(alloc, selection, strict=False)]
+            ax.barh(
+                list(y_pos),
+                interaction,
+                left=left_interaction,
+                label="交互效应",
+                color="#e74c3c",
+                alpha=0.8,
+            )
+            ax.set_yticks(list(y_pos))
+            ax.set_yticklabels(sectors, fontsize=9)
+            ax.axvline(x=0, color="gray", linestyle="--", linewidth=0.6)
+            ax.set_title("Brinson 行业归因", fontsize=12)
+            ax.legend(fontsize=8, loc="lower right")
+        else:
+            ax_idx += 1
+
+    if barra_result is not None:
+        exposures = _safe_attr(barra_result, "exposures", {})
+        if exposures:
+            ax = axes[ax_idx]
+            ax_idx += 1
+            styles = list(exposures.keys())
+            betas = [exposures[s] for s in styles]
+            colors = ["#27ae60" if b >= 0 else "#e74c3c" for b in betas]
+            y_pos = range(len(styles))
+            ax.barh(list(y_pos), betas, color=colors, alpha=0.8)
+            ax.set_yticks(list(y_pos))
+            ax.set_yticklabels(styles, fontsize=9)
+            ax.axvline(x=0, color="gray", linestyle="--", linewidth=0.6)
+            ax.set_title("Barra 风格因子暴露", fontsize=12)
+        else:
+            ax_idx += 1
+
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
 def _make_turnover_chart(to_result: Any) -> str | None:
     """换手率填充图。"""
     if to_result is None:
@@ -325,6 +457,8 @@ def generate_tear_sheet(
     date_range: str = "",
     advanced_results: dict[str, Any] | None = None,
     universe: str = "lft_default",
+    benchmark_result: Any = None,
+    attribution_result: Any = None,
 ) -> str:
     """生成因子 Tear Sheet HTML 报告。
 
@@ -351,6 +485,10 @@ def generate_tear_sheet(
         - size (SizeICResult)
     universe : str
         股票池。
+    benchmark_result : BenchmarkResult or None
+        基准对比结果。
+    attribution_result : dict or None
+        归因分析结果，键名 "brinson"（BrinsonResult）和/或 "barra"（BarraStyleResult）。
 
     Returns
     -------
@@ -383,6 +521,26 @@ def generate_tear_sheet(
         except Exception:
             logger.warning("生成换手率图表失败", exc_info=True)
 
+    if benchmark_result is not None:
+        try:
+            b64 = _make_benchmark_chart(benchmark_result)
+            if b64:
+                charts["benchmark_chart"] = b64
+        except Exception:
+            logger.warning("生成基准对比图表失败", exc_info=True)
+
+    brinson_r = None
+    barra_r = None
+    if attribution_result is not None:
+        brinson_r = attribution_result.get("brinson")
+        barra_r = attribution_result.get("barra")
+        try:
+            b64 = _make_attribution_chart(brinson_r, barra_r)
+            if b64:
+                charts["attribution_chart"] = b64
+        except Exception:
+            logger.warning("生成归因图表失败", exc_info=True)
+
     metrics = _extract_metrics(ic_result, bt_result, to_result, advanced_results)
 
     warnings: list[str] = []
@@ -406,4 +564,6 @@ def generate_tear_sheet(
         charts=charts,
         warnings=warnings,
         summary_html=summary_html,
+        benchmark_result=benchmark_result,
+        attribution_result=attribution_result,
     )

@@ -352,6 +352,88 @@ class TestGenerateTearSheet:
         assert html is not None
         assert len(html) > 0
 
+    def test_html_contains_benchmark_section(self, ic_result, bt_result, to_result):
+        """传入 benchmark_result 时 HTML 含 'Benchmark Comparison' 关键字。"""
+        from daily.evaluation.benchmark import BenchmarkResult
+
+        dates = [f"2025-{(i // 20 + 1):02d}-{(i % 20 + 1):02d}" for i in range(60)]
+        rng = np.random.default_rng(55)
+        rets = rng.normal(0.001, 0.01, 60)
+        bench_rets = rng.normal(0.0005, 0.01, 60)
+        excess_rets = rets - bench_rets
+
+        daily_df = pl.DataFrame(
+            {
+                "trade_date": pl.Series(dates).str.strptime(pl.Date, "%Y-%m-%d"),
+                "strategy_ret": rets,
+                "benchmark_ret": bench_rets,
+                "excess_ret": excess_rets,
+                "strategy_nav": np.cumprod(1 + rets),
+                "benchmark_nav": np.cumprod(1 + bench_rets),
+                "excess_nav": np.cumprod(1 + excess_rets),
+            }
+        )
+
+        bm = BenchmarkResult(
+            benchmark_code="000300.SH",
+            benchmark_name="HS300",
+            daily=daily_df,
+            ann_excess_ret=0.05,
+            tracking_error=0.08,
+            information_ratio=0.625,
+            excess_max_dd=-0.03,
+        )
+
+        html = generate_tear_sheet(
+            "test_factor",
+            ic_result,
+            bt_result,
+            to_result,
+            benchmark_result=bm,
+        )
+        assert "Benchmark Comparison" in html
+        assert "HS300" in html
+
+    def test_html_contains_attribution_section(self, ic_result, bt_result, to_result):
+        """传入 attribution_result 时 HTML 含 'Style/Sector Attribution' 关键字。"""
+        from daily.evaluation.attribution import BrinsonResult
+
+        sector_df = pl.DataFrame(
+            {
+                "sector": ["Tech", "Finance"],
+                "allocation": [0.01, -0.005],
+                "selection": [0.02, 0.01],
+                "interaction": [0.001, -0.002],
+                "total_contribution": [0.031, 0.003],
+            }
+        )
+        period_df = pl.DataFrame(
+            {
+                "trade_date": ["2025-01-01", "2025-01-02"],
+                "allocation": [0.005, -0.002],
+                "selection": [0.01, 0.005],
+                "interaction": [0.0005, -0.001],
+                "active_ret": [0.0155, 0.002],
+            }
+        )
+        brinson = BrinsonResult(
+            sector_df=sector_df,
+            period_df=period_df,
+            ann_allocation=0.02,
+            ann_selection=0.05,
+            ann_interaction=-0.005,
+            ann_active_return=0.065,
+        )
+
+        html = generate_tear_sheet(
+            "test_factor",
+            ic_result,
+            bt_result,
+            to_result,
+            attribution_result={"brinson": brinson},
+        )
+        assert "Style/Sector Attribution" in html or "attribution" in html.lower()
+
 
 class TestTearSheetImports:
     """模块导入和模板文件测试。"""

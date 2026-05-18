@@ -10,14 +10,17 @@ import pytest
 def _make_mock_calendar(tmp_path: Path) -> pl.DataFrame:
     """生成 2024-01-01 ~ 2024-01-10 的模拟交易日历，工作日为交易日。"""
     from datetime import date, timedelta
+
     rows = []
     d = date(2024, 1, 1)
     for _ in range(10):
-        rows.append({
-            "cal_date": d,
-            "is_open": 0 if d.weekday() >= 5 else 1,
-            "pretrade_date": "",
-        })
+        rows.append(
+            {
+                "cal_date": d,
+                "is_open": 0 if d.weekday() >= 5 else 1,
+                "pretrade_date": "",
+            }
+        )
         d += timedelta(days=1)
     df = pl.DataFrame(rows)
     cal_file = tmp_path / "trade_cal.parquet"
@@ -43,7 +46,7 @@ def mock_calendar(tmp_path, monkeypatch):
 
 
 def test_is_trade_date_weekday(mock_calendar):
-    assert mock_calendar.is_trade_date(date(2024, 1, 2)) is True   # 周二
+    assert mock_calendar.is_trade_date(date(2024, 1, 2)) is True  # 周二
 
 
 def test_is_trade_date_weekend(mock_calendar):

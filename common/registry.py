@@ -80,7 +80,8 @@ class FactorRegistry:
         """列出所有已注册因子名称，可按 category 过滤。"""
         self.discover()
         names = [
-            n for n, cls in self._registry.items()
+            n
+            for n, cls in self._registry.items()
             if category is None or getattr(cls, "category", None) == category
         ]
         return sorted(names)

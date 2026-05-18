@@ -1,4 +1,4 @@
-﻿"""reporting/ — Factor Tear Sheet 报告生成引擎。
+"""reporting/ — Factor Tear Sheet 报告生成引擎。
 
 提供因子研究完整报告的 HTML 生成功能，包含 6 个面板：
   1. Overview — 关键指标卡片

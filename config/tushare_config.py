@@ -30,6 +30,7 @@ def ensure_token() -> str:
         )
     return tok
 
+
 # ── 积分与限流 ─────────────────────────────────────────
 TUSHARE_POINTS: int = int(os.environ.get("TUSHARE_POINTS", "2000"))
 MAX_RPS: int = int(os.environ.get("TUSHARE_MAX_RPS", "5"))

@@ -26,6 +26,7 @@ _CAL_FILE: Path = DATA_CACHE / "trade_cal.parquet"
 
 # ── 内部缓存管理 ────────────────────────────────────────
 
+
 def _is_cache_valid() -> bool:
     """判断本地缓存是否存在且未过期。"""
     if not _CAL_FILE.exists():
@@ -68,6 +69,7 @@ def _load_calendar() -> pl.DataFrame:
 
 
 # ── 公开 API ────────────────────────────────────────────
+
 
 def get_trade_calendar(start: str | None = None, end: str | None = None) -> pl.DataFrame:
     """返回交易日历 DataFrame。
@@ -157,9 +159,7 @@ def next_trade_date(d: date | str, n: int = 1) -> date:
         d = datetime.strptime(d, "%Y%m%d").date()
     cal = _load_calendar()
     trade_dates = (
-        cal.filter(pl.col("is_open") == 1, pl.col("cal_date") > d)
-        .sort("cal_date")
-        .limit(n)
+        cal.filter(pl.col("is_open") == 1, pl.col("cal_date") > d).sort("cal_date").limit(n)
     )
     if len(trade_dates) < n:
         raise ValueError(f"不足 {n} 个后续交易日（从 {d} 往后）")

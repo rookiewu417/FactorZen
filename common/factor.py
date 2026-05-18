@@ -39,9 +39,7 @@ class BaseFactor(ABC):
         total = len(result)
         has_fv = "factor_value" in result.columns
         null_count = result["factor_value"].null_count() if has_fv else 0
-        inf_count = (
-            result.filter(pl.col("factor_value").is_infinite()).height if has_fv else 0
-        )
+        inf_count = result.filter(pl.col("factor_value").is_infinite()).height if has_fv else 0
         n_stocks = result["ts_code"].n_unique() if "ts_code" in result.columns else 0
         n_periods = result[time_col].n_unique() if time_col in result.columns else 0
         coverage = (total - null_count) / total if total > 0 else 0.0

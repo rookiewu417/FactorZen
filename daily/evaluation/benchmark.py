@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date  # noqa: F401  (kept for public interface)
-from typing import Any  # noqa: F401  (kept for public interface)
 
 import numpy as np
 import polars as pl
@@ -113,11 +111,12 @@ def compute_excess_return(
     excess_nav_arr: np.ndarray = joined["excess_nav"].to_numpy()
 
     ann_excess_ret = float(np.mean(excess_arr) * TRADING_DAYS_PER_YEAR)
-    tracking_error = float(np.std(excess_arr, ddof=1) * np.sqrt(TRADING_DAYS_PER_YEAR))
-    information_ratio = ann_excess_ret / tracking_error if tracking_error != 0.0 else 0.0
+    tracking_error = float(np.std(excess_arr) * np.sqrt(TRADING_DAYS_PER_YEAR))
+    information_ratio = ann_excess_ret / tracking_error if tracking_error > 1e-8 else 0.0
 
-    cum_max = np.maximum.accumulate(excess_nav_arr)
-    drawdowns = excess_nav_arr / cum_max - 1.0
+    nav_with_base = np.concatenate([[1.0], excess_nav_arr])
+    cum_max = np.maximum.accumulate(nav_with_base)
+    drawdowns = nav_with_base / cum_max - 1.0
     excess_max_dd = float(np.min(drawdowns))
 
     # ── 5. benchmark_name ────────────────────────────────────────────────────────

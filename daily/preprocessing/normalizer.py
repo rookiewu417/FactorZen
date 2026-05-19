@@ -56,12 +56,16 @@ def cross_sectional_rank(
     )
     if method == "normal":
         result = result.with_columns(
-            pl.col(factor_col)
-            .map_batches(
-                lambda s: pl.Series(
-                    _norm.ppf(s.fill_null(0.5).to_numpy().clip(1e-7, 1 - 1e-7))
+            pl.when(pl.col(factor_col).is_not_null())
+            .then(
+                pl.col(factor_col).map_batches(
+                    lambda s: pl.Series(
+                        _norm.ppf(s.to_numpy().clip(1e-7, 1 - 1e-7)),
+                        dtype=pl.Float64,
+                    )
                 )
             )
+            .otherwise(None)
             .alias(factor_col)
         )
     return result
@@ -75,7 +79,6 @@ def cross_sectional_rank(
 def quantile_transform(
     df: pl.DataFrame,
     factor_col: str,
-    n_quantiles: int = 1000,
     output: Literal["normal", "uniform"] = "normal",
 ) -> pl.DataFrame:
     """仿 sklearn QuantileTransformer，按日期分组变换。
@@ -90,8 +93,6 @@ def quantile_transform(
         必须包含 trade_date 和 factor_col 两列。
     factor_col : str
         待处理的因子列名（原地替换）。
-    n_quantiles : int, default 1000
-        保留参数，与 sklearn 接口对齐（当前实现不分桶，直接用连续 rank）。
     output : {"normal", "uniform"}, default "normal"
         输出分布类型。
 
@@ -103,7 +104,7 @@ def quantile_transform(
     from scipy.stats import rankdata
 
     rows: list[pl.DataFrame] = []
-    for _date_key, group in df.group_by("trade_date"):
+    for _date_key, group in df.group_by("trade_date", maintain_order=True):
         vals = group[factor_col].to_numpy().copy().astype(float)
         valid_mask = np.isfinite(vals)
 

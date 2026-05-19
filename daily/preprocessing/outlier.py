@@ -65,14 +65,6 @@ def mad_clip(
 # ---------------------------------------------------------------------------
 
 
-def _winsorize_series(s: pl.Series, lower: float, upper: float) -> pl.Series:
-    lo = s.quantile(lower, interpolation="linear")
-    hi = s.quantile(upper, interpolation="linear")
-    if lo is None or hi is None:
-        return s
-    return s.clip(lo, hi)
-
-
 def winsorize_percentile(
     df: pl.DataFrame,
     factor_col: str,
@@ -97,25 +89,14 @@ def winsorize_percentile(
     pl.DataFrame
         原地替换 factor_col 列的截尾结果（与 mad_clip 不同，不新增列）。
     """
-    return df.with_columns(
-        pl.col(factor_col)
-        .over("trade_date")
-        .map_batches(lambda s: _winsorize_series(s, lower, upper))
-        .alias(factor_col)
-    )
+    lo = pl.col(factor_col).quantile(lower, interpolation="linear").over("trade_date")
+    hi = pl.col(factor_col).quantile(upper, interpolation="linear").over("trade_date")
+    return df.with_columns(pl.col(factor_col).clip(lo, hi))
 
 
 # ---------------------------------------------------------------------------
 # Sigma clip (mean ± n·std)
 # ---------------------------------------------------------------------------
-
-
-def _sigma_clip_series(s: pl.Series, n_sigma: float) -> pl.Series:
-    mean = s.mean()
-    std = s.std()
-    if mean is None or std is None or std == 0:
-        return s
-    return s.clip(mean - n_sigma * std, mean + n_sigma * std)
 
 
 def sigma_clip(
@@ -139,9 +120,8 @@ def sigma_clip(
     pl.DataFrame
         原地替换 factor_col 列的截尾结果。
     """
+    mean = pl.col(factor_col).mean().over("trade_date")
+    std = pl.col(factor_col).std().over("trade_date")
     return df.with_columns(
-        pl.col(factor_col)
-        .over("trade_date")
-        .map_batches(lambda s: _sigma_clip_series(s, n_sigma))
-        .alias(factor_col)
+        pl.col(factor_col).clip(mean - n_sigma * std, mean + n_sigma * std)
     )

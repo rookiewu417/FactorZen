@@ -357,6 +357,25 @@ packages:
   - tomli ; python_full_version < '3.11'
   - tzdata ; extra == 'tz'
   requires_python: '>=3.10'
+- pypi: ./
+  name: alphazen
+  version: 0.1.0
+  sha256: ce89249e128b91dc2d9637e629de714a4a9abd1b9973ea842bf879d6c81f3d62
+  requires_dist:
+  - polars>=1.0.0
+  - pyarrow>=14.0.0
+  - tushare>=1.4.0
+  - pandas>=2.0.0
+  - numpy>=1.24.0
+  - scipy>=1.11.0
+  - statsmodels>=0.14.0
+  - matplotlib>=3.7.0
+  - jinja2>=3.1.0
+  - pytest>=7.0.0 ; extra == 'dev'
+  - coverage>=7.4.0 ; extra == 'dev'
+  - ruff>=0.3.0 ; extra == 'dev'
+  - jupyterlab>=4.0.0 ; extra == 'dev'
+  requires_python: '>=3.10,<3.13'
 - pypi: https://files.pythonhosted.org/packages/78/b6/6307fbef88d9b5ee7421e68d78a9f162e0da4900bc5f5793f6d3d0e34fb8/annotated_types-0.7.0-py3-none-any.whl
   name: annotated-types
   version: 0.7.0
@@ -833,25 +852,6 @@ packages:
   - littleutils ; extra == 'tests'
   - rich ; python_full_version >= '3.11' and extra == 'tests'
   requires_python: '>=3.8'
-- pypi: ./
-  name: factor-research
-  version: 0.1.0
-  sha256: 6a0434c1c938399018e7a03a21624eb6e04df9c920b42a2f47ef8df214af90c5
-  requires_dist:
-  - polars>=1.0.0
-  - pyarrow>=14.0.0
-  - tushare>=1.4.0
-  - pandas>=2.0.0
-  - numpy>=1.24.0
-  - scipy>=1.11.0
-  - statsmodels>=0.14.0
-  - matplotlib>=3.7.0
-  - jinja2>=3.1.0
-  - pytest>=7.0.0 ; extra == 'dev'
-  - coverage>=7.4.0 ; extra == 'dev'
-  - ruff>=0.3.0 ; extra == 'dev'
-  - jupyterlab>=4.0.0 ; extra == 'dev'
-  requires_python: '>=3.10,<3.13'
 - pypi: https://files.pythonhosted.org/packages/cb/a8/20d0723294217e47de6d9e2e40fd4a9d2f7c4b6ef974babd482a59743694/fastjsonschema-2.21.2-py3-none-any.whl
   name: fastjsonschema
   version: 2.21.2

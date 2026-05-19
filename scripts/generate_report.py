@@ -16,6 +16,15 @@ from pathlib import Path
 import polars as pl
 
 from common.calendar import get_trade_dates
+from common.config_loader import (
+    RunConfig,
+    build_cost_model,
+    build_preprocessing_pipeline,
+    build_runtime_backtest_config,
+    load_run_config,
+)
+from common.data_quality import QualityCheckError, build_daily_quality_report
+from common.experiment import record_experiment_output, run_experiment
 from common.loader import fetch_daily
 from common.logger import get_logger, setup_logging
 from common.storage import load_parquet
@@ -33,12 +42,41 @@ from daily.evaluation.ic_analysis import (
     compute_rank_ic,
 )
 from daily.evaluation.turnover import TurnoverResult, compute_turnover
+from daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 from daily.factors.registry import get_factor
-from daily.preprocessing.pipeline import quick_preprocess
 from reporting.tear_sheet import generate_tear_sheet
 
 setup_logging()
 logger = get_logger(__name__)
+
+
+def _merge_report_config_args(args: argparse.Namespace, run_config: RunConfig | None):
+    """Merge YAML config into report CLI args without overriding explicit CLI values."""
+    if run_config is not None:
+        for field in ("factor", "start", "end", "universe", "benchmark"):
+            if getattr(args, field, None) is None:
+                setattr(args, field, getattr(run_config, field))
+
+    if args.universe is None:
+        args.universe = "csi300"
+
+    missing = [field for field in ("factor", "start", "end") if getattr(args, field, None) is None]
+    if missing:
+        raise ValueError(f"缺少必填参数: {', '.join(missing)}（可通过 CLI 或 --config 提供）")
+    return args
+
+
+def _effective_report_config(args: argparse.Namespace, run_config: RunConfig | None) -> RunConfig:
+    base = run_config or RunConfig(factor=args.factor, start=args.start, end=args.end)
+    return base.model_copy(
+        update={
+            "factor": args.factor,
+            "start": args.start,
+            "end": args.end,
+            "universe": args.universe,
+            "benchmark": args.benchmark or base.benchmark,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +97,9 @@ def _save_results(
     ic_result: ICAnalysisResult,
     bt_result: BacktestResult,
     to_result: TurnoverResult,
+    quality_report: dict | None = None,
+    quality_path: Path | None = None,
+    walk_forward_summary: dict | None = None,
 ) -> None:
     """将因子 DataFrame 和评价结果落盘到 output/daily/。"""
     OUTPUT_DAILY_FACTORS.mkdir(parents=True, exist_ok=True)
@@ -100,11 +141,39 @@ def _save_results(
         "to_factor_name": to_result.factor_name,
         "to_avg_turnover": to_result.avg_turnover,
         "to_frequency": to_result.frequency,
+        "quality_status": (quality_report or {}).get("status"),
+        "quality_warnings": (quality_report or {}).get("warnings", []),
+        "quality_report_path": str(quality_path) if quality_path is not None else None,
+        "walk_forward_summary": walk_forward_summary or {"status": "not_run", "n_folds": 0},
     }
     _meta_path(factor_name, start, end).write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     logger.info(f"中间结果已落盘: output/daily/results/{prefix}_*.parquet")
+
+
+def _quality_path(factor_name: str, start: str, end: str) -> Path:
+    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
+    return OUTPUT_DAILY_RESULTS / f"{factor_name}_{start}_{end}_quality.json"
+
+
+def _save_quality_report(
+    factor_name: str,
+    start: str,
+    end: str,
+    report: dict,
+) -> Path:
+    path = _quality_path(factor_name, start, end)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _load_walk_forward_summary(factor_name: str, start: str, end: str) -> dict | None:
+    mp = _meta_path(factor_name, start, end)
+    if not mp.exists():
+        return None
+    meta = json.loads(mp.read_text(encoding="utf-8"))
+    return meta.get("walk_forward_summary")
 
 
 def _load_results(
@@ -327,25 +396,16 @@ def _run_advanced_evaluation(clean_df, ret_df, frequency, start: str = "", end: 
 # ---------------------------------------------------------------------------
 
 
-def main():
-    parser = argparse.ArgumentParser(description="因子 Tear Sheet 报告生成")
-    parser.add_argument("--factor", required=True, help="因子名称")
-    parser.add_argument("--start", required=True, help="起始日期 YYYYMMDD")
-    parser.add_argument("--end", required=True, help="截止日期 YYYYMMDD")
-    parser.add_argument("--universe", default="csi300", help="股票池")
-    parser.add_argument(
-        "--frequency", default="daily", choices=["daily", "weekly", "monthly"], help="因子频率"
-    )
-    parser.add_argument(
-        "--reuse", action="store_true", help="复用已有 parquet 结果，跳过重新计算（需先跑过一次）"
-    )
-    parser.add_argument(
-        "--benchmark",
-        default=None,
-        help="基准指数代码（如 000300.SH），若指定则计算超额收益与 benchmark 对比",
-    )
-    args = parser.parse_args()
+def _existing_report_outputs(factor_name: str, start: str, end: str) -> dict[str, str]:
+    candidates = {
+        "report": OUTPUT_DAILY_REPORTS / f"{factor_name}_{start}_{end}.html",
+        "meta": _meta_path(factor_name, start, end),
+        "quality_report": _quality_path(factor_name, start, end),
+    }
+    return {name: str(path) for name, path in candidates.items() if path.exists()}
 
+
+def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str]:
     logger.info(f"──── 因子报告生成: {args.factor} | {args.start} ~ {args.end} ────")
 
     # ── 1. 获取因子类 ──
@@ -353,9 +413,12 @@ def main():
         factor_cls = get_factor(args.factor)
     except KeyError as e:
         logger.error(str(e))
-        sys.exit(1)
+        raise RuntimeError(f"unknown factor: {args.factor}") from e
     factor = factor_cls()
     logger.info(f"因子: {factor.name} | {factor.description}")
+
+    walk_forward_summary: dict | None = None
+    walk_forward_result = None
 
     # ── --reuse 路径 ──
     reused = None
@@ -364,6 +427,7 @@ def main():
 
     if reused is not None:
         clean_df, ic_result, bt_result, to_result = reused
+        walk_forward_summary = _load_walk_forward_summary(args.factor, args.start, args.end)
         # 高级评价仍需 ret_df，重新从存储加载（快速路径：只读收盘价）
         try:
             fetch_daily(args.start, args.end)
@@ -398,13 +462,13 @@ def main():
             fetch_daily(args.start, args.end)
         except Exception as e:
             logger.error(f"数据拉取失败: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"fetch_daily failed: {e}") from e
 
         # ── 3. 股票池 ──
         universe = get_universe(args.end, args.universe)
         if universe.is_empty():
             logger.error(f"股票池为空: {args.universe} ({args.end})")
-            sys.exit(1)
+            raise RuntimeError(f"empty universe: {args.universe} ({args.end})")
         ts_codes = universe["ts_code"].to_list()
         logger.info(f"股票池: {len(ts_codes)} 只")
 
@@ -421,31 +485,49 @@ def main():
             factor_df = factor.compute(ctx)
         except Exception as e:
             logger.error(f"因子计算失败: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"factor compute failed: {e}") from e
 
         validation = factor.validate(factor_df)
         logger.info(f"因子计算完成: {validation}")
         if factor_df.is_empty():
             logger.error("因子计算结果为空，退出")
-            sys.exit(1)
+            raise RuntimeError("empty factor result")
         if validation.get("coverage", 0) < 0.5:
             logger.warning("因子覆盖率不足 50%，结果可能不可靠")
 
         # ── 5. 预处理 ──
-        clean_df = quick_preprocess(factor_df, col="factor_value")
+        clean_df = build_preprocessing_pipeline(effective_config).run(factor_df, col="factor_value")
         logger.info("预处理完成 (去极值 → 填充 → 标准化)")
 
         # ── 6. 前向收益 ──
         daily = load_parquet("daily", start=args.start, end=args.end).collect()
         if daily.is_empty():
             logger.error("日线数据为空，无法计算收益")
-            sys.exit(1)
+            raise RuntimeError("empty daily data")
         ret_df = daily.select(["trade_date", "ts_code", "close"]).sort(["ts_code", "trade_date"])
         ret_df = ret_df.with_columns(
             (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1).alias("ret")
         )
         ret_df = compute_fwd_returns(ret_df, ret_col="ret")
         logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
+
+        try:
+            quality_report = build_daily_quality_report(
+                daily_df=daily,
+                factor_df=factor_df,
+                clean_df=clean_df,
+                ret_df=ret_df,
+                universe_codes=ts_codes,
+            )
+        except QualityCheckError as e:
+            logger.error(f"数据质量检查失败: {e}")
+            raise RuntimeError(f"quality check failed: {e}") from e
+        quality_report_path = _save_quality_report(
+            factor.name, args.start, args.end, quality_report
+        )
+        if quality_report["warnings"]:
+            logger.warning(f"数据质量警告: {quality_report['warnings']}")
+        logger.info(f"数据质量报告已保存: {quality_report_path}")
 
         # ── 7. IC 分析 ──
         ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
@@ -456,8 +538,13 @@ def main():
         bt_result = run_stratified_backtest(
             clean_df,
             daily,
+            n_groups=effective_config.backtest.quantiles,
             frequency=args.frequency,
             factor_name=factor.name,
+            cost_model=build_cost_model(effective_config),
+            config=build_runtime_backtest_config(
+                effective_config, factor_col="factor_clean", frequency=args.frequency
+            ),
         )
         logger.info(f"\n{bt_result.summary()}")
 
@@ -466,11 +553,37 @@ def main():
         to_result.factor_name = factor.name
         logger.info(f"\n{to_result.summary()}")
 
-        # ── 10. 高级评价 ──
+        # ── 10. Walk-forward / OOS 摘要 ──
+        try:
+            walk_forward_summary, walk_forward_result = run_quantile_walk_forward_summary(
+                clean_df,
+                daily,
+                effective_config,
+                factor_name=factor.name,
+                frequency=args.frequency,
+            )
+            logger.info(f"Walk-forward 摘要: {walk_forward_summary}")
+        except Exception as e:
+            walk_forward_summary = {"status": "error", "n_folds": 0, "error": str(e)}
+            walk_forward_result = None
+            logger.warning(f"Walk-forward 计算失败（跳过）: {e}")
+
+        # ── 11. 高级评价 ──
         advanced_results = _run_advanced_evaluation(clean_df, ret_df, args.frequency)
 
         # ── 持久化中间结果 ──
-        _save_results(args.factor, args.start, args.end, clean_df, ic_result, bt_result, to_result)
+        _save_results(
+            args.factor,
+            args.start,
+            args.end,
+            clean_df,
+            ic_result,
+            bt_result,
+            to_result,
+            quality_report=quality_report,
+            quality_path=quality_report_path,
+            walk_forward_summary=walk_forward_summary,
+        )
 
     # ── (Optional) Benchmark 对比 ──
     benchmark_result = None
@@ -498,6 +611,8 @@ def main():
         universe=args.universe,
         benchmark_result=benchmark_result,
         attribution_result=None,  # Brinson requires index constituent data; deferred
+        walk_forward_result=walk_forward_result,
+        walk_forward_summary=walk_forward_summary,
     )
 
     # ── 12. 落盘 HTML ──
@@ -505,7 +620,59 @@ def main():
     report_path = OUTPUT_DAILY_REPORTS / f"{factor.name}_{args.start}_{args.end}.html"
     report_path.write_text(html, encoding="utf-8")
     logger.info(f"报告已生成: {report_path}")
-    logger.info("完成!")
+
+    outputs = {
+        "report": str(report_path),
+        "meta": str(_meta_path(args.factor, args.start, args.end)),
+    }
+    quality_report_path = _quality_path(args.factor, args.start, args.end)
+    if quality_report_path.exists():
+        outputs["quality_report"] = str(quality_report_path)
+    return outputs
+
+
+def main():
+    parser = argparse.ArgumentParser(description="因子 Tear Sheet 报告生成")
+    parser.add_argument("--factor", default=None, help="因子名称")
+    parser.add_argument("--start", default=None, help="起始日期 YYYYMMDD")
+    parser.add_argument("--end", default=None, help="截止日期 YYYYMMDD")
+    parser.add_argument("--universe", default=None, help="股票池")
+    parser.add_argument(
+        "--frequency", default="daily", choices=["daily", "weekly", "monthly"], help="因子频率"
+    )
+    parser.add_argument(
+        "--reuse", action="store_true", help="复用已有 parquet 结果，跳过重新计算（需先跑过一次）"
+    )
+    parser.add_argument(
+        "--benchmark",
+        default=None,
+        help="基准指数代码（如 000300.SH），若指定则计算超额收益与 benchmark 对比",
+    )
+    parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
+    args = parser.parse_args()
+
+    run_config = load_run_config(args.config) if args.config else None
+    try:
+        args = _merge_report_config_args(args, run_config)
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(2)
+    effective_config = _effective_report_config(args, run_config)
+
+    try:
+        with run_experiment(effective_config, command=sys.argv) as exp_dir:
+            try:
+                outputs = _run(args, effective_config)
+            except Exception:
+                for name, path in _existing_report_outputs(args.factor, args.start, args.end).items():
+                    record_experiment_output(exp_dir, name, path)
+                raise
+            for name, path in outputs.items():
+                record_experiment_output(exp_dir, name, path)
+    except Exception as e:
+        logger.error(str(e))
+        sys.exit(1)
+    logger.info("Done.")
 
 
 if __name__ == "__main__":

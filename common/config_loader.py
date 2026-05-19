@@ -68,3 +68,40 @@ def load_run_config(path: Path | str) -> RunConfig:
     path = Path(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     return RunConfig.model_validate(data)
+
+
+def build_preprocessing_pipeline(config: RunConfig):
+    """Build the runtime preprocessing pipeline from a validated run config."""
+    from daily.preprocessing.pipeline import PreprocessingPipeline
+
+    return PreprocessingPipeline(
+        steps=["outlier", "missing", "normalize"],
+        outlier_method=config.preprocessing.outlier,
+        normalizer_method=config.preprocessing.normalizer,
+        neutralize=config.preprocessing.neutralize,
+    )
+
+
+def build_runtime_backtest_config(
+    config: RunConfig,
+    factor_col: str = "factor_clean",
+    frequency: str = "daily",
+):
+    """Build daily.evaluation.backtest.BacktestConfig from RunConfig."""
+    from daily.evaluation.backtest import BacktestConfig as RuntimeBacktestConfig
+
+    return RuntimeBacktestConfig(
+        factor_col=factor_col,
+        frequency=frequency,
+        max_abs_weight=config.backtest.max_abs_weight,
+        rebalance_threshold=config.backtest.rebalance_threshold,
+    )
+
+
+def build_cost_model(config: RunConfig):
+    """Build the configured transaction cost model."""
+    from daily.evaluation.cost_models import LinearCostModel, SquareRootImpactCostModel
+
+    if config.backtest.cost_model == "square_root_impact":
+        return SquareRootImpactCostModel()
+    return LinearCostModel()

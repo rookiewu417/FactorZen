@@ -434,6 +434,19 @@ class TestGenerateTearSheet:
         )
         assert "Style/Sector Attribution" in html or "attribution" in html.lower()
 
+    def test_html_contains_walk_forward_insufficient_state(
+        self, ic_result, bt_result, to_result
+    ):
+        html = generate_tear_sheet(
+            "test_factor",
+            ic_result,
+            bt_result,
+            to_result,
+            walk_forward_summary={"status": "insufficient_data", "n_folds": 0},
+        )
+        assert "Walk-Forward 稳健性" in html
+        assert "样本不足" in html
+
 
 class TestTearSheetImports:
     """模块导入和模板文件测试。"""

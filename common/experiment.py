@@ -1,10 +1,12 @@
 """实验记录：写 manifest.json 到 output/experiments/{run_id}/"""
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from config.settings import ROOT
@@ -25,8 +27,40 @@ def _get_git_sha() -> str:
         return "unknown"
 
 
+def _get_git_dirty() -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return False
+
+
+def _get_pixi_lock_hash() -> str:
+    lock_path = ROOT / "pixi.lock"
+    if not lock_path.exists():
+        return "missing"
+    return hashlib.sha256(lock_path.read_bytes()).hexdigest()
+
+
+def record_experiment_output(exp_dir: Path, key: str, value: str) -> None:
+    """Record an output path in an existing experiment manifest."""
+    manifest_path = exp_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.setdefault("outputs", {})[key] = value
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 @contextmanager
-def run_experiment(config: Any, run_id: str | None = None):
+def run_experiment(
+    config: Any,
+    run_id: str | None = None,
+    command: list[str] | None = None,
+):
     """记录实验 manifest。config 可以是 RunConfig 或任意可序列化对象。
 
     Args:
@@ -56,7 +90,11 @@ def run_experiment(config: Any, run_id: str | None = None):
     manifest: dict[str, Any] = {
         "run_id": run_id,
         "git_sha": _get_git_sha(),
+        "git_dirty": _get_git_dirty(),
+        "pixi_lock_sha256": _get_pixi_lock_hash(),
+        "command": command,
         "config": config_dict,
+        "outputs": {},
         "start_ts": start_ts,
         "end_ts": None,
         "status": "running",
@@ -76,4 +114,7 @@ def run_experiment(config: Any, run_id: str | None = None):
         manifest["error"] = str(exc)
         raise
     finally:
+        if manifest_path.exists():
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["outputs"] = existing.get("outputs", manifest.get("outputs", {}))
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))

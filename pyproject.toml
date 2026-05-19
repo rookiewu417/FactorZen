@@ -3,10 +3,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "factor-research"
+name = "alphazen"
 version = "0.1.0"
 requires-python = ">=3.10,<3.13"
-description = "单因子研究框架 — 覆盖日/周/月频（daily）、日内分钟频（intraday）和 Tick 预留（tick）"
+description = "AlphaZen — disciplined A-share alpha research from signal to evidence"
 dependencies = [
     "polars>=1.0.0",
     "pyarrow>=14.0.0",
@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
+    "coverage>=7.4.0",
     "ruff>=0.3.0",
     "jupyterlab>=4.0.0",
 ]
@@ -65,4 +66,17 @@ warn_redundant_casts = true
 warn_unused_ignores = false
 ignore_missing_imports = true
 # 渐进式：仅强制 common/ 和 daily/evaluation/ daily/preprocessing/
-files = ["common", "daily/evaluation", "daily/preprocessing"]
+files = ["common", "daily/evaluation", "daily/preprocessing", "daily/factors", "reporting", "automation"]
+
+[tool.coverage.run]
+source = ["common", "daily/evaluation", "daily/preprocessing", "daily/factors", "reporting", "automation"]
+omit = [
+    "scripts/*",
+    "docs/archive/*",
+    "docs/superpowers/*",
+    "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

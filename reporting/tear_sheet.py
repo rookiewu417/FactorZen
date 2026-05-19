@@ -647,6 +647,7 @@ def generate_tear_sheet(
     benchmark_result: Any = None,
     attribution_result: Any = None,
     walk_forward_result: Any = None,
+    walk_forward_summary: dict[str, Any] | None = None,
     event_study_result: Any = None,
     factor_corr: Any = None,
     pearson_ic_result: Any = None,
@@ -812,6 +813,7 @@ def generate_tear_sheet(
         benchmark_result=benchmark_result,
         attribution_result=attribution_result,
         walk_forward_result=walk_forward_result,
+        walk_forward_summary=walk_forward_summary,
         event_study_result=event_study_result,
         factor_corr=factor_corr,
     )

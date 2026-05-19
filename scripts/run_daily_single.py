@@ -1,11 +1,20 @@
 """日频单因子完整评估。用法: python scripts/run_daily_single.py --factor momentum_20d --start 20250101 --end 20250513"""
 
 import argparse
+import json
 import sys
 
 import polars as pl
 
 from common.calendar import get_trade_dates
+from common.config_loader import (
+    RunConfig,
+    build_cost_model,
+    build_preprocessing_pipeline,
+    build_runtime_backtest_config,
+)
+from common.data_quality import QualityCheckError, build_daily_quality_report
+from common.experiment import record_experiment_output, run_experiment
 from common.loader import fetch_daily
 from common.logger import get_logger, setup_logging
 from common.universe import get_universe
@@ -15,18 +24,64 @@ from daily.evaluation.backtest import run_stratified_backtest
 from daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
 from daily.evaluation.turnover import compute_turnover
 from daily.factors.registry import get_factor
-from daily.preprocessing.pipeline import quick_preprocess
 from reporting.tear_sheet import generate_tear_sheet
 
 setup_logging()
 logger = get_logger(__name__)
 
 
+def _merge_run_config_args(args: argparse.Namespace, run_config: RunConfig | None):
+    """Merge YAML config into argparse args without overriding explicit CLI values."""
+    if run_config is not None:
+        for field in ("factor", "start", "end", "universe", "benchmark", "seed"):
+            if getattr(args, field, None) is None:
+                setattr(args, field, getattr(run_config, field))
+        if args.ic_method is None:
+            args.ic_method = run_config.ic_method
+        if args.neutralized_ic is None:
+            args.neutralized_ic = run_config.neutralized_ic
+        if args.event_study is None:
+            args.event_study = run_config.event_study
+
+    if args.universe is None:
+        args.universe = "csi300"
+    if args.ic_method is None:
+        args.ic_method = "rank"
+    if args.neutralized_ic is None:
+        args.neutralized_ic = False
+    if args.event_study is None:
+        args.event_study = False
+
+    missing = [field for field in ("factor", "start", "end") if getattr(args, field, None) is None]
+    if missing:
+        raise ValueError(f"缺少必填参数: {', '.join(missing)}（可通过 CLI 或 --config 提供）")
+
+    return args
+
+
+def _effective_run_config(args: argparse.Namespace, run_config: RunConfig | None) -> RunConfig:
+    """Return a RunConfig that reflects final merged scalar CLI values."""
+    base = run_config or RunConfig(factor=args.factor, start=args.start, end=args.end)
+    return base.model_copy(
+        update={
+            "factor": args.factor,
+            "start": args.start,
+            "end": args.end,
+            "universe": args.universe,
+            "benchmark": args.benchmark or base.benchmark,
+            "seed": args.seed,
+            "ic_method": args.ic_method,
+            "neutralized_ic": args.neutralized_ic,
+            "event_study": args.event_study,
+        }
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="日频单因子评估")
-    parser.add_argument("--factor", required=True, help="因子名称")
-    parser.add_argument("--start", required=True, help="起始日期 YYYYMMDD")
-    parser.add_argument("--end", required=True, help="截止日期 YYYYMMDD")
+    parser.add_argument("--factor", default=None, help="因子名称")
+    parser.add_argument("--start", default=None, help="起始日期 YYYYMMDD")
+    parser.add_argument("--end", default=None, help="截止日期 YYYYMMDD")
     parser.add_argument("--universe", type=str, default=None, help="股票池")
     parser.add_argument(
         "--frequency", default="daily", choices=["daily", "weekly", "monthly"], help="因子频率"
@@ -40,7 +95,7 @@ def main():
     parser.add_argument("--seed", type=int, default=None, help="全局随机种子")
     parser.add_argument(
         "--ic-method",
-        default="rank",
+        default=None,
         choices=["rank", "pearson", "both"],
         dest="ic_method",
         help="IC 计算方法：rank（Spearman，默认）/ pearson / both",
@@ -49,14 +104,14 @@ def main():
         "--neutralized-ic",
         action="store_true",
         dest="neutralized_ic",
-        default=False,
+        default=None,
         help="是否计算中性化后的 Rank IC（需要因子 DataFrame 含 industry 或 log_mktcap 列）",
     )
     parser.add_argument(
         "--event-study",
         action="store_true",
         dest="event_study",
-        default=False,
+        default=None,
         help="是否执行事件研究分析（选 Top 5%% 分位股票为事件）",
     )
     args = parser.parse_args()
@@ -67,17 +122,14 @@ def main():
         from common.config_loader import load_run_config
 
         run_config = load_run_config(args.config)
-        # CLI 默认值时，从 config 填充
-        if args.universe is None and run_config.universe:
-            args.universe = run_config.universe
-        if args.benchmark is None and run_config.benchmark:
-            args.benchmark = run_config.benchmark
-        if args.seed is None and run_config.seed is not None:
-            args.seed = run_config.seed
 
-    # 最终默认值（CLI 未提供且 config 未填充时）
-    if args.universe is None:
-        args.universe = "csi300"
+    try:
+        args = _merge_run_config_args(args, run_config)
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(2)
+
+    effective_config = _effective_run_config(args, run_config)
 
     # ── 0b. 设置全局随机种子（可选）──
     if args.seed is not None:
@@ -140,7 +192,7 @@ def main():
         logger.warning("因子覆盖率不足 50%，结果可能不可靠")
 
     # ── 5. 预处理 ──
-    clean_df = quick_preprocess(factor_df, col="factor_value")
+    clean_df = build_preprocessing_pipeline(effective_config).run(factor_df, col="factor_value")
     logger.info("预处理完成 (去极值 → 填充 → 标准化)")
 
     # ── 6. 计算前向收益 ──
@@ -154,6 +206,27 @@ def main():
     )
     ret_df = compute_fwd_returns(ret_df, ret_col="ret")
     logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
+
+    # ── 6b. 数据质量审计 ──
+    try:
+        quality_report = build_daily_quality_report(
+            daily_df=daily,
+            factor_df=factor_df,
+            clean_df=clean_df,
+            ret_df=ret_df,
+            universe_codes=ts_codes,
+        )
+    except QualityCheckError as e:
+        logger.error(f"数据质量检查失败: {e}")
+        sys.exit(1)
+    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
+    quality_path = (
+        OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_quality.json"
+    )
+    quality_path.write_text(json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if quality_report["warnings"]:
+        logger.warning(f"数据质量警告: {quality_report['warnings']}")
+    logger.info(f"数据质量报告已保存: {quality_path}")
 
     # ── 7. IC 分析 ──
     ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
@@ -204,8 +277,13 @@ def main():
     bt_result = run_stratified_backtest(
         clean_df,
         daily,
+        n_groups=effective_config.backtest.quantiles,
         frequency=args.frequency,
         factor_name=factor.name,
+        cost_model=build_cost_model(effective_config),
+        config=build_runtime_backtest_config(
+            effective_config, factor_col="factor_clean", frequency=args.frequency
+        ),
     )
     logger.info(f"\n{bt_result.summary()}")
 
@@ -274,6 +352,12 @@ def main():
     report_path = OUTPUT_DAILY_REPORTS / f"{factor.name}_{args.start}_{args.end}.html"
     report_path.write_text(html, encoding="utf-8")
     logger.info(f"报告已生成: {report_path}")
+
+    with run_experiment(effective_config, command=sys.argv) as exp_dir:
+        record_experiment_output(exp_dir, "factor", str(factor_path))
+        record_experiment_output(exp_dir, "ic", str(OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_ic.parquet"))
+        record_experiment_output(exp_dir, "quality_report", str(quality_path))
+        record_experiment_output(exp_dir, "report", str(report_path))
     logger.info("完成!")
 
 

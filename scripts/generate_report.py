@@ -16,6 +16,15 @@ from pathlib import Path
 import polars as pl
 
 from common.calendar import get_trade_dates
+from common.config_loader import (
+    RunConfig,
+    build_cost_model,
+    build_preprocessing_pipeline,
+    build_runtime_backtest_config,
+    load_run_config,
+)
+from common.data_quality import QualityCheckError, build_daily_quality_report
+from common.experiment import record_experiment_output, run_experiment
 from common.loader import fetch_daily
 from common.logger import get_logger, setup_logging
 from common.storage import load_parquet
@@ -34,11 +43,39 @@ from daily.evaluation.ic_analysis import (
 )
 from daily.evaluation.turnover import TurnoverResult, compute_turnover
 from daily.factors.registry import get_factor
-from daily.preprocessing.pipeline import quick_preprocess
 from reporting.tear_sheet import generate_tear_sheet
 
 setup_logging()
 logger = get_logger(__name__)
+
+
+def _merge_report_config_args(args: argparse.Namespace, run_config: RunConfig | None):
+    """Merge YAML config into report CLI args without overriding explicit CLI values."""
+    if run_config is not None:
+        for field in ("factor", "start", "end", "universe", "benchmark"):
+            if getattr(args, field, None) is None:
+                setattr(args, field, getattr(run_config, field))
+
+    if args.universe is None:
+        args.universe = "csi300"
+
+    missing = [field for field in ("factor", "start", "end") if getattr(args, field, None) is None]
+    if missing:
+        raise ValueError(f"缺少必填参数: {', '.join(missing)}（可通过 CLI 或 --config 提供）")
+    return args
+
+
+def _effective_report_config(args: argparse.Namespace, run_config: RunConfig | None) -> RunConfig:
+    base = run_config or RunConfig(factor=args.factor, start=args.start, end=args.end)
+    return base.model_copy(
+        update={
+            "factor": args.factor,
+            "start": args.start,
+            "end": args.end,
+            "universe": args.universe,
+            "benchmark": args.benchmark or base.benchmark,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +96,8 @@ def _save_results(
     ic_result: ICAnalysisResult,
     bt_result: BacktestResult,
     to_result: TurnoverResult,
+    quality_report: dict | None = None,
+    quality_path: Path | None = None,
 ) -> None:
     """将因子 DataFrame 和评价结果落盘到 output/daily/。"""
     OUTPUT_DAILY_FACTORS.mkdir(parents=True, exist_ok=True)
@@ -100,11 +139,30 @@ def _save_results(
         "to_factor_name": to_result.factor_name,
         "to_avg_turnover": to_result.avg_turnover,
         "to_frequency": to_result.frequency,
+        "quality_status": (quality_report or {}).get("status"),
+        "quality_warnings": (quality_report or {}).get("warnings", []),
+        "quality_report_path": str(quality_path) if quality_path is not None else None,
     }
     _meta_path(factor_name, start, end).write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     logger.info(f"中间结果已落盘: output/daily/results/{prefix}_*.parquet")
+
+
+def _quality_path(factor_name: str, start: str, end: str) -> Path:
+    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
+    return OUTPUT_DAILY_RESULTS / f"{factor_name}_{start}_{end}_quality.json"
+
+
+def _save_quality_report(
+    factor_name: str,
+    start: str,
+    end: str,
+    report: dict,
+) -> Path:
+    path = _quality_path(factor_name, start, end)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def _load_results(
@@ -329,10 +387,10 @@ def _run_advanced_evaluation(clean_df, ret_df, frequency, start: str = "", end: 
 
 def main():
     parser = argparse.ArgumentParser(description="因子 Tear Sheet 报告生成")
-    parser.add_argument("--factor", required=True, help="因子名称")
-    parser.add_argument("--start", required=True, help="起始日期 YYYYMMDD")
-    parser.add_argument("--end", required=True, help="截止日期 YYYYMMDD")
-    parser.add_argument("--universe", default="csi300", help="股票池")
+    parser.add_argument("--factor", default=None, help="因子名称")
+    parser.add_argument("--start", default=None, help="起始日期 YYYYMMDD")
+    parser.add_argument("--end", default=None, help="截止日期 YYYYMMDD")
+    parser.add_argument("--universe", default=None, help="股票池")
     parser.add_argument(
         "--frequency", default="daily", choices=["daily", "weekly", "monthly"], help="因子频率"
     )
@@ -344,7 +402,16 @@ def main():
         default=None,
         help="基准指数代码（如 000300.SH），若指定则计算超额收益与 benchmark 对比",
     )
+    parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
     args = parser.parse_args()
+
+    run_config = load_run_config(args.config) if args.config else None
+    try:
+        args = _merge_report_config_args(args, run_config)
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(2)
+    effective_config = _effective_report_config(args, run_config)
 
     logger.info(f"──── 因子报告生成: {args.factor} | {args.start} ~ {args.end} ────")
 
@@ -432,7 +499,7 @@ def main():
             logger.warning("因子覆盖率不足 50%，结果可能不可靠")
 
         # ── 5. 预处理 ──
-        clean_df = quick_preprocess(factor_df, col="factor_value")
+        clean_df = build_preprocessing_pipeline(effective_config).run(factor_df, col="factor_value")
         logger.info("预处理完成 (去极值 → 填充 → 标准化)")
 
         # ── 6. 前向收益 ──
@@ -447,6 +514,24 @@ def main():
         ret_df = compute_fwd_returns(ret_df, ret_col="ret")
         logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
 
+        try:
+            quality_report = build_daily_quality_report(
+                daily_df=daily,
+                factor_df=factor_df,
+                clean_df=clean_df,
+                ret_df=ret_df,
+                universe_codes=ts_codes,
+            )
+        except QualityCheckError as e:
+            logger.error(f"数据质量检查失败: {e}")
+            sys.exit(1)
+        quality_report_path = _save_quality_report(
+            factor.name, args.start, args.end, quality_report
+        )
+        if quality_report["warnings"]:
+            logger.warning(f"数据质量警告: {quality_report['warnings']}")
+        logger.info(f"数据质量报告已保存: {quality_report_path}")
+
         # ── 7. IC 分析 ──
         ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
         ic_result.factor_name = factor.name
@@ -456,8 +541,13 @@ def main():
         bt_result = run_stratified_backtest(
             clean_df,
             daily,
+            n_groups=effective_config.backtest.quantiles,
             frequency=args.frequency,
             factor_name=factor.name,
+            cost_model=build_cost_model(effective_config),
+            config=build_runtime_backtest_config(
+                effective_config, factor_col="factor_clean", frequency=args.frequency
+            ),
         )
         logger.info(f"\n{bt_result.summary()}")
 
@@ -470,7 +560,17 @@ def main():
         advanced_results = _run_advanced_evaluation(clean_df, ret_df, args.frequency)
 
         # ── 持久化中间结果 ──
-        _save_results(args.factor, args.start, args.end, clean_df, ic_result, bt_result, to_result)
+        _save_results(
+            args.factor,
+            args.start,
+            args.end,
+            clean_df,
+            ic_result,
+            bt_result,
+            to_result,
+            quality_report=quality_report,
+            quality_path=quality_report_path,
+        )
 
     # ── (Optional) Benchmark 对比 ──
     benchmark_result = None
@@ -505,6 +605,13 @@ def main():
     report_path = OUTPUT_DAILY_REPORTS / f"{factor.name}_{args.start}_{args.end}.html"
     report_path.write_text(html, encoding="utf-8")
     logger.info(f"报告已生成: {report_path}")
+
+    with run_experiment(effective_config, command=sys.argv) as exp_dir:
+        record_experiment_output(exp_dir, "report", str(report_path))
+        record_experiment_output(exp_dir, "meta", str(_meta_path(args.factor, args.start, args.end)))
+        quality_report_path = _quality_path(args.factor, args.start, args.end)
+        if quality_report_path.exists():
+            record_experiment_output(exp_dir, "quality_report", str(quality_report_path))
     logger.info("完成!")
 
 

@@ -46,3 +46,62 @@ def test_default_preprocessing():
     cfg = RunConfig(factor="x", start="20230101", end="20241231")
     assert cfg.preprocessing.outlier == "mad"
     assert cfg.preprocessing.normalizer == "zscore"
+
+
+def test_build_preprocessing_pipeline_from_run_config():
+    from common.config_loader import RunConfig, build_preprocessing_pipeline
+
+    cfg = RunConfig(
+        factor="x",
+        start="20230101",
+        end="20241231",
+        preprocessing={
+            "outlier": "winsorize",
+            "normalizer": "rank_uniform",
+            "neutralize": True,
+        },
+    )
+
+    pipeline = build_preprocessing_pipeline(cfg)
+
+    assert pipeline.outlier_method == "winsorize"
+    assert pipeline.normalizer_method == "rank_uniform"
+    assert pipeline.neutralize is True
+
+
+def test_build_runtime_backtest_config_from_run_config():
+    from common.config_loader import RunConfig, build_runtime_backtest_config
+
+    cfg = RunConfig(
+        factor="x",
+        start="20230101",
+        end="20241231",
+        backtest={
+            "quantiles": 7,
+            "max_abs_weight": 0.2,
+            "rebalance_threshold": 0.15,
+        },
+    )
+
+    runtime = build_runtime_backtest_config(cfg, factor_col="factor_clean", frequency="weekly")
+
+    assert runtime.factor_col == "factor_clean"
+    assert runtime.frequency == "weekly"
+    assert runtime.max_abs_weight == 0.2
+    assert runtime.rebalance_threshold == 0.15
+
+
+def test_build_cost_model_from_run_config():
+    from common.config_loader import RunConfig, build_cost_model
+    from daily.evaluation.cost_models import LinearCostModel, SquareRootImpactCostModel
+
+    linear_cfg = RunConfig(factor="x", start="20230101", end="20241231")
+    assert isinstance(build_cost_model(linear_cfg), LinearCostModel)
+
+    impact_cfg = RunConfig(
+        factor="x",
+        start="20230101",
+        end="20241231",
+        backtest={"cost_model": "square_root_impact"},
+    )
+    assert isinstance(build_cost_model(impact_cfg), SquareRootImpactCostModel)

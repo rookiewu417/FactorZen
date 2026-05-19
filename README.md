@@ -53,6 +53,9 @@ python -c "from common.loader import fetch_daily_basic; fetch_daily_basic('20250
 # 单因子完整评估 → output/daily/results/（保存 parquet 中间结果）
 pixi run python scripts/run_daily_single.py --factor momentum_20d --start 20250101 --end 20260513
 
+# 使用 YAML 配置运行；preprocessing/backtest/cost_model/walk_forward 字段会真实生效
+pixi run python scripts/run_daily_single.py --config configs/examples/momentum_20d.yaml
+
 # 生成 HTML Tear Sheet → output/daily/reports/（同时落盘 parquet）
 pixi run report -- --factor momentum_20d --start 20250101 --end 20260513
 
@@ -62,6 +65,15 @@ pixi run report -- --factor momentum_20d --start 20250101 --end 20260513 --reuse
 # 多因子 IC 对比
 pixi run python scripts/run_daily_compare.py --factors momentum_20d,reversal_5d --start 20250101 --end 20260513
 ```
+
+主要输出：
+
+- `output/daily/factors/{factor}_{start}_{end}.parquet`：预处理后的因子矩阵。
+- `output/daily/results/{factor}_{start}_{end}_quality.json`：数据质量报告，包含覆盖率、重复键、收益对齐等检查结果。
+- `output/daily/results/{factor}_{start}_{end}_meta.json`：报告生成元数据，包含 IC/回测/换手、配置摘要、`walk_forward_summary`。
+- `output/daily/results/{factor}_{start}_{end}_walk_forward.json`：`run_daily_single.py` 的 walk-forward/OOS 摘要；样本不足时记录 `{"status": "insufficient_data", "n_folds": 0}`，不让主流程失败。
+- `output/daily/reports/{factor}_{start}_{end}.html`：Tear Sheet，包含 OOS 摘要区块；没有 folds 时显示样本不足。
+- `output/experiments/{run_id}/manifest.json`：实验 manifest，记录完整配置、命令、git SHA、dirty 状态、`pixi.lock` hash、成功/失败状态、错误信息和已生成输出路径。
 
 ## 可用因子列表
 
@@ -111,6 +123,8 @@ pixi run python scripts/run_daily_compare.py --factors momentum_20d,reversal_5d 
 ```bash
 pixi run test      # 运行测试
 pixi run lint      # ruff check
+pixi run typecheck # mypy：common、daily/evaluation、daily/preprocessing、daily/factors、reporting、automation
+pixi run coverage  # pytest coverage，当前门槛 70%
 pixi run format    # ruff format
 pixi run lab       # 启动 JupyterLab
 ```
@@ -158,4 +172,5 @@ output/
 ## 已知预留位
 
 - **`tick/`**：Tushare 不提供 Tick 数据。未来对接 CTP 或 Wind 时填充，见 [`tick/README.md`](tick/README.md)。
-- **`daily/combination/`**：实验性多因子合成（等权、IC 加权、Max-IR），用于研究阶段对比。当前权重估计仍是 in-sample 口径，不能直接解释为生产可交易组合优化，见 [`daily/combination/README.md`](daily/combination/README.md)。
+- **`daily/combination/`**：实验性多因子合成（等权、IC 加权、Max-IR），用于研究阶段对比。当前权重估计仍是 in-sample 口径，不能把组合结果称为 OOS，也不能直接解释为生产可交易组合优化，见 [`daily/combination/README.md`](daily/combination/README.md)。
+- **生产交易边界**：当前框架聚焦研究可信度，不包含 tick 数据、实盘 OMS、盘口成交、真实 Tushare 网络 smoke 或生产级组合执行闭环。

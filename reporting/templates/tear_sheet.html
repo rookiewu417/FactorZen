@@ -287,6 +287,11 @@
     {% endfor %}
   </table>
 </div>
+{% elif walk_forward_summary is not none and walk_forward_summary.get('status') == 'insufficient_data' %}
+<div class="panel">
+  <h2>Walk-Forward 稳健性</h2>
+  <div class="no-data">样本不足，未生成 OOS folds</div>
+</div>
 {% endif %}
 
 <!-- 7. Event Study -->

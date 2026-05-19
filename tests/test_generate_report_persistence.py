@@ -89,6 +89,15 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
         to_result,
         quality_report={"status": "warning", "warnings": ["low coverage"]},
         quality_path=tmp_path / "quality.json",
+        walk_forward_summary={
+            "status": "ok",
+            "n_folds": 2,
+            "is_sharpe_mean": 1.1,
+            "oos_sharpe_mean": 0.8,
+            "oos_sharpe_std": 0.2,
+            "oos_max_dd": -0.05,
+            "stability_ratio": 0.72,
+        },
     )
 
     meta = json.loads(
@@ -99,3 +108,12 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
     assert meta["quality_status"] == "warning"
     assert meta["quality_warnings"] == ["low coverage"]
     assert meta["quality_report_path"] == str(tmp_path / "quality.json")
+    assert meta["walk_forward_summary"] == {
+        "status": "ok",
+        "n_folds": 2,
+        "is_sharpe_mean": 1.1,
+        "oos_sharpe_mean": 0.8,
+        "oos_sharpe_std": 0.2,
+        "oos_max_dd": -0.05,
+        "stability_ratio": 0.72,
+    }

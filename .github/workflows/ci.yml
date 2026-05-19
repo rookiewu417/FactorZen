@@ -32,3 +32,6 @@ jobs:
         env:
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
         run: pixi run test
+
+      - name: Coverage
+        run: pixi run coverage

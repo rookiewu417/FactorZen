@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from typing import Any, cast
 
 from common.factor import BaseFactor
 from common.logger import get_logger
@@ -30,7 +31,7 @@ logger = get_logger(__name__)
 class FactorRegistry:
     """线程不安全（单进程使用），同一进程中可多次实例化不同频率的注册表。"""
 
-    def __init__(self, base_cls: type[BaseFactor], scan_packages: list[str]) -> None:
+    def __init__(self, base_cls: type[Any], scan_packages: list[str]) -> None:
         self._base_cls = base_cls
         self._scan_packages = scan_packages
         self._registry: dict[str, type[BaseFactor]] = {}
@@ -59,9 +60,10 @@ class FactorRegistry:
                             and issubclass(attr, self._base_cls)
                             and attr is not self._base_cls
                         ):
-                            instance = attr()
+                            factor_cls = cast(type[BaseFactor], attr)
+                            instance = factor_cls()
                             if instance.name:
-                                self._registry[instance.name] = attr
+                                self._registry[instance.name] = factor_cls
                 except Exception as e:
                     # 记录 import 失败，不静默吞噬（方便调试缺失依赖）
                     logger.warning(f"导入 {mod_name} 时失败: {e}", exc_info=True)

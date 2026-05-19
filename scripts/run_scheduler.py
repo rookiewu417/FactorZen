@@ -10,7 +10,7 @@ import argparse
 import sys
 import time
 
-from automation.dag import _run_daily_pipeline, build_daily_dag
+from automation.dag import build_daily_dag, run_daily_pipeline
 from common.logger import get_logger, setup_logging
 
 setup_logging()
@@ -54,7 +54,7 @@ def main() -> None:
         date: str = args.once
         logger.info(f"[scheduler] 单次运行模式: date={date} factors={factor_list}")
         try:
-            _run_daily_pipeline(date=date, factor_list=factor_list, benchmark=benchmark)
+            run_daily_pipeline(date=date, factor_list=factor_list, benchmark=benchmark)
             logger.info("[scheduler] 单次运行完成，退出")
             sys.exit(0)
         except Exception as exc:

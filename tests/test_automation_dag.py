@@ -48,7 +48,7 @@ def test_build_daily_dag_not_started():
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# _run_daily_pipeline — 非交易日跳过
+# run_daily_pipeline — 非交易日跳过
 # ────────────────────────────────────────────────────────────────────────────────
 
 
@@ -62,9 +62,9 @@ def test_pipeline_skips_on_non_trade_day():
         patch("automation.dag.job_evaluate") as mock_ev,
         patch("automation.dag.job_generate_report") as mock_gr,
     ):
-        from automation.dag import _run_daily_pipeline
+        from automation.dag import run_daily_pipeline
 
-        _run_daily_pipeline("20250101", ["momentum_20d"], "000300.SH")
+        run_daily_pipeline("20250101", ["momentum_20d"], "000300.SH")
 
         mock_fd.assert_not_called()
         mock_fi.assert_not_called()
@@ -74,7 +74,7 @@ def test_pipeline_skips_on_non_trade_day():
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# _run_daily_pipeline — 交易日执行
+# run_daily_pipeline — 交易日执行
 # ────────────────────────────────────────────────────────────────────────────────
 
 
@@ -88,9 +88,9 @@ def test_pipeline_runs_all_jobs_on_trade_day():
         patch("automation.dag.job_evaluate") as mock_ev,
         patch("automation.dag.job_generate_report") as mock_gr,
     ):
-        from automation.dag import _run_daily_pipeline
+        from automation.dag import run_daily_pipeline
 
-        _run_daily_pipeline("20250513", ["momentum_20d"], "000300.SH")
+        run_daily_pipeline("20250513", ["momentum_20d"], "000300.SH")
 
         mock_fd.assert_called_once_with("20250513")
         mock_fi.assert_called_once_with("20250513")
@@ -111,9 +111,9 @@ def test_pipeline_runs_per_factor_jobs_for_each_factor():
         patch("automation.dag.job_evaluate") as mock_ev,
         patch("automation.dag.job_generate_report") as mock_gr,
     ):
-        from automation.dag import _run_daily_pipeline
+        from automation.dag import run_daily_pipeline
 
-        _run_daily_pipeline("20250513", factors, "000300.SH")
+        run_daily_pipeline("20250513", factors, "000300.SH")
 
         assert mock_ev.call_count == len(factors)
         assert mock_gr.call_count == len(factors)
@@ -132,9 +132,9 @@ def test_pipeline_empty_factor_list():
         patch("automation.dag.job_evaluate") as mock_ev,
         patch("automation.dag.job_generate_report") as mock_gr,
     ):
-        from automation.dag import _run_daily_pipeline
+        from automation.dag import run_daily_pipeline
 
-        _run_daily_pipeline("20250513", [], "000300.SH")
+        run_daily_pipeline("20250513", [], "000300.SH")
         mock_ev.assert_not_called()
         mock_gr.assert_not_called()
 

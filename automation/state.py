@@ -5,12 +5,14 @@
 """
 
 import json
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 STATE_FILE = Path("output/automation/runs.jsonl")
+_write_lock = threading.Lock()
 
 
 def _write_record(
@@ -29,7 +31,7 @@ def _write_record(
         "status": status,
         "error": error,
     }
-    with STATE_FILE.open("a", encoding="utf-8") as fh:
+    with _write_lock, STATE_FILE.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 

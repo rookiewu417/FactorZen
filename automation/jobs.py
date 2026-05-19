@@ -52,7 +52,7 @@ def job_fetch_index(date: str) -> None:
 
 
 def job_compute_factors(date: str, factor_list: list[str]) -> None:
-    """计算指定因子列表。
+    """验证指定因子列表均可实例化（实际计算在下游懒加载时执行）。
 
     Parameters
     ----------
@@ -61,7 +61,7 @@ def job_compute_factors(date: str, factor_list: list[str]) -> None:
     factor_list : list[str]
         因子名称列表。
     """
-    logger.info(f"[job_compute_factors] 开始计算因子: {factor_list} date={date}")
+    logger.info(f"[job_compute_factors] 验证因子可实例化: {factor_list} date={date}")
     try:
         from daily.factors.registry import get_factor
 
@@ -102,7 +102,11 @@ def job_evaluate(date: str, factor_name: str) -> None:
             "--end",
             date,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=1800)
+        except subprocess.TimeoutExpired as exc:
+            logger.error("子进程超时: %s", exc)
+            raise
         if result.returncode != 0:
             raise RuntimeError(
                 f"run_daily_single 退出码={result.returncode}\n"
@@ -140,7 +144,11 @@ def job_generate_report(date: str, factor_name: str) -> None:
             "--end",
             date,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=1800)
+        except subprocess.TimeoutExpired as exc:
+            logger.error("子进程超时: %s", exc)
+            raise
         if result.returncode != 0:
             raise RuntimeError(
                 f"generate_report 退出码={result.returncode}\n"

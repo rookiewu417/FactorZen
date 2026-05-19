@@ -27,7 +27,7 @@ def main():
     parser.add_argument("--factor", required=True, help="因子名称")
     parser.add_argument("--start", required=True, help="起始日期 YYYYMMDD")
     parser.add_argument("--end", required=True, help="截止日期 YYYYMMDD")
-    parser.add_argument("--universe", default="csi300", help="股票池")
+    parser.add_argument("--universe", type=str, default=None, help="股票池")
     parser.add_argument(
         "--frequency", default="daily", choices=["daily", "weekly", "monthly"], help="因子频率"
     )
@@ -47,12 +47,16 @@ def main():
 
         run_config = load_run_config(args.config)
         # CLI 默认值时，从 config 填充
-        if args.universe == "csi300" and run_config.universe:
+        if args.universe is None and run_config.universe:
             args.universe = run_config.universe
         if args.benchmark is None and run_config.benchmark:
             args.benchmark = run_config.benchmark
         if args.seed is None and run_config.seed is not None:
             args.seed = run_config.seed
+
+    # 最终默认值（CLI 未提供且 config 未填充时）
+    if args.universe is None:
+        args.universe = "csi300"
 
     # ── 0b. 设置全局随机种子（可选）──
     if args.seed is not None:

@@ -5,10 +5,11 @@ import json
 import subprocess
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-EXPERIMENTS_DIR = Path("output/experiments")
+from config.settings import ROOT
+
+EXPERIMENTS_DIR = ROOT / "output" / "experiments"
 
 
 def _get_git_sha() -> str:
@@ -20,7 +21,7 @@ def _get_git_sha() -> str:
             timeout=5,
         )
         return result.stdout.strip() if result.returncode == 0 else "unknown"
-    except Exception:
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return "unknown"
 
 
@@ -45,9 +46,12 @@ def run_experiment(config: Any, run_id: str | None = None):
     if hasattr(config, "model_dump"):
         config_dict = config.model_dump()
     elif hasattr(config, "__dict__"):
-        config_dict = dict(config.__dict__)
+        config_dict = vars(config)
     else:
-        config_dict = {}
+        from common.logger import get_logger
+        _logger = get_logger(__name__)
+        _logger.warning("run_experiment: config type %s has no model_dump/__dict__, recording repr", type(config).__name__)
+        config_dict = {"repr": repr(config)}
 
     manifest: dict[str, Any] = {
         "run_id": run_id,

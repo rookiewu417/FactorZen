@@ -22,8 +22,15 @@ def test_seed_reproducibility():
     np.testing.assert_array_equal(a, b)
 
 
-def test_get_optuna_sampler_not_none():
-    from common.seed import get_optuna_sampler
+def test_get_optuna_sampler_reproducible():
+    """同种子采样器产生相同建议。"""
+    import optuna
 
-    sampler = get_optuna_sampler(42)
-    assert sampler is not None
+    from common.seed import get_optuna_sampler
+    sampler1 = get_optuna_sampler(42)
+    sampler2 = get_optuna_sampler(42)
+    study = optuna.create_study(sampler=sampler1)
+    trial1 = study.ask({"x": optuna.distributions.FloatDistribution(0, 1)})
+    study2 = optuna.create_study(sampler=sampler2)
+    trial2 = study2.ask({"x": optuna.distributions.FloatDistribution(0, 1)})
+    assert trial1.params == trial2.params

@@ -16,6 +16,7 @@ def neutralize_ols(
     col: str = "factor_value",
     stock_basic: pl.DataFrame | None = None,
     daily_basic: pl.DataFrame | None = None,
+    n_jobs: int = 1,
 ) -> pl.DataFrame:
     """对每个 trade_date 截面做因子值 ~ 行业哑变量 + log(市值) 的 OLS，取残差。
 
@@ -38,6 +39,9 @@ def neutralize_ols(
         股票基本信息，必须包含 ts_code 和 industry 列。
     daily_basic : pl.DataFrame | None, default None
         每日估值数据，必须包含 trade_date, ts_code, total_mv 列。
+    n_jobs : int, default 1
+        并行 worker 数。1 表示串行（默认）；-1 表示使用所有 CPU；
+        其他正整数表示指定数量的线程（prefer="threads"）。
 
     Returns
     -------
@@ -52,17 +56,15 @@ def neutralize_ols(
         return df.with_columns(pl.col(col).alias(out_col))
 
     # 构建行业映射
-    industry_map = {}
+    industry_map: dict[str, str] = {}
     if stock_basic is not None:
         industry_map = dict(
             zip(stock_basic["ts_code"].to_list(), stock_basic["industry"].to_list(), strict=False)
         )
 
-    # 对每个日期做截面回归
     dates = df["trade_date"].unique().sort().to_list()
-    results = []
 
-    for d in dates:
+    def _process_date(d: object) -> pl.DataFrame:
         cross = df.filter(pl.col("trade_date") == d)
         codes = cross["ts_code"].to_list()
         y = cross[col].to_numpy()
@@ -70,9 +72,7 @@ def neutralize_ols(
 
         if valid.sum() < 30:
             logger.warning(f"neutralize_ols: {d} 有效样本数 {valid.sum()} < 30，跳过")
-            cross = cross.with_columns(pl.lit(None).alias(out_col))
-            results.append(cross)
-            continue
+            return cross.with_columns(pl.lit(None).alias(out_col))
 
         # 构建设计矩阵
         X_parts: list[np.ndarray] = [np.ones((len(codes), 1), dtype=float)]
@@ -104,8 +104,17 @@ def neutralize_ols(
             logger.warning(f"neutralize_ols: {d} 回归失败 ({e})，使用原值")
             residuals = y
 
-        cross = cross.with_columns(pl.Series(out_col, residuals))
-        results.append(cross)
+        return cross.with_columns(pl.Series(out_col, residuals))
+
+    # 对每个日期做截面回归（支持并行）
+    if n_jobs == 1:
+        results = [_process_date(d) for d in dates]
+    else:
+        from joblib import Parallel, delayed
+
+        results = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_process_date)(d) for d in dates
+        )
 
     return pl.concat(results)
 
@@ -115,6 +124,7 @@ def neutralize_by_styles(
     style_dfs: list[pl.DataFrame],
     industry_map: dict[str, str] | None = None,
     col: str = "factor_value",
+    n_jobs: int = 1,
 ) -> pl.DataFrame:
     """Barra-style 多因子中性化：截面 OLS(factor ~ style_1 + ... + industry_dummies)，取残差。
 
@@ -124,6 +134,7 @@ def neutralize_by_styles(
                    按传入顺序作为解释变量（style_0, style_1, ...）。
         industry_map: {ts_code: industry_name}，若提供则加入行业哑变量。
         col: 待中性化的因子列名。
+        n_jobs: 并行 worker 数，1 为串行（默认），-1 为全部 CPU，其他正整数为线程数。
 
     Returns:
         输入 DataFrame + 新增列 {col}_style_neutral（OLS 残差）。
@@ -145,9 +156,8 @@ def neutralize_by_styles(
 
     style_cols = [f"_style_{i}" for i in range(len(style_dfs))]
     dates = merged["trade_date"].unique().sort().to_list()
-    results = []
 
-    for d in dates:
+    def _process_date_styles(d: object) -> pl.DataFrame:
         cross = merged.filter(pl.col("trade_date") == d)
         codes = cross["ts_code"].to_list()
         y = cross[col].to_numpy().astype(float)
@@ -162,10 +172,9 @@ def neutralize_by_styles(
 
         if valid_mask.sum() < 30:
             cross = cross.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
-            results.append(
-                cross.select([c for c in cross.columns if not c.startswith("_style_")] + [out_col])
+            return cross.select(
+                [c for c in cross.columns if not c.startswith("_style_")] + [out_col]
             )
-            continue
 
         # 构建设计矩阵
         X_parts: list[np.ndarray] = [np.ones((len(codes), 1), dtype=float)]
@@ -195,8 +204,17 @@ def neutralize_by_styles(
             residuals[~valid_mask] = np.nan
 
         cross = cross.with_columns(pl.Series(out_col, residuals))
-        results.append(
-            cross.select([c for c in cross.columns if not c.startswith("_style_")] + [out_col])
+        return cross.select(
+            [c for c in cross.columns if not c.startswith("_style_")] + [out_col]
+        )
+
+    if n_jobs == 1:
+        results = [_process_date_styles(d) for d in dates]
+    else:
+        from joblib import Parallel, delayed
+
+        results = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_process_date_styles)(d) for d in dates
         )
 
     return pl.concat(results)

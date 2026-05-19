@@ -1,0 +1,16 @@
+factor: momentum_20d
+universe: csi500
+start: "20230101"
+end: "20241231"
+benchmark: "000300.SH"
+seed: 42
+preprocessing:
+  outlier: mad
+  normalizer: zscore
+  neutralize: false
+backtest:
+  top_n: 50
+  quantiles: 5
+  max_abs_weight: 0.1
+  cost_model: linear
+ic_method: rank

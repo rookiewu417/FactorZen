@@ -65,6 +65,7 @@ def run_optuna_search(
     direction: str = "maximize",
     study_name: str = "walk_forward_tuning",
     timeout: float | None = None,
+    seed: int | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """运行 Optuna 超参搜索。
 
@@ -75,11 +76,14 @@ def run_optuna_search(
         direction: "maximize" 或 "minimize"。
         study_name: Optuna study 名称。
         timeout: 总超时秒数（None=不限）。
+        seed: 随机种子，若指定则使用固定种子的 TPE 采样器。
 
     Returns:
         (best_params, study) — best_params 为最优参数字典，study 为 optuna.Study 对象。
     """
     import optuna
+
+    from common.seed import get_optuna_sampler
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -90,7 +94,8 @@ def run_optuna_search(
         except Exception:
             return float("-inf") if direction == "maximize" else float("inf")
 
-    study = optuna.create_study(direction=direction, study_name=study_name)
+    sampler = get_optuna_sampler(seed) if seed is not None else None
+    study = optuna.create_study(direction=direction, study_name=study_name, sampler=sampler)
     study.optimize(_wrapped_objective, n_trials=n_trials, timeout=timeout)
 
     return study.best_params, study

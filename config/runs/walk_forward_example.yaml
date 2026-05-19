@@ -1,0 +1,15 @@
+factor: momentum_20d
+universe: csi500
+start: "20210101"
+end: "20241231"
+seed: 42
+preprocessing:
+  outlier: winsorize
+  normalizer: rank_normal
+  neutralize: true
+walk_forward:
+  train_days: 504
+  test_days: 63
+  step_days: 63
+  embargo_days: 5
+  n_trials: 30

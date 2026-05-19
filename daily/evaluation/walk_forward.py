@@ -177,6 +177,7 @@ def run_walk_forward(
     config: BacktestConfig | None = None,
     factor_name: str = "",
     params: dict[str, Any] | None = None,
+    seed: int | None = None,
 ) -> WalkForwardResult:
     """策略级 walk-forward 验证。
 
@@ -195,6 +196,7 @@ def run_walk_forward(
         config: BacktestConfig，None 时使用默认值。
         factor_name: 因子名称。
         params: 传给 strategy_factory 的参数字典，None 时传空字典。
+        seed: 随机种子，若指定则在每折开始时设置 seed + fold_id。
 
     Returns:
         WalkForwardResult
@@ -236,6 +238,11 @@ def run_walk_forward(
     oos_return_parts: list[pl.DataFrame] = []
 
     for fold_id, (train_dates, test_dates) in enumerate(folds_data):
+        if seed is not None:
+            from common.seed import set_global_seed
+
+            set_global_seed(seed + fold_id)
+
         train_set = set(train_dates)
         test_set = set(test_dates)
 

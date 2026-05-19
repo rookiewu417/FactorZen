@@ -55,7 +55,36 @@ def main() -> None:
     parser.add_argument("--step_days", type=int, default=63, help="每折步进（交易日）")
     parser.add_argument("--embargo_days", type=int, default=5, help="训练集末到测试集首的间隔")
     parser.add_argument("--universe", default="csi300", help="股票池")
+    parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
+    parser.add_argument("--seed", type=int, default=None, help="全局随机种子")
     args = parser.parse_args()
+
+    # ── 0. 加载 YAML 配置（可选），CLI 参数优先级更高 ──
+    run_config = None
+    if args.config:
+        from common.config_loader import load_run_config
+
+        run_config = load_run_config(args.config)
+        if args.universe == "csi300" and run_config.universe:
+            args.universe = run_config.universe
+        if args.seed is None and run_config.seed is not None:
+            args.seed = run_config.seed
+        if args.train_days == 252 and run_config.walk_forward.train_days != 504:
+            args.train_days = run_config.walk_forward.train_days
+        if args.test_days == 63 and run_config.walk_forward.test_days != 63:
+            args.test_days = run_config.walk_forward.test_days
+        if args.step_days == 63 and run_config.walk_forward.step_days != 63:
+            args.step_days = run_config.walk_forward.step_days
+        if args.embargo_days == 5 and run_config.walk_forward.embargo_days != 5:
+            args.embargo_days = run_config.walk_forward.embargo_days
+
+    # ── 0b. 设置全局随机种子（可选）──
+    seed: int | None = args.seed
+    if seed is not None:
+        from common.seed import set_global_seed
+
+        set_global_seed(seed)
+        logger.info(f"全局随机种子已设置: {seed}")
 
     # ── 1. 加载因子数据 ──
     factor_path = OUTPUT_DAILY_FACTORS / f"{args.factor}_{args.start}_{args.end}.parquet"
@@ -106,6 +135,7 @@ def main() -> None:
         splitter=splitter,
         config=config,
         factor_name=args.factor,
+        seed=seed,
     )
 
     # ── 6. 打印结果 ──

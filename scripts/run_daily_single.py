@@ -36,7 +36,30 @@ def main():
         default=None,
         help="基准指数代码（如 000300.SH），若指定则计算超额收益并生成 HTML 报告",
     )
+    parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
+    parser.add_argument("--seed", type=int, default=None, help="全局随机种子")
     args = parser.parse_args()
+
+    # ── 0. 加载 YAML 配置（可选），CLI 参数优先级更高 ──
+    run_config = None
+    if args.config:
+        from common.config_loader import load_run_config
+
+        run_config = load_run_config(args.config)
+        # CLI 默认值时，从 config 填充
+        if args.universe == "csi300" and run_config.universe:
+            args.universe = run_config.universe
+        if args.benchmark is None and run_config.benchmark:
+            args.benchmark = run_config.benchmark
+        if args.seed is None and run_config.seed is not None:
+            args.seed = run_config.seed
+
+    # ── 0b. 设置全局随机种子（可选）──
+    if args.seed is not None:
+        from common.seed import set_global_seed
+
+        set_global_seed(args.seed)
+        logger.info(f"全局随机种子已设置: {args.seed}")
 
     # ── 1. 获取因子类 ──
     logger.info(f"──── 单因子评估: {args.factor} | {args.start} ~ {args.end} ────")

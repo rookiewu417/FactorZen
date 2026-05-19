@@ -33,6 +33,7 @@ jinja2       = ">=3.1.0"
 # 本地包 editable install（消除 scripts/ 中的 sys.path hack）
 factor-research = { path = ".", editable = true }
 apscheduler      = ">=3.10"
+pydantic         = ">=2.5"
 
 # dev 依赖（测试 / lint / notebook）
 [feature.dev.pypi-dependencies]

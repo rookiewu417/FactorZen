@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Literal, TypedDict
 
 import numpy as np
 import polars as pl
@@ -155,6 +156,115 @@ def _rank_ic_by_date(
         .sort("trade_date")
     )
     return ic_df
+
+
+@dataclass
+class IcStats:
+    """轻量级 IC 统计结果，供 compute_ic 使用。"""
+
+    ic_mean: float
+    ic_std: float
+    ir: float
+    ic_positive_ratio: float
+    n_periods: int
+    ic_tstat: float
+    ic_pvalue: float
+    ic_series: pl.DataFrame  # trade_date, ic
+
+
+class BothIcResult(TypedDict):
+    """compute_ic(method='both') 的返回类型。"""
+
+    rank: IcStats
+    pearson: IcStats
+
+
+def _pearson_ic_by_date(
+    df: pl.DataFrame,
+    factor_col: str,
+    ret_col: str,
+    min_samples: int = _MIN_CROSS_SAMPLES,
+) -> pl.DataFrame:
+    """按交易日计算 Pearson IC（皮尔逊相关系数）。
+
+    Returns:
+        pl.DataFrame with columns [trade_date, ic]，已按 trade_date 排序。
+    """
+    valid_df = df.filter(
+        pl.col(factor_col).is_not_null()
+        & pl.col(ret_col).is_not_null()
+        & pl.col(ret_col).is_finite()
+    )
+
+    if valid_df.is_empty():
+        return pl.DataFrame({"trade_date": [], "ic": []}).cast(
+            {"trade_date": pl.Date, "ic": pl.Float64}
+        )
+
+    return (
+        valid_df.group_by("trade_date")
+        .agg(
+            [
+                pl.corr(factor_col, ret_col, method="pearson").alias("ic"),
+                pl.len().alias("_n"),
+            ]
+        )
+        .filter(pl.col("_n") >= min_samples)
+        .drop("_n")
+        .sort("trade_date")
+    )
+
+
+def _build_ic_stats(ic_series: pl.DataFrame) -> IcStats:
+    """从 IC 序列 DataFrame 构建 IcStats。"""
+    ic_values = ic_series["ic"].drop_nulls().drop_nans().to_numpy()
+    ic_mean, ic_std, ir, ic_pos, tstat, pvalue = _ic_stats(ic_values)
+    return IcStats(
+        ic_mean=ic_mean,
+        ic_std=ic_std,
+        ir=ir,
+        ic_positive_ratio=ic_pos,
+        n_periods=len(ic_values),
+        ic_tstat=tstat,
+        ic_pvalue=pvalue,
+        ic_series=ic_series,
+    )
+
+
+def compute_ic(
+    df: pl.DataFrame,
+    factor_col: str = "factor_clean",
+    ret_col: str = "ret_1d",
+    method: Literal["rank", "pearson", "both"] = "rank",
+) -> IcStats | BothIcResult:
+    """计算因子 IC（Rank 或 Pearson），简化版接口。
+
+    与 compute_rank_ic 不同，此函数直接接受含因子值和收益的单个 DataFrame，
+    不需要预先计算前向收益。
+
+    Args:
+        df: DataFrame，列: trade_date, ts_code, {factor_col}, {ret_col}
+        factor_col: 因子列名（默认 "factor_clean"）
+        ret_col: 收益列名（默认 "ret_1d"）
+        method: "rank"（Spearman）/ "pearson" / "both"
+
+    Returns:
+        - method="rank" 或 "pearson": IcStats
+        - method="both": BothIcResult {"rank": IcStats, "pearson": IcStats}
+    """
+    if method == "rank":
+        ic_series = _rank_ic_by_date(df, factor_col, ret_col)
+        return _build_ic_stats(ic_series)
+    elif method == "pearson":
+        ic_series = _pearson_ic_by_date(df, factor_col, ret_col)
+        return _build_ic_stats(ic_series)
+    else:  # "both"
+        rank_series = _rank_ic_by_date(df, factor_col, ret_col)
+        pearson_series = _pearson_ic_by_date(df, factor_col, ret_col)
+        return BothIcResult(
+            rank=_build_ic_stats(rank_series),
+            pearson=_build_ic_stats(pearson_series),
+        )
 
 
 def _hac_maxlags(n: int) -> int:

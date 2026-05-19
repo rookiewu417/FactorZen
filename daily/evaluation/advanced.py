@@ -8,17 +8,24 @@
 5. Factor Crowding — 因子拥挤度检测（实验性）
 6. Market Regime IC — 市场状态分层 IC
 7. Rank Autocorrelation — 因子排名自相关
+8. Neutralized IC — 行业/市值中性化后的 Rank IC
+9. Event Study — 事件前后窗口累计收益分析
+10. Factor Correlation — 多因子截面 Rank 相关性矩阵
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
 
-from daily.evaluation.ic_analysis import _rank_ic_by_date
+from daily.evaluation.ic_analysis import IcStats, _build_ic_stats, _rank_ic_by_date
+
+if TYPE_CHECKING:
+    pass
 
 
 def _grouped_ic(
@@ -880,6 +887,321 @@ def compute_rank_autocorr(
         half_life_est=half_life_est,
         _lag_to_autocorr=lag_to_autocorr,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. Neutralized IC
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def compute_neutralized_ic(
+    factor_df: pl.DataFrame,
+    ret_col: str = "ret_1d",
+    neutralize_by: str = "industry+size",
+    factor_col: str = "factor_clean",
+) -> IcStats:
+    """中性化因子后计算 Rank IC。
+
+    Args:
+        factor_df: DataFrame，必须含 trade_date, ts_code, {factor_col}, {ret_col}。
+                   - 行业中性化需要 "industry" 列
+                   - 市值中性化需要 "log_mktcap" 列（或 "total_mv" 列作为备选）
+        ret_col: 收益列名（默认 "ret_1d"）
+        neutralize_by: "industry" / "size" / "industry+size"（默认）
+        factor_col: 因子列名（默认 "factor_clean"）
+
+    Returns:
+        IcStats — 中性化后的 Rank IC 统计结果
+    """
+    from daily.preprocessing.neutralizer import neutralize_ols
+
+    # 根据 neutralize_by 决定传入 neutralize_ols 的参数
+    stock_basic: pl.DataFrame | None = None
+    daily_basic: pl.DataFrame | None = None
+
+    do_industry = "industry" in neutralize_by
+    do_size = "size" in neutralize_by
+
+    if do_industry and "industry" in factor_df.columns:
+        # 构造 stock_basic DataFrame（ts_code, industry）
+        stock_basic = factor_df.select(["ts_code", "industry"]).unique(subset=["ts_code"])
+
+    if do_size:
+        # 支持 log_mktcap 或 total_mv 作为市值列
+        if "log_mktcap" in factor_df.columns:
+            # 将 log_mktcap 转为 total_mv（exp 反变换），供 neutralize_ols 使用
+            daily_basic = factor_df.select(
+                ["trade_date", "ts_code", pl.col("log_mktcap").exp().alias("total_mv")]
+            )
+        elif "total_mv" in factor_df.columns:
+            daily_basic = factor_df.select(["trade_date", "ts_code", "total_mv"])
+
+    if stock_basic is None and daily_basic is None:
+        # 无法中性化，直接计算 Rank IC
+        ic_series = _rank_ic_by_date(factor_df, factor_col, ret_col)
+        return _build_ic_stats(ic_series)
+
+    # 调用 neutralize_ols，col 参数为 factor_col
+    neutralized_df = neutralize_ols(
+        factor_df,
+        col=factor_col,
+        stock_basic=stock_basic,
+        daily_basic=daily_basic,
+    )
+
+    # 残差列名为 {factor_col}_neutral
+    residual_col = f"{factor_col}_neutral"
+    if residual_col not in neutralized_df.columns:
+        # 回退：直接使用原因子
+        ic_series = _rank_ic_by_date(factor_df, factor_col, ret_col)
+        return _build_ic_stats(ic_series)
+
+    # 用残差计算 Rank IC
+    ic_series = _rank_ic_by_date(neutralized_df, residual_col, ret_col)
+    return _build_ic_stats(ic_series)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. Event Study
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class EventStudyResult:
+    """事件研究结果。
+
+    Attributes:
+        windows: 相对事件日的窗口列表，如 [-5, -4, ..., 0, ..., 20]
+        avg_cumret: 各窗口日的平均累计收益（shape: len(windows)）
+        ci_95: 95% 置信区间半宽（1.96 * std / sqrt(n_events)），shape: len(windows)
+        n_events: 事件数量
+    """
+
+    windows: list[int]
+    avg_cumret: np.ndarray
+    ci_95: np.ndarray
+    n_events: int
+
+
+def compute_event_study(
+    factor_df: pl.DataFrame,
+    ret_df: pl.DataFrame,
+    event_threshold: float = 0.95,
+    pre_window: int = 5,
+    post_window: int = 20,
+    factor_col: str = "factor_clean",
+) -> EventStudyResult:
+    """选 factor top event_threshold 分位作为事件，计算事件前后窗口平均累计收益。
+
+    Args:
+        factor_df: 含 trade_date, ts_code, {factor_col} 的因子 DataFrame
+        ret_df: 含 trade_date, ts_code, ret_1d 的收益 DataFrame
+        event_threshold: 事件阈值分位数（默认 0.95，即 top 5% 为事件）
+        pre_window: 事件前窗口天数（默认 5）
+        post_window: 事件后窗口天数（默认 20）
+        factor_col: 因子列名
+
+    Returns:
+        EventStudyResult
+    """
+    windows = list(range(-pre_window, post_window + 1))
+    n_windows = len(windows)
+
+    # 过滤有效因子值
+    valid_factor = factor_df.filter(pl.col(factor_col).is_not_null())
+    if valid_factor.is_empty():
+        return EventStudyResult(
+            windows=windows,
+            avg_cumret=np.zeros(n_windows),
+            ci_95=np.zeros(n_windows),
+            n_events=0,
+        )
+
+    # 按日期找 top event_threshold 分位的事件
+    event_rows = (
+        valid_factor.with_columns(
+            pl.col(factor_col)
+            .rank(method="average")
+            .over("trade_date")
+            .alias("_rank"),
+            pl.len().over("trade_date").alias("_n"),
+        )
+        .filter(pl.col("_rank") / pl.col("_n") >= event_threshold)
+        .select(["trade_date", "ts_code"])
+    )
+
+    if event_rows.is_empty():
+        return EventStudyResult(
+            windows=windows,
+            avg_cumret=np.zeros(n_windows),
+            ci_95=np.zeros(n_windows),
+            n_events=0,
+        )
+
+    # 构建日期索引（用于窗口偏移）
+    all_dates = sorted(ret_df["trade_date"].unique().to_list())
+    date_to_idx = {d: i for i, d in enumerate(all_dates)}
+
+    # 对 ret_df 建立 (date, ts_code) -> ret_1d 的查找字典
+    ret_lookup: dict[tuple, float] = {}
+    for row in ret_df.iter_rows(named=True):
+        ret_lookup[(row["trade_date"], row["ts_code"])] = float(row["ret_1d"])
+
+    # 对每个事件，计算窗口内累计收益
+    event_cumrets: list[np.ndarray] = []
+
+    for row in event_rows.iter_rows(named=True):
+        event_date = row["trade_date"]
+        ts_code = row["ts_code"]
+
+        if event_date not in date_to_idx:
+            continue
+        event_idx = date_to_idx[event_date]
+
+        # 收集各窗口日的日收益
+        daily_rets = []
+        valid_event = True
+        for w in windows:
+            target_idx = event_idx + w
+            if target_idx < 0 or target_idx >= len(all_dates):
+                valid_event = False
+                break
+            target_date = all_dates[target_idx]
+            ret = ret_lookup.get((target_date, ts_code), 0.0)
+            daily_rets.append(ret)
+
+        if not valid_event:
+            continue
+
+        # 计算以事件日（w=0）为基准的累计收益
+        # cumret[i] = prod(1 + ret[event_day..i]) - 1
+        daily_arr = np.array(daily_rets)
+        # w=0 对应 pre_window 索引
+        base_idx = pre_window
+        cumrets = np.zeros(n_windows)
+        for i in range(n_windows):
+            if i <= base_idx:
+                # 事件前：反向累乘
+                segment = daily_arr[i : base_idx + 1]
+                if len(segment) == 0:
+                    cumrets[i] = 0.0
+                else:
+                    cumrets[i] = float(np.prod(1.0 + segment)) - 1.0
+                    cumrets[i] = -cumrets[i]  # 负号：事件前为反向
+            else:
+                # 事件后：正向累乘
+                segment = daily_arr[base_idx : i + 1]
+                cumrets[i] = float(np.prod(1.0 + segment)) - 1.0
+
+        event_cumrets.append(cumrets)
+
+    if len(event_cumrets) == 0:
+        return EventStudyResult(
+            windows=windows,
+            avg_cumret=np.zeros(n_windows),
+            ci_95=np.zeros(n_windows),
+            n_events=0,
+        )
+
+    cumret_matrix = np.array(event_cumrets)  # shape: (n_events, n_windows)
+    avg_cumret = np.mean(cumret_matrix, axis=0)
+    n_events = len(event_cumrets)
+
+    if n_events > 1:
+        ci_95 = 1.96 * np.std(cumret_matrix, axis=0, ddof=1) / np.sqrt(n_events)
+    else:
+        ci_95 = np.zeros(n_windows)
+
+    return EventStudyResult(
+        windows=windows,
+        avg_cumret=avg_cumret,
+        ci_95=ci_95,
+        n_events=n_events,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 10. Factor Correlation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def compute_factor_correlation(
+    factor_dfs: dict[str, pl.DataFrame],
+    factor_col: str = "factor_clean",
+) -> pl.DataFrame:
+    """计算多因子截面 Rank 相关性均值矩阵（Spearman 相关）。
+
+    Args:
+        factor_dfs: {factor_name: DataFrame(trade_date, ts_code, {factor_col})}
+        factor_col: 因子列名
+
+    Returns:
+        pl.DataFrame — 含 "factor" 列及各因子列的方阵，值为平均 Spearman 相关系数。
+    """
+    names = list(factor_dfs.keys())
+    n = len(names)
+
+    if n == 0:
+        return pl.DataFrame()
+
+    if n == 1:
+        return pl.DataFrame({"factor": names, names[0]: [1.0]})
+
+    # 合并所有因子到宽表（每日截面）
+    merged: pl.DataFrame | None = None
+    for name, df in factor_dfs.items():
+        col_renamed = df.select(["trade_date", "ts_code", pl.col(factor_col).alias(name)])
+        if merged is None:
+            merged = col_renamed
+        else:
+            merged = merged.join(col_renamed, on=["trade_date", "ts_code"], how="inner")
+
+    if merged is None or merged.is_empty():
+        # 返回单位矩阵
+        data: dict[str, list] = {"factor": names}
+        for name in names:
+            data[name] = [1.0 if n == name2 else 0.0 for n2, name2 in enumerate(names)]
+        return pl.DataFrame(data)
+
+    # 对每个日期计算截面 Rank 相关，然后累加
+    dates = merged["trade_date"].unique().sort().to_list()
+    cum_corr = np.zeros((n, n))
+    count = 0
+
+    for d in dates:
+        cross = merged.filter(pl.col("trade_date") == d).drop_nulls()
+        if len(cross) < 2:
+            continue
+        arr = np.column_stack([cross[name].to_numpy() for name in names])
+        stds = arr.std(axis=0)
+        if np.any(stds == 0):
+            continue
+        # Spearman: rank then Pearson
+        from scipy.stats import rankdata
+
+        ranked_arr = np.column_stack([rankdata(arr[:, i]) for i in range(n)])
+        try:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                corr = np.corrcoef(ranked_arr.T)
+            if not np.any(np.isnan(corr)):
+                cum_corr += corr
+                count += 1
+        except Exception:
+            continue
+
+    if count > 0:
+        avg_corr = cum_corr / count
+    else:
+        avg_corr = np.eye(n)
+
+    np.fill_diagonal(avg_corr, 1.0)
+
+    # 构造 DataFrame（含 "factor" 列作为行标签）
+    data2: dict[str, list] = {"factor": names}
+    for j, col_name in enumerate(names):
+        data2[col_name] = [float(avg_corr[i, j]) for i in range(n)]
+
+    return pl.DataFrame(data2)
 
 
 def apply_fdr_correction(

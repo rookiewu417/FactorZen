@@ -38,6 +38,27 @@ def main():
     )
     parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
     parser.add_argument("--seed", type=int, default=None, help="全局随机种子")
+    parser.add_argument(
+        "--ic-method",
+        default="rank",
+        choices=["rank", "pearson", "both"],
+        dest="ic_method",
+        help="IC 计算方法：rank（Spearman，默认）/ pearson / both",
+    )
+    parser.add_argument(
+        "--neutralized-ic",
+        action="store_true",
+        dest="neutralized_ic",
+        default=False,
+        help="是否计算中性化后的 Rank IC（需要因子 DataFrame 含 industry 或 log_mktcap 列）",
+    )
+    parser.add_argument(
+        "--event-study",
+        action="store_true",
+        dest="event_study",
+        default=False,
+        help="是否执行事件研究分析（选 Top 5%% 分位股票为事件）",
+    )
     args = parser.parse_args()
 
     # ── 0. 加载 YAML 配置（可选），CLI 参数优先级更高 ──
@@ -139,6 +160,46 @@ def main():
     ic_result.factor_name = factor.name
     logger.info(f"\n{ic_result.summary()}")
 
+    # 可选：Pearson IC / Both IC
+    pearson_ic_result = None
+    if args.ic_method in ("pearson", "both"):
+        from daily.evaluation.ic_analysis import compute_ic
+
+        # 构建含 ret_1d 列的简化 DataFrame
+        merged_simple = clean_df.join(
+            ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename(
+                {"fwd_ret_1d": "ret_1d"}
+            ),
+            on=["trade_date", "ts_code"],
+            how="inner",
+        )
+        if args.ic_method == "both":
+            both_ic = compute_ic(merged_simple, factor_col="factor_clean", ret_col="ret_1d", method="both")
+            pearson_ic_result = both_ic["pearson"]
+            logger.info(f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, IR: {pearson_ic_result.ir:.2f}")
+        else:
+            pearson_ic_result = compute_ic(merged_simple, factor_col="factor_clean", ret_col="ret_1d", method="pearson")
+            logger.info(f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, IR: {pearson_ic_result.ir:.2f}")
+
+    # 可选：中性化 IC
+    neutralized_ic_result = None
+    if args.neutralized_ic:
+        from daily.evaluation.advanced import compute_neutralized_ic
+
+        # 尝试构建含 ret_1d 的因子 DataFrame
+        merged_neutral = clean_df.join(
+            ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename(
+                {"fwd_ret_1d": "ret_1d"}
+            ),
+            on=["trade_date", "ts_code"],
+            how="inner",
+        )
+        try:
+            neutralized_ic_result = compute_neutralized_ic(merged_neutral, ret_col="ret_1d")
+            logger.info(f"Neutralized IC Mean: {neutralized_ic_result.ic_mean:.4f}")
+        except Exception as e:
+            logger.warning(f"中性化 IC 计算失败（跳过）: {e}")
+
     # ── 8. 分层回测 ──
     bt_result = run_stratified_backtest(
         clean_df,
@@ -165,6 +226,21 @@ def main():
         str(OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_ic.parquet")
     )
 
+    # ── 10b. 事件研究（可选）──
+    event_study_result = None
+    if args.event_study:
+        from daily.evaluation.advanced import compute_event_study
+
+        factor_simple = clean_df.select(["trade_date", "ts_code", "factor_clean"])
+        ret_simple = ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename(
+            {"fwd_ret_1d": "ret_1d"}
+        )
+        try:
+            event_study_result = compute_event_study(factor_simple, ret_simple)
+            logger.info(f"事件研究完成: {event_study_result.n_events} 个事件")
+        except Exception as e:
+            logger.warning(f"事件研究计算失败（跳过）: {e}")
+
     # ── 11. Benchmark 对比（可选）──
     benchmark_result = None
     if args.benchmark:
@@ -190,6 +266,7 @@ def main():
         universe=args.universe,
         benchmark_result=benchmark_result,
         attribution_result=None,
+        event_study_result=event_study_result,
     )
     OUTPUT_DAILY_REPORTS.mkdir(parents=True, exist_ok=True)
     report_path = OUTPUT_DAILY_REPORTS / f"{factor.name}_{args.start}_{args.end}.html"

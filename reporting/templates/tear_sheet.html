@@ -78,6 +78,12 @@
     {% endfor %}
   </table>
   {% endif %}
+
+  {% if charts.quantile_spread_chart %}
+  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">分位价差（Quantile Spread）</h3>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">最高分位 - 最低分位的每日价差及累计价差 — 价差持续正数说明因子有较强的分层区分能力。</p>
+  <img class="chart-img" src="data:image/png;base64,{{ charts.quantile_spread_chart }}" alt="分位价差图">
+  {% endif %}
 </div>
 
 <!-- 3. IC Analysis -->
@@ -98,6 +104,22 @@
   </table>
   {% endif %}
 </div>
+
+<!-- 3a. Pearson vs Rank IC Comparison -->
+{% if metrics.get('pearson_ic_mean') is not none %}
+<div class="panel">
+  <h2>Pearson IC vs Rank IC 对比</h2>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">Rank IC（Spearman）对极端值更鲁棒；Pearson IC 对量纲敏感。两者差异大时需关注因子分布的尾部风险。</p>
+  <table>
+    <tr><th>指标</th><th>Rank IC（Spearman）</th><th>Pearson IC</th></tr>
+    <tr><td>IC 均值</td><td>{{ "%.4f"|format(metrics.ic_mean or 0) }}</td><td>{{ "%.4f"|format(metrics.pearson_ic_mean or 0) }}</td></tr>
+    <tr><td>IC 标准差</td><td>{{ "%.4f"|format(metrics.ic_std or 0) }}</td><td>{{ "%.4f"|format(metrics.pearson_ic_std or 0) }}</td></tr>
+    <tr><td>信息比率 (IR)</td><td>{{ "%.2f"|format(metrics.ir or 0) }}</td><td>{{ "%.2f"|format(metrics.pearson_ir or 0) }}</td></tr>
+    <tr><td>IC 胜率</td><td>{{ "%.1f%%"|format((metrics.ic_positive_ratio or 0) * 100) }}</td><td>{{ "%.1f%%"|format((metrics.pearson_ic_positive_ratio or 0) * 100) }}</td></tr>
+    <tr><td>t 统计量</td><td>{{ "%.2f"|format(metrics.ic_tstat or 0) }}</td><td>{{ "%.2f"|format(metrics.pearson_ic_tstat or 0) }}</td></tr>
+  </table>
+</div>
+{% endif %}
 
 <!-- 3b. Multi-Period Consistency -->
 {% if metrics.get('multi_period_table') %}
@@ -264,6 +286,27 @@
     </tr>
     {% endfor %}
   </table>
+</div>
+{% endif %}
+
+<!-- 7. Event Study -->
+{% if charts.event_study_chart %}
+<div class="panel">
+  <h2>事件研究</h2>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">选取因子值 Top 分位的股票为事件，观察事件前后窗口的平均累计收益。阴影区域为 95% 置信区间。</p>
+  <img class="chart-img" src="data:image/png;base64,{{ charts.event_study_chart }}" alt="事件研究图">
+  {% if event_study_result is not none %}
+  <p style="color:#7f8c8d;font-size:13px;margin-top:8px">事件数量: {{ event_study_result.n_events }}</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- 8. Factor Correlation -->
+{% if charts.factor_corr_chart %}
+<div class="panel">
+  <h2>因子相关性</h2>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">多因子截面 Rank（Spearman）相关性均值矩阵。相关性越高，因子间信息重叠越多；对角线为 1。</p>
+  <img class="chart-img" src="data:image/png;base64,{{ charts.factor_corr_chart }}" alt="因子相关性热力图">
 </div>
 {% endif %}
 

@@ -9,9 +9,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from daily.optimization.base import OptimizerConstraints, PortfolioOptimizer
 
 import numpy as np
 import polars as pl
@@ -89,6 +92,7 @@ class BacktestContext:
     price_slice: pl.DataFrame
     current_positions: pl.DataFrame
     factor_col: str = "factor_clean"
+    price_history: pl.DataFrame = field(default_factory=pl.DataFrame)
 
 
 class Strategy(ABC):
@@ -262,6 +266,141 @@ class FactorWeightedStrategy(Strategy):
         )
 
 
+class OptimizerStrategy(Strategy):
+    """凸优化策略：用因子值作为预期收益，历史价格估计协方差，调用 optimizer 求最优权重。
+
+    Args:
+        optimizer: PortfolioOptimizer 实例（MeanVarianceOptimizer 等）。
+        lookback_days: 估计协方差的历史窗口长度（交易日）。
+        factor_col: 因子列名。
+        cov_estimator: 协方差估计方法，"sample" / "ledoit_wolf" / "ewma"。
+        constraints: OptimizerConstraints，若 None 则使用默认。
+        long_only: 是否仅允许多头（min_weight=0）。
+        top_n: 仅保留因子值最高的 N 只股票进入优化（None=全部）。
+    """
+
+    name = "optimizer_strategy"
+
+    def __init__(
+        self,
+        optimizer: PortfolioOptimizer,
+        lookback_days: int = 60,
+        factor_col: str = "factor_clean",
+        cov_estimator: str = "sample",
+        constraints: OptimizerConstraints | None = None,
+        long_only: bool = True,
+        top_n: int | None = 100,
+    ) -> None:
+        from daily.optimization.base import OptimizerConstraints
+
+        self.optimizer = optimizer
+        self.lookback_days = lookback_days
+        self.factor_col = factor_col
+        self.cov_estimator = cov_estimator
+        self.constraints = constraints or OptimizerConstraints()
+        self.long_only = long_only
+        self.top_n = top_n
+        if long_only:
+            self.constraints.min_weight = 0.0
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        from daily.optimization.base import OptimizerConstraints
+        from daily.optimization.covariance import (
+            ewma_covariance,
+            ledoit_wolf_shrinkage,
+            sample_covariance,
+        )
+
+        factor_col = context.factor_col or self.factor_col
+        df = _valid_factor_slice(context.factor_slice, factor_col)
+        if df.is_empty():
+            return _empty_weights()
+
+        # Select top_n by factor score if requested
+        if self.top_n is not None and df.height > self.top_n:
+            df = df.sort(factor_col, descending=True).head(self.top_n)
+
+        codes = df["ts_code"].to_list()
+        n = len(codes)
+
+        # Build expected_returns from factor values (z-score normalization)
+        factor_vals = df[factor_col].to_numpy().astype(float)
+        std_f = float(np.std(factor_vals))
+        if std_f > 1e-8:
+            mu = factor_vals / std_f
+        else:
+            mu = np.ones(n)
+
+        # Build covariance matrix from price_history
+        cov = np.eye(n) * 0.0001  # default: tiny diagonal if no history
+        if not context.price_history.is_empty():
+            hist = context.price_history.filter(pl.col("ts_code").is_in(codes))
+            # Pivot to wide format: rows=dates, cols=ts_code
+            try:
+                pivoted = hist.select(["trade_date", "ts_code", "close"]).sort(
+                    ["trade_date", "ts_code"]
+                )
+                wide = pivoted.pivot(index="trade_date", on="ts_code", values="close")
+                # Compute returns and extract in codes order
+                code_cols = [c for c in wide.columns if c != "trade_date" and c in codes]
+                present_codes = code_cols
+                if len(present_codes) >= 2:
+                    price_mat = wide.select(present_codes).to_numpy().astype(float)
+                    ret_mat = np.diff(np.log(np.clip(price_mat, 1e-6, None)), axis=0)
+                    # Remove rows with any NaN
+                    valid_rows = np.isfinite(ret_mat).all(axis=1)
+                    ret_mat = ret_mat[valid_rows]
+                    if ret_mat.shape[0] >= 5:
+                        if self.cov_estimator == "ledoit_wolf":
+                            cov_present = ledoit_wolf_shrinkage(ret_mat)
+                        elif self.cov_estimator == "ewma":
+                            cov_present = ewma_covariance(ret_mat)
+                        else:
+                            cov_present = sample_covariance(ret_mat)
+                        # Map back to codes order
+                        code_to_idx = {c: i for i, c in enumerate(present_codes)}
+                        cov = np.eye(n) * np.diag(cov_present).mean()
+                        for i, ci in enumerate(codes):
+                            for j, cj in enumerate(codes):
+                                if ci in code_to_idx and cj in code_to_idx:
+                                    cov[i, j] = cov_present[code_to_idx[ci], code_to_idx[cj]]
+            except Exception:
+                pass  # fallback to diagonal
+
+        # Regularize covariance
+        cov = cov + 1e-6 * np.eye(n)
+
+        # Build constraints
+        cons = OptimizerConstraints(
+            max_weight=self.constraints.max_weight,
+            min_weight=self.constraints.min_weight,
+            gross_exposure=self.constraints.gross_exposure,
+            net_exposure=self.constraints.net_exposure,
+            turnover_limit=self.constraints.turnover_limit,
+        )
+
+        # Prev weights for turnover constraint
+        if not context.current_positions.is_empty() and self.constraints.turnover_limit is not None:
+            pos_map = dict(
+                zip(
+                    context.current_positions["ts_code"].to_list(),
+                    context.current_positions["weight"].to_list(),
+                    strict=False,
+                )
+            )
+            cons.prev_weights = np.array([pos_map.get(c, 0.0) for c in codes])
+
+        weights = self.optimizer.solve(mu, cov, cons)
+        weights = np.clip(weights, cons.min_weight, cons.max_weight)
+        total = np.sum(np.abs(weights))
+        if total < 1e-8:
+            weights = np.full(n, 1.0 / n)
+        elif total > cons.gross_exposure:
+            weights = weights / total * cons.gross_exposure
+
+        return pl.DataFrame({"ts_code": codes, "target_weight": weights.tolist()})
+
+
 def run_strategy_backtest(
     strategy: Strategy,
     factor_df: pl.DataFrame,
@@ -285,6 +424,9 @@ def run_strategy_backtest(
     price_by_date = _group_frames_by_date(price)
     factor_by_date = _group_frames_by_date(factor)
 
+    # Determine lookback for OptimizerStrategy
+    _lookback = getattr(strategy, "lookback_days", 0)
+
     for i, execution_date in enumerate(trade_dates):
         price_slice = price_by_date[execution_date]
         price_map = _price_records(price_slice)
@@ -302,6 +444,7 @@ def run_strategy_backtest(
                 price_slice=price_slice,
                 current_positions=_positions_frame(open_weights, nav_value, cfg.initial_capital),
                 factor_col=cfg.factor_col,
+                price_history=_get_price_history(price, trade_dates, i, _lookback),
             )
             target_df = _validate_target_weights(strategy.generate_weights(context), cfg)
             target_weights = dict(zip(target_df["ts_code"], target_df["target_weight"], strict=True))
@@ -523,6 +666,17 @@ def _validate_target_weights(weights: pl.DataFrame, config: BacktestConfig) -> p
         if gross is not None and float(gross) > config.max_gross_exposure + 1e-12:  # type: ignore[arg-type]
             raise ValueError("gross exposure exceeds max_gross_exposure")
     return out
+
+
+def _get_price_history(
+    price: pl.DataFrame, trade_dates: list, current_idx: int, lookback: int
+) -> pl.DataFrame:
+    """获取截至 current_idx-1 的 lookback 期价格历史。"""
+    if lookback <= 0 or current_idx <= 0:
+        return pl.DataFrame()
+    start_idx = max(0, current_idx - lookback)
+    hist_dates = set(trade_dates[start_idx:current_idx])
+    return price.filter(pl.col("trade_date").is_in(hist_dates))
 
 
 def _price_records(price_slice: pl.DataFrame) -> dict[str, dict[str, Any]]:

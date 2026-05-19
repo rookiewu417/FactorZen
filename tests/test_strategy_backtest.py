@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -12,6 +13,7 @@ from daily.evaluation.backtest import (
     BacktestContext,
     CostModel,
     FactorWeightedStrategy,
+    OptimizerStrategy,
     QuantileLongShortStrategy,
     Strategy,
     StrategyBacktestResult,
@@ -294,3 +296,61 @@ def test_factor_weighted_strategy_supports_long_only_and_long_short():
     assert long_only["target_weight"].sum() == pytest.approx(1.0)
     assert long_short["target_weight"].abs().sum() == pytest.approx(2.0)
     assert long_short["target_weight"].sum() == pytest.approx(0.0)
+
+
+def test_optimizer_strategy_end_to_end():
+    """OptimizerStrategy 端到端回测跑通，结果结构正确。"""
+    from daily.optimization.mean_variance import MeanVarianceOptimizer
+
+    # Build a multi-stock, multi-day dataset
+    stocks = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    dates = [
+        date(2024, 1, 1),
+        date(2024, 1, 2),
+        date(2024, 1, 3),
+        date(2024, 1, 4),
+        date(2024, 1, 5),
+    ]
+    price_rows = []
+    for d in dates:
+        for code in stocks:
+            price_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": code,
+                    "open": 10.0,
+                    "close": 10.0,
+                    "pre_close": 10.0,
+                    "pct_chg": 0.0,
+                    "vol": 1000.0,
+                    "amount": 1_000_000.0,
+                }
+            )
+    factor_rows = []
+    for d in dates[:-1]:  # factor up to second-to-last date
+        for j, code in enumerate(stocks):
+            factor_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": code,
+                    "factor_clean": float(j + 1),
+                }
+            )
+
+    factor_df = pl.DataFrame(factor_rows)
+    price_df = pl.DataFrame(price_rows)
+
+    optimizer = MeanVarianceOptimizer(risk_aversion=1.0)
+    strategy = OptimizerStrategy(
+        optimizer=optimizer,
+        lookback_days=10,
+        long_only=True,
+        top_n=20,
+    )
+    cfg = BacktestConfig(max_abs_weight=0.5, max_gross_exposure=1.0, max_participation_rate=1.0)
+    result = run_strategy_backtest(strategy, factor_df, price_df, config=cfg, factor_name="test")
+
+    assert result.strategy_name == "optimizer_strategy"
+    assert result.returns.height > 0
+    assert "net_return" in result.returns.columns
+    assert np.all(np.isfinite(result.returns["net_return"].to_numpy()))

@@ -227,6 +227,46 @@
   {% endif %}
 </div>
 
+<!-- 5d. Walk-Forward -->
+{% if walk_forward_result is not none %}
+<div class="panel">
+  <h2>Walk-Forward 稳健性</h2>
+  <div class="metric-grid" style="margin-bottom:10px">
+    <div class="metric-card">
+      <div class="label">IS Sharpe 均值</div>
+      <div class="value">{{ "%.2f"|format(walk_forward_result.is_sharpe_mean) }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">OOS Sharpe 均值</div>
+      <div class="value">{{ "%.2f"|format(walk_forward_result.oos_sharpe_mean) }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">稳定性比率</div>
+      <div class="value">{{ "%.2f"|format(walk_forward_result.stability_ratio) }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">OOS 最大回撤</div>
+      <div class="value">{{ "%.2f%%"|format(walk_forward_result.oos_max_dd * 100) }}</div>
+    </div>
+  </div>
+  {% if charts.walk_forward_chart %}
+  <img class="chart-img" src="data:image/png;base64,{{ charts.walk_forward_chart }}" alt="Walk-Forward 图">
+  {% endif %}
+  <table>
+    <tr><th>折</th><th>IS Sharpe</th><th>OOS Sharpe</th><th>OOS 年化收益</th><th>OOS 最大回撤</th></tr>
+    {% for fold in walk_forward_result.folds %}
+    <tr>
+      <td>Fold {{ fold.fold_id }}</td>
+      <td>{{ "%.2f"|format(fold.is_sharpe) }}</td>
+      <td style="color: {% if fold.oos_sharpe > 0 %}#27ae60{% else %}#e74c3c{% endif %}">{{ "%.2f"|format(fold.oos_sharpe) }}</td>
+      <td>{{ "%.1f%%"|format(fold.oos_ann_ret * 100) }}</td>
+      <td>{{ "%.1f%%"|format(fold.oos_max_dd * 100) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
 <!-- 6. Summary -->
 <div class="panel">
   <h2>综合评估</h2>

@@ -257,6 +257,46 @@ def _make_attribution_chart(brinson_result: Any, barra_result: Any) -> str | Non
     return _fig_to_base64(fig)
 
 
+def _make_walk_forward_chart(wf_result: Any) -> str | None:
+    """Walk-forward 图：(上) OOS 拼接净值; (下) IS vs OOS Sharpe 分折柱状图。"""
+    if wf_result is None:
+        return None
+    oos_returns = _safe_attr(wf_result, "oos_returns")
+    folds = _safe_attr(wf_result, "folds", [])
+    if oos_returns is None or oos_returns.is_empty() or not folds:
+        return None
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7))
+
+    # 上：OOS 拼接净值
+    oos_pd = oos_returns.to_pandas()
+    if "trade_date" in oos_pd.columns and "nav" in oos_pd.columns:
+        oos_pd = oos_pd.sort_values("trade_date")
+        ax1.plot(oos_pd["trade_date"], oos_pd["nav"], linewidth=1.4, color="#2980b9", label="OOS NAV")
+        ax1.axhline(y=1.0, color="gray", linestyle="--", linewidth=0.6, alpha=0.5)
+    ax1.set_title("Walk-Forward OOS 累计净值", fontsize=12)
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
+    ax1.legend(fontsize=8)
+    fig.autofmt_xdate()
+
+    # 下：IS vs OOS Sharpe 分折柱状图
+    fold_ids = [f.fold_id for f in folds]
+    is_sharpes = [f.is_sharpe for f in folds]
+    oos_sharpes = [f.oos_sharpe for f in folds]
+    x = range(len(fold_ids))
+    width = 0.35
+    ax2.bar([xi - width / 2 for xi in x], is_sharpes, width, label="IS Sharpe", color="#3498db", alpha=0.7)
+    ax2.bar([xi + width / 2 for xi in x], oos_sharpes, width, label="OOS Sharpe", color="#e74c3c", alpha=0.7)
+    ax2.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
+    ax2.set_xticks(list(x))
+    ax2.set_xticklabels([f"Fold {fid}" for fid in fold_ids], fontsize=8)
+    ax2.set_title("各折 IS / OOS Sharpe 对比", fontsize=12)
+    ax2.legend(fontsize=8)
+
+    plt.tight_layout()
+    return _fig_to_base64(fig)
+
+
 def _make_turnover_chart(to_result: Any) -> str | None:
     """换手率填充图。"""
     if to_result is None:
@@ -459,6 +499,7 @@ def generate_tear_sheet(
     universe: str = "lft_default",
     benchmark_result: Any = None,
     attribution_result: Any = None,
+    walk_forward_result: Any = None,
 ) -> str:
     """生成因子 Tear Sheet HTML 报告。
 
@@ -541,6 +582,14 @@ def generate_tear_sheet(
         except Exception:
             logger.warning("生成归因图表失败", exc_info=True)
 
+    if walk_forward_result is not None:
+        try:
+            wf_b64 = _make_walk_forward_chart(walk_forward_result)
+            if wf_b64:
+                charts["walk_forward_chart"] = wf_b64
+        except Exception:
+            logger.warning("生成 Walk-Forward 图表失败", exc_info=True)
+
     metrics = _extract_metrics(ic_result, bt_result, to_result, advanced_results)
 
     warnings: list[str] = []
@@ -566,4 +615,5 @@ def generate_tear_sheet(
         summary_html=summary_html,
         benchmark_result=benchmark_result,
         attribution_result=attribution_result,
+        walk_forward_result=walk_forward_result,
     )

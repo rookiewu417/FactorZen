@@ -1,0 +1,134 @@
+#!/usr/bin/env python
+"""策略级 Walk-Forward 验证。
+
+用法:
+  python scripts/run_walk_forward.py --factor momentum_20d --start 20230101 --end 20241231
+  python scripts/run_walk_forward.py --factor momentum_20d --strategy topn_long_only --train_days 252 --test_days 63
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from common.logger import get_logger, setup_logging
+from config.settings import OUTPUT_DAILY_FACTORS
+from daily.evaluation.backtest import BacktestConfig
+from daily.evaluation.walk_forward import WalkForwardSplitter, run_walk_forward
+
+setup_logging()
+logger = get_logger(__name__)
+
+
+def _build_strategy_factory(strategy_name: str):  # type: ignore[return]
+    """根据策略名称构建 strategy_factory。"""
+    from daily.evaluation.backtest import (
+        FactorWeightedStrategy,
+        QuantileLongShortStrategy,
+        TopNLongOnlyStrategy,
+    )
+
+    factories = {
+        "quantile_long_short": lambda p: QuantileLongShortStrategy(n_groups=p.get("n_groups", 10)),
+        "topn_long_only": lambda p: TopNLongOnlyStrategy(n=p.get("n", 50)),
+        "factor_weighted": lambda p: FactorWeightedStrategy(long_only=True),
+    }
+    if strategy_name not in factories:
+        logger.error(f"未知策略: {strategy_name}，可用: {list(factories.keys())}")
+        sys.exit(1)
+    return factories[strategy_name]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="策略级 Walk-Forward 验证")
+    parser.add_argument("--factor", required=True, help="因子名称")
+    parser.add_argument("--start", required=True, help="起始日期 YYYYMMDD")
+    parser.add_argument("--end", required=True, help="截止日期 YYYYMMDD")
+    parser.add_argument(
+        "--strategy",
+        default="quantile_long_short",
+        choices=["quantile_long_short", "topn_long_only", "factor_weighted"],
+        help="策略类型",
+    )
+    parser.add_argument("--train_days", type=int, default=252, help="训练集长度（交易日）")
+    parser.add_argument("--test_days", type=int, default=63, help="测试集长度（交易日）")
+    parser.add_argument("--step_days", type=int, default=63, help="每折步进（交易日）")
+    parser.add_argument("--embargo_days", type=int, default=5, help="训练集末到测试集首的间隔")
+    parser.add_argument("--universe", default="csi300", help="股票池")
+    args = parser.parse_args()
+
+    # ── 1. 加载因子数据 ──
+    factor_path = OUTPUT_DAILY_FACTORS / f"{args.factor}_{args.start}_{args.end}.parquet"
+    if not factor_path.exists():
+        logger.error(f"因子文件不存在: {factor_path}")
+        sys.exit(1)
+
+    import polars as pl
+
+    logger.info(f"加载因子数据: {factor_path}")
+    factor_df = pl.read_parquet(str(factor_path))
+
+    # ── 2. 加载价格数据 ──
+    try:
+        from common.storage import load_parquet
+
+        price_df = load_parquet("daily", start=args.start, end=args.end).collect()
+    except Exception as e:
+        logger.error(f"价格数据加载失败: {e}")
+        sys.exit(1)
+
+    if price_df.is_empty():
+        logger.error("价格数据为空")
+        sys.exit(1)
+
+    # ── 3. 构建策略工厂 ──
+    strategy_factory = _build_strategy_factory(args.strategy)
+
+    # ── 4. 创建 WalkForwardSplitter ──
+    splitter = WalkForwardSplitter(
+        train_days=args.train_days,
+        test_days=args.test_days,
+        step_days=args.step_days,
+        embargo_days=args.embargo_days,
+    )
+
+    logger.info(
+        f"WalkForward 配置: train={args.train_days}d, test={args.test_days}d, "
+        f"step={args.step_days}d, embargo={args.embargo_days}d"
+    )
+
+    # ── 5. 运行 Walk-Forward ──
+    config = BacktestConfig()
+    result = run_walk_forward(
+        strategy_factory=strategy_factory,
+        factor_df=factor_df,
+        price_df=price_df,
+        splitter=splitter,
+        config=config,
+        factor_name=args.factor,
+    )
+
+    # ── 6. 打印结果 ──
+    print("\n" + "=" * 60)
+    print(result.summary())
+    print("=" * 60)
+
+    if result.folds:
+        print(
+            f"\n{'折':<6} {'IS Sharpe':>10} {'OOS Sharpe':>11} "
+            f"{'OOS 年化收益':>12} {'OOS 最大回撤':>12}"
+        )
+        print("-" * 55)
+        for fold in result.folds:
+            print(
+                f"Fold {fold.fold_id:<2} {fold.is_sharpe:>10.2f} {fold.oos_sharpe:>11.2f} "
+                f"{fold.oos_ann_ret:>11.1%} {fold.oos_max_dd:>11.1%}"
+            )
+    else:
+        print("无有效折结果（数据不足或回测均失败）")
+
+    print()
+
+
+if __name__ == "__main__":
+    main()

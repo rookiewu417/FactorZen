@@ -254,7 +254,7 @@ def run_walk_forward(
             )
             is_sharpe = _extract_sharpe(is_result)
         except Exception as exc:
-            logger.warning(f"Fold {fold_id} IS 回测失败，跳过该折: {exc}")
+            logger.warning(f"Fold {fold_id} IS 回测失败，跳过该折: {exc}", exc_info=True)
             continue
 
         # OOS 回测
@@ -276,7 +276,7 @@ def run_walk_forward(
                     .with_columns(pl.lit(fold_id).cast(pl.Int32).alias("fold_id"))
                 )
         except Exception as exc:
-            logger.warning(f"Fold {fold_id} OOS 回测失败，跳过该折: {exc}")
+            logger.warning(f"Fold {fold_id} OOS 回测失败，跳过该折: {exc}", exc_info=True)
             continue
 
         fold_result = WalkForwardFoldResult(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import numpy as np
 import polars as pl
 import pytest
@@ -20,7 +22,8 @@ from daily.evaluation.walk_forward import (
 def factor_df() -> pl.DataFrame:
     rng = np.random.default_rng(0)
     n_dates, n_stocks = 300, 30
-    dates = [f"2024-{(d // 22 + 1):02d}-{(d % 22 + 1):02d}" for d in range(n_dates)]
+    start = date(2022, 1, 3)
+    dates = [(start + timedelta(days=i)).isoformat() for i in range(n_dates)]
     records = []
     for d in dates:
         for s in range(n_stocks):
@@ -140,6 +143,7 @@ class TestRunWalkForward:
             splitter=splitter,
             params={"n_groups": 5},
         )
+        assert len(result.folds) > 0, "Expected at least one WF fold but got 0 — fixture may be too small"
         if result.folds and not result.oos_returns.is_empty():
             first_nav = result.oos_returns.sort("trade_date")["nav"][0]
             # 第一个 nav 应等于 1 + first_net_return，不必精确为 1.0
@@ -157,6 +161,7 @@ class TestRunWalkForward:
             splitter=splitter,
             params={"n_groups": 5},
         )
+        assert len(result.folds) > 0, "Expected at least one WF fold but got 0 — fixture may be too small"
         if result.oos_returns.is_empty():
             return
         dates = result.oos_returns["trade_date"].to_list()
@@ -186,6 +191,7 @@ class TestRunWalkForward:
             splitter=splitter,
             params={"n_groups": 5},
         )
+        assert len(result.folds) > 0, "Expected at least one WF fold but got 0 — fixture may be too small"
         assert isinstance(result, WalkForwardResult)
         assert isinstance(result.folds, list)
         assert isinstance(result.oos_returns, pl.DataFrame)

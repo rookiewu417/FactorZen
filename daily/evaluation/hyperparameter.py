@@ -6,8 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
-
 
 @dataclass
 class ParamSpec:
@@ -41,26 +39,22 @@ class TuningSpace:
         params: dict[str, Any] = {}
         for spec in self.specs:
             if spec.type == "int":
-                params[spec.name] = trial.suggest_int(
-                    spec.name,
-                    int(spec.low),  # type: ignore[arg-type]
-                    int(spec.high),  # type: ignore[arg-type]
-                    step=int(spec.step) if spec.step else 1,
-                    log=spec.log,
-                )
+                kwargs: dict = {"log": spec.log}
+                if spec.step is not None and not spec.log:
+                    kwargs["step"] = int(spec.step)
+                params[spec.name] = trial.suggest_int(spec.name, int(spec.low), int(spec.high), **kwargs)  # type: ignore[arg-type]
             elif spec.type == "float":
-                params[spec.name] = trial.suggest_float(
-                    spec.name,
-                    float(spec.low),  # type: ignore[arg-type]
-                    float(spec.high),  # type: ignore[arg-type]
-                    step=spec.step,
-                    log=spec.log,
-                )
+                kwargs = {"log": spec.log}
+                if spec.step is not None and not spec.log:
+                    kwargs["step"] = float(spec.step)
+                params[spec.name] = trial.suggest_float(spec.name, float(spec.low), float(spec.high), **kwargs)  # type: ignore[arg-type]
             elif spec.type == "categorical":
                 params[spec.name] = trial.suggest_categorical(
                     spec.name,
                     spec.choices,
                 )
+            else:
+                raise ValueError(f"Unknown ParamSpec.type: {spec.type!r}. Expected 'int', 'float', or 'categorical'.")
         return params
 
 
@@ -102,8 +96,4 @@ def run_optuna_search(
     return study.best_params, study
 
 
-# Suppress numpy import warning in type checkers
 __all__ = ["ParamSpec", "TuningSpace", "run_optuna_search"]
-
-# Avoid unused import warning
-_np = np

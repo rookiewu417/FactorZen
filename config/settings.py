@@ -5,6 +5,14 @@ from pathlib import Path
 # 项目根目录：本文件向上两级
 ROOT = Path(__file__).resolve().parent.parent
 
+# ── 自动化调度配置 ───────────────────────────────────────────────────────────────
+AUTOMATION_OUTPUT = ROOT / "output" / "automation"
+SCHEDULER_TIMEZONE: str = "Asia/Shanghai"
+SCHEDULER_CRON_HOUR: int = 16
+SCHEDULER_CRON_MINUTE: int = 30
+SCHEDULER_MAX_RETRIES: int = 3
+SCHEDULER_RETRY_BASE_SECONDS: int = 60
+
 # config
 CONFIG_DIR = ROOT / "config"
 

@@ -1,11 +1,26 @@
 """测试 IntradayDataContext。"""
 
+from datetime import date
 from unittest.mock import patch
 
 import polars as pl
 import pytest
 
 from intraday.data.context import IntradayDataContext
+
+
+@pytest.fixture(autouse=True)
+def mock_prev_trade_date(monkeypatch):
+    """Keep these unit tests offline; calendar integration is covered separately."""
+
+    def _fake_prev_trade_date(d: str, n: int = 1) -> date:
+        assert n == 5
+        return {
+            "20260514": date(2026, 5, 7),
+            "20260105": date(2025, 12, 25),
+        }[d]
+
+    monkeypatch.setattr("intraday.data.context.prev_trade_date", _fake_prev_trade_date)
 
 # ── 构造与默认值 ──────────────────────────────────────────────────────────
 

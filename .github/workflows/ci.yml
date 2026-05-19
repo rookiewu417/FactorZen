@@ -9,6 +9,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
     strategy:
       matrix:
         python-version: ["3.11"]
@@ -29,8 +31,6 @@ jobs:
         run: pixi run typecheck
 
       - name: Test
-        env:
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
         run: pixi run test
 
       - name: Coverage

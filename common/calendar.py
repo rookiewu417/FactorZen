@@ -18,7 +18,7 @@ from pathlib import Path
 import polars as pl
 
 from config.settings import DATA_CACHE
-from config.tushare_config import CACHE_EXPIRE_DAYS, TUSHARE_TOKEN
+from config.tushare_config import CACHE_EXPIRE_DAYS, ensure_token
 
 # ── 常量 ─────────────────────────────────────────────────
 _CAL_FILE: Path = DATA_CACHE / "trade_cal.parquet"
@@ -42,7 +42,7 @@ def _fetch_from_tushare() -> pl.DataFrame:
     """
     import tushare as ts
 
-    ts.set_token(TUSHARE_TOKEN)
+    ts.set_token(ensure_token())
     pro = ts.pro_api()
 
     df = pro.trade_cal(exchange="SSE", start_date="19900101", end_date="20301231")

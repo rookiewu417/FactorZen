@@ -267,6 +267,8 @@ def main():
         benchmark_result=benchmark_result,
         attribution_result=None,
         event_study_result=event_study_result,
+        pearson_ic_result=pearson_ic_result if args.ic_method in ("pearson", "both") else None,
+        neutralized_ic_result=neutralized_ic_result if args.neutralized_ic else None,
     )
     OUTPUT_DAILY_REPORTS.mkdir(parents=True, exist_ok=True)
     report_path = OUTPUT_DAILY_REPORTS / f"{factor.name}_{args.start}_{args.end}.html"

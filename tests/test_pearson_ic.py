@@ -84,7 +84,8 @@ def test_heavy_tail_pearson_less_than_rank():
     pearson_res = compute_ic(df, method="pearson")
     rank_res = compute_ic(df, method="rank")
     # Pearson is disturbed by outlier; rank is more robust
-    assert abs(pearson_res.ic_mean) <= abs(rank_res.ic_mean) + 0.05  # allow small margin
+    # Rank IC should be >= Pearson IC in absolute value (rank is outlier-robust)
+    assert abs(rank_res.ic_mean) >= abs(pearson_res.ic_mean)
 
 
 def test_ic_stats_fields():

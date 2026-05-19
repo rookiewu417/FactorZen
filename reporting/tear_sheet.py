@@ -484,7 +484,7 @@ def _build_bt_summary_table(stats: dict) -> list:
     return rows
 
 
-def _extract_metrics(ic_result, bt_result, to_result, advanced_results) -> dict[str, Any]:
+def _extract_metrics(ic_result, bt_result, to_result, advanced_results, pearson_ic_result=None, neutralized_ic_result=None) -> dict[str, Any]:
     """提取所有关键指标为扁平字典。"""
     m: dict[str, Any] = {}
 
@@ -516,6 +516,20 @@ def _extract_metrics(ic_result, bt_result, to_result, advanced_results) -> dict[
     if oos_ic:
         m["oos_train_ic"] = oos_ic.get("train", 0)
         m["oos_test_ic"] = oos_ic.get("test", 0)
+
+    if pearson_ic_result is not None:
+        m["pearson_ic_mean"] = pearson_ic_result.ic_mean
+        m["pearson_ic_std"] = pearson_ic_result.ic_std
+        m["pearson_ir"] = pearson_ic_result.ir
+        m["pearson_ic_positive_ratio"] = pearson_ic_result.ic_positive_ratio
+        m["pearson_ic_tstat"] = pearson_ic_result.ic_tstat
+
+    if neutralized_ic_result is not None:
+        m["neutralized_ic_mean"] = neutralized_ic_result.ic_mean
+        m["neutralized_ic_std"] = neutralized_ic_result.ic_std
+        m["neutralized_ir"] = neutralized_ic_result.ir
+        m["neutralized_ic_positive_ratio"] = neutralized_ic_result.ic_positive_ratio
+        m["neutralized_ic_tstat"] = neutralized_ic_result.ic_tstat
 
     m["bt_stats"] = []
     if bt_result is not None:
@@ -635,6 +649,8 @@ def generate_tear_sheet(
     walk_forward_result: Any = None,
     event_study_result: Any = None,
     factor_corr: Any = None,
+    pearson_ic_result: Any = None,
+    neutralized_ic_result: Any = None,
 ) -> str:
     """生成因子 Tear Sheet HTML 报告。
 
@@ -770,7 +786,7 @@ def generate_tear_sheet(
         except Exception:
             logger.warning("生成分位价差图表失败", exc_info=True)
 
-    metrics = _extract_metrics(ic_result, bt_result, to_result, advanced_results)
+    metrics = _extract_metrics(ic_result, bt_result, to_result, advanced_results, pearson_ic_result, neutralized_ic_result)
 
     warnings: list[str] = []
     if metrics.get("n_periods", 0) < 30:

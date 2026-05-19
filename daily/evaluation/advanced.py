@@ -22,7 +22,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 
+from common.logger import get_logger
 from daily.evaluation.ic_analysis import IcStats, _build_ic_stats, _rank_ic_by_date
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     pass
@@ -938,6 +941,9 @@ def compute_neutralized_ic(
 
     if stock_basic is None and daily_basic is None:
         # 无法中性化，直接计算 Rank IC
+        logger.warning(
+            "compute_neutralized_ic: 缺少 %s 等中性化所需列，返回未中性化 IC", neutralize_by
+        )
         ic_series = _rank_ic_by_date(factor_df, factor_col, ret_col)
         return _build_ic_stats(ic_series)
 
@@ -1067,7 +1073,7 @@ def compute_event_study(
                 valid_event = False
                 break
             target_date = all_dates[target_idx]
-            ret = ret_lookup.get((target_date, ts_code), 0.0)
+            ret = ret_lookup.get((target_date, ts_code), np.nan)
             daily_rets.append(ret)
 
         if not valid_event:
@@ -1075,23 +1081,29 @@ def compute_event_study(
 
         # 计算以事件日（w=0）为基准的累计收益
         # cumret[i] = prod(1 + ret[event_day..i]) - 1
-        daily_arr = np.array(daily_rets)
+        daily_arr = np.array(daily_rets, dtype=float)
+
+        # 如果缺失数据过多（超过 50%），跳过该事件
+        nan_ratio = np.sum(np.isnan(daily_arr)) / len(daily_arr)
+        if nan_ratio > 0.5:
+            continue
+
         # w=0 对应 pre_window 索引
         base_idx = pre_window
         cumrets = np.zeros(n_windows)
         for i in range(n_windows):
             if i <= base_idx:
-                # 事件前：反向累乘
+                # 事件前：反向累乘（忽略 NaN）
                 segment = daily_arr[i : base_idx + 1]
                 if len(segment) == 0:
                     cumrets[i] = 0.0
                 else:
-                    cumrets[i] = float(np.prod(1.0 + segment)) - 1.0
+                    cumrets[i] = float(np.nanprod(1.0 + segment)) - 1.0
                     cumrets[i] = -cumrets[i]  # 负号：事件前为反向
             else:
-                # 事件后：正向累乘
+                # 事件后：正向累乘（忽略 NaN）
                 segment = daily_arr[base_idx : i + 1]
-                cumrets[i] = float(np.prod(1.0 + segment)) - 1.0
+                cumrets[i] = float(np.nanprod(1.0 + segment)) - 1.0
 
         event_cumrets.append(cumrets)
 
@@ -1159,8 +1171,8 @@ def compute_factor_correlation(
     if merged is None or merged.is_empty():
         # 返回单位矩阵
         data: dict[str, list] = {"factor": names}
-        for name in names:
-            data[name] = [1.0 if n == name2 else 0.0 for n2, name2 in enumerate(names)]
+        for n1 in names:
+            data[n1] = [1.0 if n1 == n2 else 0.0 for n2 in names]
         return pl.DataFrame(data)
 
     # 对每个日期计算截面 Rank 相关，然后累加

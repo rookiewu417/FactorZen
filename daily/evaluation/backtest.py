@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 import numpy as np
 import polars as pl
 
+from common.universe import _get_board_limit
 from config.constants import (
     BORROW_RATE_ANNUAL,
     COMMISSION_RATE,
@@ -26,6 +27,7 @@ from config.constants import (
     STAMP_TAX_RATE,
     TRADING_DAYS_PER_YEAR,
 )
+from daily.evaluation.cost_models import CostModelBase
 
 
 @dataclass
@@ -80,6 +82,7 @@ class BacktestConfig:
     limit_down_pct: float = -9.8
     execution_price: str = "next_open"
     ret_definition: str = "open_to_close_with_overnight_carry"
+    rebalance_threshold: float | None = None  # 换手率低于此阈值时跳过调仓（None=每期调仓）
 
 
 @dataclass
@@ -93,6 +96,7 @@ class BacktestContext:
     current_positions: pl.DataFrame
     factor_col: str = "factor_clean"
     price_history: pl.DataFrame = field(default_factory=pl.DataFrame)
+    adv_20d: dict[str, float] = field(default_factory=dict)  # ts_code → 20日均成交额（元）
 
 
 class Strategy(ABC):
@@ -406,7 +410,7 @@ def run_strategy_backtest(
     factor_df: pl.DataFrame,
     price_df: pl.DataFrame,
     config: BacktestConfig | None = None,
-    cost_model: CostModel | None = None,
+    cost_model: CostModel | CostModelBase | None = None,
     factor_name: str = "",
 ) -> StrategyBacktestResult:
     """运行策略回测。"""
@@ -448,6 +452,16 @@ def run_strategy_backtest(
             )
             target_df = _validate_target_weights(strategy.generate_weights(context), cfg)
             target_weights = dict(zip(target_df["ts_code"], target_df["target_weight"], strict=True))
+
+            # 换手率低于阈值时跳过本次调仓
+            if cfg.rebalance_threshold is not None:
+                all_proposed = set(open_weights) | set(target_weights)
+                proposed_turnover = sum(
+                    abs(target_weights.get(c, 0.0) - open_weights.get(c, 0.0))
+                    for c in all_proposed
+                )
+                if proposed_turnover <= cfg.rebalance_threshold:
+                    target_weights = dict(open_weights)
         else:
             target_weights = dict(open_weights)
 
@@ -558,7 +572,7 @@ def run_stratified_backtest(
     n_groups: int = 10,
     frequency: str = "daily",
     factor_name: str = "",
-    cost_model: CostModel | None = None,
+    cost_model: CostModel | CostModelBase | None = None,
     config: BacktestConfig | None = None,
 ) -> StrategyBacktestResult:
     """分层多空策略回测入口。"""
@@ -747,9 +761,13 @@ def _apply_trade_constraints(
     if float(rec.get("vol") or 0.0) <= 0:
         return 0.0, "suspended"
     pct = float(rec.get("pct_chg") or 0.0)
-    if delta > 0 and pct >= config.limit_up_pct:
+    # 按板块细化涨跌停阈值（pct_chg 单位为百分比，如 9.8 表示 9.8%）
+    board_limit_pct = _get_board_limit(code) * 100 if code else config.limit_up_pct
+    effective_limit_up = board_limit_pct
+    effective_limit_down = -board_limit_pct
+    if delta > 0 and pct >= effective_limit_up:
         return 0.0, "limit_up"
-    if delta < 0 and pct <= config.limit_down_pct:
+    if delta < 0 and pct <= effective_limit_down:
         return 0.0, "limit_down"
     amount = float(rec.get("amount") or 0.0)
     max_trade_value = amount * config.max_participation_rate

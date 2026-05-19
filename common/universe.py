@@ -378,11 +378,36 @@ def filter_suspended(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
         return stocks
 
 
-def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
-    """剔除当日涨跌停股票。
+def _get_board_limit(ts_code: str) -> float:
+    """按板块返回单边涨跌停幅度（不含1）。主板9.8%，创业板/科创板19.8%，北交所29.8%。
 
-    使用 ``pct_chg`` 阈值判断：主板 ±10%，创业板/科创板 ±20%，
-    统一用 ``(-9.8%, 9.8%)`` 区间覆盖大部分情况。
+    Parameters
+    ----------
+    ts_code : str
+        股票代码，如 ``"300001.SZ"``、``"688001.SH"``。
+
+    Returns
+    -------
+    float
+        涨跌停幅度小数（例如 0.098 表示 9.8%）。
+    """
+    code = ts_code.upper()
+    if code.startswith("300") or code.startswith("301"):  # 创业板
+        return 0.198
+    if code.startswith("688") or code.startswith("689"):  # 科创板
+        return 0.198
+    if code.endswith(".BJ"):  # 北交所
+        return 0.298
+    return 0.098  # 主板（含ST的4.95%由调用方另外判断）
+
+
+def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
+    """剔除当日涨跌停股票（按板块细化阈值）。
+
+    使用 ``pct_chg`` 阈值判断（pct_chg 单位为百分比，如 9.8 表示 9.8%）：
+    - 创业板/科创板：±19.8%
+    - 北交所：±29.8%
+    - 主板：±9.8%
 
     如果无法读取日线数据，优雅降级：不过滤。
 
@@ -405,8 +430,17 @@ def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
             logger.warning(f"[filter_limit] {date_str} 无日线数据，不过滤")
             return stocks
 
+        # 按板块构建每只股票的涨跌停阈值（pct_chg 单位为百分比）
+        codes = daily["ts_code"].unique().to_list()
+        limits = {code: _get_board_limit(code) * 100 for code in codes}
+        limit_df = pl.DataFrame({
+            "ts_code": list(limits.keys()),
+            "_limit_pct": list(limits.values()),
+        })
+
         not_limit = (
-            daily.filter((pl.col("pct_chg") > -9.8) & (pl.col("pct_chg") < 9.8))
+            daily.join(limit_df, on="ts_code", how="left")
+            .filter(pl.col("pct_chg").abs() < pl.col("_limit_pct"))
             .select("ts_code")
             .unique()
         )

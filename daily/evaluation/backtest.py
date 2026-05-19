@@ -96,6 +96,7 @@ class BacktestContext:
     current_positions: pl.DataFrame
     factor_col: str = "factor_clean"
     price_history: pl.DataFrame = field(default_factory=pl.DataFrame)
+    # TODO: populate adv_20d from price history and pass to SquareRootImpactCostModel.trade_cost(adv=...)
     adv_20d: dict[str, float] = field(default_factory=dict)  # ts_code → 20日均成交额（元）
 
 

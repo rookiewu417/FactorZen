@@ -1,7 +1,7 @@
 [workspace]
 authors = ["吴一凡 <1007372080@qq.com>"]
 channels = ["conda-forge"]
-name = "AlphaZen"
+name = "FactorZen"
 platforms = ["win-64", "linux-64"]
 version = "0.1.0"
 

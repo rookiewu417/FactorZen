@@ -1,6 +1,6 @@
-# AlphaZen
+# FactorZen
 
-> **AlphaZen** 是一个面向 A 股单因子的可信研究框架，强调严谨、克制和可复现。当前核心主线覆盖因子计算、预处理、IC/回测评估、walk-forward OOS、数据质量报告、实验 manifest 与 Tear Sheet 报告生成。`daily/combination/` 已提供实验性多因子合成工具，用于研究对比，不作为当前生产组合优化模块。
+> **FactorZen** 是一个面向 A 股单因子的可信研究框架，强调严谨、克制和可复现。当前核心主线覆盖因子计算、预处理、IC/回测评估、walk-forward OOS、数据质量报告、实验 manifest 与 Tear Sheet 报告生成。`daily/combination/` 已提供实验性多因子合成工具，用于研究对比，不作为当前生产组合优化模块。
 
 ## 目录结构与频率词汇表
 
@@ -24,7 +24,7 @@
 winget install prefix-dev.pixi
 
 # 克隆项目后安装依赖（含 editable install）
-cd AlphaZen
+cd FactorZen
 pixi install
 ```
 
@@ -132,7 +132,7 @@ pixi run lab       # 启动 JupyterLab
 ## 项目架构
 
 ```
-AlphaZen/
+FactorZen/
 ├── common/          # 数据底座（loader/storage/calendar/universe）
 ├── config/          # 路径常量、Tushare 配置
 ├── daily/           # 日/周/月频因子框架

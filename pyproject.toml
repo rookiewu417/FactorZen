@@ -3,10 +3,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "alphazen"
+name = "factorzen"
 version = "0.1.0"
 requires-python = ">=3.10,<3.13"
-description = "AlphaZen — disciplined A-share alpha research from signal to evidence"
+description = "FactorZen — disciplined A-share alpha research from signal to evidence"
 dependencies = [
     "polars>=1.0.0",
     "pyarrow>=14.0.0",

@@ -128,8 +128,11 @@ def ic_weighted(
     for _, z in normed[1:]:
         merged = merged.join(z, on=["trade_date", "ts_code"], how="inner")
 
-    # 加权求和
-    expr = sum(pl.col(f"_f_{n}") * weights[n] for n in factor_dfs)
+    # 加权求和（用循环避免 sum() 从 int(0) 起步导致的类型歧义）
+    weight_exprs = [pl.col(f"_f_{n}") * weights[n] for n in factor_dfs]
+    expr: pl.Expr = weight_exprs[0]
+    for e in weight_exprs[1:]:
+        expr = expr + e
     combined = merged.with_columns(expr.alias("factor_value")).select(
         ["trade_date", "ts_code", "factor_value"]
     )
@@ -203,7 +206,10 @@ def max_ir(
     for _, z in normed[1:]:
         merged = merged.join(z, on=["trade_date", "ts_code"], how="inner")
 
-    expr = sum(pl.col(f"_f_{n}") * weights[n] for n in names)
+    weight_exprs = [pl.col(f"_f_{n}") * weights[n] for n in names]
+    expr: pl.Expr = weight_exprs[0]
+    for e in weight_exprs[1:]:
+        expr = expr + e
     combined = merged.with_columns(expr.alias("factor_value")).select(
         ["trade_date", "ts_code", "factor_value"]
     )

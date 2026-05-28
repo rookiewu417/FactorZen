@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class EpRatioMonthly(LFTFactor):
+class EpRatioMonthly(DailyFactor):
     name = "ep_ratio"
     category = "monthly"
     frequency = "monthly"

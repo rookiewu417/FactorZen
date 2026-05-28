@@ -75,6 +75,3 @@ class IntradayDataContext:
             if data_type == "minute":
                 _ = self.minute
 
-
-# 向后兼容别名
-MFTDataContext = IntradayDataContext

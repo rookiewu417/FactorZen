@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class ValueStyle(LFTFactor):
+class ValueStyle(DailyFactor):
     name = "value_style"
     category = "daily"
     description = "价值因子：-log(PB)，即 log(B/P)，Barra VALUE"

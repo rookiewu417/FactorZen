@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class Volatility20D(LFTFactor):
+class Volatility20D(DailyFactor):
     name = "volatility_20d"
     category = "daily"
     description = "20日波动率：std(log_return) over 20 days"

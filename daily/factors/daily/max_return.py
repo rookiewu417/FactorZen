@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class MaxReturn5D(LFTFactor):
+class MaxReturn5D(DailyFactor):
     name = "max_return_5d"
     category = "daily"
     description = "5-day MAX factor (Bali et al. 2011): negatively predicts future returns"

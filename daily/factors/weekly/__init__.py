@@ -1,1 +1,1 @@
-# lft/factors/weekly/ - 周频因子
+# daily/factors/weekly/ - 周频因子

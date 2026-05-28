@@ -272,6 +272,36 @@ class TestGenerateTearSheet:
         assert isinstance(html, str)
         assert "无回测数据" in html
 
+    def test_html_shows_current_backtest_strategy(self, ic_result, bt_result, to_result):
+        """报告应提示当前使用的回测策略。"""
+        html = generate_tear_sheet("test_factor", ic_result, bt_result, to_result)
+
+        assert "当前回测策略" in html
+        assert "quantile_long_short" in html
+
+    def test_html_explains_missing_attribution(self, ic_result, bt_result, to_result):
+        """归因结果为空时，报告应说明为什么为空。"""
+        html = generate_tear_sheet("test_factor", ic_result, bt_result, to_result)
+
+        assert "归因未生成" in html
+        assert "attribution_result" in html
+
+    def test_html_marks_reversed_backtest_direction(self, ic_result, bt_result, to_result):
+        """报告应标注自动反向回测。"""
+        html = generate_tear_sheet(
+            "test_factor",
+            ic_result,
+            bt_result,
+            to_result,
+            backtest_direction={
+                "direction": "reversed",
+                "reason": "IC 均值为负且 p 值小于等于 0.10",
+            },
+        )
+
+        assert "已自动反向回测" in html
+        assert "IC 均值为负" in html
+
     def test_none_turnover(self, ic_result, bt_result):
         """None turnover 优雅处理。"""
         html = generate_tear_sheet(
@@ -446,6 +476,14 @@ class TestGenerateTearSheet:
         )
         assert "Walk-Forward 稳健性" in html
         assert "样本不足" in html
+
+    def test_html_uses_observation_window_terms(self, ic_result, bt_result, to_result):
+        ic_result.oos_ic = {"train": 0.03, "test": 0.02}
+        html = generate_tear_sheet("test_factor", ic_result, bt_result, to_result)
+
+        assert "历史观察期" in html
+        assert "未来验证期" in html
+        assert "训练集" not in html
 
 
 class TestTearSheetImports:

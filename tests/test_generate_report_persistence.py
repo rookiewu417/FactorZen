@@ -117,3 +117,60 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
         "oos_max_dd": -0.05,
         "stability_ratio": 0.72,
     }
+
+
+def test_negative_significant_ic_uses_reversed_backtest_direction():
+    from daily.evaluation.ic_analysis import ICAnalysisResult
+    from scripts import generate_report as mod
+
+    ic_result = ICAnalysisResult(
+        factor_name="value",
+        ic_mean=-0.03,
+        ic_std=0.04,
+        ir=-0.75,
+        ic_positive_ratio=0.3,
+        n_periods=60,
+        ic_series=pl.DataFrame(),
+        ic_tstat=-1.8,
+        ic_pvalue=0.08,
+    )
+
+    decision = mod._decide_backtest_direction(ic_result)
+
+    assert decision["direction"] == "reversed"
+    assert decision["should_reverse"] is True
+
+
+def test_weak_negative_ic_keeps_normal_backtest_direction():
+    from daily.evaluation.ic_analysis import ICAnalysisResult
+    from scripts import generate_report as mod
+
+    ic_result = ICAnalysisResult(
+        factor_name="noise",
+        ic_mean=-0.005,
+        ic_std=0.04,
+        ir=-0.125,
+        ic_positive_ratio=0.48,
+        n_periods=60,
+        ic_series=pl.DataFrame(),
+        ic_tstat=-0.5,
+        ic_pvalue=0.62,
+        oos_ic={"train": -0.004, "test": 0.002},
+    )
+
+    decision = mod._decide_backtest_direction(ic_result)
+
+    assert decision["direction"] == "normal"
+    assert decision["should_reverse"] is False
+
+
+def test_reversed_backtest_direction_flips_factor_clean():
+    from scripts import generate_report as mod
+
+    clean_df = pl.DataFrame(
+        {"trade_date": [date(2024, 1, 2)], "ts_code": ["000001.SZ"], "factor_clean": [2.0]}
+    )
+
+    out = mod._apply_backtest_direction(clean_df, {"direction": "reversed"})
+
+    assert out["factor_clean"].to_list() == [-2.0]

@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class SizeStyle(LFTFactor):
+class SizeStyle(DailyFactor):
     name = "size_style"
     category = "daily"
     description = "规模因子：log(total_mv)，Barra SIZE"

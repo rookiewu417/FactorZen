@@ -18,6 +18,7 @@ from config.constants import (
     TRADING_DAYS_PER_YEAR,
 )
 from daily.evaluation.backtest import CostModel, run_stratified_backtest
+from daily.evaluation.cost_models import SquareRootImpactCostModel
 
 
 def _make_data(n_dates: int = 200, n_stocks: int = 100, seed: int = 0):
@@ -149,3 +150,56 @@ class TestBacktestCostIntegration:
         s_zero = r_zero.summary_stats["long_short"]["ann_ret"]
         # 允许极小浮点误差
         assert abs(s_none - s_zero) < 1e-6, f"零成本模型应与无成本相同: {s_none} vs {s_zero}"
+
+
+class TestSquareRootImpactCostModel:
+    def test_adv_missing_uses_fallback(self):
+        """adv=None 时应使用 fallback_adv，成本有限且为正。"""
+        m = SquareRootImpactCostModel(alpha=0.1, fallback_adv=1e7)
+        cost = m.trade_cost(delta_weight=0.01, adv=None)
+        cost_explicit = m.trade_cost(delta_weight=0.01, adv=1e7)
+        assert cost == cost_explicit, "adv=None 应等价于 adv=fallback_adv"
+        assert cost > 0
+
+    def test_adv_zero_uses_fallback(self):
+        """adv=0 时应回退到 fallback_adv，不触发除零。"""
+        m = SquareRootImpactCostModel(alpha=0.1, fallback_adv=1e7)
+        cost = m.trade_cost(delta_weight=0.01, adv=0.0)
+        assert cost > 0
+        assert np.isfinite(cost)
+
+    def test_larger_adv_lowers_impact(self):
+        """ADV 越大，冲击成本越低（流动性越好，冲击越小）。"""
+        m = SquareRootImpactCostModel(alpha=0.1, fallback_adv=1e7)
+        cost_small_adv = m.trade_cost(delta_weight=0.01, adv=1e6)
+        cost_large_adv = m.trade_cost(delta_weight=0.01, adv=1e9)
+        assert cost_small_adv > cost_large_adv
+
+    def test_extreme_turnover_finite(self):
+        """极端换手（delta_weight=1.0）成本应有限且不溢出。"""
+        m = SquareRootImpactCostModel(alpha=0.1, fallback_adv=1e7)
+        cost = m.trade_cost(delta_weight=1.0, adv=1e6)
+        assert np.isfinite(cost)
+        assert cost > 0
+
+    def test_zero_delta_weight_zero_cost(self):
+        """delta_weight=0 时成本应为 0。"""
+        m = SquareRootImpactCostModel()
+        assert m.trade_cost(delta_weight=0.0) == 0.0
+
+    def test_alpha_parameterization(self):
+        """alpha 越大，冲击成本越大。"""
+        m_low = SquareRootImpactCostModel(alpha=0.01)
+        m_high = SquareRootImpactCostModel(alpha=1.0)
+        assert m_high.trade_cost(delta_weight=0.05) > m_low.trade_cost(delta_weight=0.05)
+
+    def test_fallback_adv_scales_impact_for_given_adv(self):
+        """fallback_adv 是 ADV 归一化基准：基准越大，同等 adv 被视为流动性越差，成本越高。"""
+        adv = 1e6  # 固定的实际成交额
+        # fallback_adv=1e9：adv_normalized = 1e6/1e9 = 0.001，冲击高
+        m_high_ref = SquareRootImpactCostModel(alpha=0.1, fallback_adv=1e9)
+        # fallback_adv=1e5：adv_normalized = 1e6/1e5 = 10，冲击低
+        m_low_ref = SquareRootImpactCostModel(alpha=0.1, fallback_adv=1e5)
+        assert m_high_ref.trade_cost(delta_weight=0.01, adv=adv) > m_low_ref.trade_cost(
+            delta_weight=0.01, adv=adv
+        )

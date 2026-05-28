@@ -9,6 +9,7 @@ _registry = FactorRegistry(
         "daily.factors.daily",
         "daily.factors.weekly",
         "daily.factors.monthly",
+        "daily.factors.qlib",
     ],
 )
 # 模块加载时自动扫描（与之前行为保持一致）

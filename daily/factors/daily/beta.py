@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class Beta60D(LFTFactor):
+class Beta60D(DailyFactor):
     name = "beta_60d"
     category = "daily"
     description = "60-day rolling CAPM beta vs equal-weight market portfolio"

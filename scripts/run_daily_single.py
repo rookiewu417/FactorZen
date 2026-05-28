@@ -13,9 +13,10 @@ from common.config_loader import (
     build_preprocessing_pipeline,
     build_runtime_backtest_config,
 )
+from common.data_ensure import ensure_data_for_daily_run
 from common.data_quality import QualityCheckError, build_daily_quality_report
 from common.experiment import record_experiment_output, run_experiment
-from common.loader import fetch_daily
+from common.loader import fetch_daily_basic
 from common.logger import get_logger, setup_logging
 from common.universe import get_universe
 from config.settings import OUTPUT_DAILY_FACTORS, OUTPUT_DAILY_REPORTS, OUTPUT_DAILY_RESULTS
@@ -90,6 +91,30 @@ def _existing_run_outputs(factor_name: str, start: str, end: str) -> dict[str, s
     return {name: str(path) for name, path in candidates.items() if path.exists()}
 
 
+def _preprocess_factor(
+    factor_df: pl.DataFrame,
+    effective_config: RunConfig,
+    *,
+    universe: pl.DataFrame,
+    daily_basic: pl.DataFrame | None,
+) -> pl.DataFrame:
+    """Run configured preprocessing with the side data required by neutralization."""
+    stock_basic = None
+    daily_basic_input = None
+    if effective_config.preprocessing.neutralize:
+        neutralize_by = effective_config.preprocessing.neutralize_by
+        if neutralize_by in ("industry", "industry+size"):
+            stock_basic = universe
+        if neutralize_by in ("size", "industry+size"):
+            daily_basic_input = daily_basic
+    return build_preprocessing_pipeline(effective_config).run(
+        factor_df,
+        col="factor_value",
+        stock_basic=stock_basic,
+        daily_basic=daily_basic_input,
+    )
+
+
 def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str]:
     # ── 0b. 设置全局随机种子（可选）──
     if args.seed is not None:
@@ -115,10 +140,22 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         logger.warning("交易日不足 30 天，IC 分析可能不稳定")
 
     try:
-        fetch_daily(args.start, args.end)
+        ensure_data_for_daily_run(
+            required_data=factor.required_data,
+            start=args.start,
+            end=args.end,
+            universe=args.universe,
+            benchmark=args.benchmark,
+            needs_size_neutralization=(
+                effective_config.preprocessing.neutralize
+                and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
+            ),
+            is_qlib_factor=getattr(factor, "category", "") == "qlib"
+            or factor.name.startswith("qlib_"),
+        )
     except Exception as e:
-        logger.error(f"数据拉取失败: {e}")
-        raise RuntimeError(f"fetch_daily failed: {e}") from e
+        logger.error(f"数据保障失败: {e}")
+        raise RuntimeError(f"ensure_data_for_daily_run failed: {e}") from e
 
     # ── 3. 股票池 ──
     universe = get_universe(args.end, args.universe)
@@ -127,6 +164,14 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         raise RuntimeError(f"empty universe: {args.universe} ({args.end})")
     ts_codes = universe["ts_code"].to_list()
     logger.info(f"股票池: {len(ts_codes)} 只")
+
+    # ── 3b. 保存 universe 快照（供复现和审计）──
+    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
+    universe_snapshot_path = (
+        OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_universe.parquet"
+    )
+    universe.write_parquet(str(universe_snapshot_path))
+    logger.info(f"Universe 快照已保存: {universe_snapshot_path} ({len(ts_codes)} 只)")
 
     # ── 4. 计算因子 ──
     ctx = FactorDataContext(
@@ -152,7 +197,23 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         logger.warning("因子覆盖率不足 50%，结果可能不可靠")
 
     # ── 5. 预处理 ──
-    clean_df = build_preprocessing_pipeline(effective_config).run(factor_df, col="factor_value")
+    daily_basic_for_neutralize = None
+    if (
+        effective_config.preprocessing.neutralize
+        and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
+    ):
+        try:
+            daily_basic_for_neutralize = fetch_daily_basic(args.start, args.end)
+        except Exception as e:
+            logger.error(f"daily_basic 拉取失败，无法执行市值中性化: {e}")
+            raise RuntimeError(f"fetch_daily_basic failed for neutralization: {e}") from e
+
+    clean_df = _preprocess_factor(
+        factor_df,
+        effective_config,
+        universe=universe,
+        daily_basic=daily_basic_for_neutralize,
+    )
     logger.info("预处理完成 (去极值 → 填充 → 标准化)")
 
     # ── 6. 计算前向收益 ──
@@ -343,6 +404,7 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         "ic": str(OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_ic.parquet"),
         "quality_report": str(quality_path),
         "walk_forward_summary": str(walk_forward_path),
+        "universe_snapshot": str(universe_snapshot_path),
         "report": str(report_path),
     }
 

@@ -40,6 +40,67 @@ def test_experiment_failure(tmp_path, monkeypatch):
     assert "test error" in manifest["error"]
 
 
+def test_experiment_index_created_on_success(tmp_path, monkeypatch):
+    """成功 run 后，experiment_index.jsonl 被创建并含正确字段。"""
+    import json as _json
+
+    from common import experiment as exp_mod
+    from common.config_loader import RunConfig
+
+    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+    cfg = RunConfig(factor="reversal_5d", start="20240101", end="20241231")
+
+    with exp_mod.run_experiment(cfg, run_id="idx_run") as _exp_dir:
+        pass
+
+    index_path = tmp_path / "experiments" / "experiment_index.jsonl"
+    assert index_path.exists(), "experiment_index.jsonl 应被创建"
+    entry = _json.loads(index_path.read_text(encoding="utf-8").strip())
+    assert entry["run_id"] == "idx_run"
+    assert entry["factor"] == "reversal_5d"
+    assert entry["status"] == "success"
+    assert "manifest_path" in entry
+
+
+def test_experiment_index_appends_multiple_runs(tmp_path, monkeypatch):
+    """两次 run 各 append 一行，JSONL 共两行。"""
+    import json as _json
+
+    from common import experiment as exp_mod
+    from common.config_loader import RunConfig
+
+    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+
+    for run_id, factor in [("run_a", "momentum_20d"), ("run_b", "reversal_5d")]:
+        cfg = RunConfig(factor=factor, start="20240101", end="20241231")
+        with exp_mod.run_experiment(cfg, run_id=run_id):
+            pass
+
+    index_path = tmp_path / "experiments" / "experiment_index.jsonl"
+    lines = [_json.loads(ln) for ln in index_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 2
+    factors = {e["factor"] for e in lines}
+    assert factors == {"momentum_20d", "reversal_5d"}
+
+
+def test_experiment_index_records_failure_status(tmp_path, monkeypatch):
+    """失败 run 的状态也被记录到索引。"""
+    import json as _json
+
+    from common import experiment as exp_mod
+    from common.config_loader import RunConfig
+
+    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+    cfg = RunConfig(factor="x", start="20240101", end="20241231")
+
+    with pytest.raises(RuntimeError), exp_mod.run_experiment(cfg, run_id="fail_idx"):
+        raise RuntimeError("boom")
+
+    index_path = tmp_path / "experiments" / "experiment_index.jsonl"
+    entry = _json.loads(index_path.read_text(encoding="utf-8").strip())
+    assert entry["status"] == "failure"
+
+
 def test_experiment_records_reproducibility_metadata(tmp_path, monkeypatch):
     from common import experiment as exp_mod
     from common.config_loader import RunConfig

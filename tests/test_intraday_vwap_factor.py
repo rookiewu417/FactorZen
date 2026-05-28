@@ -5,12 +5,12 @@ import unittest.mock as mock
 
 import polars as pl
 
-from intraday.data.context import MFTDataContext
+from intraday.data.context import IntradayDataContext
 from intraday.factors.technical.vwap_deviation import VwapDeviation
 
 
 def _make_ctx(df: pl.DataFrame):
-    ctx = mock.MagicMock(spec=MFTDataContext)
+    ctx = mock.MagicMock(spec=IntradayDataContext)
     ctx.minute = df.lazy()
     return ctx
 

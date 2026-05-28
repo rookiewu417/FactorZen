@@ -1,7 +1,7 @@
 """性能基准测试：评估层 polars 化前后耗时对比。
 
 运行方式：
-    pixi run python -m pytest tests/bench_evaluation.py -v -s
+    pixi run python -m pytest benchmarks/bench_evaluation.py -v -s
 
 说明：
 - "polars vectorized" 版本使用 _rank_ic_by_date（group_by + pl.corr）

@@ -1,1 +1,1 @@
-# mft/factors/ - MFT 因子
+# intraday/factors/ - intraday 因子

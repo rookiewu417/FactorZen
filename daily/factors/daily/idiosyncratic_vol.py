@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class IdiosyncraticVol20D(LFTFactor):
+class IdiosyncraticVol20D(DailyFactor):
     name = "idiosyncratic_vol_20d"
     category = "daily"
     description = "20-day idiosyncratic volatility: std of residuals after removing market beta"

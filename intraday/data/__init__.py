@@ -1,1 +1,1 @@
-# mft/data/ - MFT 数据层
+# intraday/data/ - intraday 数据层

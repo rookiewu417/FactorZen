@@ -1,1 +1,1 @@
-# mft/preprocessing/ - MFT 预处理
+# intraday/preprocessing/ - intraday 预处理

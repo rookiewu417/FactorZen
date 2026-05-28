@@ -95,6 +95,3 @@ def clip_outliers(
     hi = df[col].quantile(upper_pct / 100.0)
     return df.with_columns(pl.col(col).clip(lo, hi))
 
-
-# 向后兼容别名
-MFTPreprocessingPipeline = IntradayPreprocessingPipeline

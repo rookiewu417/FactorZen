@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+
 import polars as pl
 
-from daily.combination.methods import equal_weight, ic_weighted, max_ir
 from daily.evaluation.backtest import BacktestResult, CostModel, run_stratified_backtest
 from daily.evaluation.ic_analysis import ICAnalysisResult, compute_fwd_returns, compute_rank_ic
+from research.combination.methods import equal_weight, ic_weighted, max_ir
+
+_logger = logging.getLogger(__name__)
+
+_IN_SAMPLE_METHODS = {"ic_weighted", "max_ir"}
 
 
 def combine_and_evaluate(
@@ -34,6 +40,13 @@ def combine_and_evaluate(
         horizons = [1, 5]
 
     ret_df = compute_fwd_returns(price_df, horizons=horizons, ret_col=ret_col)
+
+    if method in _IN_SAMPLE_METHODS:
+        _logger.warning(
+            "[样本内警告] 合成方法 '%s' 使用全样本 IC 估权重，回测结果含样本内偏差，"
+            "请勿将其视为 OOS 表现。",
+            method,
+        )
 
     # 合成
     if method == "equal_weight":

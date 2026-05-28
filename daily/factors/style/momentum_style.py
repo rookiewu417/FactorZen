@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class MomentumStyle(LFTFactor):
+class MomentumStyle(DailyFactor):
     name = "momentum_style"
     category = "daily"
     description = "JT 12-1 动量：close_adj[t-21] / close_adj[t-252] - 1，剔除最近1个月反转效应"

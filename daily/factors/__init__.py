@@ -1,1 +1,1 @@
-# lft/factors/ - LFT 因子
+# daily/factors/ - daily 因子

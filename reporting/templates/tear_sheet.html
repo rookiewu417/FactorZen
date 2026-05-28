@@ -36,7 +36,14 @@
   <div class="meta">
     频率：{{ frequency }} | 股票池：{{ universe }} | 生成时间：{{ generated_at }}
     {% if date_range %}| 日期范围：{{ date_range }}{% endif %}
+    | 当前回测策略：{{ metrics.bt_strategy_name }}{% if backtest_direction and backtest_direction.direction == 'reversed' %}（反向因子）{% endif %}
   </div>
+
+  {% if backtest_direction and backtest_direction.direction == 'reversed' %}
+  <div class="warning">已自动反向回测：{{ backtest_direction.reason }}</div>
+  {% elif backtest_direction %}
+  <div class="no-data" style="text-align:left;padding:8px 12px;margin:6px 0">{{ backtest_direction.reason }}</div>
+  {% endif %}
 
   {% if warnings %}
   {% for w in warnings %}
@@ -147,11 +154,11 @@
 {% if metrics.get('oos_train_ic') is not none %}
 <div class="panel">
   <h2>样本外稳健性</h2>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">样本内（前 70%）与样本外（后 30%）IC 分割 —— IC 方向一致说明因子未过拟合特定时段。</p>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">前 70% 历史观察期与后 30% 未来验证期的 IC 分割。固定因子不会在观察期重新拟合参数；这里用于检查历史结论能否延续到后续区间。</p>
   <table>
     <tr><th>区间</th><th>IC 均值</th></tr>
-    <tr><td>样本内（训练集）</td><td>{{ "%.4f"|format(metrics.oos_train_ic) }}</td></tr>
-    <tr><td>样本外（测试集）</td><td>{{ "%.4f"|format(metrics.oos_test_ic) }}</td></tr>
+    <tr><td>历史观察期（IS，前 70%）</td><td>{{ "%.4f"|format(metrics.oos_train_ic) }}</td></tr>
+    <tr><td>未来验证期（OOS，后 30%）</td><td>{{ "%.4f"|format(metrics.oos_test_ic) }}</td></tr>
   </table>
 </div>
 {% endif %}
@@ -246,6 +253,8 @@
     &nbsp;|&nbsp; 交互: {{ "%.2f%%"|format(attribution_result['brinson'].ann_interaction * 100) }}
   </p>
   {% endif %}
+  {% elif attribution_notice %}
+  <div class="no-data">{{ attribution_notice }}</div>
   {% endif %}
 </div>
 
@@ -253,13 +262,14 @@
 {% if walk_forward_result is not none %}
 <div class="panel">
   <h2>Walk-Forward 稳健性</h2>
+  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">每个 Fold 用过去的历史观察期作为 IS 参照，隔开 embargo 后，用后续未来验证期计算 OOS 表现。固定因子主流程不在 IS 期拟合因子参数。</p>
   <div class="metric-grid" style="margin-bottom:10px">
     <div class="metric-card">
-      <div class="label">IS Sharpe 均值</div>
+      <div class="label">IS 观察期 Sharpe 均值</div>
       <div class="value">{{ "%.2f"|format(walk_forward_result.is_sharpe_mean) }}</div>
     </div>
     <div class="metric-card">
-      <div class="label">OOS Sharpe 均值</div>
+      <div class="label">OOS 验证期 Sharpe 均值</div>
       <div class="value">{{ "%.2f"|format(walk_forward_result.oos_sharpe_mean) }}</div>
     </div>
     <div class="metric-card">
@@ -275,7 +285,7 @@
   <img class="chart-img" src="data:image/png;base64,{{ charts.walk_forward_chart }}" alt="Walk-Forward 图">
   {% endif %}
   <table>
-    <tr><th>折</th><th>IS Sharpe</th><th>OOS Sharpe</th><th>OOS 年化收益</th><th>OOS 最大回撤</th></tr>
+    <tr><th>折</th><th>IS 观察期 Sharpe</th><th>OOS 验证期 Sharpe</th><th>OOS 年化收益</th><th>OOS 最大回撤</th></tr>
     {% for fold in walk_forward_result.folds %}
     <tr>
       <td>Fold {{ fold.fold_id }}</td>

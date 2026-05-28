@@ -1,4 +1,4 @@
-# daily/combination/ — 多因子合成
+# research/combination/ — 多因子合成
 
 > 状态：实验性研究工具。`ic_weighted` 和 `max_ir` 当前使用样本内 IC 估计权重，适合方法对比和候选因子筛选，不应用作无偏的样本外组合表现。
 
@@ -13,7 +13,7 @@
 ## 快速使用
 
 ```python
-from daily.combination.methods import equal_weight, ic_weighted, max_ir
+from research.combination.methods import equal_weight, ic_weighted, max_ir
 
 # factor_dfs: dict[str, pl.DataFrame]，每个 df 含 trade_date, ts_code, factor_value
 # ret_df: 含 trade_date, ts_code, ret 的前向收益
@@ -26,7 +26,7 @@ combined = max_ir(factor_dfs, ret_df, lookback=120)
 ## 一体化评估
 
 ```python
-from daily.combination.pipeline import combine_and_evaluate
+from research.combination.pipeline import combine_and_evaluate
 
 combined_df, ic_result, bt_result = combine_and_evaluate(
     factor_dfs, price_df, method="ic_weighted"

@@ -5,10 +5,10 @@ import warnings
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class Momentum20D(LFTFactor):
+class Momentum20D(DailyFactor):
     name = "momentum_20d"
     category = "daily"
     description = "20 日动量：(close(t) / close(t-20) - 1)（已弃用，请用 Momentum12_1）"
@@ -35,7 +35,7 @@ class Momentum20D(LFTFactor):
         return result
 
 
-class Momentum12_1(LFTFactor):
+class Momentum12_1(DailyFactor):
     """Jegadeesh-Titman 12-1 动量因子。
 
     用 t-21 至 t-252 的收益率（剔除最近 1 个月，避免短期反转污染）。

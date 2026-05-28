@@ -36,6 +36,3 @@ class IntradayFactor(BaseFactor):
     def validate(self, result: pl.DataFrame, time_col: str = "trade_time") -> dict[str, Any]:
         return super().validate(result, time_col=time_col)
 
-
-# 向后兼容别名
-MFTFactor = IntradayFactor

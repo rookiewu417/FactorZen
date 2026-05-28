@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class LiquidityStyle(LFTFactor):
+class LiquidityStyle(DailyFactor):
     name = "liquidity_style"
     category = "daily"
     description = "流动性因子：21 日换手率均值，Barra LIQUIDITY"

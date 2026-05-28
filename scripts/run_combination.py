@@ -13,12 +13,12 @@ import sys
 import polars as pl
 
 from common.storage import load_parquet
-from daily.combination.methods import equal_weight, ic_weighted, max_ir
 from daily.data.context import FactorDataContext
 from daily.evaluation.backtest import CostModel
 from daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
 from daily.factors.registry import get_factor
 from daily.preprocessing.pipeline import quick_preprocess
+from research.combination.methods import equal_weight, ic_weighted, max_ir
 
 
 def _instantiate_factor(fname: str, registry_getter=get_factor):
@@ -81,6 +81,12 @@ def main():
     ret_df = _prepare_return_frame(price_df, horizons=[1, 5])
 
     # 合成
+    if args.method in ("ic_weighted", "max_ir"):
+        print(
+            f"\n[!] 警告：合成方法 '{args.method}' 使用全样本 IC 估权重（样本内）。"
+            "\n    回测结果含样本内偏差，请勿将其视为 OOS 表现。\n"
+        )
+
     fwd1 = ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename({"fwd_ret_1d": "ret"})
     if args.method == "equal_weight":
         combined = equal_weight(factor_dfs)

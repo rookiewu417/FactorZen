@@ -11,12 +11,12 @@ from common.logger import get_logger
 from common.storage import scan_parquet
 from daily.data.context import FactorDataContext
 from daily.data.pit import pit_align
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 logger = get_logger(__name__)
 
 
-class AssetGrowthMonthly(LFTFactor):
+class AssetGrowthMonthly(DailyFactor):
     name = "asset_growth"
     category = "monthly"
     frequency = "monthly"

@@ -20,6 +20,7 @@ from daily.evaluation.backtest import (
     TopNLongOnlyStrategy,
     run_strategy_backtest,
 )
+from daily.evaluation.cost_models import SquareRootImpactCostModel
 
 
 def _prices(
@@ -219,6 +220,65 @@ def test_cost_model_reduces_nav():
         BuyOneStrategy(), _factor(), _prices(), config=config, cost_model=CostModel()
     )
     assert costly.nav["nav"][1] < free.nav["nav"][1]
+
+
+def test_square_root_impact_uses_history_adv_for_trade_cost():
+    price_rows = []
+    for i, d in enumerate([date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]):
+        price_rows.extend(
+            [
+                {
+                    "trade_date": d,
+                    "ts_code": "000001.SZ",
+                    "open": 10.0,
+                    "close": 10.0,
+                    "pre_close": 10.0,
+                    "pct_chg": 0.0,
+                    "vol": 1000.0,
+                    "amount": 1_000_000.0 if i == 0 else 100_000_000.0,
+                },
+                {
+                    "trade_date": d,
+                    "ts_code": "000002.SZ",
+                    "open": 10.0,
+                    "close": 10.0,
+                    "pre_close": 10.0,
+                    "pct_chg": 0.0,
+                    "vol": 1000.0,
+                    "amount": 100_000_000.0,
+                },
+            ]
+        )
+    factor = _factor(
+        [
+            (date(2024, 1, 1), "000001.SZ", 1.0),
+            (date(2024, 1, 1), "000002.SZ", 1.0),
+        ]
+    )
+
+    class BuyBothStrategy(Strategy):
+        name = "buy_both"
+
+        def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+            return pl.DataFrame(
+                {
+                    "ts_code": ["000001.SZ", "000002.SZ"],
+                    "target_weight": [0.5, 0.5],
+                }
+            )
+
+    result = run_strategy_backtest(
+        BuyBothStrategy(),
+        factor,
+        pl.DataFrame(price_rows),
+        config=BacktestConfig(max_participation_rate=1.0),
+        cost_model=SquareRootImpactCostModel(alpha=0.1, fallback_adv=10_000_000.0),
+    )
+
+    trades = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).sort("ts_code")
+    low_adv_cost = trades.filter(pl.col("ts_code") == "000001.SZ")["cost"][0]
+    high_adv_cost = trades.filter(pl.col("ts_code") == "000002.SZ")["cost"][0]
+    assert low_adv_cost > high_adv_cost
 
 
 def test_quantile_long_short_strategy_selects_top_and_bottom_groups():

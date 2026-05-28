@@ -1,1 +1,1 @@
-# lft/preprocessing/ - LFT 预处理
+# daily/preprocessing/ - daily 预处理

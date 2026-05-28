@@ -1,6 +1,6 @@
 # FactorZen
 
-> **FactorZen** 是一个面向 A 股单因子的可信研究框架，强调严谨、克制和可复现。当前核心主线覆盖因子计算、预处理、IC/回测评估、walk-forward OOS、数据质量报告、实验 manifest 与 Tear Sheet 报告生成。`daily/combination/` 已提供实验性多因子合成工具，用于研究对比，不作为当前生产组合优化模块。
+> **FactorZen** 是一个面向 A 股单因子的可信研究框架，强调严谨、克制和可复现。当前核心主线覆盖因子计算、预处理、IC/回测评估、walk-forward OOS、数据质量报告、实验 manifest 与 Tear Sheet 报告生成。`research/combination/` 提供实验性多因子合成工具，用于研究对比，不作为当前生产组合优化模块。
 
 ## 目录结构与频率词汇表
 
@@ -8,12 +8,12 @@
 |------|------|---------|--------|
 | `daily/` | 日/周/月（日线下采样） | Tushare 日线行情 + 估值 + 财报 | ✅ 完整 |
 | `intraday/` | 分钟（1min/5min） | Tushare 分钟线 | ✅ 评估管线完整（待实数据）|
-| `tick/` | Tick 级 | 预留位（Tushare 不提供） | 🚫 未实现 |
+| `research/` | 实验性研究工具 | 复用 daily/intraday 数据 | ⚠️ 非生产 |
 | `common/` | 通用 | — | ✅ 完整 |
 | `config/` | — | — | ✅ 完整 |
 | `reporting/` | HTML Tear Sheet | — | ✅ 完整 |
 
-> **命名说明**：`daily` ≡ 低频（业界常说的日频/月频因子）；`intraday` ≡ 日内（分钟级）；`tick` ≡ 高频（HFT，预留）。
+> **命名说明**：`daily` ≡ 低频（业界常说的日频/月频因子）；`intraday` ≡ 日内（分钟级）；`research` ≡ 实验性研究工具。
 
 ## 快速开始
 
@@ -41,10 +41,10 @@ cp .env.example .env
 
 ```bash
 # 拉取日线行情（约 5 分钟）
-python -c "from common.loader import fetch_daily; fetch_daily('20250101','20260513')"
+pixi run python -c "from common.loader import fetch_daily; fetch_daily('20250101','20260513')"
 
 # 拉取每日估值（PE/PB/市值，月频因子依赖）
-python -c "from common.loader import fetch_daily_basic; fetch_daily_basic('20250101','20260513')"
+pixi run python -c "from common.loader import fetch_daily_basic; fetch_daily_basic('20250101','20260513')"
 ```
 
 ### 4. 运行单因子评估
@@ -54,7 +54,7 @@ python -c "from common.loader import fetch_daily_basic; fetch_daily_basic('20250
 pixi run python scripts/run_daily_single.py --factor momentum_20d --start 20250101 --end 20260513
 
 # 使用 YAML 配置运行；preprocessing/backtest/cost_model/walk_forward 字段会真实生效
-pixi run python scripts/run_daily_single.py --config configs/examples/momentum_20d.yaml
+pixi run python scripts/run_daily_single.py --config config/runs/single_factor_momentum.yaml
 
 # 生成 HTML Tear Sheet → output/daily/reports/（同时落盘 parquet）
 pixi run report -- --factor momentum_20d --start 20250101 --end 20260513
@@ -71,7 +71,7 @@ pixi run python scripts/run_daily_compare.py --factors momentum_20d,reversal_5d 
 - `output/daily/factors/{factor}_{start}_{end}.parquet`：预处理后的因子矩阵。
 - `output/daily/results/{factor}_{start}_{end}_quality.json`：数据质量报告，包含覆盖率、重复键、收益对齐等检查结果。
 - `output/daily/results/{factor}_{start}_{end}_meta.json`：报告生成元数据，包含 IC/回测/换手、配置摘要、`walk_forward_summary`。
-- `output/daily/results/{factor}_{start}_{end}_walk_forward.json`：`run_daily_single.py` 的 walk-forward/OOS 摘要；样本不足时记录 `{"status": "insufficient_data", "n_folds": 0}`，不让主流程失败。
+- `output/daily/results/{factor}_{start}_{end}_walk_forward.json`：`run_daily_single.py` 的 walk-forward/OOS 摘要；IS 表示历史观察期，OOS 表示未来验证期，固定因子主流程不会在 IS 期重新拟合参数；样本不足时记录 `{"status": "insufficient_data", "n_folds": 0}`，不让主流程失败。
 - `output/daily/reports/{factor}_{start}_{end}.html`：Tear Sheet，包含 OOS 摘要区块；没有 folds 时显示样本不足。
 - `output/experiments/{run_id}/manifest.json`：实验 manifest，记录完整配置、命令、git SHA、dirty 状态、`pixi.lock` hash、成功/失败状态、错误信息和已生成输出路径。
 
@@ -123,7 +123,7 @@ pixi run python scripts/run_daily_compare.py --factors momentum_20d,reversal_5d 
 ```bash
 pixi run test      # 运行测试
 pixi run lint      # ruff check
-pixi run typecheck # mypy：common、daily/evaluation、daily/preprocessing、daily/factors、reporting、automation
+pixi run typecheck # mypy：common、daily/evaluation、daily/preprocessing、daily/factors、research/combination、reporting、automation
 pixi run coverage  # pytest coverage，当前门槛 70%
 pixi run format    # ruff format
 pixi run lab       # 启动 JupyterLab
@@ -139,12 +139,13 @@ FactorZen/
 │   ├── data/        # FactorDataContext（懒加载、PIT 对齐）
 │   ├── factors/     # 因子实现（daily/weekly/monthly/custom）
 │   ├── preprocessing/   # 去极值 → 填充 → 标准化 → 中性化
-│   ├── evaluation/  # IC / 回测 / 换手 / 相关性 / 高级指标
-│   └── combination/ # 实验性多因子合成（研究对比，非生产优化）
+│   └── evaluation/  # IC / 回测 / 换手 / 相关性 / 高级指标
 ├── intraday/        # 分钟频因子框架
-├── tick/            # 🚫 Tick 级预留
+├── research/        # 实验性研究工具（非生产优化）
+│   └── combination/ # 实验性多因子合成（研究对比）
 ├── reporting/       # HTML Tear Sheet 生成
 ├── scripts/         # CLI 入口
+├── benchmarks/      # 性能基准脚本
 └── tests/           # pytest 测试套件
 ```
 
@@ -169,8 +170,8 @@ output/
     └── reports/     # intraday HTML 报告
 ```
 
-## 已知预留位
+## 已知边界
 
-- **`tick/`**：Tushare 不提供 Tick 数据。未来对接 CTP 或 Wind 时填充，见 [`tick/README.md`](tick/README.md)。
-- **`daily/combination/`**：实验性多因子合成（等权、IC 加权、Max-IR），用于研究阶段对比。当前权重估计仍是 in-sample 口径，不能把组合结果称为 OOS，也不能直接解释为生产可交易组合优化，见 [`daily/combination/README.md`](daily/combination/README.md)。
+- **Tick 级研究**：当前不保留正式代码包。Tushare 不提供 Tick 数据，未来如对接 CTP 或 Wind，应单独设计数据 adapter、订单簿/逐笔存储与评估口径。
+- **`research/combination/`**：实验性多因子合成（等权、IC 加权、Max-IR），用于研究阶段对比。当前权重估计仍是 in-sample 口径，不能把组合结果称为 OOS，也不能直接解释为生产可交易组合优化，见 [`research/combination/README.md`](research/combination/README.md)。
 - **生产交易边界**：当前框架聚焦研究可信度，不包含 tick 数据、实盘 OMS、盘口成交、真实 Tushare 网络 smoke 或生产级组合执行闭环。

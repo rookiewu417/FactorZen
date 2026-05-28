@@ -12,6 +12,7 @@ from typing import Any
 from config.settings import ROOT
 
 EXPERIMENTS_DIR = ROOT / "output" / "experiments"
+_EXPERIMENT_INDEX = EXPERIMENTS_DIR / "experiment_index.jsonl"
 
 
 def _get_git_sha() -> str:
@@ -45,6 +46,28 @@ def _get_pixi_lock_hash() -> str:
     if not lock_path.exists():
         return "missing"
     return hashlib.sha256(lock_path.read_bytes()).hexdigest()
+
+
+def _update_experiment_index(manifest: dict[str, Any], exp_dir: Path) -> None:
+    """Append a one-line summary to experiment_index.jsonl for cross-run lookup."""
+    config = manifest.get("config", {})
+    entry: dict[str, Any] = {
+        "run_id": manifest.get("run_id"),
+        "timestamp": manifest.get("start_ts"),
+        "factor": config.get("factor"),
+        "universe": config.get("universe"),
+        "start": config.get("start"),
+        "end": config.get("end"),
+        "status": manifest.get("status"),
+        "manifest_path": str(exp_dir / "manifest.json"),
+    }
+    try:
+        index_path = exp_dir.parent / "experiment_index.jsonl"
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(index_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # index write failure must not affect the experiment outcome
 
 
 def record_experiment_output(exp_dir: Path, key: str, value: str) -> None:
@@ -88,6 +111,7 @@ def run_experiment(
         config_dict = {"repr": repr(config)}
 
     manifest: dict[str, Any] = {
+        "schema_version": "1",
         "run_id": run_id,
         "git_sha": _get_git_sha(),
         "git_dirty": _get_git_dirty(),
@@ -118,3 +142,4 @@ def run_experiment(
             existing = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["outputs"] = existing.get("outputs", manifest.get("outputs", {}))
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
+        _update_experiment_index(manifest, exp_dir)

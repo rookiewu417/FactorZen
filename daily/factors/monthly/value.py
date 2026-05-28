@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class PeTtmMonthly(LFTFactor):
+class PeTtmMonthly(DailyFactor):
     name = "pe_ttm"
     category = "monthly"
     frequency = "monthly"
@@ -30,7 +30,7 @@ class PeTtmMonthly(LFTFactor):
         return result
 
 
-class PbMonthly(LFTFactor):
+class PbMonthly(DailyFactor):
     name = "pb"
     category = "monthly"
     frequency = "monthly"

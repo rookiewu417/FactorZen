@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 # ── Synthetic data helpers ───────────────────────────────────────────────────
 
@@ -120,7 +120,7 @@ def test_amihud_illiquidity(ctx):
     from daily.factors.daily.amihud import AmihudIlliquidity
 
     factor = AmihudIlliquidity()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "amihud_illiquidity")
     non_null = result["factor_value"].drop_nulls()
@@ -131,7 +131,7 @@ def test_max_return_5d(ctx):
     from daily.factors.daily.max_return import MaxReturn5D
 
     factor = MaxReturn5D()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "max_return_5d")
 
@@ -140,7 +140,7 @@ def test_skewness_20d(ctx):
     from daily.factors.daily.skewness import Skewness20D
 
     factor = Skewness20D()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "skewness_20d")
     non_null = result["factor_value"].drop_nulls().to_numpy()
@@ -151,7 +151,7 @@ def test_beta_60d(ctx):
     from daily.factors.daily.beta import Beta60D
 
     factor = Beta60D()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "beta_60d")
 
@@ -160,7 +160,7 @@ def test_idiosyncratic_vol_20d(ctx):
     from daily.factors.daily.idiosyncratic_vol import IdiosyncraticVol20D
 
     factor = IdiosyncraticVol20D()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "idiosyncratic_vol_20d")
     non_null = result["factor_value"].drop_nulls().to_numpy()
@@ -171,7 +171,7 @@ def test_bm_ratio(ctx):
     from daily.factors.monthly.bm_ratio import BmRatioMonthly
 
     factor = BmRatioMonthly()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "bm_ratio")
     non_null = result["factor_value"].drop_nulls().to_numpy()
@@ -182,7 +182,7 @@ def test_ep_ratio(ctx):
     from daily.factors.monthly.ep_ratio import EpRatioMonthly
 
     factor = EpRatioMonthly()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "ep_ratio")
     non_null = result["factor_value"].drop_nulls().to_numpy()
@@ -205,6 +205,57 @@ def test_registry_has_new_factors():
     ]
     for name in expected:
         assert name in factors, f"Factor '{name}' not registered"
+
+
+def test_registry_has_qlib_factors():
+    from daily.factors.registry import list_factors
+
+    factors = list_factors()
+
+    assert "qlib_alpha158_kmid" in factors
+    assert "qlib_alpha158_ma20" in factors
+    assert "qlib_alpha360_close0" in factors
+    assert "qlib_alpha360_volume59" in factors
+
+
+def test_qlib_alpha158_factor_returns_factorzen_schema(ctx, monkeypatch):
+    import daily.factors.qlib.handler as qlib_mod
+    from daily.factors.qlib.handler import QlibAlpha158Kmid
+
+    assert QlibAlpha158Kmid.required_data == ["daily"]
+
+    qlib_df = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 3, 1), date(2024, 3, 1)],
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            "KMID": [0.1, -0.2],
+        }
+    )
+    monkeypatch.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
+
+    result = QlibAlpha158Kmid().compute(ctx)
+
+    assert result.columns == ["trade_date", "ts_code", "factor_value"]
+    assert result["factor_value"].to_list() == [0.1, -0.2]
+
+
+def test_qlib_alpha360_factor_returns_factorzen_schema(ctx, monkeypatch):
+    import daily.factors.qlib.handler as qlib_mod
+    from daily.factors.qlib.handler import QlibAlpha360Close0
+
+    qlib_df = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 3, 1), date(2024, 3, 1)],
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            "CLOSE0": [1.0, 1.0],
+        }
+    )
+    monkeypatch.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
+
+    result = QlibAlpha360Close0().compute(ctx)
+
+    assert result.columns == ["trade_date", "ts_code", "factor_value"]
+    assert result["factor_value"].to_list() == [1.0, 1.0]
 
 
 def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
@@ -248,7 +299,7 @@ def test_asset_growth(ctx, monkeypatch):
     monkeypatch.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
 
     factor = AssetGrowthMonthly()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "asset_growth")
     # YoY growth can be positive or negative, but should be finite

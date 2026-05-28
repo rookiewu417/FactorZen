@@ -1,17 +1,17 @@
-"""通用因子注册中心。支持多频率（daily/intraday/tick）因子的自动发现与注册。
+"""通用因子注册中心。支持 daily/intraday 因子的自动发现与注册。
 
 用法:
     # daily 频率
     from common.registry import FactorRegistry
     daily_registry = FactorRegistry(
-        base_cls=LFTFactor,
+        base_cls=DailyFactor,
         scan_packages=["daily.factors.daily", "daily.factors.weekly", "daily.factors.monthly"],
     )
     factor_cls = daily_registry.get("momentum_20d")
 
     # intraday 频率
     intraday_registry = FactorRegistry(
-        base_cls=MFTFactor,
+        base_cls=IntradayFactor,
         scan_packages=["intraday.factors.demo"],
     )
 """

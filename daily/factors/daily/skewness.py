@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class Skewness20D(LFTFactor):
+class Skewness20D(DailyFactor):
     name = "skewness_20d"
     category = "daily"
     description = "20-day return skewness; right-skewed (positive) stocks earn lower future returns"

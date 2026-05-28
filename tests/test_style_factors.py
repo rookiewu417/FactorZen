@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
 def _make_daily_lf(n_stocks: int = 10, n_days: int = 310, seed: int = 42) -> pl.LazyFrame:
@@ -103,7 +103,7 @@ def test_liquidity_style(ctx_basic):
     from daily.factors.style.liquidity import LiquidityStyle
 
     factor = LiquidityStyle()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx_basic)
     _check(result, "liquidity_style")
 
@@ -112,7 +112,7 @@ def test_size_style(ctx_basic):
     from daily.factors.style.size import SizeStyle
 
     factor = SizeStyle()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx_basic)
     _check(result, "size_style")
     non_null = result["factor_value"].drop_nulls().to_numpy()
@@ -123,7 +123,7 @@ def test_value_style(ctx_basic):
     from daily.factors.style.value import ValueStyle
 
     factor = ValueStyle()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx_basic)
     _check(result, "value_style")
     non_null = result["factor_value"].drop_nulls().to_numpy()
@@ -135,7 +135,7 @@ def test_momentum_style(ctx_daily):
     from daily.factors.style.momentum_style import MomentumStyle
 
     factor = MomentumStyle()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx_daily)
     assert isinstance(result, pl.DataFrame)
     assert "factor_value" in result.columns
@@ -145,7 +145,7 @@ def test_volatility_style(ctx_daily):
     from daily.factors.style.volatility_style import VolatilityStyle
 
     factor = VolatilityStyle()
-    assert isinstance(factor, LFTFactor)
+    assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx_daily)
     assert isinstance(result, pl.DataFrame)
     assert "factor_value" in result.columns

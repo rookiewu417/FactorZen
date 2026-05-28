@@ -62,9 +62,9 @@ def main() -> None:
         help="策略类型",
     )
     parser.add_argument("--n_trials", type=int, default=30, help="Optuna 搜索次数")
-    parser.add_argument("--train_days", type=int, default=252, help="训练集长度（交易日）")
-    parser.add_argument("--test_days", type=int, default=63, help="测试集长度（交易日）")
-    parser.add_argument("--embargo_days", type=int, default=5, help="训练集末到测试集首的间隔")
+    parser.add_argument("--train_days", type=int, default=252, help="IS 历史观察期长度（交易日）")
+    parser.add_argument("--test_days", type=int, default=63, help="OOS 未来验证期长度（交易日）")
+    parser.add_argument("--embargo_days", type=int, default=5, help="IS 期末到 OOS 期首的间隔")
     parser.add_argument("--universe", default="csi300", help="股票池")
     parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
     parser.add_argument("--seed", type=int, default=None, help="全局随机种子")

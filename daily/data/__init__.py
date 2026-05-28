@@ -1,1 +1,1 @@
-# lft/data/ - LFT 数据层
+# daily/data/ - daily 数据层

@@ -34,7 +34,12 @@ def run_quantile_walk_forward_summary(
     factor_name: str,
     frequency: str = "daily",
 ) -> tuple[dict[str, Any], WalkForwardResult | None]:
-    """Run quantile long-short walk-forward and return metadata summary plus result."""
+    """Run fixed quantile long-short walk-forward and return summary plus result.
+
+    The default single-factor workflow does not refit factor parameters inside the
+    IS window. The IS window is a historical observation period, and the OOS window
+    is the forward validation period.
+    """
     splitter = WalkForwardSplitter(
         train_days=config.walk_forward.train_days,
         test_days=config.walk_forward.test_days,

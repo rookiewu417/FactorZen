@@ -6,7 +6,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from daily.combination.methods import equal_weight, ic_weighted, max_ir
+from research.combination.methods import equal_weight, ic_weighted, max_ir
 from scripts.run_combination import _instantiate_factor, _prepare_return_frame
 
 

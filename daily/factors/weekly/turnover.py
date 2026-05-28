@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class TurnoverWeekly(LFTFactor):
+class TurnoverWeekly(DailyFactor):
     name = "turnover_weekly"
     category = "weekly"
     frequency = "weekly"

@@ -9,8 +9,8 @@
 
     from common.universe import get_universe, create_universe
 
-    # 预设 LFT 股票池
-    lft = get_universe("20260513", "lft_default")
+    # 预设日频股票池
+    daily = get_universe("20260513", "daily_default")
 
     # 自定义过滤：全A + 剔除ST + 剔除次新
     custom = create_universe("20260513", filters=["st", "new_listing"])
@@ -53,8 +53,10 @@ _UNIVERSE_REGISTRY: dict[str, str] = {
     "csi300": "沪深 300 成分股",
     "csi500": "中证 500 成分股",
     "csi800": "沪深 300 + 中证 500",
-    "lft_default": "全A → 过滤 ST/次新/停牌/涨跌停",
-    "mft_default": "LFT 默认池 → 流动性过滤（日成交额 >= 1000 万）",
+    "daily_default": "全A → 过滤 ST/次新/停牌/涨跌停",
+    "intraday_default": "daily_default → 流动性过滤（日成交额 >= 1000 万）",
+    "lft_default": "兼容别名：daily_default",
+    "mft_default": "兼容别名：intraday_default",
 }
 
 # universe_name → Tushare index_code
@@ -146,8 +148,9 @@ def get_universe(
         - ``"csi300"``: 沪深 300 成分股（Tushare 动态拉取）
         - ``"csi500"``: 中证 500 成分股（Tushare 动态拉取）
         - ``"csi800"``: 沪深 300 + 中证 500（csi300 ∪ csi500）
-        - ``"lft_default"``: 全A → 过滤 ST/次新/停牌/涨跌停
-        - ``"mft_default"``: lft_default → 流动性过滤
+        - ``"daily_default"``: 全A → 过滤 ST/次新/停牌/涨跌停
+        - ``"intraday_default"``: daily_default → 流动性过滤
+        - ``"lft_default"`` / ``"mft_default"``: 旧命名兼容别名
 
     Returns
     -------
@@ -196,8 +199,13 @@ def get_universe(
             logger.warning(f"[universe] {universe_name} 指数成分股加载失败 ({e})，降级为全 A 股")
             return all_a
 
-    # --- lft_default ---
     if universe_name == "lft_default":
+        universe_name = "daily_default"
+    elif universe_name == "mft_default":
+        universe_name = "intraday_default"
+
+    # --- daily_default ---
+    if universe_name == "daily_default":
         result = all_a
         result = filter_st(result, date_str)
         result = filter_new_listing(result, date_str)
@@ -205,9 +213,9 @@ def get_universe(
         result = filter_limit(result, date_str)
         return result
 
-    # --- mft_default ---
-    if universe_name == "mft_default":
-        result = get_universe(date_str, "lft_default")
+    # --- intraday_default ---
+    if universe_name == "intraday_default":
+        result = get_universe(date_str, "daily_default")
         result = filter_liquidity(result, date_str)
         return result
 

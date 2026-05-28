@@ -18,11 +18,11 @@
 ```python
 # daily/factors/custom/my_factor.py
 import polars as pl
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 from daily.data.context import FactorDataContext
 
 
-class MyFactor(LFTFactor):
+class MyFactor(DailyFactor):
     name = "my_factor"
     category = "daily"          # "daily" / "weekly" / "monthly"
     description = "一句话描述"

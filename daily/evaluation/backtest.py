@@ -96,8 +96,7 @@ class BacktestContext:
     current_positions: pl.DataFrame
     factor_col: str = "factor_clean"
     price_history: pl.DataFrame = field(default_factory=pl.DataFrame)
-    # TODO: populate adv_20d from price history and pass to SquareRootImpactCostModel.trade_cost(adv=...)
-    adv_20d: dict[str, float] = field(default_factory=dict)  # ts_code → 20日均成交额（元）
+    adv_20d: dict[str, float] = field(default_factory=dict)  # ts_code → 20日均成交额（元），由 _compute_adv_20d 填充
 
 
 class Strategy(ABC):
@@ -441,7 +440,9 @@ def run_strategy_backtest(
         open_weights = _drift_weights(current_weights, price_map, overnight_return)
 
         target_weights: dict[str, float] = {}
+        adv_20d: dict[str, float] = {}
         if signal_date is not None and signal_date in factor_by_date:
+            adv_20d = _compute_adv_20d(price, trade_dates, i)
             context = BacktestContext(
                 signal_date=signal_date,
                 execution_date=execution_date,
@@ -450,6 +451,7 @@ def run_strategy_backtest(
                 current_positions=_positions_frame(open_weights, nav_value, cfg.initial_capital),
                 factor_col=cfg.factor_col,
                 price_history=_get_price_history(price, trade_dates, i, _lookback),
+                adv_20d=adv_20d,
             )
             target_df = _validate_target_weights(strategy.generate_weights(context), cfg)
             target_weights = dict(zip(target_df["ts_code"], target_df["target_weight"], strict=True))
@@ -485,7 +487,11 @@ def run_strategy_backtest(
                 next_weights.pop(code, None)
             else:
                 next_weights[code] = next_weight
-            cost = cost_model.trade_cost(filled_delta) if cost_model is not None else 0.0
+            cost = (
+                _trade_cost(cost_model, filled_delta, adv_20d.get(code))
+                if cost_model is not None
+                else 0.0
+            )
             trade_cost += cost
             turnover += abs(filled_delta)
             if abs(filled_delta) > 0 or abs(target_weight - prev_weight) > 1e-12:
@@ -692,6 +698,30 @@ def _get_price_history(
     start_idx = max(0, current_idx - lookback)
     hist_dates = set(trade_dates[start_idx:current_idx])
     return price.filter(pl.col("trade_date").is_in(hist_dates))
+
+
+def _compute_adv_20d(price: pl.DataFrame, trade_dates: list, current_idx: int) -> dict[str, float]:
+    """Compute trailing 20-period average amount before the execution date."""
+    if current_idx <= 0:
+        return {}
+    start_idx = max(0, current_idx - 20)
+    hist_dates = set(trade_dates[start_idx:current_idx])
+    hist = price.filter(pl.col("trade_date").is_in(hist_dates))
+    if hist.is_empty() or "amount" not in hist.columns:
+        return {}
+    adv = hist.group_by("ts_code").agg(pl.col("amount").mean().alias("adv_20d"))
+    return dict(zip(adv["ts_code"].to_list(), adv["adv_20d"].to_list(), strict=False))
+
+
+def _trade_cost(
+    cost_model: CostModel | CostModelBase,
+    delta_weight: float,
+    adv: float | None,
+) -> float:
+    """Call old and new cost model interfaces without changing their public API."""
+    if isinstance(cost_model, CostModelBase):
+        return cost_model.trade_cost(delta_weight, adv=adv)
+    return cost_model.trade_cost(delta_weight)
 
 
 def _price_records(price_slice: pl.DataFrame) -> dict[str, dict[str, Any]]:

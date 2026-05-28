@@ -1,4 +1,4 @@
-"""MFT Demo: 1分钟 5-bar 动量因子。
+"""intraday Demo: 1分钟 5-bar 动量因子。
 
 Momentum1Min = close(t) / close(t-5) - 1
 基于 ctx.minute 提供的 1 分钟 K 线数据计算。
@@ -42,7 +42,7 @@ class Momentum1Min(IntradayFactor):
         在 ts_code 分组内进行 shift，ctx.minute 已按 ts_code + trade_time 排序。
 
         Args:
-            ctx: MFT 数据上下文，提供 ctx.minute LazyFrame。
+            ctx: intraday 数据上下文，提供 ctx.minute LazyFrame。
 
         Returns:
             pl.DataFrame，包含列: trade_time, ts_code, factor_value。

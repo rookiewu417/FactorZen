@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class MomentumWeekly(LFTFactor):
+class MomentumWeekly(DailyFactor):
     name = "momentum_weekly"
     category = "weekly"
     frequency = "weekly"

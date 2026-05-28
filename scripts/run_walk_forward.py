@@ -50,10 +50,10 @@ def main() -> None:
         choices=["quantile_long_short", "topn_long_only", "factor_weighted"],
         help="策略类型",
     )
-    parser.add_argument("--train_days", type=int, default=252, help="训练集长度（交易日）")
-    parser.add_argument("--test_days", type=int, default=63, help="测试集长度（交易日）")
+    parser.add_argument("--train_days", type=int, default=252, help="IS 历史观察期长度（交易日）")
+    parser.add_argument("--test_days", type=int, default=63, help="OOS 未来验证期长度（交易日）")
     parser.add_argument("--step_days", type=int, default=63, help="每折步进（交易日）")
-    parser.add_argument("--embargo_days", type=int, default=5, help="训练集末到测试集首的间隔")
+    parser.add_argument("--embargo_days", type=int, default=5, help="IS 期末到 OOS 期首的间隔")
     parser.add_argument("--universe", default="csi300", help="股票池")
     parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
     parser.add_argument("--seed", type=int, default=None, help="全局随机种子")
@@ -122,7 +122,7 @@ def main() -> None:
     )
 
     logger.info(
-        f"WalkForward 配置: train={args.train_days}d, test={args.test_days}d, "
+        f"WalkForward 配置: IS观察期={args.train_days}d, OOS验证期={args.test_days}d, "
         f"step={args.step_days}d, embargo={args.embargo_days}d"
     )
 
@@ -145,7 +145,7 @@ def main() -> None:
 
     if result.folds:
         print(
-            f"\n{'折':<6} {'IS Sharpe':>10} {'OOS Sharpe':>11} "
+            f"\n{'折':<6} {'IS观察期Sharpe':>14} {'OOS验证期Sharpe':>15} "
             f"{'OOS 年化收益':>12} {'OOS 最大回撤':>12}"
         )
         print("-" * 55)

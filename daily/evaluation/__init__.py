@@ -1,1 +1,1 @@
-# lft/evaluation/ - LFT 因子评价
+# daily/evaluation/ - daily 因子评价

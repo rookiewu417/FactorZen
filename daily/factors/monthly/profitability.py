@@ -6,12 +6,12 @@ from common.logger import get_logger
 from common.storage import scan_parquet
 from daily.data.context import FactorDataContext
 from daily.data.pit import pit_align
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 logger = get_logger(__name__)
 
 
-class RoeTtmMonthly(LFTFactor):
+class RoeTtmMonthly(DailyFactor):
     name = "roe_ttm"
     category = "monthly"
     frequency = "monthly"

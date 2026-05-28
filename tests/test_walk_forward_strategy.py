@@ -76,7 +76,7 @@ class TestWalkForwardSplitter:
         )
 
     def test_embargo_prevents_leakage(self):
-        """每折训练集末尾索引 + embargo_days <= 测试集首索引。"""
+        """每折历史观察期末尾索引 + embargo_days <= 未来验证期首索引。"""
         splitter = WalkForwardSplitter(
             train_days=100, test_days=30, step_days=30, embargo_days=5
         )
@@ -85,7 +85,7 @@ class TestWalkForwardSplitter:
         folds = splitter.split(dates)
         assert len(folds) > 0, "应有至少一折"
         for train_dates, test_dates in folds:
-            # 找最后一个训练日在 dates 中的索引
+            # 找最后一个历史观察日在 dates 中的索引
             train_end_val = train_dates[-1]
             test_start_val = test_dates[0]
             train_end_idx = dates.index(train_end_val)
@@ -106,7 +106,7 @@ class TestWalkForwardSplitter:
         assert result == []
 
     def test_train_always_from_zero(self):
-        """展开窗口：每折训练集从 dates[0] 开始。"""
+        """展开窗口：每折历史观察期从 dates[0] 开始。"""
         splitter = WalkForwardSplitter(
             train_days=80, test_days=20, step_days=20, embargo_days=5
         )
@@ -115,7 +115,7 @@ class TestWalkForwardSplitter:
         assert len(folds) > 0
         for train_dates, _test_dates in folds:
             assert train_dates[0] == dates[0], (
-                "展开窗口：训练集第一个日期应始终为 dates[0]"
+                "展开窗口：历史观察期第一个日期应始终为 dates[0]"
             )
 
 

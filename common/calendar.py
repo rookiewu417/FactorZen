@@ -188,7 +188,7 @@ def get_trading_sessions() -> list[tuple[time, time]]:
     Returns
     -------
     list[tuple[time, time]]
-        ``[(9:30, 11:30), (13:00, 15:00)]`` — MFT 模块使用。
+        ``[(9:30, 11:30), (13:00, 15:00)]`` — intraday 模块使用。
     """
     return [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
 

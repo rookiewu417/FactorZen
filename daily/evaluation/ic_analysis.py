@@ -72,6 +72,7 @@ class ICAnalysisResult:
     # Multi-period IC: {horizon: ICAnalysisResult-like fields} for consistency check
     multi_period: dict[int, dict[str, float]] = field(default_factory=dict)
     # Out-of-sample split IC: {"train": ic_mean, "test": ic_mean}（向后兼容）
+    # 语义上 train/test 分别对应历史观察期和未来验证期，不表示固定因子被重新拟合。
     oos_ic: dict[str, float] = field(default_factory=dict)
     # Walk-forward cross-validation: list of {"train_ic": float, "test_ic": float}
     walk_forward_ic: list[dict[str, float]] = field(default_factory=list)
@@ -103,7 +104,7 @@ class ICAnalysisResult:
         if self.oos_ic:
             train_ic = self.oos_ic.get("train", float("nan"))
             test_ic = self.oos_ic.get("test", float("nan"))
-            lines.append(f"  OOS: train IC={train_ic:.4f}, test IC={test_ic:.4f}")
+            lines.append(f"  OOS: IS observation IC={train_ic:.4f}, OOS validation IC={test_ic:.4f}")
         return "\n".join(lines)
 
 
@@ -314,7 +315,7 @@ def _compute_walk_forward_ic(
     Args:
         ic_values: 时序 IC 数组（已过滤 nan/inf）。
         n_folds: 折数。
-        embargo: 训练集末尾到测试集开头之间的 gap（防时序泄漏）。
+        embargo: 历史观察期末尾到未来验证期开头之间的 gap（防时序泄漏）。
 
     Returns:
         list of {"fold": int, "train_ic": float, "test_ic": float}，

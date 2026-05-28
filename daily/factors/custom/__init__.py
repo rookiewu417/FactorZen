@@ -1,1 +1,1 @@
-# lft/factors/custom/ - 自定义因子
+# daily/factors/custom/ - 自定义因子

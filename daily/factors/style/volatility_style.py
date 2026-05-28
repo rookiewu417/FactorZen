@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class VolatilityStyle(LFTFactor):
+class VolatilityStyle(DailyFactor):
     name = "volatility_style"
     category = "daily"
     description = "波动率因子：21 日 std(log_return)，Barra VOLATILITY"

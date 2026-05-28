@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class Turnover5D(LFTFactor):
+class Turnover5D(DailyFactor):
     name = "turnover_5d"
     category = "daily"
     description = "5日平均成交量（换手率 proxy）"

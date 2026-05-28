@@ -20,11 +20,13 @@ class BacktestConfig(BaseModel):
     max_abs_weight: float = 0.1
     cost_model: Literal["linear", "square_root_impact"] = "linear"
     rebalance_threshold: float | None = None
+    alpha: float = 0.1  # SquareRootImpactCostModel 冲击系数
+    fallback_adv: float = 1e7  # ADV 缺失时的参考值（元）
 
 
 class WalkForwardConfig(BaseModel):
-    train_days: int = 504
-    test_days: int = 63
+    train_days: int = 504  # IS 历史观察期长度；字段名保留用于配置兼容
+    test_days: int = 63  # OOS 未来验证期长度；字段名保留用于配置兼容
     step_days: int = 63
     embargo_days: int = 5
     n_trials: int = 50
@@ -103,5 +105,8 @@ def build_cost_model(config: RunConfig):
     from daily.evaluation.cost_models import LinearCostModel, SquareRootImpactCostModel
 
     if config.backtest.cost_model == "square_root_impact":
-        return SquareRootImpactCostModel()
+        return SquareRootImpactCostModel(
+            alpha=config.backtest.alpha,
+            fallback_adv=config.backtest.fallback_adv,
+        )
     return LinearCostModel()

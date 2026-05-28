@@ -21,6 +21,13 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/

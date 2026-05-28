@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "factorzen"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.10,<3.13"
 description = "FactorZen — disciplined A-share alpha research from signal to evidence"
 dependencies = [
@@ -17,6 +17,15 @@ dependencies = [
     "statsmodels>=0.14.0",
     "matplotlib>=3.7.0",
     "jinja2>=3.1.0",
+    "cvxpy>=1.4",
+    "optuna>=3.5",
+    "apscheduler>=3.10",
+    "pydantic>=2.5",
+    "joblib>=1.3",
+    "PyYAML>=6.0",
+    "pyqlib>=0.9.7",
+    "protobuf<5",
+    "setuptools>=69,<81",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +38,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 # 声明所有顶层包；注意 config 是自定义包，editable install 下优先于 PyPI 同名包
-packages = ["common", "config", "daily", "intraday", "tick", "reporting"]
+packages = ["common", "config", "daily", "intraday", "research", "reporting", "automation"]
 
 [tool.ruff]
 target-version = "py310"
@@ -48,7 +57,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["common", "config", "daily", "intraday", "tick", "reporting"]
+known-first-party = ["common", "config", "daily", "intraday", "research", "reporting"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -65,15 +74,16 @@ strict_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = false
 ignore_missing_imports = true
+cache_dir = ".cache/mypy"
+sqlite_cache = false
 # 渐进式：仅强制 common/ 和 daily/evaluation/ daily/preprocessing/
-files = ["common", "daily/evaluation", "daily/preprocessing", "daily/factors", "reporting", "automation"]
+files = ["common", "daily/evaluation", "daily/preprocessing", "daily/factors", "research/combination", "reporting", "automation"]
 
 [tool.coverage.run]
-source = ["common", "daily/evaluation", "daily/preprocessing", "daily/factors", "reporting", "automation"]
+source = ["common", "daily/evaluation", "daily/preprocessing", "daily/factors", "research/combination", "reporting", "automation"]
 omit = [
     "scripts/*",
     "docs/archive/*",
-    "docs/superpowers/*",
     "tests/*",
 ]
 

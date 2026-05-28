@@ -1,7 +1,8 @@
 """策略级 Walk-Forward 验证。
 
-滚动窗口切分（展开窗口模式），在每折的训练集上获取 IS Sharpe，
-在测试集上获取 OOS Sharpe / 收益，最终拼接所有 OOS 收益并计算累计净值。
+滚动窗口切分（展开窗口模式），在每折的历史观察期上获取 IS Sharpe，
+在未来验证期上获取 OOS Sharpe / 收益，最终拼接所有 OOS 收益并计算累计净值。
+固定因子主流程不会在 IS 期拟合因子参数，IS 仅作为历史表现参照。
 """
 
 from __future__ import annotations
@@ -24,18 +25,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class WalkForwardSplitter:
-    """滚动窗口切分器（展开窗口模式：训练集始终从第 0 天开始）。"""
+    """滚动窗口切分器（展开窗口模式：历史观察期始终从第 0 天开始）。
 
-    train_days: int = 504  # 训练集长度（交易日）
-    test_days: int = 63  # 测试集长度（交易日）
+    字段名保留 train/test 是为了兼容已有配置；语义上分别对应
+    IS 历史观察期和 OOS 未来验证期。
+    """
+
+    train_days: int = 504  # IS 历史观察期长度（交易日）
+    test_days: int = 63  # OOS 未来验证期长度（交易日）
     step_days: int = 63  # 每折步进（交易日），通常等于 test_days
-    embargo_days: int = 5  # 训练集末到测试集首的间隔（防时序泄漏）
+    embargo_days: int = 5  # IS 期末到 OOS 期首的间隔（防时序泄漏）
 
     def split(self, dates: list[Any]) -> list[tuple[list[Any], list[Any]]]:
         """切分 dates 列表，返回 [(train_dates, test_dates), ...] 列表。
 
-        展开窗口：每折训练集从 dates[0] 到 dates[train_end_idx]；
-        测试集从 dates[test_start_idx] 到 dates[test_end_idx]，
+        展开窗口：每折历史观察期从 dates[0] 到 dates[train_end_idx]；
+        未来验证期从 dates[test_start_idx] 到 dates[test_end_idx]，
         train_end_idx 和 test_start_idx 相差 embargo_days。
 
         若切分数量 < 1 则返回空列表。
@@ -182,10 +187,10 @@ def run_walk_forward(
     """策略级 walk-forward 验证。
 
     对每折：
-    1. 切出训练/测试期因子和价格数据
+    1. 切出 IS 历史观察期 / OOS 未来验证期的因子和价格数据
     2. 用 strategy_factory(params) 生成策略实例
-    3. IS 期：在训练集上运行回测，提取 IS Sharpe
-    4. OOS 期：在测试集上运行回测，提取 OOS Sharpe / 收益
+    3. IS 期：在历史观察期上运行回测，提取 IS Sharpe
+    4. OOS 期：在未来验证期上运行回测，提取 OOS Sharpe / 收益
     5. 拼接所有 OOS returns 并计算累计净值
 
     Args:
@@ -246,7 +251,7 @@ def run_walk_forward(
         train_set = set(train_dates)
         test_set = set(test_dates)
 
-        # 切出训练/测试数据
+        # 切出 IS 历史观察期 / OOS 未来验证期数据
         train_factor = factor_df.filter(pl.col("trade_date").is_in(train_set))
         train_price = price_df.filter(pl.col("trade_date").is_in(train_set))
         test_factor = factor_df.filter(pl.col("trade_date").is_in(test_set))

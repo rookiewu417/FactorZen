@@ -259,7 +259,7 @@ def _make_attribution_chart(brinson_result: Any, barra_result: Any) -> str | Non
 
 
 def _make_walk_forward_chart(wf_result: Any) -> str | None:
-    """Walk-forward 图：(上) OOS 拼接净值; (下) IS vs OOS Sharpe 分折柱状图。"""
+    """Walk-forward 图：(上) OOS 拼接净值; (下) IS 观察期 vs OOS 验证期 Sharpe。"""
     if wf_result is None:
         return None
     oos_returns = _safe_attr(wf_result, "oos_returns")
@@ -286,12 +286,12 @@ def _make_walk_forward_chart(wf_result: Any) -> str | None:
     oos_sharpes = [f.oos_sharpe for f in folds]
     x = range(len(fold_ids))
     width = 0.35
-    ax2.bar([xi - width / 2 for xi in x], is_sharpes, width, label="IS Sharpe", color="#3498db", alpha=0.7)
-    ax2.bar([xi + width / 2 for xi in x], oos_sharpes, width, label="OOS Sharpe", color="#e74c3c", alpha=0.7)
+    ax2.bar([xi - width / 2 for xi in x], is_sharpes, width, label="IS 观察期 Sharpe", color="#3498db", alpha=0.7)
+    ax2.bar([xi + width / 2 for xi in x], oos_sharpes, width, label="OOS 验证期 Sharpe", color="#e74c3c", alpha=0.7)
     ax2.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
     ax2.set_xticks(list(x))
     ax2.set_xticklabels([f"Fold {fid}" for fid in fold_ids], fontsize=8)
-    ax2.set_title("各折 IS / OOS Sharpe 对比", fontsize=12)
+    ax2.set_title("各折历史观察期 / 未来验证期 Sharpe 对比", fontsize=12)
     ax2.legend(fontsize=8)
 
     plt.tight_layout()
@@ -532,6 +532,7 @@ def _extract_metrics(ic_result, bt_result, to_result, advanced_results, pearson_
         m["neutralized_ic_tstat"] = neutralized_ic_result.ic_tstat
 
     m["bt_stats"] = []
+    m["bt_strategy_name"] = _safe_attr(bt_result, "strategy_name", "未运行") or "未运行"
     if bt_result is not None:
         stats = _safe_attr(bt_result, "summary_stats", {})
         if stats:
@@ -568,6 +569,18 @@ def _extract_metrics(ic_result, bt_result, to_result, advanced_results, pearson_
             ]
 
     return m
+
+
+def _build_attribution_notice(attribution_result: Any, has_attribution_chart: bool) -> str | None:
+    """Return a user-facing explanation when attribution output is unavailable."""
+    if attribution_result is None:
+        return (
+            "归因未生成：当前报告入口未传入 attribution_result；Brinson 归因需要组合权重、"
+            "基准权重及行业收益数据，Barra 风格归因需要组合收益和风格因子暴露。"
+        )
+    if not has_attribution_chart:
+        return "归因未生成：已传入 attribution_result，但 Brinson/Barra 数据为空或缺少可绘图字段。"
+    return None
 
 
 def _compute_star_rating(metrics: dict[str, Any]) -> int:
@@ -646,6 +659,7 @@ def generate_tear_sheet(
     universe: str = "lft_default",
     benchmark_result: Any = None,
     attribution_result: Any = None,
+    backtest_direction: dict[str, Any] | None = None,
     walk_forward_result: Any = None,
     walk_forward_summary: dict[str, Any] | None = None,
     event_study_result: Any = None,
@@ -798,6 +812,9 @@ def generate_tear_sheet(
         warnings.append("换手率较高（>80%），信号稳定性需关注。")
 
     summary_html = _generate_summary_text(factor_name, metrics)
+    attribution_notice = _build_attribution_notice(
+        attribution_result, "attribution_chart" in charts
+    )
 
     template = _ENV.get_template("tear_sheet.html")
     return template.render(
@@ -810,8 +827,10 @@ def generate_tear_sheet(
         charts=charts,
         warnings=warnings,
         summary_html=summary_html,
+        attribution_notice=attribution_notice,
         benchmark_result=benchmark_result,
         attribution_result=attribution_result,
+        backtest_direction=backtest_direction,
         walk_forward_result=walk_forward_result,
         walk_forward_summary=walk_forward_summary,
         event_study_result=event_study_result,

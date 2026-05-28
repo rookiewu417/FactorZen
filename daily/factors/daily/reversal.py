@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class Reversal5D(LFTFactor):
+class Reversal5D(DailyFactor):
     name = "reversal_5d"
     category = "daily"
     description = "5日反转因子：-(close(t) / close(t-5) - 1)"

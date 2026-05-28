@@ -3,10 +3,10 @@
 import polars as pl
 
 from daily.data.context import FactorDataContext
-from daily.factors.base import LFTFactor
+from daily.factors.base import DailyFactor
 
 
-class AmihudIlliquidity(LFTFactor):
+class AmihudIlliquidity(DailyFactor):
     name = "amihud_illiquidity"
     category = "daily"
     description = "Amihud (2002) illiquidity: 20-day mean of |ret|/amount, higher = less liquid"

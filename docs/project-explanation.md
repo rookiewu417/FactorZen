@@ -546,7 +546,7 @@ from intraday.factors.registry import get_factor, list_factors
 
 ### 10.4 风格因子
 
-`daily/factors/personal/style/` 提供 Barra 风格暴露相关实现：
+`daily/factors/personal/daily/` 提供 Barra 风格暴露相关实现：
 
 - beta
 - liquidity

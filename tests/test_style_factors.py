@@ -1,4 +1,4 @@
-﻿"""Tests for Barra-style factors (daily/factors/personal/style/*)."""
+"""Tests for Barra-style factors in the personal daily factor library."""
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -100,7 +100,7 @@ def _check(result: pl.DataFrame, name: str) -> None:
 
 
 def test_liquidity_style(ctx_basic):
-    from daily.factors.personal.style.liquidity import LiquidityStyle
+    from daily.factors.personal.daily.liquidity import LiquidityStyle
 
     factor = LiquidityStyle()
     assert isinstance(factor, DailyFactor)
@@ -109,7 +109,7 @@ def test_liquidity_style(ctx_basic):
 
 
 def test_size_style(ctx_basic):
-    from daily.factors.personal.style.size import SizeStyle
+    from daily.factors.personal.daily.size import SizeStyle
 
     factor = SizeStyle()
     assert isinstance(factor, DailyFactor)
@@ -120,7 +120,7 @@ def test_size_style(ctx_basic):
 
 
 def test_value_style(ctx_basic):
-    from daily.factors.personal.style.value import ValueStyle
+    from daily.factors.personal.daily.value import ValueStyle
 
     factor = ValueStyle()
     assert isinstance(factor, DailyFactor)
@@ -132,7 +132,7 @@ def test_value_style(ctx_basic):
 
 
 def test_momentum_style(ctx_daily):
-    from daily.factors.personal.style.momentum_style import MomentumStyle
+    from daily.factors.personal.daily.momentum_style import MomentumStyle
 
     factor = MomentumStyle()
     assert isinstance(factor, DailyFactor)
@@ -142,7 +142,7 @@ def test_momentum_style(ctx_daily):
 
 
 def test_volatility_style(ctx_daily):
-    from daily.factors.personal.style.volatility_style import VolatilityStyle
+    from daily.factors.personal.daily.volatility_style import VolatilityStyle
 
     factor = VolatilityStyle()
     assert isinstance(factor, DailyFactor)
@@ -155,6 +155,6 @@ def test_volatility_style(ctx_daily):
 
 def test_beta_style_is_alias_of_beta60d():
     from daily.factors.personal.daily.beta import Beta60D
-    from daily.factors.personal.style.beta import BetaStyle
+    from daily.factors.personal.daily.beta_style import BetaStyle
 
     assert BetaStyle is Beta60D

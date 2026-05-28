@@ -1,4 +1,4 @@
-"""Daily 因子注册中心（代理到 common.registry.FactorRegistry）。"""
+﻿"""Daily 因子注册中心（代理到 common.registry.FactorRegistry）。"""
 
 from common.registry import FactorRegistry
 from daily.factors.base import DailyFactor
@@ -6,9 +6,9 @@ from daily.factors.base import DailyFactor
 _registry = FactorRegistry(
     base_cls=DailyFactor,
     scan_packages=[
-        "daily.factors.daily",
-        "daily.factors.weekly",
-        "daily.factors.monthly",
+        "daily.factors.personal.daily",
+        "daily.factors.personal.weekly",
+        "daily.factors.personal.monthly",
         "daily.factors.qlib",
     ],
 )

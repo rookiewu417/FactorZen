@@ -1,4 +1,4 @@
-# FactorZen 项目完整文档
+﻿# FactorZen 项目完整文档
 
 本文档面向后续维护者、研究使用者和自动化代理，解释 FactorZen 的目标、目录结构、运行方式、核心数据流、主要模块、扩展方法、质量门和已知边界。
 
@@ -456,9 +456,9 @@ from daily.factors.registry import get_factor, list_factors
 
 扫描包：
 
-- `daily.factors.daily`
-- `daily.factors.weekly`
-- `daily.factors.monthly`
+- `daily.factors.personal.daily`
+- `daily.factors.personal.weekly`
+- `daily.factors.personal.monthly`
 
 ### 8.3 日内因子
 
@@ -546,7 +546,7 @@ from intraday.factors.registry import get_factor, list_factors
 
 ### 10.4 风格因子
 
-`daily/factors/style/` 提供 Barra 风格暴露相关实现：
+`daily/factors/personal/style/` 提供 Barra 风格暴露相关实现：
 
 - beta
 - liquidity
@@ -1200,9 +1200,9 @@ pixi run pytest tests --tb=short -q
 1. 在合适目录新增因子文件：
 
 ```text
-daily/factors/daily/
-daily/factors/weekly/
-daily/factors/monthly/
+daily/factors/personal/daily/
+daily/factors/personal/weekly/
+daily/factors/personal/monthly/
 ```
 
 2. 继承 `DailyFactor`。

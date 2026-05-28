@@ -1,4 +1,4 @@
-"""Unit tests for new daily factors (using synthetic data, no disk I/O)."""
+﻿"""Unit tests for new daily factors (using synthetic data, no disk I/O)."""
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -117,7 +117,7 @@ def _check_result(result: pl.DataFrame, factor_name: str):
 
 
 def test_amihud_illiquidity(ctx):
-    from daily.factors.daily.amihud import AmihudIlliquidity
+    from daily.factors.personal.daily.amihud import AmihudIlliquidity
 
     factor = AmihudIlliquidity()
     assert isinstance(factor, DailyFactor)
@@ -128,7 +128,7 @@ def test_amihud_illiquidity(ctx):
 
 
 def test_max_return_5d(ctx):
-    from daily.factors.daily.max_return import MaxReturn5D
+    from daily.factors.personal.daily.max_return import MaxReturn5D
 
     factor = MaxReturn5D()
     assert isinstance(factor, DailyFactor)
@@ -137,7 +137,7 @@ def test_max_return_5d(ctx):
 
 
 def test_skewness_20d(ctx):
-    from daily.factors.daily.skewness import Skewness20D
+    from daily.factors.personal.daily.skewness import Skewness20D
 
     factor = Skewness20D()
     assert isinstance(factor, DailyFactor)
@@ -148,7 +148,7 @@ def test_skewness_20d(ctx):
 
 
 def test_beta_60d(ctx):
-    from daily.factors.daily.beta import Beta60D
+    from daily.factors.personal.daily.beta import Beta60D
 
     factor = Beta60D()
     assert isinstance(factor, DailyFactor)
@@ -157,7 +157,7 @@ def test_beta_60d(ctx):
 
 
 def test_idiosyncratic_vol_20d(ctx):
-    from daily.factors.daily.idiosyncratic_vol import IdiosyncraticVol20D
+    from daily.factors.personal.daily.idiosyncratic_vol import IdiosyncraticVol20D
 
     factor = IdiosyncraticVol20D()
     assert isinstance(factor, DailyFactor)
@@ -168,7 +168,7 @@ def test_idiosyncratic_vol_20d(ctx):
 
 
 def test_bm_ratio(ctx):
-    from daily.factors.monthly.bm_ratio import BmRatioMonthly
+    from daily.factors.personal.monthly.bm_ratio import BmRatioMonthly
 
     factor = BmRatioMonthly()
     assert isinstance(factor, DailyFactor)
@@ -179,7 +179,7 @@ def test_bm_ratio(ctx):
 
 
 def test_ep_ratio(ctx):
-    from daily.factors.monthly.ep_ratio import EpRatioMonthly
+    from daily.factors.personal.monthly.ep_ratio import EpRatioMonthly
 
     factor = EpRatioMonthly()
     assert isinstance(factor, DailyFactor)
@@ -292,8 +292,8 @@ def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
 
 
 def test_asset_growth(ctx, monkeypatch):
-    import daily.factors.monthly.asset_growth as ag_mod
-    from daily.factors.monthly.asset_growth import AssetGrowthMonthly
+    import daily.factors.personal.monthly.asset_growth as ag_mod
+    from daily.factors.personal.monthly.asset_growth import AssetGrowthMonthly
 
     synthetic_lf = _make_finance_lf()
     monkeypatch.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
@@ -309,8 +309,8 @@ def test_asset_growth(ctx, monkeypatch):
 
 def test_asset_growth_empty_when_no_finance(ctx, monkeypatch):
     """When finance data unavailable, factor returns empty DataFrame gracefully."""
-    import daily.factors.monthly.asset_growth as ag_mod
-    from daily.factors.monthly.asset_growth import AssetGrowthMonthly
+    import daily.factors.personal.monthly.asset_growth as ag_mod
+    from daily.factors.personal.monthly.asset_growth import AssetGrowthMonthly
 
     def _raise(_):
         raise FileNotFoundError("no data")

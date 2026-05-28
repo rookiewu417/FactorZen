@@ -12,7 +12,7 @@ import argparse
 import sys
 
 from common.logger import get_logger, setup_logging
-from config.settings import OUTPUT_DAILY_FACTORS
+from config.settings import daily_factor_output_dir
 from daily.evaluation.backtest import BacktestConfig
 from daily.evaluation.walk_forward import WalkForwardSplitter, run_walk_forward
 
@@ -87,7 +87,7 @@ def main() -> None:
         logger.info(f"全局随机种子已设置: {seed}")
 
     # ── 1. 加载因子数据 ──
-    factor_path = OUTPUT_DAILY_FACTORS / f"{args.factor}_{args.start}_{args.end}.parquet"
+    factor_path = daily_factor_output_dir(args.factor) / f"{args.factor}_{args.start}_{args.end}.parquet"
     if not factor_path.exists():
         logger.error(f"因子文件不存在: {factor_path}")
         sys.exit(1)

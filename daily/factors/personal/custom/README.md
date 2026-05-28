@@ -1,4 +1,4 @@
-# daily/factors/custom/ — 用户自定义因子
+﻿# daily/factors/personal/custom/ — 用户自定义因子
 
 ## 用途
 
@@ -16,7 +16,7 @@
 ## 最简模板
 
 ```python
-# daily/factors/custom/my_factor.py
+# daily/factors/personal/custom/my_factor.py
 import polars as pl
 from daily.factors.base import DailyFactor
 from daily.data.context import FactorDataContext

@@ -44,3 +44,27 @@ REPORTING_DIR = ROOT / "reporting"
 SCRIPTS_DIR = ROOT / "scripts"
 NOTEBOOKS_DIR = ROOT / "notebooks"
 TESTS_DIR = ROOT / "tests"
+
+
+def daily_output_bucket(factor_name: str) -> str | None:
+    """Return the output subdirectory for grouped daily factor artifacts."""
+    if factor_name.startswith("qlib_alpha158_"):
+        return "qlib158"
+    if factor_name.startswith("qlib_alpha360_"):
+        return "qlib360"
+    return None
+
+
+def daily_factor_output_dir(factor_name: str) -> Path:
+    bucket = daily_output_bucket(factor_name)
+    return OUTPUT_DAILY_FACTORS / bucket if bucket else OUTPUT_DAILY_FACTORS
+
+
+def daily_result_output_dir(factor_name: str) -> Path:
+    bucket = daily_output_bucket(factor_name)
+    return OUTPUT_DAILY_RESULTS / bucket if bucket else OUTPUT_DAILY_RESULTS
+
+
+def daily_report_output_dir(factor_name: str) -> Path:
+    bucket = daily_output_bucket(factor_name)
+    return OUTPUT_DAILY_REPORTS / bucket if bucket else OUTPUT_DAILY_REPORTS

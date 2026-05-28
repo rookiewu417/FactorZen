@@ -5,7 +5,12 @@
     from common.registry import FactorRegistry
     daily_registry = FactorRegistry(
         base_cls=DailyFactor,
-        scan_packages=["daily.factors.daily", "daily.factors.weekly", "daily.factors.monthly"],
+        scan_packages=[
+            "daily.factors.personal.daily",
+            "daily.factors.personal.weekly",
+            "daily.factors.personal.monthly",
+            "daily.factors.qlib",
+        ],
     )
     factor_cls = daily_registry.get("momentum_20d")
 

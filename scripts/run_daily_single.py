@@ -19,7 +19,11 @@ from common.experiment import record_experiment_output, run_experiment
 from common.loader import fetch_daily_basic
 from common.logger import get_logger, setup_logging
 from common.universe import get_universe
-from config.settings import OUTPUT_DAILY_FACTORS, OUTPUT_DAILY_REPORTS, OUTPUT_DAILY_RESULTS
+from config.settings import (
+    daily_factor_output_dir,
+    daily_report_output_dir,
+    daily_result_output_dir,
+)
 from daily.data.context import FactorDataContext
 from daily.evaluation.backtest import run_stratified_backtest
 from daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
@@ -81,12 +85,15 @@ def _effective_run_config(args: argparse.Namespace, run_config: RunConfig | None
 
 def _existing_run_outputs(factor_name: str, start: str, end: str) -> dict[str, str]:
     prefix = f"{factor_name}_{start}_{end}"
+    factor_dir = daily_factor_output_dir(factor_name)
+    result_dir = daily_result_output_dir(factor_name)
+    report_dir = daily_report_output_dir(factor_name)
     candidates = {
-        "factor": OUTPUT_DAILY_FACTORS / f"{prefix}.parquet",
-        "ic": OUTPUT_DAILY_RESULTS / f"{prefix}_ic.parquet",
-        "quality_report": OUTPUT_DAILY_RESULTS / f"{prefix}_quality.json",
-        "walk_forward_summary": OUTPUT_DAILY_RESULTS / f"{prefix}_walk_forward.json",
-        "report": OUTPUT_DAILY_REPORTS / f"{prefix}.html",
+        "factor": factor_dir / f"{prefix}.parquet",
+        "ic": result_dir / f"{prefix}_ic.parquet",
+        "quality_report": result_dir / f"{prefix}_quality.json",
+        "walk_forward_summary": result_dir / f"{prefix}_walk_forward.json",
+        "report": report_dir / f"{prefix}.html",
     }
     return {name: str(path) for name, path in candidates.items() if path.exists()}
 
@@ -132,6 +139,9 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         raise RuntimeError(f"unknown factor: {args.factor}") from e
     factor = factor_cls()
     logger.info(f"因子: {factor.name} | {factor.description}")
+    factor_output_dir = daily_factor_output_dir(factor.name)
+    result_output_dir = daily_result_output_dir(factor.name)
+    report_output_dir = daily_report_output_dir(factor.name)
 
     # ── 2. 准备数据 ──
     trade_dates = get_trade_dates(args.start, args.end)
@@ -166,9 +176,9 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
     logger.info(f"股票池: {len(ts_codes)} 只")
 
     # ── 3b. 保存 universe 快照（供复现和审计）──
-    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
+    result_output_dir.mkdir(parents=True, exist_ok=True)
     universe_snapshot_path = (
-        OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_universe.parquet"
+        result_output_dir / f"{factor.name}_{args.start}_{args.end}_universe.parquet"
     )
     universe.write_parquet(str(universe_snapshot_path))
     logger.info(f"Universe 快照已保存: {universe_snapshot_path} ({len(ts_codes)} 只)")
@@ -240,9 +250,9 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
     except QualityCheckError as e:
         logger.error(f"数据质量检查失败: {e}")
         raise RuntimeError(f"quality check failed: {e}") from e
-    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
+    result_output_dir.mkdir(parents=True, exist_ok=True)
     quality_path = (
-        OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_quality.json"
+        result_output_dir / f"{factor.name}_{args.start}_{args.end}_quality.json"
     )
     quality_path.write_text(json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8")
     if quality_report["warnings"]:
@@ -329,15 +339,15 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         logger.warning(f"Walk-forward 计算失败（跳过）: {e}")
 
     # ── 11. 落盘 ──
-    OUTPUT_DAILY_FACTORS.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
+    factor_output_dir.mkdir(parents=True, exist_ok=True)
+    result_output_dir.mkdir(parents=True, exist_ok=True)
 
-    factor_path = OUTPUT_DAILY_FACTORS / f"{factor.name}_{args.start}_{args.end}.parquet"
+    factor_path = factor_output_dir / f"{factor.name}_{args.start}_{args.end}.parquet"
     clean_df.write_parquet(str(factor_path))
     logger.info(f"因子已保存: {factor_path}")
 
     walk_forward_path = (
-        OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_walk_forward.json"
+        result_output_dir / f"{factor.name}_{args.start}_{args.end}_walk_forward.json"
     )
     walk_forward_path.write_text(
         json.dumps(walk_forward_summary, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -345,7 +355,7 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
     logger.info(f"Walk-forward 摘要已保存: {walk_forward_path}")
 
     ic_result.ic_series.write_parquet(
-        str(OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_ic.parquet")
+        str(result_output_dir / f"{factor.name}_{args.start}_{args.end}_ic.parquet")
     )
 
     # ── 11b. 事件研究（可选）──
@@ -394,14 +404,14 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         pearson_ic_result=pearson_ic_result if args.ic_method in ("pearson", "both") else None,
         neutralized_ic_result=neutralized_ic_result if args.neutralized_ic else None,
     )
-    OUTPUT_DAILY_REPORTS.mkdir(parents=True, exist_ok=True)
-    report_path = OUTPUT_DAILY_REPORTS / f"{factor.name}_{args.start}_{args.end}.html"
+    report_output_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_output_dir / f"{factor.name}_{args.start}_{args.end}.html"
     report_path.write_text(html, encoding="utf-8")
     logger.info(f"报告已生成: {report_path}")
 
     return {
         "factor": str(factor_path),
-        "ic": str(OUTPUT_DAILY_RESULTS / f"{factor.name}_{args.start}_{args.end}_ic.parquet"),
+        "ic": str(result_output_dir / f"{factor.name}_{args.start}_{args.end}_ic.parquet"),
         "quality_report": str(quality_path),
         "walk_forward_summary": str(walk_forward_path),
         "universe_snapshot": str(universe_snapshot_path),

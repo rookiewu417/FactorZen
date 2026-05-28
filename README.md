@@ -137,7 +137,9 @@ FactorZen/
 ├── config/          # 路径常量、Tushare 配置
 ├── daily/           # 日/周/月频因子框架
 │   ├── data/        # FactorDataContext（懒加载、PIT 对齐）
-│   ├── factors/     # 因子实现（daily/weekly/monthly/custom）
+│   ├── factors/     # 因子实现（qlib + personal）
+│   │   ├── qlib/     # Qlib Alpha158 / Alpha360 因子
+│   │   └── personal/ # 个人因子库（daily/weekly/monthly/style/custom）
 │   ├── preprocessing/   # 去极值 → 填充 → 标准化 → 中性化
 │   └── evaluation/  # IC / 回测 / 换手 / 相关性 / 高级指标
 ├── intraday/        # 分钟频因子框架
@@ -162,9 +164,9 @@ data/
 
 output/
 ├── daily/
-│   ├── factors/     # 预处理后因子矩阵 parquet
-│   ├── results/     # IC/BT/TO 评价结果 parquet + 元数据 JSON
-│   └── reports/     # HTML Tear Sheet
+│   ├── factors/     # 预处理后因子矩阵 parquet；qlib 因子按 qlib158/qlib360 分目录
+│   ├── results/     # IC/BT/TO 评价结果 parquet + 元数据 JSON；qlib 因子按 qlib158/qlib360 分目录
+│   └── reports/     # HTML Tear Sheet；qlib 因子按 qlib158/qlib360 分目录
 └── intraday/
     ├── results/     # intraday IC 结果
     └── reports/     # intraday HTML 报告

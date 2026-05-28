@@ -31,9 +31,9 @@ from common.logger import get_logger, setup_logging
 from common.storage import load_parquet
 from common.universe import get_universe
 from config.settings import (
-    OUTPUT_DAILY_FACTORS,
-    OUTPUT_DAILY_REPORTS,
-    OUTPUT_DAILY_RESULTS,
+    daily_factor_output_dir,
+    daily_report_output_dir,
+    daily_result_output_dir,
 )
 from daily.data.context import FactorDataContext
 from daily.evaluation.backtest import BacktestResult, run_stratified_backtest
@@ -149,8 +149,9 @@ def _load_backtest_direction(factor_name: str, start: str, end: str) -> dict[str
 
 
 def _meta_path(factor_name: str, start: str, end: str) -> "Path":
-    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
-    return OUTPUT_DAILY_RESULTS / f"{factor_name}_{start}_{end}_meta.json"
+    result_dir = daily_result_output_dir(factor_name)
+    result_dir.mkdir(parents=True, exist_ok=True)
+    return result_dir / f"{factor_name}_{start}_{end}_meta.json"
 
 
 def _save_results(
@@ -167,21 +168,21 @@ def _save_results(
     backtest_direction: dict[str, Any] | None = None,
 ) -> None:
     """将因子 DataFrame 和评价结果落盘到 output/daily/。"""
-    OUTPUT_DAILY_FACTORS.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
+    factor_dir = daily_factor_output_dir(factor_name)
+    result_dir = daily_result_output_dir(factor_name)
+    factor_dir.mkdir(parents=True, exist_ok=True)
+    result_dir.mkdir(parents=True, exist_ok=True)
 
     prefix = f"{factor_name}_{start}_{end}"
 
-    clean_df.write_parquet(str(OUTPUT_DAILY_FACTORS / f"{prefix}.parquet"))
-    ic_result.ic_series.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_ic.parquet"))
-    bt_result.returns.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_returns.parquet"))
-    bt_result.nav.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_nav.parquet"))
-    bt_result.positions.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_positions.parquet"))
-    bt_result.trades.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_bt_trades.parquet"))
-    to_result.daily_turnover.write_parquet(str(OUTPUT_DAILY_RESULTS / f"{prefix}_to_daily.parquet"))
-    to_result.migration_matrix.write_parquet(
-        str(OUTPUT_DAILY_RESULTS / f"{prefix}_to_matrix.parquet")
-    )
+    clean_df.write_parquet(str(factor_dir / f"{prefix}.parquet"))
+    ic_result.ic_series.write_parquet(str(result_dir / f"{prefix}_ic.parquet"))
+    bt_result.returns.write_parquet(str(result_dir / f"{prefix}_bt_returns.parquet"))
+    bt_result.nav.write_parquet(str(result_dir / f"{prefix}_bt_nav.parquet"))
+    bt_result.positions.write_parquet(str(result_dir / f"{prefix}_bt_positions.parquet"))
+    bt_result.trades.write_parquet(str(result_dir / f"{prefix}_bt_trades.parquet"))
+    to_result.daily_turnover.write_parquet(str(result_dir / f"{prefix}_to_daily.parquet"))
+    to_result.migration_matrix.write_parquet(str(result_dir / f"{prefix}_to_matrix.parquet"))
 
     meta = {
         "factor_name": ic_result.factor_name,
@@ -220,8 +221,9 @@ def _save_results(
 
 
 def _quality_path(factor_name: str, start: str, end: str) -> Path:
-    OUTPUT_DAILY_RESULTS.mkdir(parents=True, exist_ok=True)
-    return OUTPUT_DAILY_RESULTS / f"{factor_name}_{start}_{end}_quality.json"
+    result_dir = daily_result_output_dir(factor_name)
+    result_dir.mkdir(parents=True, exist_ok=True)
+    return result_dir / f"{factor_name}_{start}_{end}_quality.json"
 
 
 def _save_quality_report(
@@ -252,14 +254,16 @@ def _load_results(
         return None
 
     prefix = f"{factor_name}_{start}_{end}"
-    ic_path = OUTPUT_DAILY_RESULTS / f"{prefix}_ic.parquet"
-    bt_ret_path = OUTPUT_DAILY_RESULTS / f"{prefix}_bt_returns.parquet"
-    bt_nav_path = OUTPUT_DAILY_RESULTS / f"{prefix}_bt_nav.parquet"
-    bt_pos_path = OUTPUT_DAILY_RESULTS / f"{prefix}_bt_positions.parquet"
-    bt_trades_path = OUTPUT_DAILY_RESULTS / f"{prefix}_bt_trades.parquet"
-    to_daily_path = OUTPUT_DAILY_RESULTS / f"{prefix}_to_daily.parquet"
-    to_mat_path = OUTPUT_DAILY_RESULTS / f"{prefix}_to_matrix.parquet"
-    factor_path = OUTPUT_DAILY_FACTORS / f"{prefix}.parquet"
+    factor_dir = daily_factor_output_dir(factor_name)
+    result_dir = daily_result_output_dir(factor_name)
+    ic_path = result_dir / f"{prefix}_ic.parquet"
+    bt_ret_path = result_dir / f"{prefix}_bt_returns.parquet"
+    bt_nav_path = result_dir / f"{prefix}_bt_nav.parquet"
+    bt_pos_path = result_dir / f"{prefix}_bt_positions.parquet"
+    bt_trades_path = result_dir / f"{prefix}_bt_trades.parquet"
+    to_daily_path = result_dir / f"{prefix}_to_daily.parquet"
+    to_mat_path = result_dir / f"{prefix}_to_matrix.parquet"
+    factor_path = factor_dir / f"{prefix}.parquet"
 
     for p in [
         ic_path,
@@ -465,7 +469,7 @@ def _run_advanced_evaluation(clean_df, ret_df, frequency, start: str = "", end: 
 
 def _existing_report_outputs(factor_name: str, start: str, end: str) -> dict[str, str]:
     candidates = {
-        "report": OUTPUT_DAILY_REPORTS / f"{factor_name}_{start}_{end}.html",
+        "report": daily_report_output_dir(factor_name) / f"{factor_name}_{start}_{end}.html",
         "meta": _meta_path(factor_name, start, end),
         "quality_report": _quality_path(factor_name, start, end),
     }
@@ -700,8 +704,9 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
     )
 
     # ── 12. 落盘 HTML ──
-    OUTPUT_DAILY_REPORTS.mkdir(parents=True, exist_ok=True)
-    report_path = OUTPUT_DAILY_REPORTS / f"{factor.name}_{args.start}_{args.end}.html"
+    report_dir = daily_report_output_dir(factor.name)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"{factor.name}_{args.start}_{args.end}.html"
     report_path.write_text(html, encoding="utf-8")
     logger.info(f"报告已生成: {report_path}")
 

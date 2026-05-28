@@ -20,8 +20,8 @@ def test_generate_report_failure_manifest_records_partial_outputs(tmp_path, monk
 
     experiments_dir = tmp_path / "experiments"
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
-    monkeypatch.setattr(mod, "OUTPUT_DAILY_RESULTS", tmp_path / "results")
-    monkeypatch.setattr(mod, "OUTPUT_DAILY_REPORTS", tmp_path / "reports")
+    monkeypatch.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")
+    monkeypatch.setattr(mod, "daily_report_output_dir", lambda factor_name: tmp_path / "reports")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -62,9 +62,9 @@ def test_run_daily_failure_manifest_records_partial_outputs(tmp_path, monkeypatc
 
     experiments_dir = tmp_path / "experiments"
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
-    monkeypatch.setattr(mod, "OUTPUT_DAILY_FACTORS", tmp_path / "factors")
-    monkeypatch.setattr(mod, "OUTPUT_DAILY_RESULTS", tmp_path / "results")
-    monkeypatch.setattr(mod, "OUTPUT_DAILY_REPORTS", tmp_path / "reports")
+    monkeypatch.setattr(mod, "daily_factor_output_dir", lambda factor_name: tmp_path / "factors")
+    monkeypatch.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")
+    monkeypatch.setattr(mod, "daily_report_output_dir", lambda factor_name: tmp_path / "reports")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -80,7 +80,7 @@ def test_run_daily_failure_manifest_records_partial_outputs(tmp_path, monkeypatc
     )
 
     def fail_after_quality(args, effective_config):
-        quality_path = mod.OUTPUT_DAILY_RESULTS / (
+        quality_path = mod.daily_result_output_dir(args.factor) / (
             f"{args.factor}_{args.start}_{args.end}_quality.json"
         )
         quality_path.parent.mkdir(parents=True, exist_ok=True)

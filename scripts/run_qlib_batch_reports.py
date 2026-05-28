@@ -10,13 +10,13 @@ from time import perf_counter
 
 from common.config_loader import RunConfig
 from common.experiment import record_experiment_output, run_experiment
-from config.settings import OUTPUT_DAILY_REPORTS, OUTPUT_DAILY_RESULTS
+from config.settings import OUTPUT_DAILY_RESULTS, daily_report_output_dir
 from daily.factors.registry import list_factors
 from scripts.run_daily_single import _run
 
 
 def _report_path(factor: str, start: str, end: str) -> Path:
-    return OUTPUT_DAILY_REPORTS / f"{factor}_{start}_{end}.html"
+    return daily_report_output_dir(factor) / f"{factor}_{start}_{end}.html"
 
 
 def _namespace(args: argparse.Namespace, factor: str) -> argparse.Namespace:

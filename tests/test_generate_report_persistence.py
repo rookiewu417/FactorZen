@@ -14,8 +14,8 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
     from daily.evaluation.turnover import TurnoverResult
     from scripts import generate_report as mod
 
-    monkeypatch.setattr(mod, "OUTPUT_DAILY_FACTORS", tmp_path / "factors")
-    monkeypatch.setattr(mod, "OUTPUT_DAILY_RESULTS", tmp_path / "results")
+    monkeypatch.setattr(mod, "daily_factor_output_dir", lambda factor_name: tmp_path / "factors")
+    monkeypatch.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")
 
     clean_df = pl.DataFrame(
         {"trade_date": [date(2024, 1, 2)], "ts_code": ["000001.SZ"], "factor_clean": [1.0]}

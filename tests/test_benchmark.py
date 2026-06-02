@@ -1,4 +1,4 @@
-"""daily/evaluation/benchmark.py 的单元测试。
+﻿"""daily/evaluation/benchmark.py 的单元测试。
 
 验证:
 - BenchmarkResult 结构完整
@@ -15,7 +15,7 @@ from unittest.mock import patch
 import numpy as np
 import polars as pl
 
-from daily.evaluation.benchmark import BenchmarkResult, compute_excess_return
+from factorzen.daily.evaluation.benchmark import BenchmarkResult, compute_excess_return
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────
 
@@ -55,7 +55,7 @@ class TestComputeExcessReturn(unittest.TestCase):
     def _dates(self, n: int = 40) -> list[str]:
         return [f"2026-01-{d + 1:02d}" if d < 31 else f"2026-02-{d - 30:02d}" for d in range(n)]
 
-    @patch("common.loader.fetch_index_daily")
+    @patch("factorzen.core.loader.fetch_index_daily")
     def test_basic_structure(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """compute_excess_return 返回结构正确的 BenchmarkResult。"""
         dates = self._dates(40)
@@ -78,7 +78,7 @@ class TestComputeExcessReturn(unittest.TestCase):
         self.assertTrue(required_cols.issubset(set(result.daily.columns)))
         self.assertGreater(result.daily.height, 0)
 
-    @patch("common.loader.fetch_index_daily")
+    @patch("factorzen.core.loader.fetch_index_daily")
     def test_excess_return_math(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """超额收益 = 策略收益 - 基准收益，超额净值为超额收益的累积乘积。"""
         dates = self._dates(40)
@@ -110,7 +110,7 @@ class TestComputeExcessReturn(unittest.TestCase):
             err_msg="excess_nav does not match cumprod(1 + excess_ret)",
         )
 
-    @patch("common.loader.fetch_index_daily")
+    @patch("factorzen.core.loader.fetch_index_daily")
     def test_ann_excess_ret_direction(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """策略持续跑赢基准时，ann_excess_ret > 0。"""
         dates = self._dates(40)
@@ -139,7 +139,7 @@ class TestComputeExcessReturn(unittest.TestCase):
 
         self.assertGreater(result.ann_excess_ret, 0.0)
 
-    @patch("common.loader.fetch_index_daily")
+    @patch("factorzen.core.loader.fetch_index_daily")
     def test_tracking_error_nonnegative(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """tracking_error >= 0 恒成立。"""
         dates = self._dates(40)
@@ -150,7 +150,7 @@ class TestComputeExcessReturn(unittest.TestCase):
 
         self.assertGreaterEqual(result.tracking_error, 0.0)
 
-    @patch("common.loader.fetch_index_daily")
+    @patch("factorzen.core.loader.fetch_index_daily")
     def test_excess_max_dd_nonpositive(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """excess_max_dd <= 0 恒成立（最大回撤为非正数）。"""
         dates = self._dates(40)
@@ -161,7 +161,7 @@ class TestComputeExcessReturn(unittest.TestCase):
 
         self.assertLessEqual(result.excess_max_dd, 0.0)
 
-    @patch("common.loader.fetch_index_daily")
+    @patch("factorzen.core.loader.fetch_index_daily")
     def test_ir_zero_when_no_volatility(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """策略与基准收益完全一致时，超额收益方差为 0，IR 应返回 0.0。"""
         dates = self._dates(40)
@@ -190,7 +190,7 @@ class TestComputeExcessReturn(unittest.TestCase):
         self.assertAlmostEqual(result.tracking_error, 0.0, places=8)
         self.assertAlmostEqual(result.information_ratio, 0.0, places=8)
 
-    @patch("common.loader.fetch_index_daily")
+    @patch("factorzen.core.loader.fetch_index_daily")
     def test_summary_string(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """summary() 返回非空字符串且包含基准名称。"""
         dates = self._dates(40)
@@ -205,7 +205,7 @@ class TestComputeExcessReturn(unittest.TestCase):
         # benchmark_name for "000300.SH" is "HS300" per BENCHMARK_INDICES
         self.assertIn(result.benchmark_name, summary)
 
-    @patch("common.loader.fetch_index_daily")
+    @patch("factorzen.core.loader.fetch_index_daily")
     def test_raises_on_empty_index_data(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """fetch_index_daily 返回空 DataFrame 时，函数应抛出 ValueError。"""
         dates = self._dates(40)

@@ -1,8 +1,8 @@
-"""测试截面 Z-score 标准化。"""
+﻿"""测试截面 Z-score 标准化。"""
 
 import polars as pl
 
-from daily.preprocessing.normalizer import cross_sectional_zscore
+from factorzen.daily.preprocessing.normalizer import cross_sectional_zscore
 
 
 def _make_test_data(values: list[float], stocks: list[str] | None = None):

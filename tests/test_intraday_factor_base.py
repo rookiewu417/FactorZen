@@ -1,11 +1,11 @@
-"""测试 IntradayFactor 抽象基类。"""
+﻿"""测试 IntradayFactor 抽象基类。"""
 
 from dataclasses import dataclass
 
 import polars as pl
 import pytest
 
-from intraday.factors.base import IntradayFactor
+from factorzen.intraday.factors.base import IntradayFactor
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-"""S2 防回归：验证 CostModel 和成本扣除逻辑。
+﻿"""S2 防回归：验证 CostModel 和成本扣除逻辑。
 
 验证：
 - cost_model=None 时结果与旧版相同（向后兼容）
@@ -10,15 +10,15 @@
 import numpy as np
 import polars as pl
 
-from config.constants import (
+from factorzen.config.constants import (
     BORROW_RATE_ANNUAL,
     COMMISSION_RATE,
     SLIPPAGE_RATE,
     STAMP_TAX_RATE,
     TRADING_DAYS_PER_YEAR,
 )
-from daily.evaluation.backtest import CostModel, run_stratified_backtest
-from daily.evaluation.cost_models import SquareRootImpactCostModel
+from factorzen.daily.evaluation.backtest import CostModel, run_stratified_backtest
+from factorzen.daily.evaluation.cost_models import SquareRootImpactCostModel
 
 
 def _make_data(n_dates: int = 200, n_stocks: int = 100, seed: int = 0):
@@ -128,7 +128,7 @@ class TestBacktestCostIntegration:
 
     def test_cost_model_instance_returned_result_type(self):
         """启用成本后返回类型仍为 BacktestResult，ret_definition 仍正确。"""
-        from daily.evaluation.backtest import BacktestResult
+        from factorzen.daily.evaluation.backtest import BacktestResult
 
         factor_df, price_df = _make_data()
         r = run_stratified_backtest(factor_df, price_df, n_groups=5, cost_model=CostModel())

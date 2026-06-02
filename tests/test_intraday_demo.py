@@ -1,12 +1,12 @@
-"""测试 Intraday Demo 因子 Momentum1Min。"""
+﻿"""测试 Intraday Demo 因子 Momentum1Min。"""
 
 from dataclasses import dataclass, field
 
 import polars as pl
 import pytest
 
-from intraday.factors.base import IntradayFactor
-from intraday.factors.demo.momentum_1min import Momentum1Min
+from factorzen.intraday.factors.base import IntradayFactor
+from workspace.factors.intraday.momentum_1min import Momentum1Min
 
 # ── Import & Class Structure ─────────────────────────────────────────────────
 

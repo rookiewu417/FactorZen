@@ -1018,7 +1018,7 @@ packages:
 - pypi: ./
   name: factorzen
   version: 0.2.0
-  sha256: d7571aad4255c96863eb06a549efc5b3c6f7c3e357e6e9618899cff75266c0df
+  sha256: 2a1f651eef99c7da52e90ba132ec8e26a92a8295abe8cde18f0a8ec18bf02e72
   requires_dist:
   - polars>=1.0.0
   - pyarrow>=14.0.0

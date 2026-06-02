@@ -1,7 +1,7 @@
-"""平方根冲击成本模型单元测试。"""
+﻿"""平方根冲击成本模型单元测试。"""
 
 
-from daily.evaluation.cost_models import LinearCostModel, SquareRootImpactCostModel
+from factorzen.daily.evaluation.cost_models import LinearCostModel, SquareRootImpactCostModel
 
 
 class TestLinearCostModel:

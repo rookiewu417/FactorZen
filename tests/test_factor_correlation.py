@@ -1,4 +1,4 @@
-"""因子相关性矩阵测试。"""
+﻿"""因子相关性矩阵测试。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def _make_factor_df(vals_fn, n: int = 50, n_dates: int = 10, seed: int = 42) -> 
 
 
 def test_self_correlation_is_one():
-    from daily.evaluation.advanced import compute_factor_correlation
+    from factorzen.daily.evaluation.advanced import compute_factor_correlation
 
     rng = np.random.default_rng(42)
     n = 50
@@ -44,7 +44,7 @@ def test_self_correlation_is_one():
 
 
 def test_opposite_factor_correlation_is_negative():
-    from daily.evaluation.advanced import compute_factor_correlation
+    from factorzen.daily.evaluation.advanced import compute_factor_correlation
 
     rng = np.random.default_rng(0)
     n = 50
@@ -68,7 +68,7 @@ def test_opposite_factor_correlation_is_negative():
 
 def test_factor_correlation_returns_dataframe():
     """返回值应为 pl.DataFrame 含 'factor' 列。"""
-    from daily.evaluation.advanced import compute_factor_correlation
+    from factorzen.daily.evaluation.advanced import compute_factor_correlation
 
     rng = np.random.default_rng(1)
     n = 30
@@ -88,7 +88,7 @@ def test_factor_correlation_returns_dataframe():
 
 def test_single_factor_returns_identity():
     """单因子应返回 1x1 矩阵，对角线为 1。"""
-    from daily.evaluation.advanced import compute_factor_correlation
+    from factorzen.daily.evaluation.advanced import compute_factor_correlation
 
     rng = np.random.default_rng(2)
     n = 20

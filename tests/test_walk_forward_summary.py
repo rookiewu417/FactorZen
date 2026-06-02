@@ -1,4 +1,4 @@
-"""Tests for single-factor walk-forward summary integration."""
+﻿"""Tests for single-factor walk-forward summary integration."""
 
 from __future__ import annotations
 
@@ -44,8 +44,8 @@ def _make_factor_price(n_dates: int = 40, n_stocks: int = 20, seed: int = 7):
 
 
 def test_walk_forward_summary_marks_insufficient_data():
-    from common.config_loader import RunConfig
-    from daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
+    from factorzen.core.config_loader import RunConfig
+    from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 
     factor_df, price_df = _make_factor_price(n_dates=12)
     cfg = RunConfig(
@@ -64,12 +64,15 @@ def test_walk_forward_summary_marks_insufficient_data():
     )
 
     assert result is None
-    assert summary == {"status": "insufficient_data", "n_folds": 0}
+    assert summary["status"] == "insufficient_data"
+    assert summary["n_folds"] == 0
+    assert summary["requested_n_trials"] == 50
+    assert summary["param_candidates"][-1] == {"top_n": 50}
 
 
 def test_walk_forward_summary_returns_oos_metrics_when_folds_exist():
-    from common.config_loader import RunConfig
-    from daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
+    from factorzen.core.config_loader import RunConfig
+    from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 
     factor_df, price_df = _make_factor_price(n_dates=36, n_stocks=80)
     cfg = RunConfig(
@@ -96,3 +99,56 @@ def test_walk_forward_summary_returns_oos_metrics_when_folds_exist():
     assert summary["oos_sharpe_std"] == result.oos_sharpe_std
     assert summary["oos_max_dd"] == result.oos_max_dd
     assert summary["stability_ratio"] == result.stability_ratio
+
+
+def test_walk_forward_summary_uses_top_n_candidates_from_n_trials(monkeypatch):
+    from factorzen.core.config_loader import RunConfig
+    from factorzen.daily.evaluation.backtest import TopNLongOnlyStrategy
+    from factorzen.daily.evaluation.walk_forward import WalkForwardResult
+    from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
+
+    captured = {}
+
+    def fake_run_walk_forward_search(**kwargs):
+        captured["param_candidates"] = kwargs["param_candidates"]
+        captured["strategy"] = kwargs["strategy_factory"]({"top_n": 7})
+        return WalkForwardResult(
+            folds=[],
+            oos_returns=pl.DataFrame(),
+            is_sharpe_mean=0.0,
+            oos_sharpe_mean=0.0,
+            oos_sharpe_std=0.0,
+            oos_max_dd=0.0,
+            stability_ratio=0.0,
+        )
+
+    monkeypatch.setattr(
+        "factorzen.daily.evaluation.walk_forward_summary.run_walk_forward_search",
+        fake_run_walk_forward_search,
+    )
+    factor_df, price_df = _make_factor_price(n_dates=12)
+    cfg = RunConfig(
+        factor="momentum_20d",
+        start="20240101",
+        end="20240131",
+        backtest={"top_n": 10},
+        walk_forward={"n_trials": 4},
+    )
+
+    summary, _ = run_quantile_walk_forward_summary(
+        factor_df,
+        price_df,
+        cfg,
+        factor_name="momentum_20d",
+        frequency="daily",
+    )
+
+    assert captured["param_candidates"] == [
+        {"top_n": 1},
+        {"top_n": 4},
+        {"top_n": 7},
+        {"top_n": 10},
+    ]
+    assert isinstance(captured["strategy"], TopNLongOnlyStrategy)
+    assert captured["strategy"].n == 7
+    assert summary["requested_n_trials"] == 4

@@ -1,4 +1,4 @@
-"""Tests for generate_report result persistence metadata."""
+﻿"""Tests for generate_report result persistence metadata."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ import polars as pl
 
 
 def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
-    from daily.evaluation.backtest import StrategyBacktestResult
-    from daily.evaluation.ic_analysis import ICAnalysisResult
-    from daily.evaluation.turnover import TurnoverResult
-    from scripts import generate_report as mod
+    from factorzen.daily.evaluation.backtest import StrategyBacktestResult
+    from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
+    from factorzen.daily.evaluation.turnover import TurnoverResult
+    from factorzen.pipelines import generate_report as mod
 
     monkeypatch.setattr(mod, "daily_factor_output_dir", lambda factor_name: tmp_path / "factors")
     monkeypatch.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")
@@ -120,8 +120,8 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
 
 
 def test_negative_significant_ic_uses_reversed_backtest_direction():
-    from daily.evaluation.ic_analysis import ICAnalysisResult
-    from scripts import generate_report as mod
+    from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
+    from factorzen.pipelines import generate_report as mod
 
     ic_result = ICAnalysisResult(
         factor_name="value",
@@ -142,8 +142,8 @@ def test_negative_significant_ic_uses_reversed_backtest_direction():
 
 
 def test_weak_negative_ic_keeps_normal_backtest_direction():
-    from daily.evaluation.ic_analysis import ICAnalysisResult
-    from scripts import generate_report as mod
+    from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
+    from factorzen.pipelines import generate_report as mod
 
     ic_result = ICAnalysisResult(
         factor_name="noise",
@@ -165,7 +165,7 @@ def test_weak_negative_ic_keeps_normal_backtest_direction():
 
 
 def test_reversed_backtest_direction_flips_factor_clean():
-    from scripts import generate_report as mod
+    from factorzen.pipelines import generate_report as mod
 
     clean_df = pl.DataFrame(
         {"trade_date": [date(2024, 1, 2)], "ts_code": ["000001.SZ"], "factor_clean": [2.0]}
@@ -174,3 +174,175 @@ def test_reversed_backtest_direction_flips_factor_clean():
     out = mod._apply_backtest_direction(clean_df, {"direction": "reversed"})
 
     assert out["factor_clean"].to_list() == [-2.0]
+
+
+def test_merge_report_config_args_all_enables_report_defaults():
+    from argparse import Namespace
+
+    from factorzen.pipelines import generate_report as mod
+
+    args = Namespace(
+        factor="momentum_20d",
+        start="20240101",
+        end="20240131",
+        universe=None,
+        benchmark=None,
+        frequency="daily",
+        reuse=False,
+        config=None,
+        all=True,
+        ic_method=None,
+        neutralized_ic=None,
+        event_study=None,
+        llm_explain=False,
+        llm_refresh=False,
+    )
+
+    merged = mod._merge_report_config_args(args, None)
+
+    assert merged.universe == "csi300"
+    assert merged.benchmark == "000300.SH"
+    assert merged.reuse is False
+    assert merged.ic_method == "both"
+    assert merged.neutralized_ic is True
+    assert merged.event_study is True
+    assert merged.llm_explain is True
+    assert merged.llm_refresh is False
+
+
+def test_merge_report_config_args_all_uses_universe_matched_benchmark():
+    from argparse import Namespace
+
+    from factorzen.pipelines import generate_report as mod
+
+    args = Namespace(
+        factor="momentum_20d",
+        start="20240101",
+        end="20240131",
+        universe="csi500",
+        benchmark=None,
+        frequency="daily",
+        reuse=False,
+        config=None,
+        all=True,
+        ic_method=None,
+        neutralized_ic=None,
+        event_study=None,
+        llm_explain=False,
+        llm_refresh=False,
+    )
+
+    merged = mod._merge_report_config_args(args, None)
+
+    assert merged.benchmark == "000905.SH"
+
+
+def test_merge_report_config_args_all_overrides_yaml_benchmark():
+    from argparse import Namespace
+
+    from factorzen.core.config_loader import RunConfig
+    from factorzen.pipelines import generate_report as mod
+
+    args = Namespace(
+        factor=None,
+        start=None,
+        end=None,
+        universe=None,
+        benchmark=None,
+        frequency="daily",
+        reuse=False,
+        config=None,
+        all=True,
+        ic_method=None,
+        neutralized_ic=None,
+        event_study=None,
+        llm_explain=False,
+        llm_refresh=False,
+    )
+    cfg = RunConfig(
+        factor="momentum_20d",
+        start="20230101",
+        end="20241231",
+        universe="csi500",
+        benchmark="000300.SH",
+    )
+
+    merged = mod._merge_report_config_args(args, cfg)
+
+    assert merged.benchmark == "000905.SH"
+    assert merged.reuse is False
+    assert merged.ic_method == "both"
+    assert merged.neutralized_ic is True
+    assert merged.event_study is True
+    assert merged.llm_explain is True
+
+
+def test_merge_report_config_args_all_keeps_explicit_deep_options():
+    from argparse import Namespace
+
+    from factorzen.core.config_loader import RunConfig
+    from factorzen.pipelines import generate_report as mod
+
+    args = Namespace(
+        factor=None,
+        start=None,
+        end=None,
+        universe=None,
+        benchmark="000300.SH",
+        frequency="daily",
+        reuse=False,
+        config=None,
+        all=True,
+        ic_method="pearson",
+        neutralized_ic=False,
+        event_study=False,
+        llm_explain=False,
+        llm_refresh=False,
+    )
+    cfg = RunConfig(
+        factor="momentum_20d",
+        start="20230101",
+        end="20241231",
+        universe="csi500",
+        benchmark="000905.SH",
+    )
+
+    merged = mod._merge_report_config_args(args, cfg)
+
+    assert merged.benchmark == "000300.SH"
+    assert merged.ic_method == "pearson"
+    assert merged.neutralized_ic is False
+    assert merged.event_study is False
+
+
+def test_effective_report_config_without_yaml_uses_default_strategy_suite():
+    from argparse import Namespace
+
+    from factorzen.pipelines import generate_report as mod
+
+    args = Namespace(
+        factor="momentum_20d",
+        start="20240101",
+        end="20240131",
+        universe=None,
+        benchmark=None,
+        frequency="daily",
+        reuse=False,
+        config=None,
+        all=False,
+        ic_method=None,
+        neutralized_ic=None,
+        event_study=None,
+        llm_explain=False,
+        llm_refresh=False,
+    )
+
+    merged = mod._merge_report_config_args(args, None)
+    cfg = mod._effective_report_config(merged, None)
+
+    assert [spec.name for spec in cfg.backtest.strategy_specs] == [
+        "topn_50",
+        "quantile_ls_5",
+        "factor_weighted_ls",
+        "optimizer_mv_long_only",
+    ]

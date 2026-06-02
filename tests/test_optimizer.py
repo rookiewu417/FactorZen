@@ -1,13 +1,17 @@
-"""组合优化器单元测试。"""
+﻿"""组合优化器单元测试。"""
 from __future__ import annotations
 
 import numpy as np
 
-from daily.optimization.base import OptimizerConstraints
-from daily.optimization.covariance import ewma_covariance, ledoit_wolf_shrinkage, sample_covariance
-from daily.optimization.max_sharpe import MaxSharpeOptimizer
-from daily.optimization.mean_variance import MeanVarianceOptimizer
-from daily.optimization.risk_parity import RiskParityOptimizer
+from factorzen.daily.optimization.base import OptimizerConstraints
+from factorzen.daily.optimization.covariance import (
+    ewma_covariance,
+    ledoit_wolf_shrinkage,
+    sample_covariance,
+)
+from factorzen.daily.optimization.max_sharpe import MaxSharpeOptimizer
+from factorzen.daily.optimization.mean_variance import MeanVarianceOptimizer
+from factorzen.daily.optimization.risk_parity import RiskParityOptimizer
 
 
 def _equal_cov(n: int, sigma: float = 0.01) -> np.ndarray:

@@ -1,4 +1,4 @@
-"""Tests for daily data quality reporting."""
+﻿"""Tests for daily data quality reporting."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def _base_returns() -> pl.DataFrame:
 
 
 def test_quality_report_records_coverage_and_warnings():
-    from common.data_quality import build_daily_quality_report
+    from factorzen.core.data_quality import build_daily_quality_report
 
     report = build_daily_quality_report(
         daily_df=_base_daily(),
@@ -67,7 +67,7 @@ def test_quality_report_records_coverage_and_warnings():
 
 
 def test_quality_report_rejects_duplicate_daily_keys():
-    from common.data_quality import QualityCheckError, build_daily_quality_report
+    from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
 
     duplicate_daily = pl.concat([_base_daily(), _base_daily().head(1)])
 
@@ -82,7 +82,7 @@ def test_quality_report_rejects_duplicate_daily_keys():
 
 
 def test_quality_report_rejects_empty_clean_factor():
-    from common.data_quality import QualityCheckError, build_daily_quality_report
+    from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
 
     empty_clean = _base_clean().with_columns(pl.lit(None).cast(pl.Float64).alias("factor_clean"))
 

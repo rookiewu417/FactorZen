@@ -1,8 +1,8 @@
-"""测试 IC Decay 分析：因子 IC 随持有期的衰减。"""
+﻿"""测试 IC Decay 分析：因子 IC 随持有期的衰减。"""
 
 import polars as pl
 
-from daily.evaluation.advanced import ICDecayResult, compute_ic_decay
+from factorzen.daily.evaluation.advanced import ICDecayResult, compute_ic_decay
 
 
 def _make_factor_and_returns() -> tuple[pl.DataFrame, pl.DataFrame]:

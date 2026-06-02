@@ -1,4 +1,4 @@
-"""Tests for script-level experiment manifest wrappers."""
+﻿"""Tests for script-level experiment manifest wrappers."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ def _single_manifest(experiments_dir):
 
 
 def test_generate_report_failure_manifest_records_partial_outputs(tmp_path, monkeypatch):
-    from common import experiment as exp_mod
-    from scripts import generate_report as mod
+    from factorzen.core import experiment as exp_mod
+    from factorzen.pipelines import generate_report as mod
 
     experiments_dir = tmp_path / "experiments"
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
@@ -57,8 +57,8 @@ def test_generate_report_failure_manifest_records_partial_outputs(tmp_path, monk
 
 
 def test_run_daily_failure_manifest_records_partial_outputs(tmp_path, monkeypatch):
-    from common import experiment as exp_mod
-    from scripts import run_daily_single as mod
+    from factorzen.core import experiment as exp_mod
+    from factorzen.pipelines import daily_single as mod
 
     experiments_dir = tmp_path / "experiments"
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)

@@ -1,4 +1,4 @@
-"""事件研究测试。"""
+﻿"""事件研究测试。"""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _make_factor_ret_dfs(n_stocks: int = 20, n_dates: int = 60, seed: int = 42):
 
 
 def test_event_study_returns_correct_windows():
-    from daily.evaluation.advanced import compute_event_study
+    from factorzen.daily.evaluation.advanced import compute_event_study
 
     factor_df, ret_df = _make_factor_ret_dfs()
     result = compute_event_study(factor_df, ret_df, pre_window=3, post_window=10)
@@ -44,7 +44,7 @@ def test_event_study_returns_correct_windows():
 
 
 def test_event_study_ci_nonnegative():
-    from daily.evaluation.advanced import compute_event_study
+    from factorzen.daily.evaluation.advanced import compute_event_study
 
     factor_df, ret_df = _make_factor_ret_dfs(seed=0)
     result = compute_event_study(factor_df, ret_df, pre_window=2, post_window=5)
@@ -53,7 +53,7 @@ def test_event_study_ci_nonnegative():
 
 def test_event_study_windows_range():
     """windows 列表应从 -pre_window 到 +post_window。"""
-    from daily.evaluation.advanced import compute_event_study
+    from factorzen.daily.evaluation.advanced import compute_event_study
 
     factor_df, ret_df = _make_factor_ret_dfs()
     pre, post = 4, 8
@@ -64,7 +64,7 @@ def test_event_study_windows_range():
 
 def test_event_study_empty_factor():
     """空因子 DataFrame 应返回零结果不崩溃。"""
-    from daily.evaluation.advanced import compute_event_study
+    from factorzen.daily.evaluation.advanced import compute_event_study
 
     empty_factor = pl.DataFrame(
         {"trade_date": [], "ts_code": [], "factor_clean": []},
@@ -77,3 +77,20 @@ def test_event_study_empty_factor():
     result = compute_event_study(empty_factor, ret_df, pre_window=2, post_window=5)
     assert result.n_events == 0
     assert len(result.windows) == 2 + 1 + 5
+
+
+def test_event_study_tolerates_null_returns():
+    from factorzen.daily.evaluation.advanced import compute_event_study
+
+    factor_df, ret_df = _make_factor_ret_dfs(n_stocks=5, n_dates=20)
+    ret_df = ret_df.with_columns(
+        pl.when((pl.col("trade_date") == "2023-01-10") & (pl.col("ts_code") == "000004.SZ"))
+        .then(None)
+        .otherwise(pl.col("ret_1d"))
+        .alias("ret_1d")
+    )
+
+    result = compute_event_study(factor_df, ret_df, pre_window=2, post_window=5)
+
+    assert result.n_events > 0
+    assert np.isfinite(result.avg_cumret).all()

@@ -1,11 +1,11 @@
-"""tests/test_intraday_returns.py"""
+﻿"""tests/test_intraday_returns.py"""
 
 import datetime
 
 import polars as pl
 import pytest
 
-from intraday.evaluation.returns import compute_intraday_fwd_returns
+from factorzen.intraday.evaluation.returns import compute_intraday_fwd_returns
 
 
 def _make_minute_df() -> pl.DataFrame:

@@ -1,4 +1,4 @@
-"""daily/evaluation/attribution.py 的单元测试。"""
+﻿"""daily/evaluation/attribution.py 的单元测试。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from config.constants import TRADING_DAYS_PER_YEAR
-from daily.evaluation.attribution import (
+from factorzen.config.constants import TRADING_DAYS_PER_YEAR
+from factorzen.daily.evaluation.attribution import (
     BarraStyleResult,
     BrinsonResult,
     aggregate_positions_to_sectors,

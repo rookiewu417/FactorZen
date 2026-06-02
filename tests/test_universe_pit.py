@@ -1,4 +1,4 @@
-"""S1-B 防回归：验证 get_universe("all_a") 实现 PIT 过滤（幸存者偏差消除）。
+﻿"""S1-B 防回归：验证 get_universe("all_a") 实现 PIT 过滤（幸存者偏差消除）。
 
 策略：用 monkeypatch 替换 fetch_stock_basic，注入含退市股的合成数据，
 验证 get_universe 在指定日期只返回彼时在市的股票，不包含未来退市股和未来上市股。
@@ -9,7 +9,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from common.universe import get_universe
+from factorzen.core.universe import get_universe
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ def synthetic_stock_basic(monkeypatch):
             ],
         }
     )
-    monkeypatch.setattr("common.universe.get_stock_basic", lambda: df)
+    monkeypatch.setattr("factorzen.core.universe.get_stock_basic", lambda: df)
     return df
 
 

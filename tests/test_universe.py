@@ -1,10 +1,10 @@
-"""测试指数成分股加载。"""
+﻿"""测试指数成分股加载。"""
 
 import os
 
 import pytest
 
-from common.universe import get_universe
+from factorzen.core.universe import get_universe
 
 # ── helpers ────────────────────────────────────────────────────────────────
 

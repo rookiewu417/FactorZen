@@ -1,4 +1,4 @@
-"""Tests for daily.evaluation.correlation (standalone module, not advanced.py)."""
+﻿"""Tests for daily.evaluation.correlation (standalone module, not advanced.py)."""
 
 from datetime import date, timedelta
 
@@ -20,7 +20,7 @@ def _make_df(n: int = 50, n_dates: int = 10, seed: int = 42, negate: bool = Fals
 
 
 def test_single_factor_returns_identity():
-    from daily.evaluation.correlation import CorrelationResult, compute_factor_correlation
+    from factorzen.daily.evaluation.correlation import CorrelationResult, compute_factor_correlation
 
     df = _make_df(n=50, n_dates=5)
     result = compute_factor_correlation({"A": df})
@@ -31,7 +31,7 @@ def test_single_factor_returns_identity():
 
 
 def test_identical_factors_have_correlation_one():
-    from daily.evaluation.correlation import compute_factor_correlation
+    from factorzen.daily.evaluation.correlation import compute_factor_correlation
 
     df = _make_df(n=50, n_dates=10)
     result = compute_factor_correlation({"X": df, "Y": df})
@@ -40,7 +40,7 @@ def test_identical_factors_have_correlation_one():
 
 
 def test_anti_correlated_factors():
-    from daily.evaluation.correlation import compute_factor_correlation
+    from factorzen.daily.evaluation.correlation import compute_factor_correlation
 
     df_pos = _make_df(n=50, n_dates=10, seed=7)
     df_neg = _make_df(n=50, n_dates=10, seed=7, negate=True)
@@ -50,7 +50,7 @@ def test_anti_correlated_factors():
 
 def test_sparse_dates_skipped():
     """Dates with fewer than 30 stocks are skipped; diagonal is still 1."""
-    from daily.evaluation.correlation import compute_factor_correlation
+    from factorzen.daily.evaluation.correlation import compute_factor_correlation
 
     # Only 10 stocks — every date will be skipped
     df = _make_df(n=10, n_dates=5)
@@ -61,7 +61,7 @@ def test_sparse_dates_skipped():
 
 def test_zero_variance_factor_skipped():
     """A constant factor has zero std → that date is skipped; diagonal still 1."""
-    from daily.evaluation.correlation import compute_factor_correlation
+    from factorzen.daily.evaluation.correlation import compute_factor_correlation
 
     n = 50
     rows_const = [
@@ -82,7 +82,7 @@ def test_zero_variance_factor_skipped():
 
 def test_non_overlapping_stocks_returns_identity():
     """Inner join on non-overlapping ts_code → empty merged → identity matrix."""
-    from daily.evaluation.correlation import compute_factor_correlation
+    from factorzen.daily.evaluation.correlation import compute_factor_correlation
 
     n = 50
     rows_a = [{"trade_date": "2023-01-03", "ts_code": f"A{i:05d}.SZ", "factor_clean": float(i)} for i in range(n)]
@@ -94,7 +94,7 @@ def test_non_overlapping_stocks_returns_identity():
 
 def test_diagonal_is_always_one():
     """Diagonal elements must be exactly 1 regardless of off-diagonal values."""
-    from daily.evaluation.correlation import compute_factor_correlation
+    from factorzen.daily.evaluation.correlation import compute_factor_correlation
 
     df1 = _make_df(n=60, n_dates=10, seed=1)
     df2 = _make_df(n=60, n_dates=10, seed=2)
@@ -106,7 +106,7 @@ def test_diagonal_is_always_one():
 
 
 def test_summary_contains_factor_names_and_values():
-    from daily.evaluation.correlation import CorrelationResult
+    from factorzen.daily.evaluation.correlation import CorrelationResult
 
     result = CorrelationResult(
         factor_names=["alpha", "beta"],
@@ -119,7 +119,7 @@ def test_summary_contains_factor_names_and_values():
 
 
 def test_summary_single_factor():
-    from daily.evaluation.correlation import CorrelationResult
+    from factorzen.daily.evaluation.correlation import CorrelationResult
 
     result = CorrelationResult(factor_names=["only"], corr_matrix=np.eye(1))
     summary = result.summary()

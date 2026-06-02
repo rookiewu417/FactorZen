@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import date
 from unittest.mock import MagicMock
@@ -7,7 +7,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
-import common.data_ensure as data_ensure
+import factorzen.core.data_ensure as data_ensure
 
 
 def _daily_frame(trade_date: date | str) -> pl.DataFrame:

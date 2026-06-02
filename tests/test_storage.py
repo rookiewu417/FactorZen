@@ -1,11 +1,11 @@
-"""common/storage.py 的单元测试。"""
+﻿"""common/storage.py 的单元测试。"""
 
 from datetime import date
 
 import polars as pl
 import pytest
 
-from common.storage import load_parquet, save_parquet
+from factorzen.core.storage import load_parquet, save_parquet
 
 
 @pytest.fixture()

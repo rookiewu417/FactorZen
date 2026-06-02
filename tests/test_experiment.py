@@ -1,4 +1,4 @@
-"""Tests for common.experiment module."""
+﻿"""Tests for common.experiment module."""
 from __future__ import annotations
 
 import json
@@ -7,10 +7,10 @@ import pytest
 
 
 def test_experiment_success(tmp_path, monkeypatch):
-    from common import experiment as exp_mod
+    from factorzen.core import experiment as exp_mod
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    from common.config_loader import RunConfig
+    from factorzen.core.config_loader import RunConfig
 
     cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
 
@@ -24,11 +24,26 @@ def test_experiment_success(tmp_path, monkeypatch):
     assert "git_sha" in manifest
 
 
-def test_experiment_failure(tmp_path, monkeypatch):
-    from common import experiment as exp_mod
+def test_auto_run_id_includes_factor_name(tmp_path, monkeypatch):
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    from common.config_loader import RunConfig
+    cfg = RunConfig(factor="momentum_12_1", start="20230101", end="20241231")
+
+    with exp_mod.run_experiment(cfg) as exp_dir:
+        pass
+
+    manifest = json.loads((exp_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert exp_dir.name.startswith("momentum_12_1_")
+    assert manifest["run_id"] == exp_dir.name
+
+
+def test_experiment_failure(tmp_path, monkeypatch):
+    from factorzen.core import experiment as exp_mod
+
+    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+    from factorzen.core.config_loader import RunConfig
 
     cfg = RunConfig(factor="x", start="20230101", end="20241231")
 
@@ -44,8 +59,8 @@ def test_experiment_index_created_on_success(tmp_path, monkeypatch):
     """成功 run 后，experiment_index.jsonl 被创建并含正确字段。"""
     import json as _json
 
-    from common import experiment as exp_mod
-    from common.config_loader import RunConfig
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     cfg = RunConfig(factor="reversal_5d", start="20240101", end="20241231")
@@ -66,8 +81,8 @@ def test_experiment_index_appends_multiple_runs(tmp_path, monkeypatch):
     """两次 run 各 append 一行，JSONL 共两行。"""
     import json as _json
 
-    from common import experiment as exp_mod
-    from common.config_loader import RunConfig
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
 
@@ -87,8 +102,8 @@ def test_experiment_index_records_failure_status(tmp_path, monkeypatch):
     """失败 run 的状态也被记录到索引。"""
     import json as _json
 
-    from common import experiment as exp_mod
-    from common.config_loader import RunConfig
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     cfg = RunConfig(factor="x", start="20240101", end="20241231")
@@ -102,8 +117,8 @@ def test_experiment_index_records_failure_status(tmp_path, monkeypatch):
 
 
 def test_experiment_records_reproducibility_metadata(tmp_path, monkeypatch):
-    from common import experiment as exp_mod
-    from common.config_loader import RunConfig
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: True)
@@ -113,12 +128,12 @@ def test_experiment_records_reproducibility_metadata(tmp_path, monkeypatch):
     with exp_mod.run_experiment(
         cfg,
         run_id="metadata_run",
-        command=["python", "scripts/run_daily_single.py"],
+        command=["python", "factorzen.pipelines.daily_single"],
     ) as exp_dir:
         exp_mod.record_experiment_output(exp_dir, "quality_report", "quality.json")
 
     manifest = json.loads((exp_dir / "manifest.json").read_text())
     assert manifest["git_dirty"] is True
     assert manifest["pixi_lock_sha256"] == "abc123"
-    assert manifest["command"] == ["python", "scripts/run_daily_single.py"]
+    assert manifest["command"] == ["python", "factorzen.pipelines.daily_single"]
     assert manifest["outputs"]["quality_report"] == "quality.json"

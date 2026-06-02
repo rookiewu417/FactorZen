@@ -1,12 +1,12 @@
-"""tests/test_intraday_backtest.py"""
+﻿"""tests/test_intraday_backtest.py"""
 
 import datetime
 import random
 
 import polars as pl
 
-from daily.evaluation.backtest import BacktestResult
-from intraday.evaluation.backtest import aggregate_intraday_factor, run_intraday_backtest
+from factorzen.daily.evaluation.backtest import BacktestResult
+from factorzen.intraday.evaluation.backtest import aggregate_intraday_factor, run_intraday_backtest
 
 
 def _make_minute_factor(

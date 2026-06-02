@@ -1,11 +1,11 @@
-"""Tests for common.seed module."""
+﻿"""Tests for common.seed module."""
 from __future__ import annotations
 
 import numpy as np
 
 
 def test_set_global_seed_returns_dict():
-    from common.seed import set_global_seed
+    from factorzen.core.seed import set_global_seed
 
     result = set_global_seed(42)
     assert result["seed"] == 42
@@ -13,7 +13,7 @@ def test_set_global_seed_returns_dict():
 
 def test_seed_reproducibility():
     """固定种子两次采样结果相同。"""
-    from common.seed import set_global_seed
+    from factorzen.core.seed import set_global_seed
 
     set_global_seed(42)
     a = np.random.rand(5)
@@ -26,7 +26,7 @@ def test_get_optuna_sampler_reproducible():
     """同种子采样器产生相同建议。"""
     import optuna
 
-    from common.seed import get_optuna_sampler
+    from factorzen.core.seed import get_optuna_sampler
     sampler1 = get_optuna_sampler(42)
     sampler2 = get_optuna_sampler(42)
     study = optuna.create_study(sampler=sampler1)

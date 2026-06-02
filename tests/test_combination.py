@@ -6,8 +6,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from research.combination.methods import equal_weight, ic_weighted, max_ir
-from scripts.run_combination import _instantiate_factor, _prepare_return_frame
+from factorzen.research.combination.methods import equal_weight, ic_weighted, max_ir
+from factorzen.research.combination.pipeline import instantiate_factor, prepare_return_frame
 
 
 class _DummyFactor:
@@ -16,7 +16,7 @@ class _DummyFactor:
 
 
 def test_instantiate_factor_builds_instance_from_registry_class():
-    factor = _instantiate_factor("dummy", registry_getter=lambda _name: _DummyFactor)
+    factor = instantiate_factor("dummy", registry_getter=lambda _name: _DummyFactor)
 
     assert isinstance(factor, _DummyFactor)
     assert factor.required_data == ["daily"]
@@ -32,7 +32,7 @@ def test_prepare_return_frame_adds_ret_and_forward_returns():
         }
     )
 
-    out = _prepare_return_frame(price_df, horizons=[1])
+    out = prepare_return_frame(price_df, horizons=[1])
 
     assert "ret" in out.columns
     assert "fwd_ret_1d" in out.columns

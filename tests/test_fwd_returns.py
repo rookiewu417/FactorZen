@@ -1,9 +1,9 @@
-from datetime import date
+﻿from datetime import date
 
 import polars as pl
 import pytest
 
-from daily.evaluation.ic_analysis import compute_fwd_returns
+from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
 
 
 def test_fwd_ret_1d_uses_next_close_over_current_close():

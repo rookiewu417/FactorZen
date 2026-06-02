@@ -1,8 +1,8 @@
-"""测试分市值 IC：按市值分组（大盘/中盘/小盘）计算 Rank IC。"""
+﻿"""测试分市值 IC：按市值分组（大盘/中盘/小盘）计算 Rank IC。"""
 
 import polars as pl
 
-from daily.evaluation.advanced import SizeICResult, compute_size_ic
+from factorzen.daily.evaluation.advanced import SizeICResult, compute_size_ic
 
 
 def _make_size_data(n_stocks: int = 60) -> pl.DataFrame:
@@ -72,3 +72,25 @@ def test_size_ic_result_object():
     assert isinstance(result, SizeICResult)
     assert hasattr(result, "buckets")
     assert hasattr(result, "summary")
+
+
+def test_size_ic_drops_undefined_correlations():
+    df = pl.DataFrame(
+        {
+            "ts_code": ["a", "b", "c", "d", "e", "f"],
+            "trade_date": ["2026-01-05"] * 6,
+            "factor_value": [1.0, 1.0, 1.0, 1.0, 0.1, 0.2],
+            "fwd_ret": [0.01, 0.02, 0.03, 0.04, 0.01, 0.02],
+            "market_cap": [10.0, 11.0, 12.0, 13.0, 100.0, 101.0],
+        }
+    )
+
+    result = compute_size_ic(
+        df,
+        factor_col="factor_value",
+        ret_col="fwd_ret",
+        cap_col="market_cap",
+        n_buckets=2,
+    )
+
+    assert result["ic"].is_nan().sum() == 0

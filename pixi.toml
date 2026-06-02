@@ -1,5 +1,5 @@
 [workspace]
-authors = ["吴一凡 <1007372080@qq.com>"]
+authors = ["rookiewu417 <1007372080@qq.com>"]
 channels = ["conda-forge"]
 name = "FactorZen"
 platforms = ["win-64", "linux-64"]
@@ -10,13 +10,13 @@ lint       = "ruff check ."
 format     = "ruff format ."
 test       = "pytest tests/ -v"
 typecheck  = "mypy --cache-dir .cache/mypy --no-sqlite-cache"
-coverage   = "python scripts/run_coverage.py"
+coverage   = "python tools/run_coverage.py"
 lab        = "jupyter lab"
 smoke      = "python -c \"import polars; import tushare; print('ok')\""
-smoke-data = "python scripts/smoke_data.py"  # 手动触发，需 TUSHARE_TOKEN，不入 CI
-report     = "python scripts/generate_report.py"
+daily      = "python -m factorzen.pipelines.daily_single"
+report     = "python -m factorzen.pipelines.generate_report"
+fz         = "python -m factorzen.cli.main"
 
-# runtime 依赖
 [dependencies]
 python = ">=3.10,<3.13"
 
@@ -32,7 +32,6 @@ optuna       = ">=3.5"
 statsmodels  = ">=0.14.0"
 matplotlib   = ">=3.7.0"
 jinja2       = ">=3.1.0"
-# 本地包 editable install（消除 scripts/ 中的 sys.path hack）
 factorzen = { path = ".", editable = true }
 apscheduler      = ">=3.10"
 pydantic         = ">=2.5"
@@ -42,7 +41,6 @@ pyqlib           = ">=0.9.7"
 protobuf         = "<5"
 setuptools       = ">=69,<81"
 
-# dev 依赖（测试 / lint / notebook）
 [feature.dev.pypi-dependencies]
 pytest     = ">=7.0.0"
 coverage   = ">=7.4.0"
@@ -51,5 +49,4 @@ mypy       = ">=1.9.0"
 jupyterlab = ">=4.0.0"
 
 [environments]
-# 默认环境包含 dev 特性，保持开发体验不变
 default = { features = ["dev"], solve-group = "default" }

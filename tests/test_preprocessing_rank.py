@@ -1,4 +1,4 @@
-"""Tests for cross_sectional_rank and quantile_transform."""
+﻿"""Tests for cross_sectional_rank and quantile_transform."""
 
 import numpy as np
 import polars as pl
@@ -17,7 +17,7 @@ def make_df(n=100) -> pl.DataFrame:
 
 
 def test_rank_uniform_in_01():
-    from daily.preprocessing.normalizer import cross_sectional_rank
+    from factorzen.daily.preprocessing.normalizer import cross_sectional_rank
 
     df = make_df()
     result = cross_sectional_rank(df, "factor", method="uniform")
@@ -29,7 +29,7 @@ def test_rank_uniform_in_01():
 def test_rank_normal_approx_standard_normal():
     from scipy.stats import kstest
 
-    from daily.preprocessing.normalizer import cross_sectional_rank
+    from factorzen.daily.preprocessing.normalizer import cross_sectional_rank
 
     df = make_df(500)
     result = cross_sectional_rank(df, "factor", method="normal")
@@ -39,7 +39,7 @@ def test_rank_normal_approx_standard_normal():
 
 
 def test_quantile_transform_constant_column():
-    from daily.preprocessing.normalizer import quantile_transform
+    from factorzen.daily.preprocessing.normalizer import quantile_transform
 
     df = pl.DataFrame(
         {
@@ -54,7 +54,7 @@ def test_quantile_transform_constant_column():
 
 
 def test_quantile_transform_schema_preserved():
-    from daily.preprocessing.normalizer import quantile_transform
+    from factorzen.daily.preprocessing.normalizer import quantile_transform
 
     df = make_df()
     result = quantile_transform(df, "factor")

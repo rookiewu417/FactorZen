@@ -1,4 +1,4 @@
-"""automation/state.py 单元测试。
+﻿"""automation/state.py 单元测试。
 
 测试 run_record 上下文管理器和 load_runs 函数。
 """
@@ -7,14 +7,14 @@ import json
 
 import pytest
 
-from automation.state import _write_record, load_runs, run_record
+from factorzen.automation.state import _write_record, load_runs, run_record
 
 
 @pytest.fixture(autouse=True)
 def tmp_state_file(tmp_path, monkeypatch):
     """将 STATE_FILE 重定向到临时目录，保证测试隔离。"""
     tmp_file = tmp_path / "automation" / "runs.jsonl"
-    monkeypatch.setattr("automation.state.STATE_FILE", tmp_file)
+    monkeypatch.setattr("factorzen.automation.state.STATE_FILE", tmp_file)
     yield tmp_file
 
 

@@ -1,4 +1,4 @@
-"""Tests for joblib-parallel neutralize_ols."""
+﻿"""Tests for joblib-parallel neutralize_ols."""
 
 import numpy as np
 import polars as pl
@@ -27,7 +27,7 @@ def make_factor_df(n_dates=20, n_stocks=50) -> pl.DataFrame:
 
 
 def test_parallel_matches_serial():
-    from daily.preprocessing.neutralizer import neutralize_ols
+    from factorzen.daily.preprocessing.neutralizer import neutralize_ols
 
     df = make_factor_df()
     serial = neutralize_ols(df, "factor", n_jobs=1)
@@ -42,7 +42,7 @@ def test_parallel_matches_serial():
 
 
 def test_serial_baseline():
-    from daily.preprocessing.neutralizer import neutralize_ols
+    from factorzen.daily.preprocessing.neutralizer import neutralize_ols
 
     df = make_factor_df()
     result = neutralize_ols(df, "factor", n_jobs=1)

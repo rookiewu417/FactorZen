@@ -1,9 +1,9 @@
-"""测试 IntradayPreprocessingPipeline — fill_missing_bars 与 clip_outliers。"""
+﻿"""测试 IntradayPreprocessingPipeline — fill_missing_bars 与 clip_outliers。"""
 
 import polars as pl
 import polars.testing as pl_testing
 
-from intraday.preprocessing.pipeline import (
+from factorzen.intraday.preprocessing.pipeline import (
     IntradayPreprocessingPipeline,
     clip_outliers,
     fill_missing_bars,

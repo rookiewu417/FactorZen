@@ -1,8 +1,8 @@
-"""S3 防回归：验证 walk-forward IC 交叉验证。"""
+﻿"""S3 防回归：验证 walk-forward IC 交叉验证。"""
 
 import numpy as np
 
-from daily.evaluation.ic_analysis import _compute_walk_forward_ic
+from factorzen.daily.evaluation.ic_analysis import _compute_walk_forward_ic
 
 
 class TestWalkForwardIC:
@@ -58,7 +58,7 @@ class TestWalkForwardIC:
         import numpy as np
         import polars as pl
 
-        from daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
+        from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
 
         rng = np.random.default_rng(42)
         n_dates, n_stocks = 120, 50

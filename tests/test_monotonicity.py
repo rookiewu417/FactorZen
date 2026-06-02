@@ -1,8 +1,8 @@
-"""测试因子单调性：分组收益是否单调递增/递减。"""
+﻿"""测试因子单调性：分组收益是否单调递增/递减。"""
 
 import polars as pl
 
-from daily.evaluation.advanced import MonotonicityResult, compute_monotonicity
+from factorzen.daily.evaluation.advanced import MonotonicityResult, compute_monotonicity
 
 
 def _make_strongly_monotonic_data() -> pl.DataFrame:

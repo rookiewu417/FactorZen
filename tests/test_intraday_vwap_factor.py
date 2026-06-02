@@ -1,12 +1,12 @@
-"""tests/test_intraday_vwap_factor.py"""
+﻿"""tests/test_intraday_vwap_factor.py"""
 
 import datetime
 import unittest.mock as mock
 
 import polars as pl
 
-from intraday.data.context import IntradayDataContext
-from intraday.factors.technical.vwap_deviation import VwapDeviation
+from factorzen.intraday.data.context import IntradayDataContext
+from workspace.factors.intraday.vwap_deviation import VwapDeviation
 
 
 def _make_ctx(df: pl.DataFrame):
@@ -59,6 +59,6 @@ def test_first_bar_zero():
 
 
 def test_registered():
-    from intraday.factors.registry import get_factor
+    from factorzen.intraday.factors.registry import get_factor
 
     assert get_factor("vwap_deviation") is VwapDeviation

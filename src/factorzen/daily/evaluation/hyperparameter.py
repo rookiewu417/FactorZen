@@ -1,0 +1,104 @@
+﻿"""Optuna 超参搜索：基于 walk-forward OOS Sharpe 做策略参数优化。"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class ParamSpec:
+    """单个超参数的搜索空间定义。"""
+
+    name: str
+    type: str  # "int", "float", "categorical"
+    low: float | int | None = None
+    high: float | int | None = None
+    step: float | int | None = None
+    log: bool = False  # log 空间搜索（适用于 int/float）
+    choices: list[Any] | None = None  # type="categorical" 时使用
+
+
+@dataclass
+class TuningSpace:
+    """超参搜索空间，封装 optuna trial.suggest_* 调用。
+
+    Example:
+        space = TuningSpace([
+            ParamSpec("n_groups", "int", 5, 20),
+            ParamSpec("risk_aversion", "float", 0.1, 10.0, log=True),
+        ])
+        params = space.suggest(trial)
+    """
+
+    specs: list[ParamSpec] = field(default_factory=list)
+
+    def suggest(self, trial: Any) -> dict[str, Any]:
+        """调用 trial.suggest_* 为每个参数采样并返回 params 字典。"""
+        params: dict[str, Any] = {}
+        for spec in self.specs:
+            if spec.type == "int":
+                kwargs: dict = {"log": spec.log}
+                if spec.step is not None and not spec.log:
+                    kwargs["step"] = int(spec.step)
+                params[spec.name] = trial.suggest_int(spec.name, int(spec.low), int(spec.high), **kwargs)  # type: ignore[arg-type]
+            elif spec.type == "float":
+                kwargs = {"log": spec.log}
+                if spec.step is not None and not spec.log:
+                    kwargs["step"] = float(spec.step)
+                params[spec.name] = trial.suggest_float(spec.name, float(spec.low), float(spec.high), **kwargs)  # type: ignore[arg-type]
+            elif spec.type == "categorical":
+                params[spec.name] = trial.suggest_categorical(
+                    spec.name,
+                    spec.choices,
+                )
+            else:
+                raise ValueError(f"Unknown ParamSpec.type: {spec.type!r}. Expected 'int', 'float', or 'categorical'.")
+        return params
+
+
+def run_optuna_search(
+    objective_fn: Callable[[dict[str, Any]], float],
+    space: TuningSpace,
+    n_trials: int = 50,
+    direction: str = "maximize",
+    study_name: str = "walk_forward_tuning",
+    timeout: float | None = None,
+    seed: int | None = None,
+) -> tuple[dict[str, Any], Any]:
+    """运行 Optuna 超参搜索。
+
+    Args:
+        objective_fn: 接受 params 字典，返回标量目标值（如 OOS Sharpe）。
+        space: TuningSpace 搜索空间。
+        n_trials: 搜索次数。
+        direction: "maximize" 或 "minimize"。
+        study_name: Optuna study 名称。
+        timeout: 总超时秒数（None=不限）。
+        seed: 随机种子，若指定则使用固定种子的 TPE 采样器。
+
+    Returns:
+        (best_params, study) — best_params 为最优参数字典，study 为 optuna.Study 对象。
+    """
+    import optuna
+
+    from factorzen.core.seed import get_optuna_sampler
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def _wrapped_objective(trial: optuna.Trial) -> float:
+        params = space.suggest(trial)
+        try:
+            return objective_fn(params)
+        except Exception:
+            return float("-inf") if direction == "maximize" else float("inf")
+
+    sampler = get_optuna_sampler(seed) if seed is not None else None
+    study = optuna.create_study(direction=direction, study_name=study_name, sampler=sampler)
+    study.optimize(_wrapped_objective, n_trials=n_trials, timeout=timeout)
+
+    return study.best_params, study
+
+
+__all__ = ["ParamSpec", "TuningSpace", "run_optuna_search"]

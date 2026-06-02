@@ -1,4 +1,4 @@
-"""common/calendar.py 的单元测试（使用本地缓存 mock，不调用 Tushare）。"""
+﻿"""common/calendar.py 的单元测试（使用本地缓存 mock，不调用 Tushare）。"""
 
 from datetime import date
 from pathlib import Path
@@ -31,7 +31,7 @@ def _make_mock_calendar(tmp_path: Path) -> pl.DataFrame:
 @pytest.fixture()
 def mock_calendar(tmp_path, monkeypatch):
     """将 _CAL_FILE 和 _is_cache_valid 重定向到 tmp 目录。"""
-    import common.calendar as cal_mod
+    import factorzen.core.calendar as cal_mod
 
     cal_file = tmp_path / "trade_cal.parquet"
     _make_mock_calendar(tmp_path)

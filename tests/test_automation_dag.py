@@ -1,4 +1,4 @@
-"""automation/dag.py 单元测试。
+﻿"""automation/dag.py 单元测试。
 
 验证 build_daily_dag 构建结果和流水线跳过逻辑。
 """
@@ -15,7 +15,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 def test_build_daily_dag_returns_background_scheduler():
     """build_daily_dag 应返回 BackgroundScheduler 实例。"""
-    from automation.dag import build_daily_dag
+    from factorzen.automation.dag import build_daily_dag
 
     scheduler = build_daily_dag(factor_list=[])
     assert isinstance(scheduler, BackgroundScheduler)
@@ -23,7 +23,7 @@ def test_build_daily_dag_returns_background_scheduler():
 
 def test_build_daily_dag_has_at_least_one_job():
     """build_daily_dag 返回的 scheduler 应含有至少 1 个 job。"""
-    from automation.dag import build_daily_dag
+    from factorzen.automation.dag import build_daily_dag
 
     scheduler = build_daily_dag(factor_list=["momentum_20d"])
     jobs = scheduler.get_jobs()
@@ -32,7 +32,7 @@ def test_build_daily_dag_has_at_least_one_job():
 
 def test_build_daily_dag_job_id():
     """daily_pipeline job 应以 'daily_pipeline' 作为 id。"""
-    from automation.dag import build_daily_dag
+    from factorzen.automation.dag import build_daily_dag
 
     scheduler = build_daily_dag(factor_list=[])
     job_ids = [j.id for j in scheduler.get_jobs()]
@@ -41,7 +41,7 @@ def test_build_daily_dag_job_id():
 
 def test_build_daily_dag_not_started():
     """build_daily_dag 返回的 scheduler 默认未启动（调用方负责 start）。"""
-    from automation.dag import build_daily_dag
+    from factorzen.automation.dag import build_daily_dag
 
     scheduler = build_daily_dag(factor_list=[])
     assert not scheduler.running
@@ -55,14 +55,14 @@ def test_build_daily_dag_not_started():
 def test_pipeline_skips_on_non_trade_day():
     """is_trade_date 返回 False 时，流水线不应调用任何 job。"""
     with (
-        patch("automation.dag.is_trade_date", return_value=False),
-        patch("automation.dag.job_fetch_daily") as mock_fd,
-        patch("automation.dag.job_fetch_index") as mock_fi,
-        patch("automation.dag.job_compute_factors") as mock_cf,
-        patch("automation.dag.job_evaluate") as mock_ev,
-        patch("automation.dag.job_generate_report") as mock_gr,
+        patch("factorzen.automation.dag.is_trade_date", return_value=False),
+        patch("factorzen.automation.dag.job_fetch_daily") as mock_fd,
+        patch("factorzen.automation.dag.job_fetch_index") as mock_fi,
+        patch("factorzen.automation.dag.job_compute_factors") as mock_cf,
+        patch("factorzen.automation.dag.job_evaluate") as mock_ev,
+        patch("factorzen.automation.dag.job_generate_report") as mock_gr,
     ):
-        from automation.dag import run_daily_pipeline
+        from factorzen.automation.dag import run_daily_pipeline
 
         run_daily_pipeline("20250101", ["momentum_20d"], "000300.SH")
 
@@ -81,14 +81,14 @@ def test_pipeline_skips_on_non_trade_day():
 def test_pipeline_runs_all_jobs_on_trade_day():
     """is_trade_date 返回 True 时，流水线应依次调用所有 job。"""
     with (
-        patch("automation.dag.is_trade_date", return_value=True),
-        patch("automation.dag.job_fetch_daily") as mock_fd,
-        patch("automation.dag.job_fetch_index") as mock_fi,
-        patch("automation.dag.job_compute_factors") as mock_cf,
-        patch("automation.dag.job_evaluate") as mock_ev,
-        patch("automation.dag.job_generate_report") as mock_gr,
+        patch("factorzen.automation.dag.is_trade_date", return_value=True),
+        patch("factorzen.automation.dag.job_fetch_daily") as mock_fd,
+        patch("factorzen.automation.dag.job_fetch_index") as mock_fi,
+        patch("factorzen.automation.dag.job_compute_factors") as mock_cf,
+        patch("factorzen.automation.dag.job_evaluate") as mock_ev,
+        patch("factorzen.automation.dag.job_generate_report") as mock_gr,
     ):
-        from automation.dag import run_daily_pipeline
+        from factorzen.automation.dag import run_daily_pipeline
 
         run_daily_pipeline("20250513", ["momentum_20d"], "000300.SH")
 
@@ -104,14 +104,14 @@ def test_pipeline_runs_per_factor_jobs_for_each_factor():
     factors = ["factor_a", "factor_b", "factor_c"]
 
     with (
-        patch("automation.dag.is_trade_date", return_value=True),
-        patch("automation.dag.job_fetch_daily"),
-        patch("automation.dag.job_fetch_index"),
-        patch("automation.dag.job_compute_factors"),
-        patch("automation.dag.job_evaluate") as mock_ev,
-        patch("automation.dag.job_generate_report") as mock_gr,
+        patch("factorzen.automation.dag.is_trade_date", return_value=True),
+        patch("factorzen.automation.dag.job_fetch_daily"),
+        patch("factorzen.automation.dag.job_fetch_index"),
+        patch("factorzen.automation.dag.job_compute_factors"),
+        patch("factorzen.automation.dag.job_evaluate") as mock_ev,
+        patch("factorzen.automation.dag.job_generate_report") as mock_gr,
     ):
-        from automation.dag import run_daily_pipeline
+        from factorzen.automation.dag import run_daily_pipeline
 
         run_daily_pipeline("20250513", factors, "000300.SH")
 
@@ -125,14 +125,14 @@ def test_pipeline_runs_per_factor_jobs_for_each_factor():
 def test_pipeline_empty_factor_list():
     """空因子列表时，evaluate/generate_report 不应被调用。"""
     with (
-        patch("automation.dag.is_trade_date", return_value=True),
-        patch("automation.dag.job_fetch_daily"),
-        patch("automation.dag.job_fetch_index"),
-        patch("automation.dag.job_compute_factors"),
-        patch("automation.dag.job_evaluate") as mock_ev,
-        patch("automation.dag.job_generate_report") as mock_gr,
+        patch("factorzen.automation.dag.is_trade_date", return_value=True),
+        patch("factorzen.automation.dag.job_fetch_daily"),
+        patch("factorzen.automation.dag.job_fetch_index"),
+        patch("factorzen.automation.dag.job_compute_factors"),
+        patch("factorzen.automation.dag.job_evaluate") as mock_ev,
+        patch("factorzen.automation.dag.job_generate_report") as mock_gr,
     ):
-        from automation.dag import run_daily_pipeline
+        from factorzen.automation.dag import run_daily_pipeline
 
         run_daily_pipeline("20250513", [], "000300.SH")
         mock_ev.assert_not_called()
@@ -146,7 +146,7 @@ def test_pipeline_empty_factor_list():
 
 def test_with_retry_succeeds_first_try():
     """函数第一次成功时，_with_retry 不等待。"""
-    from automation.dag import _with_retry
+    from factorzen.automation.dag import _with_retry
 
     call_count = 0
 
@@ -160,7 +160,7 @@ def test_with_retry_succeeds_first_try():
 
 def test_with_retry_retries_on_failure():
     """函数失败时，_with_retry 应重试最多 max_retries 次。"""
-    from automation.dag import _with_retry
+    from factorzen.automation.dag import _with_retry
 
     call_count = 0
 
@@ -169,7 +169,7 @@ def test_with_retry_retries_on_failure():
         call_count += 1
         raise RuntimeError("fail")
 
-    with patch("automation.dag.time.sleep"), pytest.raises(RuntimeError):  # 不真正等待
+    with patch("factorzen.automation.dag.time.sleep"), pytest.raises(RuntimeError):  # 不真正等待
         _with_retry(always_fail, max_retries=2, base_seconds=0)
 
     assert call_count == 3  # 1 次首次 + 2 次重试
@@ -177,7 +177,7 @@ def test_with_retry_retries_on_failure():
 
 def test_with_retry_succeeds_on_second_attempt():
     """函数第二次成功时，_with_retry 应返回而不继续重试。"""
-    from automation.dag import _with_retry
+    from factorzen.automation.dag import _with_retry
 
     call_count = 0
 
@@ -187,7 +187,7 @@ def test_with_retry_succeeds_on_second_attempt():
         if call_count == 1:
             raise RuntimeError("first fail")
 
-    with patch("automation.dag.time.sleep"):
+    with patch("factorzen.automation.dag.time.sleep"):
         _with_retry(fail_once, max_retries=3, base_seconds=0)
 
     assert call_count == 2

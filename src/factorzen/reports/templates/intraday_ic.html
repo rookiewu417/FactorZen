@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ factor_name }} - 分钟因子 IC 报告</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #eef2f7; color: #25313d; line-height: 1.6; }
+  .container { max-width: 1180px; margin: 0 auto; padding: 24px; }
+  .hero { background: linear-gradient(135deg, #18324a 0%, #2f5f6f 58%, #7c6f45 100%); color: #fff; border-radius: 8px; padding: 26px 30px; margin-bottom: 18px; box-shadow: 0 12px 30px rgba(24,50,74,0.18); }
+  .hero h1 { color: #fff; font-size: 28px; margin-bottom: 8px; overflow-wrap: anywhere; }
+  .hero .meta { color: rgba(255,255,255,0.82); font-size: 13px; }
+  .report-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 18px; align-items: start; }
+  .toc { position: sticky; top: 16px; background: #fff; border: 1px solid #d8e0ea; border-radius: 8px; padding: 14px; box-shadow: 0 2px 10px rgba(33,47,61,0.06); max-height: calc(100vh - 32px); overflow-y: auto; }
+  .toc-title { font-size: 13px; font-weight: 700; color: #52616f; margin-bottom: 8px; }
+  .toc a { display: block; color: #2b5f79; text-decoration: none; font-size: 13px; padding: 6px 8px; border-radius: 6px; }
+  .toc a:hover, .toc a:focus-visible { background: #edf5f8; color: #18324a; outline: none; }
+  .report-main { min-width: 0; }
+  h2 { font-size: 18px; color: #2b4054; margin: 0 0 12px 0; padding-bottom: 6px; border-bottom: 2px solid #3b82a0; }
+  h3 { font-size: 15px; color: #34495e; margin: 16px 0 8px; }
+  .panel { background: #fff; border-radius: 8px; border: 1px solid #dce4ee; box-shadow: 0 4px 18px rgba(33,47,61,0.07); padding: 22px; margin-bottom: 18px; }
+  .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 12px 0 16px; }
+  .dashboard-card { background: #f8fafc; border: 1px solid #dbe4ee; border-radius: 8px; padding: 12px 14px; }
+  .dashboard-card .label { font-size: 12px; color: #64748b; }
+  .dashboard-card .value { font-size: 19px; font-weight: 700; color: #1f2d3d; margin-top: 3px; overflow-wrap: anywhere; }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .metric-card { background: #f8f9fa; padding: 12px; border-radius: 6px; border-left: 3px solid #3b82a0; }
+  .metric-card .label { font-size: 12px; color: #7f8c8d; }
+  .metric-card .value { font-size: 20px; font-weight: 700; color: #2c3e50; overflow-wrap: anywhere; }
+  .decision-panel { border: 1px solid #c9d7e5; border-left: 4px solid #2b5f79; background: #f8fbfd; border-radius: 8px; padding: 14px 16px; margin: 14px 0; }
+  .decision-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
+  .decision-title { font-size: 15px; font-weight: 700; color: #18324a; }
+  .decision-verdict { font-size: 22px; font-weight: 800; color: #1f2d3d; }
+  .decision-score { color: #64748b; font-size: 13px; text-align: right; }
+  .decision-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .decision-card { background: #fff; border: 1px solid #dbe4ee; border-radius: 6px; padding: 10px 12px; }
+  .decision-card strong { display: block; color: #334155; font-size: 13px; margin-bottom: 4px; }
+  .decision-card ul { margin-left: 18px; color: #475569; font-size: 13px; }
+  .badge { display: inline-flex; align-items: center; border: 1px solid #7dd3fc; border-radius: 999px; padding: 2px 8px; font-size: 12px; color: #075985; background: #e0f2fe; }
+  .status-callout { border: 1px solid #dbe4ee; border-left: 4px solid #64748b; background: #f8fafc; border-radius: 6px; padding: 10px 12px; margin: 10px 0; color: #475569; }
+  .definition-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin: 10px 0 14px; }
+  .definition-item { background: #f8fafc; border: 1px solid #dbe4ee; border-radius: 6px; padding: 10px 12px; }
+  .definition-item strong { display: block; color: #334155; font-size: 13px; margin-bottom: 3px; }
+  .definition-item span { display: block; color: #64748b; font-size: 12px; line-height: 1.5; }
+  .chart-img { width: 100%; margin: 10px 0; border-radius: 6px; border: 1px solid #e4eaf1; background: #fff; }
+  .table-wrap { overflow-x: auto; margin: 10px 0; }
+  .table-wrap table { min-width: 640px; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #ecf0f1; overflow-wrap: anywhere; }
+  th { background: #f8f9fa; font-weight: 600; color: #2c3e50; }
+  tr:hover { background: #f8f9fa; }
+  .note { color: #7f8c8d; font-size: 12px; line-height: 1.5; margin: 4px 0 8px; }
+  .no-data { color: #475569; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 6px; padding: 16px 18px; text-align: left; }
+  .footer { text-align: center; color: #94a3b8; font-size: 12px; margin-top: 30px; padding: 15px; border-top: 1px solid #dbe4ee; }
+  @media (max-width: 900px) {
+    .container { padding: 14px; }
+    .hero { padding: 20px; }
+    .report-layout { grid-template-columns: 1fr; }
+    .toc { position: static; max-height: none; }
+    .panel { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="hero">
+  <h1>{{ factor_name }} <span class="badge">分钟 IC</span></h1>
+  <div class="meta">
+    分钟粒度：{{ bar_size }} | 股票池：{{ universe }} | 生成时间：{{ generated_at }}
+    {% if date_range %}| 日期范围：{{ date_range }}{% endif %}
+  </div>
+</div>
+
+<div class="report-layout">
+<nav class="toc" aria-label="报告目录">
+  <div class="toc-title">报告目录</div>
+  <a href="#overview">01 综合结论</a>
+  <a href="#daily-ic">02 日度 IC 趋势</a>
+  <a href="#segment-ic">03 分时段 IC</a>
+  <a href="#appendix">04 附录</a>
+</nav>
+
+<main class="report-main">
+
+<div class="panel" id="overview">
+  <h2>综合结论</h2>
+  {% set has_ic_mean = metrics.ic_mean is not none and metrics.ic_mean == metrics.ic_mean %}
+  {% set has_ic_std = metrics.ic_std is not none and metrics.ic_std == metrics.ic_std %}
+  {% set has_ir = metrics.ir is not none and metrics.ir == metrics.ir %}
+  {% set has_core_metrics = has_ic_mean and has_ic_std and has_ir %}
+  {% set has_win_rate = metrics.ic_positive_ratio is not none and metrics.ic_positive_ratio == metrics.ic_positive_ratio %}
+  {% set segment_coverage = namespace(count=0, has_open=false, has_midday=false, has_close=false, missing=[]) %}
+  {% if metrics.segment_table %}
+    {% for row in metrics.segment_table %}
+      {% if row.ic is not none and row.ic == row.ic %}
+        {% if row.segment == 'open' %}
+          {% set segment_coverage.has_open = true %}
+        {% elif row.segment == 'midday' %}
+          {% set segment_coverage.has_midday = true %}
+        {% elif row.segment == 'close' %}
+          {% set segment_coverage.has_close = true %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {% if segment_coverage.has_open %}{% set segment_coverage.count = segment_coverage.count + 1 %}{% endif %}
+    {% if segment_coverage.has_midday %}{% set segment_coverage.count = segment_coverage.count + 1 %}{% endif %}
+    {% if segment_coverage.has_close %}{% set segment_coverage.count = segment_coverage.count + 1 %}{% endif %}
+    {% if not segment_coverage.has_open %}{% set segment_coverage.missing = segment_coverage.missing + ['开盘段'] %}{% endif %}
+    {% if not segment_coverage.has_midday %}{% set segment_coverage.missing = segment_coverage.missing + ['中盘段'] %}{% endif %}
+    {% if not segment_coverage.has_close %}{% set segment_coverage.missing = segment_coverage.missing + ['收盘段'] %}{% endif %}
+  {% endif %}
+  <div class="dashboard-grid">
+    <div class="dashboard-card"><div class="label">报告类型</div><div class="value">分钟 IC 验证</div></div>
+    <div class="dashboard-card"><div class="label">分钟粒度</div><div class="value">{{ bar_size }}</div></div>
+    <div class="dashboard-card"><div class="label">样本 Bar 数</div><div class="value">{{ metrics.n_periods or 0 }}</div></div>
+    <div class="dashboard-card"><div class="label">方向胜率</div><div class="value">{% if has_win_rate %}{{ "%.1f%%"|format(metrics.ic_positive_ratio * 100) }}{% else %}样本不足{% endif %}</div></div>
+    <div class="dashboard-card"><div class="label">信号方向</div><div class="value">{% if not has_core_metrics %}指标未计算{% elif metrics.ic_mean > 0 %}正向{% elif metrics.ic_mean < 0 %}负向{% else %}不明显{% endif %}</div></div>
+  </div>
+
+  <div class="metric-grid">
+    <div class="metric-card"><div class="label">IC 均值</div><div class="value">{% if has_ic_mean %}{{ "%.4f"|format(metrics.ic_mean) }}{% else %}样本不足{% endif %}</div></div>
+    <div class="metric-card"><div class="label">IC 标准差</div><div class="value">{% if has_ic_std %}{{ "%.4f"|format(metrics.ic_std) }}{% else %}样本不足{% endif %}</div></div>
+    <div class="metric-card"><div class="label">信息比率 (IR)</div><div class="value">{% if has_ir %}{{ "%.2f"|format(metrics.ir) }}{% else %}样本不足{% endif %}</div></div>
+    <div class="metric-card"><div class="label">IC 胜率</div><div class="value">{% if has_win_rate %}{{ "%.1f%%"|format(metrics.ic_positive_ratio * 100) }}{% else %}样本不足{% endif %}</div></div>
+  </div>
+
+  {% if not has_core_metrics %}
+    {% set intraday_verdict = "指标未计算" %}
+    {% set intraday_action = "盘中 IC 尚未计算，当前只能确认分钟样本与图表缺口，不能判断信号方向。" %}
+    {% set evidence_strength = "未计算" %}
+  {% else %}
+  {% set abs_ic = metrics.ic_mean|abs %}
+  {% set abs_ir = metrics.ir|abs %}
+  {% if metrics.ic_mean > 0.01 %}
+    {% set intraday_verdict = "正向信号观察" %}
+    {% set intraday_action = "盘中 IC 为正，可作为日频因子的盘中一致性证据，但需结合交易成本、盘口冲击和容量约束复核。" %}
+  {% elif metrics.ic_mean < -0.01 %}
+    {% set intraday_verdict = "反向信号观察" %}
+    {% set intraday_action = "盘中 IC 为负，当前更适合按反向信号理解；进入候选前需确认负向关系是否跨日期和分时段稳定。" %}
+  {% else %}
+    {% set intraday_verdict = "暂不判断" %}
+    {% set intraday_action = "盘中 IC 接近零，当前证据不足以支持正向或反向使用。" %}
+  {% endif %}
+  {% if abs_ir >= 0.50 and abs_ic >= 0.02 %}
+    {% set evidence_strength = "较强" %}
+  {% elif abs_ir >= 0.20 or abs_ic >= 0.01 %}
+    {% set evidence_strength = "中等" %}
+  {% else %}
+    {% set evidence_strength = "偏弱" %}
+  {% endif %}
+  {% endif %}
+  <div class="decision-panel">
+    <div class="decision-head">
+      <div>
+        <div class="decision-title">盘中研究决策</div>
+        <div class="decision-verdict">{{ intraday_verdict }}</div>
+      </div>
+      <div class="decision-score">
+        证据强度：{{ evidence_strength }}<br>
+        {% if has_core_metrics %}IC={{ "%.4f"|format(metrics.ic_mean) }} | IR={{ "%.2f"|format(metrics.ir) }}{% else %}IC=样本不足 | IR=样本不足{% endif %}
+      </div>
+    </div>
+    <div class="decision-grid">
+      <div class="decision-card"><strong>当前结论</strong>{{ intraday_action }}</div>
+      <div class="decision-card">
+        <strong>主要证据</strong>
+        <ul>
+          <li>样本 Bar 数 {{ metrics.n_periods or 0 }}，{% if has_win_rate %}方向胜率 {{ "%.1f%%"|format(metrics.ic_positive_ratio * 100) }}{% else %}方向胜率样本不足{% endif %}。</li>
+          {% if segment_coverage.count == 3 %}
+          <li>已生成开盘、中盘、收盘分时段 IC，可检查盘中方向是否一致。</li>
+          {% elif metrics.segment_table and segment_coverage.count > 0 %}
+          <li>仅生成 {{ segment_coverage.count }} 个分时段 IC，缺少{{ segment_coverage.missing|join('、') }}；盘中方向一致性仍需补齐时段后判断。</li>
+          {% elif metrics.segment_table %}
+          <li>分时段 IC 已传入，但有效 IC 样本不足，暂不判断开盘/中盘/收盘稳定性。</li>
+          {% endif %}
+          {% if charts.daily_ic_chart %}
+          <li>已生成日度 IC 趋势，可观察信号是否集中在少数日期。</li>
+          {% elif metrics.daily_ic_table %}
+          <li>已生成日度 IC 表，但趋势图缺失；仍可查看逐日 IC 数值，需补图后判断形态和极端日期。</li>
+          {% endif %}
+        </ul>
+      </div>
+      <div class="decision-card">
+        <strong>关键缺口</strong>
+        <ul>
+          {% if (metrics.n_periods or 0) < 60 %}<li>样本 Bar 少于 60，分钟 IC 与 IR 只能作为短样本证据。</li>{% endif %}
+          {% if not has_core_metrics or not has_win_rate %}<li>分钟 IC、IR 或方向胜率未计算，需先补齐分钟截面相关性。</li>{% endif %}
+          {% if not charts.daily_ic_chart and metrics.daily_ic_table %}
+          <li>日度 IC 表已生成，但趋势图缺失；跨日期稳定性判断仍需补齐可视化。</li>
+          {% elif not charts.daily_ic_chart %}
+          <li>未生成日度 IC 趋势，尚不能判断跨日期稳定性。</li>
+          {% endif %}
+          {% if not metrics.segment_table %}
+          <li>未生成分时段 IC，无法判断开盘/中盘/收盘稳定性。</li>
+          {% elif segment_coverage.count < 3 %}
+          <li>分时段 IC 覆盖不完整，缺少{{ segment_coverage.missing|join('、') }}。</li>
+          {% endif %}
+          <li>尚未纳入交易成本、容量约束和盘口冲击。</li>
+        </ul>
+      </div>
+      <div class="decision-card">
+        <strong>下一步</strong>
+        <ul>
+          <li>延长分钟样本并按交易日复核 IC 稳定性。</li>
+          <li>将分钟信号接入日内回测，补充成本、滑点和容量检验。</li>
+          <li>对比开盘、中盘、收盘信号，确认是否依赖单一时段。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="status-callout">
+    <strong>阅读口径：</strong>分钟报告用于验证日频因子的盘中一致性和时段稳定性；重点观察日度 IC 是否持续、开盘/中盘/收盘时段是否方向一致。
+    <strong>研究边界：</strong>本报告只评价分钟截面预测能力，不替代交易成本、容量约束和盘口冲击分析。
+  </div>
+  {% if (metrics.n_periods or 0) < 60 %}
+  <div class="status-callout">
+    <strong>短样本提示：</strong>当前有效分钟截面少于 60 个，IC 均值、IR 和方向胜率仅适合同区间横向比较；需要更多交易日确认盘中稳定性。
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel" id="daily-ic">
+  <h2>日度 IC 趋势</h2>
+  {% if charts.daily_ic_chart %}
+  <img class="chart-img" src="data:image/png;base64,{{ charts.daily_ic_chart }}" alt="日度 IC 趋势图">
+  {% elif metrics.daily_ic_table %}
+  <div class="no-data">日度 IC 趋势图未生成：已生成日度 IC 表，但缺少可绘图的趋势图产物。下一步：检查日度 IC 图表生成日志、日期列和 IC 列，再复核是否由少数交易日驱动。</div>
+  {% else %}
+  <div class="no-data">未生成日度 IC 图：可能是样本为空、日度聚合序列不足，或当前流程未生成可绘制的日度 IC 趋势。下一步：检查分钟数据覆盖率和日度聚合逻辑，确认每个交易日都有足够截面样本后复跑。</div>
+  {% endif %}
+
+  {% if metrics.daily_ic_table %}
+  <div class="table-wrap">
+    <table>
+      <tr><th>交易日</th><th>IC</th></tr>
+      {% for row in metrics.daily_ic_table %}
+      <tr><td>{{ row.trade_date }}</td><td>{% if row.ic is not none and row.ic == row.ic %}{{ "%.4f"|format(row.ic) }}{% else %}样本不足{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel" id="segment-ic">
+  <h2>分时段 IC</h2>
+  <p class="note">开盘段：09:30-10:00；收盘段：14:30-15:00；中盘段：其余连续交易时段。</p>
+  {% if metrics.segment_table %}
+  {% set seg = namespace(pos=0, neg=0, flat=0, missing=0, strongest_label='未识别', strongest_ic=none, strongest_abs=-1.0) %}
+  {% for row in metrics.segment_table %}
+    {% if row.segment == 'open' %}
+      {% set row_label = '开盘段' %}
+    {% elif row.segment == 'midday' %}
+      {% set row_label = '中盘段' %}
+    {% elif row.segment == 'close' %}
+      {% set row_label = '收盘段' %}
+    {% else %}
+      {% set row_label = row.segment %}
+    {% endif %}
+    {% if row.ic is none or row.ic != row.ic %}
+      {% set seg.missing = seg.missing + 1 %}
+    {% elif row.ic > 0 %}
+      {% set seg.pos = seg.pos + 1 %}
+    {% elif row.ic < 0 %}
+      {% set seg.neg = seg.neg + 1 %}
+    {% else %}
+      {% set seg.flat = seg.flat + 1 %}
+    {% endif %}
+    {% if row.ic is not none and row.ic == row.ic %}
+      {% set abs_ic = row.ic if row.ic >= 0 else -row.ic %}
+      {% if abs_ic > seg.strongest_abs %}
+        {% set seg.strongest_abs = abs_ic %}
+        {% set seg.strongest_ic = row.ic %}
+        {% set seg.strongest_label = row_label %}
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+  <div class="status-callout">
+    <strong>盘中一致性摘要：</strong>
+    {% if seg.pos == 0 and seg.neg == 0 and seg.flat == 0 %}
+    分时段 IC 样本不足，当前无法判断盘中方向一致性。下一步：检查分时段样本数量、交易时段切分规则和分钟 Bar 时间戳。
+    {% elif seg.pos > 0 and seg.neg == 0 %}
+    各分时段 IC 均为正，盘中方向一致；重点关注该信号是否在更长样本中延续。
+    {% elif seg.neg > 0 and seg.pos == 0 %}
+    各分时段 IC 均为负，盘中方向一致但更适合按反向信号理解。
+    {% elif seg.pos > 0 and seg.neg > 0 %}
+    分时段 IC 方向分化，说明信号可能依赖特定交易时段，需谨慎外推到全天。
+    {% else %}
+    各分时段 IC 接近 0，当前样本暂未显示稳定盘中方向。
+    {% endif %}
+    {% if seg.strongest_ic is not none %}
+    绝对 IC 最大的时段是{{ seg.strongest_label }}（IC={{ "%.4f"|format(seg.strongest_ic) }}）。
+    {% else %}
+    有效分时段 IC 样本不足，暂不比较最强时段。
+    {% endif %}
+  </div>
+  <div class="table-wrap">
+    <table>
+      <tr><th>时段</th><th>IC 均值</th><th>信号方向</th><th>阅读含义</th></tr>
+      {% for row in metrics.segment_table %}
+      <tr>
+        <td>{% if row.segment == 'open' %}开盘段{% elif row.segment == 'midday' %}中盘段{% elif row.segment == 'close' %}收盘段{% else %}{{ row.segment }}{% endif %}</td>
+        <td>{% if row.ic is not none and row.ic == row.ic %}{{ "%.4f"|format(row.ic) }}{% else %}样本不足{% endif %}</td>
+        <td>{% if row.ic is none or row.ic != row.ic %}样本不足{% elif row.ic > 0 %}正向{% elif row.ic < 0 %}负向{% else %}不明显{% endif %}</td>
+        <td>{% if row.segment == 'open' %}检验信号是否依赖开盘定价和隔夜信息释放。{% elif row.segment == 'midday' %}检验信号在连续交易时段是否仍然稳定。{% elif row.segment == 'close' %}检验信号是否集中在尾盘成交和收盘定价。{% else %}自定义时段，请结合上游分段规则解读。{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% else %}
+  <div class="no-data">未生成分时段 IC：可能是分钟数据不足、交易时段无法识别，或当前流程未生成开盘/中盘/收盘分段结果。下一步：确认交易时段切分规则和分钟 Bar 时间戳，再复核开盘/中盘/收盘样本数量。</div>
+  {% endif %}
+</div>
+
+<div class="panel" id="appendix">
+  <h2>附录</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>条目</th><th>值</th></tr>
+      <tr><td>因子</td><td>{{ factor_name }}</td></tr>
+      <tr><td>报告类型</td><td>分钟 IC 验证</td></tr>
+      <tr><td>分钟粒度</td><td>{{ bar_size }}</td></tr>
+      <tr><td>股票池</td><td>{{ universe }}</td></tr>
+      <tr><td>日期范围</td><td>{{ date_range or '未指定' }}</td></tr>
+    </table>
+  </div>
+  <h3>指标口径说明</h3>
+  <div class="definition-grid">
+    <div class="definition-item"><strong>分钟 IC</strong><span>每个分钟截面上因子值与未来分钟收益的 Rank 相关性，用于观察盘中预测方向。</span></div>
+    <div class="definition-item"><strong>日度 IC 趋势</strong><span>将分钟 IC 聚合到交易日层面，检查信号是否只集中在少数日期。</span></div>
+    <div class="definition-item"><strong>分时段 IC</strong><span>按开盘、中盘和收盘分组，判断信号是否依赖特定交易时段。</span></div>
+    <div class="definition-item"><strong>信息比率 (IR)</strong><span>分钟 IC 均值除以 IC 标准差，用于衡量盘中预测稳定性。</span></div>
+  </div>
+  <h3>模块状态</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>模块</th><th>状态</th><th>说明</th><th>读法 / 下一步</th></tr>
+      <tr>
+        <td>核心分钟 IC</td>
+        <td>{% if has_core_metrics and has_win_rate %}已生成{% elif has_core_metrics %}需关注{% else %}样本不足{% endif %}</td>
+        <td>{% if has_core_metrics and has_win_rate %}已生成 IC 均值、标准差、IR 和方向胜率。{% elif has_core_metrics %}已生成 IC 均值、标准差和 IR，但方向胜率缺失。{% else %}分钟 IC 核心指标未完整生成。{% endif %}</td>
+        <td>{% if has_core_metrics and has_win_rate %}可作为盘中预测能力证据。{% else %}补齐分钟截面相关性和方向胜率后复核。{% endif %}</td>
+      </tr>
+      <tr>
+        <td>日度 IC 趋势</td>
+        <td>{% if charts.daily_ic_chart %}已生成{% elif metrics.daily_ic_table %}需关注{% else %}未生成{% endif %}</td>
+        <td>{% if charts.daily_ic_chart %}已生成日度 IC 趋势图。{% elif metrics.daily_ic_table %}已生成日度 IC 表，但缺少趋势图。{% else %}未生成日度 IC 表或趋势图。{% endif %}</td>
+        <td>{% if charts.daily_ic_chart %}可检查跨日期稳定性和极端日期。{% elif metrics.daily_ic_table %}补齐趋势图后复核形态和极端日期。{% else %}检查分钟数据覆盖率和日度聚合逻辑后复跑。{% endif %}</td>
+      </tr>
+      <tr>
+        <td>分时段 IC</td>
+        <td>{% if segment_coverage.count == 3 %}已生成{% elif metrics.segment_table and segment_coverage.count > 0 %}需关注{% elif metrics.segment_table %}样本不足{% else %}未生成{% endif %}</td>
+        <td>{% if segment_coverage.count == 3 %}已生成开盘、中盘、收盘分时段 IC。{% elif metrics.segment_table and segment_coverage.count > 0 %}仅生成 {{ segment_coverage.count }} 个有效分时段 IC，缺少{{ segment_coverage.missing|join('、') }}。{% elif metrics.segment_table %}分时段 IC 已传入，但有效 IC 样本不足。{% else %}未生成开盘、中盘、收盘分时段 IC。{% endif %}</td>
+        <td>{% if segment_coverage.count == 3 %}可用于判断盘中方向一致性。{% else %}检查分时段样本数量、交易时段切分规则和分钟 Bar 时间戳。{% endif %}</td>
+      </tr>
+      <tr>
+        <td>交易可行性边界</td>
+        <td>未生成</td>
+        <td>分钟 IC 报告不包含交易成本、容量约束和盘口冲击检验。</td>
+        <td>接入日内回测后补充成本、滑点和容量检验。</td>
+      </tr>
+    </table>
+  </div>
+  <p class="note">本报告只评价分钟截面预测能力，不替代可交易性、冲击成本和容量分析。</p>
+</div>
+
+<div class="footer">
+  FactorZen 分钟研究报告 - 生成时间 {{ generated_at }}
+</div>
+
+</main>
+</div>
+</div>
+</body>
+</html>

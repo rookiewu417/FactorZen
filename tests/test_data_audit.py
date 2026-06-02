@@ -1,4 +1,4 @@
-"""tests/test_data_audit.py — common/data_audit.py 单元测试。
+﻿"""tests/test_data_audit.py — common/data_audit.py 单元测试。
 
 全量 mock：不读取文件系统，不调用 Tushare，不依赖本地 data/raw/ 数据。
 """
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from common.data_audit import (
+from factorzen.core.data_audit import (
     build_raw_data_audit,
 )
 
@@ -80,7 +80,7 @@ class TestInvalidDataType:
 
 class TestLoadFailure:
     def test_scan_exception_returns_error(self):
-        with patch("common.data_audit.load_parquet") as mock_lp:
+        with patch("factorzen.core.data_audit.load_parquet") as mock_lp:
             mock_lp.return_value.collect.side_effect = Exception("no parquet files found")
             result = build_raw_data_audit(data_type="daily", start="20230101", end="20231231")
         assert result["status"] == "error"
@@ -88,8 +88,8 @@ class TestLoadFailure:
 
     def test_empty_dataframe_returns_error(self):
         with (
-            patch("common.data_audit.load_parquet") as mock_lp,
-            patch("common.data_audit.get_trade_dates", return_value=[]),
+            patch("factorzen.core.data_audit.load_parquet") as mock_lp,
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=[]),
         ):
             mock_lp.return_value.collect.return_value = pl.DataFrame()
             result = build_raw_data_audit(data_type="daily", start="20230101", end="20231231")
@@ -107,8 +107,8 @@ class TestDailyDateCoverage:
     def test_no_gaps_ok(self):
         df = _daily_df(self._dates, self._codes)
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=self._dates),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=self._dates),
         ):
             result = build_raw_data_audit(data_type="daily", start="20230103", end="20230105")
         assert result["status"] == "ok"
@@ -118,8 +118,8 @@ class TestDailyDateCoverage:
         # Drop middle date from actual data
         df = _daily_df([date(2023, 1, 3), date(2023, 1, 5)], self._codes)
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=self._dates),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=self._dates),
         ):
             result = build_raw_data_audit(data_type="daily", start="20230103", end="20230105")
         assert result["status"] == "warning"
@@ -133,8 +133,8 @@ class TestDailyDateCoverage:
         expected = [date(2023, 1, d) for d in range(3, 28)]  # 25 dates
         df = _daily_df([date(2023, 1, 3)], self._codes)  # only 1 date present
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=expected),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=expected),
         ):
             result = build_raw_data_audit(data_type="daily", start="20230103", end="20230127")
         assert result["checks"]["date_coverage"]["missing_count"] == 24
@@ -151,8 +151,8 @@ class TestDailyStockCoverage:
     def test_full_coverage_ok(self):
         df = _daily_df(self._dates, self._universe)
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=self._dates),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=self._dates),
         ):
             result = build_raw_data_audit(
                 data_type="daily",
@@ -169,8 +169,8 @@ class TestDailyStockCoverage:
         # Only 5 of 10 universe stocks present
         df = _daily_df(self._dates, self._universe[:5])
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=self._dates),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=self._dates),
         ):
             result = build_raw_data_audit(
                 data_type="daily",
@@ -186,8 +186,8 @@ class TestDailyStockCoverage:
     def test_no_universe_skips_coverage(self):
         df = _daily_df(self._dates, self._universe[:3])
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=self._dates),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=self._dates),
         ):
             result = build_raw_data_audit(data_type="daily", start="20230103", end="20230103")
         sc = result["checks"]["stock_coverage"]
@@ -205,8 +205,8 @@ class TestDailyBasicFieldNulls:
     def test_all_fields_present_ok(self):
         df = _daily_basic_df(self._dates, self._codes, null_pb=False)
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=self._dates),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=self._dates),
         ):
             result = build_raw_data_audit(data_type="daily_basic", start="20230103", end="20230103")
         assert result["status"] == "ok"
@@ -217,8 +217,8 @@ class TestDailyBasicFieldNulls:
     def test_all_null_pb_warns(self):
         df = _daily_basic_df(self._dates, self._codes, null_pb=True)
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=self._dates),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=self._dates),
         ):
             result = build_raw_data_audit(data_type="daily_basic", start="20230103", end="20230103")
         assert result["status"] == "warning"
@@ -230,8 +230,8 @@ class TestDailyBasicFieldNulls:
         # Build df without 'circ_mv'
         df = _daily_basic_df(self._dates, self._codes).drop("circ_mv")
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=self._dates),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=self._dates),
         ):
             result = build_raw_data_audit(data_type="daily_basic", start="20230103", end="20230103")
         assert result["status"] == "warning"
@@ -249,7 +249,7 @@ class TestFinancePITStaleness:
 
         fresh = datetime.now().strftime("%Y%m%d")
         df = _finance_df(ann_date_str=fresh)
-        with patch("common.data_audit.load_parquet", return_value=_mock_load(df)):
+        with patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)):
             result = build_raw_data_audit(data_type="finance", start="20230101", end="20231231")
         assert result["status"] == "ok"
         assert result["checks"]["pit_staleness"]["stale_count"] == 0
@@ -257,7 +257,7 @@ class TestFinancePITStaleness:
     def test_stale_ann_date_warns(self):
         # ann_date is from 2018 — well beyond 548-day threshold
         df = _finance_df(ann_date_str="20180101")
-        with patch("common.data_audit.load_parquet", return_value=_mock_load(df)):
+        with patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)):
             result = build_raw_data_audit(data_type="finance", start="20230101", end="20231231")
         assert result["status"] == "warning"
         ps = result["checks"]["pit_staleness"]
@@ -266,7 +266,7 @@ class TestFinancePITStaleness:
 
     def test_finance_unique_end_dates_reported(self):
         df = _finance_df(ann_date_str="20231201", n=3)
-        with patch("common.data_audit.load_parquet", return_value=_mock_load(df)):
+        with patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)):
             result = build_raw_data_audit(data_type="finance", start="20230101", end="20231231")
         # finance date_coverage reports unique end_dates, not trade date gaps
         assert "unique_end_dates" in result["checks"]["date_coverage"]
@@ -275,7 +275,7 @@ class TestFinancePITStaleness:
         df = _finance_df(ann_date_str="20231201", n=5)
         # Drop 'roe' to trigger missing_column warning
         df = df.drop("roe")
-        with patch("common.data_audit.load_parquet", return_value=_mock_load(df)):
+        with patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)):
             result = build_raw_data_audit(data_type="finance", start="20230101", end="20231231")
         assert result["checks"]["field_null_rates"]["roe"].get("missing_column")
 
@@ -287,8 +287,8 @@ class TestOutputSchema:
     def test_output_keys_always_present(self):
         df = _daily_df([date(2023, 1, 3)], ["000001.SZ"])
         with (
-            patch("common.data_audit.load_parquet", return_value=_mock_load(df)),
-            patch("common.data_audit.get_trade_dates", return_value=[date(2023, 1, 3)]),
+            patch("factorzen.core.data_audit.load_parquet", return_value=_mock_load(df)),
+            patch("factorzen.core.data_audit.get_trade_dates", return_value=[date(2023, 1, 3)]),
         ):
             result = build_raw_data_audit(data_type="daily", start="20230103", end="20230103")
         assert set(result.keys()) == {"status", "checks", "warnings", "errors"}

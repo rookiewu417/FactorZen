@@ -2,17 +2,19 @@
 .pixi/*
 !.pixi/config.toml
 
-# 环境变量 / 密钥
+# Environment variables / secrets
 .env
 *.env.local
 
-# 数据目录（原始 / 处理后 / 缓存）
+# Data caches
 data/raw/
 data/processed/
 data/cache/
 
-# 输出目录（因子结果 / 图表 / 报告）
-output/
+workspace/runs/*
+!workspace/runs/.gitkeep
+workspace/factor_evaluations/*
+!workspace/factor_evaluations/.gitkeep
 
 # Python
 __pycache__/
@@ -41,14 +43,14 @@ htmlcov/
 Thumbs.db
 .DS_Store
 
-# 临时文件
+# Temporary files
 *.tmp
 *.swp
 *.swo
 
-# 开发笔记（大体量 markdown，不纳入 git）
+# Development notes
 .sisyphus/notepads/
 
-# editable install 产物
+# editable install artifacts
 *.egg-info/
 factor_research.egg-link

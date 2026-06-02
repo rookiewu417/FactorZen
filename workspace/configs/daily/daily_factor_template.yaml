@@ -1,0 +1,113 @@
+# Daily single-factor evaluation template.
+# Copy this file to {factor}.yaml or {factor}_{purpose}.yaml before running.
+
+factor: momentum_20d
+universe: csi500
+start: "20230101"
+end: "20241231"
+
+# Optional. If omitted or null, FactorZen derives it from universe:
+# csi300 -> 000300.SH, csi500 -> 000905.SH, csi800 -> 000906.SH.
+benchmark: null
+
+# Optional reproducibility seed.
+seed: 42
+
+preprocessing:
+  # Supported: mad, winsorize, sigma.
+  outlier: mad
+
+  # Supported: zscore, rank_uniform, rank_normal, quantile_normal.
+  normalizer: zscore
+
+  # If true, neutralize factor values using neutralize_by exposures.
+  neutralize: false
+
+  # Supported: industry, size, industry+size.
+  neutralize_by: industry+size
+
+backtest:
+  # Multi-strategy backtest. Add a new Strategy subclass and reference its
+  # dotted path in `type` to run custom strategies without changing pipelines.
+  primary: topn_50
+  strategies:
+    - name: topn_50
+      type: topn_long_only
+      params:
+        top_n: 50
+      max_abs_weight: 0.1
+      cost_model: linear
+
+    - name: quantile_ls_5
+      type: quantile_long_short
+      params:
+        quantiles: 5
+      max_abs_weight: 0.1
+      cost_model: linear
+
+    - name: factor_weighted_ls
+      type: factor_weighted
+      params:
+        long_only: false
+        gross_exposure: 2.0
+      max_abs_weight: 0.05
+      cost_model: linear
+
+    - name: optimizer_mv_long_only
+      type: optimizer_strategy
+      params:
+        optimizer: mean_variance
+        risk_aversion: 1.0
+        lookback_days: 60
+        cov_estimator: ledoit_wolf
+        long_only: true
+        top_n: 100
+        max_weight: 0.08
+        gross_exposure: 1.0
+        net_exposure: 1.0
+      max_abs_weight: 0.08
+      cost_model: linear
+
+  # Legacy single-strategy fields remain supported. If `strategies` is omitted,
+  # FactorZen builds one `topn_long_only` strategy from these values.
+  # Main evaluation strategy uses TopNLongOnlyStrategy with this top_n.
+  top_n: 50
+
+  # Kept for quantile-style summaries and compatibility.
+  quantiles: 5
+
+  # Per-name absolute weight cap.
+  max_abs_weight: 0.1
+
+  # Supported: linear, square_root_impact.
+  cost_model: linear
+
+  # Skip rebalance when proposed turnover is <= this value. Use null to rebalance every period.
+  rebalance_threshold: null
+
+  # Used only when cost_model is square_root_impact.
+  alpha: 0.1
+  fallback_adv: 10000000.0
+
+walk_forward:
+  # IS history window length in trading days.
+  train_days: 504
+
+  # OOS validation window length in trading days.
+  test_days: 63
+
+  # Rolling step length in trading days.
+  step_days: 63
+
+  # Gap between IS end and OOS start to reduce leakage.
+  embargo_days: 5
+
+  # Number of top_n candidates to try in walk-forward IS selection.
+  n_trials: 50
+
+# Supported: rank, pearson, both.
+ic_method: rank
+
+# Optional deep evaluation switches. `--all` enables both regardless of YAML unless explicit CLI values override it.
+event_study: false
+neutralized_ic: false

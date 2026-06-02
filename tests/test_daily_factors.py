@@ -1,5 +1,7 @@
 ﻿"""Unit tests for new daily factors (using synthetic data, no disk I/O)."""
 
+import sys
+import types
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -7,7 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from daily.factors.base import DailyFactor
+from factorzen.daily.factors.base import DailyFactor
 
 # ── Synthetic data helpers ───────────────────────────────────────────────────
 
@@ -117,7 +119,7 @@ def _check_result(result: pl.DataFrame, factor_name: str):
 
 
 def test_amihud_illiquidity(ctx):
-    from daily.factors.personal.daily.amihud import AmihudIlliquidity
+    from workspace.factors.daily.amihud import AmihudIlliquidity
 
     factor = AmihudIlliquidity()
     assert isinstance(factor, DailyFactor)
@@ -128,7 +130,7 @@ def test_amihud_illiquidity(ctx):
 
 
 def test_max_return_5d(ctx):
-    from daily.factors.personal.daily.max_return import MaxReturn5D
+    from workspace.factors.daily.max_return import MaxReturn5D
 
     factor = MaxReturn5D()
     assert isinstance(factor, DailyFactor)
@@ -137,7 +139,7 @@ def test_max_return_5d(ctx):
 
 
 def test_skewness_20d(ctx):
-    from daily.factors.personal.daily.skewness import Skewness20D
+    from workspace.factors.daily.skewness import Skewness20D
 
     factor = Skewness20D()
     assert isinstance(factor, DailyFactor)
@@ -148,7 +150,7 @@ def test_skewness_20d(ctx):
 
 
 def test_beta_60d(ctx):
-    from daily.factors.personal.daily.beta import Beta60D
+    from workspace.factors.daily.beta import Beta60D
 
     factor = Beta60D()
     assert isinstance(factor, DailyFactor)
@@ -157,7 +159,7 @@ def test_beta_60d(ctx):
 
 
 def test_idiosyncratic_vol_20d(ctx):
-    from daily.factors.personal.daily.idiosyncratic_vol import IdiosyncraticVol20D
+    from workspace.factors.daily.idiosyncratic_vol import IdiosyncraticVol20D
 
     factor = IdiosyncraticVol20D()
     assert isinstance(factor, DailyFactor)
@@ -168,7 +170,7 @@ def test_idiosyncratic_vol_20d(ctx):
 
 
 def test_bm_ratio(ctx):
-    from daily.factors.personal.monthly.bm_ratio import BmRatioMonthly
+    from workspace.factors.monthly.bm_ratio import BmRatioMonthly
 
     factor = BmRatioMonthly()
     assert isinstance(factor, DailyFactor)
@@ -179,7 +181,7 @@ def test_bm_ratio(ctx):
 
 
 def test_ep_ratio(ctx):
-    from daily.factors.personal.monthly.ep_ratio import EpRatioMonthly
+    from workspace.factors.monthly.ep_ratio import EpRatioMonthly
 
     factor = EpRatioMonthly()
     assert isinstance(factor, DailyFactor)
@@ -190,7 +192,7 @@ def test_ep_ratio(ctx):
 
 
 def test_registry_has_new_factors():
-    from daily.factors.registry import list_factors
+    from factorzen.daily.factors.registry import list_factors
 
     factors = list_factors()
     expected = [
@@ -208,7 +210,7 @@ def test_registry_has_new_factors():
 
 
 def test_registry_has_qlib_factors():
-    from daily.factors.registry import list_factors
+    from factorzen.daily.factors.registry import list_factors
 
     factors = list_factors()
 
@@ -219,8 +221,8 @@ def test_registry_has_qlib_factors():
 
 
 def test_qlib_alpha158_factor_returns_factorzen_schema(ctx, monkeypatch):
-    import daily.factors.qlib.handler as qlib_mod
-    from daily.factors.qlib.handler import QlibAlpha158Kmid
+    import workspace.factors.qlib.handler as qlib_mod
+    from workspace.factors.qlib.handler import QlibAlpha158Kmid
 
     assert QlibAlpha158Kmid.required_data == ["daily"]
 
@@ -239,9 +241,35 @@ def test_qlib_alpha158_factor_returns_factorzen_schema(ctx, monkeypatch):
     assert result["factor_value"].to_list() == [0.1, -0.2]
 
 
+def test_qlib_init_uses_low_memory_defaults(monkeypatch):
+    import workspace.factors.qlib.handler as qlib_mod
+
+    init_calls = []
+
+    fake_qlib = types.SimpleNamespace(init=lambda **kwargs: init_calls.append(kwargs))
+    fake_constant = types.SimpleNamespace(REG_CN="cn")
+
+    monkeypatch.setattr(qlib_mod, "_QLIB_INITIALIZED", False)
+    monkeypatch.delenv("QLIB_KERNELS", raising=False)
+    monkeypatch.delenv("QLIB_JOBLIB_BACKEND", raising=False)
+    monkeypatch.setitem(sys.modules, "qlib", fake_qlib)
+    monkeypatch.setitem(sys.modules, "qlib.constant", fake_constant)
+
+    qlib_mod._init_qlib("provider")
+
+    assert init_calls == [
+        {
+            "provider_uri": "provider",
+            "region": "cn",
+            "kernels": 1,
+            "joblib_backend": "threading",
+        }
+    ]
+
+
 def test_qlib_alpha360_factor_returns_factorzen_schema(ctx, monkeypatch):
-    import daily.factors.qlib.handler as qlib_mod
-    from daily.factors.qlib.handler import QlibAlpha360Close0
+    import workspace.factors.qlib.handler as qlib_mod
+    from workspace.factors.qlib.handler import QlibAlpha360Close0
 
     qlib_df = pl.DataFrame(
         {
@@ -292,8 +320,8 @@ def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
 
 
 def test_asset_growth(ctx, monkeypatch):
-    import daily.factors.personal.monthly.asset_growth as ag_mod
-    from daily.factors.personal.monthly.asset_growth import AssetGrowthMonthly
+    import workspace.factors.monthly.asset_growth as ag_mod
+    from workspace.factors.monthly.asset_growth import AssetGrowthMonthly
 
     synthetic_lf = _make_finance_lf()
     monkeypatch.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
@@ -309,8 +337,8 @@ def test_asset_growth(ctx, monkeypatch):
 
 def test_asset_growth_empty_when_no_finance(ctx, monkeypatch):
     """When finance data unavailable, factor returns empty DataFrame gracefully."""
-    import daily.factors.personal.monthly.asset_growth as ag_mod
-    from daily.factors.personal.monthly.asset_growth import AssetGrowthMonthly
+    import workspace.factors.monthly.asset_growth as ag_mod
+    from workspace.factors.monthly.asset_growth import AssetGrowthMonthly
 
     def _raise(_):
         raise FileNotFoundError("no data")

@@ -1,4 +1,4 @@
-"""Pearson IC 测试。"""
+﻿"""Pearson IC 测试。"""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def make_factor_ret_df(n_stocks: int = 50, n_dates: int = 20, seed: int = 42) ->
 
 def test_pearson_ic_is_positive():
     """已知正信号因子的 Pearson IC 应为正。"""
-    from daily.evaluation.ic_analysis import compute_ic
+    from factorzen.daily.evaluation.ic_analysis import compute_ic
 
     df = make_factor_ret_df()
     result = compute_ic(df, method="pearson")
@@ -38,7 +38,7 @@ def test_pearson_ic_is_positive():
 
 
 def test_rank_ic_is_positive():
-    from daily.evaluation.ic_analysis import compute_ic
+    from factorzen.daily.evaluation.ic_analysis import compute_ic
 
     df = make_factor_ret_df()
     result = compute_ic(df, method="rank")
@@ -47,7 +47,7 @@ def test_rank_ic_is_positive():
 
 def test_both_ic_returns_dict():
     """method='both' 应返回含 rank 和 pearson 两个 IcStats 的字典。"""
-    from daily.evaluation.ic_analysis import IcStats, compute_ic
+    from factorzen.daily.evaluation.ic_analysis import IcStats, compute_ic
 
     df = make_factor_ret_df()
     result = compute_ic(df, method="both")
@@ -59,7 +59,7 @@ def test_both_ic_returns_dict():
 
 def test_heavy_tail_pearson_less_than_rank():
     """重尾因子（单个极端值）Pearson IC 受影响更大，绝对值应小于 Rank IC。"""
-    from daily.evaluation.ic_analysis import compute_ic
+    from factorzen.daily.evaluation.ic_analysis import compute_ic
 
     rng = np.random.default_rng(0)
     n_stocks = 100
@@ -90,7 +90,7 @@ def test_heavy_tail_pearson_less_than_rank():
 
 def test_ic_stats_fields():
     """IcStats 应含预期字段。"""
-    from daily.evaluation.ic_analysis import IcStats, compute_ic
+    from factorzen.daily.evaluation.ic_analysis import IcStats, compute_ic
 
     df = make_factor_ret_df()
     result = compute_ic(df, method="rank")

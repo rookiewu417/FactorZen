@@ -1,4 +1,4 @@
-"""S0 防回归：验证策略回测不会使用同日收益。
+﻿"""S0 防回归：验证策略回测不会使用同日收益。
 
 新回测口径：
 - t 日因子只能在 t+1 开盘调仓。
@@ -9,7 +9,7 @@
 import numpy as np
 import polars as pl
 
-from daily.evaluation.backtest import run_stratified_backtest
+from factorzen.daily.evaluation.backtest import run_stratified_backtest
 
 
 def _make_synthetic_data(n_dates: int = 200, n_stocks: int = 100, seed: int = 42):

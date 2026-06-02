@@ -37,8 +37,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-# 声明所有顶层包；注意 config 是自定义包，editable install 下优先于 PyPI 同名包
-packages = ["common", "config", "daily", "intraday", "research", "reporting", "automation"]
+packages = ["src/factorzen"]
+
+[project.scripts]
+fz = "factorzen.cli.main:main"
 
 [tool.ruff]
 target-version = "py310"
@@ -57,7 +59,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["common", "config", "daily", "intraday", "research", "reporting"]
+known-first-party = ["factorzen", "workspace"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -76,14 +78,12 @@ warn_unused_ignores = false
 ignore_missing_imports = true
 cache_dir = ".cache/mypy"
 sqlite_cache = false
-# 渐进式：仅强制 common/ 和 daily/evaluation/ daily/preprocessing/
-files = ["common", "daily/evaluation", "daily/preprocessing", "daily/factors", "research/combination", "reporting", "automation"]
+# 渐进式：仅强制核心框架包
+files = ["src/factorzen"]
 
 [tool.coverage.run]
-source = ["common", "daily/evaluation", "daily/preprocessing", "daily/factors", "research/combination", "reporting", "automation"]
+source = ["src/factorzen"]
 omit = [
-    "scripts/*",
-    "docs/archive/*",
     "tests/*",
 ]
 

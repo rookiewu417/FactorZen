@@ -1,11 +1,11 @@
-"""Tests for winsorize_percentile and sigma_clip."""
+﻿"""Tests for winsorize_percentile and sigma_clip."""
 
 import numpy as np
 import polars as pl
 
 
 def test_winsorize_clips_extremes():
-    from daily.preprocessing.outlier import winsorize_percentile
+    from factorzen.daily.preprocessing.outlier import winsorize_percentile
 
     df = pl.DataFrame(
         {
@@ -24,7 +24,7 @@ def test_winsorize_clips_extremes():
 
 
 def test_sigma_clip_removes_outliers():
-    from daily.preprocessing.outlier import sigma_clip
+    from factorzen.daily.preprocessing.outlier import sigma_clip
 
     rng = np.random.default_rng(42)
     vals = [*list(rng.standard_normal(99)), 100.0]  # one huge outlier
@@ -44,7 +44,7 @@ def test_sigma_clip_removes_outliers():
 
 def test_winsorize_is_per_date():
     """两个日期分布差异极大时，裁剪边界应按日期独立计算。"""
-    from daily.preprocessing.outlier import winsorize_percentile
+    from factorzen.daily.preprocessing.outlier import winsorize_percentile
 
     # Date A: values 1-10; Date B: values 1000-10000 (completely different scale)
     rows = []
@@ -65,7 +65,7 @@ def test_winsorize_is_per_date():
 
 def test_sigma_clip_is_per_date():
     """sigma_clip 应按日期截面计算 mean/std。"""
-    from daily.preprocessing.outlier import sigma_clip
+    from factorzen.daily.preprocessing.outlier import sigma_clip
 
     rows = []
     # Date A: normal values around 0

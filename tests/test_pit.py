@@ -1,11 +1,11 @@
-"""测试 Point-In-Time 财务数据对齐。"""
+﻿"""测试 Point-In-Time 财务数据对齐。"""
 
 import time
 from datetime import date, timedelta
 
 import polars as pl
 
-from daily.data.pit import pit_align
+from factorzen.daily.data.pit import pit_align
 
 # ── helpers ────────────────────────────────────────────────────────────────
 

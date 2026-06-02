@@ -1,4 +1,4 @@
-"""tests/test_loader.py — common/loader.py 的 mock 单元测试。
+﻿"""tests/test_loader.py — common/loader.py 的 mock 单元测试。
 
 全量 mock：不调用 Tushare API，不读写本地 data/raw/ 数据。
 覆盖：_retry 重试逻辑、缓存跳过、pandas→polars 转换、finance 批次计数、
@@ -14,15 +14,15 @@ import pandas as pd
 import polars as pl
 import pytest
 
-import common.loader as loader_module
-from common.loader import (
+import factorzen.core.loader as loader_module
+from factorzen.config.tushare_config import MAX_RETRIES
+from factorzen.core.loader import (
     _retry,
     fetch_daily,
     fetch_daily_basic,
     fetch_finance,
     fetch_stock_basic,
 )
-from config.tushare_config import MAX_RETRIES
 
 # ── 辅助：合成 pandas 输出 ──────────────────────────────────────────────────
 

@@ -1,179 +1,171 @@
-# FactorZen
+﻿# FactorZen
 
-> **FactorZen** 是一个面向 A 股单因子的可信研究框架，强调严谨、克制和可复现。当前核心主线覆盖因子计算、预处理、IC/回测评估、walk-forward OOS、数据质量报告、实验 manifest 与 Tear Sheet 报告生成。`research/combination/` 提供实验性多因子合成工具，用于研究对比，不作为当前生产组合优化模块。
+> **FactorZen** 鏄竴涓潰鍚?A 鑲″崟鍥犲瓙鐨勫彲淇＄爺绌舵鏋讹紝寮鸿皟涓ヨ皑銆佸厠鍒跺拰鍙鐜般€傚綋鍓嶆牳蹇冧富绾胯鐩栧洜瀛愯绠椼€侀澶勭悊銆両C/鍥炴祴璇勪及銆亀alk-forward OOS銆佹暟鎹川閲忔姤鍛娿€佸疄楠?manifest 涓?Tear Sheet 鎶ュ憡鐢熸垚銆俙research/combination/` 鎻愪緵瀹為獙鎬у鍥犲瓙鍚堟垚宸ュ叿锛岀敤浜庣爺绌跺姣旓紝涓嶄綔涓哄綋鍓嶇敓浜х粍鍚堜紭鍖栨ā鍧椼€?
+## 褰撳墠椤圭洰缁撴瀯
 
-## 目录结构与频率词汇表
+FactorZen 鐜板湪鍒嗕负妗嗘灦鍐呮牳鍜岀爺绌跺伐浣滃尯锛?
+```text
+src/factorzen/      # 妗嗘灦浠ｇ爜锛氭暟鎹€佸洜瀛愭敞鍐屻€侀澶勭悊銆佽瘎浼般€佹姤鍛娿€丆LI
+workspace/factors/  # 鏃ュ父鏂板洜瀛愬叆鍙?workspace/configs/  # 瀹為獙閰嶇疆
+workspace/factor_evaluations/     # 姣忔杩愯鐨?report.html銆乵anifest.json銆乸arquet/json 浜х墿
+data/               # 鏈湴鏁版嵁缂撳瓨
+tests/              # pytest 娴嬭瘯
+docs/               # 鏋舵瀯銆佸洜瀛愮紪鍐欍€佽繍琛屾墜鍐?```
 
-| 目录 | 频率 | 数据来源 | 成熟度 |
+鏃ュ父浼樺厛浣跨敤缁熶竴 CLI锛?
+```bash
+pixi run fz factor list
+pixi run fz factor new my_alpha --frequency daily
+pixi run fz factor run my_alpha --start 20250101 --end 20260513 --universe csi500
+pixi run fz report path <run_id>
+```
+
+鏇村璇存槑瑙?`docs/project-explanation.md`銆乣docs/architecture.md`銆乣docs/factor-authoring.md` 鍜?`docs/runbook.md`銆?
+## 鐩綍缁撴瀯涓庨鐜囪瘝姹囪〃
+
+| 鐩綍 | 棰戠巼/鑱岃矗 | 鏁版嵁鏉ユ簮 | 鎴愮啛搴?|
 |------|------|---------|--------|
-| `daily/` | 日/周/月（日线下采样） | Tushare 日线行情 + 估值 + 财报 | ✅ 完整 |
-| `intraday/` | 分钟（1min/5min） | Tushare 分钟线 | ✅ 评估管线完整（待实数据）|
-| `research/` | 实验性研究工具 | 复用 daily/intraday 数据 | ⚠️ 非生产 |
-| `common/` | 通用 | — | ✅ 完整 |
-| `config/` | — | — | ✅ 完整 |
-| `reporting/` | HTML Tear Sheet | — | ✅ 完整 |
+| `src/factorzen/daily/` | 鏃?鍛?鏈堬紙鏃ョ嚎涓嬮噰鏍凤級 | Tushare 鏃ョ嚎琛屾儏 + 浼板€?+ 璐㈡姤 | 鉁?瀹屾暣 |
+| `src/factorzen/intraday/` | 鍒嗛挓锛?min/5min锛?| Tushare 鍒嗛挓绾?| 鉁?璇勪及绠＄嚎瀹屾暣锛堝緟瀹炴暟鎹級|
+| `src/factorzen/core/` | 閫氱敤搴曞骇 | 鈥?| 鉁?瀹屾暣 |
+| `src/factorzen/research/` | 瀹為獙鎬х爺绌跺伐鍏?| 澶嶇敤 daily/intraday 鏁版嵁 | 鈿狅笍 闈炵敓浜?|
+| `src/factorzen/reports/` | HTML Tear Sheet | 鈥?| 鉁?瀹屾暣 |
+| `workspace/factors/` | 鐢ㄦ埛鑷畾涔夊洜瀛?| 澶嶇敤妗嗘灦鏁版嵁涓婁笅鏂?| 鉁?鏃ュ父鍏ュ彛 |
+| `workspace/factor_evaluations/` | 瀹為獙杈撳嚭 | 鈥?| 鉁?鏂拌緭鍑哄叆鍙?|
 
-> **命名说明**：`daily` ≡ 低频（业界常说的日频/月频因子）；`intraday` ≡ 日内（分钟级）；`research` ≡ 实验性研究工具。
+> **鍛藉悕璇存槑**锛歚daily` 鈮?浣庨锛堜笟鐣屽父璇寸殑鏃ラ/鏈堥鍥犲瓙锛夛紱`intraday` 鈮?鏃ュ唴锛堝垎閽熺骇锛夛紱`research` 鈮?瀹為獙鎬х爺绌跺伐鍏枫€?
+## 蹇€熷紑濮?
 
-## 快速开始
-
-### 1. 环境安装
+### 1. 鐜瀹夎
 
 ```bash
-# 安装 pixi（Windows）
+# 瀹夎 pixi锛圵indows锛?
 winget install prefix-dev.pixi
 
-# 克隆项目后安装依赖（含 editable install）
+# 鍏嬮殕椤圭洰鍚庡畨瑁呬緷璧栵紙鍚?editable install锛?
 cd FactorZen
 pixi install
 ```
 
-### 2. 配置 Tushare Token
+### 2. 閰嶇疆 Tushare Token
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入 TUSHARE_TOKEN=your_token
+# 缂栬緫 .env锛屽～鍏?TUSHARE_TOKEN=your_token
 ```
 
-在 [tushare.pro/user/token](https://tushare.pro/user/token) 获取 token。
+鍦?[tushare.pro/user/token](https://tushare.pro/user/token) 鑾峰彇 token銆?
 
-### 3. 拉取行情数据
+### 3. 鎷夊彇琛屾儏鏁版嵁
 
 ```bash
-# 拉取日线行情（约 5 分钟）
-pixi run python -c "from common.loader import fetch_daily; fetch_daily('20250101','20260513')"
+# 鎷夊彇鏃ョ嚎琛屾儏锛堢害 5 鍒嗛挓锛?pixi run fz data fetch daily --start 20250101 --end 20260513
 
-# 拉取每日估值（PE/PB/市值，月频因子依赖）
-pixi run python -c "from common.loader import fetch_daily_basic; fetch_daily_basic('20250101','20260513')"
+# 鎷夊彇姣忔棩浼板€硷紙PE/PB/甯傚€硷紝鏈堥鍥犲瓙渚濊禆锛?pixi run fz data fetch daily-basic --start 20250101 --end 20260513
 ```
 
-### 4. 运行单因子评估
+### 4. 杩愯鍗曞洜瀛愯瘎浼?
 
 ```bash
-# 单因子完整评估 → output/daily/results/（保存 parquet 中间结果）
-pixi run python scripts/run_daily_single.py --factor momentum_20d --start 20250101 --end 20260513
+# 鍗曞洜瀛愬畬鏁磋瘎浼?鈫?workspace/factor_evaluations/{run_id}/
+pixi run fz factor run momentum_20d --start 20250101 --end 20260513
 
-# 使用 YAML 配置运行；preprocessing/backtest/cost_model/walk_forward 字段会真实生效
-pixi run python scripts/run_daily_single.py --config config/runs/single_factor_momentum.yaml
+# 浣跨敤 YAML 閰嶇疆杩愯锛沺reprocessing/backtest/cost_model/walk_forward 瀛楁浼氱湡瀹炵敓鏁?pixi run fz factor run --config workspace/configs/daily/daily_factor_template.yaml
 
-# 生成 HTML Tear Sheet → output/daily/reports/（同时落盘 parquet）
-pixi run report -- --factor momentum_20d --start 20250101 --end 20260513
+# 鐢熸垚 HTML Tear Sheet 鈫?workspace/factor_evaluations/{run_id}/report.html
+pixi run fz report build momentum_20d --start 20250101 --end 20260513
 
-# 复用已有 parquet 秒出报告（需先跑过上面任意一条）
-pixi run report -- --factor momentum_20d --start 20250101 --end 20260513 --reuse
+# 澶嶇敤宸叉湁 parquet 绉掑嚭鎶ュ憡锛堥渶鍏堣窇杩囦笂闈换鎰忎竴鏉★級
+pixi run fz report build momentum_20d --start 20250101 --end 20260513 --reuse
 
-# 多因子 IC 对比
-pixi run python scripts/run_daily_compare.py --factors momentum_20d,reversal_5d --start 20250101 --end 20260513
+# 澶氬洜瀛愬悎鎴愮爺绌朵娇鐢?factorzen.research.combination 鍖呭唴 API
 ```
 
-主要输出：
+`pixi run daily`銆乣pixi run report`銆乣pixi run fz factor test` 鍜?`pixi run fz report open` 淇濈暀涓哄吋瀹瑰埆鍚嶏紱鏂版枃妗ｅ拰鏂版祦绋嬩紭鍏堜娇鐢?`fz factor run`銆乣fz report build`銆乣fz report path`銆?
+涓昏杈撳嚭锛?
+- `workspace/factor_evaluations/{run_id}/report.html`锛氭湰娆″疄楠屾姤鍛娿€?- `workspace/factor_evaluations/{run_id}/manifest.json`锛氬疄楠?manifest锛岃褰曞畬鏁撮厤缃€佸懡浠ゃ€乬it SHA銆乨irty 鐘舵€併€乣pixi.lock` hash銆佹垚鍔?澶辫触鐘舵€併€侀敊璇俊鎭拰宸茬敓鎴愯緭鍑鸿矾寰勩€?- `workspace/factor_evaluations/{run_id}/factor.parquet`锛氶澶勭悊鍚庣殑鍥犲瓙鐭╅樀鍓湰銆?- `workspace/factor_evaluations/{run_id}/ic.parquet`锛欼C 搴忓垪鍓湰銆?- `workspace/factor_evaluations/{run_id}/quality.json`锛氭暟鎹川閲忔姤鍛婂壇鏈€?- `workspace/factor_evaluations/{run_id}/walk_forward.json`锛歸alk-forward/OOS 鎽樿鍓湰銆?
+## 鍙敤鍥犲瓙鍒楄〃
 
-- `output/daily/factors/{factor}_{start}_{end}.parquet`：预处理后的因子矩阵。
-- `output/daily/results/{factor}_{start}_{end}_quality.json`：数据质量报告，包含覆盖率、重复键、收益对齐等检查结果。
-- `output/daily/results/{factor}_{start}_{end}_meta.json`：报告生成元数据，包含 IC/回测/换手、配置摘要、`walk_forward_summary`。
-- `output/daily/results/{factor}_{start}_{end}_walk_forward.json`：`run_daily_single.py` 的 walk-forward/OOS 摘要；IS 表示历史观察期，OOS 表示未来验证期，固定因子主流程不会在 IS 期重新拟合参数；样本不足时记录 `{"status": "insufficient_data", "n_folds": 0}`，不让主流程失败。
-- `output/daily/reports/{factor}_{start}_{end}.html`：Tear Sheet，包含 OOS 摘要区块；没有 folds 时显示样本不足。
-- `output/experiments/{run_id}/manifest.json`：实验 manifest，记录完整配置、命令、git SHA、dirty 状态、`pixi.lock` hash、成功/失败状态、错误信息和已生成输出路径。
+### daily 鈥?鏃ラ锛?0 涓級
 
-## 可用因子列表
-
-### daily — 日频（10 个）
-
-| 因子名 | 类别 | 描述 |
+| 鍥犲瓙鍚?| 绫诲埆 | 鎻忚堪 |
 |--------|------|------|
-| `momentum_20d` | 动量 | 20 日价格动量；保留兼容，研究上建议优先使用 `momentum_12_1` |
-| `momentum_12_1` | 动量 | Jegadeesh-Titman 12-1 动量，剔除最近 1 个月反转效应 |
-| `reversal_5d` | 反转 | 5 日短期反转 |
-| `volatility_20d` | 波动 | 20 日已实现波动率 |
-| `turnover_5d` | 换手 | 5 日平均换手率 |
-| `amihud_illiquidity` | 流动性 | Amihud (2002) 非流动性指标 |
-| `beta_60d` | 风险 | 60 日 CAPM Beta |
-| `idiosyncratic_vol_20d` | 波动 | 20 日特质波动率（去除市场 Beta 后残差 std） |
-| `max_return_5d` | 彩票效应 | 5 日最大单日涨幅（Bali et al. 2011 MAX 因子） |
-| `skewness_20d` | 偏度 | 20 日收益偏度（正偏股票未来收益偏低） |
+| `momentum_20d` | 鍔ㄩ噺 | 20 鏃ヤ环鏍煎姩閲忥紱淇濈暀鍏煎锛岀爺绌朵笂寤鸿浼樺厛浣跨敤 `momentum_12_1` |
+| `momentum_12_1` | 鍔ㄩ噺 | Jegadeesh-Titman 12-1 鍔ㄩ噺锛屽墧闄ゆ渶杩?1 涓湀鍙嶈浆鏁堝簲 |
+| `reversal_5d` | 鍙嶈浆 | 5 鏃ョ煭鏈熷弽杞?|
+| `volatility_20d` | 娉㈠姩 | 20 鏃ュ凡瀹炵幇娉㈠姩鐜?|
+| `turnover_5d` | 鎹㈡墜 | 5 鏃ュ钩鍧囨崲鎵嬬巼 |
+| `amihud_illiquidity` | 娴佸姩鎬?| Amihud (2002) 闈炴祦鍔ㄦ€ф寚鏍?|
+| `beta_60d` | 椋庨櫓 | 60 鏃?CAPM Beta |
+| `idiosyncratic_vol_20d` | 娉㈠姩 | 20 鏃ョ壒璐ㄦ尝鍔ㄧ巼锛堝幓闄ゅ競鍦?Beta 鍚庢畫宸?std锛?|
+| `max_return_5d` | 褰╃エ鏁堝簲 | 5 鏃ユ渶澶у崟鏃ユ定骞咃紙Bali et al. 2011 MAX 鍥犲瓙锛?|
+| `skewness_20d` | 鍋忓害 | 20 鏃ユ敹鐩婂亸搴︼紙姝ｅ亸鑲＄エ鏈潵鏀剁泭鍋忎綆锛?|
 
-### daily — 周频（3 个）
+### daily 鈥?鍛ㄩ锛? 涓級
 
-| 因子名 | 类别 | 描述 |
+| 鍥犲瓙鍚?| 绫诲埆 | 鎻忚堪 |
 |--------|------|------|
-| `momentum_weekly` | 动量 | 周频快照动量 |
-| `turnover_weekly` | 换手 | 周频快照换手率 |
-| `volatility_weekly` | 波动 | 周频快照波动率 |
+| `momentum_weekly` | 鍔ㄩ噺 | 鍛ㄩ蹇収鍔ㄩ噺 |
+| `turnover_weekly` | 鎹㈡墜 | 鍛ㄩ蹇収鎹㈡墜鐜?|
+| `volatility_weekly` | 娉㈠姩 | 鍛ㄩ蹇収娉㈠姩鐜?|
 
-### daily — 月频（6 个）
+### daily 鈥?鏈堥锛? 涓級
 
-| 因子名 | 类别 | 描述 |
+| 鍥犲瓙鍚?| 绫诲埆 | 鎻忚堪 |
 |--------|------|------|
-| `pe_ttm` | 估值 | 月频滚动市盈率（依赖 daily_basic） |
-| `pb` | 估值 | 月频市净率（依赖 daily_basic） |
-| `ep_ratio` | 估值 | 月频 E/P（= 1/PE_TTM） |
-| `bm_ratio` | 估值 | 月频 B/M（= 1/PB） |
-| `roe_ttm` | 质量 | 月频 ROE TTM，PIT 对齐（依赖 finance） |
-| `asset_growth` | 质量 | 年度总资产增速（依赖 finance） |
+| `pe_ttm` | 浼板€?| 鏈堥婊氬姩甯傜泩鐜囷紙渚濊禆 daily_basic锛?|
+| `pb` | 浼板€?| 鏈堥甯傚噣鐜囷紙渚濊禆 daily_basic锛?|
+| `ep_ratio` | 浼板€?| 鏈堥 E/P锛? 1/PE_TTM锛?|
+| `bm_ratio` | 浼板€?| 鏈堥 B/M锛? 1/PB锛?|
+| `roe_ttm` | 璐ㄩ噺 | 鏈堥 ROE TTM锛孭IT 瀵归綈锛堜緷璧?finance锛?|
+| `asset_growth` | 璐ㄩ噺 | 骞村害鎬昏祫浜у閫燂紙渚濊禆 finance锛?|
 
-### intraday — 分钟频（2 个）
+### intraday 鈥?鍒嗛挓棰戯紙2 涓級
 
-| 因子名 | 类别 | 描述 |
+| 鍥犲瓙鍚?| 绫诲埆 | 鎻忚堪 |
 |--------|------|------|
-| `momentum_1min` | 动量 | 1 分钟 5-bar 收益动量 |
-| `vwap_deviation` | 价格偏离 | 当前价相对日内 VWAP 偏离度 |
+| `momentum_1min` | 鍔ㄩ噺 | 1 鍒嗛挓 5-bar 鏀剁泭鍔ㄩ噺 |
+| `vwap_deviation` | 浠锋牸鍋忕 | 褰撳墠浠风浉瀵规棩鍐?VWAP 鍋忕搴?|
 
-## 开发命令
+## 寮€鍙戝懡浠?
 
 ```bash
-pixi run test      # 运行测试
+pixi run test      # 杩愯娴嬭瘯
 pixi run lint      # ruff check
-pixi run typecheck # mypy：common、daily/evaluation、daily/preprocessing、daily/factors、research/combination、reporting、automation
-pixi run coverage  # pytest coverage，当前门槛 70%
+pixi run typecheck # mypy锛歴rc/factorzen
+pixi run coverage  # pytest coverage锛屽綋鍓嶉棬妲?70%
 pixi run format    # ruff format
-pixi run lab       # 启动 JupyterLab
+pixi run lab       # 鍚姩 JupyterLab
 ```
 
-## 项目架构
+## 椤圭洰鏋舵瀯
 
 ```
 FactorZen/
-├── common/          # 数据底座（loader/storage/calendar/universe）
-├── config/          # 路径常量、Tushare 配置
-├── daily/           # 日/周/月频因子框架
-│   ├── data/        # FactorDataContext（懒加载、PIT 对齐）
-│   ├── factors/     # 因子实现（qlib + personal）
-│   │   ├── qlib/     # Qlib Alpha158 / Alpha360 因子
-│   │   └── personal/ # 个人因子库（daily/weekly/monthly/style/custom）
-│   ├── preprocessing/   # 去极值 → 填充 → 标准化 → 中性化
-│   └── evaluation/  # IC / 回测 / 换手 / 相关性 / 高级指标
-├── intraday/        # 分钟频因子框架
-├── research/        # 实验性研究工具（非生产优化）
-│   └── combination/ # 实验性多因子合成（研究对比）
-├── reporting/       # HTML Tear Sheet 生成
-├── scripts/         # CLI 入口
-├── benchmarks/      # 性能基准脚本
-└── tests/           # pytest 测试套件
-```
+鈹溾攢鈹€ src/factorzen/   # 妗嗘灦鍐呮牳
+鈹?  鈹溾攢鈹€ core/        # 鏁版嵁搴曞骇锛坙oader/storage/calendar/universe锛?鈹?  鈹溾攢鈹€ config/      # 璺緞甯搁噺銆乀ushare 閰嶇疆
+鈹?  鈹溾攢鈹€ daily/       # 鏃?鍛?鏈堥鍥犲瓙妗嗘灦
+鈹?  鈹溾攢鈹€ intraday/    # 鍒嗛挓棰戝洜瀛愭鏋?鈹?  鈹溾攢鈹€ reports/     # HTML Tear Sheet 鐢熸垚
+鈹?  鈹溾攢鈹€ research/    # 瀹為獙鎬х爺绌跺伐鍏凤紙闈炵敓浜т紭鍖栵級
+鈹?  鈹溾攢鈹€ pipelines/   # daily/report 绛夎繍琛岀绾?鈹?  鈹斺攢鈹€ cli/         # fz 缁熶竴 CLI
+鈹溾攢鈹€ workspace/       # 鐢ㄦ埛鐮旂┒宸ヤ綔鍖猴紙鍥犲瓙銆侀厤缃€乺un 杈撳嚭锛?鈹斺攢鈹€ tests/           # pytest 娴嬭瘯濂椾欢锛堝惈 benchmarks/ 鎬ц兘鍩哄噯鑴氭湰锛?```
 
-## 数据目录约定
+## 鏁版嵁鐩綍绾﹀畾
 
 ```
 data/
-├── raw/
-│   ├── daily/year=YYYY/month=MM/data.parquet       # 日线行情
-│   ├── daily_basic/year=YYYY/month=MM/data.parquet # 每日估值
-│   ├── finance/year=YYYY/quarter=Q/data.parquet    # 财务数据
-│   └── minute/year=YYYY/month=MM/data.parquet      # 分钟线
-└── cache/           # 股票池、交易日历等小型缓存
+鈹溾攢鈹€ raw/
+鈹?  鈹溾攢鈹€ daily/year=YYYY/month=MM/data.parquet       # 鏃ョ嚎琛屾儏
+鈹?  鈹溾攢鈹€ daily_basic/year=YYYY/month=MM/data.parquet # 姣忔棩浼板€?
+鈹?  鈹溾攢鈹€ finance/year=YYYY/quarter=Q/data.parquet    # 璐㈠姟鏁版嵁
+鈹?  鈹斺攢鈹€ minute/year=YYYY/month=MM/data.parquet      # 鍒嗛挓绾?
+鈹斺攢鈹€ cache/           # 鑲＄エ姹犮€佷氦鏄撴棩鍘嗙瓑灏忓瀷缂撳瓨
 
-output/
-├── daily/
-│   ├── factors/     # 预处理后因子矩阵 parquet；qlib 因子按 qlib158/qlib360 分目录
-│   ├── results/     # IC/BT/TO 评价结果 parquet + 元数据 JSON；qlib 因子按 qlib158/qlib360 分目录
-│   └── reports/     # HTML Tear Sheet；qlib 因子按 qlib158/qlib360 分目录
-└── intraday/
-    ├── results/     # intraday IC 结果
-    └── reports/     # intraday HTML 报告
+workspace/
+鈹溾攢鈹€ factors/         # 鐢ㄦ埛鑷畾涔夊洜瀛?鈹溾攢鈹€ configs/         # 瀹為獙閰嶇疆
+鈹斺攢鈹€ runs/            # 姣忔瀹為獙鐨勮嚜鍖呭惈杈撳嚭
 ```
 
-## 已知边界
+## 宸茬煡杈圭晫
 
-- **Tick 级研究**：当前不保留正式代码包。Tushare 不提供 Tick 数据，未来如对接 CTP 或 Wind，应单独设计数据 adapter、订单簿/逐笔存储与评估口径。
-- **`research/combination/`**：实验性多因子合成（等权、IC 加权、Max-IR），用于研究阶段对比。当前权重估计仍是 in-sample 口径，不能把组合结果称为 OOS，也不能直接解释为生产可交易组合优化，见 [`research/combination/README.md`](research/combination/README.md)。
-- **生产交易边界**：当前框架聚焦研究可信度，不包含 tick 数据、实盘 OMS、盘口成交、真实 Tushare 网络 smoke 或生产级组合执行闭环。
+- **Tick 绾х爺绌?*锛氬綋鍓嶄笉淇濈暀姝ｅ紡浠ｇ爜鍖呫€俆ushare 涓嶆彁渚?Tick 鏁版嵁锛屾湭鏉ュ瀵规帴 CTP 鎴?Wind锛屽簲鍗曠嫭璁捐鏁版嵁 adapter銆佽鍗曠翱/閫愮瑪瀛樺偍涓庤瘎浼板彛寰勩€?- **`src/factorzen/research/combination/`**锛氬疄楠屾€у鍥犲瓙鍚堟垚锛堢瓑鏉冦€両C 鍔犳潈銆丮ax-IR锛夛紝鐢ㄤ簬鐮旂┒闃舵瀵规瘮銆傚綋鍓嶆潈閲嶄及璁′粛鏄?in-sample 鍙ｅ緞锛屼笉鑳芥妸缁勫悎缁撴灉绉颁负 OOS锛屼篃涓嶈兘鐩存帴瑙ｉ噴涓虹敓浜у彲浜ゆ槗缁勫悎浼樺寲锛岃 [`src/factorzen/research/combination/README.md`](src/factorzen/research/combination/README.md)銆?- **鐢熶骇浜ゆ槗杈圭晫**锛氬綋鍓嶆鏋惰仛鐒︾爺绌跺彲淇″害锛屼笉鍖呭惈 tick 鏁版嵁銆佸疄鐩?OMS銆佺洏鍙ｆ垚浜ゃ€佺湡瀹?Tushare 缃戠粶 smoke 鎴栫敓浜х骇缁勫悎鎵ц闂幆銆?

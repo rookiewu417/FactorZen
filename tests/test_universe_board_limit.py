@@ -1,8 +1,8 @@
-"""板块涨跌停阈值及 filter_limit 按板块细化测试。"""
+﻿"""板块涨跌停阈值及 filter_limit 按板块细化测试。"""
 
 import polars as pl
 
-from common.universe import _get_board_limit, filter_limit
+from factorzen.core.universe import _get_board_limit, filter_limit
 
 # ──────────────────────────────────────────────────────────
 # _get_board_limit 单元测试
@@ -92,7 +92,7 @@ def test_filter_limit_allows_chuang_ye_195pct(monkeypatch):
 
         return LazyWrapper()
 
-    monkeypatch.setattr("common.storage.load_parquet", fake_load)
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", fake_load)
 
     stocks = _make_stocks(ts_code)
     result = filter_limit(stocks, "20240101")
@@ -111,7 +111,7 @@ def test_filter_limit_blocks_chuang_ye_198pct(monkeypatch):
 
         return LazyWrapper()
 
-    monkeypatch.setattr("common.storage.load_parquet", fake_load)
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", fake_load)
 
     stocks = _make_stocks(ts_code)
     result = filter_limit(stocks, "20240101")
@@ -130,7 +130,7 @@ def test_filter_limit_blocks_main_board_10pct(monkeypatch):
 
         return LazyWrapper()
 
-    monkeypatch.setattr("common.storage.load_parquet", fake_load)
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", fake_load)
 
     stocks = _make_stocks(ts_code)
     result = filter_limit(stocks, "20240101")
@@ -149,7 +149,7 @@ def test_filter_limit_allows_main_board_9pct(monkeypatch):
 
         return LazyWrapper()
 
-    monkeypatch.setattr("common.storage.load_parquet", fake_load)
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", fake_load)
 
     stocks = _make_stocks(ts_code)
     result = filter_limit(stocks, "20240101")
@@ -174,7 +174,7 @@ def test_filter_limit_mixed_boards(monkeypatch):
 
         return LazyWrapper()
 
-    monkeypatch.setattr("common.storage.load_parquet", fake_load)
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", fake_load)
 
     stocks = pl.DataFrame({
         "ts_code": ["600001.SH", "300001.SZ"],

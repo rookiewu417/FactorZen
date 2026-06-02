@@ -1,8 +1,8 @@
-"""测试分行业 IC：按行业分组计算 Rank IC。"""
+﻿"""测试分行业 IC：按行业分组计算 Rank IC。"""
 
 import polars as pl
 
-from daily.evaluation.advanced import SectorICResult, compute_sector_ic
+from factorzen.daily.evaluation.advanced import SectorICResult, compute_sector_ic
 
 
 def _make_sector_data(n_stocks: int = 60) -> pl.DataFrame:
@@ -66,3 +66,22 @@ def test_sector_ic_returns_sector_ic_result():
     assert isinstance(result, SectorICResult)
     assert hasattr(result, "sector_ic_df")
     assert isinstance(result.sector_ic_df, pl.DataFrame)
+
+
+def test_sector_ic_drops_undefined_correlations():
+    df = pl.DataFrame(
+        {
+            "ts_code": ["a", "b", "c", "d", "e", "f"],
+            "trade_date": ["2026-01-05"] * 6,
+            "factor_value": [1.0, 1.0, 1.0, 1.0, 0.1, 0.2],
+            "fwd_ret": [0.01, 0.02, 0.03, 0.04, 0.01, 0.02],
+            "sector": ["Constant", "Constant", "Constant", "Constant", "Valid", "Valid"],
+        }
+    )
+
+    result = compute_sector_ic(
+        df, factor_col="factor_value", ret_col="fwd_ret", sector_col="sector"
+    )
+
+    assert "Constant" not in result["sector"].to_list()
+    assert result["ic"].is_nan().sum() == 0

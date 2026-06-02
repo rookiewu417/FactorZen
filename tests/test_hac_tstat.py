@@ -1,4 +1,4 @@
-"""S3 防回归：验证 Newey-West HAC t-stat 修正。
+﻿"""S3 防回归：验证 Newey-West HAC t-stat 修正。
 
 核心断言：对自相关 IC 序列，HAC t-stat 应明显小于朴素 t-stat（OLS 不带 HAC），
 防止 t-stat 被高估 2-3 倍。
@@ -7,7 +7,7 @@
 import numpy as np
 from scipy import stats as scipy_stats
 
-from daily.evaluation.ic_analysis import _hac_maxlags, _ic_stats
+from factorzen.daily.evaluation.ic_analysis import _hac_maxlags, _ic_stats
 
 
 def _make_autocorr_ic(n: int = 200, ar_coef: float = 0.6, seed: int = 42) -> np.ndarray:

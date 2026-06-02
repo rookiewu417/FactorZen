@@ -1,4 +1,4 @@
-"""rebalance_threshold 功能测试：换手率低于阈值时跳过调仓。"""
+﻿"""rebalance_threshold 功能测试：换手率低于阈值时跳过调仓。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-from daily.evaluation.backtest import BacktestConfig, TopNLongOnlyStrategy, run_strategy_backtest
+from factorzen.daily.evaluation.backtest import (
+    BacktestConfig,
+    TopNLongOnlyStrategy,
+    run_strategy_backtest,
+)
 
 # ──────────────────────────────────────────────────────────
 # 测试夹具
@@ -123,7 +127,7 @@ def test_zero_threshold_matches_no_threshold():
 
 def test_result_structure_with_threshold():
     """带 rebalance_threshold 的回测结果结构完整。"""
-    from daily.evaluation.backtest import StrategyBacktestResult
+    from factorzen.daily.evaluation.backtest import StrategyBacktestResult
 
     factor_df, price_df = _make_fixtures()
     strategy = TopNLongOnlyStrategy(n=5)

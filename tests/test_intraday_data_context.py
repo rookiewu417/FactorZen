@@ -1,4 +1,4 @@
-"""测试 IntradayDataContext。"""
+﻿"""测试 IntradayDataContext。"""
 
 from datetime import date
 from unittest.mock import patch
@@ -6,7 +6,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from intraday.data.context import IntradayDataContext
+from factorzen.intraday.data.context import IntradayDataContext
 
 
 @pytest.fixture(autouse=True)
@@ -20,7 +20,7 @@ def mock_prev_trade_date(monkeypatch):
             "20260105": date(2025, 12, 25),
         }[d]
 
-    monkeypatch.setattr("intraday.data.context.prev_trade_date", _fake_prev_trade_date)
+    monkeypatch.setattr("factorzen.intraday.data.context.prev_trade_date", _fake_prev_trade_date)
 
 # ── 构造与默认值 ──────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ def test_minute_lazy_loading():
         }
     ).lazy()
 
-    with patch("intraday.data.context.load_parquet", return_value=synthetic) as mock_load:
+    with patch("factorzen.intraday.data.context.load_parquet", return_value=synthetic) as mock_load:
         ctx = IntradayDataContext("20260514", "20260514")
         assert ctx._minute is None
 
@@ -110,7 +110,7 @@ def test_minute_universe_filter():
         }
     ).lazy()
 
-    with patch("intraday.data.context.load_parquet", return_value=synthetic):
+    with patch("factorzen.intraday.data.context.load_parquet", return_value=synthetic):
         ctx = IntradayDataContext("20260514", "20260514", universe=["000001.SZ"])
         lf = ctx.minute
         collected = lf.collect()
@@ -130,7 +130,7 @@ def test_load_all():
         }
     ).lazy()
 
-    with patch("intraday.data.context.load_parquet", return_value=synthetic):
+    with patch("factorzen.intraday.data.context.load_parquet", return_value=synthetic):
         ctx = IntradayDataContext("20260514", "20260514")
         assert ctx._minute is None
         ctx.load_all()

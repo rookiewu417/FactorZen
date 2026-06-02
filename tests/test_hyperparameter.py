@@ -1,8 +1,8 @@
-"""Optuna 超参搜索测试。"""
+﻿"""Optuna 超参搜索测试。"""
 
 from __future__ import annotations
 
-from daily.evaluation.hyperparameter import ParamSpec, TuningSpace, run_optuna_search
+from factorzen.daily.evaluation.hyperparameter import ParamSpec, TuningSpace, run_optuna_search
 
 # ── TestTuningSpace ──────────────────────────────────────────────────────────
 

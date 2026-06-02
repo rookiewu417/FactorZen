@@ -376,6 +376,55 @@ def test_capacity_uses_trailing_adv_not_execution_day_amount():
     assert trade["block_reason"] == "capacity"
 
 
+def test_capacity_trailing_adv_ignores_nan_amounts():
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": np.nan,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 100.0,
+            },
+            {
+                "trade_date": date(2024, 1, 3),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 100_000_000.0,
+            },
+        ]
+    )
+
+    result = run_strategy_backtest(
+        BuyOneStrategy(),
+        _factor([(date(2024, 1, 2), "000001.SZ", 1.0)]),
+        prices,
+        config=BacktestConfig(initial_capital=100.0, max_participation_rate=0.1),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+
+    trade = result.trades.sort("trade_date").row(0, named=True)
+    assert trade["filled_delta_weight"] == pytest.approx(0.1)
+    assert trade["block_reason"] == "capacity"
+
+
 def test_cost_model_reduces_nav():
     config = BacktestConfig(initial_capital=1_000_000, max_participation_rate=1.0)
     free = run_strategy_backtest(

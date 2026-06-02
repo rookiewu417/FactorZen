@@ -766,6 +766,9 @@ def _compute_adv_20d(price: pl.DataFrame, trade_dates: list, current_idx: int) -
     hist = price.filter(pl.col("trade_date").is_in(hist_dates))
     if hist.is_empty() or "amount" not in hist.columns:
         return {}
+    hist = hist.filter(pl.col("amount").is_finite() & (pl.col("amount") > 0))
+    if hist.is_empty():
+        return {}
     adv = hist.group_by("ts_code").agg(pl.col("amount").mean().alias("adv_20d"))
     return dict(zip(adv["ts_code"].to_list(), adv["adv_20d"].to_list(), strict=False))
 

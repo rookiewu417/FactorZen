@@ -181,9 +181,14 @@ def test_next_open_execution_starts_when_prior_signal_is_available():
         cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
     )
 
+    returns = result.returns.sort("trade_date")
     nav = result.nav.sort("trade_date")
-    assert nav["trade_date"][0] == date(2024, 1, 2)
-    assert nav["nav"][0] == pytest.approx(1.1)
+    assert returns["trade_date"][0] == date(2024, 1, 2)
+    assert returns["nav"][0] == pytest.approx(1.1)
+    assert nav["trade_date"][0] == date(2024, 1, 1)
+    assert nav["nav"][0] == pytest.approx(1.0)
+    assert nav["trade_date"][1] == date(2024, 1, 2)
+    assert nav["nav"][1] == pytest.approx(1.1)
     assert result.ret_definition == "open_to_close_with_overnight_carry"
 
 
@@ -822,6 +827,37 @@ def test_summary_total_cost_uses_period_basis_return_drag():
     stats = _summary_stats(returns, trades)
 
     assert stats["portfolio"]["total_cost"] == pytest.approx(0.05)
+
+
+def test_summary_max_drawdown_includes_initial_nav():
+    returns = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2)],
+            "gross_return": [-0.10],
+            "cost": [0.0],
+            "borrow_cost": [0.0],
+            "net_return": [-0.10],
+            "nav": [0.90],
+            "cash_weight": [0.0],
+            "turnover": [0.0],
+        }
+    )
+    trades = pl.DataFrame(
+        schema={
+            "trade_date": pl.Date,
+            "ts_code": pl.Utf8,
+            "prev_weight": pl.Float64,
+            "target_weight": pl.Float64,
+            "filled_delta_weight": pl.Float64,
+            "turnover": pl.Float64,
+            "cost": pl.Float64,
+            "block_reason": pl.Utf8,
+        }
+    )
+
+    stats = _summary_stats(returns, trades)
+
+    assert stats["portfolio"]["max_dd"] == pytest.approx(-0.10)
 
 
 def test_cost_model_reduces_nav():

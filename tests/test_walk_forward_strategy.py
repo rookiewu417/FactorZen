@@ -1,4 +1,4 @@
-"""策略级 Walk-Forward 验证测试。"""
+﻿"""策略级 Walk-Forward 验证测试。"""
 
 from __future__ import annotations
 
@@ -8,10 +8,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-from daily.evaluation.walk_forward import (
+from factorzen.daily.evaluation.walk_forward import (
     WalkForwardFoldResult,
     WalkForwardResult,
     WalkForwardSplitter,
+    _compute_oos_max_dd,
     run_walk_forward,
 )
 
@@ -122,6 +123,10 @@ class TestWalkForwardSplitter:
 # ── TestRunWalkForward ───────────────────────────────────────────────────────
 
 
+def test_oos_max_drawdown_includes_initial_nav():
+    assert _compute_oos_max_dd([0.90]) == pytest.approx(-0.10)
+
+
 class TestRunWalkForward:
     def _make_splitter(self) -> WalkForwardSplitter:
         return WalkForwardSplitter(
@@ -129,7 +134,7 @@ class TestRunWalkForward:
         )
 
     def _strategy_factory(self, params: dict) -> object:
-        from daily.evaluation.backtest import QuantileLongShortStrategy
+        from factorzen.daily.evaluation.backtest import QuantileLongShortStrategy
 
         return QuantileLongShortStrategy(n_groups=params.get("n_groups", 5))
 

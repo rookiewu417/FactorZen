@@ -1,11 +1,11 @@
-"""daily/evaluation/backtest.py 的单元测试。"""
+﻿"""daily/evaluation/backtest.py 的单元测试。"""
 
 from datetime import date, timedelta
 
 import numpy as np
 import polars as pl
 
-from daily.evaluation.backtest import BacktestResult, run_stratified_backtest
+from factorzen.daily.evaluation.backtest import BacktestResult, run_stratified_backtest
 
 
 def _make_factor_price(n_dates: int = 60, n_stocks: int = 50, seed: int = 42):

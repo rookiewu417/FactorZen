@@ -614,9 +614,27 @@ def run_strategy_backtest(
         current_weights = close_weights
 
     returns = pl.DataFrame(nav_rows, schema=_returns_schema())
-    nav = returns.select(
-        ["trade_date", "gross_return", "cost", "borrow_cost", "net_return", "nav", "cash_weight"]
-    )
+    nav_cols = ["trade_date", "gross_return", "cost", "borrow_cost", "net_return", "nav", "cash_weight"]
+    if returns.is_empty():
+        nav = returns.select(nav_cols)
+    else:
+        sorted_returns = returns.sort("trade_date")
+        first_return_date = sorted_returns["trade_date"][0]
+        first_return_idx = trade_dates.index(first_return_date)
+        first_signal_date = trade_dates[first_return_idx - 1]
+        base_nav = pl.DataFrame(
+            {
+                "trade_date": [first_signal_date],
+                "gross_return": [0.0],
+                "cost": [0.0],
+                "borrow_cost": [0.0],
+                "net_return": [0.0],
+                "nav": [1.0],
+                "cash_weight": [1.0],
+            },
+            schema={col: _returns_schema()[col] for col in nav_cols},
+        )
+        nav = pl.concat([base_nav, sorted_returns.select(nav_cols)])
     positions = (
         pl.DataFrame(position_rows, schema=_positions_schema())
         if position_rows
@@ -932,7 +950,7 @@ def _summary_stats(
         ann_ret = float(np.mean(valid) * TRADING_DAYS_PER_YEAR)
         ann_vol = float(np.std(valid) * np.sqrt(TRADING_DAYS_PER_YEAR))
         sharpe = ann_ret / ann_vol if ann_vol > 0 else 0.0
-        cum = np.cumprod(1 + valid)
+        cum = np.concatenate([[1.0], np.cumprod(1 + valid)])
         max_dd = float(np.min(cum / np.maximum.accumulate(cum) - 1))
     avg_turnover = float(returns["turnover"].mean() or 0.0)  # type: ignore[arg-type]
     total_cost = float(returns["cost"].sum() or 0.0)  # type: ignore[arg-type]

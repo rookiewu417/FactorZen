@@ -17,6 +17,7 @@ from factorzen.daily.evaluation.backtest import (
     QuantileLongShortStrategy,
     Strategy,
     StrategyBacktestResult,
+    _summary_stats,
     TopNLongOnlyStrategy,
     run_strategy_backtest,
     trim_backtest_to_first_trade,
@@ -553,6 +554,65 @@ def test_capacity_constraint_partially_fills_trade():
     assert trade["block_reason"] == "capacity"
 
 
+def test_capacity_constraint_uses_open_nav_value_after_overnight_gap():
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 100.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 100.0,
+            },
+            {
+                "trade_date": date(2024, 1, 3),
+                "ts_code": "000001.SZ",
+                "open": 20.0,
+                "close": 20.0,
+                "pre_close": 10.0,
+                "pct_chg": 100.0,
+                "vol": 1000.0,
+                "amount": 100_000_000.0,
+            },
+        ]
+    )
+    factors = _factor(
+        [
+            (date(2024, 1, 1), "000001.SZ", 1.0),
+            (date(2024, 1, 2), "000001.SZ", 1.0),
+        ]
+    )
+
+    result = run_strategy_backtest(
+        ExitOnSecondSignalStrategy(),
+        factors,
+        prices,
+        config=BacktestConfig(
+            initial_capital=100.0,
+            max_participation_rate=1.0,
+            fallback_adv=None,
+        ),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+
+    trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 3)).row(0, named=True)
+    assert trade["filled_delta_weight"] == pytest.approx(-0.5)
+    assert trade["block_reason"] == "capacity"
+
+
 def test_next_open_buy_is_not_blocked_by_same_day_close_limit():
     prices = pl.DataFrame(
         [
@@ -717,6 +777,51 @@ def test_capacity_trailing_adv_ignores_nan_amounts():
     trade = result.trades.sort("trade_date").row(0, named=True)
     assert trade["filled_delta_weight"] == pytest.approx(0.1)
     assert trade["block_reason"] == "capacity"
+
+
+def test_summary_total_cost_uses_period_basis_return_drag():
+    returns = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "gross_return": 0.0,
+                "cost": 0.02,
+                "borrow_cost": 0.0,
+                "net_return": -0.02,
+                "nav": 0.98,
+                "cash_weight": 1.0,
+                "turnover": 0.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "gross_return": 0.0,
+                "cost": 0.03,
+                "borrow_cost": 0.0,
+                "net_return": -0.03,
+                "nav": 0.9506,
+                "cash_weight": 1.0,
+                "turnover": 0.0,
+            },
+        ]
+    )
+    trades = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "prev_weight": 0.0,
+                "target_weight": 1.0,
+                "filled_delta_weight": 1.0,
+                "turnover": 1.0,
+                "cost": 999.0,
+                "block_reason": "",
+            }
+        ]
+    )
+
+    stats = _summary_stats(returns, trades)
+
+    assert stats["portfolio"]["total_cost"] == pytest.approx(0.05)
 
 
 def test_cost_model_reduces_nav():

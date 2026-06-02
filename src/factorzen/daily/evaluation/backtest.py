@@ -537,7 +537,7 @@ def run_strategy_backtest(
                 code=code,
                 delta=target_weight - prev_weight,
                 price_map=price_map,
-                portfolio_value=nav_value * cfg.initial_capital,
+                portfolio_value=open_nav_value * cfg.initial_capital,
                 config=cfg,
                 adv=adv_20d.get(code),
             )
@@ -935,7 +935,7 @@ def _summary_stats(
         cum = np.cumprod(1 + valid)
         max_dd = float(np.min(cum / np.maximum.accumulate(cum) - 1))
     avg_turnover = float(returns["turnover"].mean() or 0.0)  # type: ignore[arg-type]
-    total_cost = float(trades["cost"].sum() or 0.0) if not trades.is_empty() else 0.0  # type: ignore[arg-type]
+    total_cost = float(returns["cost"].sum() or 0.0)  # type: ignore[arg-type]
     stats = {
         "ann_ret": ann_ret,
         "ann_vol": ann_vol,

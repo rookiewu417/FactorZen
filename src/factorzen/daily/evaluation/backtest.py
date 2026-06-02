@@ -569,10 +569,20 @@ def run_strategy_backtest(
         if cost_model is not None:
             short_exposure = sum(abs(w) for w in next_weights.values() if w < 0)
             borrow_cost = short_exposure * cost_model.borrow_rate_per_period(cfg.frequency)
-        gross_return = overnight_return + intraday_return
+        gross_return = (1.0 + overnight_return) * (1.0 + intraday_return) - 1.0
         net_return = gross_return - trade_cost - borrow_cost
         nav_value *= 1.0 + net_return
-        cash_weight = 1.0 - sum(next_weights.values())
+        close_weights = _drift_weights(
+            next_weights, price_map, intraday_return, return_col="intraday_ret"
+        )
+        if abs(1.0 + net_return) > 1e-12:
+            cost_scale = (1.0 + gross_return) / (1.0 + net_return)
+            close_weights = {
+                code: weight * cost_scale
+                for code, weight in close_weights.items()
+                if abs(weight * cost_scale) >= 1e-12
+            }
+        cash_weight = 1.0 - sum(close_weights.values())
         if has_started:
             nav_rows.append(
                 {
@@ -586,7 +596,7 @@ def run_strategy_backtest(
                     "turnover": turnover,
                 }
             )
-            for code, weight in sorted(next_weights.items()):
+            for code, weight in sorted(close_weights.items()):
                 position_rows.append(
                     {
                         "trade_date": execution_date,
@@ -595,7 +605,7 @@ def run_strategy_backtest(
                         "market_value": weight * nav_value * cfg.initial_capital,
                     }
                 )
-        current_weights = next_weights
+        current_weights = close_weights
 
     returns = pl.DataFrame(nav_rows, schema=_returns_schema())
     nav = returns.select(
@@ -823,7 +833,10 @@ def _weighted_return(weights: dict[str, float], price_map: dict[str, dict[str, A
 
 
 def _drift_weights(
-    weights: dict[str, float], price_map: dict[str, dict[str, Any]], portfolio_return: float
+    weights: dict[str, float],
+    price_map: dict[str, dict[str, Any]],
+    portfolio_return: float,
+    return_col: str = "overnight_ret",
 ) -> dict[str, float]:
     denom = 1.0 + portfolio_return
     if abs(denom) < 1e-12:
@@ -831,8 +844,14 @@ def _drift_weights(
     drifted = {}
     for code, weight in weights.items():
         rec = price_map.get(code)
-        asset_ret = float(rec["overnight_ret"]) if rec is not None else 0.0
-        drifted[code] = weight * (1.0 + asset_ret) / denom
+        asset_ret = (
+            float(rec[return_col])
+            if rec is not None and rec.get(return_col) is not None
+            else 0.0
+        )
+        drifted_weight = weight * (1.0 + asset_ret) / denom
+        if abs(drifted_weight) >= 1e-12:
+            drifted[code] = drifted_weight
     return drifted
 
 

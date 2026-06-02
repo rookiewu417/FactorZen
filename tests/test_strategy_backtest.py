@@ -120,6 +120,18 @@ class ExitOnSecondSignalStrategy(Strategy):
         return pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [target]})
 
 
+class EqualTwoStockStrategy(Strategy):
+    name = "equal_two_stock"
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "ts_code": ["000001.SZ", "000002.SZ"],
+                "target_weight": [0.5, 0.5],
+            }
+        )
+
+
 def test_custom_strategy_runs_and_outputs_required_frames():
     result = run_strategy_backtest(
         BuyOneStrategy(),
@@ -152,6 +164,143 @@ def test_next_open_execution_starts_when_prior_signal_is_available():
     assert nav["trade_date"][0] == date(2024, 1, 2)
     assert nav["nav"][0] == pytest.approx(1.1)
     assert result.ret_definition == "open_to_close_with_overnight_carry"
+
+
+def test_overnight_and_intraday_returns_are_compounded():
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 11.0,
+                "pre_close": 10.0,
+                "pct_chg": 10.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 3),
+                "ts_code": "000001.SZ",
+                "open": 12.1,
+                "close": 13.31,
+                "pre_close": 11.0,
+                "pct_chg": 21.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+        ]
+    )
+    factors = _factor(
+        [
+            (date(2024, 1, 1), "000001.SZ", 1.0),
+            (date(2024, 1, 2), "000001.SZ", 1.0),
+        ]
+    )
+
+    result = run_strategy_backtest(
+        BuyOneStrategy(),
+        factors,
+        prices,
+        config=BacktestConfig(
+            initial_capital=1_000_000,
+            max_participation_rate=1.0,
+            fallback_adv=1_000_000.0,
+        ),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+
+    day3 = result.returns.filter(pl.col("trade_date") == date(2024, 1, 3)).row(0, named=True)
+    assert day3["gross_return"] == pytest.approx((1.10 * 1.10) - 1.0)
+    assert day3["net_return"] == pytest.approx((1.10 * 1.10) - 1.0)
+
+
+def test_positions_are_recorded_as_close_weights_after_intraday_drift():
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000002.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 11.0,
+                "pre_close": 10.0,
+                "pct_chg": 10.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000002.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+        ]
+    )
+    factors = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "factor_clean": 1.0,
+            },
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000002.SZ",
+                "factor_clean": 1.0,
+            },
+        ]
+    )
+
+    result = run_strategy_backtest(
+        EqualTwoStockStrategy(),
+        factors,
+        prices,
+        config=BacktestConfig(
+            initial_capital=1_000_000,
+            max_participation_rate=1.0,
+            fallback_adv=1_000_000.0,
+        ),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+
+    positions = result.positions.filter(pl.col("trade_date") == date(2024, 1, 2))
+    weights = dict(zip(positions["ts_code"].to_list(), positions["weight"].to_list(), strict=True))
+    assert weights["000001.SZ"] == pytest.approx(0.55 / 1.05)
+    assert weights["000002.SZ"] == pytest.approx(0.50 / 1.05)
 
 
 def test_strategy_output_validation_errors_are_clear():

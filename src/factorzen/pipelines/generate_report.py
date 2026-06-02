@@ -12,7 +12,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
@@ -45,7 +45,9 @@ from factorzen.daily.evaluation.backtest import (
     trim_backtest_to_first_trade,
 )
 from factorzen.daily.evaluation.ic_analysis import (
+    BothIcResult,
     ICAnalysisResult,
+    IcStats,
     compute_fwd_returns,
     compute_rank_ic,
 )
@@ -174,9 +176,11 @@ def _decide_backtest_direction(ic_result: ICAnalysisResult) -> dict[str, Any]:
     }
 
 
-def _apply_backtest_direction(clean_df: pl.DataFrame, decision: dict[str, Any]) -> pl.DataFrame:
+def _apply_backtest_direction(
+    clean_df: pl.DataFrame, decision: dict[str, Any] | None
+) -> pl.DataFrame:
     """Flip factor_clean for backtesting when the IC decision requires reverse direction."""
-    if decision.get("direction") != "reversed":
+    if not decision or decision.get("direction") != "reversed":
         return clean_df
     return clean_df.with_columns((-pl.col("factor_clean")).alias("factor_clean"))
 
@@ -549,7 +553,7 @@ def _build_report_deep_results(
     args: argparse.Namespace,
 ) -> tuple[Any | None, Any | None, Any | None]:
     """Compute optional deep report outputs controlled by report CLI flags."""
-    pearson_ic_result = None
+    pearson_ic_result: IcStats | None = None
     neutralized_ic_result = None
     event_study_result = None
 
@@ -565,18 +569,23 @@ def _build_report_deep_results(
                 how="inner",
             )
             if args.ic_method == "both":
-                pearson_ic_result = compute_ic(
+                both_ic = compute_ic(
                     merged_simple,
                     factor_col="factor_clean",
                     ret_col="ret_1d",
                     method="both",
-                )["pearson"]
+                )
+                # method="both" 返回 BothIcResult(TypedDict)；取 pearson 分量为 IcStats
+                pearson_ic_result = cast(BothIcResult, both_ic)["pearson"]
             else:
-                pearson_ic_result = compute_ic(
-                    merged_simple,
-                    factor_col="factor_clean",
-                    ret_col="ret_1d",
-                    method="pearson",
+                pearson_ic_result = cast(
+                    IcStats,
+                    compute_ic(
+                        merged_simple,
+                        factor_col="factor_clean",
+                        ret_col="ret_1d",
+                        method="pearson",
+                    ),
                 )
             logger.info(
                 f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, "

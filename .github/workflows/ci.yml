@@ -7,14 +7,20 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+# 最小权限:CI 只需读取仓库内容
+permissions:
+  contents: read
+
+# 同一分支/PR 的新提交取消正在进行的旧运行,节省额度
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
     env:
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-    strategy:
-      matrix:
-        python-version: ["3.11"]
 
     steps:
       - uses: actions/checkout@v4

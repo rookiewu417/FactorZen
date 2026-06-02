@@ -1,16 +1,22 @@
+# 通过 pixi 运行,保证 pre-commit == CI == 本地 完全一致(避免 hook 版本漂移)。
+# 需先 `pixi install`,并在仓库根执行 `pre-commit install`。
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.0
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        name: ruff check
+        entry: pixi run -q ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: ruff-format
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.9.0
-    hooks:
+        name: ruff format
+        entry: pixi run -q ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: mypy
-        args: [--config-file=pyproject.toml]
-        additional_dependencies:
-          - types-all
-        files: ^(common|daily/evaluation|daily/preprocessing)/
+        name: mypy (src/factorzen)
+        entry: pixi run -q mypy --cache-dir .cache/mypy --no-sqlite-cache
+        language: system
+        pass_filenames: false

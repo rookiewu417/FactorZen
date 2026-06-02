@@ -1,4 +1,4 @@
-"""Strategy backtest engine behavior tests."""
+﻿"""Strategy backtest engine behavior tests."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from daily.evaluation.backtest import (
+from factorzen.daily.evaluation.backtest import (
     BacktestConfig,
     BacktestContext,
     CostModel,
@@ -19,15 +19,19 @@ from daily.evaluation.backtest import (
     StrategyBacktestResult,
     TopNLongOnlyStrategy,
     run_strategy_backtest,
+    trim_backtest_to_first_trade,
 )
-from daily.evaluation.cost_models import SquareRootImpactCostModel
+from factorzen.daily.evaluation.cost_models import SquareRootImpactCostModel
 
 
 def _prices(
     *,
+    day1_amount: float = 1_000_000.0,
+    day2_open: float | None = 10.0,
     day2_vol: float = 1000.0,
     day2_pct: float = 0.0,
     day2_amount: float = 1_000_000.0,
+    day3_open: float = 11.0,
     day3_pct: float = 0.0,
 ) -> pl.DataFrame:
     return pl.DataFrame(
@@ -40,12 +44,12 @@ def _prices(
                 "pre_close": 10.0,
                 "pct_chg": 0.0,
                 "vol": 1000.0,
-                "amount": 1_000_000.0,
+                "amount": day1_amount,
             },
             {
                 "trade_date": date(2024, 1, 2),
                 "ts_code": "000001.SZ",
-                "open": 10.0,
+                "open": day2_open,
                 "close": 11.0,
                 "pre_close": 10.0,
                 "pct_chg": day2_pct,
@@ -55,7 +59,7 @@ def _prices(
             {
                 "trade_date": date(2024, 1, 3),
                 "ts_code": "000001.SZ",
-                "open": 11.0,
+                "open": day3_open,
                 "close": 12.0,
                 "pre_close": 11.0,
                 "pct_chg": day3_pct,
@@ -135,7 +139,7 @@ def test_custom_strategy_runs_and_outputs_required_frames():
     )
 
 
-def test_next_open_execution_ignores_same_day_return_and_starts_at_one():
+def test_next_open_execution_starts_when_prior_signal_is_available():
     result = run_strategy_backtest(
         BuyOneStrategy(),
         _factor(),
@@ -144,10 +148,9 @@ def test_next_open_execution_ignores_same_day_return_and_starts_at_one():
         cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
     )
 
-    first_nav = result.nav.sort("trade_date")["nav"][0]
-    second_nav = result.nav.sort("trade_date")["nav"][1]
-    assert first_nav == pytest.approx(1.0)
-    assert second_nav == pytest.approx(1.1)
+    nav = result.nav.sort("trade_date")
+    assert nav["trade_date"][0] == date(2024, 1, 2)
+    assert nav["nav"][0] == pytest.approx(1.1)
     assert result.ret_definition == "open_to_close_with_overnight_carry"
 
 
@@ -160,15 +163,64 @@ def test_strategy_output_validation_errors_are_clear():
         run_strategy_backtest(BadNaNStrategy(), _factor(), _prices())
 
 
+def test_trim_backtest_to_first_trade_recomputes_cached_summary():
+    result = run_strategy_backtest(
+        BuyOneStrategy(),
+        _factor(),
+        _prices(),
+        config=BacktestConfig(initial_capital=1_000_000, max_participation_rate=1.0),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+    leading = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2023, 12, 29),
+                "gross_return": 0.0,
+                "cost": 0.0,
+                "borrow_cost": 0.0,
+                "net_return": 0.0,
+                "nav": 1.0,
+                "cash_weight": 1.0,
+                "turnover": 0.0,
+            }
+        ]
+    )
+    cached = StrategyBacktestResult(
+        factor_name=result.factor_name,
+        strategy_name=result.strategy_name,
+        n_groups=result.n_groups,
+        returns=pl.concat([leading, result.returns]),
+        nav=pl.concat(
+            [
+                leading.select(
+                    ["trade_date", "gross_return", "cost", "borrow_cost", "net_return", "nav", "cash_weight"]
+                ),
+                result.nav,
+            ]
+        ),
+        positions=result.positions,
+        trades=result.trades,
+        summary_stats={"long_short": {"sharpe": -999.0}},
+        config=result.config,
+        frequency=result.frequency,
+        ret_definition=result.ret_definition,
+    )
+
+    trimmed = trim_backtest_to_first_trade(cached)
+
+    assert trimmed.returns["trade_date"][0] == date(2024, 1, 2)
+    assert trimmed.summary_stats["long_short"]["sharpe"] != -999.0
+
+
 def test_suspended_stock_blocks_trade():
-    result = run_strategy_backtest(BuyOneStrategy(), _factor(), _prices(day2_vol=0.0))
+    result = run_strategy_backtest(BuyOneStrategy(), _factor(), _prices(day2_open=None))
     trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
     assert trade["filled_delta_weight"] == pytest.approx(0.0)
-    assert trade["block_reason"] == "suspended"
+    assert trade["block_reason"] == "missing_price"
 
 
 def test_limit_up_blocks_buy_but_allows_sell():
-    result = run_strategy_backtest(BuyOneStrategy(), _factor(), _prices(day2_pct=9.9))
+    result = run_strategy_backtest(BuyOneStrategy(), _factor(), _prices(day2_open=11.0, day2_pct=9.9))
     buy_trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
     assert buy_trade["filled_delta_weight"] == pytest.approx(0.0)
     assert buy_trade["block_reason"] == "limit_up"
@@ -184,7 +236,7 @@ def test_limit_down_blocks_sell():
     result = run_strategy_backtest(
         ExitOnSecondSignalStrategy(),
         factors,
-        _prices(day3_pct=-9.9),
+        _prices(day3_open=9.9, day3_pct=-9.9),
         config=BacktestConfig(max_participation_rate=1.0),
         cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
     )
@@ -198,11 +250,128 @@ def test_capacity_constraint_partially_fills_trade():
     result = run_strategy_backtest(
         BuyOneStrategy(),
         _factor(),
-        _prices(day2_amount=100.0),
+        _prices(day1_amount=100.0),
         config=BacktestConfig(initial_capital=100.0, max_participation_rate=0.1),
         cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
     )
     trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
+    assert trade["filled_delta_weight"] == pytest.approx(0.1)
+    assert trade["block_reason"] == "capacity"
+
+
+def test_next_open_buy_is_not_blocked_by_same_day_close_limit():
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 11.0,
+                "pre_close": 10.0,
+                "pct_chg": 10.0,
+                "vol": 1000.0,
+                "amount": 100_000_000.0,
+            },
+        ]
+    )
+
+    result = run_strategy_backtest(
+        BuyOneStrategy(),
+        _factor(),
+        prices,
+        config=BacktestConfig(initial_capital=1_000_000, max_participation_rate=1.0),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+
+    trade = result.trades.sort("trade_date").row(0, named=True)
+    assert trade["filled_delta_weight"] == pytest.approx(1.0)
+    assert trade["block_reason"] == ""
+
+
+def test_next_open_buy_is_blocked_when_open_is_at_limit_up():
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 11.0,
+                "close": 11.0,
+                "pre_close": 10.0,
+                "pct_chg": 10.0,
+                "vol": 1000.0,
+                "amount": 100_000_000.0,
+            },
+        ]
+    )
+
+    result = run_strategy_backtest(
+        BuyOneStrategy(),
+        _factor(),
+        prices,
+        config=BacktestConfig(initial_capital=1_000_000, max_participation_rate=1.0),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+
+    trade = result.trades.sort("trade_date").row(0, named=True)
+    assert trade["filled_delta_weight"] == pytest.approx(0.0)
+    assert trade["block_reason"] == "limit_up"
+
+
+def test_capacity_uses_trailing_adv_not_execution_day_amount():
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 100.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 100_000_000.0,
+            },
+        ]
+    )
+
+    result = run_strategy_backtest(
+        BuyOneStrategy(),
+        _factor(),
+        prices,
+        config=BacktestConfig(initial_capital=100.0, max_participation_rate=0.1),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+
+    trade = result.trades.sort("trade_date").row(0, named=True)
     assert trade["filled_delta_weight"] == pytest.approx(0.1)
     assert trade["block_reason"] == "capacity"
 
@@ -271,7 +440,7 @@ def test_square_root_impact_uses_history_adv_for_trade_cost():
         BuyBothStrategy(),
         factor,
         pl.DataFrame(price_rows),
-        config=BacktestConfig(max_participation_rate=1.0),
+        config=BacktestConfig(max_participation_rate=100.0),
         cost_model=SquareRootImpactCostModel(alpha=0.1, fallback_adv=10_000_000.0),
     )
 
@@ -360,7 +529,7 @@ def test_factor_weighted_strategy_supports_long_only_and_long_short():
 
 def test_optimizer_strategy_end_to_end():
     """OptimizerStrategy 端到端回测跑通，结果结构正确。"""
-    from daily.optimization.mean_variance import MeanVarianceOptimizer
+    from factorzen.daily.optimization.mean_variance import MeanVarianceOptimizer
 
     # Build a multi-stock, multi-day dataset
     stocks = ["000001.SZ", "000002.SZ", "000003.SZ"]

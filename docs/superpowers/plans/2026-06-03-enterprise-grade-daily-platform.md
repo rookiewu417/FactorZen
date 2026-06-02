@@ -111,3 +111,6 @@ pixi run coverage
 
 ## 进度记录
 - 2026-06-03:完成审计,产出本计划。开始执行 Phase 0。
+- 2026-06-03:**Phase 0 完成** —— 修复 10 处 mypy 错误(tear_sheet/backtest/generate_report),xfail 冻结的 intraday WIP 测试。本地 `lint ✅ / typecheck ✅(87 文件 0 错)/ test ✅(658 passed, 2 skipped, 1 xfailed)`。提交 5baa4dd、352394e。
+- 2026-06-03:**Phase 1 完成** —— 修复 README 及 docs 的 GBK 乱码(6d1d195);pre-commit 改为 pixi local hooks 并修死路径,CI 加最小权限+并发取消,新增 CONTRIBUTING/SECURITY/CHANGELOG/PR 模板(4fbe69a)。
+- 待办:推送分支 + 开 PR 验证 CI 转绿;Phase 2+(报告模块解耦、可复现性强化)列入后续。

@@ -17,8 +17,8 @@ from factorzen.daily.evaluation.backtest import (
     QuantileLongShortStrategy,
     Strategy,
     StrategyBacktestResult,
-    _summary_stats,
     TopNLongOnlyStrategy,
+    _summary_stats,
     run_strategy_backtest,
     trim_backtest_to_first_trade,
 )

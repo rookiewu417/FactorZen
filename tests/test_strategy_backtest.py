@@ -120,6 +120,26 @@ class ExitOnSecondSignalStrategy(Strategy):
         return pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [target]})
 
 
+class CaptureCurrentPositionsStrategy(Strategy):
+    name = "capture_current_positions"
+
+    def __init__(self) -> None:
+        self.captured_positions: pl.DataFrame | None = None
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        if context.execution_date == date(2024, 1, 3):
+            self.captured_positions = context.current_positions
+        return pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [1.0]})
+
+
+class ExitAfterCostNeutralEntryStrategy(Strategy):
+    name = "exit_after_cost_neutral_entry"
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        target = 1.0 / 1.01 if context.signal_date == date(2024, 1, 1) else 0.0
+        return pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [target]})
+
+
 class EqualTwoStockStrategy(Strategy):
     name = "equal_two_stock"
 
@@ -223,6 +243,131 @@ def test_overnight_and_intraday_returns_are_compounded():
     day3 = result.returns.filter(pl.col("trade_date") == date(2024, 1, 3)).row(0, named=True)
     assert day3["gross_return"] == pytest.approx((1.10 * 1.10) - 1.0)
     assert day3["net_return"] == pytest.approx((1.10 * 1.10) - 1.0)
+
+
+def test_open_basis_trade_cost_is_scaled_to_prior_close_return_basis():
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 3),
+                "ts_code": "000001.SZ",
+                "open": 20.0,
+                "close": 20.0,
+                "pre_close": 10.0,
+                "pct_chg": 100.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+        ]
+    )
+    factors = _factor(
+        [
+            (date(2024, 1, 1), "000001.SZ", 1.0),
+            (date(2024, 1, 2), "000001.SZ", 1.0),
+        ]
+    )
+
+    result = run_strategy_backtest(
+        ExitAfterCostNeutralEntryStrategy(),
+        factors,
+        prices,
+        config=BacktestConfig(
+            initial_capital=100.0,
+            max_participation_rate=1.0,
+            fallback_adv=1_000_000.0,
+        ),
+        cost_model=CostModel(commission=0.01, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+
+    day3 = result.returns.filter(pl.col("trade_date") == date(2024, 1, 3)).row(0, named=True)
+    sell_trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 3)).row(
+        0, named=True
+    )
+    assert day3["gross_return"] == pytest.approx(1.0)
+    assert sell_trade["cost"] == pytest.approx(0.01)
+    assert day3["cost"] == pytest.approx(0.02)
+    assert day3["net_return"] == pytest.approx(0.98)
+
+
+def test_current_positions_market_value_uses_open_nav_after_overnight_gap():
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 3),
+                "ts_code": "000001.SZ",
+                "open": 20.0,
+                "close": 20.0,
+                "pre_close": 10.0,
+                "pct_chg": 100.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+        ]
+    )
+    factors = _factor(
+        [
+            (date(2024, 1, 1), "000001.SZ", 1.0),
+            (date(2024, 1, 2), "000001.SZ", 1.0),
+        ]
+    )
+    strategy = CaptureCurrentPositionsStrategy()
+
+    run_strategy_backtest(
+        strategy,
+        factors,
+        prices,
+        config=BacktestConfig(
+            initial_capital=100.0,
+            max_participation_rate=1.0,
+            fallback_adv=1_000_000.0,
+        ),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+
+    assert strategy.captured_positions is not None
+    position = strategy.captured_positions.row(0, named=True)
+    assert position["weight"] == pytest.approx(1.0)
+    assert position["market_value"] == pytest.approx(200.0)
 
 
 def test_positions_are_recorded_as_close_weights_after_intraday_drift():

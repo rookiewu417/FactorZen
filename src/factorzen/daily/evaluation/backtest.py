@@ -491,6 +491,7 @@ def run_strategy_backtest(
 
         overnight_return = _weighted_return(current_weights, price_map, "overnight_ret")
         open_weights = _drift_weights(current_weights, price_map, overnight_return)
+        open_nav_value = nav_value * (1.0 + overnight_return)
 
         target_weights: dict[str, float] = {}
         adv_20d: dict[str, float] = {}
@@ -503,7 +504,9 @@ def run_strategy_backtest(
                 execution_date=execution_date,
                 factor_slice=factor_by_date[signal_date],
                 price_slice=price_slice,
-                current_positions=_positions_frame(open_weights, nav_value, cfg.initial_capital),
+                current_positions=_positions_frame(
+                    open_weights, open_nav_value, cfg.initial_capital
+                ),
                 factor_col=cfg.factor_col,
                 price_history=_get_price_history(price, trade_dates, i, _lookback),
                 adv_20d=adv_20d,
@@ -570,12 +573,15 @@ def run_strategy_backtest(
             short_exposure = sum(abs(w) for w in next_weights.values() if w < 0)
             borrow_cost = short_exposure * cost_model.borrow_rate_per_period(cfg.frequency)
         gross_return = (1.0 + overnight_return) * (1.0 + intraday_return) - 1.0
-        net_return = gross_return - trade_cost - borrow_cost
+        period_cost_scale = 1.0 + overnight_return
+        period_trade_cost = trade_cost * period_cost_scale
+        period_borrow_cost = borrow_cost * period_cost_scale
+        net_return = gross_return - period_trade_cost - period_borrow_cost
         nav_value *= 1.0 + net_return
         close_weights = _drift_weights(
             next_weights, price_map, intraday_return, return_col="intraday_ret"
         )
-        if abs(1.0 + net_return) > 1e-12:
+        if 1.0 + net_return > 1e-12:
             cost_scale = (1.0 + gross_return) / (1.0 + net_return)
             close_weights = {
                 code: weight * cost_scale
@@ -588,8 +594,8 @@ def run_strategy_backtest(
                 {
                     "trade_date": execution_date,
                     "gross_return": gross_return,
-                    "cost": trade_cost,
-                    "borrow_cost": borrow_cost,
+                    "cost": period_trade_cost,
+                    "borrow_cost": period_borrow_cost,
                     "net_return": net_return,
                     "nav": nav_value,
                     "cash_weight": cash_weight,

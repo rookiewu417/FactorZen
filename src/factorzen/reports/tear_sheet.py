@@ -129,7 +129,7 @@ def _format_sparse_x_axis(ax: plt.Axes, *, is_date_axis: bool, max_ticks: int = 
     ax.tick_params(axis="x", labelsize=8)
     for label in ax.get_xticklabels():
         label.set_rotation(0)
-        label.set_ha("center")
+        label.set_horizontalalignment("center")
 
 
 # ── 图表生成 ──────────────────────────────────────────────────────────
@@ -480,6 +480,7 @@ def _make_attribution_chart(brinson_result: Any, barra_result: Any) -> str | Non
     ax_idx = 0
 
     if has_brinson_plot:
+        assert sector_df is not None  # has_brinson_plot 已保证非空
         sector_df = _prepare_brinson_plot_frame(sector_df)
         sdf = sector_df.to_pandas()
         ax = axes[ax_idx]
@@ -1946,11 +1947,11 @@ def _display_strategy_name(name: str, strategy_type: str, bt_result: Any) -> str
         return f"{optimizer}优化组合" if optimizer else "优化组合"
     if "topn" in lowered:
         top_n = params.get("top_n") or re.search(r"topn[_-]?(\d+)", lowered)
-        top_n_value = top_n.group(1) if hasattr(top_n, "group") else top_n
+        top_n_value = top_n.group(1) if isinstance(top_n, re.Match) else top_n
         return f"TopN 多头 {top_n_value}" if top_n_value else "TopN 多头"
     if "quantile" in lowered or "quantile_ls" in lowered:
         quantiles = params.get("quantiles") or re.search(r"(?:quantile_ls|ls)[_-]?(\d+)", lowered)
-        quantile_value = quantiles.group(1) if hasattr(quantiles, "group") else quantiles
+        quantile_value = quantiles.group(1) if isinstance(quantiles, re.Match) else quantiles
         return f"{quantile_value} 分位多空" if quantile_value else "分位数组合多空"
     if "factor_weighted" in lowered:
         return "因子加权多空" if "ls" in lowered or "long_short" in lowered else "因子加权组合"

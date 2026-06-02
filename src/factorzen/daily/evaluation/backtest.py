@@ -497,6 +497,7 @@ def run_strategy_backtest(
         adv_20d: dict[str, float] = {}
         has_signal = signal_date is not None and signal_date in factor_by_date
         if has_signal:
+            assert signal_date is not None  # has_signal 已蕴含
             has_started = True
             adv_20d = _compute_adv_20d(price, trade_dates, i)
             context = BacktestContext(

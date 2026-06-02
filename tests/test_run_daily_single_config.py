@@ -27,6 +27,50 @@ def test_build_forward_return_frame_prefers_adjusted_close():
     assert ret_df["fwd_ret_1d"][0] == pytest.approx(0.0)
 
 
+def test_build_forward_return_frame_falls_back_to_close_without_adjusted_close():
+    from factorzen.pipelines.daily_single import _build_forward_return_frame
+
+    daily = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2), date(2024, 1, 3)],
+            "ts_code": ["000001.SZ", "000001.SZ"],
+            "close": [10.0, 5.0],
+        }
+    )
+
+    ret_df = _build_forward_return_frame(daily)
+
+    assert ret_df["ret"][1] == pytest.approx(-0.5)
+    assert ret_df["fwd_ret_1d"][0] == pytest.approx(-0.5)
+
+
+def test_build_forward_return_frame_falls_back_per_stock_for_partial_adjusted_close():
+    from factorzen.pipelines.daily_single import _build_forward_return_frame
+
+    daily = pl.DataFrame(
+        {
+            "trade_date": [
+                date(2024, 1, 3),
+                date(2024, 1, 3),
+                date(2024, 1, 2),
+                date(2024, 1, 2),
+            ],
+            "ts_code": ["000002.SZ", "000001.SZ", "000002.SZ", "000001.SZ"],
+            "close": [50.0, 5.0, 100.0, 10.0],
+            "close_adj": [220.0, None, 200.0, 10.0],
+        }
+    )
+
+    ret_df = _build_forward_return_frame(daily)
+    stock_a = ret_df.filter(pl.col("ts_code") == "000001.SZ").sort("trade_date")
+    stock_b = ret_df.filter(pl.col("ts_code") == "000002.SZ").sort("trade_date")
+
+    assert stock_a["ret"][1] == pytest.approx(-0.5)
+    assert stock_a["fwd_ret_1d"][0] == pytest.approx(-0.5)
+    assert stock_b["ret"][1] == pytest.approx(0.1)
+    assert stock_b["fwd_ret_1d"][0] == pytest.approx(0.1)
+
+
 def test_build_advanced_results_includes_sector_and_size_breakdowns():
     from factorzen.pipelines.daily_single import _build_advanced_results
 

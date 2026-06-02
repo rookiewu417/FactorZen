@@ -268,8 +268,29 @@ def _build_neutralized_ic_frame(
 
 def _build_forward_return_frame(daily: pl.DataFrame) -> pl.DataFrame:
     """Build IC forward-return labels, preferring adjusted close when available."""
-    price_col = "close_adj" if "close_adj" in daily.columns else "close"
-    ret_df = daily.select(["trade_date", "ts_code", price_col]).sort(["ts_code", "trade_date"])
+    if "close_adj" not in daily.columns:
+        price_col = "close"
+        ret_df = daily.select(["trade_date", "ts_code", price_col]).sort(["ts_code", "trade_date"])
+        ret_df = ret_df.with_columns(
+            (pl.col(price_col) / pl.col(price_col).shift(1).over("ts_code") - 1).alias("ret")
+        )
+        return compute_fwd_returns(ret_df, ret_col="ret", price_col=price_col)
+
+    price_col = "_label_price"
+    valid_adj = (
+        (pl.col("close_adj").is_not_null() & pl.col("close_adj").is_finite())
+        .fill_null(False)
+        .all()
+        .over("ts_code")
+    )
+    ret_df = (
+        daily.select(["trade_date", "ts_code", "close", "close_adj"])
+        .with_columns(
+            pl.when(valid_adj).then(pl.col("close_adj")).otherwise(pl.col("close")).alias(price_col)
+        )
+        .select(["trade_date", "ts_code", price_col])
+        .sort(["ts_code", "trade_date"])
+    )
     ret_df = ret_df.with_columns(
         (pl.col(price_col) / pl.col(price_col).shift(1).over("ts_code") - 1).alias("ret")
     )

@@ -91,9 +91,21 @@
 
 ---
 
-## Phase 2+ — 路线图(后续,不在本次全部执行)
+## Phase 2 — 报告模块解耦(进行中)
 
-- **报告模块解耦:** `tear_sheet.py`(2986 行)按职责拆分 `charts/ summaries/ scoring/ rendering/`,保持 658 测试全绿。
+`tear_sheet.py`(2986 行巨石)按职责逐步拆分,全程保持测试绿:
+
+- [x] `reports/_formatting.py` —— 格式化/数值/安全取值工具(已抽取)
+- [x] `reports/_scoring.py` —— 评级评分卡 `FactorRating` + `_score_*` + `_compute_factor_rating`(已抽取)
+- [x] `reports/_charts.py` —— 全部 `_make_*_chart` + matplotlib 设置 + 图表辅助(已抽取,705 行)
+- [ ] `reports/_summaries.py` —— `_build_*_summary` / `_build_*_notice` / `_display_*`(后续;函数分散,需多段抽取)
+- [ ] `reports/_strategy.py` —— 策略命名/口径/约束/交易摘要(后续)
+
+**当前:** `tear_sheet.py` 2986 → 2050 行(-31%);4 个聚焦模块;658 passed / 2 skipped / 1 xfailed,mypy/ruff 全绿。`tear_sheet.py` 经 re-export 保持对外导入接口不变。
+
+## Phase 3+ — 路线图(后续)
+
+- **报告模块解耦收尾:** 抽取 summaries / strategy 两个模块。
 - **可复现性强化:** manifest 记录 git SHA / pixi.lock hash / dirty 状态;`workspace/factor_evaluations/index.jsonl` run 索引(对齐 evolution-plan Phase 2)。
 - **可观测性:** 结构化日志、运行耗时/数据覆盖率指标落盘。
 - **数据契约:** 用 pydantic/参数化校验固化评估输入 schema,异常早失败。

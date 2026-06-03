@@ -6,6 +6,23 @@ import pytest
 from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
 
 
+def test_compute_fwd_returns_raises_on_missing_key_columns():
+    # 缺少 ts_code → 应早失败并给出清晰错误,而非晦涩的 polars 异常
+    df = pl.DataFrame({"trade_date": [date(2024, 1, 2)], "close": [100.0]})
+    with pytest.raises(ValueError) as exc:
+        compute_fwd_returns(df, horizons=[1])
+    assert "ts_code" in str(exc.value)
+
+
+def test_compute_fwd_returns_raises_when_no_price_or_ret_column():
+    # 既无 close 也无 ret_col → 应早失败
+    df = pl.DataFrame({"trade_date": [date(2024, 1, 2)], "ts_code": ["000001.SZ"]})
+    with pytest.raises(ValueError) as exc:
+        compute_fwd_returns(df, horizons=[1], ret_col="ret")
+    msg = str(exc.value)
+    assert "close" in msg and "ret" in msg
+
+
 def test_fwd_ret_1d_uses_next_close_over_current_close():
     df = pl.DataFrame(
         {

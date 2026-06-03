@@ -30,6 +30,16 @@ for _font in ["Microsoft YaHei", "SimHei", "sans-serif"]:
 
 from factorzen.config.constants import MIN_BACKTEST_IR  # noqa: E402
 from factorzen.core.logger import get_logger  # noqa: E402
+from factorzen.reports._formatting import (  # noqa: E402  (re-export 供模板与测试使用)
+    _clamp,
+    _finite_float,
+    _format_metric_number,
+    _format_metric_percent,
+    _is_finite_metric,
+    _num,
+    _safe_attr,
+    _same_direction,
+)
 
 logger = get_logger(__name__)
 
@@ -40,36 +50,6 @@ RATING_COMPONENT_MAX_SCORES = {
     "鲁棒性": 15,
     "结构质量": 10,
 }
-
-
-def _finite_float(value: Any) -> float | None:
-    try:
-        if value is None:
-            return None
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    return numeric if np.isfinite(numeric) else None
-
-
-def _format_metric_number(value: Any, digits: int = 4, empty: str = "样本不足") -> str:
-    numeric = _finite_float(value)
-    if numeric is None:
-        return empty
-    text = f"{numeric:.{int(digits)}f}"
-    return text[1:] if text.startswith("-") and float(text) == 0.0 else text
-
-
-def _format_metric_percent(value: Any, digits: int = 1, empty: str = "样本不足") -> str:
-    numeric = _finite_float(value)
-    if numeric is None:
-        return empty
-    text = f"{numeric * 100:.{int(digits)}f}"
-    return f"{text[1:] if text.startswith('-') and float(text) == 0.0 else text}%"
-
-
-def _is_finite_metric(value: Any) -> bool:
-    return _finite_float(value) is not None
 
 
 # ── 模板加载 ──────────────────────────────────────────────────────────
@@ -91,13 +71,6 @@ def _fig_to_base64(fig: plt.Figure) -> str:
     encoded = base64.b64encode(buf.read()).decode("utf-8")
     plt.close(fig)
     return encoded
-
-
-def _safe_attr(obj: Any, attr: str, default: Any = None) -> Any:
-    """安全获取对象属性。"""
-    if obj is not None and hasattr(obj, attr):
-        return getattr(obj, attr)
-    return default
 
 
 def _with_plot_dates(frame: Any, date_col: str = "trade_date") -> tuple[Any, str, bool]:
@@ -1446,19 +1419,6 @@ class FactorRating:
     caps: list[str]
     positives: list[str]
     warnings: list[str]
-
-
-def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    return max(low, min(high, value))
-
-
-def _num(value: Any, default: float = 0.0) -> float:
-    numeric = _finite_float(value)
-    return default if numeric is None else numeric
-
-
-def _same_direction(a: float, b: float) -> bool:
-    return a == 0 or b == 0 or (a > 0) == (b > 0)
 
 
 def _score_from_drawdown(max_dd: float | None) -> float:

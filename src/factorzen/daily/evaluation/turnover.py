@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import polars as pl
 
+from factorzen.core.validation import require_columns
+
 
 @dataclass
 class TurnoverResult:
@@ -36,6 +38,7 @@ def compute_turnover(
         factor_col: 因子列名
         n_groups: 分组数
     """
+    require_columns(factor_df, ["trade_date", "ts_code", factor_col], context="compute_turnover")
     # 每日分组
     df = (
         factor_df.with_columns(

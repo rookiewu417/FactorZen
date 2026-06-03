@@ -18,7 +18,7 @@
 - **可复现性:** `run_experiment` 在工作树 dirty 时 `logger.warning` 提示;manifest 增记 `duration_seconds`。
 
 ### Added
-- **数据契约:** `core/validation.py::require_columns` 列契约校验;`compute_fwd_returns` 入口对 `ts_code`/`trade_date` 及价格/收益列做 fail-fast 校验,畸形输入给出清晰错误。
+- **数据契约:** `core/validation.py::require_columns` 列契约校验;`compute_fwd_returns`、`compute_turnover` 入口及 `backtest._prepare_factor_df`/`_prepare_price_df` 对必需列做 fail-fast 校验,畸形输入给出清晰错误(列出缺失列与实际列)。
 - 企业治理文件:`CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`.github/PULL_REQUEST_TEMPLATE.md`。
 - 升级计划:`docs/superpowers/plans/2026-06-03-enterprise-grade-daily-platform.md`。
 

@@ -27,6 +27,7 @@ from factorzen.config.constants import (
     TRADING_DAYS_PER_YEAR,
 )
 from factorzen.core.universe import _get_board_limit
+from factorzen.core.validation import require_columns
 from factorzen.daily.evaluation.cost_models import CostModelBase
 
 
@@ -692,14 +693,12 @@ def _empty_weights() -> pl.DataFrame:
 
 
 def _prepare_factor_df(df: pl.DataFrame, factor_col: str) -> pl.DataFrame:
-    if "trade_date" not in df.columns or "ts_code" not in df.columns or factor_col not in df.columns:
-        raise ValueError(f"factor_df must contain trade_date, ts_code, {factor_col}")
+    require_columns(df, ["trade_date", "ts_code", factor_col], context="factor_df")
     return _ensure_date(df, "trade_date").select(["trade_date", "ts_code", factor_col])
 
 
 def _prepare_price_df(df: pl.DataFrame) -> pl.DataFrame:
-    if "trade_date" not in df.columns or "ts_code" not in df.columns or "close" not in df.columns:
-        raise ValueError("price_df must contain trade_date, ts_code, close")
+    require_columns(df, ["trade_date", "ts_code", "close"], context="price_df")
     out = _ensure_date(df, "trade_date")
     if "open" not in out.columns:
         out = out.with_columns(pl.col("close").alias("open"))

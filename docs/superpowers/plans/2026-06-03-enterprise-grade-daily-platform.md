@@ -116,7 +116,9 @@
 
 - [x] **可复用列契约校验** `core/validation.py::require_columns` —— 缺列时抛清晰 `ValueError`(列出缺失列与实际列)。
 - [x] **评估入口 fail-fast** —— `compute_fwd_returns` 入口校验 `ts_code`/`trade_date` 及 `close`|`ret` 之一,畸形输入早失败而非产出空洞结论或晦涩 polars 异常。
-- 均 TDD(test_validation 3 + test_fwd_returns 2 新增)。
+- [x] **契约推广** —— `compute_turnover` 加列校验(原无);`backtest._prepare_factor_df`/`_prepare_price_df` 升级用 `require_columns`(错误信息现列出实际列)。
+- 均 TDD(test_validation 3 + test_fwd_returns 2 + test_evaluation_contracts 4 新增)。
+- 归因(`brinson_attribution`/`barra_style_attribution`)当前在日频管线 deferred,契约推广留作后续。
 
 ## Phase 5+ — 路线图(后续)
 

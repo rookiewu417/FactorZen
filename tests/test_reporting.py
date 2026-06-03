@@ -21,11 +21,11 @@ from factorzen.daily.evaluation.backtest import BacktestResult
 from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
 from factorzen.daily.evaluation.turnover import TurnoverResult
 from factorzen.daily.evaluation.walk_forward import WalkForwardFoldResult, WalkForwardResult
+from factorzen.reports._charts import _prepare_brinson_plot_frame
 from factorzen.reports.tear_sheet import (
     _compute_factor_rating,
     _format_metric_number,
     _format_metric_percent,
-    _prepare_brinson_plot_frame,
     generate_tear_sheet,
 )
 

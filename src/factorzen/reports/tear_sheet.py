@@ -1,35 +1,50 @@
-﻿"""Factor Tear Sheet 报告引擎。
+"""Factor Tear Sheet 报告引擎。
 
 生成包含目录、综合结论、收益表现、预测能力、结构检验、交易可行性、
 稳健性验证、风险归因和附录的 HTML 因子研究报告。
 """
 
-import base64
-import io
 import re
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import jinja2
-import matplotlib
 import numpy as np
 import polars as pl
 
-matplotlib.use("Agg")  # 非交互后端，不弹窗
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
-
-# Windows 中文字体支持（优先 Microsoft YaHei，回退 SimHei）
-for _font in ["Microsoft YaHei", "SimHei", "sans-serif"]:
-    matplotlib.rcParams["font.family"] = _font
-    matplotlib.rcParams["axes.unicode_minus"] = False
-    break
-
-from factorzen.config.constants import MIN_BACKTEST_IR  # noqa: E402
-from factorzen.core.logger import get_logger  # noqa: E402
+from factorzen.core.logger import get_logger
+from factorzen.reports._charts import (
+    _event_study_has_valid_window_series,
+    _extract_quantile_grouped_returns,
+    _factor_corr_has_valid_off_diagonal,
+    _factor_corr_is_multi_factor_input,
+    _make_attribution_chart,
+    _make_benchmark_chart,
+    _make_event_study_chart,
+    _make_factor_corr_heatmap,
+    _make_ic_chart,
+    _make_ic_distribution_chart,
+    _make_monthly_return_heatmap,
+    _make_quantile_spread_chart,
+    _make_returns_chart,
+    _make_turnover_chart,
+    _make_walk_forward_chart,
+)
+from factorzen.reports._formatting import (
+    _finite_float,
+    _format_metric_number,
+    _format_metric_percent,
+    _is_finite_metric,
+    _num,
+    _safe_attr,
+    _same_direction,
+)
+from factorzen.reports._scoring import (
+    FactorRating,
+    _compute_factor_rating,
+    _stars_from_score,
+)
 
 logger = get_logger(__name__)
 
@@ -42,36 +57,6 @@ RATING_COMPONENT_MAX_SCORES = {
 }
 
 
-def _finite_float(value: Any) -> float | None:
-    try:
-        if value is None:
-            return None
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    return numeric if np.isfinite(numeric) else None
-
-
-def _format_metric_number(value: Any, digits: int = 4, empty: str = "样本不足") -> str:
-    numeric = _finite_float(value)
-    if numeric is None:
-        return empty
-    text = f"{numeric:.{int(digits)}f}"
-    return text[1:] if text.startswith("-") and float(text) == 0.0 else text
-
-
-def _format_metric_percent(value: Any, digits: int = 1, empty: str = "样本不足") -> str:
-    numeric = _finite_float(value)
-    if numeric is None:
-        return empty
-    text = f"{numeric * 100:.{int(digits)}f}"
-    return f"{text[1:] if text.startswith('-') and float(text) == 0.0 else text}%"
-
-
-def _is_finite_metric(value: Any) -> bool:
-    return _finite_float(value) is not None
-
-
 # ── 模板加载 ──────────────────────────────────────────────────────────
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 _ENV = jinja2.Environment(
@@ -81,225 +66,6 @@ _ENV = jinja2.Environment(
 _ENV.filters["metric_number"] = _format_metric_number
 _ENV.filters["metric_percent"] = _format_metric_percent
 _ENV.tests["finite_metric"] = _is_finite_metric
-
-
-def _fig_to_base64(fig: plt.Figure) -> str:
-    """将 matplotlib Figure 转为 base64 PNG 字符串。"""
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-    buf.seek(0)
-    encoded = base64.b64encode(buf.read()).decode("utf-8")
-    plt.close(fig)
-    return encoded
-
-
-def _safe_attr(obj: Any, attr: str, default: Any = None) -> Any:
-    """安全获取对象属性。"""
-    if obj is not None and hasattr(obj, attr):
-        return getattr(obj, attr)
-    return default
-
-
-def _with_plot_dates(frame: Any, date_col: str = "trade_date") -> tuple[Any, str, bool]:
-    """Return a frame with a datetime x-axis column when dates can be parsed."""
-    if date_col not in frame.columns:
-        out = frame.copy()
-        out["_plot_index"] = np.arange(len(out))
-        return out, "_plot_index", False
-    try:
-        pandas = __import__("pandas")
-        parsed = pandas.to_datetime(frame[date_col], errors="coerce")
-    except Exception:
-        return frame, date_col, False
-    if not parsed.notna().any():
-        return frame, date_col, False
-    out = frame.copy()
-    out["_plot_date"] = parsed
-    return out, "_plot_date", True
-
-
-def _format_sparse_x_axis(ax: plt.Axes, *, is_date_axis: bool, max_ticks: int = 7) -> None:
-    """Keep report chart x-axis labels readable on dense daily samples."""
-    if is_date_axis:
-        locator = mdates.AutoDateLocator(minticks=3, maxticks=max(3, int(max_ticks)))
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-    else:
-        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=max(3, int(max_ticks))))
-    ax.tick_params(axis="x", labelsize=8)
-    for label in ax.get_xticklabels():
-        label.set_rotation(0)
-        label.set_horizontalalignment("center")
-
-
-# ── 图表生成 ──────────────────────────────────────────────────────────
-
-
-def _make_returns_chart(bt_result: Any, factor_name: str) -> str | None:
-    """分层回测净值曲线图。"""
-    if bt_result is None:
-        return None
-    nav = _safe_attr(bt_result, "nav")
-    if nav is None or nav.is_empty():
-        return None
-
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    nav_pd = nav.to_pandas()
-    nav_pd, x_col, is_date_axis = _with_plot_dates(nav_pd)
-    if "trade_date" in nav_pd.columns and "group" in nav_pd.columns and "nav" in nav_pd.columns:
-        for g, grp_data in nav_pd.groupby("group"):
-            grp_data = grp_data.sort_values("trade_date")
-            ax.plot(
-                grp_data[x_col],
-                grp_data["nav"],
-                linewidth=1.2,
-                label=f"Q{g + 1}" if isinstance(g, (int, float)) else str(g),
-            )
-    elif "trade_date" in nav_pd.columns and "nav" in nav_pd.columns:
-        nav_pd = nav_pd.sort_values("trade_date")
-        ax.plot(nav_pd[x_col], nav_pd["nav"], linewidth=1.4, label="组合")
-    else:
-        for col in nav_pd.columns:
-            if col in {"trade_date", "_plot_date"}:
-                continue
-            ax.plot(nav_pd[x_col], nav_pd[col], linewidth=1.2, label=str(col))
-
-    ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.set_title(f"分层回测净值 - {factor_name}", fontsize=12)
-    ax.legend(fontsize=8, loc="upper left")
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
-    _format_sparse_x_axis(ax, is_date_axis=is_date_axis)
-    fig.autofmt_xdate()
-    return _fig_to_base64(fig)
-
-
-def _make_ic_chart(ic_result: Any) -> str | None:
-    """IC 时序棒图 + 滚动均值。"""
-    if ic_result is None:
-        return None
-    ic_series = _safe_attr(ic_result, "ic_series")
-    if ic_series is None or ic_series.is_empty():
-        return None
-
-    ic_pd = ic_series.to_pandas()
-    ic_col = "ic" if "ic" in ic_pd.columns else next((c for c in ic_pd.columns if c != "trade_date"), None)
-    if ic_col is None:
-        return None
-    fig, ax = plt.subplots(figsize=(10, 4))
-    date_col = "trade_date" if "trade_date" in ic_pd.columns else ic_pd.columns[0]
-    ic_pd, x_col, is_date_axis = _with_plot_dates(ic_pd, date_col)
-
-    ax.bar(ic_pd[x_col], ic_pd[ic_col], width=1.0, color="#bdc3c7", alpha=0.6, label="IC")
-    if len(ic_pd) >= 5:
-        window = min(20, max(3, len(ic_pd) // 3))
-        rolling = ic_pd[ic_col].rolling(window=window, min_periods=1).mean()
-        ax.plot(
-            ic_pd[x_col], rolling, color="#e74c3c", linewidth=1.2, label=f"滚动均值({window}期)"
-        )
-
-    ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
-    ax.set_title("Rank IC 时序", fontsize=12)
-    ax.legend(fontsize=8)
-    _format_sparse_x_axis(ax, is_date_axis=is_date_axis)
-    fig.autofmt_xdate()
-    return _fig_to_base64(fig)
-
-
-def _make_ic_distribution_chart(ic_result: Any) -> str | None:
-    """IC 分布直方图，用于检查 IC 是否由少数极端日期贡献。"""
-    if ic_result is None:
-        return None
-    ic_series = _safe_attr(ic_result, "ic_series")
-    if ic_series is None or ic_series.is_empty():
-        return None
-
-    ic_pd = ic_series.to_pandas()
-    ic_col = "ic" if "ic" in ic_pd.columns else next((c for c in ic_pd.columns if c != "trade_date"), None)
-    if ic_col is None:
-        return None
-    values = np.asarray(ic_pd[ic_col].dropna(), dtype=float)
-    if values.size == 0:
-        return None
-
-    fig, ax = plt.subplots(figsize=(9, 4.5))
-    bins = min(30, max(8, int(np.sqrt(values.size))))
-    ax.hist(values, bins=bins, color="#4c78a8", alpha=0.78, edgecolor="white")
-    ax.axvline(0, color="#6b7280", linestyle="--", linewidth=1.0, label="0")
-    ax.axvline(values.mean(), color="#f58518", linewidth=1.5, label=f"均值 {values.mean():.4f}")
-    ax.set_title("IC 分布", fontsize=12)
-    ax.set_xlabel("IC")
-    ax.set_ylabel("频数")
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    return _fig_to_base64(fig)
-
-
-def _make_monthly_return_heatmap(bt_result: Any) -> str | None:
-    """多空组合月度收益热力图，从回测收益序列派生。"""
-    if bt_result is None:
-        return None
-    returns = _safe_attr(bt_result, "returns")
-    if returns is None or returns.is_empty():
-        return None
-
-    ret_pd = returns.to_pandas()
-    if "trade_date" not in ret_pd.columns:
-        return None
-    ret_col = next(
-        (col for col in ["net_return", "ret", "return"] if col in ret_pd.columns),
-        None,
-    )
-    if ret_col is None:
-        return None
-
-    dates = ret_pd["trade_date"].astype(str)
-    parsed = None
-    for fmt in ["%Y%m%d", "%Y-%m-%d"]:
-        candidate = None
-        try:
-            candidate = __import__("pandas").to_datetime(dates, format=fmt, errors="coerce")
-        except Exception:
-            candidate = None
-        if candidate is not None and candidate.notna().any():
-            parsed = candidate
-            break
-    if parsed is None:
-        return None
-
-    frame = ret_pd.assign(_date=parsed).dropna(subset=["_date", ret_col])
-    if frame.empty:
-        return None
-    frame["_year"] = frame["_date"].dt.year
-    frame["_month"] = frame["_date"].dt.month
-    monthly = (
-        frame.groupby(["_year", "_month"])[ret_col]
-        .apply(lambda s: float(np.prod(1 + s.to_numpy(dtype=float)) - 1))
-        .unstack("_month")
-        .reindex(columns=range(1, 13))
-    )
-    if monthly.empty:
-        return None
-
-    data = monthly.to_numpy(dtype=float)
-    masked = np.ma.masked_invalid(data)
-    fig, ax = plt.subplots(figsize=(10, max(2.8, 0.7 * len(monthly.index) + 1.5)))
-    vmax = float(np.nanmax(np.abs(data))) if np.isfinite(data).any() else 0.01
-    vmax = max(vmax, 0.01)
-    image = ax.imshow(masked, cmap="RdYlGn", vmin=-vmax, vmax=vmax, aspect="auto")
-    ax.set_title("月度收益热力图", fontsize=12)
-    ax.set_xticks(range(12))
-    ax.set_xticklabels([str(i) for i in range(1, 13)])
-    ax.set_yticks(range(len(monthly.index)))
-    ax.set_yticklabels([str(y) for y in monthly.index])
-    ax.set_xlabel("月份")
-    ax.set_ylabel("年份")
-    for i in range(data.shape[0]):
-        for j in range(data.shape[1]):
-            if np.isfinite(data[i, j]):
-                ax.text(j, i, f"{data[i, j] * 100:.1f}%", ha="center", va="center", fontsize=7)
-    fig.colorbar(image, ax=ax, fraction=0.025, pad=0.02, format=mticker.PercentFormatter(1.0))
-    fig.tight_layout()
-    return _fig_to_base64(fig)
 
 
 def _monthly_returns(bt_result: Any) -> list[tuple[str, float]]:
@@ -344,7 +110,9 @@ def _build_monthly_return_summary(bt_result: Any) -> dict[str, str] | None:
     best_month, best_ret = max(monthly, key=lambda item: item[1])
     worst_month, worst_ret = min(monthly, key=lambda item: item[1])
     total_abs = sum(abs(ret) for _, ret in monthly)
-    concentration = max((abs(ret) for _, ret in monthly), default=0.0) / total_abs if total_abs else 0.0
+    concentration = (
+        max((abs(ret) for _, ret in monthly), default=0.0) / total_abs if total_abs else 0.0
+    )
     if len(monthly) < 3:
         concentration_text = "月度样本不足，仅作区间摘要；至少覆盖 3 个自然月后再判断收益集中度。"
     elif concentration >= 0.70:
@@ -362,452 +130,10 @@ def _build_monthly_return_summary(bt_result: Any) -> dict[str, str] | None:
             else f"最佳月份 {best_month}（{best_ret:.2%}）"
         ),
         "worst": (
-            "无跨月对比"
-            if len(monthly) == 1
-            else f"最弱月份 {worst_month}（{worst_ret:.2%}）"
+            "无跨月对比" if len(monthly) == 1 else f"最弱月份 {worst_month}（{worst_ret:.2%}）"
         ),
         "concentration": concentration_text,
     }
-
-
-def _make_benchmark_chart(benchmark_result: Any) -> str | None:
-    """基准对比图：策略净值 vs 基准净值（上）+ 超额净值（下）。"""
-    if benchmark_result is None:
-        return None
-    daily = _safe_attr(benchmark_result, "daily")
-    if daily is None or daily.is_empty():
-        return None
-
-    df = daily.to_pandas()
-    if "trade_date" not in df.columns:
-        return None
-    if not {"strategy_nav", "benchmark_nav", "excess_nav"}.issubset(df.columns):
-        return None
-    df, x_col, is_date_axis = _with_plot_dates(df)
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-
-    benchmark_name = _safe_attr(benchmark_result, "benchmark_name", "基准")
-
-    if "strategy_nav" in df.columns:
-        df_sorted = df.sort_values("trade_date")
-        ax1.plot(df_sorted[x_col], df_sorted["strategy_nav"], linewidth=1.4, label="策略")
-    if "benchmark_nav" in df.columns:
-        df_sorted = df.sort_values("trade_date")
-        ax1.plot(
-            df_sorted[x_col],
-            df_sorted["benchmark_nav"],
-            linewidth=1.2,
-            linestyle="--",
-            label=benchmark_name,
-        )
-    ax1.axhline(y=1.0, color="gray", linestyle=":", linewidth=0.6, alpha=0.5)
-    ax1.set_title(f"基准对比 — {benchmark_name}", fontsize=12)
-    ax1.legend(fontsize=8, loc="upper left")
-    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
-
-    if "excess_nav" in df.columns:
-        df_sorted = df.sort_values("trade_date")
-        ax2.plot(
-            df_sorted[x_col],
-            df_sorted["excess_nav"],
-            linewidth=1.2,
-            color="#e74c3c",
-            label="超额净值",
-        )
-        ax2.axhline(y=1.0, color="gray", linestyle=":", linewidth=0.6, alpha=0.5)
-        ax2.set_title("超额净值", fontsize=11)
-        ax2.legend(fontsize=8, loc="upper left")
-        ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
-
-    _format_sparse_x_axis(ax2, is_date_axis=is_date_axis)
-    fig.autofmt_xdate()
-    fig.tight_layout()
-    return _fig_to_base64(fig)
-
-
-def _prepare_brinson_plot_frame(sector_df: pl.DataFrame, max_sectors: int = 12) -> pl.DataFrame:
-    if sector_df.is_empty():
-        return sector_df
-    required = {"sector", "allocation", "selection", "interaction", "total_contribution"}
-    if not required.issubset(set(sector_df.columns)):
-        return sector_df
-
-    clean = (
-        sector_df.select(
-            [
-                "sector",
-                pl.col("allocation").cast(pl.Float64).fill_nan(0.0).fill_null(0.0),
-                pl.col("selection").cast(pl.Float64).fill_nan(0.0).fill_null(0.0),
-                pl.col("interaction").cast(pl.Float64).fill_nan(0.0).fill_null(0.0),
-                pl.col("total_contribution").cast(pl.Float64).fill_nan(0.0).fill_null(0.0),
-            ]
-        )
-        .with_columns(pl.col("total_contribution").abs().alias("_abs_total"))
-        .sort("_abs_total", descending=True)
-    )
-    if clean.height <= max_sectors:
-        return clean.drop("_abs_total").sort("total_contribution")
-
-    head = clean.head(max_sectors)
-    other = (
-        clean.slice(max_sectors)
-        .select(["allocation", "selection", "interaction", "total_contribution"])
-        .sum()
-        .with_columns(pl.lit("其他").alias("sector"))
-        .select(["sector", "allocation", "selection", "interaction", "total_contribution"])
-    )
-    return pl.concat([head.drop("_abs_total"), other]).sort("total_contribution")
-
-
-def _make_attribution_chart(brinson_result: Any, barra_result: Any) -> str | None:
-    """归因分析图：Brinson 行业堆积条形（上）+ Barra 风格暴露（下）。"""
-    if brinson_result is None and barra_result is None:
-        return None
-
-    sector_df = _safe_attr(brinson_result, "sector_df") if brinson_result is not None else None
-    exposures = _safe_attr(barra_result, "exposures", {}) if barra_result is not None else {}
-    has_brinson_plot = sector_df is not None and not sector_df.is_empty()
-    has_barra_plot = bool(exposures)
-    if not has_brinson_plot and not has_barra_plot:
-        return None
-
-    n_panels = (1 if has_brinson_plot else 0) + (1 if has_barra_plot else 0)
-    fig, axes = plt.subplots(n_panels, 1, figsize=(10, 4.5 * n_panels))
-    if n_panels == 1:
-        axes = [axes]
-
-    ax_idx = 0
-
-    if has_brinson_plot:
-        assert sector_df is not None  # has_brinson_plot 已保证非空
-        sector_df = _prepare_brinson_plot_frame(sector_df)
-        sdf = sector_df.to_pandas()
-        ax = axes[ax_idx]
-        ax_idx += 1
-        sectors = sdf["sector"].tolist() if "sector" in sdf.columns else list(range(len(sdf)))
-        alloc = sdf["allocation"].tolist() if "allocation" in sdf.columns else [0] * len(sdf)
-        selection = (
-            sdf["selection"].tolist() if "selection" in sdf.columns else [0] * len(sdf)
-        )
-        interaction = (
-            sdf["interaction"].tolist() if "interaction" in sdf.columns else [0] * len(sdf)
-        )
-        y_pos = range(len(sectors))
-        ax.barh(
-            list(y_pos),
-            alloc,
-            label="配置效应",
-            color="#3498db",
-            alpha=0.8,
-        )
-        ax.barh(
-            list(y_pos),
-            selection,
-            left=alloc,
-            label="选股效应",
-            color="#2ecc71",
-            alpha=0.8,
-        )
-        left_interaction = [a + s for a, s in zip(alloc, selection, strict=False)]
-        ax.barh(
-            list(y_pos),
-            interaction,
-            left=left_interaction,
-            label="交互效应",
-            color="#e74c3c",
-            alpha=0.8,
-        )
-        ax.set_yticks(list(y_pos))
-        ax.set_yticklabels(sectors, fontsize=9)
-        ax.axvline(x=0, color="gray", linestyle="--", linewidth=0.6)
-        ax.set_title("Brinson 行业归因", fontsize=12)
-        ax.legend(fontsize=8, loc="best")
-
-    if has_barra_plot:
-        ax = axes[ax_idx]
-        styles = list(exposures.keys())
-        betas = [exposures[s] for s in styles]
-        colors = ["#27ae60" if b >= 0 else "#e74c3c" for b in betas]
-        y_pos = range(len(styles))
-        ax.barh(list(y_pos), betas, color=colors, alpha=0.8)
-        ax.set_yticks(list(y_pos))
-        ax.set_yticklabels(styles, fontsize=9)
-        ax.axvline(x=0, color="gray", linestyle="--", linewidth=0.6)
-        ax.set_title("Barra 风格因子暴露", fontsize=12)
-
-    fig.tight_layout()
-    return _fig_to_base64(fig)
-
-
-def _make_walk_forward_chart(wf_result: Any) -> str | None:
-    """滚动样本外图：样本外验证期拼接净值，以及历史观察期/样本外验证期 Sharpe。"""
-    if wf_result is None:
-        return None
-    oos_returns = _safe_attr(wf_result, "oos_returns")
-    folds = _safe_attr(wf_result, "folds", [])
-    if oos_returns is None or oos_returns.is_empty() or not folds:
-        return None
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7))
-
-    # 上：样本外验证期拼接净值
-    oos_pd = oos_returns.to_pandas()
-    if "trade_date" in oos_pd.columns and "nav" in oos_pd.columns:
-        oos_pd, x_col, is_date_axis = _with_plot_dates(oos_pd)
-        oos_pd = oos_pd.sort_values("trade_date")
-        ax1.plot(oos_pd[x_col], oos_pd["nav"], linewidth=1.4, color="#2980b9", label="样本外验证期净值")
-        ax1.axhline(y=1.0, color="gray", linestyle="--", linewidth=0.6, alpha=0.5)
-        _format_sparse_x_axis(ax1, is_date_axis=is_date_axis)
-    ax1.set_title("滚动样本外验证期累计净值", fontsize=12)
-    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
-    ax1.legend(fontsize=8)
-    fig.autofmt_xdate()
-
-    # 下：历史观察期 vs 样本外验证期 Sharpe 分折柱状图
-    fold_ids = [f.fold_id for f in folds]
-    is_sharpes = [f.is_sharpe for f in folds]
-    oos_sharpes = [f.oos_sharpe for f in folds]
-    x = range(len(fold_ids))
-    width = 0.35
-    ax2.bar([xi - width / 2 for xi in x], is_sharpes, width, label="历史观察期 Sharpe", color="#3498db", alpha=0.7)
-    ax2.bar([xi + width / 2 for xi in x], oos_sharpes, width, label="样本外验证期 Sharpe", color="#e74c3c", alpha=0.7)
-    ax2.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
-    ax2.set_xticks(list(x))
-    ax2.set_xticklabels([f"第 {fid} 折" for fid in fold_ids], fontsize=8)
-    ax2.set_title("各折历史观察期 / 样本外验证期 Sharpe 对比", fontsize=12)
-    ax2.legend(fontsize=8)
-
-    plt.tight_layout()
-    return _fig_to_base64(fig)
-
-
-def _make_quantile_spread_chart(grouped_returns: dict) -> str | None:
-    """Q_N - Q_1 每日价差时序图 + 累计价差图。
-
-    Args:
-        grouped_returns: {quantile_int: list[float]} 每组日收益序列
-
-    Returns:
-        base64 PNG 字符串，或 None（数据不足时）
-    """
-    if not grouped_returns:
-        return None
-    keys = sorted(k for k in grouped_returns if isinstance(k, int))
-    if len(keys) < 2:
-        return None
-    top_key = keys[-1]
-    bot_key = keys[0]
-    top_rets = np.array(grouped_returns[top_key], dtype=float)
-    bot_rets = np.array(grouped_returns[bot_key], dtype=float)
-    min_len = min(len(top_rets), len(bot_rets))
-    if min_len == 0:
-        return None
-    spread = top_rets[:min_len] - bot_rets[:min_len]
-    cum_spread = np.cumprod(1.0 + spread) - 1.0
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=False)
-
-    x = np.arange(min_len)
-    pos_mask = spread >= 0
-    ax1.bar(x[pos_mask], spread[pos_mask], color="#27ae60", alpha=0.7, label="正价差")
-    ax1.bar(x[~pos_mask], spread[~pos_mask], color="#e74c3c", alpha=0.7, label="负价差")
-    ax1.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
-    ax1.set_title(f"Q{top_key + 1} - Q{bot_key + 1} 每日价差", fontsize=12)
-    ax1.legend(fontsize=8)
-
-    ax2.plot(x, cum_spread, linewidth=1.4, color="#2980b9", label="累计价差")
-    ax2.axhline(y=0, color="gray", linestyle="--", linewidth=0.5)
-    ax2.set_title("累计价差", fontsize=12)
-    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.2%}"))
-    ax2.legend(fontsize=8)
-
-    fig.tight_layout()
-    return _fig_to_base64(fig)
-
-
-def _extract_quantile_grouped_returns(bt_result: Any) -> dict[int, list[float]]:
-    """Extract per-quantile return series from grouped NAV data."""
-    nav = _safe_attr(bt_result, "nav")
-    summary_stats = _safe_attr(bt_result, "summary_stats", {})
-    if nav is None or nav.is_empty() or not summary_stats:
-        return {}
-
-    nav_pd = nav.to_pandas()
-    if "group" not in nav_pd.columns or "nav" not in nav_pd.columns:
-        return {}
-
-    grouped_rets: dict[int, list[float]] = {}
-    for group, frame in nav_pd.groupby("group"):
-        if not isinstance(group, (int, float)):
-            continue
-        group_id = int(group)
-        sort_col = "trade_date" if "trade_date" in frame.columns else None
-        ordered = frame.sort_values(sort_col) if sort_col else frame
-        navs = ordered["nav"].to_numpy(dtype=float)
-        if len(navs) > 1:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                rets = np.diff(navs) / navs[:-1]
-            rets = [float(r) for r in rets if np.isfinite(r)]
-        else:
-            rets = []
-        if rets:
-            grouped_rets[group_id] = rets
-    return grouped_rets
-
-
-def _event_study_has_valid_window_series(event_study_result: Any) -> bool:
-    if event_study_result is None:
-        return False
-    n_events = int(_safe_attr(event_study_result, "n_events", 0) or 0)
-    windows = _safe_attr(event_study_result, "windows", [])
-    avg_cumret = _safe_attr(event_study_result, "avg_cumret")
-    if n_events <= 0 or avg_cumret is None or len(windows) == 0:
-        return False
-    try:
-        return len(avg_cumret) == len(windows)
-    except TypeError:
-        return False
-
-
-def _make_event_study_chart(event_study_result: Any) -> str | None:
-    """事件研究图：平均累计收益 + 95% CI 阴影。
-
-    Args:
-        event_study_result: EventStudyResult（含 windows, avg_cumret, ci_95, n_events）
-
-    Returns:
-        base64 PNG 字符串，或 None
-    """
-    if event_study_result is None:
-        return None
-    windows = _safe_attr(event_study_result, "windows", [])
-    avg_cumret = _safe_attr(event_study_result, "avg_cumret")
-    ci_95 = _safe_attr(event_study_result, "ci_95")
-    n_events = _safe_attr(event_study_result, "n_events", 0)
-    if n_events <= 0:
-        return None
-    if not _event_study_has_valid_window_series(event_study_result):
-        return None
-
-    avg_cumret = np.asarray(avg_cumret)
-    ci_95 = np.asarray(ci_95) if ci_95 is not None else np.zeros_like(avg_cumret)
-    windows_arr = np.asarray(windows)
-
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    ax.plot(windows_arr, avg_cumret, linewidth=1.5, color="#2980b9", label="平均累计收益")
-    ax.fill_between(
-        windows_arr,
-        avg_cumret - ci_95,
-        avg_cumret + ci_95,
-        alpha=0.2,
-        color="#2980b9",
-        label="95% CI",
-    )
-    ax.axvline(x=0, color="#e74c3c", linestyle="--", linewidth=0.8, label="事件日")
-    ax.axhline(y=0, color="gray", linestyle=":", linewidth=0.5)
-    ax.set_xlabel("相对事件日（交易日）")
-    ax.set_ylabel("平均累计收益")
-    ax.set_title(f"事件研究 — 事件前后平均累计收益（n={n_events}）", fontsize=12)
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.2%}"))
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    return _fig_to_base64(fig)
-
-
-def _factor_corr_has_valid_off_diagonal(corr_df: Any) -> bool:
-    if not isinstance(corr_df, pl.DataFrame) or corr_df.is_empty() or "factor" not in corr_df.columns:
-        return False
-    factor_names = [str(name) for name in corr_df["factor"].to_list()]
-    if len(factor_names) < 2:
-        return False
-    for row_idx, _row_name in enumerate(factor_names):
-        for col_idx, col_name in enumerate(factor_names):
-            if col_idx <= row_idx or col_name not in corr_df.columns:
-                continue
-            if _finite_float(corr_df[col_name][row_idx]) is not None:
-                return True
-    return False
-
-
-def _factor_corr_is_multi_factor_input(corr_df: Any) -> bool:
-    if not isinstance(corr_df, pl.DataFrame) or corr_df.is_empty() or "factor" not in corr_df.columns:
-        return False
-    return len(corr_df["factor"].to_list()) >= 2
-
-
-def _make_factor_corr_heatmap(corr_df: Any) -> str | None:
-    """因子相关性热力图（Spearman 相关矩阵）。
-
-    Args:
-        corr_df: pl.DataFrame，含 "factor" 列（行标签）及各因子列
-
-    Returns:
-        base64 PNG 字符串，或 None
-    """
-    if corr_df is None:
-        return None
-    try:
-        factor_names = corr_df["factor"].to_list()
-    except Exception:
-        return None
-    if len(factor_names) == 0:
-        return None
-    if not _factor_corr_has_valid_off_diagonal(corr_df):
-        return None
-
-    n = len(factor_names)
-    mat = np.zeros((n, n))
-    for i, fname in enumerate(factor_names):
-        if fname in corr_df.columns:
-            mat[:, i] = corr_df[fname].to_numpy()
-
-    fig, ax = plt.subplots(figsize=(max(5, n * 0.9), max(4, n * 0.8)))
-    im = ax.imshow(mat, cmap="RdBu_r", vmin=-1.0, vmax=1.0, aspect="auto")
-    plt.colorbar(im, ax=ax, fraction=0.04, pad=0.04)
-
-    ax.set_xticks(np.arange(n))
-    ax.set_yticks(np.arange(n))
-    ax.set_xticklabels(factor_names, rotation=45, ha="right", fontsize=9)
-    ax.set_yticklabels(factor_names, fontsize=9)
-    ax.set_title("因子截面 Rank 相关性矩阵（Spearman）", fontsize=12)
-
-    # 注释数值
-    for i in range(n):
-        for j in range(n):
-            text_color = "white" if abs(mat[i, j]) > 0.6 else "black"
-            ax.text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center",
-                    fontsize=8, color=text_color)
-
-    fig.tight_layout()
-    return _fig_to_base64(fig)
-
-
-def _make_turnover_chart(to_result: Any) -> str | None:
-    """换手率填充图。"""
-    if to_result is None:
-        return None
-    dt = _safe_attr(to_result, "daily_turnover")
-    if dt is None or dt.is_empty():
-        return None
-
-    dt_pd = dt.to_pandas()
-    date_col = "trade_date" if "trade_date" in dt_pd.columns else dt_pd.columns[0]
-    val_col = next((c for c in dt_pd.columns if c != date_col), None)
-    if val_col is None:
-        return None
-    fig, ax = plt.subplots(figsize=(10, 4))
-    dt_pd, x_col, is_date_axis = _with_plot_dates(dt_pd, date_col)
-    ax.fill_between(dt_pd[x_col], dt_pd[val_col], alpha=0.3, color="#9b59b6")
-    ax.plot(dt_pd[x_col], dt_pd[val_col], linewidth=1.2, color="#8e44ad")
-    ax.set_title("周期换手率", fontsize=12)
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.1%}"))
-    _format_sparse_x_axis(ax, is_date_axis=is_date_axis)
-    fig.autofmt_xdate()
-    return _fig_to_base64(fig)
-
-
-# ── 辅助函数 ──────────────────────────────────────────────────────────
 
 
 def _build_bt_summary_table(stats: dict, *, include_long_short: bool = True) -> list:
@@ -875,7 +201,14 @@ def _resolve_is_long_short(bt_result: Any, stats: dict[str, Any]) -> bool:
     return "long_short" in stats
 
 
-def _extract_metrics(ic_result, bt_result, to_result, advanced_results, pearson_ic_result=None, neutralized_ic_result=None) -> dict[str, Any]:
+def _extract_metrics(
+    ic_result,
+    bt_result,
+    to_result,
+    advanced_results,
+    pearson_ic_result=None,
+    neutralized_ic_result=None,
+) -> dict[str, Any]:
     """提取所有关键指标为扁平字典。"""
     m: dict[str, Any] = {}
 
@@ -1171,8 +504,7 @@ def _build_holding_period_summary(metrics: dict[str, Any]) -> dict[str, str] | N
     negative_count = sum(1 for row in directional_rows if _num(row.get("ic_mean")) < 0)
     if directional_rows and positive_count == len(directional_rows):
         headline = (
-            f"{best_horizon} 的综合表现最好，IC {best_ic}，"
-            f"IR {best_ir}，胜率 {best_win_rate}。"
+            f"{best_horizon} 的综合表现最好，IC {best_ic}，IR {best_ir}，胜率 {best_win_rate}。"
         )
         direction = "各持有期方向一致，信号具备跨周期稳定性。"
         recommendation = f"建议以 {best_horizon} 作为优先验证的调仓周期，同时用长端结果监控衰减。"
@@ -1182,18 +514,18 @@ def _build_holding_period_summary(metrics: dict[str, Any]) -> dict[str, str] | N
             f"IR {best_ir}，正向胜率 {best_win_rate}。"
         )
         direction = "各持有期方向一致，但 IC 均为负，应按反向信号验证。"
-        recommendation = f"建议以 {best_horizon} 作为优先验证的反向调仓周期，同时用长端结果监控衰减。"
+        recommendation = (
+            f"建议以 {best_horizon} 作为优先验证的反向调仓周期，同时用长端结果监控衰减。"
+        )
     elif positive_count > 0 and negative_count > 0:
         headline = (
-            f"{best_horizon} 的绝对 IC 强度最高，IC {best_ic}，"
-            f"IR {best_ir}，胜率 {best_win_rate}。"
+            f"{best_horizon} 的绝对 IC 强度最高，IC {best_ic}，IR {best_ir}，胜率 {best_win_rate}。"
         )
         direction = "持有期之间方向分化，信号可能依赖特定调仓周期。"
         recommendation = f"建议以 {best_horizon} 作为优先验证周期，但需分别测试正向和反向口径。"
     else:
         headline = (
-            f"{best_horizon} 的综合证据相对最多，IC {best_ic}，"
-            f"IR {best_ir}，胜率 {best_win_rate}。"
+            f"{best_horizon} 的综合证据相对最多，IC {best_ic}，IR {best_ir}，胜率 {best_win_rate}。"
         )
         direction = "部分持有期 IC 接近 0，跨周期稳定性仍需更多样本确认。"
         recommendation = f"建议先延长样本，再决定是否以 {best_horizon} 作为调仓周期。"
@@ -1219,9 +551,7 @@ def _display_regime_label(regime: Any) -> str:
 
 def _build_regime_summary(metrics: dict[str, Any]) -> dict[str, str] | None:
     rows = [
-        row
-        for row in metrics.get("regime_table", [])
-        if _finite_float(row.get("ic")) is not None
+        row for row in metrics.get("regime_table", []) if _finite_float(row.get("ic")) is not None
     ]
     if not rows:
         return None
@@ -1245,8 +575,7 @@ def _build_regime_summary(metrics: dict[str, Any]) -> dict[str, str] | None:
     else:
         strongest = max(rows, key=lambda row: abs(_num(row.get("ic"))))
         headline = (
-            f"{strongest.get('label')}状态下 IC 绝对值最高"
-            f"（{_num(strongest.get('ic')):.4f}）。"
+            f"{strongest.get('label')}状态下 IC 绝对值最高（{_num(strongest.get('ic')):.4f}）。"
         )
         detail = "需比较不同状态下方向和强度，避免仅在单一市场环境中有效。"
 
@@ -1341,9 +670,7 @@ def _build_attribution_summary(attribution_result: Any) -> dict[str, Any] | None
         return None
 
     if finite_components:
-        driver_name, driver_value = max(
-            finite_components.items(), key=lambda item: abs(item[1])
-        )
+        driver_name, driver_value = max(finite_components.items(), key=lambda item: abs(item[1]))
         if abs(driver_value) < 0.005:
             driver_text = "超额贡献较分散，暂无单一主导来源。"
         elif driver_value > 0:
@@ -1364,7 +691,11 @@ def _build_attribution_summary(attribution_result: Any) -> dict[str, Any] | None
 
     sector_text = ""
     sector_df = _safe_attr(brinson, "sector_df")
-    if isinstance(sector_df, pl.DataFrame) and not sector_df.is_empty() and "total_contribution" in sector_df.columns:
+    if (
+        isinstance(sector_df, pl.DataFrame)
+        and not sector_df.is_empty()
+        and "total_contribution" in sector_df.columns
+    ):
         sorted_df = sector_df.with_columns(
             pl.col("total_contribution").cast(pl.Float64).fill_nan(0.0).fill_null(0.0)
         ).sort("total_contribution")
@@ -1435,315 +766,6 @@ def _build_factor_corr_summary(factor_corr: Any) -> dict[str, Any] | None:
     }
 
 
-@dataclass(frozen=True)
-class FactorRating:
-    """Research scorecard result for the summary panel."""
-
-    stars: int
-    score: float
-    label: str
-    components: dict[str, float]
-    caps: list[str]
-    positives: list[str]
-    warnings: list[str]
-
-
-def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    return max(low, min(high, value))
-
-
-def _num(value: Any, default: float = 0.0) -> float:
-    numeric = _finite_float(value)
-    return default if numeric is None else numeric
-
-
-def _same_direction(a: float, b: float) -> bool:
-    return a == 0 or b == 0 or (a > 0) == (b > 0)
-
-
-def _score_from_drawdown(max_dd: float | None) -> float:
-    if max_dd is None:
-        return 2.0
-    if max_dd >= -0.10:
-        return 4.0
-    if max_dd >= -0.20:
-        return 2.5
-    if max_dd >= -0.30:
-        return 1.0
-    return 0.0
-
-
-def _score_from_turnover(avg_turnover: float | None) -> float:
-    if avg_turnover is None:
-        return 1.5
-    if avg_turnover <= 0:
-        return 1.5
-    if avg_turnover <= 0.20:
-        return 3.0
-    if avg_turnover <= 0.50:
-        return 2.0
-    if avg_turnover <= 0.80:
-        return 1.0
-    return 0.0
-
-
-def _decay_values(metrics: dict[str, Any]) -> list[float]:
-    decay_table = metrics.get("decay_table") or []
-    if decay_table:
-        rows = sorted(decay_table, key=lambda row: _num(row.get("horizon"), 0))
-        return [
-            numeric
-            for row in rows
-            if (numeric := _finite_float(row.get("ic_mean"))) is not None
-        ]
-
-    decay = metrics.get("decay") or {}
-    if decay:
-        return [
-            numeric
-            for h in sorted(decay)
-            if (numeric := _finite_float(decay[h])) is not None
-        ]
-
-    return []
-
-
-def _score_alpha_strength(metrics: dict[str, Any]) -> float:
-    ic_mean = _num(metrics.get("ic_mean"))
-    abs_ic = abs(ic_mean)
-    ir = abs(_num(metrics.get("ir")))
-    tstat = abs(_num(metrics.get("ic_tstat")))
-    pvalue = _num(metrics.get("ic_pvalue"), 1.0)
-    pos_ratio = _num(metrics.get("ic_positive_ratio"), 0.5)
-    direction_ratio = max(pos_ratio, 1.0 - pos_ratio)
-
-    ic_score = _clamp(abs_ic / 0.04) * 12.0
-    ir_score = _clamp(ir / MIN_BACKTEST_IR) * 8.0
-    if pvalue <= 0.01 or tstat >= 2.58:
-        sig_score = 6.0
-    elif pvalue <= 0.05 or tstat >= 1.96:
-        sig_score = 4.0
-    elif pvalue <= 0.10 or tstat >= 1.65:
-        sig_score = 2.0
-    else:
-        sig_score = 0.0
-    direction_score = _clamp((direction_ratio - 0.50) / 0.12) * 4.0
-
-    return ic_score + ir_score + sig_score + direction_score
-
-
-def _score_stability(metrics: dict[str, Any]) -> float:
-    ic_mean = _num(metrics.get("ic_mean"))
-    abs_ic = abs(ic_mean)
-    train_ic = _finite_float(metrics.get("oos_train_ic"))
-    test_ic = _finite_float(metrics.get("oos_test_ic"))
-    if train_ic is not None and test_ic is not None:
-        denominator = max(abs(train_ic), abs_ic, 1e-9)
-        retention = _clamp(abs(test_ic) / denominator)
-        oos_score = 10.0 * retention if _same_direction(ic_mean, test_ic) else 0.0
-    else:
-        oos_score = 3.0
-
-    wf_sharpe = _finite_float(metrics.get("walk_forward_oos_sharpe_mean"))
-    wf_stability = _finite_float(metrics.get("walk_forward_stability_ratio"))
-    if wf_sharpe is not None or wf_stability is not None:
-        wf_score = _clamp((wf_sharpe or 0.0) / 1.0) * 3.0
-        wf_score += _clamp(wf_stability or 0.0) * 3.0
-    else:
-        wf_score = 2.0
-
-    decay_vals = _decay_values(metrics)
-    if len(decay_vals) >= 2 and abs(decay_vals[0]) > 1e-9:
-        same_sign_count = sum(1 for val in decay_vals if _same_direction(decay_vals[0], val))
-        sign_score = same_sign_count / len(decay_vals)
-        retention = _clamp(abs(decay_vals[-1]) / abs(decay_vals[0]))
-        decay_score = 5.0 * (0.6 * sign_score + 0.4 * retention)
-    else:
-        decay_score = 2.5
-
-    multi_period = [
-        numeric
-        for row in metrics.get("multi_period_table") or []
-        if (numeric := _finite_float(row.get("ic_mean"))) is not None
-    ]
-    if multi_period:
-        same_sign_count = sum(
-            1 for ic_value in multi_period if _same_direction(ic_mean, ic_value)
-        )
-        multi_score = 4.0 * same_sign_count / len(multi_period)
-    else:
-        multi_score = 2.0
-
-    return oos_score + wf_score + decay_score + multi_score
-
-
-def _score_tradeability(metrics: dict[str, Any]) -> float:
-    sharpe = _finite_float(metrics.get("ls_sharpe"))
-    ann_ret = _finite_float(metrics.get("ls_ann_ret"))
-    max_dd = _finite_float(metrics.get("ls_max_dd"))
-    avg_turnover = _finite_float(metrics.get("avg_turnover"))
-
-    sharpe_score = _clamp((sharpe or 0.0) / 1.5) * 8.0
-    ret_score = _clamp((ann_ret or 0.0) / 0.10) * 5.0
-    dd_score = _score_from_drawdown(max_dd)
-    turnover_score = _score_from_turnover(avg_turnover)
-
-    return sharpe_score + ret_score + dd_score + turnover_score
-
-
-def _score_robustness(metrics: dict[str, Any]) -> float:
-    ic_mean = _num(metrics.get("ic_mean"))
-    abs_ic = abs(ic_mean)
-    neutral_ic = _finite_float(metrics.get("neutralized_ic_mean"))
-    if neutral_ic is not None and abs_ic > 1e-9:
-        retention = _clamp(abs(neutral_ic) / abs_ic)
-        neutral_score = 8.0 * retention if _same_direction(ic_mean, neutral_ic) else 0.0
-    else:
-        neutral_score = 4.0
-
-    pearson_ic = _finite_float(metrics.get("pearson_ic_mean"))
-    if pearson_ic is not None and abs_ic > 1e-9:
-        pearson_score = 3.0 * _clamp(abs(pearson_ic) / abs_ic) if _same_direction(ic_mean, pearson_ic) else 0.0
-    else:
-        pearson_score = 1.5
-
-    subgroup_score = 0.0
-    sector_ic = metrics.get("sector_ic")
-    if sector_ic is not None and hasattr(sector_ic, "is_empty") and not sector_ic.is_empty():
-        subgroup_score += 2.0
-    else:
-        subgroup_score += 0.5
-
-    size_buckets = metrics.get("size_buckets") or {}
-    if size_buckets:
-        values = [_num(v) for v in size_buckets.values()]
-        same_sign_count = sum(1 for val in values if _same_direction(ic_mean, val))
-        subgroup_score += 2.0 * same_sign_count / max(len(values), 1)
-    else:
-        subgroup_score += 0.5
-
-    return neutral_score + pearson_score + subgroup_score
-
-
-def _score_structure(metrics: dict[str, Any]) -> float:
-    mono = _finite_float(metrics.get("monotonicity_score"))
-    if mono is not None:
-        mono_score = _clamp(mono) * 6.0
-    else:
-        mono_score = 3.0
-
-    autocorr = _finite_float(metrics.get("rank_autocorr"))
-    if autocorr is not None:
-        autocorr_score = _clamp(autocorr) * 4.0
-    else:
-        autocorr_score = 2.0
-
-    return mono_score + autocorr_score
-
-
-def _stars_from_score(score: float) -> int:
-    if score >= 80:
-        return 5
-    if score >= 65:
-        return 4
-    if score >= 50:
-        return 3
-    if score >= 35:
-        return 2
-    return 1
-
-
-def _label_from_stars(stars: int) -> str:
-    if stars >= 5:
-        return "production_watch"
-    if stars == 4:
-        return "candidate"
-    if stars == 3:
-        return "research"
-    if stars == 2:
-        return "weak"
-    return "invalid"
-
-
-def _compute_factor_rating(metrics: dict[str, Any]) -> FactorRating:
-    """Compute a 100-point research scorecard and capped 1-5 star rating."""
-    components = {
-        "Alpha 强度": _score_alpha_strength(metrics),
-        "稳定性": _score_stability(metrics),
-        "可交易性": _score_tradeability(metrics),
-        "鲁棒性": _score_robustness(metrics),
-        "结构质量": _score_structure(metrics),
-    }
-    score = round(sum(components.values()), 1)
-    base_stars = _stars_from_score(score)
-
-    caps: list[str] = []
-    cap_stars = 5
-    n_periods = int(_num(metrics.get("n_periods")))
-    ic_mean = _num(metrics.get("ic_mean"))
-    abs_ic = abs(ic_mean)
-    avg_turnover = _finite_float(metrics.get("avg_turnover"))
-
-    if n_periods < 60:
-        cap_stars = min(cap_stars, 2)
-        caps.append("样本期数少于 60，最高 2 星")
-
-    oos_test_ic = _finite_float(metrics.get("oos_test_ic"))
-    if oos_test_ic is None:
-        cap_stars = min(cap_stars, 3)
-        caps.append("缺少样本外验证期 IC，最高 3 星")
-    else:
-        if abs(oos_test_ic) > 0.005 and not _same_direction(ic_mean, oos_test_ic):
-            cap_stars = min(cap_stars, 2)
-            caps.append("样本外验证期 IC 与全样本方向相反，最高 2 星")
-
-    neutral_ic = _finite_float(metrics.get("neutralized_ic_mean"))
-    if neutral_ic is not None and abs_ic > 1e-9:
-        neutral_retention = abs(neutral_ic) / abs_ic
-        if neutral_retention < 0.50:
-            cap_stars = min(cap_stars, 3)
-            caps.append("中性化后 IC 保留不足 50%，最高 3 星")
-
-    mono = _finite_float(metrics.get("monotonicity_score"))
-    if mono is not None and mono < 0.60:
-        cap_stars = min(cap_stars, 3)
-        caps.append("分组单调性不足，最高 3 星")
-
-    if avg_turnover is not None and avg_turnover > 0.80:
-        cap_stars = min(cap_stars, 3)
-        caps.append("平均换手率高于 80%，最高 3 星")
-
-    if _finite_float(metrics.get("ls_sharpe")) is None and _finite_float(metrics.get("ls_ann_ret")) is None:
-        cap_stars = min(cap_stars, 3)
-        caps.append("缺少多空回测绩效，最高 3 星")
-
-    stars = min(base_stars, cap_stars)
-    positives = [
-        name for name, value in components.items()
-        if value >= {"Alpha 强度": 21.0, "稳定性": 17.5, "可交易性": 14.0, "鲁棒性": 10.5, "结构质量": 7.0}[name]
-    ]
-    warnings = caps.copy()
-    for name, value in components.items():
-        threshold = {"Alpha 强度": 12.0, "稳定性": 10.0, "可交易性": 8.0, "鲁棒性": 6.0, "结构质量": 4.0}[name]
-        if value < threshold:
-            warnings.append(f"{name}得分偏低")
-
-    return FactorRating(
-        stars=stars,
-        score=score,
-        label=_label_from_stars(stars),
-        components={name: round(value, 1) for name, value in components.items()},
-        caps=caps,
-        positives=positives,
-        warnings=warnings,
-    )
-
-
-def _compute_star_rating(metrics: dict[str, Any]) -> int:
-    """根据评分卡计算 1-5 星级评分。"""
-    return _compute_factor_rating(metrics).stars
-
-
 def _display_factor_rating_label(label: str) -> str:
     return _format_label_with_code(
         label,
@@ -1793,8 +815,7 @@ def _generate_summary_text(
     rating_cap_note = ""
     if rating_result.caps and base_stars > stars:
         rating_cap_note = (
-            f" | <strong>评级说明：</strong>原始得分对应 {base_stars} 星，"
-            f"评级上限后为 {stars} 星"
+            f" | <strong>评级说明：</strong>原始得分对应 {base_stars} 星，评级上限后为 {stars} 星"
         )
 
     lines = [
@@ -1830,7 +851,9 @@ def _generate_summary_text(
             '<p class="summary-note">核心 IC 指标样本不足，暂不判断预测方向；需先补齐有效 IC 时序。</p>'
         )
     elif abs(ic_mean) < 0.01:
-        lines.append('<p class="summary-note">IC 均值极低（|IC| &lt; 0.01），因子对收益的预测能力非常有限。</p>')
+        lines.append(
+            '<p class="summary-note">IC 均值极低（|IC| &lt; 0.01），因子对收益的预测能力非常有限。</p>'
+        )
     elif ic_mean > 0.03:
         lines.append(
             f'<p class="summary-note">IC 均值 {ic_mean:.4f}（Spearman &rho;），因子展现出较强的正向预测能力。</p>'
@@ -1843,7 +866,9 @@ def _generate_summary_text(
         lines.append(f'<p class="summary-note">IC 均值 {ic_mean:.4f}，因子具备一定的预测能力。</p>')
 
     if ir is not None and ir > 0.5:
-        lines.append(f'<p class="summary-note">信息比率 IR = {ir:.2f}，因子稳定性良好，IC 方向一致性高。</p>')
+        lines.append(
+            f'<p class="summary-note">信息比率 IR = {ir:.2f}，因子稳定性良好，IC 方向一致性高。</p>'
+        )
     elif ir is not None and ir > 0.2:
         lines.append(f'<p class="summary-note">信息比率 IR = {ir:.2f}，因子稳定性一般。</p>')
 
@@ -1860,7 +885,9 @@ def _generate_summary_text(
                 f'<p class="summary-note">多空年化收益 {primary_ret * 100:.1f}%，分层效果较弱。</p>'
             )
         elif primary_ret < 0:
-            lines.append('<p class="summary-note">多空收益为负，分层回测不理想，因子分组单调性需关注。</p>')
+            lines.append(
+                '<p class="summary-note">多空收益为负，分层回测不理想，因子分组单调性需关注。</p>'
+            )
     else:
         if primary_ret > 0.05:
             lines.append(
@@ -1871,7 +898,9 @@ def _generate_summary_text(
                 f'<p class="summary-note">主策略组合年化收益 {primary_ret * 100:.1f}%，收益表现偏弱，需结合回撤、换手和多空策略验证。</p>'
             )
         elif primary_ret < 0:
-            lines.append('<p class="summary-note">主策略组合收益为负，组合构建或因子方向需重点复核。</p>')
+            lines.append(
+                '<p class="summary-note">主策略组合收益为负，组合构建或因子方向需重点复核。</p>'
+            )
 
     if llm_explanation is not None:
         evidence = str(llm_explanation.get("evidence_assessment", "")).strip()
@@ -2219,9 +1248,7 @@ def _build_execution_summary(strategy_pages: list[dict[str, Any]]) -> dict[str, 
         else ""
     )
     cost_name = (
-        str(highest_cost.get("display_name", "")).strip()
-        if highest_cost is not None
-        else ""
+        str(highest_cost.get("display_name", "")).strip() if highest_cost is not None else ""
     )
     if constraint_rate is not None:
         headline = f"成交约束占比最高：{constraint_name}（{constraint_rate:.1%}）。"
@@ -2232,9 +1259,14 @@ def _build_execution_summary(strategy_pages: list[dict[str, Any]]) -> dict[str, 
         risk = "当前执行风险较高，需先复核约束来源和可成交容量。"
     elif constraint_rate is not None and constraint_rate > 0:
         risk = "当前存在少量执行约束，需在扩大资金规模前复核成交可得性。"
-    elif highest_turnover is not None and (_finite_float(highest_turnover.get("avg_turnover")) or 0.0) >= 0.80:
+    elif (
+        highest_turnover is not None
+        and (_finite_float(highest_turnover.get("avg_turnover")) or 0.0) >= 0.80
+    ):
         risk = f"{turnover_name} 换手偏高，交易成本和冲击成本需要压力测试。"
-    elif highest_cost is not None and (_finite_float(highest_cost.get("total_cost")) or 0.0) >= 0.03:
+    elif (
+        highest_cost is not None and (_finite_float(highest_cost.get("total_cost")) or 0.0) >= 0.03
+    ):
         risk = f"{cost_name} 成本压力较高，应优先比较扣费后净收益。"
     elif constraint_rate is None:
         risk = "成交约束记录样本不足，但换手和成本未显示明显压力。"
@@ -2541,7 +1573,9 @@ def _build_research_decision(
         evidence.append(f"有效样本 {n_periods} 期。")
     if strategy_pages:
         long_short_count = sum(1 for page in strategy_pages if page.get("is_long_short"))
-        evidence.append(f"已覆盖 {len(strategy_pages)} 个策略，其中 {long_short_count} 个多空策略。")
+        evidence.append(
+            f"已覆盖 {len(strategy_pages)} 个策略，其中 {long_short_count} 个多空策略。"
+        )
     if benchmark_summary:
         evidence.append(f"基准相对表现：{benchmark_summary['direction']}。")
     if attribution_summary:
@@ -2617,13 +1651,19 @@ def _build_strategy_pages(
     signal_label: str = "",
 ) -> list[dict[str, Any]]:
     pages: list[dict[str, Any]] = []
-    primary = primary_strategy if primary_strategy in strategy_results else next(iter(strategy_results), None)
+    primary = (
+        primary_strategy
+        if primary_strategy in strategy_results
+        else next(iter(strategy_results), None)
+    )
     for name, result in strategy_results.items():
         page_charts: dict[str, str] = {}
         stats = _safe_attr(result, "summary_stats", {}) or {}
         strategy_type = _infer_strategy_type(name, result)
         is_long_short = _resolve_is_long_short(result, stats)
-        portfolio_stats = stats.get("portfolio") or (stats.get("long_short") if is_long_short else {}) or {}
+        portfolio_stats = (
+            stats.get("portfolio") or (stats.get("long_short") if is_long_short else {}) or {}
+        )
         portfolio_metrics = {
             key: _finite_float(portfolio_stats.get(key))
             for key in (
@@ -2874,14 +1914,26 @@ def generate_tear_sheet(
                 "下一步：检查分组净值长度、分组编号和图表生成日志。"
             )
 
-    metrics = _extract_metrics(ic_result, bt_result, to_result, advanced_results, pearson_ic_result, neutralized_ic_result)
+    metrics = _extract_metrics(
+        ic_result, bt_result, to_result, advanced_results, pearson_ic_result, neutralized_ic_result
+    )
     if walk_forward_result is not None:
-        metrics["walk_forward_oos_sharpe_mean"] = _finite_float(_safe_attr(walk_forward_result, "oos_sharpe_mean"))
-        metrics["walk_forward_stability_ratio"] = _finite_float(_safe_attr(walk_forward_result, "stability_ratio"))
-        metrics["walk_forward_oos_max_dd"] = _finite_float(_safe_attr(walk_forward_result, "oos_max_dd"))
+        metrics["walk_forward_oos_sharpe_mean"] = _finite_float(
+            _safe_attr(walk_forward_result, "oos_sharpe_mean")
+        )
+        metrics["walk_forward_stability_ratio"] = _finite_float(
+            _safe_attr(walk_forward_result, "stability_ratio")
+        )
+        metrics["walk_forward_oos_max_dd"] = _finite_float(
+            _safe_attr(walk_forward_result, "oos_max_dd")
+        )
     elif walk_forward_summary and walk_forward_summary.get("status") == "ok":
-        metrics["walk_forward_oos_sharpe_mean"] = _finite_float(walk_forward_summary.get("oos_sharpe_mean"))
-        metrics["walk_forward_stability_ratio"] = _finite_float(walk_forward_summary.get("stability_ratio"))
+        metrics["walk_forward_oos_sharpe_mean"] = _finite_float(
+            walk_forward_summary.get("oos_sharpe_mean")
+        )
+        metrics["walk_forward_stability_ratio"] = _finite_float(
+            walk_forward_summary.get("stability_ratio")
+        )
         metrics["walk_forward_oos_max_dd"] = _finite_float(walk_forward_summary.get("oos_max_dd"))
     metrics["factor_rating"] = _compute_factor_rating(metrics)
 
@@ -2940,7 +1992,9 @@ def generate_tear_sheet(
     )
     dashboard = {
         "primary_strategy": (
-            primary_page["display_name"] if primary_page else metrics.get("bt_strategy_name", "未运行")
+            primary_page["display_name"]
+            if primary_page
+            else metrics.get("bt_strategy_name", "未运行")
         ),
         "primary_strategy_code": (
             primary_page["name"] if primary_page else metrics.get("bt_strategy_name", "未运行")
@@ -2953,7 +2007,9 @@ def generate_tear_sheet(
             else "未计算"
         ),
         "sample_periods": metrics.get("n_periods", 0),
-        "data_quality": quality_summary["status"] if quality_report else ("需关注" if warnings else "正常"),
+        "data_quality": quality_summary["status"]
+        if quality_report
+        else ("需关注" if warnings else "正常"),
     }
 
     template = _ENV.get_template("tear_sheet.html")

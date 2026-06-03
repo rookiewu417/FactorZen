@@ -79,7 +79,7 @@ def test_run_daily_failure_manifest_records_partial_outputs(tmp_path, monkeypatc
         ],
     )
 
-    def fail_after_quality(args, effective_config):
+    def fail_after_quality(args, effective_config, timer=None):
         quality_path = mod.daily_result_output_dir(args.factor) / (
             f"{args.factor}_{args.start}_{args.end}_quality.json"
         )

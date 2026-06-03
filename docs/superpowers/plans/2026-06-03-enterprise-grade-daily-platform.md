@@ -127,10 +127,12 @@
 - [x] **接入报告管线** —— `generate_report._run` 对 IC/回测/换手/报告 4 阶段计时,`stage_timings` 写入 manifest。
 - 均 TDD(test_timing 3 + test_experiment 元数据用例)。
 
+- [x] **观测接入 `daily_single`** —— 与 `generate_report` 对称:IC/回测/换手/报告四阶段计时,`stage_timings` 写入 manifest;两条日频主管线现已统一可观测。
+
 ## Phase 6+ — 路线图(后续)
 
 - **覆盖率爬坡:** 逐步上调 `MIN_COVERAGE`,优先补 `_charts`/`_summaries` 等低覆盖模块。
-- **观测推广:** 把 `StageTimer` 接入 `daily_single` 管线;数据覆盖率指标落盘。
+- **观测深化:** 数据覆盖率指标落盘;阶段计时聚合到 run 索引。
 - **契约推广:** 把 `require_columns` 推广到归因(deferred)入口。
 - **可复现性强化:** manifest 记录 git SHA / pixi.lock hash / dirty 状态;`workspace/factor_evaluations/index.jsonl` run 索引(对齐 evolution-plan Phase 2)。
 - **可观测性:** 结构化日志、运行耗时/数据覆盖率指标落盘。

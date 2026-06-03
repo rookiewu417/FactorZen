@@ -26,10 +26,15 @@ from factorzen.core.config_loader import (
 )
 from factorzen.core.data_ensure import ensure_data_for_daily_run
 from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
-from factorzen.core.experiment import record_experiment_output, run_experiment
+from factorzen.core.experiment import (
+    record_experiment_metadata,
+    record_experiment_output,
+    run_experiment,
+)
 from factorzen.core.loader import fetch_daily_basic
 from factorzen.core.logger import get_logger, setup_logging
 from factorzen.core.storage import load_parquet
+from factorzen.core.timing import StageTimer
 from factorzen.core.universe import get_universe
 from factorzen.daily.data.context import FactorDataContext
 from factorzen.daily.evaluation.backtest import run_strategy_backtest, trim_backtest_to_first_trade
@@ -498,7 +503,12 @@ def _run_backtest_strategies(
     return strategy_results[primary_name], strategy_results
 
 
-def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str]:
+def _run(
+    args: argparse.Namespace,
+    effective_config: RunConfig,
+    timer: StageTimer | None = None,
+) -> dict[str, str]:
+    timer = timer or StageTimer()
     # ── 0b. 设置全局随机种子（可选）──
     if args.seed is not None:
         from factorzen.core.seed import set_global_seed
@@ -633,7 +643,8 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
     logger.info(f"数据质量报告已保存: {quality_path}")
 
     # ── 7. IC 分析 ──
-    ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
+    with timer.stage("IC 分析"):
+        ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
     ic_result.factor_name = factor.name
     logger.info(f"\n{ic_result.summary()}")
 
@@ -697,16 +708,18 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
             logger.warning(f"中性化 IC 计算失败（跳过）: {e}")
 
     # ── 8. 策略回测 ──
-    bt_result, strategy_results = _run_backtest_strategies(
-        effective_config,
-        clean_df,
-        daily,
-        factor_name=factor.name,
-        frequency=args.frequency,
-    )
+    with timer.stage("策略回测"):
+        bt_result, strategy_results = _run_backtest_strategies(
+            effective_config,
+            clean_df,
+            daily,
+            factor_name=factor.name,
+            frequency=args.frequency,
+        )
 
     # ── 9. 换手率 ──
-    to_result = compute_turnover(clean_df, frequency=args.frequency)
+    with timer.stage("换手率"):
+        to_result = compute_turnover(clean_df, frequency=args.frequency)
     to_result.factor_name = factor.name
     logger.info(f"\n{to_result.summary()}")
 
@@ -810,27 +823,28 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         quality_report=quality_report,
         backtest_direction=None,
     )
-    html = generate_tear_sheet(
-        factor_name=factor.name,
-        ic_result=ic_result,
-        bt_result=bt_result,
-        to_result=to_result,
-        frequency=args.frequency,
-        date_range=date_range,
-        advanced_results=advanced_results,
-        universe=args.universe,
-        benchmark_result=benchmark_result,
-        attribution_result=attribution_result,
-        event_study_result=event_study_result,
-        walk_forward_result=walk_forward_result,
-        walk_forward_summary=walk_forward_summary,
-        pearson_ic_result=pearson_ic_result if args.ic_method in ("pearson", "both") else None,
-        neutralized_ic_result=neutralized_ic_result if args.neutralized_ic else None,
-        llm_explanation=llm_explanation.to_dict() if llm_explanation is not None else None,
-        strategy_results=strategy_results,
-        primary_strategy=effective_config.backtest.primary,
-        quality_report=quality_report,
-    )
+    with timer.stage("报告生成"):
+        html = generate_tear_sheet(
+            factor_name=factor.name,
+            ic_result=ic_result,
+            bt_result=bt_result,
+            to_result=to_result,
+            frequency=args.frequency,
+            date_range=date_range,
+            advanced_results=advanced_results,
+            universe=args.universe,
+            benchmark_result=benchmark_result,
+            attribution_result=attribution_result,
+            event_study_result=event_study_result,
+            walk_forward_result=walk_forward_result,
+            walk_forward_summary=walk_forward_summary,
+            pearson_ic_result=pearson_ic_result if args.ic_method in ("pearson", "both") else None,
+            neutralized_ic_result=neutralized_ic_result if args.neutralized_ic else None,
+            llm_explanation=llm_explanation.to_dict() if llm_explanation is not None else None,
+            strategy_results=strategy_results,
+            primary_strategy=effective_config.backtest.primary,
+            quality_report=quality_report,
+        )
     report_output_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_output_dir / f"{factor.name}_{args.start}_{args.end}.html"
     report_path.write_text(html, encoding="utf-8")
@@ -934,12 +948,15 @@ def main():
 
     try:
         with run_experiment(effective_config, command=sys.argv) as exp_dir:
+            timer = StageTimer()
             try:
-                outputs = _run(args, effective_config)
+                outputs = _run(args, effective_config, timer=timer)
             except Exception:
+                record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
                 for name, path in _existing_run_outputs(args.factor, args.start, args.end).items():
                     record_experiment_output(exp_dir, name, path)
                 raise
+            record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
             for name, path in outputs.items():
                 record_experiment_output(exp_dir, name, path)
             for name, path in copy_outputs_to_run_dir(outputs, exp_dir).items():

@@ -103,11 +103,20 @@
 
 **Phase 2 完成:** `tear_sheet.py` **2986 → 1054 行(-65%)**;巨石拆为 6 个聚焦模块(orchestrator + formatting/scoring/charts/strategy/summaries);658 passed / 2 skipped / 1 xfailed,mypy(92 文件)/ruff 全绿。经 re-export 保持对外导入接口不变(模板与测试基本零改动)。
 
-## Phase 3+ — 路线图(后续)
+## Phase 3 — 质量门 + 可复现性(进行中)
 
-- **可复现性强化:** manifest 记录 git SHA / pixi.lock hash / dirty 状态;`workspace/factor_evaluations/index.jsonl` run 索引。
-- **可观测性:** 结构化日志、运行耗时/数据覆盖率指标落盘。
+审计发现 manifest 已记录 `git_sha`/`git_dirty`/`pixi_lock_sha256` 并维护 `experiment_index.jsonl`(已接入两个管线 + 有测试),故"可复现元数据"基本完成。本轮补齐真实缺口:
+
+- [x] **CI 覆盖率门槛** —— `tools/run_coverage.py` 加 `--fail-under=73`(当前基线 75%,防回退)。
+- [x] **dirty 运行告警** —— `run_experiment` 在工作树有未提交改动时 `logger.warning`(此前只记 manifest、不提示)。
+- [x] **manifest 增记 `duration_seconds`** —— 运行耗时显式落盘。
+- 均以 TDD 实现(先写失败测试),test_experiment 10 passed。
+
+## Phase 4+ — 路线图(后续)
+
+- **可观测性:** 结构化日志、数据覆盖率指标落盘。
 - **数据契约:** 用 pydantic 固化评估输入 schema,异常早失败。
+- **覆盖率爬坡:** 逐步上调 `MIN_COVERAGE`,优先补 `_charts`/`_summaries`/`research.combination.pipeline` 等低覆盖模块。
 - **可复现性强化:** manifest 记录 git SHA / pixi.lock hash / dirty 状态;`workspace/factor_evaluations/index.jsonl` run 索引(对齐 evolution-plan Phase 2)。
 - **可观测性:** 结构化日志、运行耗时/数据覆盖率指标落盘。
 - **数据契约:** 用 pydantic/参数化校验固化评估输入 schema,异常早失败。

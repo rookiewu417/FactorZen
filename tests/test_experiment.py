@@ -137,3 +137,51 @@ def test_experiment_records_reproducibility_metadata(tmp_path, monkeypatch):
     assert manifest["pixi_lock_sha256"] == "abc123"
     assert manifest["command"] == ["python", "factorzen.pipelines.daily_single"]
     assert manifest["outputs"]["quality_report"] == "quality.json"
+
+
+def test_manifest_records_duration_seconds(tmp_path, monkeypatch):
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
+
+    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+    cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
+
+    with exp_mod.run_experiment(cfg, run_id="dur_run"):
+        pass
+
+    manifest = json.loads((tmp_path / "experiments" / "dur_run" / "manifest.json").read_text())
+    assert "duration_seconds" in manifest
+    assert isinstance(manifest["duration_seconds"], (int, float))
+    assert manifest["duration_seconds"] >= 0
+
+
+def test_experiment_warns_when_git_dirty(tmp_path, monkeypatch, caplog):
+    import logging
+
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
+
+    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+    monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: True)
+    cfg = RunConfig(factor="x", start="20230101", end="20241231")
+
+    with caplog.at_level(logging.WARNING), exp_mod.run_experiment(cfg, run_id="dirty_warn_run"):
+        pass
+
+    assert any("git_dirty" in r.getMessage() for r in caplog.records)
+
+
+def test_experiment_does_not_warn_when_clean(tmp_path, monkeypatch, caplog):
+    import logging
+
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
+
+    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+    monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: False)
+    cfg = RunConfig(factor="x", start="20230101", end="20241231")
+
+    with caplog.at_level(logging.WARNING), exp_mod.run_experiment(cfg, run_id="clean_run"):
+        pass
+
+    assert not any("git_dirty" in r.getMessage() for r in caplog.records)

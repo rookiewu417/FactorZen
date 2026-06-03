@@ -12,8 +12,10 @@
 - **文档编码:** 修复 README 及 docs 在合并中被 GBK 双重编码损坏的中文(重写 README/architecture/runbook,恢复 evolution-plan/project-explanation)。
 
 ### Changed
+- **报告模块解耦:** `tear_sheet.py` 2986 → 1054 行(-65%),按职责拆为 `_formatting`/`_scoring`/`_charts`/`_strategy`/`_summaries` 五个模块;经 re-export 保持对外导入接口不变。
 - **工程化:** `.pre-commit-config.yaml` 改为通过 `pixi run` 的 local hooks,保证 pre-commit / CI / 本地三者版本一致(修复 mypy hook 指向已删除旧路径的问题)。
-- **CI:** 增加 `permissions: contents: read` 最小权限与 `concurrency` 取消重复运行。
+- **CI:** 增加 `permissions: contents: read` 最小权限与 `concurrency` 取消重复运行;`tools/run_coverage.py` 增加 `--fail-under=73` 覆盖率门槛(防回退)。
+- **可复现性:** `run_experiment` 在工作树 dirty 时 `logger.warning` 提示;manifest 增记 `duration_seconds`。
 
 ### Added
 - 企业治理文件:`CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`.github/PULL_REQUEST_TEMPLATE.md`。

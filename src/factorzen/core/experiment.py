@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from factorzen.config.settings import FACTOR_EVALUATIONS_DIR, ROOT
+from factorzen.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 EXPERIMENTS_DIR = FACTOR_EVALUATIONS_DIR
 _EXPERIMENT_INDEX = EXPERIMENTS_DIR / "experiment_index.jsonl"
@@ -86,10 +89,7 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
     if hasattr(config, "__dict__"):
         return vars(config)
 
-    from factorzen.core.logger import get_logger
-
-    _logger = get_logger(__name__)
-    _logger.warning(
+    logger.warning(
         "run_experiment: config type %s has no model_dump/__dict__, recording repr",
         type(config).__name__,
     )
@@ -129,7 +129,7 @@ def run_experiment(
     exp_dir = EXPERIMENTS_DIR / run_id
     exp_dir.mkdir(parents=True, exist_ok=True)
 
-    start_ts = datetime.now().isoformat()
+    start_dt = datetime.now()
 
     manifest: dict[str, Any] = {
         "schema_version": "1",
@@ -140,25 +140,32 @@ def run_experiment(
         "command": command,
         "config": config_dict,
         "outputs": {},
-        "start_ts": start_ts,
+        "start_ts": start_dt.isoformat(),
         "end_ts": None,
+        "duration_seconds": None,
         "status": "running",
         "error": None,
     }
+
+    if manifest["git_dirty"]:
+        logger.warning(
+            "git_dirty=true：工作树存在未提交改动，本次运行无法仅凭 git SHA 复现；已记录到 manifest。"
+        )
 
     manifest_path = exp_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
 
     try:
         yield exp_dir
-        manifest["end_ts"] = datetime.now().isoformat()
         manifest["status"] = "success"
     except Exception as exc:
-        manifest["end_ts"] = datetime.now().isoformat()
         manifest["status"] = "failure"
         manifest["error"] = str(exc)
         raise
     finally:
+        end_dt = datetime.now()
+        manifest["end_ts"] = end_dt.isoformat()
+        manifest["duration_seconds"] = round((end_dt - start_dt).total_seconds(), 3)
         if manifest_path.exists():
             existing = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["outputs"] = existing.get("outputs", manifest.get("outputs", {}))

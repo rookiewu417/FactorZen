@@ -112,11 +112,17 @@
 - [x] **manifest 增记 `duration_seconds`** —— 运行耗时显式落盘。
 - 均以 TDD 实现(先写失败测试),test_experiment 10 passed。
 
-## Phase 4+ — 路线图(后续)
+## Phase 4 — 数据契约(进行中)
 
-- **可观测性:** 结构化日志、数据覆盖率指标落盘。
-- **数据契约:** 用 pydantic 固化评估输入 schema,异常早失败。
-- **覆盖率爬坡:** 逐步上调 `MIN_COVERAGE`,优先补 `_charts`/`_summaries`/`research.combination.pipeline` 等低覆盖模块。
+- [x] **可复用列契约校验** `core/validation.py::require_columns` —— 缺列时抛清晰 `ValueError`(列出缺失列与实际列)。
+- [x] **评估入口 fail-fast** —— `compute_fwd_returns` 入口校验 `ts_code`/`trade_date` 及 `close`|`ret` 之一,畸形输入早失败而非产出空洞结论或晦涩 polars 异常。
+- 均 TDD(test_validation 3 + test_fwd_returns 2 新增)。
+
+## Phase 5+ — 路线图(后续)
+
+- **可观测性:** 结构化日志、数据覆盖率指标落盘、按阶段计时。
+- **覆盖率爬坡:** 逐步上调 `MIN_COVERAGE`,优先补 `_charts`/`_summaries` 等低覆盖模块。
+- **契约推广:** 把 `require_columns` 推广到其它评估入口(回测/换手/归因)。
 - **可复现性强化:** manifest 记录 git SHA / pixi.lock hash / dirty 状态;`workspace/factor_evaluations/index.jsonl` run 索引(对齐 evolution-plan Phase 2)。
 - **可观测性:** 结构化日志、运行耗时/数据覆盖率指标落盘。
 - **数据契约:** 用 pydantic/参数化校验固化评估输入 schema,异常早失败。

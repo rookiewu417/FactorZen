@@ -15,6 +15,8 @@ import numpy as np
 import polars as pl
 import statsmodels.api as sm
 
+from factorzen.core.validation import require_columns
+
 # 最少截面样本数（低于此值的交易日跳过）
 _MIN_CROSS_SAMPLES = 30
 
@@ -42,6 +44,13 @@ def compute_fwd_returns(
     """
     if horizons is None:
         horizons = [1, 5, 10, 20]
+
+    require_columns(price_df, [code_col, date_col], context="compute_fwd_returns")
+    if price_col not in price_df.columns and ret_col not in price_df.columns:
+        raise ValueError(
+            f"compute_fwd_returns: 需要价格列 '{price_col}' 或单日收益列 '{ret_col}' 之一;"
+            f"实际列为 {list(price_df.columns)}"
+        )
 
     df = price_df.sort([code_col, date_col])
     for h in horizons:

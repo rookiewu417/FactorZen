@@ -36,7 +36,7 @@ def test_generate_report_failure_manifest_records_partial_outputs(tmp_path, monk
         ],
     )
 
-    def fail_after_meta(args, effective_config):
+    def fail_after_meta(args, effective_config, timer=None):
         meta_path = mod._meta_path(args.factor, args.start, args.end)
         meta_path.write_text("{}", encoding="utf-8")
         raise RuntimeError("report boom")

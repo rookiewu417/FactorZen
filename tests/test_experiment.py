@@ -139,6 +139,23 @@ def test_experiment_records_reproducibility_metadata(tmp_path, monkeypatch):
     assert manifest["outputs"]["quality_report"] == "quality.json"
 
 
+def test_record_experiment_metadata_survives_run_finalization(tmp_path, monkeypatch):
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
+
+    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+    cfg = RunConfig(factor="x", start="20230101", end="20241231")
+
+    with exp_mod.run_experiment(cfg, run_id="meta_run") as exp_dir:
+        exp_mod.record_experiment_metadata(exp_dir, "stage_timings", {"ic": 1.2, "backtest": 3.4})
+
+    manifest = json.loads((exp_dir / "manifest.json").read_text())
+    # 运行期写入的顶层元数据不应被 run_experiment 的 finally 覆盖丢失
+    assert manifest["stage_timings"] == {"ic": 1.2, "backtest": 3.4}
+    assert manifest["status"] == "success"
+    assert manifest["end_ts"] is not None
+
+
 def test_manifest_records_duration_seconds(tmp_path, monkeypatch):
     from factorzen.core import experiment as exp_mod
     from factorzen.core.config_loader import RunConfig

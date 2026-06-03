@@ -33,10 +33,15 @@ from factorzen.core.config_loader import (
     with_default_all_strategies,
 )
 from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
-from factorzen.core.experiment import record_experiment_output, run_experiment
+from factorzen.core.experiment import (
+    record_experiment_metadata,
+    record_experiment_output,
+    run_experiment,
+)
 from factorzen.core.loader import fetch_daily
 from factorzen.core.logger import get_logger, setup_logging
 from factorzen.core.storage import load_parquet
+from factorzen.core.timing import StageTimer
 from factorzen.core.universe import get_universe
 from factorzen.daily.data.context import FactorDataContext
 from factorzen.daily.evaluation.backtest import (
@@ -661,7 +666,12 @@ def _existing_report_outputs(factor_name: str, start: str, end: str) -> dict[str
     return {name: str(path) for name, path in candidates.items() if path.exists()}
 
 
-def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str]:
+def _run(
+    args: argparse.Namespace,
+    effective_config: RunConfig,
+    timer: StageTimer | None = None,
+) -> dict[str, str]:
+    timer = timer or StageTimer()
     logger.info(f"──── 因子报告生成: {args.factor} | {args.start} ~ {args.end} ────")
 
     # ── 1. 获取因子类 ──
@@ -817,7 +827,8 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         logger.info(f"数据质量报告已保存: {quality_report_path}")
 
         # ── 7. IC 分析 ──
-        ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
+        with timer.stage("IC 分析"):
+            ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
         ic_result.factor_name = factor.name
         logger.info(f"\n{ic_result.summary()}")
         backtest_direction = _decide_backtest_direction(ic_result)
@@ -825,16 +836,18 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         backtest_df = _apply_backtest_direction(clean_df, backtest_direction)
 
         # ── 8. 策略回测 ──
-        bt_result, strategy_results = _run_backtest_strategies(
-            effective_config,
-            backtest_df,
-            daily,
-            factor_name=factor.name,
-            frequency=args.frequency,
-        )
+        with timer.stage("策略回测"):
+            bt_result, strategy_results = _run_backtest_strategies(
+                effective_config,
+                backtest_df,
+                daily,
+                factor_name=factor.name,
+                frequency=args.frequency,
+            )
 
         # ── 9. 换手率 ──
-        to_result = compute_turnover(backtest_df, frequency=args.frequency)
+        with timer.stage("换手率"):
+            to_result = compute_turnover(backtest_df, frequency=args.frequency)
         to_result.factor_name = factor.name
         logger.info(f"\n{to_result.summary()}")
 
@@ -914,28 +927,29 @@ def _run(args: argparse.Namespace, effective_config: RunConfig) -> dict[str, str
         quality_report=quality_report_for_llm,
         backtest_direction=backtest_direction,
     )
-    html = generate_tear_sheet(
-        factor_name=factor.name,
-        ic_result=ic_result,
-        bt_result=bt_result,
-        to_result=to_result,
-        frequency=args.frequency,
-        date_range=date_range,
-        advanced_results=advanced_results,
-        universe=args.universe,
-        benchmark_result=benchmark_result,
-        attribution_result=None,  # Brinson requires index constituent data; deferred
-        backtest_direction=backtest_direction,
-        walk_forward_result=walk_forward_result,
-        walk_forward_summary=walk_forward_summary,
-        event_study_result=event_study_result,
-        pearson_ic_result=pearson_ic_result if args.ic_method in ("pearson", "both") else None,
-        neutralized_ic_result=neutralized_ic_result if args.neutralized_ic else None,
-        llm_explanation=llm_explanation.to_dict() if llm_explanation is not None else None,
-        strategy_results=strategy_results,
-        primary_strategy=effective_config.backtest.primary,
-        quality_report=quality_report_for_llm,
-    )
+    with timer.stage("报告生成"):
+        html = generate_tear_sheet(
+            factor_name=factor.name,
+            ic_result=ic_result,
+            bt_result=bt_result,
+            to_result=to_result,
+            frequency=args.frequency,
+            date_range=date_range,
+            advanced_results=advanced_results,
+            universe=args.universe,
+            benchmark_result=benchmark_result,
+            attribution_result=None,  # Brinson requires index constituent data; deferred
+            backtest_direction=backtest_direction,
+            walk_forward_result=walk_forward_result,
+            walk_forward_summary=walk_forward_summary,
+            event_study_result=event_study_result,
+            pearson_ic_result=pearson_ic_result if args.ic_method in ("pearson", "both") else None,
+            neutralized_ic_result=neutralized_ic_result if args.neutralized_ic else None,
+            llm_explanation=llm_explanation.to_dict() if llm_explanation is not None else None,
+            strategy_results=strategy_results,
+            primary_strategy=effective_config.backtest.primary,
+            quality_report=quality_report_for_llm,
+        )
 
     # ── 12. 落盘 HTML ──
     report_dir = daily_report_output_dir(factor.name)
@@ -1025,12 +1039,15 @@ def main():
 
     try:
         with run_experiment(effective_config, command=sys.argv) as exp_dir:
+            timer = StageTimer()
             try:
-                outputs = _run(args, effective_config)
+                outputs = _run(args, effective_config, timer=timer)
             except Exception:
+                record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
                 for name, path in _existing_report_outputs(args.factor, args.start, args.end).items():
                     record_experiment_output(exp_dir, name, path)
                 raise
+            record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
             for name, path in outputs.items():
                 record_experiment_output(exp_dir, name, path)
             for name, path in copy_outputs_to_run_dir(outputs, exp_dir).items():

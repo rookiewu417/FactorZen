@@ -120,11 +120,18 @@
 - 均 TDD(test_validation 3 + test_fwd_returns 2 + test_evaluation_contracts 4 新增)。
 - 归因(`brinson_attribution`/`barra_style_attribution`)当前在日频管线 deferred,契约推广留作后续。
 
-## Phase 5+ — 路线图(后续)
+## Phase 5 — 可观测性(进行中)
 
-- **可观测性:** 结构化日志、数据覆盖率指标落盘、按阶段计时。
+- [x] **按阶段计时** `core/timing.py::StageTimer` —— 上下文管理器,记录各命名阶段耗时并 INFO 日志,异常退出也记录。
+- [x] **manifest 元数据可靠落盘** `core/experiment.py::record_experiment_metadata` + 修 `run_experiment` 的 finally 合并(原仅保留 `outputs`,运行期写入的顶层元数据会丢失)。
+- [x] **接入报告管线** —— `generate_report._run` 对 IC/回测/换手/报告 4 阶段计时,`stage_timings` 写入 manifest。
+- 均 TDD(test_timing 3 + test_experiment 元数据用例)。
+
+## Phase 6+ — 路线图(后续)
+
 - **覆盖率爬坡:** 逐步上调 `MIN_COVERAGE`,优先补 `_charts`/`_summaries` 等低覆盖模块。
-- **契约推广:** 把 `require_columns` 推广到其它评估入口(回测/换手/归因)。
+- **观测推广:** 把 `StageTimer` 接入 `daily_single` 管线;数据覆盖率指标落盘。
+- **契约推广:** 把 `require_columns` 推广到归因(deferred)入口。
 - **可复现性强化:** manifest 记录 git SHA / pixi.lock hash / dirty 状态;`workspace/factor_evaluations/index.jsonl` run 索引(对齐 evolution-plan Phase 2)。
 - **可观测性:** 结构化日志、运行耗时/数据覆盖率指标落盘。
 - **数据契约:** 用 pydantic/参数化校验固化评估输入 schema,异常早失败。

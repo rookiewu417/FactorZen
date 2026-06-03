@@ -19,6 +19,7 @@
 
 ### Added
 - **数据契约:** `core/validation.py::require_columns` 列契约校验;`compute_fwd_returns`、`compute_turnover` 入口及 `backtest._prepare_factor_df`/`_prepare_price_df` 对必需列做 fail-fast 校验,畸形输入给出清晰错误(列出缺失列与实际列)。
+- **可观测性:** `core/timing.py::StageTimer` 按阶段计时(INFO 日志 + 累计);报告管线对 IC/回测/换手/报告四阶段计时并把 `stage_timings` 写入 manifest;新增 `record_experiment_metadata` 并修复 `run_experiment` finally 丢失运行期元数据的问题。
 - 企业治理文件:`CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`.github/PULL_REQUEST_TEMPLATE.md`。
 - 升级计划:`docs/superpowers/plans/2026-06-03-enterprise-grade-daily-platform.md`。
 

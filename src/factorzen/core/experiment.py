@@ -83,6 +83,39 @@ def record_experiment_output(exp_dir: Path, key: str, value: str) -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+# run_experiment 自身管理的标准字段;其余键视为运行期写入的元数据,finally 时予以保留。
+_MANAGED_MANIFEST_KEYS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "git_sha",
+        "git_dirty",
+        "pixi_lock_sha256",
+        "command",
+        "config",
+        "outputs",
+        "start_ts",
+        "end_ts",
+        "duration_seconds",
+        "status",
+        "error",
+    }
+)
+
+
+def record_experiment_metadata(exp_dir: Path, key: str, value: Any) -> None:
+    """Record an arbitrary top-level metadata key in an existing manifest.
+
+    与 ``record_experiment_output``(写入 ``outputs`` 子字典)不同,此处写入顶层键,
+    适合运行期产生的观测数据(如 ``stage_timings``)。run_experiment 的 finally
+    会保留这些键。
+    """
+    manifest_path = exp_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[key] = value
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def _config_to_dict(config: Any) -> dict[str, Any]:
     if hasattr(config, "model_dump"):
         return config.model_dump()
@@ -169,6 +202,10 @@ def run_experiment(
         if manifest_path.exists():
             existing = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["outputs"] = existing.get("outputs", manifest.get("outputs", {}))
+            # 保留运行期通过 record_experiment_metadata 写入的顶层元数据
+            for key, value in existing.items():
+                if key not in _MANAGED_MANIFEST_KEYS:
+                    manifest[key] = value
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
         _update_experiment_index(manifest, exp_dir)
 

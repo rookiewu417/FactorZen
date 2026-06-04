@@ -80,6 +80,12 @@ indent-style = "space"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+# 屏蔽 matplotlib 在缺失中文字体环境（如 CI）下的 glyph 缺失告警。
+# 字体优先级回退已在 reports/_charts.py 配置；安装任一 CJK 字体即可正常渲染。
+# 仅精确屏蔽这一条 cosmetic 告警，其余告警照常暴露。
+filterwarnings = [
+    "ignore:Glyph .* missing from font.*:UserWarning",
+]
 
 [tool.mypy]
 python_version = "3.11"

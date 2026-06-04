@@ -13,11 +13,22 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
-# Windows 中文字体支持（优先 Microsoft YaHei，回退 SimHei）
-for _font in ["Microsoft YaHei", "SimHei", "sans-serif"]:
-    matplotlib.rcParams["font.family"] = _font
-    matplotlib.rcParams["axes.unicode_minus"] = False
-    break
+# 中文字体支持：按优先级回退（Windows / Linux 常见 CJK 字体），末位回落 DejaVu Sans。
+# 必须设置 font.sans-serif 列表（而非 font.family 单值），否则 matplotlib 无法
+# 在缺失首选字体时自动尝试后续字体，会把中文渲染成豆腐块并刷屏 glyph 缺失告警。
+matplotlib.rcParams["font.sans-serif"] = [
+    "Microsoft YaHei",
+    "SimHei",
+    "Noto Sans CJK SC",
+    "Noto Sans CJK JP",
+    "Source Han Sans CN",
+    "WenQuanYi Zen Hei",
+    "WenQuanYi Micro Hei",
+    "Arial Unicode MS",
+    "DejaVu Sans",
+]
+matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["axes.unicode_minus"] = False
 
 from factorzen.reports._formatting import _finite_float, _safe_attr  # noqa: E402
 

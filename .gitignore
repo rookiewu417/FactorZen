@@ -6,10 +6,9 @@
 .env
 *.env.local
 
-# Data caches
-data/raw/
-data/processed/
-data/cache/
+# Local market data and generated artifacts
+data/*
+!data/.gitkeep
 
 workspace/runs/*
 !workspace/runs/.gitkeep
@@ -50,6 +49,11 @@ Thumbs.db
 
 # Development notes
 .sisyphus/notepads/
+.superpowers/
+
+# Runtime logs and state
+*.log
+*.pid
 
 # editable install artifacts
 *.egg-info/

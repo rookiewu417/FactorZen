@@ -1,95 +1,130 @@
 # FactorZen
 
-> **FactorZen** 是一个面向 A 股单因子的可信研究框架,强调严谨、克制与可复现。核心主线覆盖:因子计算 → 预处理 → IC / 分层回测评估 → walk-forward 样本外验证 → 数据质量报告 → 实验 manifest → Tear Sheet HTML 报告生成。当前聚焦**日频评估与报告**;`research/combination/` 提供实验性多因子合成工具(用于研究对比,不作为生产组合优化模块)。
+FactorZen 是一个面向 A 股单因子的研究框架，目标是把一个信号从数据、因子计算、预处理、IC 检验、分层回测、walk-forward 样本外验证到 HTML Tear Sheet 报告串成一条可复现的链路。
 
 [![CI](https://github.com/rookiewu417/FactorZen/actions/workflows/ci.yml/badge.svg)](https://github.com/rookiewu417/FactorZen/actions/workflows/ci.yml)
 
-## 设计原则
+## 适合做什么
 
-1. **无未来函数** —— 信号在 T 日生成,T+1 开盘执行;前向收益用复权价,严格隔离样本外。
-2. **可复现** —— 每次运行落盘 universe 快照、manifest(配置 / git SHA / 参数)与产物。
-3. **可信结论** —— 样本不足、覆盖率偏低、缺失模块都会在报告中显式标注,不把缺失当作零信号。
-4. **质量门守护** —— `lint / typecheck / test / coverage` 进入 CI,关键路径回归有测试。
+- 验证日频单因子是否有稳定预测能力。
+- 检查分层收益、Rank/Pearson IC、HAC t 统计、换手、成本和容量约束。
+- 生成可审计的实验产物：`manifest.json`、universe 快照、parquet 结果和 Tear Sheet HTML。
+- 编写自定义日频/周频/月频因子，并用统一 CLI 跑评估流程。
+
+## 不覆盖什么
+
+FactorZen 不是实盘交易系统，不提供 OMS/EMS、撮合、风控执行闭环，也不内置商业行情数据。`intraday/` 目前保留为分钟线研究代码，主线仍聚焦低频因子评估。
+
+## 核心原则
+
+1. **无未来函数**：T 日信号生成，T+1 开盘执行；前向收益和成交约束按可获得数据对齐。
+2. **可复现**：运行配置、git SHA、lockfile hash、输出路径和阶段耗时写入 manifest。
+3. **可信结论**：样本不足、覆盖率偏低、缺失模块会在报告中显式标注。
+4. **质量门**：lint、mypy、pytest、coverage 由本地命令和 CI 共同守护。
+
+## 安装
+
+推荐使用 [pixi](https://pixi.sh/) 管理环境：
+
+```bash
+pixi install
+cp .env.example .env
+pixi run smoke
+```
+
+`.env` 不入库。真实数据拉取需要在 `.env` 中配置 `TUSHARE_TOKEN`；LLM 解读是可选能力，默认关闭。
+
+## 快速开始
+
+```bash
+pixi run fz factor list
+pixi run fz factor new my_alpha --frequency daily
+pixi run fz config validate workspace/configs/daily/daily_factor_template.yaml
+pixi run fz factor run momentum_20d --start 20230101 --end 20241231 --universe csi500
+pixi run fz report path <run_id>
+```
+
+使用 YAML 配置运行：
+
+```bash
+pixi run fz factor run --config workspace/configs/daily/daily_factor_template.yaml
+```
+
+数据拉取示例：
+
+```bash
+pixi run fz data fetch daily --start 20230101 --end 20241231
+pixi run fz data fetch daily-basic --start 20230101 --end 20241231
+```
+
+## 输出在哪里
+
+每次评估会写入：
+
+```text
+workspace/factor_evaluations/{run_id}/
+  report.html
+  manifest.json
+  universe.parquet
+  *_ic.parquet
+  *_backtest.parquet
+```
+
+运行日志、实验产物和本地行情数据默认不提交到 Git：
+
+```text
+data/                         # 本地行情与缓存
+workspace/runs/               # 运行日志和中间产物
+workspace/factor_evaluations/ # 每次评估输出
+```
 
 ## 项目结构
 
 ```text
-src/factorzen/          # 框架代码
-  config/               # 配置加载与常量
-  core/                 # 日历、universe、存储、数据质量、实验 manifest、日志
-  daily/                # 日频主线
-    data/               # PIT 数据上下文
-    preprocessing/      # 去极值、标准化、中性化
-    evaluation/         # IC、分层回测、换手、walk-forward、归因、基准、成本模型
-    factors/            # 因子注册与基类
-    optimization/       # 组合优化器(研究用)
-  intraday/             # 分钟线(已冻结,不在当前迭代范围)
-  llm/                  # LLM 研究解读(可选)
+src/factorzen/
+  config/               # 路径、常量、Tushare 配置
+  core/                 # 日历、universe、存储、加载、数据审计、实验元数据
+  daily/                # 日频数据、因子、预处理、评估和优化
+  intraday/             # 分钟线研究代码，当前非主线
+  llm/                  # 可选的 OpenAI-compatible 研究解读
   pipelines/            # daily_single、generate_report 端到端流程
-  reports/              # Tear Sheet 报告引擎 + Jinja 模板
+  reports/              # Tear Sheet 报告引擎和模板
   research/combination/ # 实验性多因子合成
-  cli/                  # 统一 CLI 入口(fz)
-workspace/factors/              # 用户日常新增因子
-workspace/configs/              # 实验配置(YAML)
-workspace/factor_evaluations/   # 每次运行的 report.html / manifest.json / parquet 产物
-data/                   # 本地数据缓存(parquet)
-tests/                  # pytest 测试(658+ 用例)
-docs/                   # 架构、因子编写、运行手册、演进计划
+  cli/                  # fz 命令行入口
+workspace/
+  factors/              # 用户自定义因子
+  configs/              # 实验 YAML 配置
+tests/                  # pytest 测试
+docs/                   # 架构、因子编写、运行手册和路线图
 ```
 
-## 环境
-
-本仓库使用 **pixi**(conda-forge + PyPI)管理环境,支持 Python 3.10–3.12。
+## 开发
 
 ```bash
-pixi install                      # 安装依赖
-cp .env.example .env              # 配置 TUSHARE_TOKEN 等(.env 不入库)
-pixi run smoke                    # 自检:import polars/tushare 正常
+pixi run lint
+pixi run format
+pixi run typecheck
+pixi run test
+pixi run coverage
 ```
 
-## 快速开始(统一 CLI)
+提交前建议启用：
 
 ```bash
-pixi run fz factor list                                            # 列出已注册因子
-pixi run fz factor new my_alpha --frequency daily                  # 生成因子模板
-pixi run fz factor run my_alpha --start 20250101 --end 20260513 \
-    --universe csi500                                              # 运行单因子评估
-pixi run fz report path <run_id>                                   # 打印报告路径
-pixi run fz config validate workspace/configs/my_run.yaml          # 校验运行配置
+pre-commit install
 ```
-
-每次 `factor run` 会在 `workspace/factor_evaluations/{run_id}/` 下生成:
-`report.html`(Tear Sheet)、`manifest.json`(可复现元数据)、`universe.parquet`、IC / 回测 parquet。
-
-## 报告(Tear Sheet)包含
-
-综合结论与评级评分卡 · 收益表现(分层 / 多空 / 月度) · 预测能力(Rank/Pearson IC、多持有期、样本外分割) · 结构检验(单调性、自相关、因子相关性) · 交易可行性(换手、成本、成交约束) · 风险归因(市值 / 行业 / 市场状态) · walk-forward OOS · 数据质量 · 附录(复现摘要 + 模块状态)。
-
-## 开发与质量门
-
-```bash
-pixi run lint        # ruff 检查
-pixi run format      # ruff 格式化
-pixi run typecheck   # mypy(src/factorzen)
-pixi run test        # pytest
-pixi run coverage    # 覆盖率
-```
-
-提交前建议启用 `pre-commit install`(ruff + ruff-format + mypy)。CI 在 push / PR 到 `master` 时运行上述质量门。
-
-## 范围与边界
-
-- **当前聚焦:** 日频因子评估与报告。
-- **已冻结:** 分钟线(intraday)主线与报告 UI、Tick 级研究、实盘 OMS/EMS、生产组合执行闭环。
-
-## 安全
-
-`.env` 与凭据不入库。若发现密钥泄露,请立即轮换;详见 [SECURITY.md](SECURITY.md)。
 
 ## 文档
 
-- [架构](docs/architecture.md) · [因子编写](docs/factor-authoring.md) · [运行手册](docs/runbook.md) · [演进计划](docs/evolution-plan-2026.md)
-- 升级计划:[docs/superpowers/plans/](docs/superpowers/plans/)
+- [项目说明](docs/project-explanation.md)
+- [架构](docs/architecture.md)
+- [因子编写](docs/factor-authoring.md)
+- [运行手册](docs/runbook.md)
+- [演进计划](docs/evolution-plan-2026.md)
+
+## 安全
+
+不要提交 `.env`、API token、商业行情数据或私有研究产物。安全问题请参考 [SECURITY.md](SECURITY.md)。
 
 ## 许可
 

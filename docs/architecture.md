@@ -9,7 +9,7 @@ workspace/configs/  实验 YAML 配置
 workspace/factor_evaluations/     每次运行的自包含输出
 data/               本地市场数据缓存
 tests/              pytest 测试
-tests/benchmarks/   性能基准脚本
+tools/              维护与性能辅助脚本
 docs/               项目文档
 ```
 

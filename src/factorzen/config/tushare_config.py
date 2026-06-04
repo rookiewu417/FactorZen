@@ -1,10 +1,11 @@
 """Tushare 连接配置。Token 从环境变量读取，积分/限流参数可配置。"""
 
 import os
-from pathlib import Path
+
+from factorzen.config.settings import ROOT
 
 # ── 加载 .env 文件（如果存在）────────────────────────────
-_env_file = Path(__file__).resolve().parent.parent / ".env"
+_env_file = ROOT / ".env"
 if _env_file.exists():
     with open(_env_file, encoding="utf-8") as f:
         for line in f:

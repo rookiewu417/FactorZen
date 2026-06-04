@@ -31,8 +31,6 @@ workspace/factor_evaluations/ 每次运行的 report.html / manifest.json / parq
 data/                         本地数据缓存(parquet,不入库)
 ```
 
-> 历史说明:`common/` 已并入 `core/`,`reporting/` 改名 `reports/`,因子注册迁至 `daily/factors/registry.py`,`scripts/` 改为 `pipelines/` + `cli/`。
-
 ## 3. 快速开始
 
 ```bash

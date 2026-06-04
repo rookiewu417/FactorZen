@@ -1,40 +1,43 @@
 # 贡献指南
 
-感谢参与 FactorZen。本项目当前聚焦**日频因子评估与报告**。
+感谢参与 FactorZen。本项目当前聚焦日频因子评估与报告，优先接受能提升研究可信度、可复现性、测试覆盖和文档清晰度的改动。
 
 ## 环境
 
 ```bash
 pixi install
-pre-commit install        # 启用提交前 ruff + mypy 钩子
-cp .env.example .env       # 配置 TUSHARE_TOKEN(不入库)
+cp .env.example .env
+pre-commit install
 ```
 
-## 提交前必过的质量门
+`.env` 只放本地凭据，不提交到仓库。
+
+## 提交前质量门
 
 ```bash
-pixi run lint        # ruff
-pixi run typecheck   # mypy(src/factorzen,必须 0 错)
-pixi run test        # pytest
-pixi run coverage    # 覆盖率
+pixi run lint
+pixi run typecheck
+pixi run test
+pixi run coverage
 ```
 
-CI 在 push / PR 到 `master` 时运行同一套门。**typecheck 失败会跳过测试**,务必本地先跑通。
+CI 在 push / PR 到 `main` 或 `master` 时运行同一套检查。提交前请尽量在本地跑通。
 
-## 工作流约定
+## 工作流
 
-- **分支:** 不直接提交 `master`,从 `master` 切 `fix/`、`feat/`、`chore/`、`docs/` 分支,经 PR 合并。
-- **提交信息:** 遵循 Conventional Commits(`fix:` / `feat:` / `chore:` / `docs:` / `test:`)。
-- **作者身份:** `rookiewu417 <1007372080@qq.com>`。
-- **TDD:** bugfix 与新功能先写失败测试,再实现;关键路径必须有回归测试。
-- **无未来函数:** 评估代码严禁引入前瞻偏差;涉及收益/价格对齐的改动需有 lookahead 安全测试。
+- 从最新主分支创建功能分支，不直接向主分支提交。
+- 提交信息建议遵循 Conventional Commits，例如 `fix:`、`feat:`、`docs:`、`test:`、`chore:`。
+- bugfix 和核心行为变更应先有能复现问题的测试，再实现修复。
+- 涉及收益、价格、成交约束或样本切分的改动，必须说明是否可能引入未来函数，并补充相应回归测试。
+- 不提交本地行情数据、运行产物、日志、notebook checkpoint、`.env` 或任何 token。
 
 ## 编码风格
 
-- 行宽由 ruff-format 管理;遵循 `pyproject.toml` 的 ruff 规则集。
-- 中文注释/字符串保持正确 UTF-8,**不要**用 GBK 或 latin1 保存源文件/文档。
-- 新增因子放在 `workspace/factors/{daily,...}`,框架代码放在 `src/factorzen/`。
+- Python 代码由 ruff 和 ruff-format 统一处理。
+- 中文文档和注释使用 UTF-8 保存。
+- 框架代码放在 `src/factorzen/`；用户可扩展因子放在 `workspace/factors/{daily,weekly,monthly,intraday}/`。
+- 保持改动聚焦，避免顺手重排无关代码。
 
 ## 报告问题
 
-通过 GitHub Issues 提交。安全问题请勿公开,见 [SECURITY.md](SECURITY.md)。
+普通问题请通过 GitHub Issues 提交。安全问题不要公开披露，处理方式见 [SECURITY.md](SECURITY.md)。

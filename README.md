@@ -90,3 +90,7 @@ pixi run coverage    # 覆盖率
 
 - [架构](docs/architecture.md) · [因子编写](docs/factor-authoring.md) · [运行手册](docs/runbook.md) · [演进计划](docs/evolution-plan-2026.md)
 - 升级计划:[docs/superpowers/plans/](docs/superpowers/plans/)
+
+## 许可
+
+本项目以 [MIT License](LICENSE) 开源。

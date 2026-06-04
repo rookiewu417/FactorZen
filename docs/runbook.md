@@ -1,42 +1,97 @@
 # 运行手册
 
-常用命令:
+> [FactorZen](../README.md) · [文档](README.md) · [架构](architecture.md) · **运行手册** · [路线图](evolution-plan-2026.md)
+
+所有命令从仓库根目录执行，并通过 `pixi run` 进入项目环境。
+
+## 命令速查
+
+| 场景 | 命令 |
+|------|------|
+| 环境自检 | `pixi run smoke` |
+| 列出因子 | `pixi run fz factor list` |
+| 新建因子 | `pixi run fz factor new <name> --frequency daily` |
+| 运行因子 | `pixi run fz factor run <name> --start … --end … --universe csi500` |
+| 校验配置 | `pixi run fz config validate <path>` |
+| 生成报告 | `pixi run fz report build <name> …` |
+| 报告路径 | `pixi run fz report path <run_id>` |
+| 拉取数据 | `pixi run fz data fetch daily --start … --end …` |
+| 运行历史 | `pixi run fz runs list` / `pixi run fz runs show <run_id>` |
+| 质量门 | `pixi run lint && pixi run typecheck && pixi run test && pixi run coverage` |
+
+## 环境自检
+
+```bash
+pixi install
+cp .env.example .env
+pixi run smoke
+```
+
+真实数据拉取需要在 `.env` 配置 `TUSHARE_TOKEN`。LLM 研究解读默认关闭，只有命令显式传入 `--llm-explain` 时才会尝试读取相关配置。
+
+## 因子工作流
 
 ```bash
 pixi run fz factor list
 pixi run fz factor new my_alpha --frequency daily
-pixi run fz factor run my_alpha --start 20250101 --end 20260513 --universe csi500
-pixi run fz report path <run_id>
+pixi run fz factor run my_alpha --start 20230101 --end 20241231 --universe csi500
 ```
 
-YAML 配置运行:
+可选深度分析开关：
+
+```bash
+pixi run fz factor run momentum_20d --start 20230101 --end 20241231 --universe csi500 --all
+pixi run fz factor run momentum_20d --start 20230101 --end 20241231 --universe csi500 --ic-method both --neutralized-ic --event-study
+```
+
+## YAML 配置
 
 ```bash
 pixi run fz config validate workspace/configs/daily/daily_factor_template.yaml
 pixi run fz factor run --config workspace/configs/daily/daily_factor_template.yaml
 ```
 
-报告生成:
+`config validate` 会打印生效后的配置与标准输出目录，不会启动完整回测。
+
+## 报告
 
 ```bash
-pixi run fz report build momentum_20d --start 20250101 --end 20260513
+pixi run fz report build momentum_20d --start 20230101 --end 20241231 --universe csi500
 pixi run fz report path <run_id>
 ```
 
-数据拉取(需在 `.env` 配置 `TUSHARE_TOKEN`):
+已有产物可复用时，加 `--reuse`：
 
 ```bash
-pixi run fz data fetch daily --start 20250101 --end 20260513
-pixi run fz data fetch daily-basic --start 20250101 --end 20260513
+pixi run fz report build momentum_20d --start 20230101 --end 20241231 --universe csi500 --reuse
 ```
 
-运行历史:
+报告与 manifest 的标准位置：
+
+```text
+workspace/factor_evaluations/{run_id}/
+```
+
+## 数据
+
+```bash
+pixi run fz data fetch daily --start 20230101 --end 20241231
+pixi run fz data fetch daily-basic --start 20230101 --end 20241231
+```
+
+管线会在运行时审计并补齐所需缓存。真实网络请求不进入默认 CI。
+
+## 运行历史
 
 ```bash
 pixi run fz runs list
+pixi run fz runs list --limit 50
+pixi run fz runs show <run_id>
 ```
 
-## 质量门(提交前 / CI)
+`runs list` 读取 `workspace/factor_evaluations/experiment_index.jsonl`，`runs show` 读取单次运行的 `manifest.json`。
+
+## 质量门
 
 ```bash
 pixi run lint
@@ -45,8 +100,17 @@ pixi run test
 pixi run coverage
 ```
 
-## 说明
+CI 在 push / PR 到 `main` 或 `master` 时运行同一套检查。
 
-- 关键输出在 `workspace/factor_evaluations/{run_id}/`(报告 + manifest + parquet)。
-- 新增流程统一优先使用 `fz`;`daily`、`report`、`factor test`、`report open` 仅作为兼容别名保留。
-- 长任务(批量回测 / 数据拉取)建议放入 tmux 并记录命令、日志与输出目录。
+## 兼容入口
+
+`pixi run daily`、`pixi run report`、`fz factor test` 与 `fz report open` 仍保留为兼容入口。新增脚本与文档优先使用 `fz factor run`、`fz report build`、`fz report path`。
+
+## 故障处理
+
+| 现象 | 处理 |
+|------|------|
+| `TUSHARE_TOKEN` 缺失 | 只影响真实数据拉取；离线测试不应依赖真实 token |
+| `report path` 找不到报告 | 先用 `fz runs list` 确认 `run_id`，再用 `fz runs show <run_id>` 查看 manifest |
+| qlib 因子运行失败 | 确认 `QLIB_PROVIDER_URI` 指向的数据包覆盖运行日期，详见 [`workspace/factors/qlib/README.md`](../workspace/factors/qlib/README.md) |
+| manifest 标记 `git_dirty=true` | 工作树存在未提交改动，该 run 不能只凭 git SHA 完全复现 |

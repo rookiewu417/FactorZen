@@ -16,12 +16,18 @@ def _single_manifest(experiments_dir):
 
 def test_generate_report_failure_manifest_records_partial_outputs(tmp_path, monkeypatch):
     from factorzen.core import experiment as exp_mod
+    from factorzen.pipelines import _report_persistence as persist
     from factorzen.pipelines import generate_report as mod
 
     experiments_dir = tmp_path / "experiments"
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
-    monkeypatch.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")
-    monkeypatch.setattr(mod, "daily_report_output_dir", lambda factor_name: tmp_path / "reports")
+    # _meta_path / _existing_report_outputs 已拆到 _report_persistence，在该模块解析路径函数
+    monkeypatch.setattr(
+        persist, "daily_result_output_dir", lambda factor_name: tmp_path / "results"
+    )
+    monkeypatch.setattr(
+        persist, "daily_report_output_dir", lambda factor_name: tmp_path / "reports"
+    )
     monkeypatch.setattr(
         sys,
         "argv",

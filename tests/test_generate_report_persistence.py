@@ -12,7 +12,9 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
     from factorzen.daily.evaluation.backtest import StrategyBacktestResult
     from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
     from factorzen.daily.evaluation.turnover import TurnoverResult
-    from factorzen.pipelines import generate_report as mod
+
+    # _save_results 已拆到 _report_persistence，路径构造函数在该模块命名空间解析
+    from factorzen.pipelines import _report_persistence as mod
 
     monkeypatch.setattr(mod, "daily_factor_output_dir", lambda factor_name: tmp_path / "factors")
     monkeypatch.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")

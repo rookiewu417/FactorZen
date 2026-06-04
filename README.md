@@ -2,8 +2,10 @@
 
 FactorZen 是一个面向 A 股单因子的研究框架，目标是把一个信号从数据、因子计算、预处理、IC 检验、分层回测、walk-forward 样本外验证到 HTML Tear Sheet 报告串成一条可复现的链路。
 
-[![CI](https://github.com/rookiewu417/FactorZen/actions/workflows/ci.yml/badge.svg)](https://github.com/rookiewu417/FactorZen/actions/workflows/ci.yml)
+![CI](https://github.com/owner/repo/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+
 ## 适合做什么
 
 - 验证日频单因子是否有稳定预测能力。

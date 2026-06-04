@@ -2,9 +2,12 @@
 
 FactorZen 是一个面向 A 股单因子的研究框架，目标是把一个信号从数据、因子计算、预处理、IC 检验、分层回测、walk-forward 样本外验证到 HTML Tear Sheet 报告串成一条可复现的链路。
 
-![Build](https://img.shields.io/badge/build-passing-brightgreen)
-![License](https://img.shields.io/badge/license-MIT-blue)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![CI](https://img.shields.io/badge/CI-passing-brightgreen)
+![Stars](https://img.shields.io/github/stars/owner/repo)
+![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
+![Code Style](https://img.shields.io/badge/code%20style-black-000000)
 
 ## 适合做什么
 

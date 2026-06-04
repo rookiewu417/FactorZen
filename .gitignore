@@ -2,6 +2,10 @@
 .pixi/*
 !.pixi/config.toml
 
+# Virtual environments
+.venv/
+venv/
+
 # Environment variables / secrets
 .env
 *.env.local
@@ -50,6 +54,7 @@ Thumbs.db
 # Development notes
 .sisyphus/notepads/
 .superpowers/
+docs/plans/
 
 # Runtime logs and state
 *.log

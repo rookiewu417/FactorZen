@@ -10,6 +10,7 @@
 - **类型安全:** 修复 `tear_sheet.py` / `backtest.py` / `generate_report.py` 共 10 处 mypy 错误,恢复 CI `typecheck` 步骤(此前失败导致测试被跳过)。
 - **健壮性:** 图表辅助函数单列输入的 `StopIteration` 守卫;分位收益除零防护;事件研究窗口序列校验由 `>=` 收紧为 `==`。
 - **文档编码:** 修复 README 及 docs 在合并中被 GBK 双重编码损坏的中文(重写 README/architecture/runbook,恢复 evolution-plan/project-explanation)。
+- **文档刷新:** `project-explanation.md` 由 1374 行陈旧版(合并前布局)改写为 ~130 行准确版,反映 `src/factorzen` 当前布局并补入可复现/可观测/数据契约等新能力。
 
 ### Changed
 - **报告模块解耦:** `tear_sheet.py` 2986 → 1054 行(-65%),按职责拆为 `_formatting`/`_scoring`/`_charts`/`_strategy`/`_summaries` 五个模块;经 re-export 保持对外导入接口不变。

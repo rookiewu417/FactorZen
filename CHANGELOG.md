@@ -19,6 +19,7 @@
 - **可复现性:** `run_experiment` 在工作树 dirty 时 `logger.warning` 提示;manifest 增记 `duration_seconds`。
 
 ### Added
+- **测试加固:** 新增 `test_charts_helpers` / `test_summaries_helpers` 共 29 个边界单测,覆盖报告模块的 None/空输入防御分支(`_charts` 78%→85%,`_summaries` 78%→81%);覆盖率门槛 73%→74%。
 - **开源:** 以 MIT License 开源(`LICENSE`);pyproject 增加 `license`、`readme` 与分类器元数据;README 增加许可说明。仓库当前文件与全部 git 历史经扫描确认无凭据泄露。
 - **数据契约:** `core/validation.py::require_columns` 列契约校验;`compute_fwd_returns`、`compute_turnover` 入口及 `backtest._prepare_factor_df`/`_prepare_price_df` 对必需列做 fail-fast 校验,畸形输入给出清晰错误(列出缺失列与实际列)。
 - **可观测性:** `core/timing.py::StageTimer` 按阶段计时(INFO 日志 + 累计);`generate_report` 与 `daily_single` 两条日频主管线均对 IC/回测/换手/报告四阶段计时并把 `stage_timings` 写入 manifest;新增 `record_experiment_metadata` 并修复 `run_experiment` finally 丢失运行期元数据的问题。

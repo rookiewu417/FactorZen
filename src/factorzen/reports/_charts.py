@@ -20,6 +20,7 @@ matplotlib.rcParams["font.sans-serif"] = [
     "Microsoft YaHei",
     "SimHei",
     "Noto Sans CJK SC",
+    "Noto Sans CJK TC",
     "Noto Sans CJK JP",
     "Source Han Sans CN",
     "WenQuanYi Zen Hei",

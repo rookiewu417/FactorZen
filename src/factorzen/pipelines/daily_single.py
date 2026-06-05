@@ -20,10 +20,10 @@ from factorzen.core.config_loader import (
     RunConfig,
     build_backtest_strategies,
     build_cost_model,
+    build_default_daily_research_config,
     build_preprocessing_pipeline,
     build_runtime_backtest_config,
     default_benchmark_for_universe,
-    with_default_all_strategies,
 )
 from factorzen.core.data_ensure import ensure_data_for_daily_run
 from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
@@ -99,6 +99,19 @@ def _merge_run_config_args(args: argparse.Namespace, run_config: RunConfig | Non
     cli_ic_method = args.ic_method is not None
     cli_neutralized_ic = args.neutralized_ic is not None
     cli_event_study = args.event_study is not None
+    using_builtin_default = run_config is None or bool(
+        getattr(args, "_uses_builtin_default_config", False)
+    )
+
+    if run_config is None and args.factor and args.start and args.end:
+        run_config = build_default_daily_research_config(
+            factor=args.factor,
+            start=args.start,
+            end=args.end,
+            universe=args.universe,
+            benchmark=args.benchmark,
+            seed=args.seed,
+        )
 
     if run_config is not None:
         for field in ("factor", "start", "end", "universe", "seed"):
@@ -129,6 +142,9 @@ def _merge_run_config_args(args: argparse.Namespace, run_config: RunConfig | Non
             args.event_study = True
         args.llm_explain = True
 
+    if using_builtin_default:
+        args.llm_explain = True
+
     if args.ic_method is None:
         args.ic_method = "rank"
     if args.neutralized_ic is None:
@@ -145,7 +161,14 @@ def _merge_run_config_args(args: argparse.Namespace, run_config: RunConfig | Non
 
 def _effective_run_config(args: argparse.Namespace, run_config: RunConfig | None) -> RunConfig:
     """Return a RunConfig that reflects final merged scalar CLI values."""
-    base = run_config or RunConfig(factor=args.factor, start=args.start, end=args.end)
+    base = run_config or build_default_daily_research_config(
+        factor=args.factor,
+        start=args.start,
+        end=args.end,
+        universe=args.universe,
+        benchmark=args.benchmark,
+        seed=args.seed,
+    )
     config = base.model_copy(
         update={
             "factor": args.factor,
@@ -159,8 +182,6 @@ def _effective_run_config(args: argparse.Namespace, run_config: RunConfig | None
             "event_study": args.event_study,
         }
     )
-    if run_config is None:
-        config = with_default_all_strategies(config)
     return config
 
 
@@ -184,11 +205,21 @@ def _write_run_metrics(path: str, ic_result: Any, bt_result: Any) -> None:
     Path(path).write_text(json.dumps(metrics, ensure_ascii=False), encoding="utf-8")
 
 
-def _build_dry_run_payload(config: RunConfig) -> dict[str, Any]:
-    return {
+def _build_dry_run_payload(
+    config: RunConfig,
+    *,
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    payload = {
         "config": config.model_dump(),
         "output_dir": (ROOT / "workspace" / "factor_evaluations" / "<run_id>").as_posix(),
     }
+    if args is not None:
+        payload["execution"] = {
+            "llm_explain": bool(getattr(args, "llm_explain", False)),
+            "llm_refresh": bool(getattr(args, "llm_refresh", False)),
+        }
+    return payload
 
 
 def _existing_run_outputs(factor_name: str, start: str, end: str) -> dict[str, str]:
@@ -946,7 +977,7 @@ def main():
     parser.add_argument(
         "--llm-explain",
         action="store_true",
-        help="显式启用大模型因子解读；默认关闭，缺少 FACTORZEN_LLM_* 配置时跳过",
+        help="启用大模型因子解读；无 YAML 默认配置会自动启用，缺少 FACTORZEN_LLM_* 配置时跳过",
     )
     parser.add_argument(
         "--llm-refresh",
@@ -974,21 +1005,18 @@ def main():
 
             run_config = load_run_config(args.config, overrides=overrides)
         elif overrides and args.factor and args.start and args.end:
-            # 无 YAML 但用了 --set：用 CLI 标量构造 minimal dict，叠加覆盖后校验。
-            # run_config 变为非 None → 不再套用 4 策略默认套件，
-            # `--set backtest.top_n=N` 经 model_validator 产出单一 topn 策略。
             from factorzen.core.config_loader import build_run_config_from_dict
 
-            base: dict[str, Any] = {
-                "factor": args.factor,
-                "start": args.start,
-                "end": args.end,
-            }
-            for field in ("universe", "benchmark", "seed", "ic_method"):
-                value = getattr(args, field, None)
-                if value is not None:
-                    base[field] = value
+            base = build_default_daily_research_config(
+                factor=args.factor,
+                start=args.start,
+                end=args.end,
+                universe=args.universe,
+                benchmark=args.benchmark,
+                seed=args.seed,
+            ).model_dump()
             run_config = build_run_config_from_dict(base, overrides=overrides)
+            args._uses_builtin_default_config = True
     except (ImportError, ValueError) as e:
         logger.error(str(e))
         sys.exit(2)
@@ -1004,7 +1032,7 @@ def main():
 
     effective_config = _effective_run_config(args, run_config)
     if args.dry_run:
-        print(json.dumps(_build_dry_run_payload(effective_config), ensure_ascii=False, indent=2))
+        print(json.dumps(_build_dry_run_payload(effective_config, args=args), ensure_ascii=False, indent=2))
         return
 
     try:

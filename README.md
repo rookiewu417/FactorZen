@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/logo-horizontal-light.svg" alt="FactorZen logo" width="520">
+
 # FactorZen
 
 **面向 A 股低频因子的可复现研究框架**
@@ -59,7 +61,7 @@ cp .env.example .env
 pixi run smoke
 ```
 
-`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；LLM 研究解读为可选能力，默认关闭。
+`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；无 YAML 默认运行会启用 LLM 研究解读，缺少 `FACTORZEN_LLM_*` 配置时自动跳过。
 
 ## 快速开始
 
@@ -70,12 +72,14 @@ pixi run fz factor list
 pixi run fz factor new my_alpha --frequency daily
 ```
 
-**校验并运行 YAML 配置**
+**无需 YAML 运行新因子**
 
 ```bash
-pixi run fz config validate workspace/configs/daily/daily_factor_template.yaml
-pixi run fz factor run --config workspace/configs/daily/daily_factor_template.yaml
+pixi run fz factor run my_alpha --start 20230101 --end 20241231
+pixi run fz report path <run_id>
 ```
+
+无 `--config` 时会使用内置研究级默认配置：`csi500`、匹配 benchmark、`seed=42`、行业+市值中性化、内置 4 策略套件、walk-forward、both IC、neutralized IC、event study 与 LLM 解读。
 
 **命令行调参，无需改 YAML**
 
@@ -86,6 +90,8 @@ pixi run fz factor run momentum_20d --start 20230101 --end 20241231 \
   --set backtest.top_n=30 --set preprocessing.neutralize=true --set walk_forward.train_days=252
 ```
 
+无 YAML 默认配置下，`--set backtest.top_n=N` 会同步更新默认主策略为 `topn_N`。
+
 `factor sweep` 建在 `--set` 之上：一条命令跑参数网格的笛卡尔积，按指标排序输出对比表并落 CSV：
 
 ```bash
@@ -93,11 +99,11 @@ pixi run fz factor sweep --config workspace/configs/daily/daily_factor_template.
   --grid backtest.top_n=30,50,100 --grid preprocessing.normalizer=zscore,rank_normal --sort-by ir
 ```
 
-**直接运行内置示例因子**
+**校验并运行 YAML 配置**
 
 ```bash
-pixi run fz factor run momentum_20d --start 20230101 --end 20241231 --universe csi500
-pixi run fz report path <run_id>
+pixi run fz config validate workspace/configs/daily/daily_factor_template.yaml
+pixi run fz factor run --config workspace/configs/daily/daily_factor_template.yaml
 ```
 
 **拉取本地研究数据**

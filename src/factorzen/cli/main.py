@@ -321,7 +321,11 @@ def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--neutralized-ic", action="store_true", dest="neutralized_ic")
     parser.add_argument("--event-study", action="store_true", dest="event_study")
-    parser.add_argument("--llm-explain", action="store_true")
+    parser.add_argument(
+        "--llm-explain",
+        action="store_true",
+        help="Enable LLM explanation; no-config daily runs enable this by default",
+    )
     parser.add_argument("--llm-refresh", action="store_true")
 
 

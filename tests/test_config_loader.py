@@ -272,3 +272,23 @@ def test_build_top_n_candidate_params_uses_n_trials():
         {"top_n": 7},
         {"top_n": 10},
     ]
+
+
+def test_default_daily_research_config_top_n_override_updates_primary_strategy():
+    from factorzen.core.config_loader import (
+        build_default_daily_research_config,
+        build_run_config_from_dict,
+    )
+
+    base = build_default_daily_research_config(
+        factor="x",
+        start="20230101",
+        end="20241231",
+    ).model_dump()
+
+    cfg = build_run_config_from_dict(base, overrides=["backtest.top_n=30"])
+
+    assert cfg.backtest.primary == "topn_30"
+    primary = cfg.backtest.strategy_specs[0]
+    assert primary.name == "topn_30"
+    assert primary.params["top_n"] == 30

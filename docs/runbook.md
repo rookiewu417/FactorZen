@@ -9,6 +9,7 @@
 | 场景 | 命令 |
 |------|------|
 | 环境自检 | `pixi run smoke` |
+| 数据 smoke | `pixi run smoke-data --start … --end …` |
 | 列出因子 | `pixi run fz factor list` |
 | 新建因子 | `pixi run fz factor new <name> --frequency daily` |
 | 运行因子 | `pixi run fz factor run <name> --start … --end … --universe csi500` |
@@ -28,6 +29,15 @@ pixi run smoke
 ```
 
 真实数据拉取需要在 `.env` 配置 `TUSHARE_TOKEN`。LLM 研究解读默认关闭，只有命令显式传入 `--llm-explain` 时才会尝试读取相关配置。
+
+需要验证真实环境时，用数据 smoke 检查 Tushare 连通性与本地原始数据分区完整性（不入默认 CI）：
+
+```bash
+pixi run smoke-data --start 20230101 --end 20231231   # 连通性 + daily/daily_basic/finance 审计
+pixi run smoke-data --skip-tushare                     # 仅离线审计本地分区
+```
+
+退出码 0=全部正常，1=出现 error，2=仅 warning。
 
 ## 因子工作流
 

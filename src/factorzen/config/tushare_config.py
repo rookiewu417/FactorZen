@@ -1,19 +1,37 @@
 """Tushare 连接配置。Token 从环境变量读取，积分/限流参数可配置。"""
 
 import os
+from collections.abc import MutableMapping
+from pathlib import Path
 
 from factorzen.config.settings import ROOT
 
+
+def _load_dotenv(path: Path, env: MutableMapping[str, str] | None = None) -> None:
+    """读取 .env 填充环境变量（不覆盖已存在的键）。
+
+    容忍 BOM（``utf-8-sig``）、CRLF、键值首尾空白与成对引号——此前用 ``utf-8``
+    打开会把 BOM 读进首行，使 ``TUSHARE_TOKEN`` 被存成 ``\\ufeffTUSHARE_TOKEN``
+    而静默失效。
+    """
+    target = env if env is not None else os.environ
+    if not path.exists():
+        return
+    with open(path, encoding="utf-8-sig") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in target:
+                target[key] = value
+
+
 # ── 加载 .env 文件（如果存在）────────────────────────────
 _env_file = ROOT / ".env"
-if _env_file.exists():
-    with open(_env_file, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                if key and key not in os.environ:
-                    os.environ[key] = value
+_load_dotenv(_env_file)
 
 # ── Token（延迟校验，import 时不崩溃）──────────────────────
 _token: str | None = os.environ.get("TUSHARE_TOKEN")

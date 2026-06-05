@@ -13,11 +13,52 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
-# Windows 中文字体支持（优先 Microsoft YaHei，回退 SimHei）
-for _font in ["Microsoft YaHei", "SimHei", "sans-serif"]:
-    matplotlib.rcParams["font.family"] = _font
-    matplotlib.rcParams["axes.unicode_minus"] = False
-    break
+
+def _register_cjk_fonts() -> None:
+    """发现并注册常见 CJK 字体，让未预装中文字体的环境也能渲染报告图表。
+
+    重点是 matplotlib 默认不扫描的 WSL 挂载 Windows 字体目录（``/mnt/*/Windows/Fonts``，
+    含 Microsoft YaHei / SimHei），以及用户字体目录。任意一项失败都静默，绝不影响 import。
+    """
+    import contextlib
+    import glob
+    from pathlib import Path
+
+    from matplotlib import font_manager
+
+    candidates: list[str] = []
+    # WSL：Windows 自带中文字体（任意盘符）
+    for pat in ("msyh*.tt?", "simhei.ttf", "simsun.tt?"):
+        candidates += glob.glob(f"/mnt/*/Windows/Fonts/{pat}")
+    # 用户字体目录（含通过 setup 装入的 Noto Sans CJK）
+    for d in (Path.home() / ".local/share/fonts", Path.home() / ".fonts"):
+        if d.exists():
+            for ext in ("*.ttf", "*.ttc", "*.otf"):
+                candidates += [str(p) for p in d.glob(ext)]
+    for fp in candidates:
+        with contextlib.suppress(Exception):
+            font_manager.fontManager.addfont(fp)
+
+
+_register_cjk_fonts()
+
+# 中文字体支持：按优先级回退（Windows / Linux 常见 CJK 字体），末位回落 DejaVu Sans。
+# 必须设置 font.sans-serif 列表（而非 font.family 单值），否则 matplotlib 无法
+# 在缺失首选字体时自动尝试后续字体，会把中文渲染成豆腐块并刷屏 glyph 缺失告警。
+matplotlib.rcParams["font.sans-serif"] = [
+    "Microsoft YaHei",
+    "SimHei",
+    "Noto Sans CJK SC",
+    "Noto Sans CJK TC",
+    "Noto Sans CJK JP",
+    "Source Han Sans CN",
+    "WenQuanYi Zen Hei",
+    "WenQuanYi Micro Hei",
+    "Arial Unicode MS",
+    "DejaVu Sans",
+]
+matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["axes.unicode_minus"] = False
 
 from factorzen.reports._formatting import _finite_float, _safe_attr  # noqa: E402
 

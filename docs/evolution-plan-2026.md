@@ -9,9 +9,11 @@
 | 阶段 | 主题 | 状态 |
 |------|------|------|
 | Phase 1 | 数据完整性与可靠性 | 已完成（2026-05）|
-| Phase 2 | 实验可复现性 | 进行中 |
-| Phase 3 | 研究结论可信度 | 进行中 |
-| Phase 4 | 报告与用户体验 | 进行中 |
+| Phase 2 | 实验可复现性 | 核心能力已落地，持续强化 |
+| Phase 3 | 研究结论可信度 | 核心能力已落地，持续强化 |
+| Phase 4 | 报告与用户体验 | 核心能力已落地，持续强化 |
+
+> 说明：Phase 2–4 的核心基础设施均已实现并随主线持续演进，并非「尚未开始」；这些主题作为长期质量投入持续维护，而非一次性交付后封板。
 
 ## 当前定位
 
@@ -53,26 +55,44 @@ pixi run typecheck
 pixi run coverage
 ```
 
-## Phase 2 · 实验可复现性 — 进行中
+## Phase 2 · 实验可复现性 — 核心能力已落地
 
 目标：任何一次研究运行都能追溯输入、配置、代码版本与输出。
+
+已落地：`core/experiment.py` 的 manifest 含 `schema_version` / `duration_seconds`，
+失败运行也记录状态；`_update_experiment_index()` 追加 `experiment_index.jsonl` 支持跨运行检索；
+`experiments/run_paths.py` 落 `universe.parquet` universe 快照；工作树 dirty 时告警。
+
+后续持续强化：
 
 - 继续强化 `core/experiment.py` 的 manifest 元数据，确保失败运行也记录状态与错误。
 - 保持 `workspace/factor_evaluations/{run_id}/` 为单次运行的标准输出位置。
 - 维护 `experiment_index.jsonl`，便于跨 run 检索因子、universe、状态与报告路径。
 - 对工作树 dirty、lockfile 变化、配置变更给出明确提示。
 
-## Phase 3 · 研究结论可信度 — 进行中
+## Phase 3 · 研究结论可信度 — 核心能力已落地
 
 目标：降低过拟合、误读与交易可行性高估。
+
+已落地：`research/combination/pipeline.py` 对样本内 IC 估权重打出 `[样本内警告]`；
+`daily/evaluation/cost_models.py` 的平方根冲击成本模型支持 `alpha` 与 `fallback_adv` 参数，
+并处理 ADV 缺失 / 零 ADV / 极端换手等场景。
+
+后续持续强化：
 
 - 对 `research/combination/` 的样本内权重估计保持醒目标注，避免把样本内组合结果误读为 OOS 结果。
 - 持续完善成本模型与容量约束，尤其是 `square_root_impact` 的参数、ADV 缺失与极端换手场景。
 - 对收益对齐、涨跌停、停牌、容量与 rebalance threshold 的回归测试保持高优先级。
 
-## Phase 4 · 报告与用户体验 — 进行中
+## Phase 4 · 报告与用户体验 — 核心能力已落地
 
 目标：让报告更适合研究复核，而不只是展示漂亮图表。
+
+已落地：`reports/tear_sheet.py` 按职责拆分为 `_formatting`/`_scoring`/`_charts`/`_strategy`/`_summaries`
+五个模块（经 re-export 保持对外接口不变）；报告引擎补齐 None/空输入防御分支；
+`reports/_charts.py` 配置 CJK 字体优先级回退，图表中文在具备字体的环境下正常渲染。
+
+后续持续强化：
 
 - 保持 Tear Sheet 的结论、证据、限制与复现信息并列呈现。
 - 对缺失模块显示明确状态与下一步建议。

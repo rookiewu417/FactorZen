@@ -110,6 +110,8 @@ def _cmd_factor_test(args: argparse.Namespace) -> int:
         forwarded.append("--all")
     if args.dry_run:
         forwarded.append("--dry-run")
+    for override in getattr(args, "set_overrides", None) or []:
+        forwarded.extend(["--set", override])
 
     old_argv = sys.argv
     try:
@@ -117,6 +119,58 @@ def _cmd_factor_test(args: argparse.Namespace) -> int:
         daily_single.main()
     finally:
         sys.argv = old_argv
+    return 0
+
+
+def _cmd_factor_sweep(args: argparse.Namespace) -> int:
+    from datetime import datetime
+
+    from factorzen.config.settings import FACTOR_EVALUATIONS_DIR
+    from factorzen.pipelines.factor_sweep import (
+        format_sweep_csv,
+        format_sweep_table,
+        pipeline_runner,
+        run_sweep,
+    )
+
+    factor = args.name
+    start, end, universe = args.start, args.end, args.universe
+    if args.config:
+        from factorzen.core.config_loader import load_run_config
+
+        cfg = load_run_config(args.config)
+        factor = factor or cfg.factor
+        start = start or cfg.start
+        end = end or cfg.end
+        universe = universe or cfg.universe
+
+    if not (factor and start and end):
+        print("sweep 需要 factor 与 start/end（经位置参数/--config/CLI 提供）", file=sys.stderr)
+        return 2
+    if not args.grid:
+        print("sweep 需要至少一个 --grid key=v1,v2,...", file=sys.stderr)
+        return 2
+
+    runner = pipeline_runner(
+        factor=factor,
+        start=start,
+        end=end,
+        config_path=args.config,
+        universe=universe,
+    )
+    rows = run_sweep(
+        args.grid,
+        runner,
+        sort_by=args.sort_by,
+        extra_overrides=args.set_overrides,
+    )
+    print(format_sweep_table(rows))
+
+    out_dir = FACTOR_EVALUATIONS_DIR / f"sweep_{datetime.now():%Y%m%d_%H%M%S}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "sweep_results.csv"
+    csv_path.write_text(format_sweep_csv(rows), encoding="utf-8")
+    print(f"\n结果已保存: {csv_path}")
     return 0
 
 
@@ -248,6 +302,14 @@ def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--benchmark", default=None, help="Benchmark index code")
     parser.add_argument("--config", default=None, help="YAML run config path")
     parser.add_argument("--seed", type=int, default=None, help="Global random seed")
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        dest="set_overrides",
+        metavar="KEY=VALUE",
+        help="Override any config field, repeatable: --set backtest.top_n=30",
+    )
     parser.add_argument("--all", action="store_true", help="Enable deep evaluation preset")
     parser.add_argument("--dry-run", action="store_true", help="Print effective config without running")
     parser.add_argument(
@@ -330,6 +392,35 @@ def build_parser() -> argparse.ArgumentParser:
     test = factor_sub.add_parser("test", help="Deprecated alias for 'factor run'")
     _add_factor_run_arguments(test)
     test.set_defaults(func=_cmd_factor_test)
+
+    sweep = factor_sub.add_parser("sweep", help="Parameter grid sweep over --set overrides")
+    sweep.add_argument("name", nargs="?", help="Factor name (or supply via --config)")
+    sweep.add_argument("--config", default=None, help="Base YAML run config path")
+    sweep.add_argument(
+        "--grid",
+        action="append",
+        default=None,
+        metavar="KEY=V1,V2,...",
+        help="Grid dimension, repeatable: --grid backtest.top_n=30,50,100",
+    )
+    sweep.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        dest="set_overrides",
+        metavar="KEY=VALUE",
+        help="Fixed override applied to every combo",
+    )
+    sweep.add_argument("--start", default=None, help="Start date YYYYMMDD")
+    sweep.add_argument("--end", default=None, help="End date YYYYMMDD")
+    sweep.add_argument("--universe", default=None, help="Universe name")
+    sweep.add_argument(
+        "--sort-by",
+        default="ir",
+        dest="sort_by",
+        help="Metric to rank rows by (ir/ic_mean/ic_pos/t)",
+    )
+    sweep.set_defaults(func=_cmd_factor_sweep)
 
     report = sub.add_parser("report", help="Report workflows")
     report_sub = report.add_subparsers(dest="report_command", required=True)

@@ -63,6 +63,29 @@ pixi run fz factor run --config workspace/configs/daily/daily_factor_template.ya
 
 `config validate` 会打印生效后的配置与标准输出目录，不会启动完整回测。
 
+## 命令行调参
+
+`--set key=value` 在校验前覆盖任意字段（含 `preprocessing` / `backtest` / `walk_forward`），可重复。
+值类型与 YAML 同源推断（`30→int`、`true→bool`、`rank_normal→str`），并写入 manifest 保持可复现：
+
+```bash
+pixi run fz factor run momentum_20d --start 20230101 --end 20241231 \
+  --set backtest.top_n=30 --set preprocessing.neutralize=true --set walk_forward.train_days=252
+```
+
+无 `--config` 时，`--set backtest.top_n=N` 产出单一 `topn_N` 策略（不套用 4 策略默认套件）；
+若 YAML 已显式定义多策略 `strategies:`，`backtest.top_n` 只改 vestigial 字段——多策略维度请用 sweep 或编辑 YAML。
+先用 `--dry-run` 打印生效配置确认后再跑。
+
+`factor sweep` 在 `--set` 之上做网格扫描：每个组合串行跑一次完整评估，按指标排序出对比表并落
+`workspace/factor_evaluations/sweep_{ts}/sweep_results.csv`。单组失败不中断全局，会在表中标注 error。
+
+```bash
+pixi run fz factor sweep --config workspace/configs/daily/daily_factor_template.yaml \
+  --grid backtest.top_n=30,50,100 --grid preprocessing.normalizer=zscore,rank_normal --sort-by ir
+# --grid 可多个维度（笛卡尔积）；--set 施加到每个组合的固定覆盖；--sort-by 取 ir/ic_mean/ic_pos/t
+```
+
 ## 报告
 
 ```bash

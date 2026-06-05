@@ -77,6 +77,22 @@ pixi run fz config validate workspace/configs/daily/daily_factor_template.yaml
 pixi run fz factor run --config workspace/configs/daily/daily_factor_template.yaml
 ```
 
+**命令行调参，无需改 YAML**
+
+`--set key=value` 在校验前覆盖任意配置字段（含 `preprocessing` / `backtest` / `walk_forward`），可重复，且仍写入 `manifest.json` 保持可复现：
+
+```bash
+pixi run fz factor run momentum_20d --start 20230101 --end 20241231 \
+  --set backtest.top_n=30 --set preprocessing.neutralize=true --set walk_forward.train_days=252
+```
+
+`factor sweep` 建在 `--set` 之上：一条命令跑参数网格的笛卡尔积，按指标排序输出对比表并落 CSV：
+
+```bash
+pixi run fz factor sweep --config workspace/configs/daily/daily_factor_template.yaml \
+  --grid backtest.top_n=30,50,100 --grid preprocessing.normalizer=zscore,rank_normal --sort-by ir
+```
+
 **直接运行内置示例因子**
 
 ```bash

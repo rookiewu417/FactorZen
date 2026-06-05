@@ -335,8 +335,8 @@ def test_merge_run_config_args_all_enables_single_factor_defaults():
 
     merged = _merge_run_config_args(args, None)
 
-    assert merged.universe == "csi300"
-    assert merged.benchmark == "000300.SH"
+    assert merged.universe == "csi500"
+    assert merged.benchmark == "000905.SH"
     assert merged.ic_method == "both"
     assert merged.neutralized_ic is True
     assert merged.event_study is True
@@ -387,6 +387,23 @@ def test_dry_run_payload_includes_effective_config_and_output_dir():
     assert payload["config"]["backtest"]["top_n"] == 25
     assert payload["config"]["walk_forward"]["n_trials"] == 3
     assert payload["output_dir"].endswith("workspace/factor_evaluations/<run_id>")
+
+
+def test_dry_run_payload_includes_execution_options():
+    from factorzen.core.config_loader import RunConfig
+    from factorzen.pipelines.daily_single import _build_dry_run_payload
+
+    cfg = RunConfig(
+        factor="momentum_20d",
+        start="20230101",
+        end="20231231",
+    )
+    args = Namespace(llm_explain=True, llm_refresh=False)
+
+    payload = _build_dry_run_payload(cfg, args=args)
+
+    assert payload["execution"]["llm_explain"] is True
+    assert payload["execution"]["llm_refresh"] is False
 
 
 def test_merge_run_config_args_all_overrides_yaml_defaults():
@@ -447,12 +464,49 @@ def test_effective_run_config_without_yaml_uses_default_strategy_suite():
     merged = _merge_run_config_args(args, None)
     cfg = _effective_run_config(merged, None)
 
+    assert cfg.universe == "csi500"
+    assert cfg.benchmark == "000905.SH"
+    assert cfg.seed == 42
+    assert cfg.preprocessing.neutralize is True
+    assert cfg.preprocessing.neutralize_by == "industry+size"
+    assert cfg.ic_method == "both"
+    assert cfg.neutralized_ic is True
+    assert cfg.event_study is True
     assert [spec.name for spec in cfg.backtest.strategy_specs] == [
         "topn_50",
         "quantile_ls_5",
         "factor_weighted_ls",
         "optimizer_mv_long_only",
     ]
+
+
+def test_merge_run_config_args_without_yaml_enables_comprehensive_defaults():
+    from factorzen.pipelines.daily_single import _merge_run_config_args
+
+    args = Namespace(
+        factor="momentum_20d",
+        start="20240101",
+        end="20240131",
+        universe=None,
+        benchmark=None,
+        seed=None,
+        ic_method=None,
+        neutralized_ic=None,
+        event_study=None,
+        all=False,
+        llm_explain=False,
+        llm_refresh=False,
+    )
+
+    merged = _merge_run_config_args(args, None)
+
+    assert merged.universe == "csi500"
+    assert merged.benchmark == "000905.SH"
+    assert merged.seed == 42
+    assert merged.ic_method == "both"
+    assert merged.neutralized_ic is True
+    assert merged.event_study is True
+    assert merged.llm_explain is True
 
 
 def test_find_default_run_config_path_matches_factor_field(tmp_path):

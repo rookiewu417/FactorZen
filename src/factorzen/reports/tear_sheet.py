@@ -1011,9 +1011,7 @@ def generate_tear_sheet(
             else "未计算"
         ),
         "sample_periods": metrics.get("n_periods", 0),
-        "data_quality": quality_summary["status"]
-        if quality_report
-        else ("需关注" if warnings else "正常"),
+        "data_quality": quality_summary["status"],
     }
 
     template = _ENV.get_template("tear_sheet.html")

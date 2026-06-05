@@ -9,8 +9,9 @@
   :root {
     --paper: #f6f1e8;
     --paper-strong: #fffaf0;
+    --panel: rgba(255,250,240,0.96);
     --ink: #1f2a2e;
-    --muted: #6f766f;
+    --muted: #52615c;
     --line: #d8ccba;
     --line-strong: #b7aa97;
     --teal: #2f625f;
@@ -18,13 +19,13 @@
     --amber: #b8893b;
     --red: #9f3a2f;
     --green: #3f7d55;
-    --shadow: 0 18px 42px rgba(40, 34, 24, 0.10);
+    --shadow: 0 4px 8px rgba(40, 34, 24, 0.08);
   }
   body {
     font-family: "Aptos", "Segoe UI", "Microsoft YaHei", sans-serif;
     background:
-      linear-gradient(rgba(63, 82, 71, 0.045) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(63, 82, 71, 0.035) 1px, transparent 1px),
+      linear-gradient(rgba(63, 82, 71, 0.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(63, 82, 71, 0.018) 1px, transparent 1px),
       var(--paper);
     background-size: 32px 32px;
     color: var(--ink);
@@ -39,10 +40,7 @@
     border-radius: 8px;
     padding: 30px 32px;
     margin-bottom: 18px;
-    background:
-      linear-gradient(90deg, rgba(255,255,255,0.10) 1px, transparent 1px),
-      linear-gradient(135deg, #152f32 0%, #274e4b 45%, #8a6f3c 100%);
-    background-size: 28px 28px, auto;
+    background: linear-gradient(135deg, #152f32 0%, #274e4b 45%, #8a6f3c 100%);
     box-shadow: var(--shadow);
   }
   .hero:after {
@@ -54,15 +52,15 @@
     background: linear-gradient(90deg, var(--amber), #efe0b5, rgba(255,255,255,0));
   }
   .hero-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 420px); gap: 24px; align-items: end; z-index: 1; }
-  .hero-kicker { color: rgba(255,255,255,0.72); font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 6px; }
+  .hero-kicker { color: rgba(255,255,255,0.78); font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 6px; }
   .hero h1 { color: #fff; font-family: Georgia, "Times New Roman", serif; font-size: 38px; line-height: 1.06; margin-bottom: 10px; letter-spacing: 0; }
-  .hero .meta { color: rgba(255,255,255,0.82); margin-bottom: 0; }
+  .hero .meta { color: rgba(255,255,255,0.88); margin-bottom: 0; }
   .hero-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .hero-fact { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 9px 10px; backdrop-filter: blur(6px); }
-  .hero-fact span { display: block; color: rgba(255,255,255,0.66); font-size: 11px; }
+  .hero-fact { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 9px 10px; }
+  .hero-fact span { display: block; color: rgba(255,255,255,0.74); font-size: 11px; }
   .hero-fact strong { display: block; color: #fff; font-size: 13px; overflow-wrap: anywhere; }
   .report-layout { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 20px; align-items: start; }
-  .toc { position: sticky; top: 16px; background: rgba(255,250,240,0.92); border: 1px solid var(--line); border-radius: 8px; padding: 14px; box-shadow: 0 8px 24px rgba(40,34,24,0.08); max-height: calc(100vh - 32px); overflow-y: auto; }
+  .toc { position: sticky; top: 16px; background: rgba(255,250,240,0.92); border: 1px solid var(--line); border-radius: 8px; padding: 14px; box-shadow: 0 4px 8px rgba(40,34,24,0.06); max-height: calc(100vh - 32px); overflow-y: auto; }
   .toc-title { font-size: 12px; font-weight: 800; color: var(--teal-dark); letter-spacing: .10em; text-transform: uppercase; margin-bottom: 9px; }
   .toc a { display: block; color: #384644; text-decoration: none; font-size: 13px; padding: 7px 8px; border-left: 3px solid transparent; border-radius: 4px; }
   .toc a:hover, .toc a:focus-visible { background: #eee6d7; border-left-color: var(--teal); color: var(--teal-dark); outline: none; }
@@ -71,19 +69,19 @@
   h2 { font-size: 17px; color: var(--ink); margin: 24px 0 12px 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
   h2:before { content: ""; display: inline-block; width: 7px; height: 18px; margin-right: 8px; vertical-align: -3px; background: var(--teal); border-radius: 2px; }
   .meta { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
-  .panel { background: rgba(255,250,240,0.96); border-radius: 8px; border: 1px solid var(--line); box-shadow: var(--shadow); padding: 24px; margin-bottom: 20px; }
+  .panel { background: var(--panel); border-radius: 8px; border: 1px solid var(--line); box-shadow: var(--shadow); padding: 24px; margin-bottom: 20px; }
   #overview { border-top: 5px solid var(--ink); }
   table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; background: rgba(255,255,255,0.48); }
   th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid #e8ddcc; vertical-align: top; }
   th { background: #e9dfcf; font-weight: 700; color: #263431; }
   tr:hover { background: rgba(47,98,95,0.055); }
   .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-  .metric-card { background: #fffaf2; padding: 12px 13px; border-radius: 6px; border: 1px solid var(--line); border-left: 4px solid var(--teal); box-shadow: 0 8px 18px rgba(40,34,24,0.05); }
+  .metric-card { background: #fffaf2; padding: 12px 13px; border-radius: 6px; border: 1px solid var(--line); border-top: 3px solid rgba(47,98,95,0.62); box-shadow: 0 3px 6px rgba(40,34,24,0.04); }
   .metric-card .label { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
   .metric-card .value { font-family: Georgia, "Times New Roman", serif; font-size: 24px; line-height: 1.16; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
   .overview-metrics { margin: 14px 0 6px; }
-  .warning { background: #fff1d6; border: 1px solid #ddb66d; border-left: 4px solid var(--amber); padding: 10px 12px; border-radius: 6px; margin: 8px 0; font-size: 13px; color: #76500f; }
-  .chart-img { width: 100%; margin: 12px 0; border-radius: 6px; border: 1px solid var(--line); background: #fff; box-shadow: 0 8px 18px rgba(40,34,24,0.06); }
+  .warning { background: #fff1d6; border: 1px solid #ddb66d; padding: 10px 12px; border-radius: 6px; margin: 8px 0; font-size: 13px; color: #76500f; }
+  .chart-img { width: 100%; margin: 12px 0; border-radius: 6px; border: 1px solid var(--line); background: #fff; box-shadow: 0 3px 6px rgba(40,34,24,0.05); }
   .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-top: 12px; }
   .chart-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fffaf2; }
   .chart-card h3 { font-size: 14px; color: var(--ink); margin-bottom: 6px; }
@@ -92,23 +90,26 @@
   .no-data { color: #5c645f; background: #f8f3ea; border: 1px dashed #cbd5e1; border-color: var(--line-strong); border-radius: 6px; padding: 16px 18px; text-align: left; }
   .note { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 4px 0 8px 0; }
   .summary-note { margin: 8px 0; }
-  .rating-caps { background: #fff1d6; border: 1px solid #ddb66d; border-left: 4px solid var(--amber); border-radius: 6px; padding: 12px 14px; margin: 12px 0; }
+  .rating-caps { background: #fff1d6; border: 1px solid #ddb66d; border-radius: 6px; padding: 12px 14px; margin: 12px 0; }
   .rating-caps-title { font-weight: 700; color: #76500f; margin-bottom: 8px; }
   .rating-cap-item { background: rgba(255,255,255,0.70); border: 1px solid #ead29f; border-radius: 4px; padding: 7px 9px; margin-top: 6px; color: #6d480c; }
-  .decision-panel { border: 1px solid #254a47; border-left: 0; background: linear-gradient(135deg, var(--teal-dark), var(--teal)); color: #f7f1e8; border-radius: 8px; padding: 18px 18px; margin: 16px 0; box-shadow: 0 16px 34px rgba(23,61,59,0.18); }
+  .decision-panel { border: 1px solid #254a47; background: linear-gradient(135deg, var(--teal-dark), var(--teal)); color: #f7f1e8; border-radius: 8px; padding: 18px 18px; margin: 16px 0; box-shadow: 0 4px 8px rgba(23,61,59,0.14); }
   .decision-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.18); }
   .decision-title { font-size: 12px; font-weight: 800; color: #d9c58e; letter-spacing: .10em; text-transform: uppercase; margin-bottom: 4px; }
   .decision-verdict { font-family: Georgia, "Times New Roman", serif; font-size: 34px; line-height: 1.08; font-weight: 800; color: #fff; }
-  .decision-score { color: rgba(255,255,255,0.78); font-size: 13px; text-align: right; min-width: 190px; }
-  .decision-metric-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 0 0 12px; }
-  .decision-metric { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; padding: 8px 10px; }
-  .decision-metric span { display: block; color: rgba(255,255,255,0.65); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  .decision-metric strong { display: block; color: #fff; font-family: Georgia, "Times New Roman", serif; font-size: 20px; line-height: 1.2; }
-  .decision-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; align-items: start; }
+  .decision-score { color: rgba(255,255,255,0.84); font-size: 13px; text-align: right; min-width: 190px; }
+  .decision-metric-row { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.12); }
+  .decision-metric { display: inline-flex; gap: 6px; align-items: baseline; min-width: 128px; }
+  .decision-metric span { color: rgba(255,255,255,0.74); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .decision-metric strong { color: #fff; font-family: Georgia, "Times New Roman", serif; font-size: 20px; line-height: 1.2; }
+  .decision-grid { display: grid; gap: 10px; align-items: start; }
+  .decision-support-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .decision-card { background: rgba(255,255,255,0.09); border: 1px solid rgba(255,255,255,0.16); border-radius: 6px; padding: 11px 12px; }
+  .decision-primary { background: rgba(255,255,255,0.12); }
   .decision-card strong { display: block; color: #f4df9f; font-size: 13px; margin-bottom: 5px; }
-  .decision-card .note { color: rgba(255,255,255,0.70); }
+  .decision-card .note { color: rgba(255,255,255,0.82); }
   .decision-card ul { margin-left: 18px; color: rgba(255,255,255,0.86); font-size: 13px; }
+  .supporting-metrics { margin: 12px 0 16px; }
   .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 12px 0 16px; }
   .dashboard-card { background: #fffaf2; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
   .dashboard-card .label { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
@@ -117,7 +118,7 @@
   .dashboard-card .subvalue { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .badge { display: inline-flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 999px; padding: 2px 9px; font-size: 12px; color: #33413d; background: #fffaf2; }
   .badge-primary { color: #fff; background: var(--teal); border-color: var(--teal); }
-  .status-callout { border: 1px solid var(--line); border-left: 4px solid var(--teal); background: #f8f3ea; border-radius: 6px; padding: 11px 13px; margin: 10px 0; color: #4c5651; }
+  .status-callout { border: 1px solid rgba(47,98,95,0.28); background: #f8f3ea; border-radius: 6px; padding: 11px 13px; margin: 10px 0; color: #4c5651; }
   .strategy-header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin: 14px 0 10px; }
   .strategy-header h3 { font-size: 16px; color: var(--ink); margin: 0 0 4px; }
   .strategy-badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
@@ -147,7 +148,7 @@
     .panel { padding: 16px; }
     .decision-head { flex-direction: column; }
     .decision-score { min-width: 0; text-align: left; }
-    .decision-grid { grid-template-columns: 1fr; }
+    .decision-support-grid { grid-template-columns: 1fr; }
     .strategy-header { flex-direction: column; }
     .strategy-badges { justify-content: flex-start; }
   }
@@ -207,12 +208,6 @@
   </p>
   {% endif %}
 
-  <div class="status-callout">
-    <strong>阅读口径：</strong>预测能力优先看 IC 均值、IR、显著性和 IC 分布；收益表现看多策略净值、回撤和收益口径；
-    交易可行性看换手、成交约束和成本吞噬；稳健性看样本外验证期、事件研究和结构检验。
-    <strong>研究边界：</strong>本报告用于因子研究和策略筛选，不等同实盘组合建议；未生成模块会在附录列出状态和原因。
-  </div>
-
   {% if backtest_direction and backtest_direction.direction == 'reversed' %}
   <p class="note">已自动反向回测：{{ backtest_direction.reason }}</p>
   {% elif backtest_direction %}
@@ -238,40 +233,35 @@
         {% if research_decision.rating_caps %}<br>评级上限：{{ research_decision.rating_caps|join("；") }}{% endif %}
       </div>
     </div>
-    <div class="decision-metric-strip" aria-label="核心研究指标">
+    <div class="decision-metric-row" aria-label="核心研究指标">
       <div class="decision-metric"><span>IC 均值</span><strong>{{ metrics.get('ic_mean')|metric_number(4) }}</strong></div>
       <div class="decision-metric"><span>信息比率</span><strong>{{ metrics.get('ir')|metric_number(2) }}</strong></div>
       <div class="decision-metric"><span>多空 Sharpe</span><strong>{{ metrics.get('ls_sharpe')|metric_number(2) }}</strong></div>
       <div class="decision-metric"><span>平均换手</span><strong>{{ metrics.get('avg_turnover')|metric_percent(1) }}</strong></div>
     </div>
     <div class="decision-grid">
-      <div class="decision-card"><strong>当前结论</strong><span class="note">建议动作：</span>{{ research_decision.action }}</div>
-      <div class="decision-card">
-        <strong>主要证据</strong>
-        <ul>{% for item in research_decision.evidence %}<li>{{ item }}</li>{% endfor %}</ul>
-      </div>
-      <div class="decision-card">
-        <strong>关键缺口</strong>
-        <ul>{% for item in research_decision.gaps %}<li>{{ item }}</li>{% endfor %}</ul>
-      </div>
-      <div class="decision-card">
-        <strong>下一步</strong>
-        <ul>{% for item in research_decision.next_steps %}<li>{{ item }}</li>{% endfor %}</ul>
+      <div class="decision-card decision-primary"><strong>当前结论</strong><span class="note">建议动作：</span>{{ research_decision.action }}</div>
+      <div class="decision-support-grid">
+        <div class="decision-card">
+          <strong>主要证据</strong>
+          <ul>{% for item in research_decision.evidence[:3] %}<li>{{ item }}</li>{% endfor %}</ul>
+        </div>
+        <div class="decision-card">
+          <strong>关键缺口</strong>
+          <ul>{% for item in research_decision.gaps[:3] %}<li>{{ item }}</li>{% endfor %}</ul>
+        </div>
+        <div class="decision-card">
+          <strong>下一步</strong>
+          <ul>{% for item in research_decision.next_steps[:3] %}<li>{{ item }}</li>{% endfor %}</ul>
+        </div>
       </div>
     </div>
   </div>
   {% endif %}
+</div>
 
-  <div class="metric-grid overview-metrics">
-    <div class="metric-card"><div class="label">IC 均值</div><div class="value">{{ metrics.ic_mean|metric_number(4) }}</div></div>
-    <div class="metric-card"><div class="label">IC 标准差</div><div class="value">{{ metrics.ic_std|metric_number(4) }}</div></div>
-    <div class="metric-card"><div class="label">信息比率 (IR)</div><div class="value">{{ metrics.ir|metric_number(2) }}</div></div>
-    <div class="metric-card"><div class="label">IC 胜率</div><div class="value">{{ metrics.ic_positive_ratio|metric_percent(1) }}</div></div>
-    <div class="metric-card"><div class="label">t 统计量</div><div class="value">{% if metrics.ic_tstat is not none %}{{ metrics.ic_tstat|metric_number(2) }}{% if metrics.ic_pvalue is not none and metrics.ic_pvalue < 0.01 %}<span style="color:#9f3a2f;font-size:14px">***</span>{% elif metrics.ic_pvalue is not none and metrics.ic_pvalue < 0.05 %}<span style="color:#b8893b;font-size:14px">**</span>{% elif metrics.ic_pvalue is not none and metrics.ic_pvalue < 0.1 %}<span style="color:#b8893b;font-size:14px">*</span>{% endif %}{% else %}样本不足{% endif %}</div></div>
-    <div class="metric-card"><div class="label">样本期数</div><div class="value">{{ metrics.n_periods or 0 }}</div></div>
-    <div class="metric-card"><div class="label">平均换手率</div><div class="value">{{ metrics.avg_turnover|metric_percent(1) }}</div></div>
-  </div>
-
+<!-- 1b. 研究摘要 -->
+<div class="panel" id="research-summary">
   <!-- 综合评估 -->
   <div style="margin-top:16px">
     <h2>研究仪表盘</h2>
@@ -282,6 +272,17 @@
       <div class="dashboard-card"><div class="label">样本期数</div><div class="value">{{ dashboard.sample_periods }}</div></div>
       <div class="dashboard-card"><div class="label">数据质量</div><div class="value">{{ dashboard.data_quality }}</div></div>
     </div>
+    <div class="metric-grid supporting-metrics">
+      <div class="metric-card"><div class="label">IC 标准差</div><div class="value">{{ metrics.ic_std|metric_number(4) }}</div></div>
+      <div class="metric-card"><div class="label">IC 胜率</div><div class="value">{{ metrics.ic_positive_ratio|metric_percent(1) }}</div></div>
+      <div class="metric-card"><div class="label">t 统计量</div><div class="value">{% if metrics.ic_tstat is not none %}{{ metrics.ic_tstat|metric_number(2) }}{% if metrics.ic_pvalue is not none and metrics.ic_pvalue < 0.01 %}<span style="color:#9f3a2f;font-size:14px">***</span>{% elif metrics.ic_pvalue is not none and metrics.ic_pvalue < 0.05 %}<span style="color:#b8893b;font-size:14px">**</span>{% elif metrics.ic_pvalue is not none and metrics.ic_pvalue < 0.1 %}<span style="color:#b8893b;font-size:14px">*</span>{% endif %}{% else %}样本不足{% endif %}</div></div>
+      <div class="metric-card"><div class="label">样本期数</div><div class="value">{{ metrics.n_periods or 0 }}</div></div>
+    </div>
+    {% if research_decision and research_decision.gaps|length > 3 %}
+    <div class="status-callout">
+      <strong>其他关键缺口：</strong>{{ research_decision.gaps[3:]|join("；") }}
+    </div>
+    {% endif %}
     <h2>综合评估</h2>
     {{ summary_html | safe }}
     {% if metrics.get('rank_autocorr') is not none %}
@@ -1247,6 +1248,11 @@
 <div class="panel" id="appendix">
   <h2>附录</h2>
   <p class="note">报告由 FactorZen 自动生成。完整复现实验配置、质量检查和产物路径以对应 run 目录中的 manifest、quality 和 meta 文件为准。</p>
+  <div class="status-callout">
+    <strong>阅读口径：</strong>预测能力优先看 IC 均值、IR、显著性和 IC 分布；收益表现看多策略净值、回撤和收益口径；
+    交易可行性看换手、成交约束和成本吞噬；稳健性看样本外验证期、事件研究和结构检验。
+    <strong>研究边界：</strong>本报告用于因子研究和策略筛选，不等同实盘组合建议；未生成模块会在附录列出状态和原因。
+  </div>
   <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">复现摘要</h3>
   <div class="table-wrap">
     <table>

@@ -148,6 +148,47 @@ class RunConfig(BaseModel):
     neutralized_ic: bool = False
 
 
+def build_default_daily_research_config(
+    *,
+    factor: str,
+    start: str,
+    end: str,
+    universe: str | None = None,
+    benchmark: str | None = None,
+    seed: int | None = None,
+) -> RunConfig:
+    """Build the no-YAML daily research preset used for new factors."""
+    resolved_universe = universe or "csi500"
+    return RunConfig(
+        factor=factor,
+        start=start,
+        end=end,
+        universe=resolved_universe,
+        benchmark=benchmark or default_benchmark_for_universe(resolved_universe),
+        seed=42 if seed is None else seed,
+        preprocessing=PreprocessingConfig(
+            outlier="mad",
+            normalizer="zscore",
+            neutralize=True,
+            neutralize_by="industry+size",
+        ),
+        backtest=BacktestConfig(
+            primary="topn_50",
+            strategies=default_all_strategy_specs(),
+        ),
+        walk_forward=WalkForwardConfig(
+            train_days=504,
+            test_days=63,
+            step_days=63,
+            embargo_days=5,
+            n_trials=50,
+        ),
+        ic_method="both",
+        neutralized_ic=True,
+        event_study=True,
+    )
+
+
 def apply_overrides(data: dict[str, Any], overrides: Sequence[str]) -> dict[str, Any]:
     """把 ``key.path=value`` 形式的覆盖应用到原始配置 dict（pydantic 校验之前）。
 
@@ -187,6 +228,44 @@ def apply_overrides(data: dict[str, Any], overrides: Sequence[str]) -> dict[str,
     return data
 
 
+def _has_override(overrides: Sequence[str] | None, key: str) -> bool:
+    return any(item.partition("=")[0].strip() == key for item in overrides or [])
+
+
+def _sync_default_top_n_strategy(config: RunConfig) -> RunConfig:
+    """Keep the built-in no-YAML primary top-N strategy aligned with backtest.top_n."""
+    top_n = int(config.backtest.top_n)
+    old_name = "topn_50"
+    new_name = f"topn_{top_n}"
+    changed = False
+    strategies: list[StrategySpec] = []
+    for spec in config.backtest.strategy_specs:
+        if spec.name == old_name and spec.type == "topn_long_only":
+            strategies.append(
+                spec.model_copy(
+                    update={
+                        "name": new_name,
+                        "params": {**spec.params, "top_n": top_n},
+                    }
+                )
+            )
+            changed = True
+        else:
+            strategies.append(spec)
+
+    if not changed:
+        return config
+
+    primary = new_name if config.backtest.primary == old_name else config.backtest.primary
+    return config.model_copy(
+        update={
+            "backtest": config.backtest.model_copy(
+                update={"primary": primary, "strategies": strategies}
+            )
+        }
+    )
+
+
 def build_run_config_from_dict(
     data: dict[str, Any] | None, overrides: Sequence[str] | None = None
 ) -> RunConfig:
@@ -194,7 +273,10 @@ def build_run_config_from_dict(
     merged: dict[str, Any] = dict(data or {})
     if overrides:
         apply_overrides(merged, overrides)
-    return RunConfig.model_validate(merged)
+    config = RunConfig.model_validate(merged)
+    if _has_override(overrides, "backtest.top_n"):
+        config = _sync_default_top_n_strategy(config)
+    return config
 
 
 def load_run_config(

@@ -342,6 +342,69 @@ class TestGenerateTearSheet:
         assert summary_pos < returns_pos
         assert llm_pos < returns_pos
 
+    def test_overview_panel_is_focused_executive_summary(
+        self, ic_result, bt_result, to_result
+    ):
+        html = generate_tear_sheet("momentum_20d", ic_result, bt_result, to_result)
+
+        assert '<div class="panel" id="research-summary">' in html
+        overview_html = html.split('<div class="panel" id="overview">', 1)[1].split(
+            '<div class="panel" id="research-summary">', 1
+        )[0]
+        research_summary_html = html.split('<div class="panel" id="research-summary">', 1)[1].split(
+            '<div class="panel" id="returns">', 1
+        )[0]
+
+        assert "最终研究决策" in overview_html
+        assert "阅读口径" not in overview_html
+        assert "研究仪表盘" not in overview_html
+        assert "综合评估" not in overview_html
+        assert "大模型研究解读" not in overview_html
+        assert "研究仪表盘" in research_summary_html
+        assert "综合评估" in research_summary_html
+        assert html.index("<h2>综合评估</h2>") < html.index('<div class="panel" id="returns">')
+
+    def test_overview_decision_layout_reduces_density(
+        self, ic_result, bt_result, to_result
+    ):
+        import re
+
+        html = generate_tear_sheet("momentum_20d", ic_result, bt_result, to_result)
+        overview_html = html.split('<div class="panel" id="overview">', 1)[1].split(
+            '<div class="panel" id="research-summary">', 1
+        )[0]
+        research_summary_html = html.split('<div class="panel" id="research-summary">', 1)[1].split(
+            '<div class="panel" id="returns">', 1
+        )[0]
+
+        assert 'class="decision-metric-row"' in overview_html
+        assert 'class="decision-metric-strip"' not in overview_html
+        assert 'class="decision-card decision-primary"' in overview_html
+        assert 'class="decision-support-grid"' in overview_html
+        assert 'class="metric-grid overview-metrics"' not in overview_html
+        assert 'class="metric-grid supporting-metrics"' in research_summary_html
+
+        support_lists = re.findall(
+            r'<div class="decision-card">\s*<strong>[^<]+</strong>\s*<ul>(.*?)</ul>',
+            overview_html,
+            flags=re.S,
+        )
+        assert len(support_lists) == 3
+        for list_html in support_lists:
+            assert list_html.count("<li>") <= 3
+
+    def test_dashboard_quality_status_reflects_missing_quality_report(
+        self, ic_result, bt_result, to_result
+    ):
+        html = generate_tear_sheet("momentum_20d", ic_result, bt_result, to_result)
+
+        dashboard_html = html.split("<h2>研究仪表盘</h2>", 1)[1].split(
+            "<h2>综合评估</h2>", 1
+        )[0]
+
+        assert '<div class="label">数据质量</div><div class="value">未传入</div>' in dashboard_html
+        assert '<div class="label">数据质量</div><div class="value">正常</div>' not in dashboard_html
+
     def test_brinson_plot_frame_limits_sector_count_and_aggregates_other(self):
         sector_df = pl.DataFrame(
             {
@@ -1217,9 +1280,9 @@ class TestGenerateTearSheet:
 
         html = generate_tear_sheet("test_factor", ic_result, bt_result, to_result)
 
-        assert '<div class="label">IC 均值</div><div class="value">样本不足</div>' in html
+        assert '<div class="decision-metric"><span>IC 均值</span><strong>样本不足</strong></div>' in html
         assert '<div class="label">IC 标准差</div><div class="value">样本不足</div>' in html
-        assert '<div class="label">信息比率 (IR)</div><div class="value">样本不足</div>' in html
+        assert '<div class="decision-metric"><span>信息比率</span><strong>样本不足</strong></div>' in html
         assert '<div class="label">IC 胜率</div><div class="value">样本不足</div>' in html
         assert '<div class="label">t 统计量</div><div class="value">样本不足</div>' in html
         assert "核心 IC 指标样本不足，暂不判断预测方向" in html

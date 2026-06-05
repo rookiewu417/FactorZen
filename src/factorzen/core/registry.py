@@ -6,10 +6,8 @@
     daily_registry = FactorRegistry(
         base_cls=DailyFactor,
         scan_packages=[
-            "workspace.factors.daily",
-            "workspace.factors.weekly",
-            "workspace.factors.monthly",
-            "workspace.factors.qlib",
+            "factorzen.builtin_factors.daily",  # 框架自带
+            "workspace.factors.daily",          # 用户自定义（同名时覆盖内置）
         ],
     )
     factor_cls = daily_registry.get("momentum_20d")
@@ -17,7 +15,7 @@
     # intraday 频率
     intraday_registry = FactorRegistry(
         base_cls=IntradayFactor,
-        scan_packages=["workspace.factors.intraday"],
+        scan_packages=["factorzen.builtin_factors.intraday", "workspace.factors.intraday"],
     )
 """
 

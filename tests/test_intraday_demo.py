@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 import polars as pl
 import pytest
 
+from factorzen.builtin_factors.intraday.momentum_1min import Momentum1Min
 from factorzen.intraday.factors.base import IntradayFactor
-from workspace.factors.intraday.momentum_1min import Momentum1Min
 
 # ── Import & Class Structure ─────────────────────────────────────────────────
 

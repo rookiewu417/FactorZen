@@ -119,7 +119,7 @@ def _check_result(result: pl.DataFrame, factor_name: str):
 
 
 def test_amihud_illiquidity(ctx):
-    from workspace.factors.daily.amihud import AmihudIlliquidity
+    from factorzen.builtin_factors.daily.amihud import AmihudIlliquidity
 
     factor = AmihudIlliquidity()
     assert isinstance(factor, DailyFactor)
@@ -130,7 +130,7 @@ def test_amihud_illiquidity(ctx):
 
 
 def test_max_return_5d(ctx):
-    from workspace.factors.daily.max_return import MaxReturn5D
+    from factorzen.builtin_factors.daily.max_return import MaxReturn5D
 
     factor = MaxReturn5D()
     assert isinstance(factor, DailyFactor)
@@ -139,7 +139,7 @@ def test_max_return_5d(ctx):
 
 
 def test_skewness_20d(ctx):
-    from workspace.factors.daily.skewness import Skewness20D
+    from factorzen.builtin_factors.daily.skewness import Skewness20D
 
     factor = Skewness20D()
     assert isinstance(factor, DailyFactor)
@@ -150,7 +150,7 @@ def test_skewness_20d(ctx):
 
 
 def test_beta_60d(ctx):
-    from workspace.factors.daily.beta import Beta60D
+    from factorzen.builtin_factors.daily.beta import Beta60D
 
     factor = Beta60D()
     assert isinstance(factor, DailyFactor)
@@ -159,7 +159,7 @@ def test_beta_60d(ctx):
 
 
 def test_idiosyncratic_vol_20d(ctx):
-    from workspace.factors.daily.idiosyncratic_vol import IdiosyncraticVol20D
+    from factorzen.builtin_factors.daily.idiosyncratic_vol import IdiosyncraticVol20D
 
     factor = IdiosyncraticVol20D()
     assert isinstance(factor, DailyFactor)
@@ -170,7 +170,7 @@ def test_idiosyncratic_vol_20d(ctx):
 
 
 def test_bm_ratio(ctx):
-    from workspace.factors.monthly.bm_ratio import BmRatioMonthly
+    from factorzen.builtin_factors.monthly.bm_ratio import BmRatioMonthly
 
     factor = BmRatioMonthly()
     assert isinstance(factor, DailyFactor)
@@ -181,7 +181,7 @@ def test_bm_ratio(ctx):
 
 
 def test_ep_ratio(ctx):
-    from workspace.factors.monthly.ep_ratio import EpRatioMonthly
+    from factorzen.builtin_factors.monthly.ep_ratio import EpRatioMonthly
 
     factor = EpRatioMonthly()
     assert isinstance(factor, DailyFactor)
@@ -221,8 +221,8 @@ def test_registry_has_qlib_factors():
 
 
 def test_qlib_alpha158_factor_returns_factorzen_schema(ctx, monkeypatch):
-    import workspace.factors.qlib.handler as qlib_mod
-    from workspace.factors.qlib.handler import QlibAlpha158Kmid
+    import factorzen.builtin_factors.qlib.handler as qlib_mod
+    from factorzen.builtin_factors.qlib.handler import QlibAlpha158Kmid
 
     assert QlibAlpha158Kmid.required_data == ["daily"]
 
@@ -242,7 +242,7 @@ def test_qlib_alpha158_factor_returns_factorzen_schema(ctx, monkeypatch):
 
 
 def test_qlib_init_uses_low_memory_defaults(monkeypatch):
-    import workspace.factors.qlib.handler as qlib_mod
+    import factorzen.builtin_factors.qlib.handler as qlib_mod
 
     init_calls = []
 
@@ -268,8 +268,8 @@ def test_qlib_init_uses_low_memory_defaults(monkeypatch):
 
 
 def test_qlib_alpha360_factor_returns_factorzen_schema(ctx, monkeypatch):
-    import workspace.factors.qlib.handler as qlib_mod
-    from workspace.factors.qlib.handler import QlibAlpha360Close0
+    import factorzen.builtin_factors.qlib.handler as qlib_mod
+    from factorzen.builtin_factors.qlib.handler import QlibAlpha360Close0
 
     qlib_df = pl.DataFrame(
         {
@@ -320,8 +320,8 @@ def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
 
 
 def test_asset_growth(ctx, monkeypatch):
-    import workspace.factors.monthly.asset_growth as ag_mod
-    from workspace.factors.monthly.asset_growth import AssetGrowthMonthly
+    import factorzen.builtin_factors.monthly.asset_growth as ag_mod
+    from factorzen.builtin_factors.monthly.asset_growth import AssetGrowthMonthly
 
     synthetic_lf = _make_finance_lf()
     monkeypatch.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
@@ -337,8 +337,8 @@ def test_asset_growth(ctx, monkeypatch):
 
 def test_asset_growth_empty_when_no_finance(ctx, monkeypatch):
     """When finance data unavailable, factor returns empty DataFrame gracefully."""
-    import workspace.factors.monthly.asset_growth as ag_mod
-    from workspace.factors.monthly.asset_growth import AssetGrowthMonthly
+    import factorzen.builtin_factors.monthly.asset_growth as ag_mod
+    from factorzen.builtin_factors.monthly.asset_growth import AssetGrowthMonthly
 
     def _raise(_):
         raise FileNotFoundError("no data")

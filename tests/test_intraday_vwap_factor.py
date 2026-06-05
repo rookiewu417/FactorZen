@@ -5,8 +5,8 @@ import unittest.mock as mock
 
 import polars as pl
 
+from factorzen.builtin_factors.intraday.vwap_deviation import VwapDeviation
 from factorzen.intraday.data.context import IntradayDataContext
-from workspace.factors.intraday.vwap_deviation import VwapDeviation
 
 
 def _make_ctx(df: pl.DataFrame):

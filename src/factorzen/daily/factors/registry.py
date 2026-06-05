@@ -6,6 +6,12 @@ from factorzen.daily.factors.base import DailyFactor
 _registry = FactorRegistry(
     base_cls=DailyFactor,
     scan_packages=[
+        # 框架自带因子（随包分发）
+        "factorzen.builtin_factors.daily",
+        "factorzen.builtin_factors.weekly",
+        "factorzen.builtin_factors.monthly",
+        "factorzen.builtin_factors.qlib",
+        # 用户自定义因子（workspace 在后，同名时覆盖内置）
         "workspace.factors.daily",
         "workspace.factors.weekly",
         "workspace.factors.monthly",

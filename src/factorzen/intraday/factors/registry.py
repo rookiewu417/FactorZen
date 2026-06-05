@@ -6,6 +6,7 @@ from factorzen.intraday.factors.base import IntradayFactor
 _registry = FactorRegistry(
     base_cls=IntradayFactor,
     scan_packages=[
+        "factorzen.builtin_factors.intraday",
         "workspace.factors.intraday",
     ],
 )

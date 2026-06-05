@@ -125,6 +125,7 @@ workspace/factor_evaluations/  每次评估输出
 src/factorzen/
 ├── config/               路径、常量、Tushare 配置
 ├── core/                 日历、universe、存储、加载、数据审计、实验元数据
+├── builtin_factors/      框架自带因子（daily/weekly/monthly/intraday/qlib），随包分发
 ├── daily/                低频主线：数据、因子、预处理、评估与优化
 ├── intraday/             分钟线研究代码，当前非主线
 ├── llm/                  可选 OpenAI-compatible 研究解读
@@ -133,7 +134,7 @@ src/factorzen/
 ├── research/combination/ 实验性多因子合成
 └── cli/                  fz 命令行入口
 workspace/
-├── factors/              用户自定义因子
+├── factors/              你的自定义因子（默认空，与框架自带分离）
 └── configs/              实验 YAML 配置
 tests/                    pytest 测试
 docs/                     架构、运行手册、因子编写与演进计划

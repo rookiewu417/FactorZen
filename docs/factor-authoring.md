@@ -2,7 +2,7 @@
 
 > [FactorZen](../README.md) · [文档](README.md) · [架构](architecture.md) · **因子编写** · [运行手册](runbook.md)
 
-日常研究因子写在 `workspace/factors/`，框架代码写在 `src/factorzen/`。**新增因子默认不要改 `src`。**
+日常研究因子写在 `workspace/factors/`（你的空间），框架代码写在 `src/factorzen/`。框架自带的示例/测试因子在 `src/factorzen/builtin_factors/`（随包分发）——注册表同时扫描两处，同名时 `workspace` 覆盖内置。**新增因子默认不要改 `src`。**
 
 ## 1. 创建模板
 
@@ -51,7 +51,7 @@ factor_value
 
 ## 3. 最小端到端示例
 
-下面是一个 5 日反转因子的完整实现，可直接放进 `workspace/factors/daily/reversal_5d.py`：
+下面是一个 5 日反转因子的完整实现（`reversal_5d` 也是内置因子之一，这里展示其写法作模板）。放进 `workspace/factors/daily/` 时请改用你自己的名字，以免与内置同名因子混淆：
 
 ```python
 """5 日反转因子。"""
@@ -95,17 +95,14 @@ Reversal5D()
 
 ## 4. 注册与发现
 
-因子注册表扫描以下包：
+因子注册表同时扫描"框架自带"与"用户自定义"两组包：
 
 ```text
-workspace.factors.daily
-workspace.factors.weekly
-workspace.factors.monthly
-workspace.factors.qlib
-workspace.factors.intraday
+factorzen.builtin_factors.{daily,weekly,monthly,qlib,intraday}   # 框架自带，随包分发
+workspace.factors.{daily,weekly,monthly,intraday}                # 你的因子（默认空）
 ```
 
-`workspace/factors/qlib/` 暴露 qlib Alpha158/Alpha360 特征，每个 qlib 特征注册为一个 FactorZen 因子。运行 qlib 因子前需要准备 qlib 数据包，详见 [`workspace/factors/qlib/README.md`](../workspace/factors/qlib/README.md)。
+同名因子以 `workspace`（用户）覆盖 `builtin_factors`（框架）。`builtin_factors/qlib/` 暴露 qlib Alpha158/Alpha360 特征，每个 qlib 特征注册为一个 FactorZen 因子。运行 qlib 因子前需要准备 qlib 数据包，详见 [`src/factorzen/builtin_factors/qlib/README.md`](../src/factorzen/builtin_factors/qlib/README.md)。
 
 ## 5. 验证
 

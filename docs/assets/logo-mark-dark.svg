@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" aria-labelledby="title desc" viewBox="0 0 512 512">
+  <title id="title">FactorZen factor grid logo mark dark</title>
+  <desc id="desc">A minimal light two-by-two factor grid with one green selected signal point for dark backgrounds.</desc>
+  <style>
+    .frame{fill:none;stroke:#f8faf6;stroke-width:36;stroke-linejoin:round}
+    .solid{fill:#f8faf6}
+    .soft{fill:#f8faf6;opacity:.32}
+    .accent{fill:#69c88f}
+  </style>
+  <rect class="frame" x="118" y="118" width="276" height="276" rx="54"/>
+  <circle class="solid" cx="206" cy="206" r="28"/>
+  <circle class="soft" cx="306" cy="206" r="28"/>
+  <circle class="soft" cx="206" cy="306" r="28"/>
+  <circle class="accent" cx="306" cy="306" r="28"/>
+</svg>

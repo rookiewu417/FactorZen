@@ -1015,6 +1015,9 @@ def main():
                 benchmark=args.benchmark,
                 seed=args.seed,
             ).model_dump()
+            if any(item.partition("=")[0].strip() == "backtest.top_n" for item in overrides):
+                base["backtest"].pop("primary", None)
+                base["backtest"].pop("strategies", None)
             run_config = build_run_config_from_dict(base, overrides=overrides)
             args._uses_builtin_default_config = True
     except (ImportError, ValueError) as e:

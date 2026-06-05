@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import polars as pl
+from pydantic import ValidationError
 
 from factorzen.config.settings import (
     ROOT,
@@ -161,6 +162,26 @@ def _effective_run_config(args: argparse.Namespace, run_config: RunConfig | None
     if run_config is None:
         config = with_default_all_strategies(config)
     return config
+
+
+def _write_run_metrics(path: str, ic_result: Any, bt_result: Any) -> None:
+    """把 IC 与主策略组合级回测指标写出为 JSON（供 factor sweep 汇总，内部接口）。"""
+    try:
+        portfolio = bt_result.summary_stats.get("portfolio", {})
+    except Exception:
+        portfolio = {}
+    metrics = {
+        "ic_mean": ic_result.ic_mean,
+        "ir": ic_result.ir,
+        "t": ic_result.ic_tstat,
+        "ic_pos": ic_result.ic_positive_ratio,
+        "n": ic_result.n_periods,
+        "sharpe": portfolio.get("sharpe"),
+        "ann_ret": portfolio.get("ann_ret"),
+        "avg_turnover": portfolio.get("avg_turnover"),
+        "max_dd": portfolio.get("max_dd"),
+    }
+    Path(path).write_text(json.dumps(metrics, ensure_ascii=False), encoding="utf-8")
 
 
 def _build_dry_run_payload(config: RunConfig) -> dict[str, Any]:
@@ -860,6 +881,8 @@ def _run(
     }
     if llm_explanation_path is not None:
         outputs["llm_explanation"] = str(llm_explanation_path)
+    if getattr(args, "metrics_out", None):
+        _write_run_metrics(args.metrics_out, ic_result, bt_result)
     return outputs
 
 
@@ -880,6 +903,20 @@ def main():
     parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
     parser.add_argument("--dry-run", action="store_true", help="只打印最终配置和输出目录，不执行评估")
     parser.add_argument("--seed", type=int, default=None, help="全局随机种子")
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        dest="set_overrides",
+        metavar="KEY=VALUE",
+        help="覆盖任意配置字段（校验前注入），可多次：--set backtest.top_n=30 --set preprocessing.neutralize=true",
+    )
+    parser.add_argument(
+        "--metrics-out",
+        default=None,
+        dest="metrics_out",
+        help=argparse.SUPPRESS,  # 内部接口：评估完写 IC + 主策略回测指标 JSON，供 factor sweep 读取
+    )
     parser.add_argument(
         "--all",
         action="store_true",
@@ -930,10 +967,34 @@ def main():
             args.config = str(default_config)
             logger.info(f"自动加载默认运行配置: {default_config}")
 
-    if args.config:
-        from factorzen.core.config_loader import load_run_config
+    overrides = args.set_overrides or []
+    try:
+        if args.config:
+            from factorzen.core.config_loader import load_run_config
 
-        run_config = load_run_config(args.config)
+            run_config = load_run_config(args.config, overrides=overrides)
+        elif overrides and args.factor and args.start and args.end:
+            # 无 YAML 但用了 --set：用 CLI 标量构造 minimal dict，叠加覆盖后校验。
+            # run_config 变为非 None → 不再套用 4 策略默认套件，
+            # `--set backtest.top_n=N` 经 model_validator 产出单一 topn 策略。
+            from factorzen.core.config_loader import build_run_config_from_dict
+
+            base: dict[str, Any] = {
+                "factor": args.factor,
+                "start": args.start,
+                "end": args.end,
+            }
+            for field in ("universe", "benchmark", "seed", "ic_method"):
+                value = getattr(args, field, None)
+                if value is not None:
+                    base[field] = value
+            run_config = build_run_config_from_dict(base, overrides=overrides)
+    except (ImportError, ValueError) as e:
+        logger.error(str(e))
+        sys.exit(2)
+    except ValidationError as e:
+        logger.error(f"配置校验失败:\n{e}")
+        sys.exit(2)
 
     try:
         args = _merge_run_config_args(args, run_config)

@@ -1,6 +1,7 @@
 ﻿"""YAML 运行配置加载与 Pydantic v2 验证。"""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -147,11 +148,63 @@ class RunConfig(BaseModel):
     neutralized_ic: bool = False
 
 
-def load_run_config(path: Path | str) -> RunConfig:
+def apply_overrides(data: dict[str, Any], overrides: Sequence[str]) -> dict[str, Any]:
+    """把 ``key.path=value`` 形式的覆盖应用到原始配置 dict（pydantic 校验之前）。
+
+    在校验前注入，可复用 pydantic 的取值/类型校验，并让 ``backtest.top_n`` 这类
+    依赖 ``model_validator`` 自动填充策略的 legacy 字段用新值正确生成（无需特判）。
+
+    - 值类型用 ``yaml.safe_load`` 推断，与 YAML 同源：``30→int``、``true→bool``、
+      ``0.1→float``、``rank_normal→str``、``null→None``。
+    - dotted key 走嵌套 dict（``backtest.top_n``、``preprocessing.normalizer``）；
+      中间缺失的键按需创建空 dict。
+
+    就地修改并返回 ``data``。
+    """
+    if not overrides:
+        return data
+
+    import yaml
+
+    for item in overrides:
+        if "=" not in item:
+            raise ValueError(f"--set 需要 key=value 形式，收到: {item!r}")
+        key_path, _, raw_value = item.partition("=")
+        keys = [part.strip() for part in key_path.strip().split(".")]
+        if not all(keys):
+            raise ValueError(f"--set 键名非法: {item!r}")
+        value = yaml.safe_load(raw_value)
+        node = data
+        for key in keys[:-1]:
+            existing = node.get(key)
+            if existing is None:
+                existing = {}
+                node[key] = existing
+            elif not isinstance(existing, dict):
+                raise ValueError(f"--set 路径冲突：{key!r} 不是映射（在 {item!r} 中）")
+            node = existing
+        node[keys[-1]] = value
+    return data
+
+
+def build_run_config_from_dict(
+    data: dict[str, Any] | None, overrides: Sequence[str] | None = None
+) -> RunConfig:
+    """从原始 dict（叠加可选 overrides）构造并校验 RunConfig。无 YAML 文件时复用。"""
+    merged: dict[str, Any] = dict(data or {})
+    if overrides:
+        apply_overrides(merged, overrides)
+    return RunConfig.model_validate(merged)
+
+
+def load_run_config(
+    path: Path | str, overrides: Sequence[str] | None = None
+) -> RunConfig:
     """从 YAML 文件加载并验证 RunConfig。
 
     Args:
         path: YAML 配置文件路径。
+        overrides: 可选 ``key.path=value`` 覆盖列表，在校验前叠加到 YAML dict 上。
 
     Returns:
         验证后的 RunConfig 实例。
@@ -168,7 +221,9 @@ def load_run_config(path: Path | str) -> RunConfig:
         ) from exc
 
     path = Path(path)
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if overrides:
+        apply_overrides(data, overrides)
     return RunConfig.model_validate(data)
 
 

@@ -99,7 +99,7 @@ Reversal5D()
 
 ```text
 factorzen.builtin_factors.{daily,weekly,monthly,qlib,intraday}   # 框架自带，随包分发
-workspace.factors.{daily,weekly,monthly,qlib,intraday}           # 你的因子（默认空）
+workspace.factors.{daily,weekly,monthly,intraday}                # 你的因子（默认空）
 ```
 
 同名因子以 `workspace`（用户）覆盖 `builtin_factors`（框架）。`builtin_factors/qlib/` 暴露 qlib Alpha158/Alpha360 特征，每个 qlib 特征注册为一个 FactorZen 因子。运行 qlib 因子前需要准备 qlib 数据包，详见 [`src/factorzen/builtin_factors/qlib/README.md`](../src/factorzen/builtin_factors/qlib/README.md)。

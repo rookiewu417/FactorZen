@@ -63,7 +63,7 @@ workspace/factor_evaluations/{run_id}/report.html
 
 ```text
 src/factorzen/builtin_factors/{daily,weekly,monthly,intraday,qlib}/   框架自带
-workspace/factors/{daily,weekly,monthly,intraday,qlib}/              你的因子
+workspace/factors/{daily,weekly,monthly,intraday}/                   你的因子
 ```
 
 注册表同时扫描两组，同名时 `workspace`（用户）覆盖 `builtin_factors`（框架）。`src/factorzen/daily/factors/` 与 `src/factorzen/intraday/factors/` 只放框架基类和注册中心。**你的日常研究因子始终写在 `workspace/factors/`，不要写进 `src/`（`builtin_factors/` 由框架维护）。**

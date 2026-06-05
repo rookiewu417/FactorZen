@@ -12,10 +12,10 @@ _registry = FactorRegistry(
         "factorzen.builtin_factors.monthly",
         "factorzen.builtin_factors.qlib",
         # 用户自定义因子（workspace 在后，同名时覆盖内置）
+        # qlib 因子由框架经 builtin_factors.qlib 生成，用户不在 workspace 手写
         "workspace.factors.daily",
         "workspace.factors.weekly",
         "workspace.factors.monthly",
-        "workspace.factors.qlib",
     ],
 )
 # 模块加载时自动扫描（与之前行为保持一致）

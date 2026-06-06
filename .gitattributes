@@ -1,2 +1,10 @@
+# 统一文本文件行尾为 LF(Linux-first 项目;防止 CRLF 再次混入)
+* text=auto eol=lf
+
+# 二进制文件:禁止任何行尾/编码转换
+*.png   binary
+*.ico   binary
+*.parquet binary
+
 # SCM syntax highlighting & preventing 3-way merges
 pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff

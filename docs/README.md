@@ -20,5 +20,5 @@
 
 仓库内还有两份作用域明确的局部 README，**不并入根 README**：
 
-- [`workspace/factors/qlib/README.md`](../workspace/factors/qlib/README.md) —— 只解释 qlib 因子与数据源。
+- [`src/factorzen/builtin_factors/qlib/README.md`](../src/factorzen/builtin_factors/qlib/README.md) —— 只解释 qlib 因子与数据源。
 - [`src/factorzen/research/combination/README.md`](../src/factorzen/research/combination/README.md) —— 只解释实验性多因子合成。

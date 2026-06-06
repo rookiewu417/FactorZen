@@ -28,7 +28,7 @@ cp .env.example .env
 pixi run smoke
 ```
 
-真实数据拉取需要在 `.env` 配置 `TUSHARE_TOKEN`。LLM 研究解读默认关闭，只有命令显式传入 `--llm-explain` 时才会尝试读取相关配置。
+真实数据拉取需要在 `.env` 配置 `TUSHARE_TOKEN`。LLM 研究解读默认关闭（无 YAML 默认配置与 `--all` 模式会自动启用），普通运行需命令显式传入 `--llm-explain` 才会尝试读取相关配置。
 
 需要验证真实环境时，用数据 smoke 检查 Tushare 连通性与本地原始数据分区完整性（不入默认 CI）：
 
@@ -147,5 +147,5 @@ CI 在 push / PR 到 `main` 或 `master` 时运行同一套检查。
 |------|------|
 | `TUSHARE_TOKEN` 缺失 | 只影响真实数据拉取；离线测试不应依赖真实 token |
 | `report path` 找不到报告 | 先用 `fz runs list` 确认 `run_id`，再用 `fz runs show <run_id>` 查看 manifest |
-| qlib 因子运行失败 | 确认 `QLIB_PROVIDER_URI` 指向的数据包覆盖运行日期，详见 [`workspace/factors/qlib/README.md`](../workspace/factors/qlib/README.md) |
+| qlib 因子运行失败 | 确认 `QLIB_PROVIDER_URI` 指向的数据包覆盖运行日期，详见 [`src/factorzen/builtin_factors/qlib/README.md`](../src/factorzen/builtin_factors/qlib/README.md) |
 | manifest 标记 `git_dirty=true` | 工作树存在未提交改动，该 run 不能只凭 git SHA 完全复现 |

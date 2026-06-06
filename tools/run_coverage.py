@@ -1,7 +1,7 @@
 """Run pytest coverage with an isolated temporary data file.
 
 强制最低覆盖率门槛(`--fail-under`),防止覆盖率随改动悄悄回退。
-当前基线约 76%;门槛设 74% 留出小幅波动缓冲。提高覆盖率后可上调此值。
+当前基线约 82%;门槛设 74% 留出波动缓冲(实测显著高于门槛)。提高覆盖率后可上调此值。
 """
 
 from __future__ import annotations

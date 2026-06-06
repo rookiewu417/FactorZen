@@ -12,6 +12,7 @@
 - **健壮性：** 图表辅助函数单列输入的 `StopIteration` 守卫；分位收益除零防护；事件研究窗口序列校验由 `>=` 收紧为 `==`。
 - **文档编码：** 修复 README 及 docs 在合并中被 GBK 双重编码损坏的中文（重写 README / architecture / runbook，恢复 evolution-plan / project-explanation）。
 - **文档刷新：** `project-explanation.md` 由 1374 行陈旧版（合并前布局）改写为 ~130 行准确版，反映 `src/factorzen` 当前布局并补入可复现 / 可观测 / 数据契约等新能力。
+- **文档死链：** 修复 `runbook.md` 与 `docs/README.md` 指向 qlib README 的死链（`workspace/factors/qlib/` → `src/factorzen/builtin_factors/qlib/`）；澄清 `runbook.md` 中 LLM 解读默认行为（默认关闭，无 YAML 默认配置与 `--all` 模式自动启用）。
 
 ### Changed
 
@@ -19,6 +20,7 @@
 - **工程化：** `.pre-commit-config.yaml` 改为通过 `pixi run` 的 local hooks，保证 pre-commit / CI / 本地三者版本一致（修复 mypy hook 指向已删除旧路径的问题）。
 - **CI：** 增加 `permissions: contents: read` 最小权限与 `concurrency` 取消重复运行；`tools/run_coverage.py` 增加 `--fail-under=73` 覆盖率门槛（防回退）。
 - **可复现性：** `run_experiment` 在工作树 dirty 时 `logger.warning` 提示；manifest 增记 `duration_seconds`。
+- **锁文件 / 覆盖率：** `pixi.lock` 升级 v6 → v7（改善可复现性）；`tools/run_coverage.py` 基线说明 76% → 82%（实测总覆盖率，门槛仍为 74%）。
 
 ### Added
 

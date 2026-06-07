@@ -187,7 +187,7 @@ pre-commit install
 | [因子编写](docs/factor-authoring.md) | 因子放哪里、实现什么接口、如何验证 |
 | [运行手册](docs/runbook.md) | 常用命令、报告入口、数据拉取、故障处理 |
 | [演进计划](docs/evolution-plan-2026.md) | 公开路线图与非目标 |
-| [示例报告](docs/volume_return_corr_20d-tear-sheet.html) | 真实 tear sheet 示例 |
+| [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html) | 真实 tear sheet 示例 |
 
 文档索引见 [docs/README.md](docs/README.md)。
 

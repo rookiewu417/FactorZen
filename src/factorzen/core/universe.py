@@ -1,4 +1,4 @@
-﻿"""股票池构建与过滤系统。
+"""股票池构建与过滤系统。
 
 提供预设股票池与可组合的过滤链：
 - ``get_universe(date_str, universe_name)`` — 从 6 种预设池中选取
@@ -18,6 +18,7 @@
 
 import calendar
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 
@@ -65,6 +66,8 @@ _INDEX_CODE_MAP: dict[str, str] = {
     "csi500": "000905.SH",
 }
 
+_INDEX_MEMBER_MEMORY_CACHE: dict[tuple[str, str, str], tuple[str, ...]] = {}
+
 
 # ══════════════════════════════════════════════════════════
 # 指数成分股加载
@@ -100,25 +103,50 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
     start_date = f"{year_month}01"
     end_date = f"{year_month}{last_day:02d}"
 
-    # 缓存检查
     safe_name = index_code.replace(".", "_")
     cache_file = DATA_CACHE / f"index_member_{safe_name}_{year_month}.parquet"
+    memory_key = (str(DATA_CACHE), index_code, year_month)
+
+    cached_members = _INDEX_MEMBER_MEMORY_CACHE.get(memory_key)
+    if cached_members is not None:
+        logger.info(f"[index_member] {index_code} {year_month} 内存缓存命中")
+        return list(cached_members)
 
     if cache_file.exists():
         logger.info(f"[index_member] {index_code} {year_month} 缓存命中")
-        return pl.read_parquet(cache_file)["con_code"].to_list()
+        members = _read_index_member_cache(cache_file)
+        _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(members)
+        return members
 
     # 从 Tushare 拉取
     pro = init_tushare()
-    df_pd = _retry(
-        pro.index_weight,
-        index_code=index_code,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    try:
+        df_pd = _retry(
+            pro.index_weight,
+            index_code=index_code,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except Exception:
+        cached = _load_latest_cached_index_members(index_code, year_month)
+        if cached:
+            logger.warning(
+                f"[index_member] {index_code} {year_month} 拉取失败，使用最近可用成分股缓存"
+            )
+            _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(cached)
+            return cached
+        raise
 
     if df_pd is None or df_pd.empty:
+        cached = _load_latest_cached_index_members(index_code, year_month)
+        if cached:
+            logger.warning(
+                f"[index_member] {index_code} {year_month} 无成分股数据，使用最近可用成分股缓存"
+            )
+            _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(cached)
+            return cached
         logger.warning(f"[index_member] {index_code} {year_month} 无成分股数据")
+        _INDEX_MEMBER_MEMORY_CACHE[memory_key] = ()
         return []
 
     df = pl.from_pandas(df_pd)
@@ -128,7 +156,33 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
     df.write_parquet(str(cache_file))
     logger.info(f"[index_member] {index_code} {year_month}: {len(df)} 只成分股，已缓存")
 
-    return df["con_code"].to_list()
+    members = df["con_code"].drop_nulls().to_list()
+    _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(members)
+    return members
+
+
+def _read_index_member_cache(cache_file: Path) -> list[str]:
+    df = pl.read_parquet(cache_file)
+    if "con_code" not in df.columns:
+        return []
+    return df["con_code"].drop_nulls().to_list()
+
+
+def _load_latest_cached_index_members(index_code: str, year_month: str) -> list[str]:
+    safe_name = index_code.replace(".", "_")
+    prefix = f"index_member_{safe_name}_"
+    candidates: list[tuple[str, Path]] = []
+    for path in DATA_CACHE.glob(f"{prefix}*.parquet"):
+        month = path.stem.removeprefix(prefix)
+        if len(month) == 6 and month.isdigit() and month <= year_month:
+            candidates.append((month, path))
+
+    for month, path in sorted(candidates, reverse=True):
+        members = _read_index_member_cache(path)
+        if members:
+            logger.info(f"[index_member] {index_code} {year_month} 回退到 {month} 缓存")
+            return members
+    return []
 
 
 def get_universe(
@@ -441,10 +495,12 @@ def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
         # 按板块构建每只股票的涨跌停阈值（pct_chg 单位为百分比）
         codes = daily["ts_code"].unique().to_list()
         limits = {code: _get_board_limit(code) * 100 for code in codes}
-        limit_df = pl.DataFrame({
-            "ts_code": list(limits.keys()),
-            "_limit_pct": list(limits.values()),
-        })
+        limit_df = pl.DataFrame(
+            {
+                "ts_code": list(limits.keys()),
+                "_limit_pct": list(limits.values()),
+            }
+        )
 
         not_limit = (
             daily.join(limit_df, on="ts_code", how="left")

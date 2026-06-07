@@ -1,4 +1,4 @@
-﻿"""common/storage.py 的单元测试。"""
+"""common/storage.py 的单元测试。"""
 
 from datetime import date
 
@@ -38,6 +38,18 @@ def test_save_append_deduplicates(tmp_dir):
     save_parquet(df1, "test_data", base_dir=tmp_dir, mode="append")
     loaded = load_parquet("test_data", base_dir=tmp_dir).collect()
     assert loaded.shape[0] == 5  # 去重后仍为 5 行
+
+
+def test_save_append_replaces_existing_business_key(tmp_dir):
+    original = _make_df(1)
+    updated = original.with_columns(pl.lit(99).alias("value"))
+
+    save_parquet(original, "test_data", base_dir=tmp_dir, mode="append")
+    save_parquet(updated, "test_data", base_dir=tmp_dir, mode="append")
+
+    loaded = load_parquet("test_data", base_dir=tmp_dir).collect()
+    assert loaded.height == 1
+    assert loaded["value"][0] == 99
 
 
 def test_save_overwrite_replaces(tmp_dir):

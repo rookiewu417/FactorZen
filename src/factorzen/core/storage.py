@@ -1,4 +1,4 @@
-﻿"""Polars Parquet 读写封装，支持 Hive 分区。
+"""Polars Parquet 读写封装，支持 Hive 分区。
 
 分区路径格式: ``{base_dir}/{data_type}/year={YYYY}/month={MM}/data.parquet``
 """
@@ -48,7 +48,13 @@ def save_parquet(
 
         if mode == "append" and file_path.exists():
             existing = pl.read_parquet(file_path)
-            combined = pl.concat([existing, group]).unique(maintain_order=True)
+            combined = pl.concat([existing, group], how="vertical_relaxed")
+            key_cols = [date_col, "ts_code"] if "ts_code" in combined.columns else None
+            combined = combined.unique(
+                subset=key_cols,
+                keep="last",
+                maintain_order=True,
+            )
             combined.write_parquet(file_path)
         else:
             group.write_parquet(file_path)

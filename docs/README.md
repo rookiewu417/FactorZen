@@ -14,7 +14,7 @@
 | [factor-authoring](factor-authoring.md) | 因子作者 | 新因子放哪里、实现什么接口、如何验证 |
 | [runbook](runbook.md) | 日常使用者、值守者 | 常用命令、报告入口、数据拉取、故障处理 |
 | [evolution-plan-2026](evolution-plan-2026.md) | 维护者 | 公开路线图与非目标 |
-| [examples/](examples/) | 新用户、复核者 | 真实 tear sheet 示例与分区导读 |
+| [示例报告](volume_return_corr_20d-tear-sheet.html) | 新用户、复核者 | 真实 tear sheet 示例 |
 | [release-notes/](release-notes/) | 发布使用者 | 已发布版本的历史说明（发布后不回写）|
 
 ## 局部 README

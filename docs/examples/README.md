@@ -8,9 +8,9 @@
 
 | 文件 | 说明 |
 |------|------|
-| [`volume_return_corr_20d-tear-sheet.html`](volume_return_corr_20d-tear-sheet.html) | 示例因子的完整 HTML 报告（自包含，约 1.1MB）|
+| [`volume_return_corr_20d-tear-sheet.html`](../volume_return_corr_20d-tear-sheet.html) | 示例因子的完整 HTML 报告（自包含，约 1.1MB）|
 
-> GitHub 不会内联渲染 HTML。请点开后下载用浏览器打开，或借助 htmlpreview 类工具在线预览。
+> GitHub 源码浏览器不会内联渲染 HTML；GitHub Pages 会直接展示 `docs/` 根目录下的报告页面。
 
 ## 示例因子
 

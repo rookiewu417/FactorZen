@@ -26,7 +26,7 @@
 
 ### Added
 
-- **示例报告：** 新增 `docs/examples/`，收录示例因子 `volume_return_corr_20d` 的真实 tear sheet（`docs/examples/volume_return_corr_20d-tear-sheet.html`）与分区导读 README。
+- **示例报告：** 新增示例因子 `volume_return_corr_20d` 的真实 tear sheet（`docs/volume_return_corr_20d-tear-sheet.html`）与分区导读 README。
 - **示例因子：** 新增 `workspace/factors/daily/volume_return_corr_20d.py`（20 日量价滚动相关）及其配置，并在 factor-authoring 中作为进阶 worked example。
 - **因子模板：** 各频率目录新增 `TEMPLATE.md` 手写模板，并在 factor-authoring 中引用。
 - **测试加固：** 新增 `test_charts_helpers` / `test_summaries_helpers` 共 29 个边界单测，覆盖报告模块的 None / 空输入防御分支（`_charts` 78%→85%，`_summaries` 78%→81%）；覆盖率门槛 73%→74%。

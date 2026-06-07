@@ -1,6 +1,6 @@
 # 因子编写
 
-> [FactorZen](../README.md) · [文档](README.md) · [架构](architecture.md) · **因子编写** · [运行手册](runbook.md) · [示例报告](examples/)
+> [FactorZen](../README.md) · [文档](README.md) · [架构](architecture.md) · **因子编写** · [运行手册](runbook.md) · [示例报告](volume_return_corr_20d-tear-sheet.html)
 
 日常研究因子写在 `workspace/factors/`（你的空间），框架代码写在 `src/factorzen/`。框架自带的示例/测试因子在 `src/factorzen/builtin_factors/`（随包分发）——注册表同时扫描两处，同名时 `workspace` 覆盖内置。**新增因子默认不要改 `src`。**
 
@@ -113,7 +113,7 @@ pixi run fz factor run volume_return_corr_20d --start 20160606 --end 20260606
 pixi run fz report path <run_id>
 ```
 
-它产出的真实 tear sheet 已收录为示例报告：[docs/examples/](examples/)。该因子预测能力偏弱，正好演示报告如何诚实暴露「统计显著但经济意义弱」的结论——这是 FactorZen 的设计取向，而非缺陷。
+它产出的真实 tear sheet 已收录为示例报告：[docs/volume_return_corr_20d-tear-sheet.html](volume_return_corr_20d-tear-sheet.html)。该因子预测能力偏弱，正好演示报告如何诚实暴露「统计显著但经济意义弱」的结论——这是 FactorZen 的设计取向，而非缺陷。
 
 要点（相对最小示例新增的）：
 

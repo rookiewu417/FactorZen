@@ -33,11 +33,11 @@
 复现命令：
 
 ```bash
-pixi run fz factor run --config workspace/configs/daily/volume_return_corr_20d.yaml
+pixi run fz factor run volume_return_corr_20d --start 20160606 --end 20260606
 pixi run fz report path <run_id>
 ```
 
-实跑产物落在 `workspace/factor_evaluations/{run_id}/`（默认不入库）；本页 HTML 是其中一次运行的快照。
+无 `--config` 时会套用内置研究级预设（上表配置即由它生成），walk-forward 默认关闭；LLM 解读需先配置 `FACTORZEN_LLM_*` 才会生成，否则自动跳过。实跑产物落在 `workspace/factor_evaluations/{run_id}/`（默认不入库）；本页 HTML 是其中一次运行的快照。
 
 ## 这是一个「弱因子」示例
 

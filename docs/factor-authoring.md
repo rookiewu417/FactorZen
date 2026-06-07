@@ -104,12 +104,12 @@ Reversal5D()
 
 ## 3.1 进阶示例：量价相关因子
 
-`volume_return_corr_20d` 是一个更接近真实研究的示例：20 日「1 日收益 × 对数成交量」滚动 Pearson 相关。它展示了多中间列、`rolling_*` 的 `min_samples`、以及方差非正时的守卫写法。完整实现见 [`workspace/factors/daily/volume_return_corr_20d.py`](../workspace/factors/daily/volume_return_corr_20d.py)，配置见 [`workspace/configs/daily/volume_return_corr_20d.yaml`](../workspace/configs/daily/volume_return_corr_20d.yaml)。
+`volume_return_corr_20d` 是一个更接近真实研究的示例：20 日「1 日收益 × 对数成交量」滚动 Pearson 相关。它展示了多中间列、`rolling_*` 的 `min_samples`、以及方差非正时的守卫写法。完整实现见 [`workspace/factors/daily/volume_return_corr_20d.py`](../workspace/factors/daily/volume_return_corr_20d.py)；另附一个精简 YAML 配置 [`workspace/configs/daily/volume_return_corr_20d.yaml`](../workspace/configs/daily/volume_return_corr_20d.yaml)（固定区间并显式关闭 walk-forward）。
 
-运行并查看报告：
+运行并查看报告（无 `--config` 会套用内置研究级预设，即示例报告的生成方式）：
 
 ```bash
-pixi run fz factor run --config workspace/configs/daily/volume_return_corr_20d.yaml
+pixi run fz factor run volume_return_corr_20d --start 20160606 --end 20260606
 pixi run fz report path <run_id>
 ```
 

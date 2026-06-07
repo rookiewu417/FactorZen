@@ -14,7 +14,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10--3.12-blue.svg)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
 
-[快速开始](#快速开始) · [文档](docs/README.md) · [架构](docs/architecture.md) · [路线图](docs/evolution-plan-2026.md)
+[快速开始](#快速开始) · [文档](docs/README.md) · [架构](docs/architecture.md) · [路线图](docs/evolution-plan-2026.md) · [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html)
 
 </div>
 

@@ -36,6 +36,7 @@ from factorzen.core.experiment import (
 )
 from factorzen.core.loader import fetch_daily
 from factorzen.core.logger import get_logger, setup_logging
+from factorzen.core.progress import OverallProgress
 from factorzen.core.storage import load_parquet
 from factorzen.core.timing import StageTimer
 from factorzen.core.universe import get_universe
@@ -358,6 +359,7 @@ def _run(
     timer: StageTimer | None = None,
 ) -> dict[str, str]:
     timer = timer or StageTimer()
+    progress = OverallProgress(5, label="Report run").start()
     logger.info(f"──── 因子报告生成: {args.factor} | {args.start} ~ {args.end} ────")
 
     # ── 1. 获取因子类 ──
@@ -367,6 +369,7 @@ def _run(
         logger.error(str(e))
         raise RuntimeError(f"unknown factor: {args.factor}") from e
     factor = factor_cls()
+    progress.advance("init")
     logger.info(f"因子: {factor.name} | {factor.description}")
 
     walk_forward_summary: dict | None = None
@@ -431,6 +434,7 @@ def _run(
             strategy_results = {bt_result.strategy_name: bt_result}
             logger.warning("日线数据为空，跳过高级评价")
             advanced_results = None
+        progress.advance("results")
     else:
         if args.reuse:
             logger.info("--reuse: 未找到缓存，退回完整计算")
@@ -577,6 +581,7 @@ def _run(
             walk_forward_summary=walk_forward_summary,
             backtest_direction=backtest_direction,
         )
+        progress.advance("results")
 
     # ── (Optional) Benchmark 对比 ──
     benchmark_result = None
@@ -592,6 +597,7 @@ def _run(
             logger.warning(f"Benchmark 计算失败（跳过）: {e}")
 
     # ── 11. 生成 HTML 报告 ──
+    progress.advance("benchmark")
     date_range = f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ {args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
     quality_report_for_llm: dict[str, Any] | None = None
     quality_report_path = _quality_path(args.factor, args.start, args.end)
@@ -618,6 +624,7 @@ def _run(
         quality_report=quality_report_for_llm,
         backtest_direction=backtest_direction,
     )
+    progress.advance("llm")
     with timer.stage("报告生成"):
         html = generate_tear_sheet(
             factor_name=factor.name,
@@ -647,6 +654,7 @@ def _run(
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / f"{factor.name}_{args.start}_{args.end}.html"
     report_path.write_text(html, encoding="utf-8")
+    progress.advance("report")
     logger.info(f"报告已生成: {report_path}")
 
     outputs = {
@@ -658,6 +666,7 @@ def _run(
         outputs["quality_report"] = str(quality_report_path)
     if llm_explanation_path is not None:
         outputs["llm_explanation"] = str(llm_explanation_path)
+    progress.close()
     return outputs
 
 

@@ -538,19 +538,24 @@ def _run(
         logger.info(f"\n{to_result.summary()}")
 
         # ── 10. Walk-forward / OOS 摘要 ──
-        try:
-            walk_forward_summary, walk_forward_result = run_quantile_walk_forward_summary(
-                backtest_df,
-                daily,
-                effective_config,
-                factor_name=factor.name,
-                frequency=args.frequency,
-            )
-            logger.info(f"Walk-forward 摘要: {walk_forward_summary}")
-        except Exception as e:
-            walk_forward_summary = {"status": "error", "n_folds": 0, "error": str(e)}
+        if effective_config.walk_forward.enabled:
+            try:
+                walk_forward_summary, walk_forward_result = run_quantile_walk_forward_summary(
+                    backtest_df,
+                    daily,
+                    effective_config,
+                    factor_name=factor.name,
+                    frequency=args.frequency,
+                )
+                logger.info(f"Walk-forward 摘要: {walk_forward_summary}")
+            except Exception as e:
+                walk_forward_summary = {"status": "error", "n_folds": 0, "error": str(e)}
+                walk_forward_result = None
+                logger.warning(f"Walk-forward 计算失败（跳过）: {e}")
+        else:
+            walk_forward_summary = {"status": "disabled", "n_folds": 0}
             walk_forward_result = None
-            logger.warning(f"Walk-forward 计算失败（跳过）: {e}")
+            logger.info("Walk-forward 已关闭，跳过")
 
         # ── 11. 高级评价 ──
         advanced_results = _run_advanced_evaluation(clean_df, ret_df, args.frequency)

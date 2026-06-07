@@ -61,7 +61,7 @@ cp .env.example .env
 pixi run smoke
 ```
 
-`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；无 YAML 默认运行会启用 LLM 研究解读，缺少 `FACTORZEN_LLM_*` 配置时自动跳过。
+`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；无 YAML 默认运行会尝试 LLM 研究解读，缺少 `FACTORZEN_LLM_*` 配置时自动跳过。
 
 ## 快速开始
 
@@ -79,7 +79,7 @@ pixi run fz factor run my_alpha --start 20230101 --end 20241231
 pixi run fz report path <run_id>
 ```
 
-无 `--config` 时会使用内置研究级默认配置：`csi500`、匹配 benchmark、`seed=42`、行业+市值中性化、内置 4 策略套件、walk-forward、both IC、neutralized IC、event study 与 LLM 解读。
+无 `--config` 时会使用内置研究级默认配置：`csi500`、匹配 benchmark、`seed=42`、行业+市值中性化、内置 4 策略套件、both IC、neutralized IC、event study 与 LLM 解读（缺 `FACTORZEN_LLM_*` 配置时自动跳过）。walk-forward 默认关闭，按需用 YAML `walk_forward.enabled: true` 或 `--set walk_forward.enabled=true` 开启。
 
 **命令行调参，无需改 YAML**
 
@@ -187,6 +187,7 @@ pre-commit install
 | [因子编写](docs/factor-authoring.md) | 因子放哪里、实现什么接口、如何验证 |
 | [运行手册](docs/runbook.md) | 常用命令、报告入口、数据拉取、故障处理 |
 | [演进计划](docs/evolution-plan-2026.md) | 公开路线图与非目标 |
+| [示例报告](docs/examples/) | 真实 tear sheet 示例与分区导读 |
 
 文档索引见 [docs/README.md](docs/README.md)。
 

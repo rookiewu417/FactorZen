@@ -1,7 +1,8 @@
-﻿"""Single-factor walk-forward summary helpers."""
+"""Single-factor walk-forward summary helpers."""
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import polars as pl
@@ -11,7 +12,11 @@ from factorzen.core.config_loader import (
     build_runtime_backtest_config,
     build_top_n_candidate_params,
 )
-from factorzen.daily.evaluation.backtest import Strategy, TopNLongOnlyStrategy
+from factorzen.daily.evaluation.backtest import (
+    PrecomputedWeightsStrategy,
+    Strategy,
+    precompute_top_n_weights,
+)
 from factorzen.daily.evaluation.walk_forward import (
     WalkForwardResult,
     WalkForwardSplitter,
@@ -58,6 +63,9 @@ def run_quantile_walk_forward_summary(
     Each fold searches deterministic top_n candidates on the IS window and
     evaluates the selected candidate on the OOS window.
     """
+    if not config.walk_forward.enabled:
+        return {"status": "disabled", "n_folds": 0}, None
+
     splitter = WalkForwardSplitter(
         train_days=config.walk_forward.train_days,
         test_days=config.walk_forward.test_days,
@@ -65,22 +73,34 @@ def run_quantile_walk_forward_summary(
         embargo_days=config.walk_forward.embargo_days,
     )
 
-    def strategy_factory(params: dict[str, Any]) -> Strategy:
-        return TopNLongOnlyStrategy(
-            n=int(params.get("top_n", config.backtest.top_n)),
+    param_candidates = build_top_n_candidate_params(config)
+    precomputed_weights = {
+        int(params.get("top_n", config.backtest.top_n)): precompute_top_n_weights(
+            factor_df,
+            top_n=int(params.get("top_n", config.backtest.top_n)),
             factor_col="factor_clean",
         )
+        for params in param_candidates
+    }
 
-    param_candidates = build_top_n_candidate_params(config)
+    def strategy_factory(params: dict[str, Any]) -> Strategy:
+        top_n = int(params.get("top_n", config.backtest.top_n))
+        return PrecomputedWeightsStrategy(precomputed_weights[top_n])
+
     result = run_walk_forward_search(
         strategy_factory=strategy_factory,
         factor_df=factor_df,
         price_df=price_df,
         splitter=splitter,
         param_candidates=param_candidates,
-        config=build_runtime_backtest_config(config, factor_col="factor_clean", frequency=frequency),
+        config=build_runtime_backtest_config(
+            config, factor_col="factor_clean", frequency=frequency
+        ),
         factor_name=factor_name,
         seed=config.seed,
+        reuse_is_backtests=True,
+        parallel_workers=min(4, os.cpu_count() or 1),
+        include_context_positions=False,
     )
     summary = summarize_walk_forward_result(
         result,

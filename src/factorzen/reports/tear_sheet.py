@@ -494,7 +494,11 @@ def _build_report_statuses(
         wf_detail = (
             "样本不足，未生成滚动验证折数。"
             if raw_wf_status == "insufficient_data"
-            else str(walk_forward_summary.get("error") or "已生成滚动样本外摘要。")
+            else (
+                "配置已关闭，未运行滚动样本外验证。"
+                if raw_wf_status == "disabled"
+                else str(walk_forward_summary.get("error") or "已生成滚动样本外摘要。")
+            )
         )
     else:
         wf_status = "未启用或未生成"

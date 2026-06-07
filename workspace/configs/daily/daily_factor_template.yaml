@@ -90,6 +90,9 @@ backtest:
   fallback_adv: 10000000.0
 
 walk_forward:
+  # Disabled by default because this evaluation is computationally expensive.
+  enabled: false
+
   # IS history window length in trading days.
   train_days: 504
 

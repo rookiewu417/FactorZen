@@ -6,6 +6,7 @@
 
 ### Fixed
 
+- **文档对齐：** 修正 README / runbook 把 walk-forward 误述为「无 YAML 默认开启」的过时描述；消除 runbook 中 LLM 默认行为自相矛盾的两处表述，统一为与当前代码一致的口径。
 - **报告引擎：** 事件研究 `ci_95=None` 时模板对 `None` 下标取值导致整份报告崩溃，补齐 `avg_cumret` / `ci_95` 取值守卫。
 - **报告语义：** 统一多空判定为单一 `_resolve_is_long_short`，修复 `factor_weighted + long_only=True` 在概览（判多头）与策略分页（判多空）之间自相矛盾。
 - **类型安全：** 修复 `tear_sheet.py` / `backtest.py` / `generate_report.py` 共 10 处 mypy 错误，恢复 CI `typecheck` 步骤（此前失败导致测试被跳过）。
@@ -16,6 +17,7 @@
 
 ### Changed
 
+- **Walk-forward：** 策略 walk-forward 样本外评估改为**默认关闭**（`WalkForwardConfig.enabled` 默认 `false`），按需通过 YAML `walk_forward.enabled: true` 或 `--set walk_forward.enabled=true` 开启。
 - **报告模块解耦：** `tear_sheet.py` 2986 → 1054 行（-65%），按职责拆为 `_formatting` / `_scoring` / `_charts` / `_strategy` / `_summaries` 五个模块；经 re-export 保持对外导入接口不变。
 - **工程化：** `.pre-commit-config.yaml` 改为通过 `pixi run` 的 local hooks，保证 pre-commit / CI / 本地三者版本一致（修复 mypy hook 指向已删除旧路径的问题）。
 - **CI：** 增加 `permissions: contents: read` 最小权限与 `concurrency` 取消重复运行；`tools/run_coverage.py` 增加 `--fail-under=73` 覆盖率门槛（防回退）。
@@ -24,6 +26,9 @@
 
 ### Added
 
+- **示例报告：** 新增 `docs/examples/`，收录示例因子 `volume_return_corr_20d` 的真实 tear sheet（`docs/examples/volume_return_corr_20d-tear-sheet.html`）与分区导读 README。
+- **示例因子：** 新增 `workspace/factors/daily/volume_return_corr_20d.py`（20 日量价滚动相关）及其配置，并在 factor-authoring 中作为进阶 worked example。
+- **因子模板：** 各频率目录新增 `TEMPLATE.md` 手写模板，并在 factor-authoring 中引用。
 - **测试加固：** 新增 `test_charts_helpers` / `test_summaries_helpers` 共 29 个边界单测，覆盖报告模块的 None / 空输入防御分支（`_charts` 78%→85%，`_summaries` 78%→81%）；覆盖率门槛 73%→74%。
 - **开源：** 以 MIT License 开源（`LICENSE`）；pyproject 增加 `license`、`readme` 与分类器元数据；README 增加许可说明。仓库当前文件与全部 git 历史经扫描确认无凭据泄露。
 - **数据契约：** `core/validation.py::require_columns` 列契约校验；`compute_fwd_returns`、`compute_turnover` 入口及 `backtest._prepare_factor_df` / `_prepare_price_df` 对必需列做 fail-fast 校验，畸形输入给出清晰错误（列出缺失列与实际列）。

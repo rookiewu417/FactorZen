@@ -1,4 +1,4 @@
-﻿"""策略级 Walk-Forward 验证。
+"""策略级 Walk-Forward 验证。
 
 滚动窗口切分（展开窗口模式），在每折的历史观察期上获取 IS Sharpe，
 在未来验证期上获取 OOS Sharpe / 收益，最终拼接所有 OOS 收益并计算累计净值。
@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import polars as pl
 
+from factorzen.config.constants import TRADING_DAYS_PER_YEAR
 from factorzen.daily.evaluation.backtest import BacktestConfig, Strategy, run_strategy_backtest
 
 logger = logging.getLogger(__name__)
@@ -141,6 +143,46 @@ def _extract_sharpe(result: Any) -> float:
         if isinstance(stats[key], dict):
             return float(stats[key].get("sharpe", 0.0))
     return 0.0
+
+
+def _is_expected_candidate_failure(exc: Exception) -> bool:
+    message = str(exc)
+    return message in {
+        "target_weight exceeds max_abs_weight",
+        "gross exposure exceeds max_gross_exposure",
+    }
+
+
+def _filter_date_range(df: pl.DataFrame, start: Any, end: Any) -> pl.DataFrame:
+    return df.filter((pl.col("trade_date") >= start) & (pl.col("trade_date") <= end))
+
+
+def _sharpe_from_returns(returns: pl.DataFrame) -> float:
+    if returns.is_empty():
+        return 0.0
+    rets = returns["net_return"].to_numpy()
+    valid = rets[np.isfinite(rets)]
+    if len(valid) == 0:
+        return 0.0
+    ann_ret = float(np.mean(valid) * TRADING_DAYS_PER_YEAR)
+    ann_vol = float(np.std(valid) * np.sqrt(TRADING_DAYS_PER_YEAR))
+    return ann_ret / ann_vol if ann_vol > 0 else 0.0
+
+
+def _sharpe_between(returns: pl.DataFrame, start: Any, end: Any) -> float:
+    return _sharpe_from_returns(_filter_date_range(returns, start, end))
+
+
+def _resolve_parallel_workers(
+    parallel_workers: int | None,
+    n_jobs: int,
+    seed: int | None,
+) -> int:
+    if seed is not None or n_jobs <= 1:
+        return 1
+    if parallel_workers is None:
+        return 1
+    return max(1, min(int(parallel_workers), n_jobs))
 
 
 def _extract_ann_ret(result: Any) -> float:
@@ -283,10 +325,9 @@ def run_walk_forward(
             oos_ann_ret = _extract_ann_ret(oos_result)
             oos_max_dd_fold = _extract_max_dd(oos_result)
             if not oos_result.returns.is_empty():
-                oos_returns_df = (
-                    oos_result.returns.select(["trade_date", "net_return"])
-                    .with_columns(pl.lit(fold_id).cast(pl.Int32).alias("fold_id"))
-                )
+                oos_returns_df = oos_result.returns.select(
+                    ["trade_date", "net_return"]
+                ).with_columns(pl.lit(fold_id).cast(pl.Int32).alias("fold_id"))
         except Exception as exc:
             logger.warning(f"Fold {fold_id} OOS 回测失败，跳过该折: {exc}", exc_info=True)
             continue
@@ -363,6 +404,9 @@ def run_walk_forward_search(
     config: BacktestConfig | None = None,
     factor_name: str = "",
     seed: int | None = None,
+    reuse_is_backtests: bool = False,
+    parallel_workers: int | None = None,
+    include_context_positions: bool = True,
 ) -> WalkForwardResult:
     """Walk-forward validation with per-fold IS parameter selection."""
     cfg = config or BacktestConfig()
@@ -395,6 +439,30 @@ def run_walk_forward_search(
 
     fold_results: list[WalkForwardFoldResult] = []
     oos_return_parts: list[pl.DataFrame] = []
+    reuse_is = reuse_is_backtests and seed is None
+    cached_is_returns: list[tuple[dict[str, Any], pl.DataFrame]] = []
+    if reuse_is:
+        for params in candidates:
+            try:
+                result = run_strategy_backtest(
+                    strategy_factory(params),
+                    factor_df,
+                    price_df,
+                    cfg,
+                    factor_name=factor_name,
+                    collect_positions=False,
+                    collect_trades=False,
+                    include_context_positions=include_context_positions,
+                )
+                cached_is_returns.append((dict(params), result.returns))
+            except Exception as exc:
+                message = f"IS cache failed for params={params}: {exc}"
+                if _is_expected_candidate_failure(exc):
+                    logger.warning(message)
+                else:
+                    logger.warning(message, exc_info=True)
+
+    oos_jobs: list[tuple[int, list[Any], list[Any], dict[str, Any], float]] = []
 
     for fold_id, (train_dates, test_dates) in enumerate(folds_data):
         if seed is not None:
@@ -402,31 +470,41 @@ def run_walk_forward_search(
 
             set_global_seed(seed + fold_id)
 
-        train_set = set(train_dates)
-        test_set = set(test_dates)
-        train_factor = factor_df.filter(pl.col("trade_date").is_in(train_set))
-        train_price = price_df.filter(pl.col("trade_date").is_in(train_set))
-        test_factor = factor_df.filter(pl.col("trade_date").is_in(test_set))
-        test_price = price_df.filter(pl.col("trade_date").is_in(test_set))
+        train_factor = None
+        train_price = None
+        if not reuse_is:
+            train_factor = _filter_date_range(factor_df, train_dates[0], train_dates[-1])
+            train_price = _filter_date_range(price_df, train_dates[0], train_dates[-1])
 
         best_params: dict[str, Any] | None = None
         best_is_sharpe: float | None = None
-        for params in candidates:
-            try:
-                result = run_strategy_backtest(
-                    strategy_factory(params),
-                    train_factor,
-                    train_price,
-                    cfg,
-                    factor_name=factor_name,
-                )
-                sharpe = _extract_sharpe(result)
-            except Exception as exc:
-                logger.warning(
-                    f"Fold {fold_id} IS search failed for params={params}: {exc}",
-                    exc_info=True,
-                )
-                continue
+        candidate_iter = (
+            cached_is_returns if reuse_is else [(dict(params), None) for params in candidates]
+        )
+        for params, cached_returns in candidate_iter:
+            if cached_returns is not None:
+                sharpe = _sharpe_between(cached_returns, train_dates[0], train_dates[-1])
+            else:
+                try:
+                    assert train_factor is not None and train_price is not None
+                    result = run_strategy_backtest(
+                        strategy_factory(params),
+                        train_factor,
+                        train_price,
+                        cfg,
+                        factor_name=factor_name,
+                        collect_positions=False,
+                        collect_trades=False,
+                        include_context_positions=include_context_positions,
+                    )
+                    sharpe = _extract_sharpe(result)
+                except Exception as exc:
+                    message = f"Fold {fold_id} IS search failed for params={params}: {exc}"
+                    if _is_expected_candidate_failure(exc):
+                        logger.warning(message)
+                    else:
+                        logger.warning(message, exc_info=True)
+                    continue
             if best_is_sharpe is None or sharpe > best_is_sharpe:
                 best_is_sharpe = sharpe
                 best_params = dict(params)
@@ -434,31 +512,43 @@ def run_walk_forward_search(
         if best_params is None:
             continue
 
+        oos_jobs.append(
+            (fold_id, train_dates, test_dates, best_params, float(best_is_sharpe or 0.0))
+        )
+
+    def _run_oos_job(
+        job: tuple[int, list[Any], list[Any], dict[str, Any], float],
+    ) -> tuple[WalkForwardFoldResult, pl.DataFrame | None] | None:
+        fold_id, train_dates, test_dates, best_params, best_is_sharpe = job
         oos_sharpe = 0.0
         oos_ann_ret = 0.0
         oos_max_dd_fold = 0.0
         oos_returns_df: pl.DataFrame | None = None
         try:
+            test_factor = _filter_date_range(factor_df, test_dates[0], test_dates[-1])
+            test_price = _filter_date_range(price_df, test_dates[0], test_dates[-1])
             oos_result = run_strategy_backtest(
                 strategy_factory(best_params),
                 test_factor,
                 test_price,
                 cfg,
                 factor_name=factor_name,
+                collect_positions=False,
+                collect_trades=False,
+                include_context_positions=include_context_positions,
             )
             oos_sharpe = _extract_sharpe(oos_result)
             oos_ann_ret = _extract_ann_ret(oos_result)
             oos_max_dd_fold = _extract_max_dd(oos_result)
             if not oos_result.returns.is_empty():
-                oos_returns_df = (
-                    oos_result.returns.select(["trade_date", "net_return"])
-                    .with_columns(pl.lit(fold_id).cast(pl.Int32).alias("fold_id"))
-                )
+                oos_returns_df = oos_result.returns.select(
+                    ["trade_date", "net_return"]
+                ).with_columns(pl.lit(fold_id).cast(pl.Int32).alias("fold_id"))
         except Exception as exc:
             logger.warning(f"Fold {fold_id} OOS 回测失败，跳过该折: {exc}", exc_info=True)
-            continue
+            return None
 
-        fold_results.append(
+        return (
             WalkForwardFoldResult(
                 fold_id=fold_id,
                 train_start=train_dates[0],
@@ -470,8 +560,27 @@ def run_walk_forward_search(
                 oos_ann_ret=oos_ann_ret,
                 oos_max_dd=oos_max_dd_fold,
                 params=best_params,
-            )
+            ),
+            oos_returns_df,
         )
+
+    workers = _resolve_parallel_workers(parallel_workers, len(oos_jobs), seed)
+    completed: list[tuple[WalkForwardFoldResult, pl.DataFrame | None]] = []
+    if workers <= 1:
+        for job in oos_jobs:
+            item = _run_oos_job(job)
+            if item is not None:
+                completed.append(item)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_run_oos_job, job) for job in oos_jobs]
+            for future in as_completed(futures):
+                item = future.result()
+                if item is not None:
+                    completed.append(item)
+
+    for fold_result, oos_returns_df in sorted(completed, key=lambda item: item[0].fold_id):
+        fold_results.append(fold_result)
         if oos_returns_df is not None and not oos_returns_df.is_empty():
             oos_return_parts.append(oos_returns_df)
 

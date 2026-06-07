@@ -13,6 +13,10 @@ venv/
 # Local market data and generated artifacts
 data/*
 !data/.gitkeep
+tmp/
+
+# Local agent/tool state
+.claude/
 
 workspace/runs/*
 !workspace/runs/.gitkeep

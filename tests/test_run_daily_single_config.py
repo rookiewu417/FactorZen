@@ -662,6 +662,34 @@ def test_preprocess_with_industry_neutralization_uses_universe_industry():
     assert by_industry["mean_factor"].abs().max() < 1e-10
 
 
+def test_load_daily_basic_for_neutralization_reads_ensured_cache(monkeypatch):
+    import factorzen.pipelines.daily_single as run_mod
+
+    expected = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2)],
+            "ts_code": ["000001.SZ"],
+            "total_mv": [100.0],
+        }
+    )
+    calls: list[tuple[str, str, str]] = []
+
+    class _LazyFrameStub:
+        def collect(self):
+            return expected
+
+    def fake_load_parquet(data_type: str, *, start: str, end: str):
+        calls.append((data_type, start, end))
+        return _LazyFrameStub()
+
+    monkeypatch.setattr(run_mod, "load_parquet", fake_load_parquet)
+
+    result = run_mod._load_daily_basic_for_neutralization("20240102", "20240103")
+
+    assert result.equals(expected)
+    assert calls == [("daily_basic", "20240102", "20240103")]
+
+
 def test_run_ensures_required_data_before_loading_universe(monkeypatch):
     import factorzen.pipelines.daily_single as run_mod
     from factorzen.core.config_loader import RunConfig

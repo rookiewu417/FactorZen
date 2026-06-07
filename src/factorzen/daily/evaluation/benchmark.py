@@ -38,6 +38,7 @@ def compute_excess_return(
     benchmark_code: str,
     start: str,
     end: str,
+    benchmark_data: pl.DataFrame | None = None,
 ) -> BenchmarkResult:
     """计算策略相对指数的超额表现。
 
@@ -51,10 +52,13 @@ def compute_excess_return(
     Returns:
         BenchmarkResult
     """
-    from factorzen.core.loader import fetch_index_daily
-
     # ── 1. 读取基准数据 ───────────────────────────────────────────────────────────
-    index_df = fetch_index_daily(benchmark_code, start, end)
+    if benchmark_data is None:
+        from factorzen.core.loader import fetch_index_daily
+
+        index_df = fetch_index_daily(benchmark_code, start, end)
+    else:
+        index_df = benchmark_data
     if index_df.is_empty():
         raise ValueError(f"基准 {benchmark_code} 数据不足")
 

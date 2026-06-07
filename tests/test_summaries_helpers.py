@@ -50,7 +50,13 @@ def test_predictive_summary_positive_strong_signal():
 
 def test_predictive_summary_negative_direction():
     out = _build_predictive_summary(
-        {"ic_mean": -0.05, "ir": 0.6, "ic_positive_ratio": 0.4, "ic_tstat": -3.0, "ic_pvalue": 0.001}
+        {
+            "ic_mean": -0.05,
+            "ir": 0.6,
+            "ic_positive_ratio": 0.4,
+            "ic_tstat": -3.0,
+            "ic_pvalue": 0.001,
+        }
     )
     assert "方向为负" in out["headline"]
 
@@ -147,6 +153,7 @@ def test_quality_summary_maps_status_and_checks():
 def test_display_status_and_regime_label():
     assert _display_status("ok") == "正常"
     assert _display_status("failed") == "失败"
+    assert _display_status("disabled") == "已关闭"
     assert _display_regime_label("up") == "上涨"
     assert _display_regime_label("unknown_key") == "unknown_key"
 

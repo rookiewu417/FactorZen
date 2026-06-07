@@ -1,4 +1,4 @@
-﻿"""Strategy backtest engine behavior tests."""
+"""Strategy backtest engine behavior tests."""
 
 from __future__ import annotations
 
@@ -14,11 +14,15 @@ from factorzen.daily.evaluation.backtest import (
     CostModel,
     FactorWeightedStrategy,
     OptimizerStrategy,
+    PrecomputedWeightsStrategy,
     QuantileLongShortStrategy,
     Strategy,
     StrategyBacktestResult,
     TopNLongOnlyStrategy,
+    _compute_adv_20d,
+    _precompute_adv_20d_by_date,
     _summary_stats,
+    precompute_top_n_weights,
     run_strategy_backtest,
     trim_backtest_to_first_trade,
 )
@@ -75,11 +79,27 @@ def _factor(values: list[tuple[date, str, float]] | None = None) -> pl.DataFrame
     if values is None:
         values = [(date(2024, 1, 1), "000001.SZ", 1.0)]
     return pl.DataFrame(
+        [{"trade_date": d, "ts_code": code, "factor_clean": value} for d, code, value in values]
+    )
+
+
+def test_precomputed_adv_matches_legacy_per_day_calculation():
+    prices = pl.DataFrame(
         [
-            {"trade_date": d, "ts_code": code, "factor_clean": value}
-            for d, code, value in values
+            {"trade_date": date(2024, 1, 1), "ts_code": "000001.SZ", "amount": 100.0},
+            {"trade_date": date(2024, 1, 1), "ts_code": "000002.SZ", "amount": 50.0},
+            {"trade_date": date(2024, 1, 2), "ts_code": "000001.SZ", "amount": 300.0},
+            {"trade_date": date(2024, 1, 2), "ts_code": "000002.SZ", "amount": 0.0},
+            {"trade_date": date(2024, 1, 3), "ts_code": "000001.SZ", "amount": 500.0},
+            {"trade_date": date(2024, 1, 3), "ts_code": "000002.SZ", "amount": 150.0},
         ]
     )
+    trade_dates = prices.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
+
+    adv_by_date = _precompute_adv_20d_by_date(prices, trade_dates)
+
+    for idx, trade_date in enumerate(trade_dates):
+        assert adv_by_date.get(trade_date, {}) == _compute_adv_20d(prices, trade_dates, idx)
 
 
 class BuyOneStrategy(Strategy):
@@ -101,9 +121,7 @@ class BadDuplicateStrategy(Strategy):
     name = "bad_duplicate"
 
     def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
-        return pl.DataFrame(
-            {"ts_code": ["000001.SZ", "000001.SZ"], "target_weight": [0.5, 0.5]}
-        )
+        return pl.DataFrame({"ts_code": ["000001.SZ", "000001.SZ"], "target_weight": [0.5, 0.5]})
 
 
 class BadNaNStrategy(Strategy):
@@ -170,6 +188,98 @@ def test_custom_strategy_runs_and_outputs_required_frames():
     assert {"prev_weight", "target_weight", "filled_delta_weight", "block_reason"}.issubset(
         set(result.trades.columns)
     )
+
+
+def test_backtest_lightweight_outputs_match_full_returns_and_summary():
+    full = run_strategy_backtest(
+        BuyOneStrategy(),
+        _factor([(date(2024, 1, 1), "000001.SZ", 1.0), (date(2024, 1, 2), "000001.SZ", 1.0)]),
+        _prices(),
+        config=BacktestConfig(initial_capital=1_000_000, max_participation_rate=1.0),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+    )
+    light = run_strategy_backtest(
+        BuyOneStrategy(),
+        _factor([(date(2024, 1, 1), "000001.SZ", 1.0), (date(2024, 1, 2), "000001.SZ", 1.0)]),
+        _prices(),
+        config=BacktestConfig(initial_capital=1_000_000, max_participation_rate=1.0),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+        collect_positions=False,
+        collect_trades=False,
+        include_context_positions=False,
+    )
+
+    assert light.returns.equals(full.returns)
+    assert light.nav.equals(full.nav)
+    assert light.summary_stats == full.summary_stats
+    assert light.positions.is_empty()
+    assert light.trades.is_empty()
+
+
+def test_precomputed_top_n_weights_match_top_n_strategy_backtest():
+    factors = pl.DataFrame(
+        [
+            {"trade_date": date(2024, 1, 1), "ts_code": "000001.SZ", "factor_clean": 3.0},
+            {"trade_date": date(2024, 1, 1), "ts_code": "000002.SZ", "factor_clean": 2.0},
+            {"trade_date": date(2024, 1, 1), "ts_code": "000003.SZ", "factor_clean": 1.0},
+            {"trade_date": date(2024, 1, 2), "ts_code": "000001.SZ", "factor_clean": 1.0},
+            {"trade_date": date(2024, 1, 2), "ts_code": "000002.SZ", "factor_clean": 3.0},
+            {"trade_date": date(2024, 1, 2), "ts_code": "000003.SZ", "factor_clean": 2.0},
+        ]
+    )
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": d,
+                "ts_code": code,
+                "open": 10.0 + idx,
+                "close": 10.1 + idx,
+                "pre_close": 10.0 + idx,
+                "pct_chg": 1.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+            for d in [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]
+            for idx, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ"])
+        ]
+    )
+    cfg = BacktestConfig(initial_capital=1_000_000, max_participation_rate=1.0)
+    cost = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0)
+
+    generic = run_strategy_backtest(
+        TopNLongOnlyStrategy(n=2),
+        factors,
+        prices,
+        config=cfg,
+        cost_model=cost,
+    )
+    precomputed = run_strategy_backtest(
+        PrecomputedWeightsStrategy(precompute_top_n_weights(factors, top_n=2)),
+        factors,
+        prices,
+        config=cfg,
+        cost_model=cost,
+    )
+    fast = run_strategy_backtest(
+        PrecomputedWeightsStrategy(precompute_top_n_weights(factors, top_n=2)),
+        factors,
+        prices,
+        config=cfg,
+        cost_model=cost,
+        collect_positions=False,
+        collect_trades=False,
+        include_context_positions=False,
+    )
+
+    assert precomputed.returns.equals(generic.returns)
+    assert precomputed.nav.equals(generic.nav)
+    assert precomputed.trades.equals(generic.trades)
+    assert precomputed.summary_stats == generic.summary_stats
+    assert fast.returns.equals(generic.returns)
+    assert fast.nav.equals(generic.nav)
+    assert fast.summary_stats == generic.summary_stats
+    assert fast.positions.is_empty()
+    assert fast.trades.is_empty()
 
 
 def test_next_open_execution_starts_when_prior_signal_is_available():
@@ -306,9 +416,7 @@ def test_open_basis_trade_cost_is_scaled_to_prior_close_return_basis():
     )
 
     day3 = result.returns.filter(pl.col("trade_date") == date(2024, 1, 3)).row(0, named=True)
-    sell_trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 3)).row(
-        0, named=True
-    )
+    sell_trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 3)).row(0, named=True)
     assert day3["gross_return"] == pytest.approx(1.0)
     assert sell_trade["cost"] == pytest.approx(0.01)
     assert day3["cost"] == pytest.approx(0.02)
@@ -493,7 +601,15 @@ def test_trim_backtest_to_first_trade_recomputes_cached_summary():
         nav=pl.concat(
             [
                 leading.select(
-                    ["trade_date", "gross_return", "cost", "borrow_cost", "net_return", "nav", "cash_weight"]
+                    [
+                        "trade_date",
+                        "gross_return",
+                        "cost",
+                        "borrow_cost",
+                        "net_return",
+                        "nav",
+                        "cash_weight",
+                    ]
                 ),
                 result.nav,
             ]
@@ -520,7 +636,9 @@ def test_suspended_stock_blocks_trade():
 
 
 def test_limit_up_blocks_buy_but_allows_sell():
-    result = run_strategy_backtest(BuyOneStrategy(), _factor(), _prices(day2_open=11.0, day2_pct=9.9))
+    result = run_strategy_backtest(
+        BuyOneStrategy(), _factor(), _prices(day2_open=11.0, day2_pct=9.9)
+    )
     buy_trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
     assert buy_trade["filled_delta_weight"] == pytest.approx(0.0)
     assert buy_trade["block_reason"] == "limit_up"

@@ -56,6 +56,23 @@ class TestComputeExcessReturn(unittest.TestCase):
         return [f"2026-01-{d + 1:02d}" if d < 31 else f"2026-02-{d - 30:02d}" for d in range(n)]
 
     @patch("factorzen.core.loader.fetch_index_daily")
+    def test_preloaded_benchmark_skips_fetch(
+        self, mock_fetch: unittest.mock.MagicMock
+    ) -> None:
+        dates = self._dates(10)
+
+        result = compute_excess_return(
+            _make_strategy_nav(dates),
+            "000300.SH",
+            "20260101",
+            "20260110",
+            benchmark_data=_make_index_df(dates),
+        )
+
+        self.assertGreater(result.daily.height, 0)
+        mock_fetch.assert_not_called()
+
+    @patch("factorzen.core.loader.fetch_index_daily")
     def test_basic_structure(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """compute_excess_return 返回结构正确的 BenchmarkResult。"""
         dates = self._dates(40)

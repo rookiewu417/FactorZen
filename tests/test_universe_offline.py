@@ -113,9 +113,7 @@ def test_unknown_universe_raises(stock_basic):
 
 def test_csi300_filters_to_members(stock_basic, monkeypatch):
     """csi300 应只保留指数成分股，与全 A 求交集。"""
-    monkeypatch.setattr(
-        U, "_load_index_members", lambda code, ds: ["600000.SH", "300003.SZ"]
-    )
+    monkeypatch.setattr(U, "_load_index_members", lambda code, ds: ["600000.SH", "300003.SZ"])
     result = get_universe("20240115", "csi300")
     assert set(result["ts_code"].to_list()) == {"600000.SH", "300003.SZ"}
 
@@ -147,9 +145,7 @@ def test_csi_index_failure_falls_back_to_all_a(stock_basic, monkeypatch):
 
 def test_daily_default_applies_full_filter_chain(stock_basic, monkeypatch):
     """daily_default：剔除 ST（600001）+ 次新（600002），保留正常股。"""
-    monkeypatch.setattr(
-        "factorzen.core.storage.load_parquet", _fake_daily(_daily_all_tradeable())
-    )
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(_daily_all_tradeable()))
     result = get_universe("20240115", "daily_default")
     codes = set(result["ts_code"].to_list())
     assert codes == {"600000.SH", "300003.SZ"}
@@ -172,18 +168,14 @@ def test_intraday_default_adds_liquidity_filter(stock_basic, monkeypatch):
 
 
 def test_lft_default_alias_equals_daily_default(stock_basic, monkeypatch):
-    monkeypatch.setattr(
-        "factorzen.core.storage.load_parquet", _fake_daily(_daily_all_tradeable())
-    )
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(_daily_all_tradeable()))
     lft = set(get_universe("20240115", "lft_default")["ts_code"].to_list())
     daily = set(get_universe("20240115", "daily_default")["ts_code"].to_list())
     assert lft == daily
 
 
 def test_mft_default_alias_equals_intraday_default(stock_basic, monkeypatch):
-    monkeypatch.setattr(
-        "factorzen.core.storage.load_parquet", _fake_daily(_daily_all_tradeable())
-    )
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(_daily_all_tradeable()))
     mft = set(get_universe("20240115", "mft_default")["ts_code"].to_list())
     intraday = set(get_universe("20240115", "intraday_default")["ts_code"].to_list())
     assert mft == intraday
@@ -195,9 +187,7 @@ def test_mft_default_alias_equals_intraday_default(stock_basic, monkeypatch):
 
 
 def test_filter_st_removes_st_and_pt():
-    stocks = pl.DataFrame(
-        {"ts_code": ["a", "b", "c"], "name": ["正常", "*ST东方", "PT水仙"]}
-    )
+    stocks = pl.DataFrame({"ts_code": ["a", "b", "c"], "name": ["正常", "*ST东方", "PT水仙"]})
     result = filter_st(stocks, "20240115")
     assert result["ts_code"].to_list() == ["a"]
 
@@ -271,9 +261,7 @@ def test_filter_limit_exception_no_filter(monkeypatch):
 
 
 def test_filter_liquidity_drops_low_amount(monkeypatch):
-    daily = pl.DataFrame(
-        {"ts_code": ["rich", "poor"], "amount": [2_000_000_000.0, 100.0]}
-    )
+    daily = pl.DataFrame({"ts_code": ["rich", "poor"], "amount": [2_000_000_000.0, 100.0]})
     monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(daily))
     stocks = pl.DataFrame({"ts_code": ["rich", "poor"], "name": ["x", "y"]})
     result = filter_liquidity(stocks, "20240115", min_amount=10_000_000.0)
@@ -307,9 +295,7 @@ def test_create_universe_no_filters_returns_base(stock_basic):
 
 
 def test_create_universe_applies_named_filters(stock_basic, monkeypatch):
-    monkeypatch.setattr(
-        "factorzen.core.storage.load_parquet", _fake_daily(_daily_all_tradeable())
-    )
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(_daily_all_tradeable()))
     result = create_universe("20240115", base="all_a", filters=["st", "new_listing"])
     assert set(result["ts_code"].to_list()) == {"600000.SH", "300003.SZ"}
 
@@ -329,9 +315,7 @@ def test_create_universe_liquidity_min_amount_passthrough(stock_basic, monkeypat
         }
     )
     monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(daily))
-    result = create_universe(
-        "20240115", base="all_a", filters=["liquidity"], min_amount=1e8
-    )
+    result = create_universe("20240115", base="all_a", filters=["liquidity"], min_amount=1e8)
     assert result["ts_code"].to_list() == ["600000.SH"]
 
 
@@ -371,10 +355,49 @@ def test_load_index_members_fetch_and_cache(monkeypatch, tmp_path):
 def test_load_index_members_empty_returns_empty_list(monkeypatch, tmp_path):
     monkeypatch.setattr(U, "DATA_CACHE", tmp_path)
     monkeypatch.setattr("factorzen.core.loader.init_tushare", _fake_pro)
-    monkeypatch.setattr(
-        "factorzen.core.loader._retry", lambda fn, **kw: pd.DataFrame()
-    )
+    monkeypatch.setattr("factorzen.core.loader._retry", lambda fn, **kw: pd.DataFrame())
     assert U._load_index_members("000300.SH", "20240115") == []
+
+
+def test_csi500_uses_latest_cached_members_when_requested_month_empty(
+    stock_basic, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(U, "DATA_CACHE", tmp_path)
+    cache_file = tmp_path / "index_member_000905_SH_202405.parquet"
+    pl.DataFrame({"con_code": ["600000.SH", "300003.SZ"]}).write_parquet(cache_file)
+    monkeypatch.setattr("factorzen.core.loader.init_tushare", _fake_pro)
+
+    def _empty_current_month(_fn, **_kw):
+        raise RuntimeError("Tushare 返回空结果")
+
+    monkeypatch.setattr("factorzen.core.loader._retry", _empty_current_month)
+
+    result = get_universe("20240615", "csi500")
+
+    assert set(result["ts_code"].to_list()) == {"600000.SH", "300003.SZ"}
+
+
+def test_load_index_members_reuses_fallback_members_in_memory(monkeypatch, tmp_path):
+    monkeypatch.setattr(U, "DATA_CACHE", tmp_path)
+    U._INDEX_MEMBER_MEMORY_CACHE.clear()
+    cache_file = tmp_path / "index_member_000905_SH_202405.parquet"
+    pl.DataFrame({"con_code": ["600000.SH", "300003.SZ"]}).write_parquet(cache_file)
+    monkeypatch.setattr("factorzen.core.loader.init_tushare", _fake_pro)
+    calls = 0
+
+    def _fail_current_month(_fn, **_kw):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("current month unavailable")
+
+    monkeypatch.setattr("factorzen.core.loader._retry", _fail_current_month)
+
+    first = U._load_index_members("000905.SH", "20240615")
+    second = U._load_index_members("000905.SH", "20240615")
+
+    assert first == ["600000.SH", "300003.SZ"]
+    assert second == ["600000.SH", "300003.SZ"]
+    assert calls == 1
 
 
 # ══════════════════════════════════════════════════════════

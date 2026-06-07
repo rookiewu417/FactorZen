@@ -1,6 +1,8 @@
-﻿"""YAML 运行配置加载与 Pydantic v2 验证。"""
+"""YAML 运行配置加载与 Pydantic v2 验证。"""
+
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
@@ -126,6 +128,7 @@ def with_default_all_strategies(config: RunConfig) -> RunConfig:
 
 
 class WalkForwardConfig(BaseModel):
+    enabled: bool = False
     train_days: int = 504  # IS 历史观察期长度；字段名保留用于配置兼容
     test_days: int = 63  # OOS 未来验证期长度；字段名保留用于配置兼容
     step_days: int = 63
@@ -177,6 +180,7 @@ def build_default_daily_research_config(
             strategies=default_all_strategy_specs(),
         ),
         walk_forward=WalkForwardConfig(
+            enabled=False,
             train_days=504,
             test_days=63,
             step_days=63,
@@ -279,9 +283,7 @@ def build_run_config_from_dict(
     return config
 
 
-def load_run_config(
-    path: Path | str, overrides: Sequence[str] | None = None
-) -> RunConfig:
+def load_run_config(path: Path | str, overrides: Sequence[str] | None = None) -> RunConfig:
     """从 YAML 文件加载并验证 RunConfig。
 
     Args:
@@ -367,10 +369,16 @@ def build_cost_model(config: RunConfig, strategy_spec: StrategySpec | None = Non
     """Build the configured transaction cost model."""
     from factorzen.daily.evaluation.cost_models import LinearCostModel, SquareRootImpactCostModel
 
-    cost_model = strategy_spec.cost_model if strategy_spec and strategy_spec.cost_model else config.backtest.cost_model
+    cost_model = (
+        strategy_spec.cost_model
+        if strategy_spec and strategy_spec.cost_model
+        else config.backtest.cost_model
+    )
     if cost_model == "square_root_impact":
         return SquareRootImpactCostModel(
-            alpha=strategy_spec.alpha if strategy_spec and strategy_spec.alpha is not None else config.backtest.alpha,
+            alpha=strategy_spec.alpha
+            if strategy_spec and strategy_spec.alpha is not None
+            else config.backtest.alpha,
             fallback_adv=(
                 strategy_spec.fallback_adv
                 if strategy_spec and strategy_spec.fallback_adv is not None
@@ -402,12 +410,14 @@ def build_top_n_candidate_params(config: RunConfig) -> list[dict[str, int]]:
     """Build deterministic top_n candidates limited by walk_forward.n_trials."""
     top_n = max(1, int(config.backtest.top_n))
     n_trials = max(1, int(config.walk_forward.n_trials))
-    count = min(top_n, n_trials)
+    min_top_n = max(1, math.ceil(1.0 / float(config.backtest.max_abs_weight)))
+    if min_top_n > top_n:
+        return [{"top_n": top_n}]
+
+    span = top_n - min_top_n + 1
+    count = min(span, n_trials)
     if count == 1:
         return [{"top_n": top_n}]
 
-    values = {
-        round(1 + i * (top_n - 1) / (count - 1))
-        for i in range(count)
-    }
+    values = {round(min_top_n + i * (top_n - min_top_n) / (count - 1)) for i in range(count)}
     return [{"top_n": int(value)} for value in sorted(values)]

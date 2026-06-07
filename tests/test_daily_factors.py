@@ -169,6 +169,19 @@ def test_idiosyncratic_vol_20d(ctx):
     assert np.all(non_null >= 0), "Idiosyncratic vol must be non-negative"
 
 
+def test_volume_return_corr_20d(ctx):
+    from workspace.factors.daily.volume_return_corr_20d import VolumeReturnCorr20D
+
+    factor = VolumeReturnCorr20D()
+    assert isinstance(factor, DailyFactor)
+    result = factor.compute(ctx)
+    _check_result(result, "volume_return_corr_20d")
+    assert result["trade_date"].min() >= date(2024, 3, 1)
+    non_null = result["factor_value"].drop_nulls().to_numpy()
+    assert np.all(np.isfinite(non_null)), "Volume-return correlation should be finite"
+    assert np.all(np.abs(non_null) <= 1.0 + 1e-12), "Correlation must be in [-1, 1]"
+
+
 def test_bm_ratio(ctx):
     from factorzen.builtin_factors.monthly.bm_ratio import BmRatioMonthly
 
@@ -201,6 +214,7 @@ def test_registry_has_new_factors():
         "skewness_20d",
         "beta_60d",
         "idiosyncratic_vol_20d",
+        "volume_return_corr_20d",
         "bm_ratio",
         "ep_ratio",
         "asset_growth",

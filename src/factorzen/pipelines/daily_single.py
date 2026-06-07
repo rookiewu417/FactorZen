@@ -32,7 +32,6 @@ from factorzen.core.experiment import (
     record_experiment_output,
     run_experiment,
 )
-from factorzen.core.loader import fetch_daily_basic
 from factorzen.core.logger import get_logger, setup_logging
 from factorzen.core.storage import load_parquet
 from factorzen.core.timing import StageTimer
@@ -49,6 +48,7 @@ from factorzen.reports.tear_sheet import generate_tear_sheet
 
 setup_logging()
 logger = get_logger(__name__)
+
 
 def _find_default_run_config_path(
     factor_name: str,
@@ -259,6 +259,11 @@ def _preprocess_factor(
         stock_basic=stock_basic,
         daily_basic=daily_basic_input,
     )
+
+
+def _load_daily_basic_for_neutralization(start: str, end: str) -> pl.DataFrame:
+    """Read daily_basic after the data assurance step has filled any gaps."""
+    return load_parquet("daily_basic", start=start, end=end).collect()
 
 
 def _date_expr(column: str) -> pl.Expr:
@@ -486,9 +491,7 @@ def _build_attribution_result(
             .join(portfolio_dates, on="trade_date", how="inner")
             .filter(pl.col("ret").is_not_null() & pl.col("ret").is_finite())
         )
-        benchmark_counts = benchmark_base.group_by("trade_date").agg(
-            pl.len().alias("_n_total")
-        )
+        benchmark_counts = benchmark_base.group_by("trade_date").agg(pl.len().alias("_n_total"))
         benchmark = (
             benchmark_base.group_by(["trade_date", "sector"])
             .agg([pl.len().alias("_n_sector"), pl.col("ret").mean().alias("bench_ret")])
@@ -652,10 +655,10 @@ def _run(
         and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
     ):
         try:
-            daily_basic_for_neutralize = fetch_daily_basic(args.start, args.end)
+            daily_basic_for_neutralize = _load_daily_basic_for_neutralization(args.start, args.end)
         except Exception as e:
-            logger.error(f"daily_basic 拉取失败，无法执行市值中性化: {e}")
-            raise RuntimeError(f"fetch_daily_basic failed for neutralization: {e}") from e
+            logger.error(f"daily_basic 本地缓存读取失败，无法执行市值中性化: {e}")
+            raise RuntimeError(f"load daily_basic cache failed for neutralization: {e}") from e
 
     clean_df = _preprocess_factor(
         factor_df,
@@ -686,10 +689,10 @@ def _run(
         logger.error(f"数据质量检查失败: {e}")
         raise RuntimeError(f"quality check failed: {e}") from e
     result_output_dir.mkdir(parents=True, exist_ok=True)
-    quality_path = (
-        result_output_dir / f"{factor.name}_{args.start}_{args.end}_quality.json"
+    quality_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_quality.json"
+    quality_path.write_text(
+        json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    quality_path.write_text(json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8")
     if quality_report["warnings"]:
         logger.warning(f"数据质量警告: {quality_report['warnings']}")
     logger.info(f"数据质量报告已保存: {quality_path}")
@@ -716,10 +719,18 @@ def _run(
         if args.ic_method == "both":
             both_ic = cast(
                 BothIcResult,
-                compute_ic(merged_simple, factor_col="factor_clean", ret_col="ret_1d", method="both"),
+                compute_ic(
+                    merged_simple,
+                    factor_col="factor_clean",
+                    ret_col="ret_1d",
+                    method="both",
+                ),
             )
             pearson_ic_result = both_ic["pearson"]
-            logger.info(f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, IR: {pearson_ic_result.ir:.2f}")
+            logger.info(
+                f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, "
+                f"IR: {pearson_ic_result.ir:.2f}"
+            )
         else:
             pearson_ic_result = cast(
                 IcStats,
@@ -730,7 +741,10 @@ def _run(
                     method="pearson",
                 ),
             )
-            logger.info(f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, IR: {pearson_ic_result.ir:.2f}")
+            logger.info(
+                f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, "
+                f"IR: {pearson_ic_result.ir:.2f}"
+            )
 
     # 可选：中性化 IC
     neutralized_ic_result = None
@@ -745,7 +759,8 @@ def _run(
                 ).collect()
             except Exception as e:
                 logger.warning(
-                    f"daily_basic cache load failed; neutralized IC will use available exposures: {e}"
+                    "daily_basic cache load failed; "
+                    f"neutralized IC will use available exposures: {e}"
                 )
         merged_neutral = _build_neutralized_ic_frame(
             clean_df,
@@ -775,20 +790,37 @@ def _run(
     to_result.factor_name = factor.name
     logger.info(f"\n{to_result.summary()}")
 
+    factor_output_dir.mkdir(parents=True, exist_ok=True)
+    result_output_dir.mkdir(parents=True, exist_ok=True)
+
+    factor_path = factor_output_dir / f"{factor.name}_{args.start}_{args.end}.parquet"
+    clean_df.write_parquet(str(factor_path))
+    logger.info(f"因子已保存: {factor_path}")
+
+    ic_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_ic.parquet"
+    ic_result.ic_series.write_parquet(str(ic_path))
+    logger.info(f"IC 序列已保存: {ic_path}")
+
     # ── 10. Walk-forward / OOS 摘要 ──
-    try:
-        walk_forward_summary, walk_forward_result = run_quantile_walk_forward_summary(
-            clean_df,
-            daily,
-            effective_config,
-            factor_name=factor.name,
-            frequency=args.frequency,
-        )
-        logger.info(f"Walk-forward 摘要: {walk_forward_summary}")
-    except Exception as e:
-        walk_forward_summary = {"status": "error", "n_folds": 0, "error": str(e)}
+    if effective_config.walk_forward.enabled:
+        with timer.stage("Walk-forward"):
+            try:
+                walk_forward_summary, walk_forward_result = run_quantile_walk_forward_summary(
+                    clean_df,
+                    daily,
+                    effective_config,
+                    factor_name=factor.name,
+                    frequency=args.frequency,
+                )
+                logger.info(f"Walk-forward 摘要: {walk_forward_summary}")
+            except Exception as e:
+                walk_forward_summary = {"status": "error", "n_folds": 0, "error": str(e)}
+                walk_forward_result = None
+                logger.warning(f"Walk-forward 计算失败（跳过）: {e}")
+    else:
+        walk_forward_summary = {"status": "disabled", "n_folds": 0}
         walk_forward_result = None
-        logger.warning(f"Walk-forward 计算失败（跳过）: {e}")
+        logger.info("Walk-forward 已关闭，跳过")
 
     # ── 11. 落盘 ──
     daily_basic_for_breakdowns = daily_basic_for_neutralize
@@ -808,24 +840,11 @@ def _run(
     )
     attribution_result = _build_attribution_result(bt_result, daily, universe)
 
-    factor_output_dir.mkdir(parents=True, exist_ok=True)
-    result_output_dir.mkdir(parents=True, exist_ok=True)
-
-    factor_path = factor_output_dir / f"{factor.name}_{args.start}_{args.end}.parquet"
-    clean_df.write_parquet(str(factor_path))
-    logger.info(f"因子已保存: {factor_path}")
-
-    walk_forward_path = (
-        result_output_dir / f"{factor.name}_{args.start}_{args.end}_walk_forward.json"
-    )
+    walk_forward_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_walk_forward.json"
     walk_forward_path.write_text(
         json.dumps(walk_forward_summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     logger.info(f"Walk-forward 摘要已保存: {walk_forward_path}")
-
-    ic_result.ic_series.write_parquet(
-        str(result_output_dir / f"{factor.name}_{args.start}_{args.end}_ic.parquet")
-    )
 
     # ── 11b. 事件研究（可选）──
     event_study_result = None
@@ -848,8 +867,16 @@ def _run(
         try:
             from factorzen.daily.evaluation.benchmark import compute_excess_return
 
+            benchmark_data_type = f"index_daily_{args.benchmark.replace('.', '_')}"
+            benchmark_data = load_parquet(
+                benchmark_data_type, start=args.start, end=args.end
+            ).collect()
             benchmark_result = compute_excess_return(
-                bt_result.returns, args.benchmark, args.start, args.end
+                bt_result.returns,
+                args.benchmark,
+                args.start,
+                args.end,
+                benchmark_data=benchmark_data,
             )
             logger.info(f"Benchmark: {benchmark_result.summary()}")
         except Exception as e:
@@ -932,7 +959,9 @@ def main():
         help="基准指数代码（如 000300.SH），若指定则计算超额收益并生成 HTML 报告",
     )
     parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
-    parser.add_argument("--dry-run", action="store_true", help="只打印最终配置和输出目录，不执行评估")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="只打印最终配置和输出目录，不执行评估"
+    )
     parser.add_argument("--seed", type=int, default=None, help="全局随机种子")
     parser.add_argument(
         "--set",
@@ -1035,7 +1064,11 @@ def main():
 
     effective_config = _effective_run_config(args, run_config)
     if args.dry_run:
-        print(json.dumps(_build_dry_run_payload(effective_config, args=args), ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                _build_dry_run_payload(effective_config, args=args), ensure_ascii=False, indent=2
+            )
+        )
         return
 
     try:

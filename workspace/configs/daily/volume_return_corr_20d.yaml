@@ -1,0 +1,11 @@
+factor: volume_return_corr_20d
+start: "20160606"
+end: "20260606"
+
+walk_forward:
+  enabled: false
+  train_days: 504
+  test_days: 252
+  step_days: 252
+  embargo_days: 5
+  n_trials: 1

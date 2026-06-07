@@ -24,7 +24,7 @@ FactorZen 的主线是低频单因子研究闭环：
   → PIT 数据上下文
   → 因子计算
   → 预处理
-  → IC / 分层回测 / walk-forward
+  → IC / 分层回测 / walk-forward（默认关闭）
   → 数据质量与实验 manifest
   → Tear Sheet HTML 报告
 ```

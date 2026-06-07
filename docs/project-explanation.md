@@ -88,7 +88,7 @@ data/                         本地数据缓存，不入库
 | `config/tushare_config.py` | 读取 `.env`，暴露 `TUSHARE_TOKEN` 与 `ensure_token()`；token 首次真正调用时才校验，离线测试不因 import 失败 |
 | `core/config_loader.py` | Pydantic v2 校验 YAML 运行配置 |
 
-配置样例在 `workspace/configs/daily/daily_factor_template.yaml`。常用字段包括 `factor`、`universe`、`start`、`end`、`benchmark`、`seed`、`preprocessing`、`backtest`、`walk_forward`、`ic_method`、`event_study` 与 `neutralized_ic`。
+配置样例在 `workspace/configs/daily/daily_factor_template.yaml`。常用字段包括 `factor`、`universe`、`start`、`end`、`benchmark`、`seed`、`preprocessing`、`backtest`、`walk_forward`、`ic_method`、`event_study` 与 `neutralized_ic`。其中 `walk_forward.enabled` 默认 `false`（样本外 walk-forward 按需开启）。
 
 ## 6. 数据流
 
@@ -122,7 +122,7 @@ data/                         本地数据缓存，不入库
 
 - Rank IC、Pearson IC、中性化 IC、多持有期一致性、HAC t 统计。
 - 分层回测、分位收益、多空 NAV、月度收益与分位价差。
-- 单调性、Rank 自相关、因子相关性、市值/行业/市场状态分层、事件研究、walk-forward。
+- 单调性、Rank 自相关、因子相关性、市值/行业/市场状态分层、事件研究、walk-forward（默认关闭，按需开启）。
 - 成本模型、容量约束与基准比较。
 
 报告由 `reports/tear_sheet.generate_tear_sheet` 生成，包含评分卡、分析面板、限制说明、复现摘要与模块状态。报告引擎按职责拆为 `_formatting`、`_scoring`、`_charts`、`_strategy`、`_summaries` 与模板。

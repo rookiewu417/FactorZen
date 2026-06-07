@@ -46,7 +46,7 @@ PIT 数据上下文 (daily/data)
 因子计算 (daily/factors) ──► 预处理 (daily/preprocessing)
         │
         ▼
-前向收益 + IC / 回测 / 换手 / walk-forward / 归因 / 基准
+前向收益 + IC / 回测 / 换手 / walk-forward（默认关闭）/ 归因 / 基准
         │
         ▼
 报告引擎 (reports/tear_sheet)

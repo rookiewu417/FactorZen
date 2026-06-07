@@ -28,7 +28,7 @@ cp .env.example .env
 pixi run smoke
 ```
 
-真实数据拉取需要在 `.env` 配置 `TUSHARE_TOKEN`。LLM 研究解读默认关闭（无 YAML 默认配置与 `--all` 模式会自动启用），普通运行需命令显式传入 `--llm-explain` 才会尝试读取相关配置。
+真实数据拉取需要在 `.env` 配置 `TUSHARE_TOKEN`。LLM 研究解读默认关闭；无 YAML 默认配置与 `--all` 模式会自动尝试，缺少 `FACTORZEN_LLM_*` 配置时自动跳过。普通/自定义运行需显式传入 `--llm-explain` 才会尝试读取相关配置。
 
 需要验证真实环境时，用数据 smoke 检查 Tushare 连通性与本地原始数据分区完整性（不入默认 CI）：
 
@@ -47,7 +47,7 @@ pixi run fz factor new my_alpha --frequency daily
 pixi run fz factor run my_alpha --start 20230101 --end 20241231
 ```
 
-无 `--config` 时会使用内置研究级默认配置：`csi500`、匹配 benchmark、`seed=42`、行业+市值中性化、内置 4 策略套件、walk-forward、both IC、neutralized IC、event study 与 LLM 解读。缺少 `FACTORZEN_LLM_*` 配置时，LLM 解读会自动跳过。
+无 `--config` 时会使用内置研究级默认配置：`csi500`、匹配 benchmark、`seed=42`、行业+市值中性化、内置 4 策略套件、both IC、neutralized IC、event study 与 LLM 解读。缺少 `FACTORZEN_LLM_*` 配置时，LLM 解读会自动跳过。walk-forward 默认关闭，按需通过 YAML `walk_forward.enabled: true` 或 `--set walk_forward.enabled=true` 开启。
 
 仍可显式覆盖默认配置：
 
@@ -64,6 +64,19 @@ pixi run fz factor run --config workspace/configs/daily/daily_factor_template.ya
 ```
 
 `config validate` 会打印生效后的配置与标准输出目录，不会启动完整回测。
+
+walk-forward 样本外评估默认关闭，需要时在 YAML 打开：
+
+```yaml
+walk_forward:
+  enabled: true
+  train_days: 504
+  test_days: 252
+  step_days: 252
+  embargo_days: 5
+```
+
+也可用 `--set walk_forward.enabled=true` 临时开启。
 
 ## 命令行调参
 

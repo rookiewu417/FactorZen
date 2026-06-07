@@ -1,4 +1,5 @@
 """Tests for common.config_loader module."""
+
 from __future__ import annotations
 
 import pytest
@@ -32,8 +33,7 @@ def test_invalid_outlier_method(tmp_path):
     from factorzen.core.config_loader import load_run_config
 
     yaml_content = (
-        "factor: x\nstart: '20230101'\nend: '20241231'\n"
-        "preprocessing:\n  outlier: invalid_method\n"
+        "factor: x\nstart: '20230101'\nend: '20241231'\npreprocessing:\n  outlier: invalid_method\n"
     )
     p = tmp_path / "test.yaml"
     p.write_text(yaml_content, encoding="utf-8")
@@ -47,6 +47,21 @@ def test_default_preprocessing():
     cfg = RunConfig(factor="x", start="20230101", end="20241231")
     assert cfg.preprocessing.outlier == "mad"
     assert cfg.preprocessing.normalizer == "zscore"
+
+
+def test_walk_forward_is_disabled_by_default_and_can_be_enabled():
+    from factorzen.core.config_loader import RunConfig
+
+    default_cfg = RunConfig(factor="x", start="20230101", end="20241231")
+    enabled_cfg = RunConfig(
+        factor="x",
+        start="20230101",
+        end="20241231",
+        walk_forward={"enabled": True},
+    )
+
+    assert default_cfg.walk_forward.enabled is False
+    assert enabled_cfg.walk_forward.enabled is True
 
 
 def test_build_preprocessing_pipeline_from_run_config():
@@ -267,10 +282,27 @@ def test_build_top_n_candidate_params_uses_n_trials():
     )
 
     assert build_top_n_candidate_params(cfg) == [
-        {"top_n": 1},
-        {"top_n": 4},
-        {"top_n": 7},
         {"top_n": 10},
+    ]
+
+
+def test_build_top_n_candidate_params_skips_weights_above_cap():
+    from factorzen.core.config_loader import RunConfig, build_top_n_candidate_params
+
+    cfg = RunConfig(
+        factor="x",
+        start="20230101",
+        end="20241231",
+        backtest={"top_n": 50, "max_abs_weight": 0.1},
+        walk_forward={"n_trials": 5},
+    )
+
+    assert build_top_n_candidate_params(cfg) == [
+        {"top_n": 10},
+        {"top_n": 20},
+        {"top_n": 30},
+        {"top_n": 40},
+        {"top_n": 50},
     ]
 
 

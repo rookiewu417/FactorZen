@@ -597,5 +597,6 @@ def _display_status(raw_status: Any) -> str:
         "insufficient_data": "样本不足",
         "not_run": "未运行",
         "skipped": "已跳过",
+        "disabled": "已关闭",
     }
     return labels.get(status.lower(), status or "未知")

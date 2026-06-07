@@ -1,4 +1,4 @@
-﻿"""Tests for single-factor walk-forward summary integration."""
+"""Tests for single-factor walk-forward summary integration."""
 
 from __future__ import annotations
 
@@ -52,7 +52,13 @@ def test_walk_forward_summary_marks_insufficient_data():
         factor="momentum_20d",
         start="20240101",
         end="20240131",
-        walk_forward={"train_days": 20, "test_days": 5, "step_days": 5, "embargo_days": 2},
+        walk_forward={
+            "enabled": True,
+            "train_days": 20,
+            "test_days": 5,
+            "step_days": 5,
+            "embargo_days": 2,
+        },
     )
 
     summary, result = run_quantile_walk_forward_summary(
@@ -80,7 +86,13 @@ def test_walk_forward_summary_returns_oos_metrics_when_folds_exist():
         start="20240101",
         end="20240228",
         backtest={"quantiles": 4},
-        walk_forward={"train_days": 12, "test_days": 6, "step_days": 6, "embargo_days": 1},
+        walk_forward={
+            "enabled": True,
+            "train_days": 12,
+            "test_days": 6,
+            "step_days": 6,
+            "embargo_days": 1,
+        },
     )
 
     summary, result = run_quantile_walk_forward_summary(
@@ -103,7 +115,7 @@ def test_walk_forward_summary_returns_oos_metrics_when_folds_exist():
 
 def test_walk_forward_summary_uses_top_n_candidates_from_n_trials(monkeypatch):
     from factorzen.core.config_loader import RunConfig
-    from factorzen.daily.evaluation.backtest import TopNLongOnlyStrategy
+    from factorzen.daily.evaluation.backtest import PrecomputedWeightsStrategy
     from factorzen.daily.evaluation.walk_forward import WalkForwardResult
     from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 
@@ -111,7 +123,7 @@ def test_walk_forward_summary_uses_top_n_candidates_from_n_trials(monkeypatch):
 
     def fake_run_walk_forward_search(**kwargs):
         captured["param_candidates"] = kwargs["param_candidates"]
-        captured["strategy"] = kwargs["strategy_factory"]({"top_n": 7})
+        captured["strategy"] = kwargs["strategy_factory"]({"top_n": 10})
         return WalkForwardResult(
             folds=[],
             oos_returns=pl.DataFrame(),
@@ -132,7 +144,7 @@ def test_walk_forward_summary_uses_top_n_candidates_from_n_trials(monkeypatch):
         start="20240101",
         end="20240131",
         backtest={"top_n": 10},
-        walk_forward={"n_trials": 4},
+        walk_forward={"enabled": True, "n_trials": 4},
     )
 
     summary, _ = run_quantile_walk_forward_summary(
@@ -143,12 +155,77 @@ def test_walk_forward_summary_uses_top_n_candidates_from_n_trials(monkeypatch):
         frequency="daily",
     )
 
-    assert captured["param_candidates"] == [
-        {"top_n": 1},
-        {"top_n": 4},
-        {"top_n": 7},
-        {"top_n": 10},
-    ]
-    assert isinstance(captured["strategy"], TopNLongOnlyStrategy)
-    assert captured["strategy"].n == 7
+    assert captured["param_candidates"] == [{"top_n": 10}]
+    assert isinstance(captured["strategy"], PrecomputedWeightsStrategy)
     assert summary["requested_n_trials"] == 4
+
+
+def test_walk_forward_summary_skips_runner_when_disabled(monkeypatch):
+    from factorzen.core.config_loader import RunConfig
+    from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
+
+    def unexpected_runner(**_kwargs):
+        raise AssertionError("disabled walk-forward must not invoke the runner")
+
+    monkeypatch.setattr(
+        "factorzen.daily.evaluation.walk_forward_summary.run_walk_forward_search",
+        unexpected_runner,
+    )
+    cfg = RunConfig(
+        factor="momentum_20d",
+        start="20240101",
+        end="20240131",
+    )
+
+    summary, result = run_quantile_walk_forward_summary(
+        pl.DataFrame(),
+        pl.DataFrame(),
+        cfg,
+        factor_name="momentum_20d",
+    )
+
+    assert summary == {"status": "disabled", "n_folds": 0}
+    assert result is None
+
+
+def test_walk_forward_optimized_path_matches_sequential_search():
+    from factorzen.daily.evaluation.backtest import BacktestConfig, TopNLongOnlyStrategy
+    from factorzen.daily.evaluation.walk_forward import WalkForwardSplitter, run_walk_forward_search
+
+    factor_df, price_df = _make_factor_price(n_dates=32, n_stocks=40)
+    splitter = WalkForwardSplitter(train_days=10, test_days=5, step_days=5, embargo_days=1)
+    candidates = [{"top_n": 10}, {"top_n": 20}]
+    cfg = BacktestConfig(max_abs_weight=0.05, max_participation_rate=1.0)
+
+    def strategy_factory(params):
+        return TopNLongOnlyStrategy(n=params["top_n"])
+
+    sequential = run_walk_forward_search(
+        strategy_factory=strategy_factory,
+        factor_df=factor_df,
+        price_df=price_df,
+        splitter=splitter,
+        param_candidates=candidates,
+        config=cfg,
+        factor_name="x",
+        reuse_is_backtests=False,
+        parallel_workers=1,
+    )
+    optimized = run_walk_forward_search(
+        strategy_factory=strategy_factory,
+        factor_df=factor_df,
+        price_df=price_df,
+        splitter=splitter,
+        param_candidates=candidates,
+        config=cfg,
+        factor_name="x",
+        reuse_is_backtests=True,
+        parallel_workers=2,
+    )
+
+    assert optimized.oos_returns.equals(sequential.oos_returns)
+    assert optimized.is_sharpe_mean == sequential.is_sharpe_mean
+    assert optimized.oos_sharpe_mean == sequential.oos_sharpe_mean
+    assert optimized.oos_sharpe_std == sequential.oos_sharpe_std
+    assert optimized.oos_max_dd == sequential.oos_max_dd
+    assert [fold.params for fold in optimized.folds] == [fold.params for fold in sequential.folds]

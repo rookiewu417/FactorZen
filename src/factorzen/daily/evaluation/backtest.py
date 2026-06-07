@@ -1,4 +1,4 @@
-﻿"""策略化回测引擎。
+"""策略化回测引擎。
 
 核心口径：
 - t 日因子生成目标权重。
@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import date
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from factorzen.daily.optimization.base import OptimizerConstraints, PortfolioOptimizer
@@ -102,7 +102,9 @@ class BacktestContext:
     current_positions: pl.DataFrame
     factor_col: str = "factor_clean"
     price_history: pl.DataFrame = field(default_factory=pl.DataFrame)
-    adv_20d: dict[str, float] = field(default_factory=dict)  # ts_code → 20日均成交额（元），由 _compute_adv_20d 填充
+    adv_20d: dict[str, float] = field(
+        default_factory=dict
+    )  # ts_code → 20日均成交额（元），由 _compute_adv_20d 填充
 
 
 class Strategy(ABC):
@@ -220,9 +222,7 @@ class QuantileLongShortStrategy(Strategy):
             return _empty_weights()
 
         grouped = (
-            df.with_columns(
-                pl.col(factor_col).rank("ordinal", descending=False).alias("_rank")
-            )
+            df.with_columns(pl.col(factor_col).rank("ordinal", descending=False).alias("_rank"))
             .with_columns(
                 ((pl.col("_rank") - 1) * self.n_groups // pl.col("_rank").max())
                 .cast(pl.Int32)
@@ -259,12 +259,29 @@ class TopNLongOnlyStrategy(Strategy):
 
     def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
         factor_col = context.factor_col or self.factor_col
-        top = _valid_factor_slice(context.factor_slice, factor_col).sort(
-            factor_col, descending=True
-        ).head(self.n)
+        top = (
+            _valid_factor_slice(context.factor_slice, factor_col)
+            .sort(factor_col, descending=True)
+            .head(self.n)
+        )
         if top.is_empty():
             return _empty_weights()
         return top.select(["ts_code"]).with_columns(pl.lit(1.0 / top.height).alias("target_weight"))
+
+
+class PrecomputedWeightsStrategy(Strategy):
+    """Use target weights that were precomputed by signal date."""
+
+    name = "precomputed_weights"
+
+    def __init__(self, weights_by_date: dict[date, pl.DataFrame]) -> None:
+        self.weights_by_date = weights_by_date
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        weights = self.weights_by_date.get(context.signal_date)
+        if weights is None:
+            return _empty_weights()
+        return weights
 
 
 class FactorWeightedStrategy(Strategy):
@@ -465,12 +482,31 @@ def run_strategy_backtest(
     config: BacktestConfig | None = None,
     cost_model: CostModel | CostModelBase | None = None,
     factor_name: str = "",
+    *,
+    collect_positions: bool = True,
+    collect_trades: bool = True,
+    include_context_positions: bool = True,
 ) -> StrategyBacktestResult:
     """运行策略回测。"""
     cfg = config or BacktestConfig()
     factor = _prepare_factor_df(factor_df, cfg.factor_col)
     price = _prepare_price_df(price_df)
     trade_dates = price.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
+    if _can_use_precomputed_fast_path(
+        strategy,
+        cost_model,
+        collect_positions=collect_positions,
+        collect_trades=collect_trades,
+        include_context_positions=include_context_positions,
+    ):
+        return _run_precomputed_weights_backtest_fast(
+            strategy=cast(PrecomputedWeightsStrategy, strategy),
+            price=price,
+            trade_dates=trade_dates,
+            config=cfg,
+            cost_model=cast(CostModel | None, cost_model),
+            factor_name=factor_name,
+        )
 
     current_weights: dict[str, float] = {}
     nav_value = 1.0
@@ -481,6 +517,7 @@ def run_strategy_backtest(
 
     price_by_date = _group_frames_by_date(price)
     factor_by_date = _group_frames_by_date(factor)
+    adv_20d_by_date = _precompute_adv_20d_by_date(price, trade_dates)
 
     # Determine lookback for OptimizerStrategy
     _lookback = getattr(strategy, "lookback_days", 0)
@@ -500,7 +537,7 @@ def run_strategy_backtest(
         if has_signal:
             assert signal_date is not None  # has_signal 已蕴含
             has_started = True
-            adv_20d = _compute_adv_20d(price, trade_dates, i)
+            adv_20d = adv_20d_by_date.get(execution_date, {})
             context = BacktestContext(
                 signal_date=signal_date,
                 execution_date=execution_date,
@@ -508,20 +545,23 @@ def run_strategy_backtest(
                 price_slice=price_slice,
                 current_positions=_positions_frame(
                     open_weights, open_nav_value, cfg.initial_capital
-                ),
+                )
+                if include_context_positions
+                else pl.DataFrame(schema=_positions_schema()),
                 factor_col=cfg.factor_col,
                 price_history=_get_price_history(price, trade_dates, i, _lookback),
                 adv_20d=adv_20d,
             )
             target_df = _validate_target_weights(strategy.generate_weights(context), cfg)
-            target_weights = dict(zip(target_df["ts_code"], target_df["target_weight"], strict=True))
+            target_weights = dict(
+                zip(target_df["ts_code"], target_df["target_weight"], strict=True)
+            )
 
             # 换手率低于阈值时跳过本次调仓
             if cfg.rebalance_threshold is not None:
                 all_proposed = set(open_weights) | set(target_weights)
                 proposed_turnover = sum(
-                    abs(target_weights.get(c, 0.0) - open_weights.get(c, 0.0))
-                    for c in all_proposed
+                    abs(target_weights.get(c, 0.0) - open_weights.get(c, 0.0)) for c in all_proposed
                 )
                 if proposed_turnover <= cfg.rebalance_threshold:
                     target_weights = dict(open_weights)
@@ -555,7 +595,9 @@ def run_strategy_backtest(
             )
             trade_cost += cost
             turnover += abs(filled_delta)
-            if abs(filled_delta) > 0 or abs(target_weight - prev_weight) > 1e-12:
+            if collect_trades and (
+                abs(filled_delta) > 0 or abs(target_weight - prev_weight) > 1e-12
+            ):
                 trade_rows.append(
                     {
                         "trade_date": execution_date,
@@ -604,47 +646,28 @@ def run_strategy_backtest(
                     "turnover": turnover,
                 }
             )
-            for code, weight in sorted(close_weights.items()):
-                position_rows.append(
-                    {
-                        "trade_date": execution_date,
-                        "ts_code": code,
-                        "weight": weight,
-                        "market_value": weight * nav_value * cfg.initial_capital,
-                    }
-                )
+            if collect_positions:
+                for code, weight in sorted(close_weights.items()):
+                    position_rows.append(
+                        {
+                            "trade_date": execution_date,
+                            "ts_code": code,
+                            "weight": weight,
+                            "market_value": weight * nav_value * cfg.initial_capital,
+                        }
+                    )
         current_weights = close_weights
 
     returns = pl.DataFrame(nav_rows, schema=_returns_schema())
-    nav_cols = ["trade_date", "gross_return", "cost", "borrow_cost", "net_return", "nav", "cash_weight"]
-    if returns.is_empty():
-        nav = returns.select(nav_cols)
-    else:
-        sorted_returns = returns.sort("trade_date")
-        first_return_date = sorted_returns["trade_date"][0]
-        first_return_idx = trade_dates.index(first_return_date)
-        first_signal_date = trade_dates[first_return_idx - 1]
-        base_nav = pl.DataFrame(
-            {
-                "trade_date": [first_signal_date],
-                "gross_return": [0.0],
-                "cost": [0.0],
-                "borrow_cost": [0.0],
-                "net_return": [0.0],
-                "nav": [1.0],
-                "cash_weight": [1.0],
-            },
-            schema={col: _returns_schema()[col] for col in nav_cols},
-        )
-        nav = pl.concat([base_nav, sorted_returns.select(nav_cols)])
+    nav = _build_nav_frame(returns, trade_dates)
     positions = (
         pl.DataFrame(position_rows, schema=_positions_schema())
-        if position_rows
+        if collect_positions and position_rows
         else pl.DataFrame(schema=_positions_schema())
     )
     trades = (
         pl.DataFrame(trade_rows, schema=_trades_schema())
-        if trade_rows
+        if collect_trades and trade_rows
         else pl.DataFrame(schema=_trades_schema())
     )
     summary = _summary_stats(returns, trades)
@@ -697,6 +720,27 @@ def _prepare_factor_df(df: pl.DataFrame, factor_col: str) -> pl.DataFrame:
     return _ensure_date(df, "trade_date").select(["trade_date", "ts_code", factor_col])
 
 
+def precompute_top_n_weights(
+    factor_df: pl.DataFrame,
+    *,
+    top_n: int,
+    factor_col: str = "factor_clean",
+) -> dict[date, pl.DataFrame]:
+    """Precompute TopN target weights for each signal date."""
+    factor = _prepare_factor_df(factor_df, factor_col)
+    weights_by_date: dict[date, pl.DataFrame] = {}
+    n = max(1, int(top_n))
+    for key, frame in factor.group_by("trade_date"):
+        signal_date = key[0] if isinstance(key, tuple) else key
+        top = _valid_factor_slice(frame, factor_col).sort(factor_col, descending=True).head(n)
+        if top.is_empty():
+            continue
+        weights_by_date[signal_date] = top.select(["ts_code"]).with_columns(
+            pl.lit(1.0 / top.height).alias("target_weight")
+        )
+    return weights_by_date
+
+
 def _prepare_price_df(df: pl.DataFrame) -> pl.DataFrame:
     require_columns(df, ["trade_date", "ts_code", "close"], context="price_df")
     out = _ensure_date(df, "trade_date")
@@ -713,7 +757,9 @@ def _prepare_price_df(df: pl.DataFrame) -> pl.DataFrame:
         ]
     )
     if "pct_chg" not in out.columns:
-        out = out.with_columns(((pl.col("close") / pl.col("pre_close") - 1.0) * 100).alias("pct_chg"))
+        out = out.with_columns(
+            ((pl.col("close") / pl.col("pre_close") - 1.0) * 100).alias("pct_chg")
+        )
     if "vol" not in out.columns:
         out = out.with_columns(pl.lit(1.0).alias("vol"))
     if "amount" not in out.columns:
@@ -807,6 +853,287 @@ def _compute_adv_20d(price: pl.DataFrame, trade_dates: list, current_idx: int) -
     return dict(zip(adv["ts_code"].to_list(), adv["adv_20d"].to_list(), strict=False))
 
 
+def _precompute_adv_20d_by_date(
+    price: pl.DataFrame,
+    trade_dates: list[date],
+) -> dict[date, dict[str, float]]:
+    """Precompute trailing 20-period ADV for each execution date."""
+    if not trade_dates or "amount" not in price.columns:
+        return {}
+
+    adv_frame = (
+        price.select(["trade_date", "ts_code", "amount"])
+        .sort(["ts_code", "trade_date"])
+        .with_columns(
+            pl.when(
+                pl.col("amount").cast(pl.Float64).is_finite()
+                & (pl.col("amount").cast(pl.Float64) > 0)
+            )
+            .then(pl.col("amount").cast(pl.Float64))
+            .otherwise(None)
+            .alias("_amount_for_adv")
+        )
+        .with_columns(
+            pl.col("_amount_for_adv")
+            .rolling_mean(20, min_samples=1)
+            .shift(1)
+            .over("ts_code")
+            .alias("adv_20d")
+        )
+        .filter(pl.col("trade_date").is_in(trade_dates))
+        .filter(pl.col("adv_20d").is_not_null() & pl.col("adv_20d").is_finite())
+        .select(["trade_date", "ts_code", "adv_20d"])
+    )
+
+    result: dict[date, dict[str, float]] = {}
+    for row in adv_frame.iter_rows(named=True):
+        result.setdefault(row["trade_date"], {})[row["ts_code"]] = row["adv_20d"]
+    return result
+
+
+def _can_use_precomputed_fast_path(
+    strategy: Strategy,
+    cost_model: CostModel | CostModelBase | None,
+    *,
+    collect_positions: bool,
+    collect_trades: bool,
+    include_context_positions: bool,
+) -> bool:
+    return (
+        isinstance(strategy, PrecomputedWeightsStrategy)
+        and not collect_positions
+        and not collect_trades
+        and not include_context_positions
+        and (cost_model is None or isinstance(cost_model, CostModel))
+    )
+
+
+def _build_nav_frame(returns: pl.DataFrame, trade_dates: list) -> pl.DataFrame:
+    nav_cols = [
+        "trade_date",
+        "gross_return",
+        "cost",
+        "borrow_cost",
+        "net_return",
+        "nav",
+        "cash_weight",
+    ]
+    if returns.is_empty():
+        return returns.select(nav_cols)
+    sorted_returns = returns.sort("trade_date")
+    first_return_date = sorted_returns["trade_date"][0]
+    first_return_idx = trade_dates.index(first_return_date)
+    first_signal_date = trade_dates[first_return_idx - 1]
+    base_nav = pl.DataFrame(
+        {
+            "trade_date": [first_signal_date],
+            "gross_return": [0.0],
+            "cost": [0.0],
+            "borrow_cost": [0.0],
+            "net_return": [0.0],
+            "nav": [1.0],
+            "cash_weight": [1.0],
+        },
+        schema={col: _returns_schema()[col] for col in nav_cols},
+    )
+    return pl.concat([base_nav, sorted_returns.select(nav_cols)])
+
+
+def _run_precomputed_weights_backtest_fast(
+    *,
+    strategy: PrecomputedWeightsStrategy,
+    price: pl.DataFrame,
+    trade_dates: list[date],
+    config: BacktestConfig,
+    cost_model: CostModel | None,
+    factor_name: str,
+) -> StrategyBacktestResult:
+    codes = price.select("ts_code").unique().sort("ts_code")["ts_code"].to_list()
+    code_to_idx = {code: idx for idx, code in enumerate(codes)}
+    date_to_idx = {trade_date: idx for idx, trade_date in enumerate(trade_dates)}
+    shape = (len(trade_dates), len(codes))
+    open_px = np.full(shape, np.nan, dtype=float)
+    pre_close = np.full(shape, np.nan, dtype=float)
+    overnight_ret = np.zeros(shape, dtype=float)
+    intraday_ret = np.zeros(shape, dtype=float)
+
+    for row in price.iter_rows(named=True):
+        row_date = row["trade_date"]
+        code = row["ts_code"]
+        date_idx = date_to_idx.get(row_date)
+        code_idx = code_to_idx.get(code)
+        if date_idx is None or code_idx is None:
+            continue
+        open_px[date_idx, code_idx] = float(row["open"])
+        pre_close[date_idx, code_idx] = float(row["pre_close"])
+        overnight_ret[date_idx, code_idx] = float(row["overnight_ret"] or 0.0)
+        intraday_ret[date_idx, code_idx] = float(row["intraday_ret"] or 0.0)
+
+    adv_by_date = _precompute_adv_20d_by_date(price, trade_dates)
+    adv = np.full(shape, np.nan, dtype=float)
+    for row_date, adv_values in adv_by_date.items():
+        date_idx = date_to_idx.get(row_date)
+        if date_idx is None:
+            continue
+        for code, value in adv_values.items():
+            code_idx = code_to_idx.get(code)
+            if code_idx is not None:
+                adv[date_idx, code_idx] = float(value)
+
+    board_limits = np.array([_get_board_limit(code) * 100.0 for code in codes], dtype=float)
+    target_by_signal_date: dict[date, tuple[np.ndarray, np.ndarray]] = {}
+    for sig_date, weight_df in strategy.weights_by_date.items():
+        indices: list[int] = []
+        values: list[float] = []
+        for row in weight_df.iter_rows(named=True):
+            code_idx = code_to_idx.get(row["ts_code"])
+            if code_idx is not None:
+                indices.append(code_idx)
+                values.append(float(row["target_weight"]))
+        if indices:
+            target_by_signal_date[sig_date] = (
+                np.array(indices, dtype=int),
+                np.array(values, dtype=float),
+            )
+
+    weights = np.zeros(len(codes), dtype=float)
+    nav_value = 1.0
+    has_started = False
+    nav_rows: list[dict[str, Any]] = []
+
+    for i, execution_date in enumerate(trade_dates):
+        overnight = overnight_ret[i]
+        overnight_return = float(np.dot(weights, overnight))
+        denom = 1.0 + overnight_return
+        if abs(denom) < 1e-12:
+            open_weights = weights.copy()
+        else:
+            open_weights = weights * (1.0 + overnight) / denom
+            open_weights[np.abs(open_weights) < 1e-12] = 0.0
+        open_nav_value = nav_value * (1.0 + overnight_return)
+
+        signal_date = trade_dates[i - 1] if i > 0 else None
+        target_weights = open_weights.copy()
+        if signal_date is not None and signal_date in target_by_signal_date:
+            has_started = True
+            target_weights = np.zeros(len(codes), dtype=float)
+            idx, vals = target_by_signal_date[signal_date]
+            target_weights[idx] = vals
+            if config.rebalance_threshold is not None:
+                proposed_turnover = float(np.sum(np.abs(target_weights - open_weights)))
+                if proposed_turnover <= config.rebalance_threshold:
+                    target_weights = open_weights.copy()
+
+        delta = target_weights - open_weights
+        active = np.abs(delta) > 1e-12
+        filled = np.zeros(len(codes), dtype=float)
+        if np.any(active):
+            open_today = open_px[i]
+            pre_close_today = pre_close[i]
+            valid_price = (
+                np.isfinite(open_today)
+                & np.isfinite(pre_close_today)
+                & (open_today > 0)
+                & (pre_close_today > 0)
+            )
+            opening_pct = np.zeros(len(codes), dtype=float)
+            opening_pct[valid_price] = (
+                open_today[valid_price] / pre_close_today[valid_price] - 1.0
+            ) * 100.0
+            tradable = (
+                active
+                & valid_price
+                & ~((delta > 0) & (opening_pct >= board_limits))
+                & ~((delta < 0) & (opening_pct <= -board_limits))
+            )
+            filled[tradable] = delta[tradable]
+
+            portfolio_value = open_nav_value * config.initial_capital
+            if portfolio_value <= 0:
+                filled[:] = 0.0
+            else:
+                adv_eff = adv[i].copy()
+                valid_adv = np.isfinite(adv_eff) & (adv_eff > 0)
+                fallback_adv = config.fallback_adv
+                if (
+                    fallback_adv is not None
+                    and np.isfinite(float(fallback_adv))
+                    and float(fallback_adv) > 0
+                ):
+                    adv_eff[~valid_adv] = float(fallback_adv)
+                    valid_adv = np.isfinite(adv_eff) & (adv_eff > 0)
+                capped = tradable & valid_adv
+                if np.any(capped):
+                    max_delta = adv_eff[capped] * config.max_participation_rate / portfolio_value
+                    filled[capped] = np.sign(filled[capped]) * np.minimum(
+                        np.abs(filled[capped]), max_delta
+                    )
+
+        next_weights = open_weights + filled
+        next_weights[np.abs(next_weights) < 1e-12] = 0.0
+        if cost_model is None:
+            trade_cost = 0.0
+        else:
+            buy_cost = np.where(filled > 0, np.abs(filled) * cost_model.one_way_cost(), 0.0)
+            sell_cost = np.where(filled < 0, np.abs(filled) * cost_model.sell_cost(), 0.0)
+            trade_cost = float(np.sum(buy_cost + sell_cost))
+        turnover = float(np.sum(np.abs(filled)))
+
+        intraday = intraday_ret[i]
+        intraday_return = float(np.dot(next_weights, intraday))
+        gross_return = (1.0 + overnight_return) * (1.0 + intraday_return) - 1.0
+        period_cost_scale = 1.0 + overnight_return
+        period_trade_cost = trade_cost * period_cost_scale
+        net_return = gross_return - period_trade_cost
+        nav_value *= 1.0 + net_return
+
+        close_denom = 1.0 + intraday_return
+        if abs(close_denom) < 1e-12:
+            close_weights = next_weights.copy()
+        else:
+            close_weights = next_weights * (1.0 + intraday) / close_denom
+            close_weights[np.abs(close_weights) < 1e-12] = 0.0
+        if 1.0 + net_return > 1e-12:
+            cost_scale = (1.0 + gross_return) / (1.0 + net_return)
+            close_weights *= cost_scale
+            close_weights[np.abs(close_weights) < 1e-12] = 0.0
+        cash_weight = float(1.0 - np.sum(close_weights))
+
+        if has_started:
+            nav_rows.append(
+                {
+                    "trade_date": execution_date,
+                    "gross_return": gross_return,
+                    "cost": period_trade_cost,
+                    "borrow_cost": 0.0,
+                    "net_return": net_return,
+                    "nav": nav_value,
+                    "cash_weight": cash_weight,
+                    "turnover": turnover,
+                }
+            )
+        weights = close_weights
+
+    returns = pl.DataFrame(nav_rows, schema=_returns_schema())
+    nav = _build_nav_frame(returns, trade_dates)
+    positions = pl.DataFrame(schema=_positions_schema())
+    trades = pl.DataFrame(schema=_trades_schema())
+    summary = _summary_stats(returns, trades)
+    return StrategyBacktestResult(
+        factor_name=factor_name,
+        strategy_name=strategy.name,
+        n_groups=1,
+        returns=returns,
+        nav=nav,
+        positions=positions,
+        trades=trades,
+        summary_stats=summary,
+        config=asdict(config),
+        frequency=config.frequency,
+        ret_definition=config.ret_definition,
+    )
+
+
 def _trade_cost(
     cost_model: CostModel | CostModelBase,
     delta_weight: float,
@@ -847,7 +1174,9 @@ def _positions_frame(
     )
 
 
-def _weighted_return(weights: dict[str, float], price_map: dict[str, dict[str, Any]], col: str) -> float:
+def _weighted_return(
+    weights: dict[str, float], price_map: dict[str, dict[str, Any]], col: str
+) -> float:
     total = 0.0
     for code, weight in weights.items():
         rec = price_map.get(code)
@@ -869,9 +1198,7 @@ def _drift_weights(
     for code, weight in weights.items():
         rec = price_map.get(code)
         asset_ret = (
-            float(rec[return_col])
-            if rec is not None and rec.get(return_col) is not None
-            else 0.0
+            float(rec[return_col]) if rec is not None and rec.get(return_col) is not None else 0.0
         )
         drifted_weight = weight * (1.0 + asset_ret) / denom
         if abs(drifted_weight) >= 1e-12:

@@ -16,7 +16,7 @@ class OverallProgress:
         self._enabled = sys.stderr.isatty()
         self._closed = False
 
-    def start(self) -> "OverallProgress":
+    def start(self) -> OverallProgress:
         if self._enabled:
             register(self.close)
             self._render("starting")

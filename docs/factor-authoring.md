@@ -1,6 +1,6 @@
 # 因子编写
 
-> [FactorZen](../README.md) · [文档](README.md) · [架构](architecture.md) · **因子编写** · [运行手册](runbook.md)
+> [FactorZen](../README.md) · [文档](README.md) · [架构](architecture.md) · **因子编写** · [运行手册](runbook.md) · [示例报告](examples/)
 
 日常研究因子写在 `workspace/factors/`（你的空间），框架代码写在 `src/factorzen/`。框架自带的示例/测试因子在 `src/factorzen/builtin_factors/`（随包分发）——注册表同时扫描两处，同名时 `workspace` 覆盖内置。**新增因子默认不要改 `src`。**
 
@@ -15,6 +15,15 @@ pixi run fz factor new my_alpha --frequency daily
 ```text
 workspace/factors/daily/my_alpha.py
 ```
+
+每个频率目录下还放了一份手写模板，列出编写约定、可复制代码与检查点，可直接照着改：
+
+- [`workspace/factors/daily/TEMPLATE.md`](../workspace/factors/daily/TEMPLATE.md)
+- [`workspace/factors/weekly/TEMPLATE.md`](../workspace/factors/weekly/TEMPLATE.md)
+- [`workspace/factors/monthly/TEMPLATE.md`](../workspace/factors/monthly/TEMPLATE.md)
+- [`workspace/factors/intraday/TEMPLATE.md`](../workspace/factors/intraday/TEMPLATE.md)
+
+`fz factor new` 生成最小骨架，TEMPLATE.md 提供更完整的约定与示例；两者择一起步即可。
 
 可选频率与落点：
 
@@ -92,6 +101,25 @@ Reversal5D()
 - 截面计算用 `.over("ts_code")` 按股票分组，避免跨股票串号。
 - 用 `ctx.start` 过滤掉预热期，只输出请求区间内的因子值。
 - 文件末尾**实例化一次**即完成注册。
+
+## 3.1 进阶示例：量价相关因子
+
+`volume_return_corr_20d` 是一个更接近真实研究的示例：20 日「1 日收益 × 对数成交量」滚动 Pearson 相关。它展示了多中间列、`rolling_*` 的 `min_samples`、以及方差非正时的守卫写法。完整实现见 [`workspace/factors/daily/volume_return_corr_20d.py`](../workspace/factors/daily/volume_return_corr_20d.py)，配置见 [`workspace/configs/daily/volume_return_corr_20d.yaml`](../workspace/configs/daily/volume_return_corr_20d.yaml)。
+
+运行并查看报告：
+
+```bash
+pixi run fz factor run --config workspace/configs/daily/volume_return_corr_20d.yaml
+pixi run fz report path <run_id>
+```
+
+它产出的真实 tear sheet 已收录为示例报告：[docs/examples/](examples/)。该因子预测能力偏弱，正好演示报告如何诚实暴露「统计显著但经济意义弱」的结论——这是 FactorZen 的设计取向，而非缺陷。
+
+要点（相对最小示例新增的）：
+
+- 多个 `rolling_mean(...).over("ts_code")` 中间列拼出协方差与方差，再算相关系数。
+- `min_samples` 控制窗口内最少有效样本，避免早期窗口噪声。
+- 用 `pl.when(...).then(...).otherwise(None)` 守卫方差非正的退化情形，并 `clip(-1.0, 1.0)` 约束到合法相关系数区间。
 
 ## 4. 注册与发现
 

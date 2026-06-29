@@ -35,3 +35,15 @@ def test_parse_rejects_unknown_op():
     from factorzen.discovery.expression import parse_expr
     with pytest.raises(ValueError):
         parse_expr("frobnicate(close, 5)")
+
+
+def test_parse_rejects_unknown_leaf():
+    from factorzen.discovery.expression import parse_expr
+    with pytest.raises(ValueError):
+        parse_expr("frobnicate")  # 无括号 → 叶子路径
+
+
+def test_round_trip_scientific_constant():
+    from factorzen.discovery.expression import Constant, parse_expr, to_expr_string
+    s = to_expr_string(Constant(1e-5))   # "1e-05"
+    assert parse_expr(s) == Constant(1e-5)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-import polars as pl
+import polars as pl  # noqa: F401
 
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 
@@ -43,7 +43,7 @@ def to_expr_string(node: Node) -> str:
     raise TypeError(f"未知节点: {node!r}")
 
 
-_NUM = re.compile(r"^-?\d+(\.\d+)?$")
+_NUM = re.compile(r"^-?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$")
 
 
 def _split_args(s: str) -> list[str]:

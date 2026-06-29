@@ -45,3 +45,28 @@ def test_operator_categories_present():
     from factorzen.discovery.operators import OPERATORS
     cats = {spec.category for spec in OPERATORS.values()}
     assert cats == {"ts", "cs", "arith"}
+
+
+def test_leaf_features_contains_price_volume_and_fundamental():
+    from factorzen.discovery.operators import LEAF_FEATURES
+    price_vol_leaves = {"close", "open", "high", "low", "vol", "amount", "vwap", "log_vol", "ret_1d"}
+    fundamental_leaves = {"total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm"}
+    keys = set(LEAF_FEATURES.keys())
+    assert price_vol_leaves <= keys, f"missing price/vol leaves: {price_vol_leaves - keys}"
+    assert fundamental_leaves <= keys, f"missing fundamental leaves: {fundamental_leaves - keys}"
+
+
+def test_basic_features_subset_and_no_turnover():
+    from factorzen.discovery.operators import BASIC_FEATURES
+    allowed = {"total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm", "pe", "ps", "dv_ratio"}
+    assert "turnover_rate" not in BASIC_FEATURES, "BASIC_FEATURES must not contain 'turnover_rate'"
+    assert "volume_ratio" not in BASIC_FEATURES, "BASIC_FEATURES must not contain 'volume_ratio'"
+    assert BASIC_FEATURES <= allowed, f"unexpected entries: {BASIC_FEATURES - allowed}"
+
+
+def test_operator_category_assignments():
+    from factorzen.discovery.operators import OPERATORS
+    assert OPERATORS["ts_mean"].category == "ts"
+    assert OPERATORS["pct_change"].category == "ts"
+    assert OPERATORS["rank"].category == "cs"
+    assert OPERATORS["add"].category == "arith"

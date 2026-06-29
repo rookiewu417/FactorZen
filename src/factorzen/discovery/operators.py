@@ -56,10 +56,11 @@ OPERATORS: dict[str, OperatorSpec] = {
     "ts_min":  _ts("ts_min",  lambda x, w: x.rolling_min(w, min_samples=_MIN).over("ts_code")),
     "ts_max":  _ts("ts_max",  lambda x, w: x.rolling_max(w, min_samples=_MIN).over("ts_code")),
     "ts_rank": _ts("ts_rank", lambda x, w:
-        x.rolling_map(lambda s: float(s.rank()[-1]) / s.len(), w).over("ts_code")),
+        x.rolling_map(lambda s: (float(s.rank()[-1]) / s.len()) if s.len() >= _MIN else None, w).over("ts_code")),
     "delay":   _ts("delay",   lambda x, w: x.shift(w).over("ts_code")),
     "delta":   _ts("delta",   lambda x, w: (x - x.shift(w)).over("ts_code")),
-    "pct_change": _ts("pct_change", lambda x, w: _safe_div(x, x.shift(w).over("ts_code")) - 1.0),
+    "pct_change": _ts("pct_change", lambda x, w:
+        (pl.when(x.shift(w) > 1e-12).then(x / x.shift(w) - 1.0).otherwise(None)).over("ts_code")),
     "ts_decay_linear": _ts("ts_decay_linear", lambda x, w:
         x.rolling_mean(w, min_samples=_MIN).over("ts_code")),  # MVP：等权近似线性衰减
     # ── 截面（.over("trade_date")）──

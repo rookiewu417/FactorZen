@@ -1,0 +1,79 @@
+# src/factorzen/discovery/operators.py
+"""算子库：每个算子是一个把子表达式（pl.Expr）组合成新 pl.Expr 的工厂。
+
+约定（编译前提）：求值表已按 (ts_code, trade_date) 排序。
+- 时序算子(ts)用 .over("ts_code")；截面算子(cs)用 .over("trade_date")；算术(arith)逐元素。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable, Literal
+
+import polars as pl
+
+# 叶子名 → 求值表中的列名。vwap/log_vol/ret_1d 为派生列（ExpressionFactor 预计算）。
+LEAF_FEATURES: dict[str, str] = {
+    "close": "close_adj", "open": "open_adj", "high": "high_adj", "low": "low_adj",
+    "vol": "vol", "amount": "amount", "vwap": "vwap", "log_vol": "log_vol", "ret_1d": "ret_1d",
+    "total_mv": "total_mv", "circ_mv": "circ_mv", "pb": "pb", "pe_ttm": "pe_ttm",
+    "ps_ttm": "ps_ttm", "dv_ttm": "dv_ttm",
+}
+BASIC_FEATURES: set[str] = {"total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm"}
+
+_MIN = 3  # rolling 最小样本
+
+
+def _safe_div(a: pl.Expr, b: pl.Expr) -> pl.Expr:
+    return pl.when(b.abs() > 1e-12).then(a / b).otherwise(None)
+
+
+@dataclass(frozen=True)
+class OperatorSpec:
+    name: str
+    category: Literal["ts", "cs", "arith"]
+    arity: int
+    has_window: bool
+    build: Callable[[list[pl.Expr], "int | None"], pl.Expr]
+
+
+def _ts(name, fn):  # window 时序算子
+    return OperatorSpec(name, "ts", 1, True, lambda c, w: fn(c[0], w))
+
+
+def _cs(name, fn):  # 截面算子
+    return OperatorSpec(name, "cs", 1, False, lambda c, w: fn(c[0]))
+
+
+def _ar(name, arity, fn):  # 算术算子
+    return OperatorSpec(name, "arith", arity, False, lambda c, w: fn(*c))
+
+
+OPERATORS: dict[str, OperatorSpec] = {
+    # ── 时序（.over("ts_code")）──
+    "ts_mean": _ts("ts_mean", lambda x, w: x.rolling_mean(w, min_samples=_MIN).over("ts_code")),
+    "ts_std":  _ts("ts_std",  lambda x, w: x.rolling_std(w, min_samples=_MIN).over("ts_code")),
+    "ts_sum":  _ts("ts_sum",  lambda x, w: x.rolling_sum(w, min_samples=_MIN).over("ts_code")),
+    "ts_min":  _ts("ts_min",  lambda x, w: x.rolling_min(w, min_samples=_MIN).over("ts_code")),
+    "ts_max":  _ts("ts_max",  lambda x, w: x.rolling_max(w, min_samples=_MIN).over("ts_code")),
+    "ts_rank": _ts("ts_rank", lambda x, w:
+        x.rolling_map(lambda s: float(s.rank()[-1]) / s.len(), w).over("ts_code")),
+    "delay":   _ts("delay",   lambda x, w: x.shift(w).over("ts_code")),
+    "delta":   _ts("delta",   lambda x, w: (x - x.shift(w)).over("ts_code")),
+    "pct_change": _ts("pct_change", lambda x, w: _safe_div(x, x.shift(w).over("ts_code")) - 1.0),
+    "ts_decay_linear": _ts("ts_decay_linear", lambda x, w:
+        x.rolling_mean(w, min_samples=_MIN).over("ts_code")),  # MVP：等权近似线性衰减
+    # ── 截面（.over("trade_date")）──
+    "rank":  _cs("rank",  lambda x: (x.rank().over("trade_date") / (pl.len().over("trade_date") + 1))),
+    "zscore": _cs("zscore", lambda x:
+        _safe_div(x - x.mean().over("trade_date"), x.std().over("trade_date"))),
+    "scale": _cs("scale", lambda x: _safe_div(x, x.abs().sum().over("trade_date"))),
+    # ── 算术 ──
+    "add": _ar("add", 2, lambda a, b: a + b),
+    "sub": _ar("sub", 2, lambda a, b: a - b),
+    "mul": _ar("mul", 2, lambda a, b: a * b),
+    "div": _ar("div", 2, lambda a, b: _safe_div(a, b)),
+    "abs": _ar("abs", 1, lambda a: a.abs()),
+    "log": _ar("log", 1, lambda a: pl.when(a > 0).then(a.log()).otherwise(None)),
+    "sign": _ar("sign", 1, lambda a: a.sign()),
+    "sqrt": _ar("sqrt", 1, lambda a: pl.when(a >= 0).then(a.sqrt()).otherwise(None)),
+}

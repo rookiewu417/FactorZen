@@ -6,8 +6,9 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Literal
 
 import polars as pl
 
@@ -33,7 +34,7 @@ class OperatorSpec:
     category: Literal["ts", "cs", "arith"]
     arity: int
     has_window: bool
-    build: Callable[[list[pl.Expr], "int | None"], pl.Expr]
+    build: Callable[[list[pl.Expr], int | None], pl.Expr]
 
 
 def _ts(name, fn):  # window 时序算子

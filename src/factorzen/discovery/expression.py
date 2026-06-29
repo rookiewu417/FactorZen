@@ -50,11 +50,14 @@ def _split_args(s: str) -> list[str]:
     args, depth, cur = [], 0, ""
     for ch in s:
         if ch == "(":
-            depth += 1; cur += ch
+            depth += 1
+            cur += ch
         elif ch == ")":
-            depth -= 1; cur += ch
+            depth -= 1
+            cur += ch
         elif ch == "," and depth == 0:
-            args.append(cur.strip()); cur = ""
+            args.append(cur.strip())
+            cur = ""
         else:
             cur += ch
     if cur.strip():
@@ -78,7 +81,8 @@ def parse_expr(s: str) -> Node:
     spec = OPERATORS[op]
     window = None
     if spec.has_window:
-        window = int(raw_args[-1]); raw_args = raw_args[:-1]
+        window = int(raw_args[-1])
+        raw_args = raw_args[:-1]
     children = [parse_expr(a) for a in raw_args]
     if len(children) != spec.arity:
         raise ValueError(f"{op} 期望 {spec.arity} 个子节点，得到 {len(children)}")

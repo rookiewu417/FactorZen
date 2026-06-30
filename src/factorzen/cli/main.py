@@ -318,6 +318,44 @@ def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_validate_overfit(args: argparse.Namespace) -> int:
+    from factorzen.daily.data.context import FactorDataContext
+    from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
+    from factorzen.daily.factors.registry import get_factor
+    from factorzen.daily.preprocessing.normalizer import cross_sectional_zscore
+    from factorzen.discovery.scoring import DataBundle
+    from factorzen.validation.bootstrap import block_bootstrap_ic_ci
+    from factorzen.validation.deflated_sharpe import deflated_sharpe
+
+    factor = get_factor(args.factor)()
+    ctx = FactorDataContext(
+        start=args.start,
+        end=args.end,
+        required_data=["daily", "daily_basic"],
+        lookback_days=getattr(factor, "lookback_days", 60),
+    )
+    fdf = factor.compute(ctx)
+    bundle = DataBundle.build(ctx.daily.collect(), train_ratio=1.0)
+    clean = cross_sectional_zscore(fdf, col="factor_value").rename(
+        {"factor_value_z": "factor_clean"}
+    )
+    ic_res = compute_rank_ic(
+        clean.select(["trade_date", "ts_code", "factor_clean"]),
+        bundle.fwd_returns,
+        factor_col="factor_clean",
+        frequency="daily",
+    )
+    ic_vals = ic_res.ic_series["ic"].drop_nulls().drop_nans().to_numpy()
+    lo, hi = block_bootstrap_ic_ci(ic_vals)
+    _dsr, p = deflated_sharpe(ic_res.ir, n_trials=1, n_obs=len(ic_vals))  # 单因子：N=1
+    print(
+        f"[validate] {args.factor}: IC={ic_res.ic_mean:.4f} IR={ic_res.ir:.4f} "
+        f"DSR_p={p:.4f} IC_95%CI=[{lo:.4f},{hi:.4f}]"
+    )
+    print("[validate] 注：单因子 N=1（无多重检验扣减）；PBO 仅适用候选池，此处略。")
+    return 0
+
+
 def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("name", nargs="?", help="Factor name")
     parser.add_argument("--start", default=None, help="Start date YYYYMMDD")
@@ -513,6 +551,16 @@ def build_parser() -> argparse.ArgumentParser:
     m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
     m_lb.add_argument("session_dir", help="Path to a mining session directory")
     m_lb.set_defaults(func=_cmd_mine_leaderboard)
+
+    # ── fz validate ──（与 fz mine 并列的顶层命令组）
+    validate = sub.add_parser("validate", help="Overfitting / robustness checks")
+    validate_sub = validate.add_subparsers(dest="validate_command", required=True)
+    vo = validate_sub.add_parser("overfit", help="Deflated Sharpe + bootstrap CI for one factor")
+    vo.add_argument("factor")
+    vo.add_argument("--start", required=True)
+    vo.add_argument("--end", required=True)
+    vo.add_argument("--universe", default=None)
+    vo.set_defaults(func=_cmd_validate_overfit)
 
     return parser
 

@@ -8,6 +8,19 @@ from unittest.mock import patch
 import pytest
 from apscheduler.schedulers.background import BackgroundScheduler
 
+
+@pytest.fixture(autouse=True)
+def tmp_state_file(tmp_path, monkeypatch):
+    """将 STATE_FILE 重定向到临时目录，避免 run_daily_pipeline 真实写入 workspace。
+
+    run_daily_pipeline 用 `with run_record(...)` 包裹每一步；run_record/_write_record
+    写盘路径取自 factorzen.automation.state.STATE_FILE 模块全局变量（运行时动态查找），
+    重定向该变量即可让本文件里所有调用 run_daily_pipeline 的测试互相隔离，不污染真实
+    workspace/runs/automation/runs.jsonl（与 test_automation_state.py 的隔离方式一致）。
+    """
+    monkeypatch.setattr("factorzen.automation.state.STATE_FILE", tmp_path / "automation" / "runs.jsonl")
+
+
 # ────────────────────────────────────────────────────────────────────────────────
 # build_daily_dag
 # ────────────────────────────────────────────────────────────────────────────────

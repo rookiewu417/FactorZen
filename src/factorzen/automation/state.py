@@ -9,9 +9,10 @@ import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
 
-STATE_FILE = Path("workspace/factor_evaluations/automation/runs.jsonl")
+from factorzen.config.settings import AUTOMATION_OUTPUT
+
+STATE_FILE = AUTOMATION_OUTPUT / "runs.jsonl"
 _write_lock = threading.Lock()
 
 

@@ -25,8 +25,7 @@ def test_exported_file_is_importable_and_consistent(tmp_path: Path):
     spec = importlib.util.spec_from_file_location("mined_demo", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert hasattr(mod, "MinedDemo") or any(
-        isinstance(getattr(mod, a), type) for a in dir(mod))
+    assert hasattr(mod, "MinedDemo")
 
     # 造数据 + mock ctx（复用 Task 4 风格）
     rng = np.random.default_rng(1)
@@ -57,5 +56,12 @@ def test_exported_file_is_importable_and_consistent(tmp_path: Path):
         def daily_basic(self): return pl.DataFrame({"trade_date": [], "ts_code": []}).lazy()
 
     direct = ExpressionFactor(expression="ts_mean(close, 5)", mined_name="mined_demo",
-                              lookback_days=30).compute(MockCtx()).sort(["trade_date", "ts_code"])
+                              lookback_days=60).compute(MockCtx())
     assert direct.height > 0
+    direct_sorted = direct.sort(["trade_date", "ts_code"])
+    exported = mod.MinedDemo().compute(MockCtx()).sort(["trade_date", "ts_code"])
+    assert exported.height == direct_sorted.height > 0
+    j = direct_sorted.join(exported, on=["trade_date", "ts_code"], suffix="_exp")
+    assert j.height == direct_sorted.height
+    diff = (j["factor_value"] - j["factor_value_exp"]).abs().max()
+    assert diff is not None and diff < 1e-9

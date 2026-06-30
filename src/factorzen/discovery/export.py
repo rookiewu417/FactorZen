@@ -10,6 +10,7 @@ def _class_name(name: str) -> str:
 
 def render_factor_file(expression: str, name: str) -> str:
     cls = _class_name(name)
+    expr_literal = repr(expression)
     return f'''"""Mined factor: {name}. 由 fz mine 自动生成。表达式: {expression}"""
 
 from factorzen.discovery.factor import ExpressionFactor
@@ -18,7 +19,7 @@ from factorzen.discovery.factor import ExpressionFactor
 class {cls}(ExpressionFactor):
     name = "{name}"
     frequency = "daily"
-    expression = "{expression}"
+    expression = {expr_literal}
     mined_name = "{name}"
     lookback_days = 60
 

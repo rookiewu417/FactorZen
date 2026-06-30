@@ -48,5 +48,5 @@ class ExperimentIndex:
 
     def known_valid(self, k: int = 5) -> list[str]:
         recs = [r for r in self.load() if r.get("passed", False)]
-        recs.sort(key=lambda r: abs(r.get("holdout_ic") or 0.0), reverse=True)
+        recs.sort(key=lambda r: r.get("holdout_ic") or 0.0, reverse=True)
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]

@@ -1055,4 +1055,28 @@ git -c user.name=rookiewu417 -c user.email=1007372080@qq.com commit -m "feat(age
 
 ---
 
+## 完成记录（2026-06-30）
+
+M6 多 Agent + 长期记忆 ✅ 完成入库（10 commits，`b4945b2..a20e075`，`feature/platform-upgrade`）。26 个 M6 测试 + 30 个 M5 回归全绿，opus 全分支终审确认 ship-ready（修完 Critic-drop 后）。
+
+**交付：**
+- 全新 `agents/experiment_index.py`（跨 session 长期记忆）+ `agents/roles/`（hypothesis/coder/critic/librarian）+ `agents/team_orchestrator.py` + `pipelines/factor_mine_team.py` + `fz mine team` CLI。
+- 5 角色协作：Hypothesis/Coder/Critic 调 LLM、**Evaluator 确定性**（复用 M5 评估+护栏）、Librarian 确定性管记忆。**零新依赖**。
+- **跨轮 feedback 否决回路**（self-review 从同轮改跨轮，避免 N 三角和）：Critic verdict → 下轮 Coder 改写 / Hypothesis 换方向。
+- 跨 session 长期记忆：归一化查重去同 + known_invalid（跨 session Negative RAG）+ known_valid（方向参考）。
+
+**并行执行（用户要求效率最大化）：** Task 1-4（experiment_index + 3 独立角色）并行 implement（不 commit）→ 主控串行 commit → 并行 review，比纯顺序快一倍；Task 5-8 是依赖链顺序做。
+
+**评审暴露并修复：**
+- **N 三角和**（plan self-review）：同轮否决回路会让本轮 N 重复累加 → 改跨轮 feedback（每轮恰好一次 `node_guardrails`，opus 终审独立验证 N 诚实无盲点）。见 [[multi-round-cumulative-count-trap]]。
+- **Critic drop 系统层落空**（opus 终审）：候选已被 guardrails append，drop 只设 pending 不移除 → 改 `n_before` 快照 + `del candidates[n_before:]` 真移除，有系统层回归测试。
+- **长期记忆空转**（opus）：`known_valid` 排序键 holdout_ic 从不写入、verdict 恒 null → record 归一化匹配回填 holdout_ic + critic_verdict。
+- 早期：`known_valid` 排序去 abs（Task 1 review）。
+
+**防过拟合（灵魂，继承 M5 + opus 独立验证）：** N **per-run** 诚实（跨轮重试都计入、跨 session 查重只省算力不累加 N）；holdout 段对角色/记忆全程不可见（experiment_index 不存 holdout 原始数据）；Critic 系统层 drop + 确定性 DSR 门槛双重拦截。
+
+**已知限制（defer）：** `_normalize` 双调（性能微）；真实 LLM smoke 为手动命令。
+
+---
+
 *M6 完成后，FactorZen 拥有"多角色协作（假设/编码/评审/风控/记忆）+ 跨 session 知识积累"的因子研究系统——Critic 拦截过拟合、记忆避免重复，全程可审计可复现。*

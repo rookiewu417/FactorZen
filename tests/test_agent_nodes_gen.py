@@ -50,7 +50,8 @@ def test_node_generate_then_evaluate_populates_attempts():
     assert len(state.attempts) == 2
     assert all(a.compile_ok for a in state.attempts)
     assert all(a.ic_train is not None for a in state.attempts)
-    assert "ts_mean(close, 5)" in state.seen_expressions or "ts_mean(close,5)" in state.seen_expressions
+    # 验证归一化形式（带空格）在 seen_expressions 中
+    assert "ts_mean(close, 5)" in state.seen_expressions
 
 
 def test_node_generate_rejects_illegal_and_records_error():
@@ -63,3 +64,27 @@ def test_node_generate_rejects_illegal_and_records_error():
     state = node_generate(state, llm, daily=daily, bundle=bundle)
     state = node_evaluate(state, daily=daily, bundle=bundle)
     assert state.attempts[0].compile_ok is False and state.attempts[0].error
+
+
+def test_node_generate_dedup_with_normalized_form():
+    """验证去重用归一化形式：原始 vs 归一化两种写法不重复进 attempts。"""
+    daily = _mock_daily()
+    bundle = DataBundle.build(daily)
+    # 第一轮：无空格形式
+    raw1 = json.dumps({"hypothesis": "h1", "expressions": ["ts_mean(close,5)"], "rationale": "r"})
+    sem1 = json.dumps({"consistent": True, "reason": "ok"})
+    # 第二轮：有空格形式（归一化后相同）
+    raw2 = json.dumps({"hypothesis": "h2", "expressions": ["ts_mean(close, 5)"], "rationale": "r"})
+    sem2 = json.dumps({"consistent": True, "reason": "ok"})
+    llm = FakeLLM([raw1, sem1, raw2, sem2])
+    state = AgentState(seed=42)
+    # 第一轮
+    state = node_generate(state, llm, daily=daily, bundle=bundle)
+    state = node_evaluate(state, daily=daily, bundle=bundle)
+    assert len(state.attempts) == 1
+    assert "ts_mean(close, 5)" in state.seen_expressions
+    # 第二轮：同一表达式的不同写法应被去重
+    state = node_generate(state, llm, daily=daily, bundle=bundle)
+    assert len(state._pending) == 0  # type: ignore[attr-defined]
+    state = node_evaluate(state, daily=daily, bundle=bundle)
+    assert len(state.attempts) == 1  # 仍为 1，没有增加

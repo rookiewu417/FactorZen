@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from factorzen.agents.evaluation import evaluate_expressions
 from factorzen.agents.state import AgentState, AttemptRecord
+from factorzen.discovery.expression import parse_expr, to_expr_string
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 from factorzen.llm.generation import (
     LLMFn,
@@ -35,11 +36,16 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
     pending: list[_PendingExpr] = []
     for p in proposals:
         for expr in p.expressions:
-            if expr in state.seen_expressions:
-                continue  # session 记忆去重
+            # 归一化后去重（与 node_evaluate 中 seen_expressions 一致）
+            try:
+                norm = to_expr_string(parse_expr(expr))
+            except ValueError:
+                norm = expr  # 非法保持原始（evaluate 记 compile_ok=False）
+            if norm in state.seen_expressions:
+                continue
             ok, _reason = semantic_check(p.hypothesis, expr, llm_fn)
             if ok:
-                pending.append(_PendingExpr(p.hypothesis, expr))
+                pending.append(_PendingExpr(p.hypothesis, norm))  # 暂存归一化形式
     state.__dict__.setdefault("_pending", [])
     state._pending = pending  # type: ignore[attr-defined]
     return state

@@ -42,6 +42,8 @@ def test_size_factor_shape():
     out = STYLE_FACTOR_REGISTRY["size"](pl.DataFrame(), db)
     assert set(out.columns) >= {"trade_date", "ts_code", "factor_value"}
     assert out.height > 0
+    vals = out["factor_value"].drop_nulls().drop_nans()
+    assert vals.std() > 0  # 非全零/全同值 stub（size 在不同市值股票间有离散度）
 
 
 def test_cs_standardize_zero_mean_per_date():
@@ -51,7 +53,7 @@ def test_cs_standardize_zero_mean_per_date():
                        "ts_code": [f"{i:06d}.SZ" for i in range(30)],
                        "factor_value": np.random.default_rng(1).standard_normal(30) * 5 + 100})
     std = cs_standardize(df, factor_col="factor_value", method="mad")
-    assert abs(std["factor_value"].mean()) < 0.5  # MAD-z 后截面均值接近 0
+    assert abs(std["factor_value"].mean()) < 1e-10  # Z-score 后截面均值数学上严格为 0
 
 
 def test_cs_standardize_rejects_unknown_method():

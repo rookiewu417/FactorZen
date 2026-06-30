@@ -13,6 +13,7 @@ from factorzen.attribution.brinson import brinson_attribution
 from factorzen.attribution.risk_attribution import risk_factor_attribution
 from factorzen.portfolio.constraints import ConstraintConfig
 from factorzen.portfolio.optimizer import optimize_portfolio
+from factorzen.risk.model import RiskModel
 
 
 def _git_sha() -> str:
@@ -59,7 +60,6 @@ def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
         .write_csv(run_dir / "attribution.csv")
 
     # 风险摘要（复用 M3 decompose）
-    from factorzen.risk.model import RiskModel
     risk_rows = []
     if opt.weights is not None:
         decomp = RiskModel().decompose_risk(w, risk_result)

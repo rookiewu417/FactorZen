@@ -31,7 +31,9 @@ def test_eigenvector_adjustment_symmetric_same_shape():
     cov = a @ a.T  # 半正定对称
     adj = eigenvector_adjustment(cov, n_simulations=200, seed=1)
     assert adj.shape == (4, 4)
-    assert np.allclose(adj, adj.T, atol=1e-8)
+    # eigenvector_adjustment 内部执行 (A + A.T) / 2，对称性达机器精度，与
+    # factor_covariance 对称断言保持一致
+    assert np.allclose(adj, adj.T, atol=1e-10)
 
 
 def test_covariance_too_short_returns_identity():
@@ -39,3 +41,5 @@ def test_covariance_too_short_returns_identity():
 
     cov = estimate_factor_covariance(np.zeros((1, 3)), half_life=60)
     assert cov.shape == (3, 3)
+    # T < 2 时 estimate_factor_covariance 明确返回单位阵（见 covariance.py L40-42）
+    assert np.allclose(cov, np.eye(3))

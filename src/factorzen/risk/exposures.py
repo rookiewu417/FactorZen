@@ -113,7 +113,7 @@ def compute_exposures(
     style_names = list(style_dfs.keys())
     merged = style_dfs[style_names[0]]
     for name in style_names[1:]:
-        merged = merged.join(style_dfs[name], on="ts_code", how="outer")
+        merged = merged.join(style_dfs[name], on="ts_code", how="full", coalesce=True)
 
     # ── 2. 行业哑变量 ──────────────────────────────────────────────────────────
     # 匹配股票的行业信息

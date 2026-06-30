@@ -28,3 +28,24 @@ def test_parser_has_portfolio_build():
     assert args.alpha_file == "a.parquet"
     assert args.lam == 2.0
     assert callable(args.func)
+
+
+def test_parser_portfolio_build_defaults():
+    from factorzen.cli.main import build_parser
+
+    p = build_parser()
+    args = p.parse_args(
+        [
+            "portfolio",
+            "build",
+            "--start",
+            "20230101",
+            "--end",
+            "20241231",
+            "--alpha-file",
+            "a.csv",
+        ]
+    )
+    assert args.w_max == 0.05
+    assert args.turnover is None
+    assert args.industry_neutral is False

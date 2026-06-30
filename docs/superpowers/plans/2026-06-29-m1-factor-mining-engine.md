@@ -1675,3 +1675,29 @@ git -c user.name=rookiewu417 -c user.email=1007372080@qq.com commit -m "feat(dis
 ---
 
 *本实现计划对接的现有接口均经源码探索验证（见 Global Constraints）。按 Task 顺序执行；M1 完成后进入 M2（防过拟合护栏）。*
+
+---
+
+## 实现完成记录（2026-06-30）
+
+M1 按本计划 11 个 task 全部实现，subagent 驱动执行（每 task implementer + reviewer + 必要 fix），并通过 opus 整分支 final review。
+
+**成果**：`src/factorzen/discovery/`（611 行源 + 548 行测试，20 commits，36 测试全绿，ruff 0 errors）。
+算子库 → 表达式 AST↔字符串↔polars 编译器 → ExpressionFactor → scoring（quick_fitness + 贪心去相关 + 复杂度惩罚）→ random/遗传编程搜索 → mining_session 端到端 → 导出 workspace 因子 → `fz mine search/leaderboard` CLI。
+
+**已验证**：一致性闭环在值层面坐实（`pct_change(close,20)`==内置 Momentum20D 逐值；导出 .py 因子 compute==ExpressionFactor 逐值 <1e-9）；PIT/前视安全（算子层无前视算子+停牌掩码+train/valid 切分）；同 seed 可复现。
+
+**用法**：
+```bash
+pixi run fz mine search --start 20230101 --end 20241231 --universe csi500 --method genetic --trials 200 --top-k 10
+pixi run fz mine leaderboard <session_dir>
+# 复现：cp <session_dir>/exported/*.py workspace/factors/daily/ && fz factor run <name> --set preprocessing.neutralize=false
+```
+
+**Final review 后 deferred 到 M2/后续（非阻塞，已在 CLI/manifest 诚实标注）**：
+- IC parity 完整对齐：挖掘内 IC 用 plain zscore，`fz factor run` 默认带中性化 → 完整复现需 `--set preprocessing.neutralize=false`；样本窗口/fwd 收益掩码口径未完全对齐。
+- 导出因子未自动注册到 `workspace.factors.daily`（复现需手动 copy；`fz mine export` 桥接留后续）。
+- genetic 路径双评分（效率减半）；genetic 多重检验 N 记账（manifest 记 CLI n_trials 而非实际评估数）。
+- ts_rank rolling_map 性能（大 universe）。
+
+**下一步**：M2 防过拟合护栏（PBO/DSR/Reality Check/OOS holdout 永久隔离），并在其中完整对齐 IC parity 与多重检验记账。`scoring.py` 已为此预留接口。

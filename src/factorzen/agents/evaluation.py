@@ -77,9 +77,9 @@ def evaluate_expressions(
         except Exception as exc:
             results.append(
                 {
-                    "expression": s,
+                    "expression": to_expr_string(node),
                     "node": node,
-                    "compile_ok": False,
+                    "compile_ok": True,
                     "ic_train": None,
                     "ir_train": None,
                     "error": str(exc),

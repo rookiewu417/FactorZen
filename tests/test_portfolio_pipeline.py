@@ -124,3 +124,41 @@ def test_run_portfolio_infeasible_does_not_crash(tmp_path: Path):
     # manifest.json status 非 optimal
     m = json.loads((run_dir / "manifest.json").read_text())
     assert m["status"] != "optimal"
+
+
+def test_run_portfolio_manifest_has_reproducibility_fields(tmp_path: Path):
+    """manifest.json 应含 command/git_dirty/pixi_lock_sha256/schema_version（复用 core.experiment 的
+    build_manifest_base，而非各自手写精简版 manifest）。"""
+    rr = _risk_result()
+    alpha = np.array([0.1, 0.05, 0.02, 0.08, 0.03, 0.01])
+    res = run_portfolio(alpha, rr, codes=rr.factor_exposures.codes,
+                        stock_returns=np.array([0.03, 0.01, -0.02, 0.04, 0.0, 0.01]),
+                        sectors=["A", "A", "A", "B", "B", "B"],
+                        factor_returns_latest={"size": 0.02, "ind_A": 0.0, "ind_B": 0.0},
+                        risk_aversion=1.0, w_max=0.4, out_dir=str(tmp_path), run_id="repro1")
+    run_dir = Path(res["run_dir"])
+    m = json.loads((run_dir / "manifest.json").read_text())
+
+    assert m["schema_version"] == "1"
+    assert isinstance(m["git_dirty"], bool)
+    assert isinstance(m["pixi_lock_sha256"], str) and m["pixi_lock_sha256"]
+    assert isinstance(m["command"], list) and m["command"]
+    assert m.get("git_sha")
+    # 原有字段不应回归丢失
+    assert m["run_id"] == "repro1"
+    assert "duration_seconds" in m
+
+
+def test_run_portfolio_manifest_command_override(tmp_path: Path):
+    """显式传 command 时应原样记录，供复现当时具体怎么跑的。"""
+    rr = _risk_result()
+    alpha = np.array([0.1, 0.05, 0.02, 0.08, 0.03, 0.01])
+    res = run_portfolio(alpha, rr, codes=rr.factor_exposures.codes,
+                        stock_returns=np.array([0.03, 0.01, -0.02, 0.04, 0.0, 0.01]),
+                        sectors=["A", "A", "A", "B", "B", "B"],
+                        factor_returns_latest={"size": 0.02, "ind_A": 0.0, "ind_B": 0.0},
+                        risk_aversion=1.0, w_max=0.4, out_dir=str(tmp_path), run_id="repro2",
+                        command=["fz", "portfolio", "build", "--w-max", "0.4"])
+    run_dir = Path(res["run_dir"])
+    m = json.loads((run_dir / "manifest.json").read_text())
+    assert m["command"] == ["fz", "portfolio", "build", "--w-max", "0.4"]

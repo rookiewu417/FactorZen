@@ -84,3 +84,31 @@ def test_run_risk_build_writes_artifacts(tmp_path: Path):
         (pl.col("section") == "decomp") & pl.col("metric").is_in(["factor_pct", "specific_pct"])
     )["value"].to_list()
     assert abs(sum(pcts) - 1.0) < 1e-3, f"factor_pct + specific_pct 应约等于 1，实际: {pcts}"
+
+
+def test_run_risk_build_manifest_has_reproducibility_fields(tmp_path: Path):
+    """manifest.json 应含 command/git_dirty/pixi_lock_sha256/schema_version（复用 core.experiment 的
+    build_manifest_base，而非各自手写精简版 manifest）。"""
+    from factorzen.pipelines.risk_build import run_risk_build
+    daily, db, stocks, start, end = _mock()
+    res = run_risk_build(daily, db, stocks, start, end, out_dir=str(tmp_path), run_id="repro1")
+    manifest = json.loads((Path(res["run_dir"]) / "manifest.json").read_text())
+
+    assert manifest["schema_version"] == "1"
+    assert isinstance(manifest["git_dirty"], bool)
+    assert isinstance(manifest["pixi_lock_sha256"], str) and manifest["pixi_lock_sha256"]
+    assert isinstance(manifest["command"], list) and manifest["command"]
+    assert manifest.get("git_sha")
+    # 原有字段不应回归丢失
+    assert manifest["run_id"] == "repro1"
+    assert "duration_seconds" in manifest
+
+
+def test_run_risk_build_manifest_command_override(tmp_path: Path):
+    """显式传 command 时应原样记录，供复现当时具体怎么跑的。"""
+    from factorzen.pipelines.risk_build import run_risk_build
+    daily, db, stocks, start, end = _mock()
+    res = run_risk_build(daily, db, stocks, start, end, out_dir=str(tmp_path), run_id="repro2",
+                         command=["fz", "risk", "build", "--start", start, "--end", end])
+    manifest = json.loads((Path(res["run_dir"]) / "manifest.json").read_text())
+    assert manifest["command"] == ["fz", "risk", "build", "--start", start, "--end", end]

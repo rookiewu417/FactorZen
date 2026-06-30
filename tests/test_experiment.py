@@ -202,3 +202,55 @@ def test_experiment_does_not_warn_when_clean(tmp_path, monkeypatch, caplog):
         pass
 
     assert not any("git_dirty" in r.getMessage() for r in caplog.records)
+
+
+def test_build_manifest_base_returns_reproducibility_fields(monkeypatch):
+    """build_manifest_base() 是可被其它 pipeline（risk_build/portfolio_build）复用的基础字段构造器。"""
+    from factorzen.core import experiment as exp_mod
+
+    monkeypatch.setattr(exp_mod, "_get_git_sha", lambda: "deadbeef")
+    monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: False)
+    monkeypatch.setattr(exp_mod, "_get_pixi_lock_hash", lambda: "lockhash123")
+
+    base = exp_mod.build_manifest_base(
+        ["python", "-m", "factorzen.cli.main", "risk", "build"],
+        {"start": "20230101", "end": "20231231"},
+    )
+
+    assert base["schema_version"] == "1"
+    assert base["git_sha"] == "deadbeef"
+    assert base["git_dirty"] is False
+    assert base["pixi_lock_sha256"] == "lockhash123"
+    assert base["command"] == ["python", "-m", "factorzen.cli.main", "risk", "build"]
+    assert base["config"] == {"start": "20230101", "end": "20231231"}
+    assert base.get("start_ts")
+
+
+def test_build_manifest_base_accepts_plain_dict_config(monkeypatch):
+    """非 RunConfig 调用方（如 risk_build/portfolio_build）可直接传 dict 作为 config。"""
+    from factorzen.core import experiment as exp_mod
+
+    base = exp_mod.build_manifest_base(None, {"cov_half_life": 90, "nw_lags": 2})
+
+    assert base["command"] is None
+    assert base["config"] == {"cov_half_life": 90, "nw_lags": 2}
+
+
+def test_build_manifest_base_used_by_run_experiment_unchanged(tmp_path, monkeypatch):
+    """run_experiment() 重构为复用 build_manifest_base 后，对外行为（字段集合/取值）保持不变。"""
+    from factorzen.core import experiment as exp_mod
+    from factorzen.core.config_loader import RunConfig
+
+    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+    cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
+
+    with exp_mod.run_experiment(cfg, run_id="base_reuse_run", command=["fz", "daily-single"]) as exp_dir:
+        pass
+
+    manifest = json.loads((exp_dir / "manifest.json").read_text())
+    assert manifest["schema_version"] == "1"
+    assert manifest["run_id"] == "base_reuse_run"
+    assert manifest["command"] == ["fz", "daily-single"]
+    assert manifest["config"]["factor"] == "momentum_20d"
+    assert isinstance(manifest["git_dirty"], bool)
+    assert isinstance(manifest["pixi_lock_sha256"], str)

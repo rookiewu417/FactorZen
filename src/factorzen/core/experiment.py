@@ -117,6 +117,8 @@ def record_experiment_metadata(exp_dir: Path, key: str, value: Any) -> None:
 
 
 def _config_to_dict(config: Any) -> dict[str, Any]:
+    if isinstance(config, dict):
+        return dict(config)
     if hasattr(config, "model_dump"):
         return config.model_dump()
     if hasattr(config, "__dict__"):
@@ -132,6 +134,41 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
 def _safe_run_id_part(value: object) -> str:
     cleaned = _RUN_ID_SAFE_CHARS.sub("_", str(value)).strip("._-")
     return cleaned or "unknown"
+
+
+def build_manifest_base(
+    command: list[str] | None,
+    config: Any,
+    *,
+    start_dt: datetime | None = None,
+) -> dict[str, Any]:
+    """构造 manifest 中与可复现性相关的基础字段。
+
+    与 ``run_experiment`` 解耦：供不便走完整 run_experiment() 流程（manifest 目录结构/
+    run_id 生成约定与自身耦合较深）的 pipeline（如 risk_build/portfolio_build）独立复用，
+    避免各自重复手写 ``_git_sha()`` 之类精简版逻辑，导致 manifest 缺 command/git_dirty/
+    pixi_lock_sha256/schema_version 等可复现性字段。
+
+    Args:
+        command: 触发本次运行的命令行（如 ``sys.argv``），不可得时传 None。
+        config: 运行配置；可以是 RunConfig 等带 model_dump()/__dict__ 的对象，也可以是
+            调用方已自行拼好的 plain dict（pipeline 自身参数集）。
+        start_dt: 记录的起始时间；为 None 时取 ``datetime.now()``。
+
+    Returns:
+        含 schema_version/git_sha/git_dirty/pixi_lock_sha256/command/config/start_ts 的 dict。
+    """
+    if start_dt is None:
+        start_dt = datetime.now()
+    return {
+        "schema_version": "1",
+        "git_sha": _get_git_sha(),
+        "git_dirty": _get_git_dirty(),
+        "pixi_lock_sha256": _get_pixi_lock_hash(),
+        "command": command,
+        "config": _config_to_dict(config),
+        "start_ts": start_dt.isoformat(),
+    }
 
 
 @contextmanager
@@ -163,17 +200,18 @@ def run_experiment(
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     start_dt = datetime.now()
+    base = build_manifest_base(command, config_dict, start_dt=start_dt)
 
     manifest: dict[str, Any] = {
-        "schema_version": "1",
+        "schema_version": base["schema_version"],
         "run_id": run_id,
-        "git_sha": _get_git_sha(),
-        "git_dirty": _get_git_dirty(),
-        "pixi_lock_sha256": _get_pixi_lock_hash(),
-        "command": command,
-        "config": config_dict,
+        "git_sha": base["git_sha"],
+        "git_dirty": base["git_dirty"],
+        "pixi_lock_sha256": base["pixi_lock_sha256"],
+        "command": base["command"],
+        "config": base["config"],
         "outputs": {},
-        "start_ts": start_dt.isoformat(),
+        "start_ts": base["start_ts"],
         "end_ts": None,
         "duration_seconds": None,
         "status": "running",

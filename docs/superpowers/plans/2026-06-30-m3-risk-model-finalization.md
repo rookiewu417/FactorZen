@@ -692,4 +692,25 @@ git -c user.name=rookiewu417 -c user.email=1007372080@qq.com commit -m "feat(ris
 
 ---
 
+## 完成记录（2026-06-30）
+
+M3 风险模型收口 ✅ 完成入库（15 commits，`044cfdc..7f95e5a`，`feature/platform-upgrade`）。23 个 risk 测试全绿，opus 全分支终审 ship-ready。
+
+**交付：**
+- risk 源码 6 文件（1195 行）首次入库；5 模块补测试（industry / style / exposures / covariance / model）。
+- `run_risk_build` pipeline + 6 产物 + `risk_summary.csv`（因子波动 / 特质风险分布 / R² / 风格暴露 / 等权组合分解，方差占比和 ≈ 1）。
+- `fz risk build` CLI（`--start/--end/--universe/--cov-half-life/--nw-lags/--spec-half-life/--spec-shrinkage`）。
+- README 核心能力表补「挖掘 / 防过拟合 / 风险」三行。
+
+**测试暴露并修复的真实 bug：**
+- `exposures.py` `how="outer"` 在 polars 1.41 抛 `DuplicateError`（链式 join 产生 `ts_code_right`）→ `how="full", coalesce=True`。即 `compute_exposures` 此前在 polars 1.41 根本跑不通。
+- `min_periods` → `min_samples`（polars 1.21+ 改名，消除 ~90 条 DeprecationWarning）。
+
+**评审关键发现（终审兜底）：**
+- "风险守恒"断言 `factor_risk²+specific_risk²≈total_risk²` 经 opus 复算为**数学恒等式（零判别力）**——已加固为跨函数 `predict_risk==decompose.total_risk` + 手算期望 + per-factor MCR 语义 + 协方差 PSD。教训见 memory `conservation-assertion-tautology-trap`。
+
+**已知限制（可接受）：** uncentered OLS 的 `r_squared` 理论可负但实战结构上 ∈[0,1]，manifest 如实记录不裁剪；`n_stocks==0` 空 build 路径无测试覆盖。
+
+---
+
 *M3 收口后，Barra 风险模型有测试保护、能从 `fz risk build` 跑出、有可读摘要，成为可展示成果，并为 M4 组合优化铺路。*

@@ -1,0 +1,86 @@
+# src/factorzen/discovery/mining_session.py
+from __future__ import annotations
+
+import json
+import subprocess
+import time
+from pathlib import Path
+
+import numpy as np
+import polars as pl
+
+from factorzen.discovery.expression import compile_expr, to_expr_string
+from factorzen.discovery.scoring import DataBundle, quick_fitness, score_candidate
+from factorzen.discovery.search.random_search import RandomSearcher
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except Exception:
+        return "unknown"
+
+
+def _factor_values(node, daily: pl.DataFrame) -> pl.DataFrame:
+    df = daily.sort(["ts_code", "trade_date"]).with_columns(compile_expr(node).alias("factor_value"))
+    return df.select(["trade_date", "ts_code", "factor_value"]).filter(
+        pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
+
+
+def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
+                method: str = "random", train_ratio: float = 0.7,
+                out_dir: str = "workspace/mining_sessions") -> dict:
+    t0 = time.perf_counter()
+    rng = np.random.default_rng(seed)
+    # 停牌掩码（与 ExpressionFactor 一致，保证挖掘内 IC 与 fz factor run 一致）+ 派生列
+    daily = daily.sort(["ts_code", "trade_date"])
+    _price = ["open", "high", "low", "close", "open_adj", "high_adj", "low_adj", "close_adj", "vol", "amount"]
+    daily = daily.with_columns([
+        pl.when(pl.col("vol") > 0).then(pl.col(c)).otherwise(None).alias(c)
+        for c in _price if c in daily.columns
+    ]).with_columns([
+        (pl.col("amount") / pl.col("vol")).alias("vwap"),
+        (pl.col("vol") + 1.0).log().alias("log_vol"),
+    ]).with_columns(
+        (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0).alias("ret_1d"))
+    bundle = DataBundle.build(daily, train_ratio=train_ratio)
+    searcher = RandomSearcher(rng, max_depth=3)
+
+    scored: list[dict] = []
+    seen: set[str] = set()
+    for _ in range(n_trials):
+        node = searcher.propose()
+        expr = to_expr_string(node)
+        if expr in seen:
+            continue
+        seen.add(expr)
+        try:
+            fdf = _factor_values(node, daily)
+            if fdf.height < 50:
+                continue
+            sc = score_candidate(fdf, node, bundle, pool={})
+            if sc["n_train"] < 5:
+                continue
+            valid = quick_fitness(fdf, bundle, "valid")
+            scored.append({"expression": expr, "ic_train": sc["ic_train"],
+                           "ir_train": sc["ir_train"], "ic_valid": valid["ic_mean"],
+                           "ir_valid": valid["ir"], "max_corr": sc["max_corr"],
+                           "complexity": sc["complexity"], "fitness": sc["fitness"]})
+        except Exception:
+            continue
+
+    scored.sort(key=lambda d: d["fitness"], reverse=True)
+    top = scored[:top_k]
+
+    session_dir = Path(out_dir) / f"session_{seed}_{method}"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    rows = [{"rank": i + 1, **{k: c[k] for k in
+             ["expression", "ic_train", "ir_train", "ic_valid", "ir_valid", "max_corr", "complexity"]}}
+            for i, c in enumerate(top)]
+    pl.DataFrame(rows).write_csv(session_dir / "candidates.csv") if rows else \
+        (session_dir / "candidates.csv").write_text("rank,expression\n")
+    manifest = {"seed": seed, "method": method, "n_trials": n_trials, "top_k": top_k,
+                "train_end": bundle.train_end, "git_sha": _git_sha(),
+                "duration_seconds": round(time.perf_counter() - t0, 3), "candidates": top}
+    (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+    return {"candidates": top, "n_trials": n_trials, "session_dir": str(session_dir)}

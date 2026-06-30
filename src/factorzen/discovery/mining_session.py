@@ -116,4 +116,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 "train_end": bundle.train_end, "git_sha": _git_sha(),
                 "duration_seconds": round(time.perf_counter() - t0, 3), "candidates": top}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+    from factorzen.discovery.export import export_candidate
+    exported_dir = session_dir / "exported"
+    for i, c in enumerate(top):
+        export_candidate(c["expression"], f"mined_{seed}_{i+1}", str(exported_dir))
     return {"candidates": top, "n_trials": n_trials, "session_dir": str(session_dir)}

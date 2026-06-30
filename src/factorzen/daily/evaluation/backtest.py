@@ -954,6 +954,7 @@ def _run_precomputed_weights_backtest_fast(
     shape = (len(trade_dates), len(codes))
     open_px = np.full(shape, np.nan, dtype=float)
     pre_close = np.full(shape, np.nan, dtype=float)
+    vol_data = np.full(shape, np.nan, dtype=float)
     overnight_ret = np.zeros(shape, dtype=float)
     intraday_ret = np.zeros(shape, dtype=float)
 
@@ -966,6 +967,7 @@ def _run_precomputed_weights_backtest_fast(
             continue
         open_px[date_idx, code_idx] = float(row["open"])
         pre_close[date_idx, code_idx] = float(row["pre_close"])
+        vol_data[date_idx, code_idx] = float(row["vol"] or 0.0)
         overnight_ret[date_idx, code_idx] = float(row["overnight_ret"] or 0.0)
         intraday_ret[date_idx, code_idx] = float(row["intraday_ret"] or 0.0)
 
@@ -1030,12 +1032,15 @@ def _run_precomputed_weights_backtest_fast(
         if np.any(active):
             open_today = open_px[i]
             pre_close_today = pre_close[i]
+            vol_today = vol_data[i]
             valid_price = (
                 np.isfinite(open_today)
                 & np.isfinite(pre_close_today)
                 & (open_today > 0)
                 & (pre_close_today > 0)
             )
+            # Suspended stocks have vol == 0; block both buy and sell
+            not_suspended = np.isfinite(vol_today) & (vol_today > 0)
             opening_pct = np.zeros(len(codes), dtype=float)
             opening_pct[valid_price] = (
                 open_today[valid_price] / pre_close_today[valid_price] - 1.0
@@ -1043,6 +1048,7 @@ def _run_precomputed_weights_backtest_fast(
             tradable = (
                 active
                 & valid_price
+                & not_suspended
                 & ~((delta > 0) & (opening_pct >= board_limits))
                 & ~((delta < 0) & (opening_pct <= -board_limits))
             )
@@ -1230,13 +1236,19 @@ def _apply_trade_constraints(
     ):
         return 0.0, "missing_price"
 
+    # Check if stock is suspended (vol == 0)
+    vol = rec.get("vol")
+    if vol is not None and float(vol) == 0.0:
+        return 0.0, "suspended"
+
     opening_pct = (open_price / pre_close - 1.0) * 100.0
     board_limit_pct = _get_board_limit(code) * 100 if code else config.limit_up_pct
     effective_limit_up = board_limit_pct
     effective_limit_down = -board_limit_pct
-    if delta > 0 and opening_pct >= effective_limit_up:
+    # 浮点容差：防止 (11.98/10-1)*100=19.7999... >= 19.8 漏判
+    if delta > 0 and opening_pct >= effective_limit_up - 1e-9:
         return 0.0, "limit_up"
-    if delta < 0 and opening_pct <= effective_limit_down:
+    if delta < 0 and opening_pct <= effective_limit_down + 1e-9:
         return 0.0, "limit_down"
 
     adv_value = float(adv) if adv is not None else 0.0

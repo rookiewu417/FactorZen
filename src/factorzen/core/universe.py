@@ -16,6 +16,8 @@
     custom = create_universe("20260513", filters=["st", "new_listing"])
 """
 
+from __future__ import annotations
+
 import calendar
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -602,3 +604,103 @@ def get_index_members(index_code: str, date_str: str) -> pl.DataFrame:
     except Exception as e:
         logger.warning(f"[universe] {index_code} 成分股加载失败 ({e})，返回全市场")
         return get_universe(date_str, "all_a")
+
+
+# ══════════════════════════════════════════════════════════
+# 股票池快照（含微观结构标记）
+# ══════════════════════════════════════════════════════════
+
+
+def get_universe_snapshot(
+    date_str: str,
+    universe_name: str = "all_a",
+) -> pl.DataFrame:
+    """获取指定日期股票池快照，附带微观结构布尔标记列。
+
+    在 ``get_universe`` 返回的基础池上追加以下列，方便下游（风险模型、
+    组合优化器等）直接消费，无需再重复调用各过滤函数。
+
+    追加列
+    ------
+    - ``is_st``         : ``True`` 如果股票名含 ST 或 PT
+    - ``is_suspended``  : ``True`` 如果当日成交量 == 0
+    - ``is_limit_up``   : ``True`` 如果当日涨幅 >= 板块涨停阈值
+    - ``is_limit_down`` : ``True`` 如果当日跌幅 <= -板块跌停阈值
+    - ``is_new_listing``: ``True`` 如果上市不足 250 个自然日
+
+    Parameters
+    ----------
+    date_str : str
+        交易日 ``"YYYYMMDD"``。
+    universe_name : str, default ``"all_a"``
+        基础股票池名称，同 ``get_universe``。
+
+    Returns
+    -------
+    pl.DataFrame
+        在基础池列之上追加 5 列布尔标记。
+
+    Notes
+    -----
+    当日线数据不可用时，``is_suspended`` / ``is_limit_up`` / ``is_limit_down``
+    均填充为 ``False``（优雅降级）。
+    """
+    base = get_universe(date_str, universe_name)
+
+    # ── is_st ──
+    base = base.with_columns(
+        pl.col("name").str.contains("ST|PT").alias("is_st"),
+    )
+
+    # ── is_new_listing ──
+    target_date = datetime.strptime(date_str, "%Y%m%d").date()
+    cutoff = target_date - timedelta(days=250)
+    base = base.with_columns(
+        (pl.col("list_date") > cutoff).alias("is_new_listing"),
+    )
+
+    # ── 日线数据相关标记 ──
+    from factorzen.core.storage import load_parquet
+
+    try:
+        daily = load_parquet("daily", start=date_str, end=date_str).collect()
+    except Exception as e:
+        logger.warning(f"[universe_snapshot] 读取日线失败 ({e})，相关标记填 False")
+        daily = pl.DataFrame()
+
+    if daily.is_empty():
+        base = base.with_columns(
+            pl.lit(False).alias("is_suspended"),
+            pl.lit(False).alias("is_limit_up"),
+            pl.lit(False).alias("is_limit_down"),
+        )
+        return base
+
+    # 构建每只股票的涨跌停阈值
+    codes = daily["ts_code"].unique().to_list()
+    limits = {code: _get_board_limit(code) * 100 for code in codes}
+    limit_df = pl.DataFrame(
+        {
+            "ts_code": list(limits.keys()),
+            "_limit_pct": list(limits.values()),
+        }
+    )
+
+    daily_with_limit = daily.join(limit_df, on="ts_code", how="left")
+
+    markers = daily_with_limit.select(
+        [
+            "ts_code",
+            (pl.col("vol") == 0).fill_null(True).alias("is_suspended"),
+            (pl.col("pct_chg") >= pl.col("_limit_pct")).fill_null(False).alias("is_limit_up"),
+            (pl.col("pct_chg") <= -pl.col("_limit_pct")).fill_null(False).alias("is_limit_down"),
+        ]
+    )
+
+    base = base.join(markers, on="ts_code", how="left").with_columns(
+        pl.col("is_suspended").fill_null(False),
+        pl.col("is_limit_up").fill_null(False),
+        pl.col("is_limit_down").fill_null(False),
+    )
+
+    return base

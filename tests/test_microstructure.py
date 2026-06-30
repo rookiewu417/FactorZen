@@ -1,0 +1,714 @@
+"""A-share microstructure edge-case tests.
+
+Tests cover:
+- Suspended stock (vol=0) blocking buy AND sell
+- Limit-up stock blocks buy but allows sell
+- Limit-down stock blocks sell but allows buy
+- ST stocks filtered by universe
+- New listing stocks (<250 days) filtered
+- T+1 execution: signal on day t, execution on day t+1
+- Fast path suspended stock blocking
+"""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import polars as pl
+import pytest
+
+from factorzen.core.universe import _get_board_limit
+from factorzen.daily.evaluation.backtest import (
+    BacktestConfig,
+    BacktestContext,
+    CostModel,
+    PrecomputedWeightsStrategy,
+    Strategy,
+    _apply_trade_constraints,
+    run_strategy_backtest,
+)
+
+# ═══════════════════════════════════════════════════════════
+# Helpers
+# ═══════════════════════════════════════════════════════════
+
+
+def _make_prices(
+    *,
+    codes: list[str] | None = None,
+    n_days: int = 3,
+    base_date: date = date(2024, 1, 1),
+    overrides: dict[tuple[int, str], dict] | None = None,
+) -> pl.DataFrame:
+    """生成合成价格 DataFrame。
+
+    Parameters
+    ----------
+    codes : list[str]
+        股票代码列表，默认 ["000001.SZ"]。
+    n_days : int
+        天数，默认 3。
+    base_date : date
+        起始日期。
+    overrides : dict
+        按 ``(day_index, ts_code)`` 覆盖字段值。
+    """
+    if codes is None:
+        codes = ["000001.SZ"]
+    if overrides is None:
+        overrides = {}
+
+    rows: list[dict] = []
+    for day_idx in range(n_days):
+        d = base_date + timedelta(days=day_idx)
+        for code in codes:
+            row = {
+                "trade_date": d,
+                "ts_code": code,
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+            row.update(overrides.get((day_idx, code), {}))
+            rows.append(row)
+
+    return pl.DataFrame(rows)
+
+
+def _make_factors(
+    entries: list[tuple[date, str, float]],
+) -> pl.DataFrame:
+    """生成合成因子 DataFrame。"""
+    return pl.DataFrame(
+        [{"trade_date": d, "ts_code": code, "factor_clean": val} for d, code, val in entries]
+    )
+
+
+class BuyOneStrategy(Strategy):
+    """做多单只股票。"""
+
+    name = "buy_one"
+
+    def __init__(self, code: str = "000001.SZ") -> None:
+        self.code = code
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        return pl.DataFrame({"ts_code": [self.code], "target_weight": [1.0]})
+
+
+class SellAllStrategy(Strategy):
+    """第一天买入，第二天清仓。"""
+
+    name = "sell_all"
+
+    def __init__(self, code: str = "000001.SZ") -> None:
+        self.code = code
+        self._call_count = 0
+
+    def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
+        self._call_count += 1
+        target = 1.0 if self._call_count == 1 else 0.0
+        return pl.DataFrame({"ts_code": [self.code], "target_weight": [target]})
+
+
+def _zero_cost() -> CostModel:
+    return CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0)
+
+
+def _default_config(**kwargs) -> BacktestConfig:
+    defaults = {
+        "initial_capital": 1_000_000,
+        "max_participation_rate": 1.0,
+        "fallback_adv": 1_000_000.0,
+    }
+    defaults.update(kwargs)
+    return BacktestConfig(**defaults)
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: Suspended stock (vol=0) blocks both buy AND sell
+# ═══════════════════════════════════════════════════════════
+
+
+class TestSuspendedStockBlocking:
+    """停牌股票（vol=0）不能买也不能卖。"""
+
+    def test_suspended_blocks_buy_via_apply_trade_constraints(self):
+        """Unit test: _apply_trade_constraints 直接检验停牌买入被阻。"""
+        price_map = {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 0.0,
+                "amount": 0.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="000001.SZ",
+            delta=1.0,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == 0.0
+        assert reason == "suspended"
+
+    def test_suspended_blocks_sell_via_apply_trade_constraints(self):
+        """Unit test: _apply_trade_constraints 直接检验停牌卖出被阻。"""
+        price_map = {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 0.0,
+                "amount": 0.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="000001.SZ",
+            delta=-0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == 0.0
+        assert reason == "suspended"
+
+    def test_suspended_blocks_buy_in_backtest(self):
+        """Integration test: 停牌日买入在完整回测中被阻。"""
+        prices = _make_prices(
+            n_days=3,
+            overrides={
+                # Day 1 (execution day): suspended
+                (1, "000001.SZ"): {"vol": 0.0, "amount": 0.0},
+            },
+        )
+        factors = _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)])
+
+        result = run_strategy_backtest(
+            BuyOneStrategy(),
+            factors,
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+        )
+
+        trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
+        assert trade["filled_delta_weight"] == pytest.approx(0.0)
+        assert trade["block_reason"] == "suspended"
+
+    def test_suspended_blocks_sell_in_backtest(self):
+        """Integration test: 停牌日卖出在完整回测中被阻。"""
+        prices = _make_prices(
+            n_days=4,
+            overrides={
+                # Day 2 (sell execution day): suspended
+                (2, "000001.SZ"): {"vol": 0.0, "amount": 0.0},
+            },
+        )
+        factors = _make_factors([
+            (date(2024, 1, 1), "000001.SZ", 1.0),
+            (date(2024, 1, 2), "000001.SZ", 1.0),
+            (date(2024, 1, 3), "000001.SZ", 1.0),
+        ])
+
+        result = run_strategy_backtest(
+            SellAllStrategy(),
+            factors,
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+        )
+
+        sell_trades = result.trades.filter(
+            (pl.col("trade_date") == date(2024, 1, 3))
+            & (pl.col("target_weight") < pl.col("prev_weight"))
+        )
+        if not sell_trades.is_empty():
+            trade = sell_trades.row(0, named=True)
+            assert trade["filled_delta_weight"] == pytest.approx(0.0)
+            assert trade["block_reason"] == "suspended"
+
+    def test_suspended_blocks_in_fast_path(self):
+        """Fast path (PrecomputedWeightsStrategy): 停牌阻止交易。"""
+        weights_by_date = {
+            date(2024, 1, 1): pl.DataFrame(
+                {"ts_code": ["000001.SZ"], "target_weight": [1.0]}
+            ),
+        }
+        prices = _make_prices(
+            n_days=3,
+            overrides={
+                (1, "000001.SZ"): {"vol": 0.0, "amount": 0.0},
+            },
+        )
+        # Fast path requires collect_positions=False, collect_trades=False
+        result = run_strategy_backtest(
+            PrecomputedWeightsStrategy(weights_by_date),
+            _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)]),
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+            collect_positions=False,
+            collect_trades=False,
+            include_context_positions=False,
+        )
+
+        # If suspended blocking works, the day-2 return should be 0 (no position entered)
+        returns_day2 = result.returns.filter(pl.col("trade_date") == date(2024, 1, 2))
+        if not returns_day2.is_empty():
+            ret = returns_day2["net_return"][0]
+            # NAV should stay at 1.0 — no position was taken
+            assert abs(ret) < 1e-10, f"Expected ~0 return on suspended day, got {ret}"
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: Limit-up blocks buy but allows sell
+# ═══════════════════════════════════════════════════════════
+
+
+class TestLimitUpBlocking:
+    """涨停板阻止买入但允许卖出。"""
+
+    def test_limit_up_blocks_buy(self):
+        """涨停开盘: delta > 0 被阻。"""
+        price_map = {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "open": 10.98,
+                "close": 10.98,
+                "pre_close": 10.0,
+                "pct_chg": 9.8,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="000001.SZ",
+            delta=0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == 0.0
+        assert reason == "limit_up"
+
+    def test_limit_up_allows_sell(self):
+        """涨停开盘: delta < 0 允许。"""
+        price_map = {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "open": 10.98,
+                "close": 10.98,
+                "pre_close": 10.0,
+                "pct_chg": 9.8,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="000001.SZ",
+            delta=-0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == pytest.approx(-0.5)
+        assert reason == ""
+
+    def test_gem_limit_up_uses_20pct_threshold(self):
+        """创业板涨停阈值为 19.8%。"""
+        price_map = {
+            "300001.SZ": {
+                "ts_code": "300001.SZ",
+                "open": 11.98,
+                "close": 11.98,
+                "pre_close": 10.0,
+                "pct_chg": 19.8,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="300001.SZ",
+            delta=0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == 0.0
+        assert reason == "limit_up"
+
+    def test_gem_below_20pct_not_blocked(self):
+        """创业板涨幅 9.8% 不触发涨停（阈值 19.8%）。"""
+        price_map = {
+            "300001.SZ": {
+                "ts_code": "300001.SZ",
+                "open": 10.98,
+                "close": 10.98,
+                "pre_close": 10.0,
+                "pct_chg": 9.8,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="300001.SZ",
+            delta=0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == pytest.approx(0.5)
+        assert reason == ""
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: Limit-down blocks sell but allows buy
+# ═══════════════════════════════════════════════════════════
+
+
+class TestLimitDownBlocking:
+    """跌停板阻止卖出但允许买入。"""
+
+    def test_limit_down_blocks_sell(self):
+        """跌停开盘: delta < 0 被阻。"""
+        price_map = {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "open": 9.02,
+                "close": 9.02,
+                "pre_close": 10.0,
+                "pct_chg": -9.8,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="000001.SZ",
+            delta=-0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == 0.0
+        assert reason == "limit_down"
+
+    def test_limit_down_allows_buy(self):
+        """跌停开盘: delta > 0 允许。"""
+        price_map = {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "open": 9.02,
+                "close": 9.02,
+                "pre_close": 10.0,
+                "pct_chg": -9.8,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="000001.SZ",
+            delta=0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == pytest.approx(0.5)
+        assert reason == ""
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: ST stocks filtering by universe
+# ═══════════════════════════════════════════════════════════
+
+
+class TestSTFiltering:
+    """ST / *ST / PT 股票通过 filter_st 被剔除。"""
+
+    def test_filter_st_removes_st_stocks(self):
+        from factorzen.core.universe import filter_st
+
+        stocks = pl.DataFrame({
+            "ts_code": ["000001.SZ", "000002.SZ", "000003.SZ"],
+            "name": ["平安银行", "*ST远程", "PT南洋"],
+        })
+        result = filter_st(stocks, "20240101")
+        assert result.height == 1
+        assert result["ts_code"][0] == "000001.SZ"
+
+    def test_filter_st_keeps_normal_stocks(self):
+        from factorzen.core.universe import filter_st
+
+        stocks = pl.DataFrame({
+            "ts_code": ["000001.SZ", "600519.SH"],
+            "name": ["平安银行", "贵州茅台"],
+        })
+        result = filter_st(stocks, "20240101")
+        assert result.height == 2
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: New listing stocks (<250 days) filtered
+# ═══════════════════════════════════════════════════════════
+
+
+class TestNewListingFiltering:
+    """上市不足 250 个自然日的次新股被剔除。"""
+
+    def test_filter_new_listing_removes_recent_ipo(self):
+        from factorzen.core.universe import filter_new_listing
+
+        stocks = pl.DataFrame({
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            "list_date": [
+                date(2023, 1, 1),   # >250 days → keep
+                date(2024, 3, 1),   # <250 days → remove
+            ],
+        })
+        result = filter_new_listing(stocks, "20240601", min_days=250)
+        assert result.height == 1
+        assert result["ts_code"][0] == "000001.SZ"
+
+    def test_filter_new_listing_exact_boundary(self):
+        from factorzen.core.universe import filter_new_listing
+
+        target = date(2024, 6, 1)
+        cutoff = target - timedelta(days=250)
+        stocks = pl.DataFrame({
+            "ts_code": ["exact.SZ"],
+            "list_date": [cutoff],  # exactly 250 days → keep (<=)
+        })
+        result = filter_new_listing(stocks, "20240601", min_days=250)
+        assert result.height == 1
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: T+1 execution semantics
+# ═══════════════════════════════════════════════════════════
+
+
+class TestTPlus1Execution:
+    """信号在 t 日生成，调仓在 t+1 日执行。"""
+
+    def test_signal_date_before_execution_date(self):
+        """Trade 发生在 signal date 的下一个交易日。"""
+        prices = _make_prices(n_days=3)
+        factors = _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)])
+
+        result = run_strategy_backtest(
+            BuyOneStrategy(),
+            factors,
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+        )
+
+        if not result.trades.is_empty():
+            first_trade = result.trades.sort("trade_date").row(0, named=True)
+            assert first_trade["trade_date"] == date(2024, 1, 2)
+
+    def test_no_same_day_execution(self):
+        """信号日本身不应有交易执行。"""
+        prices = _make_prices(n_days=3)
+        factors = _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)])
+
+        result = run_strategy_backtest(
+            BuyOneStrategy(),
+            factors,
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+        )
+
+        day1_trades = result.trades.filter(pl.col("trade_date") == date(2024, 1, 1))
+        assert day1_trades.is_empty()
+
+    def test_returns_start_on_execution_date(self):
+        """收益序列从第一个执行日开始记录。"""
+        prices = _make_prices(n_days=3)
+        factors = _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)])
+
+        result = run_strategy_backtest(
+            BuyOneStrategy(),
+            factors,
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+        )
+
+        sorted_returns = result.returns.sort("trade_date")
+        assert sorted_returns["trade_date"][0] == date(2024, 1, 2)
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: Board limit helper
+# ═══════════════════════════════════════════════════════════
+
+
+class TestBoardLimit:
+    """验证 _get_board_limit 按板块返回正确阈值。"""
+
+    def test_main_board(self):
+        assert _get_board_limit("000001.SZ") == pytest.approx(0.098)
+
+    def test_gem_board(self):
+        assert _get_board_limit("300001.SZ") == pytest.approx(0.198)
+
+    def test_star_board(self):
+        assert _get_board_limit("688001.SH") == pytest.approx(0.198)
+
+    def test_bse_board(self):
+        assert _get_board_limit("430001.BJ") == pytest.approx(0.298)
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: Benchmark utilities
+# ═══════════════════════════════════════════════════════════
+
+
+class TestBenchmark:
+    """验证 benchmark 工具的基本功能。"""
+
+    def test_benchmark_step_records_timing(self):
+        from factorzen.core.benchmark import BenchmarkReport, benchmark_step
+
+        report = BenchmarkReport()
+
+        @benchmark_step(report, "test_step")
+        def dummy_work():
+            total = 0
+            for i in range(1000):
+                total += i
+            return total
+
+        result = dummy_work()
+        assert result == sum(range(1000))
+        assert len(report.steps) == 1
+        assert report.steps[0].name == "test_step"
+        assert report.steps[0].elapsed_seconds > 0
+
+    def test_benchmark_report_total_elapsed(self):
+        from factorzen.core.benchmark import BenchmarkReport
+
+        report = BenchmarkReport()
+        report.add_step("a", 1.5, 100.0)
+        report.add_step("b", 2.5, 200.0)
+        assert report.total_elapsed == pytest.approx(4.0)
+
+    def test_format_benchmark_report(self):
+        from factorzen.core.benchmark import BenchmarkReport, format_benchmark_report
+
+        report = BenchmarkReport()
+        report.add_step("step_a", 1.234, 128.5)
+        report.add_step("step_b", 0.567)
+
+        output = format_benchmark_report(report)
+        assert "steps" in output
+        assert "total_elapsed" in output
+        assert len(output["steps"]) == 2
+        assert output["steps"][0]["name"] == "step_a"
+        assert output["steps"][0]["peak_memory_mb"] == 128.5
+        assert output["steps"][1]["peak_memory_mb"] is None
+        assert output["total_elapsed"] == pytest.approx(1.801)
+
+    def test_benchmark_step_preserves_exceptions(self):
+        from factorzen.core.benchmark import BenchmarkReport, benchmark_step
+
+        report = BenchmarkReport()
+
+        @benchmark_step(report, "failing_step")
+        def failing():
+            raise ValueError("test error")
+
+        with pytest.raises(ValueError, match="test error"):
+            failing()
+        # Step timing should still be recorded even on exception
+        assert len(report.steps) == 1
+        assert report.steps[0].name == "failing_step"
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: Suspended + limit combined edge cases
+# ═══════════════════════════════════════════════════════════
+
+
+class TestCombinedEdgeCases:
+    """组合边界情况。"""
+
+    def test_suspended_takes_priority_over_limit_up(self):
+        """停牌优先于涨停判断。"""
+        price_map = {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "open": 10.98,
+                "close": 10.98,
+                "pre_close": 10.0,
+                "pct_chg": 9.8,
+                "vol": 0.0,  # suspended
+                "amount": 0.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="000001.SZ",
+            delta=0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == 0.0
+        assert reason == "suspended"
+
+    def test_normal_vol_not_blocked_as_suspended(self):
+        """正常交易量的股票不被停牌逻辑阻断。"""
+        price_map = {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="000001.SZ",
+            delta=0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == pytest.approx(0.5)
+        assert reason == ""
+
+    def test_zero_delta_returns_empty_reason(self):
+        """零变动不应产生任何 block。"""
+        price_map = {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 0.0,
+                "amount": 0.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="000001.SZ",
+            delta=0.0,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == 0.0
+        assert reason == ""

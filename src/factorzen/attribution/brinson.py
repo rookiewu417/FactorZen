@@ -24,7 +24,7 @@ def brinson_attribution(port_weights, bench_weights, stock_returns, sectors) -> 
     w_p = np.asarray(port_weights, dtype=float)
     w_b = np.asarray(bench_weights, dtype=float)
     r = np.asarray(stock_returns, dtype=float)
-    secs = list(sectors)
+    secs = ["" if s is None else s for s in sectors]
     uniq = sorted(set(secs))
     r_b_total = float(w_b @ r)
     allocation: dict[str, float] = {}

@@ -30,3 +30,26 @@ def test_pure_allocation():
     res = brinson_attribution(port_w, bench_w, stock_ret, sectors)
     assert abs(sum(res.selection.values())) < 1e-9   # 选股效应≈0
     assert abs(sum(res.allocation.values())) > 1e-6   # 配置效应非0
+
+
+def test_brinson_handles_none_sectors():
+    """sectors 含 None 时不崩溃；None 归入 "" 行业；守恒仍成立。"""
+    port_w = np.array([0.4, 0.1, 0.3, 0.2])
+    bench_w = np.array([0.25, 0.25, 0.25, 0.25])
+    sectors = ["A", None, "B", None]   # 两只股票 industry 为 null
+    stock_ret = np.array([0.05, 0.03, -0.01, 0.02])
+
+    # 不应抛出 TypeError
+    res = brinson_attribution(port_w, bench_w, stock_ret, sectors)
+    assert isinstance(res, BrinsonResult)
+
+    # None 应归入 "" 行业，因此 "" 键必须存在
+    assert "" in res.allocation
+    assert "" in res.selection
+
+    # 守恒：Σ(配置+选股) ≈ port_ret − bench_ret（用独立计算的值对账）
+    port_ret = float(port_w @ stock_ret)
+    bench_ret = float(bench_w @ stock_ret)
+    excess = port_ret - bench_ret
+    total = sum(res.allocation.values()) + sum(res.selection.values())
+    assert math.isclose(total, excess, rel_tol=1e-9, abs_tol=1e-12)

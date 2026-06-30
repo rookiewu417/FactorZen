@@ -431,7 +431,7 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
         np.full(len(codes), 1.0 / len(codes)) if args.industry_neutral else None
     )
     _ind_map = dict(zip(stocks["ts_code"].to_list(), stocks["industry"].to_list(), strict=False))
-    sectors = [_ind_map.get(c, "") for c in codes]
+    sectors = [(_ind_map.get(c) or "") for c in codes]
     res = run_portfolio(
         alpha,
         risk_result,

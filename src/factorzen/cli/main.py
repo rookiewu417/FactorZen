@@ -286,6 +286,33 @@ def _cmd_runs_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mine_search(args: argparse.Namespace) -> int:
+    from factorzen.pipelines.factor_mine import run_mine
+
+    res = run_mine(
+        start=args.start,
+        end=args.end,
+        universe=args.universe,
+        n_trials=args.trials,
+        top_k=args.top_k,
+        seed=args.seed,
+        method=args.method,
+    )
+    print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {res['session_dir']}")
+    return 0
+
+
+def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    csv = Path(args.session_dir) / "candidates.csv"
+    if not csv.exists():
+        print(f"[mine] 找不到 {csv}")
+        return 2
+    print(csv.read_text(encoding="utf-8"))
+    return 0
+
+
 def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("name", nargs="?", help="Factor name")
     parser.add_argument("--start", default=None, help="Start date YYYYMMDD")
@@ -463,6 +490,24 @@ def build_parser() -> argparse.ArgumentParser:
     show_cmd = runs_sub.add_parser("show", help="Show one run manifest")
     show_cmd.add_argument("run_id")
     show_cmd.set_defaults(func=_cmd_runs_show)
+
+    # ── fz mine ──（与 fz factor 并列的顶层命令组）
+    mine = sub.add_parser("mine", help="Factor mining workflows")
+    mine_sub = mine.add_subparsers(dest="mine_command", required=True)
+
+    m_search = mine_sub.add_parser("search", help="Search candidate factor expressions")
+    m_search.add_argument("--start", required=True, help="Start date YYYYMMDD")
+    m_search.add_argument("--end", required=True, help="End date YYYYMMDD")
+    m_search.add_argument("--universe", default=None, help="Universe name (e.g. csi500)")
+    m_search.add_argument("--method", choices=["random", "genetic"], default="random")
+    m_search.add_argument("--trials", type=int, default=200)
+    m_search.add_argument("--top-k", dest="top_k", type=int, default=10)
+    m_search.add_argument("--seed", type=int, default=42)
+    m_search.set_defaults(func=_cmd_mine_search)
+
+    m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
+    m_lb.add_argument("session_dir", help="Path to a mining session directory")
+    m_lb.set_defaults(func=_cmd_mine_leaderboard)
 
     return parser
 

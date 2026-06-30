@@ -12,14 +12,20 @@ FactorZen — 端到端、可复现的 A 股量化研究平台。完整链路:**
 
 ```bash
 pixi run fz <command>      # CLI 入口 = python -m factorzen.cli.main
-pixi run test              # pytest tests/ -v (约 1111 测试)
-pixi run lint              # ruff check .      ← 全仓库!
-pixi run typecheck         # mypy              ← 全仓库!
+pixi run test              # pytest tests/ -v (约 1116 测试)
+pixi run lint              # ruff check .      ← 全仓库(含 tests/)!
+pixi run typecheck         # mypy(范围 = src/factorzen 整包)
 pixi run format            # ruff format .
 pixi run coverage          # tools/run_coverage.py
 ```
 
-**⚠️ 提交前必跑 `pixi run lint` 和 `pixi run typecheck`,它们扫描的是「整个仓库」,不是你改的文件。** 本项目 CI(`.github/workflows/ci.yml`)依次跑 Lint→Type check→Test→Coverage,任一红则 fail。历史教训:只 `ruff check src/factorzen/<改动模块>/` 会漏掉 `tests/` 的 lint、漏掉别处的 mypy 类型错,push 后 CI 才炸。**改完一定全仓库 lint+typecheck。**
+跑单个测试:`pixi run -- pytest tests/test_xxx.py::test_name -v`。
+
+**⚠️ 提交前必跑 `pixi run lint` 和 `pixi run typecheck`,它们扫的都不止你改的那个模块:**
+- `lint` = `ruff check .`,扫**整个仓库**(连 `tests/` 都算)。
+- `typecheck` = `mypy`,范围由 `pyproject.toml` 的 `[tool.mypy] files = ["src/factorzen"]` 固定,扫**整个 `src/factorzen`**(不含 tests)。
+
+本项目 CI(`.github/workflows/ci.yml`)依次跑 Lint→Type check→Test→Coverage,任一红则 fail。历史教训:只 `ruff check src/factorzen/<改动模块>/` 会漏掉 `tests/` 的 lint、漏掉 `src/` 别处的 mypy 类型错,push 后 CI 才炸。**改完一定全仓库 lint + 全 src typecheck。**
 
 ## 架构地图(模块 → 能力)
 

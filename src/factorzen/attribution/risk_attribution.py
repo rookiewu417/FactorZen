@@ -37,10 +37,10 @@ def risk_factor_attribution(
     specific_return = port_ret - sum(factor_ret_contrib.values())
     # 风险贡献复用 M3
     decomp = RiskModel().decompose_risk(w, risk_result)
-    factor_risk_contrib = {n: float(decomp.get(n, 0.0)) for n in names}
+    factor_risk_contrib = {n: float(decomp[n]) for n in names}
     return RiskAttributionResult(
         factor_return_contrib=factor_ret_contrib,
         factor_risk_contrib=factor_risk_contrib,
         specific_return=specific_return,
-        specific_risk=float(decomp.get("specific_risk", 0.0)),
+        specific_risk=float(decomp["specific_risk"]),
     )

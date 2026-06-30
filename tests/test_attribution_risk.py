@@ -25,12 +25,12 @@ def test_return_attribution_conserves():
     stock_ret = np.array([0.03, 0.01, -0.02])      # 个股实际收益
     res = risk_factor_attribution(w, r, factor_ret, stock_returns=stock_ret)
     assert isinstance(res, RiskAttributionResult)
-    # 组合收益 = Σ 因子贡献 + 特异
-    port_ret = float(w @ stock_ret)
-    total_attrib = sum(res.factor_return_contrib.values()) + res.specific_return
-    assert math.isclose(total_attrib, port_ret, rel_tol=1e-9)
-    # 因子收益贡献 = 组合暴露 × 因子收益
+    # 特异收益用独立公式验证（非代数余项，有判别力）
+    f_vec = np.array([factor_ret["size"], factor_ret["value"]])   # 顺序与 factor_names 一致
     Xw = r.factor_exposures.matrix.T @ w
+    expected_specific = float(w @ stock_ret) - float(Xw @ f_vec)
+    assert math.isclose(res.specific_return, expected_specific, rel_tol=1e-9)
+    # 因子收益贡献 = 组合暴露 × 因子收益（有判别力）
     assert math.isclose(res.factor_return_contrib["size"], Xw[0] * 0.02, rel_tol=1e-9)
 
 

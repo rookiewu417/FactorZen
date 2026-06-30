@@ -197,4 +197,5 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     exported_dir = session_dir / "exported"
     for i, c in enumerate(top):
         export_candidate(c["expression"], f"mined_{seed}_{i+1}", str(exported_dir))
-    return {"candidates": top, "n_trials": n_evaluated, "session_dir": str(session_dir)}
+    return {"candidates": top, "n_trials": n_evaluated, "session_dir": str(session_dir),
+            "holdout_start": str(holdout_start), "mining_end": str(daily["trade_date"].max())}

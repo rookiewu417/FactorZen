@@ -62,3 +62,5 @@ def test_session_has_guard_metrics_and_holdout_isolated(tmp_path):
             assert key in c
         assert c["n_trials"] > 0          # 真实评估数（非 CLI n_trials 摆设）
         assert 0.0 <= c["pbo"] <= 1.0 or c["pbo"] != c["pbo"]  # [0,1] 或 nan
+    # holdout 永久隔离：挖掘期数据严格早于 holdout（删除 daily=mining_df 会让此断言失败）
+    assert res["mining_end"] < res["holdout_start"]

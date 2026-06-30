@@ -131,7 +131,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             scored.append({"expression": expr, "ic_train": sc["ic_train"],
                            "ir_train": sc["ir_train"], "ic_valid": valid["ic_mean"],
                            "ir_valid": valid["ir"], "max_corr": sc["max_corr"],
-                           "complexity": sc["complexity"], "fitness": sc["fitness"]})
+                           "complexity": sc["complexity"], "fitness": sc["fitness"],
+                           "n_train": sc["n_train"]})
         except Exception as e:
             n_errors += 1
             last_err = e
@@ -167,12 +168,6 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     ledger.record(eval_n)
     n_evaluated = ledger.n_trials
 
-    if eval_start is not None:
-        from datetime import datetime as _dt
-        _es_date = _dt.strptime(eval_start, "%Y%m%d").date()
-        n_obs_mining = daily.filter(pl.col("trade_date") >= _es_date)["trade_date"].n_unique()
-    else:
-        n_obs_mining = daily["trade_date"].n_unique()  # mining 段交易日数 ≈ IC 序列长度
     ir_pool = np.array([c["ir_train"] for c in scored]) if scored else np.array([0.0])
     sharpe_var = float(ir_pool.var()) if ir_pool.size > 1 else 1.0
     pbo = _pool_pbo(scored, daily, bundle, eval_start)  # 候选池(mining 段)日度 IC 矩阵 → PBO
@@ -183,7 +178,10 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             h_ic, _h_ir, (ci_lo, _ci_hi) = holdout_ic(fdf_hold, holdout_df)
         else:
             h_ic, ci_lo = float("nan"), float("nan")
-        _dsr, p = deflated_sharpe(c["ir_train"], n_evaluated, n_obs_mining, sharpe_variance=sharpe_var)
+        # DSR 显著性检验须用该候选自己在 train 段的真实样本数(n_train)，
+        # 不能用 mining 全段交易日数——后者比 train 段大约 1/train_ratio 倍，
+        # 会系统性放大显著性（让候选看起来比实际更显著，危险方向）。
+        _dsr, p = deflated_sharpe(c["ir_train"], n_evaluated, c["n_train"], sharpe_variance=sharpe_var)
         c["n_trials"] = n_evaluated
         c["pbo"] = round(pbo, 4) if pbo == pbo else float("nan")
         c["holdout_ic"] = round(float(h_ic), 4) if h_ic == h_ic else float("nan")

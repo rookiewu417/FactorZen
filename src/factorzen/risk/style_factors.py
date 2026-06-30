@@ -160,11 +160,11 @@ def factor_momentum(daily_data: pl.DataFrame, daily_basic: pl.DataFrame) -> pl.D
     # 252 日累计对数收益 与 21 日累计对数收益
     df = df.with_columns(
         pl.col("log_ret")
-        .rolling_sum(window_size=252, min_periods=252)
+        .rolling_sum(window_size=252, min_samples=252)
         .over("ts_code")
         .alias("cum_252"),
         pl.col("log_ret")
-        .rolling_sum(window_size=21, min_periods=21)
+        .rolling_sum(window_size=21, min_samples=21)
         .over("ts_code")
         .alias("cum_21"),
     )
@@ -199,7 +199,7 @@ def factor_volatility(daily_data: pl.DataFrame, daily_basic: pl.DataFrame) -> pl
 
     df = df.with_columns(
         pl.col("ret")
-        .rolling_std(window_size=60, min_periods=60)
+        .rolling_std(window_size=60, min_samples=60)
         .over("ts_code")
         .alias("factor_value")
     )
@@ -233,7 +233,7 @@ def factor_liquidity(daily_data: pl.DataFrame, daily_basic: pl.DataFrame) -> pl.
 
     df = df.with_columns(
         pl.col("turnover_rate")
-        .rolling_mean(window_size=20, min_periods=20)
+        .rolling_mean(window_size=20, min_samples=20)
         .over("ts_code")
         .alias("avg_turnover")
     )

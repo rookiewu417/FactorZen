@@ -57,7 +57,7 @@ cp .env.example .env
 pixi run smoke
 ```
 
-`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；LLM 挖掘功能（单 / 多 Agent）需要配置 `FACTORZEN_LLM_*`，缺少时自动跳过。
+`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；LLM 挖掘功能（单 / 多 Agent，`fz mine agent` / `fz mine team`）需要显式配置 `FACTORZEN_LLM_*`，缺失会直接报错退出（不会自动跳过）；仅报告的可选 LLM 解读功能在缺失配置时才会自动跳过。
 
 ---
 
@@ -139,11 +139,13 @@ workspace/
 │   ├── manifest.json              配置/命令/seed/git SHA
 │   └── exported/*.py              可复现因子代码
 ├── factor_evaluations/{run_id}/   单因子评估
-│   ├── report.html                Tear Sheet 报告
+│   ├── report.html                Tear Sheet 报告（含分层回测结果，无独立 backtest 文件）
 │   ├── manifest.json              配置/命令/git SHA/lockfile hash/阶段耗时
-│   ├── *_universe.parquet         universe 快照
-│   ├── *_ic.parquet               IC 结果
-│   └── *_backtest.parquet         分层回测结果
+│   ├── factor.parquet             因子值
+│   ├── ic.parquet                 IC 结果
+│   ├── universe.parquet           universe 快照
+│   ├── quality.json               数据质量报告
+│   └── walk_forward.json          walk-forward 摘要
 ├── risk_models/{run_id}/          Barra 风险模型（exposures / factor_covariance / specific_risk + risk_summary.csv）
 ├── portfolios/{run_id}/           组合权重 + 归因（weights.parquet + attribution.csv + risk_summary.csv）
 ├── sim/{run_id}/                  模拟净值 + 绩效（nav.parquet + metrics.json）

@@ -47,7 +47,7 @@ pixi run coverage          # tools/run_coverage.py
 
 ## 数据与产物
 
-- 数据源 Tushare(token 在 `.env` 的 `TUSHARE_TOKEN`);拉取缓存为本地 parquet。LLM 挖掘(M5/M6)需 `FACTORZEN_LLM_*`,缺失自动跳过。
+- 数据源 Tushare(token 在 `.env` 的 `TUSHARE_TOKEN`);拉取缓存为本地 parquet。LLM 挖掘(M5/M6)需 `FACTORZEN_LLM_*`,缺失直接报错退出(非自动跳过;仅报告 LLM 解读这一可选功能缺失配置时才自动跳过)。
 - 产物落 `workspace/{factor_evaluations,mining_sessions,risk_models,portfolios,sim,reports}/{run_id}/`,每个含 `manifest.json`(配置/命令/git_sha/seed)。
 - 测试以 mock 离线为主(CI 无 token 也能跑);真实数据端到端 smoke 需 Tushare。
 

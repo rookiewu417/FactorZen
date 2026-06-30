@@ -114,7 +114,7 @@ graph TD
 |------|----------|------|
 | 基础 | `config/` | 集中路径、研究常量、Tushare 配置 |
 | 基础 | `core/` | 日历、universe 快照、存储、加载、数据审计、配置校验、实验 manifest、计时与日志 |
-| 微观结构与交易约束 | `core/universe.py` `core/benchmark.py` `daily/evaluation/backtest.py` | 停牌/涨跌停/ST/次新/T+1 交易约束、universe 快照（PIT）、性能基准对齐 |
+| 微观结构与交易约束 | `core/universe.py` `daily/evaluation/benchmark.py` `daily/evaluation/backtest.py` | 停牌/涨跌停/ST/次新/T+1 交易约束、universe 快照（PIT）、策略 vs 指数基准超额收益对比 |
 | 基线 | `daily/` | 低频主线：PIT 数据上下文、因子基类、预处理、IC、回测、归因、成本与优化 |
 | 因子挖掘 | `discovery/` | 算子库（时序/截面/算术）+ 表达式 AST↔字符串双向编译 + 随机/遗传搜索 + 贪心去相关 + 截面 α 导出 |
 | 防过拟合 | `validation/` | block bootstrap IC CI + Deflated Sharpe Ratio + PBO/CSCV + holdout 永久隔离、多重检验记账 |
@@ -141,10 +141,12 @@ workspace/
 
   factor_evaluations/{run_id}/
     manifest.json           # 配置 / git_sha / pixi.lock hash / 阶段耗时
-    *_universe.parquet      # universe 快照
-    *_ic.parquet            # IC 时序
-    *_backtest.parquet      # 分层回测
-    report.html             # Tear Sheet
+    factor.parquet          # 因子值
+    ic.parquet              # IC 时序
+    universe.parquet        # universe 快照
+    quality.json            # 数据质量报告
+    walk_forward.json       # walk-forward 摘要
+    report.html             # Tear Sheet（含分层回测结果，无独立 backtest 文件）
 
   risk_models/{run_id}/
     manifest.json

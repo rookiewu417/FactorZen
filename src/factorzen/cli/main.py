@@ -323,6 +323,23 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mine_team(args: argparse.Namespace) -> int:
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.pipelines.factor_mine_team import run_team_mine
+
+    stocks = get_universe(args.end, args.universe) if args.universe else None
+    daily = loader.fetch_daily(args.start, args.end)
+    if stocks is not None:
+        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    res = run_team_mine(daily, n_rounds=args.iterations, seed=args.seed,
+                        top_k=args.top_k, index_path=args.index_path)
+    print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
+    return 0
+
+
 def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -610,6 +627,17 @@ def build_parser() -> argparse.ArgumentParser:
     m_agent.add_argument("--seed", type=int, default=42)
     m_agent.add_argument("--human-review", action="store_true", dest="human_review")
     m_agent.set_defaults(func=_cmd_mine_agent)
+
+    m_team = mine_sub.add_parser("team", help="Multi-agent team factor mining")
+    m_team.add_argument("--start", required=True)
+    m_team.add_argument("--end", required=True)
+    m_team.add_argument("--universe", default=None)
+    m_team.add_argument("--iterations", type=int, default=5)
+    m_team.add_argument("--top-k", dest="top_k", type=int, default=5)
+    m_team.add_argument("--seed", type=int, default=42)
+    m_team.add_argument("--index-path", dest="index_path",
+                        default="workspace/mine_team/experiment_index.jsonl")
+    m_team.set_defaults(func=_cmd_mine_team)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     validate = sub.add_parser("validate", help="Overfitting / robustness checks")

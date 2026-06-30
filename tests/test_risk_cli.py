@@ -17,3 +17,5 @@ def test_parser_has_risk_build():
     # 默认值断言（dest 别名 cov_half_life/nw_lags + type=int 转换的易错点）
     assert args.cov_half_life == 90
     assert args.nw_lags == 2
+    assert args.spec_half_life == 90
+    assert args.spec_shrinkage == 0.3

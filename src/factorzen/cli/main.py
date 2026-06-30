@@ -382,6 +382,8 @@ def _cmd_risk_build(args: argparse.Namespace) -> int:
         args.end,
         cov_half_life=args.cov_half_life,
         nw_lags=args.nw_lags,
+        spec_half_life=args.spec_half_life,
+        spec_shrinkage=args.spec_shrinkage,
     )
     print(f"[risk] factors={len(res['factor_names'])} R2={res['r_squared']:.4f} → {res['run_dir']}")
     return 0
@@ -602,6 +604,8 @@ def build_parser() -> argparse.ArgumentParser:
     r_build.add_argument("--universe", default="all_a", help="Universe name")
     r_build.add_argument("--cov-half-life", type=int, default=90, dest="cov_half_life")
     r_build.add_argument("--nw-lags", type=int, default=2, dest="nw_lags")
+    r_build.add_argument("--spec-half-life", type=int, default=90, dest="spec_half_life")
+    r_build.add_argument("--spec-shrinkage", type=float, default=0.3, dest="spec_shrinkage")
     r_build.set_defaults(func=_cmd_risk_build)
 
     return parser

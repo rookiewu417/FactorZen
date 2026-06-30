@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ portfolio_name }} — 组合成果展示</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --paper: #f6f1e8;
+    --paper-strong: #fffaf0;
+    --panel: rgba(255,250,240,0.96);
+    --ink: #1f2a2e;
+    --muted: #52615c;
+    --line: #d8ccba;
+    --line-strong: #b7aa97;
+    --teal: #2f625f;
+    --teal-dark: #173d3b;
+    --amber: #b8893b;
+    --red: #9f3a2f;
+    --green: #3f7d55;
+    --shadow: 0 4px 8px rgba(40, 34, 24, 0.08);
+  }
+  body {
+    font-family: "Aptos", "Segoe UI", "Microsoft YaHei", sans-serif;
+    background:
+      linear-gradient(rgba(63, 82, 71, 0.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(63, 82, 71, 0.018) 1px, transparent 1px),
+      var(--paper);
+    background-size: 32px 32px;
+    color: var(--ink);
+    line-height: 1.62;
+  }
+  .container { max-width: 1280px; margin: 0 auto; padding: 26px; }
+  .hero {
+    position: relative;
+    overflow: hidden;
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 8px;
+    padding: 30px 32px;
+    margin-bottom: 18px;
+    background: linear-gradient(135deg, #152f32 0%, #274e4b 45%, #8a6f3c 100%);
+    box-shadow: var(--shadow);
+  }
+  .hero:after {
+    content: "";
+    position: absolute;
+    inset: auto 28px 0 auto;
+    width: 260px;
+    height: 5px;
+    background: linear-gradient(90deg, var(--amber), #efe0b5, rgba(255,255,255,0));
+  }
+  .hero-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 420px); gap: 24px; align-items: end; z-index: 1; }
+  .hero-kicker { color: rgba(255,255,255,0.78); font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 6px; }
+  .hero h1 { color: #fff; font-family: Georgia, "Times New Roman", serif; font-size: 38px; line-height: 1.06; margin-bottom: 10px; letter-spacing: 0; }
+  .hero .meta { color: rgba(255,255,255,0.88); margin-bottom: 0; }
+  .hero-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .hero-fact { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 9px 10px; }
+  .hero-fact span { display: block; color: rgba(255,255,255,0.74); font-size: 11px; }
+  .hero-fact strong { display: block; color: #fff; font-size: 13px; overflow-wrap: anywhere; }
+  .report-layout { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .toc { position: sticky; top: 16px; background: rgba(255,250,240,0.92); border: 1px solid var(--line); border-radius: 8px; padding: 14px; box-shadow: 0 4px 8px rgba(40,34,24,0.06); max-height: calc(100vh - 32px); overflow-y: auto; }
+  .toc-title { font-size: 12px; font-weight: 800; color: var(--teal-dark); letter-spacing: .10em; text-transform: uppercase; margin-bottom: 9px; }
+  .toc a { display: block; color: #384644; text-decoration: none; font-size: 13px; padding: 7px 8px; border-left: 3px solid transparent; border-radius: 4px; }
+  .toc a:hover, .toc a:focus-visible { background: #eee6d7; border-left-color: var(--teal); color: var(--teal-dark); outline: none; }
+  .report-main { min-width: 0; }
+  h1 { font-family: Georgia, "Times New Roman", serif; font-size: 27px; color: var(--ink); margin-bottom: 5px; letter-spacing: 0; }
+  h2 { font-size: 17px; color: var(--ink); margin: 24px 0 12px 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  h2:before { content: ""; display: inline-block; width: 7px; height: 18px; margin-right: 8px; vertical-align: -3px; background: var(--teal); border-radius: 2px; }
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .panel { background: var(--panel); border-radius: 8px; border: 1px solid var(--line); box-shadow: var(--shadow); padding: 24px; margin-bottom: 20px; }
+  #overview { border-top: 5px solid var(--ink); }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; background: rgba(255,255,255,0.48); }
+  th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid #e8ddcc; vertical-align: top; }
+  th { background: #e9dfcf; font-weight: 700; color: #263431; }
+  tr:hover { background: rgba(47,98,95,0.055); }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+  .metric-card { background: #fffaf2; padding: 12px 13px; border-radius: 6px; border: 1px solid var(--line); border-top: 3px solid rgba(47,98,95,0.62); box-shadow: 0 3px 6px rgba(40,34,24,0.04); }
+  .metric-card .label { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .metric-card .value { font-family: Georgia, "Times New Roman", serif; font-size: 24px; line-height: 1.16; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+  .overview-metrics { margin: 14px 0 6px; }
+  .warning { background: #fff1d6; border: 1px solid #ddb66d; padding: 10px 12px; border-radius: 6px; margin: 8px 0; font-size: 13px; color: #76500f; }
+  .chart-img { width: 100%; margin: 12px 0; border-radius: 6px; border: 1px solid var(--line); background: #fff; box-shadow: 0 3px 6px rgba(40,34,24,0.05); }
+  .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-top: 12px; }
+  .chart-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fffaf2; }
+  .chart-card h3 { font-size: 14px; color: var(--ink); margin-bottom: 6px; }
+  .footer { text-align: center; color: #9b9285; font-size: 12px; margin-top: 30px; padding: 15px; border-top: 1px solid var(--line); }
+  .no-data { color: #5c645f; background: #f8f3ea; border: 1px dashed var(--line-strong); border-radius: 6px; padding: 16px 18px; text-align: left; }
+  .note { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 4px 0 8px 0; }
+  .badge { display: inline-flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 999px; padding: 2px 9px; font-size: 12px; color: #33413d; background: #fffaf2; }
+  .badge-primary { color: #fff; background: var(--teal); border-color: var(--teal); }
+  .status-callout { border: 1px solid rgba(47,98,95,0.28); background: #f8f3ea; border-radius: 6px; padding: 11px 13px; margin: 10px 0; color: #4c5651; }
+  .module-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 14px 0; }
+  .module-card { background: #fffaf2; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .module-card .module-name { font-size: 13px; font-weight: 700; color: var(--teal-dark); margin-bottom: 4px; }
+  .module-card .module-desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .module-card .module-link { display: inline-block; margin-top: 8px; font-size: 12px; color: var(--teal); text-decoration: none; }
+  .module-card .module-link:hover { text-decoration: underline; }
+  .manifest-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0; }
+  .manifest-item { background: #fffaf2; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .manifest-item .key { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .manifest-item .val { font-family: Georgia, "Times New Roman", serif; font-size: 18px; font-weight: 700; color: var(--ink); margin-top: 2px; overflow-wrap: anywhere; }
+  @media (max-width: 900px) {
+    .container { padding: 14px; }
+    .hero { padding: 20px; }
+    .hero-grid { grid-template-columns: 1fr; }
+    .hero h1 { font-size: 30px; }
+    .report-layout { grid-template-columns: 1fr; }
+    .toc { position: static; max-height: none; }
+    .panel { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Hero ------------------------------------------------------------------>
+<div class="hero">
+  <div class="hero-grid">
+    <div>
+      <div class="hero-kicker">FactorZen Portfolio Dashboard</div>
+      <h1>{{ portfolio_name }}</h1>
+      <div class="meta">组合成果展示 | 生成时间：{{ generated_at }}</div>
+    </div>
+    <div class="hero-facts" aria-label="关键绩效">
+      <div class="hero-fact">
+        <span>年化收益</span>
+        <strong>{{ metrics.ann_ret | metric_percent }}</strong>
+      </div>
+      <div class="hero-fact">
+        <span>夏普比率（Sharpe）</span>
+        <strong>{{ metrics.sharpe | metric_number(2) }}</strong>
+      </div>
+      <div class="hero-fact">
+        <span>最大回撤</span>
+        <strong>{{ metrics.max_dd | metric_percent }}</strong>
+      </div>
+      <div class="hero-fact">
+        <span>年化波动率</span>
+        <strong>{{ metrics.ann_vol | metric_percent }}</strong>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="report-layout">
+<!-- TOC ------------------------------------------------------------------>
+<nav class="toc" aria-label="报告目录">
+  <div class="toc-title">报告目录</div>
+  <a href="#perf">01 综合绩效</a>
+  {% if has_sim %}<a href="#nav">02 净值曲线</a>{% endif %}
+  <a href="#risk-attribution">03 风险归因</a>
+  <a href="#holdings-meta">04 持仓 Meta</a>
+  <a href="#module-status">05 模块状态</a>
+</nav>
+
+<main class="report-main">
+
+<!-- 1. 综合绩效卡 --------------------------------------------------------->
+<div class="panel" id="perf">
+  <h2>综合绩效</h2>
+  <div class="meta">年化收益 / 波动率 / 夏普 / 最大回撤 / 换手 / 成本</div>
+  <div class="metric-grid overview-metrics">
+
+    <div class="metric-card">
+      <div class="label">年化收益</div>
+      <div class="value">{{ metrics.ann_ret | metric_percent }}</div>
+    </div>
+
+    <div class="metric-card">
+      <div class="label">年化波动率</div>
+      <div class="value">{{ metrics.ann_vol | metric_percent }}</div>
+    </div>
+
+    <div class="metric-card">
+      <div class="label">夏普比率（Sharpe）</div>
+      <div class="value">{{ metrics.sharpe | metric_number(2) }}</div>
+    </div>
+
+    <div class="metric-card">
+      <div class="label">最大回撤</div>
+      <div class="value">{{ metrics.max_dd | metric_percent }}</div>
+    </div>
+
+    {% if metrics.ann_turnover is defined %}
+    <div class="metric-card">
+      <div class="label">年化换手率</div>
+      <div class="value">{{ metrics.ann_turnover | metric_number(1) }}×</div>
+    </div>
+    {% endif %}
+
+    {% if metrics.total_cost is defined %}
+    <div class="metric-card">
+      <div class="label">总交易成本</div>
+      <div class="value">{{ metrics.total_cost | metric_percent }}</div>
+    </div>
+    {% endif %}
+
+  </div>
+
+  <!-- 其余 metrics 汇总表 -->
+  {% set extra_keys = [] %}
+  {% for k, v in metrics.items() %}
+    {% if k not in ('ann_ret', 'ann_vol', 'sharpe', 'max_dd', 'ann_turnover', 'total_cost') %}
+      {% if extra_keys.append(k) %}{% endif %}
+    {% endif %}
+  {% endfor %}
+  {% if extra_keys %}
+  <table style="margin-top:14px;">
+    <thead><tr><th>指标</th><th>数值</th></tr></thead>
+    <tbody>
+    {% for k in extra_keys %}
+      <tr><td>{{ k }}</td><td>{{ metrics[k] }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<!-- 2. 净值曲线（仅有 sim_result 时）-------------------------------------->
+{% if has_sim %}
+<div class="panel" id="nav">
+  <h2>净值曲线</h2>
+  {% if charts.returns_chart %}
+  <img class="chart-img" src="data:image/png;base64,{{ charts.returns_chart }}" alt="组合净值曲线">
+  {% else %}
+  <div class="no-data">净值曲线图暂未生成（bt_result.nav 为空或格式不匹配）。</div>
+  {% endif %}
+  {% if charts.monthly_return_chart %}
+  <div class="chart-card" style="margin-top:14px;">
+    <h3>月度收益热力图</h3>
+    <img class="chart-img" src="data:image/png;base64,{{ charts.monthly_return_chart }}" alt="月度收益热力图">
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- 3. 风险归因 ------------------------------------------------------------>
+<div class="panel" id="risk-attribution">
+  <h2>风险归因</h2>
+
+  <!-- 3a. 风险汇总 -->
+  {% if risk_rows %}
+  <h3 style="font-size:14px;margin:10px 0 6px;">总风险分解</h3>
+  <table>
+    <thead><tr><th>指标（metric）</th><th>数值</th></tr></thead>
+    <tbody>
+    {% for row in risk_rows %}
+      <tr>
+        <td>{{ row.metric }}</td>
+        <td>{{ row.value | metric_number(4) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="no-data">未传入风险汇总（risk_summary_df）。</div>
+  {% endif %}
+
+  <!-- 3b. 归因明细 -->
+  {% if attribution_rows %}
+  <h3 style="font-size:14px;margin:16px 0 6px;">收益归因明细</h3>
+  {% if not attribution_available %}
+  <div class="warning">建仓时点占位——当前 portfolio_manifest.return_attribution_available 为 false，归因数据为占位展示。</div>
+  {% endif %}
+  <table>
+    <thead><tr><th>类型（type）</th><th>维度（key）</th><th>贡献值</th></tr></thead>
+    <tbody>
+    {% for row in attribution_rows %}
+      <tr>
+        <td>{{ row.type }}</td>
+        <td>{{ row.key }}</td>
+        <td>{{ row.value | metric_number(4) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="no-data" style="margin-top:14px;">未传入归因明细（attribution_df）。</div>
+  {% endif %}
+</div>
+
+<!-- 4. 当前持仓 Meta ------------------------------------------------------>
+<div class="panel" id="holdings-meta">
+  <h2>持仓 Meta</h2>
+  {% if portfolio_manifest %}
+  <div class="manifest-grid">
+    {% for k, v in portfolio_manifest.items() %}
+    <div class="manifest-item">
+      <div class="key">{{ k }}</div>
+      <div class="val">{{ v }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="no-data">未传入持仓 Meta（portfolio_manifest）。</div>
+  {% endif %}
+</div>
+
+<!-- 5. M1-M6 模块状态卡 -------------------------------------------------->
+<div class="panel" id="module-status">
+  <h2>M1-M6 模块状态</h2>
+  <p class="note">以下为各子模块的当前状态与快速入口（超链接为占位，可在集成层配置）。</p>
+  <div class="module-grid">
+
+    <div class="module-card">
+      <div class="module-name">M1 因子挖掘</div>
+      <div class="module-desc">表达式 AST + 遗传搜索；发现候选 alpha 因子。</div>
+      <a class="module-link" href="#" title="M1 因子挖掘报告（占位）">查看报告 →</a>
+    </div>
+
+    <div class="module-card">
+      <div class="module-name">M2 防过拟合</div>
+      <div class="module-desc">PBO / 多重检验校正 / 样本外验证；控制 false-discovery。</div>
+      <a class="module-link" href="#" title="M2 防过拟合报告（占位）">查看报告 →</a>
+    </div>
+
+    <div class="module-card">
+      <div class="module-name">M3 Barra 风险模型</div>
+      <div class="module-desc">行业 + 风格因子协方差；提供风险归因与组合约束。</div>
+      <a class="module-link" href="#" title="M3 风险模型报告（占位）">查看报告 →</a>
+    </div>
+
+    <div class="module-card">
+      <div class="module-name">M4 组合优化</div>
+      <div class="module-desc">均值-方差 / 风险平价；生成当前持仓权重。</div>
+      <a class="module-link" href="#" title="M4 组合优化报告（占位）">查看报告 →</a>
+    </div>
+
+    <div class="module-card">
+      <div class="module-name">M5 LLM Agent</div>
+      <div class="module-desc">自动解读因子、生成研究假设、闭环因子评级。</div>
+      <a class="module-link" href="#" title="M5 LLM Agent 日志（占位）">查看日志 →</a>
+    </div>
+
+    <div class="module-card">
+      <div class="module-name">M6 多 Agent 协作</div>
+      <div class="module-desc">Coder / Critic / Hypothesis / Librarian 协同生产因子。</div>
+      <a class="module-link" href="#" title="M6 多 Agent 报告（占位）">查看报告 →</a>
+    </div>
+
+  </div>
+</div>
+
+</main>
+</div><!-- /report-layout -->
+
+<div class="footer">
+  FactorZen Portfolio Dashboard · 生成时间 {{ generated_at }}
+</div>
+
+</div><!-- /container -->
+</body>
+</html>

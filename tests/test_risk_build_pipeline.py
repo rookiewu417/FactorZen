@@ -37,3 +37,9 @@ def test_run_risk_build_writes_artifacts(tmp_path: Path):
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert 0.0 <= manifest["r_squared"] <= 1.0
     assert "factor_names" in manifest
+    # 产物可读非空（避免 build 返回空 result 时 false-pass）
+    assert manifest["factor_names"], "factor_names 不应为空"
+    exp_df = pl.read_parquet(run_dir / "exposures.parquet")
+    assert exp_df.height > 0, "exposures.parquet 应有数据行"
+    sr_df = pl.read_parquet(run_dir / "specific_risk.parquet")
+    assert sr_df.height > 0, "specific_risk.parquet 应有数据行"

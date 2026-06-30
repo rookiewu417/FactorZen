@@ -128,6 +128,24 @@ def _default_config(**kwargs) -> BacktestConfig:
     return BacktestConfig(**defaults)
 
 
+@pytest.fixture(autouse=True)
+def _no_namechange_by_default(monkeypatch):
+    """默认 namechange 不可用，filter_st 统一走降级（按 name 字符串匹配）路径。
+
+    universe.py 用 ``from factorzen.core.loader import fetch_namechange`` 在
+    模块级绑定，须 patch ``factorzen.core.universe.fetch_namechange`` 才能
+    生效。避免本机 .env 配了真实 token 时，TestSTFiltering 等用例意外触发
+    真实网络请求。本文件其余 ST 相关测试（_apply_trade_constraints /
+    run_strategy_backtest 的 is_st / is_st_by_date）均由调用方显式传参，
+    不经过 namechange，不受此 fixture 影响。
+    """
+
+    def _boom() -> pl.DataFrame:
+        raise RuntimeError("namechange unavailable in offline tests")
+
+    monkeypatch.setattr("factorzen.core.universe.fetch_namechange", _boom)
+
+
 # ═══════════════════════════════════════════════════════════
 # Test: Suspended stock (vol=0) blocks both buy AND sell
 # ═══════════════════════════════════════════════════════════
@@ -425,6 +443,181 @@ class TestFastPathLimitUpTolerance:
             f"GEM 涨停买单应被快速路径阻断 (NAV≈1.0)，实际 NAV={nav_val:.8f}；"
             f"若 NAV>1 说明 fast path 缺少 -1e-9 浮点容差"
         )
+
+
+# ═══════════════════════════════════════════════════════════
+# Test: ST main board narrowed limit threshold (Fix 2)
+# ═══════════════════════════════════════════════════════════
+
+
+class TestSTBoardLimitInBacktest:
+    """ST 主板涨跌停阈值收窄（4.8% 而非 9.8%）在慢路径/快路径回测中的接入测试。
+
+    is_st / is_st_by_date 默认 False/None，行为与引入该参数前完全一致；本组
+    测试验证传入 ST 标记后，约 +5.0% 涨幅（乘法/除法构造而非字面量）能被
+    正确判定为涨停，而同样涨幅的非 ST 股票不受影响（主板非 ST 阈值 9.8%）。
+    """
+
+    def test_apply_trade_constraints_st_blocks_buy_at_5pct(self):
+        """慢路径单元测试：_apply_trade_constraints(is_st=True) 阻断 5% 涨幅买入。"""
+        open_price = 10.0 * 1.05  # 乘法构造，非字面量
+        price_map = {
+            "600001.SH": {
+                "ts_code": "600001.SH",
+                "open": open_price,
+                "close": open_price,
+                "pre_close": 10.0,
+                "pct_chg": (open_price / 10.0 - 1.0) * 100,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="600001.SH",
+            delta=0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+            is_st=True,
+        )
+        assert filled == 0.0
+        assert reason == "limit_up"
+
+    def test_apply_trade_constraints_non_st_same_5pct_not_blocked(self):
+        """同样 5% 涨幅，is_st=False（默认）不应触发涨停（主板阈值 9.8%）。"""
+        open_price = 10.0 * 1.05
+        price_map = {
+            "600001.SH": {
+                "ts_code": "600001.SH",
+                "open": open_price,
+                "close": open_price,
+                "pre_close": 10.0,
+                "pct_chg": (open_price / 10.0 - 1.0) * 100,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            }
+        }
+        filled, reason = _apply_trade_constraints(
+            code="600001.SH",
+            delta=0.5,
+            price_map=price_map,
+            portfolio_value=1_000_000.0,
+            config=_default_config(),
+        )
+        assert filled == pytest.approx(0.5)
+        assert reason == ""
+
+    def test_st_main_board_blocks_buy_in_slow_path_integration(self):
+        """慢路径完整回测：run_strategy_backtest(is_st_by_date=...) 应阻断 ST 主板 5% 涨幅买入。"""
+        open_px = 10.0 * 1.05
+        prices = _make_prices(
+            codes=["600001.SH"],
+            n_days=3,
+            overrides={
+                (1, "600001.SH"): {"open": open_px, "pre_close": 10.0, "close": 13.0},
+            },
+        )
+        result = run_strategy_backtest(
+            BuyOneStrategy(code="600001.SH"),
+            _make_factors([(date(2024, 1, 1), "600001.SH", 1.0)]),
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+            is_st_by_date={date(2024, 1, 2): {"600001.SH"}},
+        )
+        trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
+        assert trade["filled_delta_weight"] == pytest.approx(0.0)
+        assert trade["block_reason"] == "limit_up"
+
+    def test_non_st_main_board_5pct_not_blocked_in_slow_path_integration(self):
+        """慢路径完整回测：不传 is_st_by_date 时同样 5% 涨幅不应被阻断（向后兼容）。"""
+        open_px = 10.0 * 1.05
+        prices = _make_prices(
+            codes=["600001.SH"],
+            n_days=3,
+            overrides={
+                (1, "600001.SH"): {"open": open_px, "pre_close": 10.0, "close": 13.0},
+            },
+        )
+        result = run_strategy_backtest(
+            BuyOneStrategy(code="600001.SH"),
+            _make_factors([(date(2024, 1, 1), "600001.SH", 1.0)]),
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+        )
+        trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
+        # BuyOneStrategy 目标权重恒为 1.0，首日 prev_weight=0.0 → delta=1.0（非阻断应全额成交）
+        assert trade["filled_delta_weight"] == pytest.approx(1.0)
+        assert trade["block_reason"] == ""
+
+    def test_st_main_board_blocks_buy_in_fast_path(self):
+        """快速路径（PrecomputedWeightsStrategy + is_st_by_date）：ST 主板 5% 涨幅应被阻断买入。"""
+        weights_by_date = {
+            date(2024, 1, 1): pl.DataFrame(
+                {"ts_code": ["600001.SH"], "target_weight": [1.0]}
+            ),
+        }
+        open_px = 10.0 * 1.05
+        # close=13.0 使 intraday_ret > 0：若买单成交则 NAV > 1.0，可与阻断情形(NAV≈1)区分
+        prices = _make_prices(
+            codes=["600001.SH"],
+            n_days=3,
+            overrides={
+                (1, "600001.SH"): {"open": open_px, "pre_close": 10.0, "close": 13.0},
+            },
+        )
+        result = run_strategy_backtest(
+            PrecomputedWeightsStrategy(weights_by_date),
+            _make_factors([(date(2024, 1, 1), "600001.SH", 1.0)]),
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+            collect_positions=False,
+            collect_trades=False,
+            include_context_positions=False,
+            is_st_by_date={date(2024, 1, 2): {"600001.SH"}},
+        )
+
+        exec_date = date(2024, 1, 2)
+        nav_rows = result.nav.filter(pl.col("trade_date") == exec_date)
+        assert not nav_rows.is_empty(), "执行日应有 NAV 记录"
+        nav_val = nav_rows["nav"][0]
+        assert nav_val == pytest.approx(1.0, abs=1e-6), (
+            f"ST 主板 5% 涨幅应被快速路径阻断买入 (NAV≈1.0)，实际 NAV={nav_val:.8f}"
+        )
+
+    def test_non_st_main_board_5pct_not_blocked_in_fast_path(self):
+        """快速路径：不传 is_st_by_date 时同样 5% 涨幅不应被阻断（主板阈值 9.8%，向后兼容）。"""
+        weights_by_date = {
+            date(2024, 1, 1): pl.DataFrame(
+                {"ts_code": ["600001.SH"], "target_weight": [1.0]}
+            ),
+        }
+        open_px = 10.0 * 1.05
+        prices = _make_prices(
+            codes=["600001.SH"],
+            n_days=3,
+            overrides={
+                (1, "600001.SH"): {"open": open_px, "pre_close": 10.0, "close": 13.0},
+            },
+        )
+        result = run_strategy_backtest(
+            PrecomputedWeightsStrategy(weights_by_date),
+            _make_factors([(date(2024, 1, 1), "600001.SH", 1.0)]),
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+            collect_positions=False,
+            collect_trades=False,
+            include_context_positions=False,
+        )
+
+        exec_date = date(2024, 1, 2)
+        nav_rows = result.nav.filter(pl.col("trade_date") == exec_date)
+        assert not nav_rows.is_empty()
+        nav_val = nav_rows["nav"][0]
+        assert nav_val > 1.0, "非 ST 5% 涨幅不应被阻断，应正常成交获得正收益"
 
 
 # ═══════════════════════════════════════════════════════════

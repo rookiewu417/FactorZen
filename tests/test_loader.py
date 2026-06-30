@@ -21,6 +21,7 @@ from factorzen.core.loader import (
     fetch_daily,
     fetch_daily_basic,
     fetch_finance,
+    fetch_namechange,
     fetch_stock_basic,
 )
 
@@ -419,3 +420,170 @@ class TestFetchFinanceBatchCount:
             fetch_finance("fina_indicator", "20230101", "20230630", ts_codes=codes)
 
         fin_api_mock.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. fetch_namechange — 缓存命中/失效、不传日期参数（PIT 坑回归）、失败降级
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _pd_namechange(n: int = 2) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "ts_code": [f"{i:06d}.SZ" for i in range(n)],
+            "name": [f"ST股票{i}" for i in range(n)],
+            "start_date": ["20240101"] * n,
+            "end_date": [None] * n,
+            "ann_date": ["20240101"] * n,
+            "change_reason": ["ST"] * n,
+        }
+    )
+
+
+class TestFetchNamechangeCache:
+    def test_fresh_cache_skips_api(self, tmp_path: Path):
+        """缓存文件刚写入（mtime 几乎为 now）→ 跳过 API 调用。"""
+        cache_file = tmp_path / "namechange.parquet"
+        fake = pl.DataFrame({"ts_code": ["000001.SZ"], "change_reason": ["ST"]})
+        fake.write_parquet(cache_file)
+
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+        ):
+            result = fetch_namechange()
+
+        mock_pro.namechange.assert_not_called()
+        assert isinstance(result, pl.DataFrame)
+        assert result.shape[0] == 1
+
+    def test_missing_cache_calls_api_without_date_params_and_writes(self, tmp_path: Path):
+        """缓存不存在 → 调用 API。
+
+        已知坑回归：调用时不应传 start_date/end_date —— Tushare namechange 接口
+        底层按 ann_date 过滤日期参数，会把早期 ann_date 为空的记录静默丢弃，
+        必须全量拉取后本地切片。同时验证结果写入本地缓存。
+        """
+        mock_pro = MagicMock()
+        mock_pro.namechange.return_value = _pd_namechange(n=3)
+
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_rate_limit"),
+        ):
+            result = fetch_namechange()
+
+        mock_pro.namechange.assert_called_once()
+        _, kwargs = mock_pro.namechange.call_args
+        assert "start_date" not in kwargs, (
+            "不应传 start_date：namechange 接口按 ann_date 过滤，会静默丢弃早期空值记录"
+        )
+        assert "end_date" not in kwargs, "不应传 end_date：同上"
+        assert isinstance(result, pl.DataFrame)
+        assert result.shape[0] == 3
+        assert (tmp_path / "namechange.parquet").exists()
+
+    def test_stale_cache_calls_api(self, tmp_path: Path):
+        """缓存文件过期（模拟 mtime 是 8 天前）→ 调用 API。"""
+        import os
+        import time
+
+        cache_file = tmp_path / "namechange.parquet"
+        fake = pl.DataFrame({"ts_code": ["000001.SZ"], "change_reason": ["旧数据"]})
+        fake.write_parquet(cache_file)
+
+        stale_mtime = time.time() - 8 * 86400
+        os.utime(cache_file, (stale_mtime, stale_mtime))
+
+        mock_pro = MagicMock()
+        mock_pro.namechange.return_value = _pd_namechange(n=2)
+
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_rate_limit"),
+        ):
+            result = fetch_namechange()
+
+        mock_pro.namechange.assert_called_once()
+        assert isinstance(result, pl.DataFrame)
+        assert result.shape[0] == 2
+
+    def test_pandas_to_polars_date_casting(self, tmp_path: Path):
+        """API 返回 pandas，fetch_namechange 输出必须是 polars 且日期列已转换为 pl.Date。"""
+        mock_pro = MagicMock()
+        mock_pro.namechange.return_value = _pd_namechange(n=2)
+
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_rate_limit"),
+        ):
+            result = fetch_namechange()
+
+        assert isinstance(result, pl.DataFrame), "输出必须是 polars.DataFrame"
+        for col in ("ts_code", "name", "start_date", "end_date", "ann_date", "change_reason"):
+            assert col in result.columns
+        assert result.schema["start_date"] == pl.Date
+        assert result.schema["ann_date"] == pl.Date
+
+    def test_fetch_failure_no_cache_raises(self, tmp_path: Path):
+        """拉取失败且无可用本地缓存 → 向上抛出异常，由调用方决定如何降级。"""
+        mock_pro = MagicMock()
+        mock_pro.namechange.side_effect = RuntimeError("network down")
+
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_rate_limit"),
+            patch("time.sleep"),
+            pytest.raises(RuntimeError),
+        ):
+            fetch_namechange()
+
+    def test_fetch_failure_with_stale_cache_falls_back(self, tmp_path: Path):
+        """拉取失败但本地存在（即使过期的）缓存 → 回退读取缓存，不向上抛异常。"""
+        import os
+        import time
+
+        cache_file = tmp_path / "namechange.parquet"
+        fake = pl.DataFrame({"ts_code": ["000001.SZ"], "change_reason": ["ST"]})
+        fake.write_parquet(cache_file)
+
+        stale_mtime = time.time() - 8 * 86400
+        os.utime(cache_file, (stale_mtime, stale_mtime))
+
+        mock_pro = MagicMock()
+        mock_pro.namechange.side_effect = RuntimeError("network down")
+
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_rate_limit"),
+            patch("time.sleep"),
+        ):
+            result = fetch_namechange()
+
+        assert isinstance(result, pl.DataFrame)
+        assert result.shape[0] == 1
+
+    def test_empty_result_no_cache_returns_empty_df(self, tmp_path: Path):
+        """_retry 返回空结果且无缓存 → 返回空 DataFrame，不抛异常。
+
+        注：真实 _retry 对空结果会重试至 MAX_RETRIES 后抛异常（不会把空结果
+        透传给调用方），所以这里直接 patch _retry 本身来隔离测试
+        fetch_namechange 自己的「空结果」分支，而非测试 _retry 的重试语义。
+        """
+        mock_pro = MagicMock()
+
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_retry", return_value=pd.DataFrame()),
+        ):
+            result = fetch_namechange()
+
+        assert isinstance(result, pl.DataFrame)
+        assert result.is_empty()

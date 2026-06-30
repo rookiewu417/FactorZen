@@ -486,8 +486,20 @@ def run_strategy_backtest(
     collect_positions: bool = True,
     collect_trades: bool = True,
     include_context_positions: bool = True,
+    is_st_by_date: dict[date, set[str]] | None = None,
 ) -> StrategyBacktestResult:
-    """运行策略回测。"""
+    """运行策略回测。
+
+    Parameters
+    ----------
+    is_st_by_date : dict[date, set[str]] | None, optional
+        按 ``execution_date`` 给出当日处于 ST/\\*ST 状态的 ``ts_code`` 集合，
+        用于 PIT 正确地收窄主板 ST 股票的涨跌停阈值（4.8% 而非 9.8%，参见
+        ``factorzen.core.universe._get_board_limit``）。为 ``None``（默认）
+        时行为与未引入此参数前完全一致：一律按非 ST 板块阈值判断涨跌停。
+        慢路径、快路径（``_run_precomputed_weights_backtest_fast``）均消费
+        此参数。
+    """
     cfg = config or BacktestConfig()
     factor = _prepare_factor_df(factor_df, cfg.factor_col)
     price = _prepare_price_df(price_df)
@@ -506,6 +518,7 @@ def run_strategy_backtest(
             config=cfg,
             cost_model=cast(CostModel | None, cost_model),
             factor_name=factor_name,
+            is_st_by_date=is_st_by_date,
         )
 
     current_weights: dict[str, float] = {}
@@ -569,6 +582,9 @@ def run_strategy_backtest(
             target_weights = dict(open_weights)
 
         all_codes = sorted(set(open_weights) | set(target_weights))
+        st_codes_today: set[str] = (
+            is_st_by_date.get(execution_date, set()) if is_st_by_date else set()
+        )
         next_weights = dict(open_weights)
         trade_cost = 0.0
         turnover = 0.0
@@ -582,6 +598,7 @@ def run_strategy_backtest(
                 portfolio_value=open_nav_value * cfg.initial_capital,
                 config=cfg,
                 adv=adv_20d.get(code),
+                is_st=code in st_codes_today,
             )
             next_weight = prev_weight + filled_delta
             if abs(next_weight) < 1e-12:
@@ -947,6 +964,7 @@ def _run_precomputed_weights_backtest_fast(
     config: BacktestConfig,
     cost_model: CostModel | None,
     factor_name: str,
+    is_st_by_date: dict[date, set[str]] | None = None,
 ) -> StrategyBacktestResult:
     codes = price.select("ts_code").unique().sort("ts_code")["ts_code"].to_list()
     code_to_idx = {code: idx for idx, code in enumerate(codes)}
@@ -983,6 +1001,11 @@ def _run_precomputed_weights_backtest_fast(
                 adv[date_idx, code_idx] = float(value)
 
     board_limits = np.array([_get_board_limit(code) * 100.0 for code in codes], dtype=float)
+    board_limits_st: np.ndarray | None = (
+        np.array([_get_board_limit(code, is_st=True) * 100.0 for code in codes], dtype=float)
+        if is_st_by_date
+        else None
+    )
     target_by_signal_date: dict[date, tuple[np.ndarray, np.ndarray]] = {}
     for sig_date, weight_df in strategy.weights_by_date.items():
         indices: list[int] = []
@@ -1045,6 +1068,15 @@ def _run_precomputed_weights_backtest_fast(
             opening_pct[valid_price] = (
                 open_today[valid_price] / pre_close_today[valid_price] - 1.0
             ) * 100.0
+            # ST 股票主板涨跌停阈值收窄（4.8% 而非 9.8%）：按 execution_date 当天
+            # 的 ST 集合逐日选择有效阈值，is_st_by_date 为 None 时与未引入该参数
+            # 前行为完全一致（始终用 board_limits）。
+            effective_board_limits = board_limits
+            if is_st_by_date and board_limits_st is not None:
+                st_today = is_st_by_date.get(execution_date)
+                if st_today:
+                    st_mask = np.array([c in st_today for c in codes], dtype=bool)
+                    effective_board_limits = np.where(st_mask, board_limits_st, board_limits)
             tradable = (
                 active
                 & valid_price
@@ -1052,8 +1084,8 @@ def _run_precomputed_weights_backtest_fast(
                 # 浮点容差与慢路径 _apply_trade_constraints 保持一致：
                 # 创业板 open=11.98/pre_close=10.0 → opening_pct=19.7999...，
                 # 若不减 1e-9 则 19.7999... >= 19.8 为 False，涨停买单被漏判。
-                & ~((delta > 0) & (opening_pct >= board_limits - 1e-9))
-                & ~((delta < 0) & (opening_pct <= -board_limits + 1e-9))
+                & ~((delta > 0) & (opening_pct >= effective_board_limits - 1e-9))
+                & ~((delta < 0) & (opening_pct <= -effective_board_limits + 1e-9))
             )
             filled[tradable] = delta[tradable]
 
@@ -1223,6 +1255,7 @@ def _apply_trade_constraints(
     portfolio_value: float,
     config: BacktestConfig,
     adv: float | None = None,
+    is_st: bool = False,
 ) -> tuple[float, str]:
     if abs(delta) < 1e-12:
         return 0.0, ""
@@ -1245,7 +1278,7 @@ def _apply_trade_constraints(
         return 0.0, "suspended"
 
     opening_pct = (open_price / pre_close - 1.0) * 100.0
-    board_limit_pct = _get_board_limit(code) * 100 if code else config.limit_up_pct
+    board_limit_pct = _get_board_limit(code, is_st=is_st) * 100 if code else config.limit_up_pct
     effective_limit_up = board_limit_pct
     effective_limit_down = -board_limit_pct
     # 浮点容差：防止 (11.98/10-1)*100=19.7999... >= 19.8 漏判

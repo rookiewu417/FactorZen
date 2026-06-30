@@ -39,6 +39,40 @@ def test_run_portfolio_writes_products(tmp_path: Path):
     assert m["status"] == "optimal" and "objective" in m
 
 
+def test_run_portfolio_attribution_placeholder_flag(tmp_path: Path):
+    """建仓时 stock_returns=zeros + factor_returns_latest={} → manifest 含占位标注。"""
+    rr = _risk_result()
+    alpha = np.array([0.1, 0.05, 0.02, 0.08, 0.03, 0.01])
+    res = run_portfolio(alpha, rr, codes=rr.factor_exposures.codes,
+                        stock_returns=np.zeros(6),       # 建仓时点全 0
+                        sectors=["A", "A", "A", "B", "B", "B"],
+                        factor_returns_latest={},        # 无因子收益
+                        risk_aversion=1.0, w_max=0.4,
+                        out_dir=str(tmp_path), run_id="placeholder")
+    run_dir = Path(res["run_dir"])
+    m = json.loads((run_dir / "manifest.json").read_text())
+    assert m["return_attribution_available"] is False, (
+        "stock_returns=zeros + factor_returns={}  时应标注归因不可用"
+    )
+    assert "return_attribution_note" in m and m["return_attribution_note"] is not None
+
+
+def test_run_portfolio_attribution_available_when_returns_provided(tmp_path: Path):
+    """传入真实收益时 return_attribution_available=True，note=None。"""
+    rr = _risk_result()
+    alpha = np.array([0.1, 0.05, 0.02, 0.08, 0.03, 0.01])
+    res = run_portfolio(alpha, rr, codes=rr.factor_exposures.codes,
+                        stock_returns=np.array([0.03, 0.01, -0.02, 0.04, 0.0, 0.01]),
+                        sectors=["A", "A", "A", "B", "B", "B"],
+                        factor_returns_latest={"size": 0.02, "ind_A": 0.0, "ind_B": 0.0},
+                        risk_aversion=1.0, w_max=0.4,
+                        out_dir=str(tmp_path), run_id="real_returns")
+    run_dir = Path(res["run_dir"])
+    m = json.loads((run_dir / "manifest.json").read_text())
+    assert m["return_attribution_available"] is True
+    assert m["return_attribution_note"] is None
+
+
 def test_run_portfolio_infeasible_does_not_crash(tmp_path: Path):
     """w_max=0.1 → n*w_max=0.6 < 1，违反 Σw=1，优化器返回 infeasible，pipeline 不崩溃。"""
     rr = _risk_result()  # n=6 stocks

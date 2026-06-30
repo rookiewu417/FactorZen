@@ -67,11 +67,18 @@ def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
     pl.DataFrame(risk_rows if risk_rows else {"metric": [], "value": []}) \
         .write_csv(run_dir / "risk_summary.csv")
 
+    # 收益归因可用性标注：建仓时点无持仓期收益时，Brinson/factor_return 为占位 0
+    _sr = np.asarray(stock_returns)
+    _attrib_placeholder = bool(np.all(_sr == 0) or len(factor_returns_latest) == 0)
     manifest = {"run_id": rid, "status": opt.status, "objective": opt.objective_value,
                 "n_holdings": int((w > 1e-6).sum()), "risk_aversion": risk_aversion,
                 "w_max": w_max, "neutral_factors": neutral_factors,
                 "turnover_budget": turnover_budget,
                 "turnover": (float(np.abs(w - prev_weights).sum()) if prev_weights is not None else None),
+                "return_attribution_available": not _attrib_placeholder,
+                "return_attribution_note": (
+                    "建仓时点无持仓期收益，收益归因(Brinson/factor_return)为占位 0；风险归因(risk_summary)有效"
+                    if _attrib_placeholder else None),
                 "git_sha": _git_sha(), "duration_seconds": round(time.perf_counter() - t0, 3)}
     (run_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     return {"run_dir": str(run_dir), "status": opt.status,

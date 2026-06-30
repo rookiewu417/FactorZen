@@ -424,6 +424,12 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
         if args.industry_neutral
         else None
     )
+    # --industry-neutral 使用 universe 等权基准：target = X_s.T @ w_bench（等权行业暴露）
+    # 而非绝对 0；raw one-hot 列下 target=0 + long_only + Σw=1 必然 infeasible。
+    # MVP：等权基准（真实指数基准权重留后续扩展）。
+    bench_weights = (
+        np.full(len(codes), 1.0 / len(codes)) if args.industry_neutral else None
+    )
     _ind_map = dict(zip(stocks["ts_code"].to_list(), stocks["industry"].to_list(), strict=False))
     sectors = [_ind_map.get(c, "") for c in codes]
     res = run_portfolio(
@@ -437,6 +443,7 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
         w_max=args.w_max,
         neutral_factors=neutral,
         turnover_budget=args.turnover,
+        bench_weights=bench_weights,
     )
     print(f"[portfolio] status={res['status']} holdings={res['n_holdings']} → {res['run_dir']}")
     return 0

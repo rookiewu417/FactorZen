@@ -79,3 +79,70 @@ def test_infeasible_when_w_max_too_tight():
     prob = cp.Problem(cp.Maximize(cp.sum(w)), cons)
     prob.solve(solver=cp.CLARABEL)
     assert prob.status in ("infeasible", "infeasible_inaccurate")
+
+
+# ── 生产形态 raw one-hot 行业列测试（Fix 2：钉死真实行为 + 验证等权基准修复）────────
+
+
+def _raw_onehot_exposures(n_industries=4, stocks_per_ind=3):
+    """构造生产形态 raw one-hot 行业暴露矩阵（取值 0/1，未去均值）。"""
+    n = n_industries * stocks_per_ind
+    ind_names = [f"ind_{chr(65 + i)}" for i in range(n_industries)]  # ind_A/B/C/D
+    mat = np.zeros((n, n_industries))
+    for i in range(n_industries):
+        mat[i * stocks_per_ind:(i + 1) * stocks_per_ind, i] = 1.0
+    return ExposureMatrix(
+        codes=[f"{i}" for i in range(n)],
+        factor_names=ind_names,
+        matrix=mat,
+    ), ind_names
+
+
+def test_raw_onehot_industry_neutral_no_bench_is_infeasible():
+    """复现 Critical 根因：生产形态 raw one-hot 行业列 + neutral=所有 ind_ + bench=None
+    (target=0) + long_only + Σw=1 → infeasible。
+
+    数学根因：Σ_{k} (X_{ind_k}.T @ w) = Σw = 1，但所有行业暴露=0 要求 Σw=0，矛盾。
+    """
+    exp, ind_names = _raw_onehot_exposures()
+    cfg = ConstraintConfig(
+        w_max=1.0,
+        neutral_factors=ind_names,
+        benchmark_weights=None,   # target = 0（绝对零暴露）
+        long_only=True,
+    )
+    w = cp.Variable(exp.n_stocks)
+    cons = build_constraints(w, exposures=exp, config=cfg)
+    prob = cp.Problem(cp.Maximize(cp.sum(w)), cons)
+    prob.solve(solver=cp.CLARABEL)
+    assert prob.status in ("infeasible", "infeasible_inaccurate"), (
+        f"期望 infeasible，实际 {prob.status}（raw one-hot + target=0 必不可行）"
+    )
+
+
+def test_raw_onehot_industry_neutral_with_equal_bench_is_feasible():
+    """同 raw one-hot 行业列，传等权基准 → target = 等权行业暴露（各行业 1/n_ind），
+    long_only + Σw=1 下可行（验证 Fix 1：CLI 传 bench_weights=np.full(n, 1/n)）。
+    """
+    exp, ind_names = _raw_onehot_exposures()
+    n = exp.n_stocks
+    bench_weights = np.full(n, 1.0 / n)
+    cfg = ConstraintConfig(
+        w_max=0.15,               # 单票上限 15%（等权 ≈ 8.3%，留有余量）
+        neutral_factors=ind_names,
+        benchmark_weights=bench_weights,
+        long_only=True,
+    )
+    w = cp.Variable(n)
+    alpha = np.arange(n, dtype=float) / n
+    cons = build_constraints(w, exposures=exp, config=cfg)
+    prob = cp.Problem(cp.Maximize(alpha @ w), cons)
+    prob.solve(solver=cp.CLARABEL)
+    assert prob.status in ("optimal", "optimal_inaccurate"), (
+        f"期望 optimal，实际 {prob.status}（raw one-hot + 等权基准应可行）"
+    )
+    # 验证行业暴露确实对齐基准（各行业总权重 ≈ 等权基准暴露）
+    target = exp.matrix.T @ bench_weights
+    actual = exp.matrix.T @ w.value
+    np.testing.assert_allclose(actual, target, atol=1e-4,
+                               err_msg="行业暴露未能对齐等权基准")

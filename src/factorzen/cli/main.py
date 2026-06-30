@@ -307,6 +307,22 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mine_agent(args: argparse.Namespace) -> int:
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.pipelines.factor_mine_agent import run_agent_mine
+
+    stocks = get_universe(args.end, args.universe) if args.universe else None
+    daily = loader.fetch_daily(args.start, args.end)
+    if stocks is not None:
+        import polars as pl
+        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    res = run_agent_mine(daily, n_rounds=args.iterations, seed=args.seed,
+                         top_k=args.top_k, human_review=args.human_review)
+    print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
+    return 0
+
+
 def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -584,6 +600,16 @@ def build_parser() -> argparse.ArgumentParser:
     m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
     m_lb.add_argument("session_dir", help="Path to a mining session directory")
     m_lb.set_defaults(func=_cmd_mine_leaderboard)
+
+    m_agent = mine_sub.add_parser("agent", help="LLM-guided agent factor mining")
+    m_agent.add_argument("--start", required=True)
+    m_agent.add_argument("--end", required=True)
+    m_agent.add_argument("--universe", default=None)
+    m_agent.add_argument("--iterations", type=int, default=5)
+    m_agent.add_argument("--top-k", dest="top_k", type=int, default=5)
+    m_agent.add_argument("--seed", type=int, default=42)
+    m_agent.add_argument("--human-review", action="store_true", dest="human_review")
+    m_agent.set_defaults(func=_cmd_mine_agent)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     validate = sub.add_parser("validate", help="Overfitting / robustness checks")

@@ -63,3 +63,13 @@ def test_genetic_improves_toy_objective():
     gs = GeneticSearcher(rng, max_depth=3)
     best = gs.evolve(lambda node: -complexity(node), pop_size=20, generations=5)
     assert complexity(best[0]) <= 4
+
+
+def test_genetic_terminates_under_complexity_pressure():
+    """即使目标偏好高复杂度（防膨胀过滤压力最大），evolve 也必须在有限时间内终止。"""
+    from factorzen.discovery.search.genetic import GeneticSearcher
+    from factorzen.discovery.expression import complexity
+    rng = np.random.default_rng(13)
+    gs = GeneticSearcher(rng, max_depth=3)
+    best = gs.evolve(lambda node: float(complexity(node)), pop_size=15, generations=6)
+    assert len(best) == 15  # 种群规模维持，未因死循环卡住

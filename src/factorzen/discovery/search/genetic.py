@@ -55,13 +55,15 @@ class GeneticSearcher:
             scored = sorted(pop, key=lambda n: score_fn(n), reverse=True)
             survivors = scored[: max(elite, pop_size // 2)]
             children = list(scored[:elite])
+            attempts = 0
             while len(children) < pop_size:
                 a = survivors[int(self.rng.integers(len(survivors)))]
                 b = survivors[int(self.rng.integers(len(survivors)))]
                 child = crossover(a, b, self.rng)
                 if self.rng.random() < 0.3:
                     child = mutate(child, self.rng, self.max_depth)
-                if complexity(child) <= 12:  # 防膨胀
+                if complexity(child) <= 12 or attempts > pop_size * 20:  # 防膨胀（软约束）
                     children.append(child)
+                attempts += 1
             pop = children
         return sorted(pop, key=lambda n: score_fn(n), reverse=True)

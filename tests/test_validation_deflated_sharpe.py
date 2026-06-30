@@ -1,4 +1,3 @@
-import numpy as np
 
 
 def test_strong_sharpe_significant():
@@ -11,7 +10,7 @@ def test_strong_sharpe_significant():
 def test_noise_sharpe_not_significant():
     from factorzen.validation.deflated_sharpe import deflated_sharpe
     # IR≈0 → 不显著
-    dsr, p = deflated_sharpe(sharpe=0.0, n_trials=100, n_obs=500, sharpe_variance=0.0025)
+    _dsr, p = deflated_sharpe(sharpe=0.0, n_trials=100, n_obs=500, sharpe_variance=0.0025)
     assert p > 0.05
 
 

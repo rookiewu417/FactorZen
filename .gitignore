@@ -67,3 +67,6 @@ docs/plans/
 # editable install artifacts
 *.egg-info/
 factor_research.egg-link
+
+# 内部 SDD 设计文档(spec/plan),不对外发布
+docs/superpowers/

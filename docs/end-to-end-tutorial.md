@@ -1,8 +1,10 @@
-# 端到端教程：从信号到 Dashboard 六步走
+# 端到端教程：从信号到 Dashboard
 
 > [FactorZen](../README.md) · [文档](README.md) · [运行手册](runbook.md) · **端到端教程**
 
-本教程手把手带你跑通 FactorZen 完整研究链路：拉数据 → 挖因子 → 防过拟合验收 → 建风险模型 → 组合优化建仓 → 模拟交易 → 成果展示页。每一步都有预期产物和输出解读。
+本教程手把手带你跑通 FactorZen 完整研究链路：拉数据 → 挖因子并导出 alpha → 防过拟合验收 → 建风险模型 → 组合优化建仓 → 模拟交易 → 成果展示页。每一步都有预期产物和输出解读。
+
+> 全流程共 **Step 0–6 七个步骤**：Step 0 为一次性的前置数据拉取，核心研究六步是 Step 1–6。
 
 ---
 
@@ -67,9 +69,9 @@ pixi run smoke-data --start 20200101 --end 20241231
 
 ---
 
-## Step 1：挖因子
+## Step 1：挖因子并导出 alpha
 
-**做什么**：用遗传算法在内置算子库（时序/截面/算术算子）上自动搜索表达式因子，保留 IC 最高的 top-k 个；或用 LLM Agent 生成并评估假设驱动的因子。
+**做什么**：用遗传算法在内置算子库（时序/截面/算术算子）上自动搜索表达式因子，保留 IC 最高的 top-k 个；或用 LLM Agent 生成并评估假设驱动的因子。挖完再用 `mine export-alpha` 把选中的候选导出成下游建仓需要的 alpha 信号。
 
 ### 方案 A：遗传表达式搜索（推荐入门）
 
@@ -82,7 +84,7 @@ pixi run fz mine search \
   --seed 42
 ```
 
-运行约 5-20 分钟（取决于机器性能）。途中可实时看到每轮最优 IC。
+运行时间取决于机器性能与 trials 数。途中可实时看到搜索进度。
 
 ### 方案 B：LLM 单 Agent 挖掘（需配置 LLM 环境变量）
 
@@ -92,7 +94,7 @@ pixi run fz mine agent \
   --iterations 10
 ```
 
-### 方案 C：多 Agent 团队挖掘（M6，需 LLM 配置）
+### 方案 C：多 Agent 团队挖掘（需 LLM 配置）
 
 ```bash
 pixi run fz mine team --start 20200101 --end 20231231
@@ -101,135 +103,147 @@ pixi run fz mine team --start 20200101 --end 20231231
 **查看排行榜**
 
 ```bash
-pixi run fz mine leaderboard workspace/discovery/<session_id>
+pixi run fz mine leaderboard workspace/mining_sessions/session_42_genetic
 ```
 
-**产物位置**
+**产物位置**（以方案 A 为例，session 目录名为 `session_{seed}_{method}`）
 
 ```
-workspace/discovery/<session_id>/
-├── top10_expressions.json    # top-k 表达式字符串 + IC/IR 统计
-├── alpha.parquet             # top 因子的每日截面 alpha 值
-├── correlation_matrix.csv    # top-k 因子去相关矩阵
-└── manifest.json             # 参数 / seed / git_sha（可复现）
+workspace/mining_sessions/session_42_genetic/
+├── candidates.csv    # 候选排行榜（列 rank,n_trials,expression,ic_train,...）
+├── manifest.json     # 参数 / seed / 复现说明
+└── exported/         # top 候选渲染成的 .py 因子文件（复制到 workspace/factors/daily/ 即可注册）
 ```
+
+> LLM 方案 B/C 的产物分别落在 `workspace/mine_agent/<run_id>/`、`workspace/mine_team/<run_id>/`，文件结构同上。
 
 **解读输出**
 
-- 排行榜按 IC_mean 降序；关注 `IC_mean > 0.03`、`IC_IR > 0.5` 的候选因子。
-- 去相关矩阵：相关性 > 0.7 的因子对视为冗余，只保留 IC 较高的一个。
-- `session_id` 格式为 `YYYYMMDD_HHMMSS`，后续步骤需要用到。
+- `candidates.csv` 按挖掘内 IC 降序；关注 `ic_train` 较高且表达式简洁的候选。
+- 注意 `candidates.csv` 的 IC 是挖掘内估计（plain zscore，无中性化），与 `fz factor run` 默认带中性化的口径不同。
+
+### 导出 alpha 信号
+
+把排行榜里选中的候选（如 rank 1）在建仓信号日当天的截面 α 导出成 `(ts_code, alpha)` 两列 parquet，供 Step 4 组合建仓使用。`--date` 应与 Step 4 的 `--end` 对齐：
+
+```bash
+pixi run fz mine export-alpha \
+  --session workspace/mining_sessions/session_42_genetic \
+  --rank 1 \
+  --date 20231231 \
+  --universe all_a \
+  --out alpha.parquet
+```
+
+**产物**：`alpha.parquet`（两列 `ts_code, alpha` 的单截面长表）。
 
 ---
 
 ## Step 2：防过拟合验收
 
-**做什么**：对候选因子执行 Deflated Sharpe（DSR）、block bootstrap IC 置信区间、PBO/CSCV 过拟合概率评估。holdout 段（通常是最后 20% 的时间）永久隔离，从不参与训练，只在此处使用一次。
+**做什么**：对候选因子执行 Deflated Sharpe（DSR）+ block bootstrap IC 置信区间评估，结果只打印到终端、不落盘。单因子样本数 N=1，**不计算 PBO**（PBO/CSCV 适用于一池候选因子的多重检验，不适用于单因子）。
+
+> 验收对象必须是**已注册因子名**。挖掘出的表达式因子需先把 Step 1 session 里 `exported/*.py` 复制到 `workspace/factors/daily/`，再用因子名验收。
 
 ```bash
-# 对 top 因子逐个验收（替换 <factor_name> 为排行榜中的因子名或表达式字符串）
+# 替换 <factor_name> 为已注册因子名
 pixi run fz validate overfit <factor_name> --start 20200101 --end 20241231
 ```
 
-**产物位置**
-
-```
-workspace/validation/<run_id>/
-├── dsr_report.json           # Deflated Sharpe 统计（DSR、t-stat、p-value）
-├── bootstrap_ic_ci.png       # bootstrap IC 均值分布图（含 95% CI）
-├── pbo_matrix.csv            # CSCV 组合内外胜率矩阵
-└── manifest.json
-```
+**输出**：终端打印一行 `IC / IR / DSR p 值 / bootstrap IC 95% CI`，不产生任何文件。
 
 **解读输出**
 
-| 指标 | 通过标准 | 说明 |
-|------|----------|------|
-| DSR | > 0 | Deflated Sharpe > 0，经多重比较修正后仍显著 |
-| bootstrap IC 95% CI | 下界 > 0 | IC 均值在 holdout 段显著异于零 |
-| PBO | < 0.5 | 过拟合概率低于 50% |
+| 指标 | 参考 | 说明 |
+|------|------|------|
+| DSR p 值 | 越小越好 | Deflated Sharpe 的显著性 p 值 |
+| bootstrap IC 95% CI | 下界 > 0 | IC 均值显著异于零 |
 
-三项均通过的因子才进入后续链路；否则回到 Step 1 重新搜索或调整算子。
+DSR 显著且 bootstrap IC CI 下界 > 0 的因子更稳健；否则回到 Step 1 重新搜索或调整算子。
 
 ---
 
 ## Step 3：建风险模型
 
-**做什么**：构建 Barra 风格因子风险模型——计算 8 个风格因子暴露（规模/价值/动量/波动率/成长/杠杆/流动性/非线性规模）和行业因子暴露，用 Newey-West 估计因子协方差矩阵，并对特质风险收缩压缩。
+**做什么**：构建 Barra 风格因子风险模型——计算 8 个风格因子暴露（`size / value / momentum / volatility / liquidity / quality / growth / leverage`）和行业因子暴露，用 Newey-West 估计因子协方差矩阵，并对特质风险做收缩。
+
+> 这一步是**独立的风险模型诊断步骤**，用于落盘并检视风险模型产物。Step 4 的 `fz portfolio build` 会**在内部用同段数据现算风险模型**，并不消费这里的产物——所以即使跳过 Step 3，建仓仍可正常进行。
 
 ```bash
 pixi run fz risk build \
   --start 20200101 --end 20241231 \
-  --cov-half-life 63 \
-  --nw-lags 5 \
-  --spec-shrinkage 0.1
+  --cov-half-life 90 \
+  --nw-lags 2 \
+  --spec-half-life 90 \
+  --spec-shrinkage 0.3
 ```
-
-运行约 2-5 分钟（全量数据）。
 
 **产物位置**
 
 ```
 workspace/risk_models/<run_id>/
-├── factor_exposures.parquet  # 每日风格+行业因子暴露矩阵（股票×因子）
-├── factor_cov.parquet        # 因子协方差矩阵（Newey-West 估计）
-├── specific_risk.parquet     # 个股特质风险向量（收缩后）
+├── exposures.parquet          # 风格+行业因子暴露矩阵（股票×因子）
+├── factor_covariance.parquet  # 因子协方差矩阵（Newey-West 估计）
+├── specific_risk.parquet      # 个股特质风险向量（收缩后）
+├── factor_returns.parquet     # 因子收益序列
+├── risk_summary.csv           # 风险摘要
 └── manifest.json
 ```
 
 **解读输出**
 
-- 命令输出每个风格因子的 IC 分布摘要，用于判断因子暴露质量。
-- `factor_cov` 应为正定矩阵（命令内部自动校验，若不正定会警告并强制谱剪裁）。
-- `specific_risk` 越小说明风险模型解释度越高。
+- 命令打印因子数与回归 R²，用于判断风险模型解释度。
+- `specific_risk` 越小说明系统性因子解释占比越高。
 
 ---
 
 ## Step 4：组合优化建仓
 
-**做什么**：以 Step 1/2 产出的 alpha 信号和 Step 3 的风险模型为输入，用 cvxpy（CLARABEL solver）求解 mean-variance 二次规划，生成每日目标权重，并输出 Brinson 归因和风险因子归因。
+**做什么**：以 Step 1 导出的 `alpha.parquet` 为输入，在 `--end` 当日做**单截面**建仓——用 cvxpy（CLARABEL solver）求解一次 mean-variance 二次规划，生成一组目标权重，并输出归因与风险摘要。风险模型由命令内部从同段数据现算。
 
 ```bash
 pixi run fz portfolio build \
-  --start 20200101 --end 20241231 \
-  --alpha-file workspace/discovery/<session_id>/alpha.parquet \
+  --start 20200101 --end 20231231 \
+  --alpha-file alpha.parquet \
   --lam 1.0 \
   --w-max 0.05 \
   --turnover 0.3 \
   --industry-neutral
 ```
 
-运行约 5-15 分钟（每个交易日一次 QP 求解）。
+> `--end` 是建仓信号日（`signal_date = end`），应与 Step 1 `export-alpha` 的 `--date` 一致。只解一次 QP，输出的是单截面权重。
 
 **产物位置**
 
 ```
 workspace/portfolios/<run_id>/
-├── weights.parquet           # 每日股票权重矩阵
-├── attribution_report.html   # Brinson 归因 + 风险因子归因 HTML
-└── manifest.json
+├── weights.parquet     # 单截面权重（列 ts_code / weight / prev_weight）
+├── attribution.csv     # Brinson 归因
+├── risk_summary.csv    # 风险因子归因摘要
+└── manifest.json       # 含 signal_date（供 Step 5 串接持仓）
 ```
 
 **解读输出**
 
-- 优化日志输出每日求解状态：`optimal` 为正常，`infeasible` 说明约束冲突（见下方 MVP 限制）。
-- 归因报告分为两部分：
-  - **Brinson 归因**：选股效应 / 行业配置效应 / 交叉效应（相对等权基准）。
-  - **风险因子归因**：各 Barra 风格因子和行业因子对组合波动率的贡献比例（MCR 分解）。
+- 命令打印一行 `status=... holdings=...`：`optimal` 为正常，`infeasible` 说明约束冲突（见下方 MVP 限制）。
+- `attribution.csv`：选股 / 行业配置 / 交叉效应（相对股票池等权基准）。
+- `risk_summary.csv`：各 Barra 风格因子和行业因子对组合风险的贡献（MCR 分解）。
 
 > **MVP 限制**：
 > - `--industry-neutral` 行业中性约束使用行业**等权**为基准，不是市值加权基准。
-> - 收益归因（Brinson）基于每日权重×日收益近似，精确归因需持仓期收益（暂不支持多持仓期精细核算）。
+> - 收益归因（Brinson）基于权重×收益近似，精确归因需持仓期收益（暂不支持多持仓期精细核算）。
 
 ---
 
 ## Step 5：模拟交易
 
-**做什么**：对 Step 4 产出的每日目标权重执行多周期净值回测，对齐真实行情（停牌/涨跌停过滤），扣除换手成本后输出净值曲线、年化收益、夏普比率、最大回撤等。
+**做什么**：把 `--portfolio-dir` 根目录下各 `<run_id>/weights.parquet`（按 manifest 的 `signal_date` 串成持仓序列）执行多周期净值回测，对齐真实行情，扣除换手成本（内部 `CostModel`）后输出净值曲线、年化收益、夏普比率、最大回撤等。
+
+> `--portfolio-dir` 传的是组合产物**根目录** `workspace/portfolios`（其下每个 `<run_id>/` 含 `weights.parquet` + `manifest.json`），不是单个 run 目录。
 
 ```bash
 pixi run fz sim run \
-  --portfolio-dir workspace/portfolios/<run_id> \
+  --portfolio-dir workspace/portfolios \
   --start 20200101 \
   --end 20241231
 ```
@@ -243,8 +257,8 @@ pixi run fz sim show --sim-dir workspace/sim/<sim_id>
 
 ```
 workspace/sim/<sim_id>/
-├── nav.parquet               # 每日净值序列
-├── performance.json          # 年化收益 / 夏普 / 最大回撤 / 年化换手
+├── nav.parquet     # 净值序列
+├── metrics.json    # 年化收益 / 夏普 / 最大回撤 / 年化换手 / 总成本
 └── manifest.json
 ```
 
@@ -257,7 +271,7 @@ workspace/sim/<sim_id>/
 | 最大回撤 | < 20% | 净值历史最大峰谷跌幅 |
 | 年化换手 | < 换手上限×年化次数 | 应与 `--turnover` 约束一致 |
 
-> **MVP 限制**：模拟交易不接真实 OMS/经纪商，不做实盘下单。换手成本为线性近似（默认 15bps 单边），未建模市场冲击。
+> **MVP 限制**：模拟交易不接真实 OMS/经纪商，不做实盘下单。换手成本由内部 `CostModel` 线性计算（默认单边佣金万 2.5 + 滑点万 5，卖出加千 1 印花税），无 CLI 成本入口，未建模非线性市场冲击。
 
 ---
 
@@ -274,8 +288,10 @@ pixi run fz report portfolio \
 **产物位置**
 
 ```
-workspace/sim/<sim_id>/portfolio_report.html
+workspace/reports/portfolio_<sim_id>.html
 ```
+
+> 输出文件名里的 `<sim_id>` 取自 `--sim-dir` 目录名；也可用 `--out` 指定路径。
 
 用浏览器打开即可查看。Dashboard 包含：
 
@@ -300,26 +316,29 @@ pixi run fz report build <factor_name> \
 pixi run fz data fetch daily --start 20200101 --end 20241231
 pixi run fz data fetch daily-basic --start 20200101 --end 20241231
 
-# Step 1：挖因子（遗传搜索）
+# Step 1：挖因子（遗传搜索）+ 导出 alpha
 pixi run fz mine search \
   --start 20200101 --end 20231231 \
   --method genetic --trials 200 --top-k 10 --seed 42
+pixi run fz mine export-alpha \
+  --session workspace/mining_sessions/session_42_genetic \
+  --rank 1 --date 20231231 --universe all_a --out alpha.parquet
 
-# Step 2：防过拟合验收（替换 <factor> 为排行榜 top 因子名）
+# Step 2：防过拟合验收（替换 <factor> 为已注册因子名）
 pixi run fz validate overfit <factor> --start 20200101 --end 20241231
 
-# Step 3：建风险模型
-pixi run fz risk build --start 20200101 --end 20241231
+# Step 3：建风险模型（独立诊断步骤，可选）
+pixi run fz risk build --start 20200101 --end 20231231
 
-# Step 4：组合优化建仓
+# Step 4：组合优化建仓（--end 与 export-alpha 的 --date 对齐）
 pixi run fz portfolio build \
-  --start 20200101 --end 20241231 \
-  --alpha-file workspace/discovery/<session_id>/alpha.parquet \
+  --start 20200101 --end 20231231 \
+  --alpha-file alpha.parquet \
   --industry-neutral
 
-# Step 5：模拟交易
+# Step 5：模拟交易（--portfolio-dir 传根目录）
 pixi run fz sim run \
-  --portfolio-dir workspace/portfolios/<run_id> \
+  --portfolio-dir workspace/portfolios \
   --start 20200101 --end 20241231
 
 # Step 6：成果展示页
@@ -332,52 +351,17 @@ pixi run fz report portfolio \
 
 ## 全景：从信号到 Dashboard
 
-```
-                     FactorZen 端到端链路
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│   Tushare API                                                       │
-│       │                                                             │
-│       ▼                                                             │
-│  [Step 0] data/tushare/                                             │
-│   日行情 + 日基础数据 (parquet 缓存, PIT 对齐)                       │
-│       │                                                             │
-│       ▼                                                             │
-│  [Step 1] fz mine search / agent / team         M1/M5/M6           │
-│   算子库 AST 搜索 / LLM 闭环挖掘                                     │
-│   → workspace/discovery/<session>/alpha.parquet                     │
-│       │                                                             │
-│       ▼                                                             │
-│  [Step 2] fz validate overfit                   M2                 │
-│   DSR + bootstrap IC CI + PBO/CSCV                                  │
-│   holdout 段永久隔离                                                  │
-│   → workspace/validation/<run>/dsr_report.json                      │
-│       │                                                             │
-│       ├──────────────────────────┐                                  │
-│       ▼                          ▼                                  │
-│  [Step 3] fz risk build     [Step 4] fz portfolio build  M3/M4     │
-│   Barra 因子暴露              mean-variance QP (cvxpy)              │
-│   Newey-West 协方差           行业中性 / 换手约束                     │
-│   特质风险收缩                 Brinson + MCR 归因                    │
-│   → workspace/risk_models/   → workspace/portfolios/               │
-│                   │                          │                      │
-│                   └──────────┬───────────────┘                      │
-│                              ▼                                      │
-│                    [Step 5] fz sim run          M7                  │
-│                    多周期净值回测                                     │
-│                    扣换手成本 / 停牌过滤                              │
-│                    → workspace/sim/<id>/nav.parquet                 │
-│                              │                                      │
-│                              ▼                                      │
-│                    [Step 6] fz report portfolio  M7                 │
-│                    指标卡 + 净值曲线 + 热图                           │
-│                    归因 + 风险摘要                                    │
-│                    → workspace/sim/<id>/portfolio_report.html       │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+| 步骤 | 命令 | 产物 |
+|------|------|------|
+| Step 0 拉数据 | `fz data fetch daily / daily-basic` | `data/tushare/`（parquet 缓存，PIT 对齐） |
+| Step 1 挖因子 | `fz mine search / agent / team` + `fz mine export-alpha` | `workspace/mining_sessions/session_{seed}_{method}/`（candidates.csv + exported/）→ `alpha.parquet` |
+| Step 2 防过拟合 | `fz validate overfit` | 终端打印 IC / IR / DSR p / bootstrap CI（不落盘） |
+| Step 3 风险模型 | `fz risk build`（独立诊断，可选） | `workspace/risk_models/<run>/`（exposures / covariance / specific_risk） |
+| Step 4 组合建仓 | `fz portfolio build`（内部现算风险模型） | `workspace/portfolios/<run>/`（weights.parquet + attribution.csv + risk_summary.csv） |
+| Step 5 模拟交易 | `fz sim run` | `workspace/sim/<id>/`（nav.parquet + metrics.json） |
+| Step 6 成果展示 | `fz report portfolio` | `workspace/reports/portfolio_<id>.html` |
 
-  每个 run 产出 manifest.json：seed + 参数 + git_sha → 可审计、可复现
-```
+> 每个 run 都产出 `manifest.json`（seed + 参数 + git_sha），可审计、可复现。
 
 ---
 
@@ -385,9 +369,9 @@ pixi run fz report portfolio \
 
 | 限制项 | 当前状态 | 计划 |
 |--------|----------|------|
-| 行业中性基准 | 行业等权基准（不是市值加权） | M4 后续版本升级为市值加权基准 |
-| 收益归因精度 | 按日权重近似（不支持持仓期内多次调仓的精细核算） | 需补持仓期收益接口 |
-| 换手成本模型 | 线性近似（固定 bps），未建模市场冲击和流动性折损 | 可扩展为非线性冲击模型 |
+| 行业中性基准 | 行业等权基准（不是市值加权） | 后续版本升级为市值加权基准 |
+| 收益归因精度 | 按权重近似（不支持持仓期内多次调仓的精细核算） | 需补持仓期收益接口 |
+| 换手成本模型 | 线性近似（固定费率：佣金+滑点+印花税），未建模市场冲击和流动性折损 | 可扩展为非线性冲击模型 |
 | 实盘接入 | 不支持，无 OMS/经纪商接口，不做实盘下单 | 不在路线图内 |
 | LLM Agent | 需外部 LLM 配置（`FACTORZEN_LLM_*`），非必须 | 核心链路无 LLM 依赖 |
 | 数据源 | 仅 Tushare（A 股），无港股/美股/期货 | 可通过数据插件扩展 |

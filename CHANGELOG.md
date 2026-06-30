@@ -36,6 +36,26 @@
 - **企业治理文件：** `CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`.github/PULL_REQUEST_TEMPLATE.md`。
 - **升级计划：** `docs/evolution-plan-2026.md`。
 
+## [0.3.0]
+
+详见 [docs/release-notes/v0.3.0.md](docs/release-notes/v0.3.0.md)。自 v0.2.0 起，项目从「A 股低频单因子研究框架」扩展为端到端、可复现的买方研究平台。测试套件扩展到 1109 个离线可重复用例。
+
+### Added
+
+- **因子挖掘引擎：** `discovery/` 算子库（30+ 时序/截面/算术算子）+ 表达式 AST 双向序列化 + 随机/遗传搜索（`fz mine search`，`--trials` 默认 200）+ IC 打分去相关；新增 `fz mine export-alpha` 把单个候选算成 `(ts_code, alpha)` 单截面 parquet，衔接组合优化。
+- **防过拟合护栏：** `validation/` block bootstrap IC 置信区间、Deflated Sharpe Ratio、PBO/CSCV（候选池）、holdout 段永久隔离；`fz validate overfit` 打印单因子 IC/IR/DSR/bootstrap CI（不落盘，N=1 不计 PBO）。
+- **Barra 风险模型：** `risk/` 8 个风格因子（size/value/momentum/volatility/liquidity/quality/growth/leverage）+ 中信一级行业因子 + Newey-West 协方差 + James-Stein 特质风险收缩 + 边际风险贡献；`fz risk build`（默认 `--cov-half-life 90 --nw-lags 2 --spec-shrinkage 0.3 --spec-half-life 90`）。
+- **组合优化与归因：** `portfolio/` cvxpy mean-variance QP（CLARABEL solver，box/预算/换手/行业中性约束，单截面建仓）+ `attribution/` Brinson 多期归因与风险因子归因；`fz portfolio build`。
+- **单/多 Agent 挖掘：** `agents/` 零外部依赖自建 LLM 闭环（假设→生成→护栏→IC 验证→反思）+ Negative RAG 失败注入（`fz mine agent`）；4 个角色 Agent（Hypothesis/Coder/Critic/Librarian）+ Evaluator 评估环节 + 跨 session 长期记忆（`fz mine team`）。
+- **模拟交易 + 成果展示：** `sim/engine.py` 多周期权重回测（对齐行情、扣换手成本、净值与绩效指标）+ `reports/portfolio_report.py` 组合绩效 HTML Dashboard（指标卡 + 净值曲线 + 月度热图 + 归因 + 风险摘要）；`fz sim run` / `fz sim show` / `fz report portfolio`。
+- **微观结构与交易约束：** `core/universe.py` universe 快照（停牌/涨跌停/ST/次新股/流通市值过滤）+ `core/benchmark.py` 基准管理（HS300/ZZ500/ZZ1000 + 行业等权替代基准）+ 回测引擎 GEM 双路径容差、T+1、`signal_date` 解耦、ADV 零值 fallback。
+- **端到端教程：** `docs/end-to-end-tutorial.md` 从拉数据到组合展示的完整链路逐步教程。
+
+### Changed
+
+- **定位升级：** README / project-explanation / architecture / evolution-plan 由单因子框架口径改写为端到端买方研究平台口径。
+- **依赖：** 新增 cvxpy（CLARABEL solver）强依赖，组合优化功能依赖此包。
+
 ## [0.2.0]
 
 见 [docs/release-notes/v0.2.0.md](docs/release-notes/v0.2.0.md)。

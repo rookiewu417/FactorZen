@@ -351,6 +351,32 @@ def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mine_export_alpha(args: argparse.Namespace) -> int:
+    from factorzen.core.universe import get_universe
+    from factorzen.daily.data.context import FactorDataContext
+    from factorzen.discovery.export import (
+        export_alpha_cross_section,
+        read_candidate_expression,
+    )
+
+    expr = read_candidate_expression(args.session, args.rank)
+    uni = get_universe(args.date, args.universe)["ts_code"].to_list()
+    ctx = FactorDataContext(
+        start=args.date,
+        end=args.date,
+        required_data=["daily", "daily_basic"],
+        lookback_days=args.lookback,
+        universe=uni,
+    )
+    out = export_alpha_cross_section(expr, ctx, args.date, args.out)
+    import polars as pl
+
+    n = pl.read_parquet(out).height
+    print(f"[mine] export-alpha: rank={args.rank} expr={expr!r} date={args.date} "
+          f"→ {out} ({n} 只股票)")
+    return 0
+
+
 def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
@@ -822,6 +848,22 @@ def build_parser() -> argparse.ArgumentParser:
     m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
     m_lb.add_argument("session_dir", help="Path to a mining session directory")
     m_lb.set_defaults(func=_cmd_mine_leaderboard)
+
+    m_exp = mine_sub.add_parser(
+        "export-alpha",
+        help="Compute one candidate's cross-sectional alpha → (ts_code,alpha) parquet",
+    )
+    m_exp.add_argument("--session", required=True,
+                       help="Mining session dir (contains candidates.csv)")
+    m_exp.add_argument("--rank", type=int, default=1,
+                       help="Candidate rank in candidates.csv (1-based, default 1)")
+    m_exp.add_argument("--date", required=True, help="Cross-section date YYYYMMDD")
+    m_exp.add_argument("--universe", default="all_a", help="Universe name (default all_a)")
+    m_exp.add_argument("--lookback", type=int, default=60,
+                       help="Trade-day lookback for time-series operators (default 60)")
+    m_exp.add_argument("--out", required=True,
+                       help="Output parquet path (columns: ts_code, alpha)")
+    m_exp.set_defaults(func=_cmd_mine_export_alpha)
 
     m_agent = mine_sub.add_parser("agent", help="LLM-guided agent factor mining")
     m_agent.add_argument("--start", required=True)

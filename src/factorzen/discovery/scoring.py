@@ -7,8 +7,11 @@ from typing import Literal
 
 import polars as pl
 
+from factorzen.daily.evaluation.correlation import compute_factor_correlation
 from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
 from factorzen.daily.preprocessing.normalizer import cross_sectional_zscore
+from factorzen.discovery.expression import Node
+from factorzen.discovery.expression import complexity as _complexity
 
 
 @dataclass
@@ -46,3 +49,28 @@ def quick_fitness(factor_df: pl.DataFrame, bundle: DataBundle,
     res = compute_rank_ic(clean.select(["trade_date", "ts_code", "factor_clean"]),
                           ret, factor_col="factor_clean", frequency="daily")
     return {"ic_mean": res.ic_mean, "ir": res.ir, "n": res.n_periods}
+
+
+def max_correlation(factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame]) -> float:
+    """factor_df 与 pool 中每个因子的截面相关性绝对值的最大值。pool 为空时返回 0。"""
+    if not pool:
+        return 0.0
+    fd = {"__cand__": factor_df.rename({"factor_value": "factor_clean"})
+          if "factor_value" in factor_df.columns else factor_df}
+    for name, df in pool.items():
+        fd[name] = df.rename({"factor_value": "factor_clean"}) if "factor_value" in df.columns else df
+    res = compute_factor_correlation(fd, factor_col="factor_clean")
+    i = res.factor_names.index("__cand__")
+    corrs = [abs(res.corr_matrix[i][j]) for j in range(len(res.factor_names)) if j != i]
+    return max(corrs) if corrs else 0.0
+
+
+def score_candidate(factor_df: pl.DataFrame, node: Node, bundle: DataBundle,
+                    pool: dict[str, pl.DataFrame], lam: float = 0.5,
+                    gamma: float = 0.002) -> dict:
+    train = quick_fitness(factor_df, bundle, "train")
+    mc = max_correlation(factor_df, pool)
+    cplx = _complexity(node)
+    fitness = train["ir"] - lam * mc - gamma * cplx
+    return {"fitness": fitness, "ic_train": train["ic_mean"], "ir_train": train["ir"],
+            "max_corr": mc, "complexity": cplx, "n_train": train["n"]}

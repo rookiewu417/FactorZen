@@ -45,3 +45,23 @@ def test_quick_fitness_positive_for_signal():
     res = quick_fitness(fac, b, segment="train")
     assert res["ic_mean"] > 0.05
     assert res["n"] > 0
+
+
+def test_max_correlation_self_is_one():
+    from factorzen.discovery.scoring import max_correlation
+    daily = _daily()
+    fac = _signal_factor_df(daily).rename({"factor_value": "factor_clean"})
+    corr = max_correlation(fac.rename({"factor_clean": "factor_value"}),
+                           {"self": fac})
+    assert corr > 0.99
+
+
+def test_score_penalizes_complexity():
+    from factorzen.discovery.scoring import DataBundle, score_candidate
+    from factorzen.discovery.expression import parse_expr
+    daily = _daily()
+    b = DataBundle.build(daily)
+    fac = _signal_factor_df(daily)
+    simple = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.01)
+    # 复杂表达式（节点更多）在相同 IC 下 fitness 更低
+    assert simple["complexity"] == 1

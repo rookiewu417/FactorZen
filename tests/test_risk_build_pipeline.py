@@ -43,3 +43,44 @@ def test_run_risk_build_writes_artifacts(tmp_path: Path):
     assert exp_df.height > 0, "exposures.parquet 应有数据行"
     sr_df = pl.read_parquet(run_dir / "specific_risk.parquet")
     assert sr_df.height > 0, "specific_risk.parquet 应有数据行"
+
+    # ── risk_summary.csv 内容验证（spec §7：5 类信息）──
+    csv_df = pl.read_csv(run_dir / "risk_summary.csv")
+    assert set(csv_df.columns) == {"section", "metric", "value"}, \
+        f"CSV 列应为 section/metric/value，实际: {csv_df.columns}"
+    sections = set(csv_df["section"].to_list())
+
+    # §1 因子波动
+    assert "factor_vol" in sections, "CSV 应含 factor_vol section"
+    fvol_rows = csv_df.filter(pl.col("section") == "factor_vol")
+    assert fvol_rows.height > 0, "factor_vol 应有行"
+    assert (fvol_rows["value"] >= 0).all(), "factor_vol 值应非负"
+
+    # §2 特质风险分布
+    assert "specific_risk" in sections, "CSV 应含 specific_risk section"
+    sr_metrics = set(csv_df.filter(pl.col("section") == "specific_risk")["metric"].to_list())
+    for m in ("mean", "median", "p25", "p75", "max"):
+        assert m in sr_metrics, f"specific_risk section 缺少 metric={m}"
+
+    # §3 R²
+    assert "r_squared" in sections, "CSV 应含 r_squared section"
+    r2_val = csv_df.filter(
+        (pl.col("section") == "r_squared") & (pl.col("metric") == "r_squared")
+    )["value"].to_list()
+    assert len(r2_val) == 1 and 0.0 <= r2_val[0] <= 1.0, f"r_squared 值应在 [0,1]，实际: {r2_val}"
+
+    # §4 风格暴露
+    assert "style_exposure" in sections, "CSV 应含 style_exposure section"
+    se_metrics = csv_df.filter(pl.col("section") == "style_exposure")["metric"].to_list()
+    assert any(m.endswith("_mean") for m in se_metrics), "style_exposure 应含 *_mean 指标"
+    assert any(m.endswith("_std")  for m in se_metrics), "style_exposure 应含 *_std 指标"
+
+    # §5 等权组合风险分解
+    assert "decomp" in sections, "CSV 应含 decomp section"
+    decomp_metrics = set(csv_df.filter(pl.col("section") == "decomp")["metric"].to_list())
+    for m in ("total_risk", "factor_risk", "specific_risk", "factor_pct", "specific_pct"):
+        assert m in decomp_metrics, f"decomp section 缺少 metric={m}"
+    pcts = csv_df.filter(
+        (pl.col("section") == "decomp") & pl.col("metric").is_in(["factor_pct", "specific_pct"])
+    )["value"].to_list()
+    assert abs(sum(pcts) - 1.0) < 1e-3, f"factor_pct + specific_pct 应约等于 1，实际: {pcts}"

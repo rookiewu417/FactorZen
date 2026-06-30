@@ -36,13 +36,13 @@ def run_risk_build(daily, daily_basic, stocks, start, end, *, out_dir="workspace
     # exposures.parquet
     if exp.n_stocks > 0:
         exp_df = pl.DataFrame({"ts_code": exp.codes}).hstack(
-            pl.DataFrame(exp.matrix, schema=names))
+            pl.DataFrame(exp.matrix, schema=names, orient="row"))
     else:
         exp_df = pl.DataFrame({"ts_code": []})
     exp_df.write_parquet(run_dir / "exposures.parquet")
     # factor_covariance.parquet
     cov = result.factor_covariance
-    cov_df = pl.DataFrame(cov, schema=names) if cov.size else pl.DataFrame()
+    cov_df = pl.DataFrame(cov, schema=names, orient="row") if cov.size else pl.DataFrame()
     cov_df.write_parquet(run_dir / "factor_covariance.parquet")
     # specific_risk.parquet
     sr = result.specific_risk
@@ -52,18 +52,57 @@ def run_risk_build(daily, daily_basic, stocks, start, end, *, out_dir="workspace
     # factor_returns.parquet
     result.factor_returns.write_parquet(run_dir / "factor_returns.parquet")
 
-    # ── 轻量报告 risk_summary.csv ──
-    factor_vol = np.sqrt(np.clip(np.diag(cov), 0, None)) if cov.size else np.array([])
-    summary_rows = [{"factor": n, "factor_vol": float(factor_vol[i])} for i, n in enumerate(names)] \
-        if factor_vol.size else []
-    pl.DataFrame(summary_rows if summary_rows else {"factor": [], "factor_vol": []}) \
-        .write_csv(run_dir / "risk_summary.csv")
-
-    # 等权组合风险分解示例
+    # 等权组合风险分解示例（先算，后写 CSV）
     decomp = {}
     if exp.n_stocks > 0:
         w = np.full(exp.n_stocks, 1.0 / exp.n_stocks)
         decomp = model.decompose_risk(w, result)
+
+    # ── 轻量报告 risk_summary.csv（长表：section / metric / value）──
+    # 人读 30 秒看懂风险来自哪：因子波动 / 特质风险分布 / R² / 风格暴露 / 组合分解
+    rows: list[dict] = []
+
+    # §1 因子波动
+    factor_vol = np.sqrt(np.clip(np.diag(cov), 0, None)) if cov.size else np.array([])
+    for i, n in enumerate(names):
+        rows.append({"section": "factor_vol", "metric": n, "value": float(factor_vol[i])})
+
+    # §2 特质风险分布
+    if sr.size:
+        rows.append({"section": "specific_risk", "metric": "mean",   "value": float(sr.mean())})
+        rows.append({"section": "specific_risk", "metric": "median", "value": float(np.median(sr))})
+        rows.append({"section": "specific_risk", "metric": "p25",    "value": float(np.percentile(sr, 25))})
+        rows.append({"section": "specific_risk", "metric": "p75",    "value": float(np.percentile(sr, 75))})
+        rows.append({"section": "specific_risk", "metric": "max",    "value": float(sr.max())})
+
+    # §3 平均回归 R²
+    rows.append({"section": "r_squared", "metric": "r_squared", "value": float(result.r_squared)})
+
+    # §4 风格暴露统计（非 ind_ 行业列）
+    style_mask = np.array([not n.startswith("ind_") for n in names], dtype=bool)
+    style_names = [n for n in names if not n.startswith("ind_")]
+    if exp.n_stocks > 0 and style_names:
+        style_matrix = exp.matrix[:, style_mask]          # (n_stocks, n_style)
+        style_mean = style_matrix.mean(axis=0)
+        style_std  = style_matrix.std(axis=0)
+        for j, sn in enumerate(style_names):
+            rows.append({"section": "style_exposure", "metric": f"{sn}_mean", "value": float(style_mean[j])})
+            rows.append({"section": "style_exposure", "metric": f"{sn}_std",  "value": float(style_std[j])})
+
+    # §5 等权组合风险分解示例
+    if decomp:
+        tr    = decomp.get("total_risk", 0.0)
+        fr    = decomp.get("factor_risk", 0.0)
+        srisk = decomp.get("specific_risk", 0.0)
+        rows.append({"section": "decomp", "metric": "total_risk",    "value": round(tr, 6)})
+        rows.append({"section": "decomp", "metric": "factor_risk",   "value": round(fr, 6)})
+        rows.append({"section": "decomp", "metric": "specific_risk", "value": round(srisk, 6)})
+        # 分解是方差加和：total_var = factor_var + specific_var；占比用方差比（std² / std²）
+        rows.append({"section": "decomp", "metric": "factor_pct",    "value": round(fr**2 / tr**2, 4) if tr > 0 else 0.0})
+        rows.append({"section": "decomp", "metric": "specific_pct",  "value": round(srisk**2 / tr**2, 4) if tr > 0 else 0.0})
+
+    pl.DataFrame(rows if rows else {"section": [], "metric": [], "value": []}) \
+        .write_csv(run_dir / "risk_summary.csv")
 
     manifest = {"run_id": rid, "start": start, "end": end, "universe_size": exp.n_stocks,
                 "cov_half_life": cov_half_life, "nw_lags": nw_lags,

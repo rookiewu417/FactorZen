@@ -136,7 +136,9 @@ class RiskModel:
 
         # ── 4. 逐日截面回归 ─────────────────────────────────────────────────
         factor_return_rows: list[dict] = []
-        residual_dict: dict[str, list[float]] = {}  # ts_code -> [residuals]
+        # ts_code -> [(trade_date, residual), ...]：连同交易日一起记录，重建矩阵时
+        # 按真实交易日对齐（而非"取最后 N 个右对齐"），避免窗口中途缺口错位。
+        residual_dict: dict[str, list[tuple[dt.date, float]]] = {}
         r_squared_list: list[float] = []
         last_exposure: ExposureMatrix | None = None
         factor_names: list[str] | None = None
@@ -203,11 +205,9 @@ class RiskModel:
                 row_dict[name] = float(f_t[i])
             factor_return_rows.append(row_dict)
 
-            # 记录残差
+            # 记录残差（连同交易日一起追加）
             for i, code in enumerate(matched_codes):
-                if code not in residual_dict:
-                    residual_dict[code] = []
-                residual_dict[code].append(float(eps_t[i]))
+                residual_dict.setdefault(code, []).append((trade_date_val, float(eps_t[i])))
 
             r_squared_list.append(r2)
             last_exposure = exposure
@@ -231,18 +231,13 @@ class RiskModel:
         )
 
         # ── 7. 特质风险估计 ──────────────────────────────────────────────────
-        # 构建残差矩阵 (T_valid, N_last)
+        # 构建残差矩阵 (T_valid, N_last)：按真实交易日索引对齐放置，而非
+        # "取最后 N 个右对齐"（窗口中途缺口会被错位推后，见 _build_residual_matrix）
         last_codes = last_exposure.codes
-        T_valid = len(factor_return_rows)
+        valid_trade_dates = [row["trade_date"] for row in factor_return_rows]
         N_last = len(last_codes)
 
-        residual_matrix = np.full((T_valid, N_last), np.nan)
-        for j, code in enumerate(last_codes):
-            if code in residual_dict:
-                resids = residual_dict[code]
-                # 取最后 T_valid 个（对齐到最后几期）
-                n_available = min(len(resids), T_valid)
-                residual_matrix[T_valid - n_available:, j] = resids[-n_available:]
+        residual_matrix = _build_residual_matrix(residual_dict, last_codes, valid_trade_dates)
 
         # 用列均值填充 NaN
         col_means = np.nanmean(residual_matrix, axis=0)
@@ -365,3 +360,36 @@ def _parse_date(date_str: str) -> dt.date:
     if "-" in date_str:
         return dt.date.fromisoformat(date_str)
     return dt.datetime.strptime(date_str, "%Y%m%d").date()
+
+
+def _build_residual_matrix(
+    residual_dict: dict[str, list[tuple[dt.date, float]]],
+    codes: list[str],
+    trade_dates: list[dt.date],
+) -> np.ndarray:
+    """按真实交易日索引对齐重建残差矩阵。
+
+    ``residual_dict[code]`` 按交易日顺序追加 ``(trade_date, residual)``，但仅在该
+    股票当天参与截面回归时才有记录——窗口中途停牌/缺数据会造成中间缺口（非仅
+    起点）。若简单地"取最后 N 个右对齐"拼接（历史实现的 bug），缺口前的残差会
+    被整体推后一位，错位进入 EWMA 衰减下权重更高的"近因"位置，而真正的缺口
+    （应为 NaN）反而被推到矩阵最前面、被列均值填充逻辑悄悄抹平。这里改为显式
+    按交易日索引定位，缺失日期保持 NaN。
+
+    Args:
+        residual_dict: ts_code -> [(trade_date, residual), ...]。
+        codes: 矩阵列顺序对应的股票代码列表。
+        trade_dates: 矩阵行顺序对应的交易日列表（升序，长度 = 矩阵行数）。
+
+    Returns:
+        残差矩阵，shape (len(trade_dates), len(codes))；该股票当天缺席的位置
+        显式为 NaN（按真实交易日对齐，不做位置无关的右对齐拼接）。
+    """
+    date_to_row = {d: i for i, d in enumerate(trade_dates)}
+    matrix = np.full((len(trade_dates), len(codes)), np.nan)
+    for j, code in enumerate(codes):
+        for trade_date_val, resid in residual_dict.get(code, []):
+            row = date_to_row.get(trade_date_val)
+            if row is not None:
+                matrix[row, j] = resid
+    return matrix

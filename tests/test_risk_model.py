@@ -4,9 +4,21 @@ import math
 
 import numpy as np
 import polars as pl
+import pytest
 
+import factorzen.risk.exposures as exposures_module
 from factorzen.risk.exposures import ExposureMatrix
 from factorzen.risk.model import RiskModel, RiskModelResult
+
+
+@pytest.fixture(autouse=True)
+def _pit_industry_unavailable_by_default(monkeypatch):
+    """RiskModel.build() 内部循环调用 compute_exposures：默认不触达真实 Tushare，
+    PIT 历史行业数据视为不可用，走现有 stocks.industry 降级路径（行为与改造
+    PIT 行业暴露之前完全一致）。"""
+    monkeypatch.setattr(exposures_module, "fetch_index_member_all", lambda: None)
+    monkeypatch.setattr(exposures_module, "_pit_industry_warned", False)
+    yield
 
 
 def _toy_result():
@@ -101,3 +113,37 @@ def test_build_end_to_end_r_squared_in_range():
     assert np.linalg.eigvalsh(result.factor_covariance).min() >= -1e-8, (
         "factor_covariance 不是半正定矩阵，风险模型协方差估计有误"
     )
+
+
+def test_build_residual_matrix_mid_window_gap_no_misalignment():
+    """回归测试：股票在窗口第3期(非首尾)缺失时，重建残差矩阵不能把缺口前的残差
+    整体右移一位。
+
+    历史实现"取最后 T_valid 个，右对齐"拼接残差：股票 B 在 5 期窗口里只有 4 期
+    数据（第3期停牌缺失），右对齐会把第1、2期残差错位推到第2、3行，
+    且把本应是第1期残差的第0行错误置为 NaN（真正的缺口在第2行，反而被掩盖）。
+    正确实现必须按真实交易日索引对齐：第1、2、4、5期残差落在各自正确的行，
+    第3期（缺口）显式为 NaN。
+    """
+    from factorzen.risk.model import _build_residual_matrix
+
+    days = [dt.date(2023, 1, 2 + i) for i in range(5)]  # d1..d5，5 期窗口
+    residual_dict = {
+        "A": [(days[0], 0.1), (days[1], 0.2), (days[2], 0.3), (days[3], 0.4), (days[4], 0.5)],
+        # B 第3期(days[2])缺失（停牌/无收益等），非首尾
+        "B": [(days[0], 1.1), (days[1], 1.2), (days[3], 1.4), (days[4], 1.5)],
+    }
+    codes = ["A", "B"]
+
+    matrix = _build_residual_matrix(residual_dict, codes, days)
+
+    assert matrix.shape == (5, 2)
+    # A 全勤：5 期精确对应，不受 B 缺口影响
+    np.testing.assert_allclose(matrix[:, 0], [0.1, 0.2, 0.3, 0.4, 0.5])
+    # B：第1、2、4、5期落在各自正确的行，未被缺口向后挤压一位
+    assert math.isclose(matrix[0, 1], 1.1, rel_tol=1e-12)
+    assert math.isclose(matrix[1, 1], 1.2, rel_tol=1e-12)
+    assert math.isclose(matrix[3, 1], 1.4, rel_tol=1e-12)
+    assert math.isclose(matrix[4, 1], 1.5, rel_tol=1e-12)
+    # 第3期(缺口本身)应为 NaN，而不是被其他期残差顶替
+    assert math.isnan(matrix[2, 1]), f"缺口行应为 NaN，实际: {matrix[2, 1]}"

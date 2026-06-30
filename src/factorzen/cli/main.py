@@ -513,6 +513,60 @@ def _cmd_sim_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_report_portfolio(args: argparse.Namespace) -> int:
+    import json as _json
+    from pathlib import Path
+
+    import polars as pl
+
+    from factorzen.reports.portfolio_report import generate_portfolio_report
+
+    sim_dir = Path(args.sim_dir) if args.sim_dir else None
+
+    # 读 metrics.json
+    metrics: dict = {}
+    run_id = "portfolio"
+    if sim_dir is not None:
+        metrics_path = sim_dir / "metrics.json"
+        if metrics_path.exists():
+            metrics = _json.loads(metrics_path.read_text(encoding="utf-8"))
+            run_id = sim_dir.name
+
+    # 读 portfolio_dir 产物
+    attribution_df: pl.DataFrame | None = None
+    risk_summary_df: pl.DataFrame | None = None
+    portfolio_manifest: dict | None = None
+    if args.portfolio_dir:
+        pdir = Path(args.portfolio_dir)
+        att_path = pdir / "attribution.csv"
+        if att_path.exists():
+            attribution_df = pl.read_csv(att_path)
+        risk_path = pdir / "risk_summary.csv"
+        if risk_path.exists():
+            risk_summary_df = pl.read_csv(risk_path)
+        mf_path = pdir / "manifest.json"
+        if mf_path.exists():
+            portfolio_manifest = _json.loads(mf_path.read_text(encoding="utf-8"))
+
+    html = generate_portfolio_report(
+        sim_result=None,
+        metrics=metrics,
+        attribution_df=attribution_df,
+        risk_summary_df=risk_summary_df,
+        portfolio_manifest=portfolio_manifest,
+    )
+
+    # 输出路径
+    if args.out:
+        out_path = Path(args.out)
+    else:
+        out_path = Path("workspace/reports") / f"portfolio_{run_id}.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html, encoding="utf-8")
+    print(out_path)
+    return 0
+
+
 def _cmd_sim_show(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -686,6 +740,27 @@ def build_parser() -> argparse.ArgumentParser:
     open_cmd = report_sub.add_parser("open", help="Deprecated alias for 'report path'")
     open_cmd.add_argument("run_id")
     open_cmd.set_defaults(func=_cmd_report_open)
+
+    pf_report = report_sub.add_parser("portfolio", help="Generate portfolio dashboard HTML report")
+    pf_report.add_argument(
+        "--sim-dir",
+        default=None,
+        dest="sim_dir",
+        help="模拟产物目录（含 metrics.json）",
+    )
+    pf_report.add_argument(
+        "--portfolio-dir",
+        default=None,
+        dest="portfolio_dir",
+        help="组合构建产物目录（含 attribution.csv / risk_summary.csv / manifest.json）",
+    )
+    pf_report.add_argument(
+        "--out",
+        default=None,
+        dest="out",
+        help="HTML 输出路径；默认 workspace/reports/portfolio_<run_id>.html",
+    )
+    pf_report.set_defaults(func=_cmd_report_portfolio)
 
     data = sub.add_parser("data", help="Data workflows")
     data_sub = data.add_subparsers(dest="data_command", required=True)

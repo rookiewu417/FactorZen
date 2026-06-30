@@ -1382,4 +1382,26 @@ git -c user.name=rookiewu417 -c user.email=1007372080@qq.com commit -m "feat(age
 
 ---
 
+## 完成记录（2026-06-30）
+
+M5 LLM Agent 闭环挖掘 ✅ 完成入库（15 commits，`7403ea1..fd957bf`，`feature/platform-upgrade`）。30 个 M5 测试 + M1/M2/M3 回归全绿，opus 全分支终审确认 ship-ready。
+
+**交付：**
+- 全新 `agents/` 模块（state / memory / evaluation / nodes / orchestrator / manifest）+ 扩展 `llm/`（`request_chat` + `generation`）+ `pipelines/factor_mine_agent` + `fz mine agent` CLI。
+- **自建极简 loop，零新第三方依赖**（不引 LangGraph/LangChain，经调研论证：单 Agent + 已有评估设施，框架伤害轻依赖/可复现/可测试三约束）。
+- 七步闭环（生成 → 编译 → 语义对齐 → 评估 → 护栏+family-aware → critic → 反思+Negative RAG），全程 `FakeLLM` 可注入、CI 离线可测。
+- 三个业界增强：假设-因子语义对齐自检、family-aware 家族多样性、Negative RAG 防重复探索。
+- session manifest 全程可审计 + `candidates.csv`（兼容 `fz mine leaderboard`）+ 导出候选。
+
+**评审暴露并修复的关键 bug：**
+- **DSR 口径双重错误**（Task 6）：`n_obs` 曾用长格式行数（stocks×days 膨胀 50× → DSR≈1 护栏失效）→ 改交易日数（train 段，与 `ir_train` 同源）；`sharpe` 曾用 `abs(ic_train)` → 改 `ir_train`（`AttemptRecord` 加字段）。
+- **N 记账三角和**（opus 终审）：`node_guardrails` 处理累积 `state.attempts` → N over-count（4 表达式 4 轮误记 N=10）→ 改只处理本轮 attempts（`iteration == state.iteration`），N 诚实记账（有灵魂回归测试 `2轮2表达式→N=4` 守护）；同根因的 candidate starvation + family-aware 跨轮一并修。
+- 归一化去重（Task 5，防 N 虚高）；`compile_ok` 区分 parse vs runtime 失败（Task 4）。
+
+**防过拟合（灵魂）：** N 诚实累加所有评估表达式（多重检验规模）；holdout 段对生成/评估/反思全程不可见（opus 确认 airtight）；候选带 holdout_ic/DSR 证据 + family 多样性。这是 M5 与 naive LLM 挖矿的分水岭。
+
+**已知限制（可接受/defer）：** manifest params 缺部分元数据（universe/start/end/model）；`run_id` 无时戳会覆盖同参运行；真实 LLM smoke 为手动命令。
+
+---
+
 *M5 完成后，FactorZen 拥有"假设 → 生成 → 评估 → 反思"的 LLM 闭环因子挖掘，全程可审计、可复现、CI 可测，严守 M2 护栏——为 M6 多 Agent 协作铺路。*

@@ -15,14 +15,20 @@ class LLMClientError(RuntimeError):
     pass
 
 
-def _build_payload(config: LLMConfig, messages: list[dict[str, str]]) -> dict[str, Any]:
+def _build_payload(
+    config: LLMConfig,
+    messages: list[dict[str, str]],
+    *,
+    include_response_format: bool = True,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
-        "response_format": {"type": "json_object"},
     }
+    if include_response_format:
+        payload["response_format"] = {"type": "json_object"}
     if config.thinking:
         payload["thinking"] = {"type": config.thinking}
     return payload
@@ -62,3 +68,31 @@ def request_llm_explanation(
     if explanation is None:
         raise LLMClientError("LLM response is not a valid explanation JSON")
     return explanation
+
+
+def request_chat(config: LLMConfig, messages: list[dict[str, str]]) -> str:
+    """通用 chat 请求：返回 choices[0].message.content 原始字符串。
+    与 request_llm_explanation 的区别：不强制 response_format、不绑定 schema。"""
+    if not config.is_ready:
+        raise LLMClientError("LLM config is not ready")
+
+    payload = _build_payload(config, messages, include_response_format=False)
+    request = urllib.request.Request(
+        config.chat_completions_url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=config.timeout_seconds) as response:
+            response_payload: dict[str, Any] = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise LLMClientError(str(exc)) from exc
+
+    try:
+        return response_payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMClientError("chat 响应缺少 choices[0].message.content") from exc

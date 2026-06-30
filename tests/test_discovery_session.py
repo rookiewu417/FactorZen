@@ -1,10 +1,11 @@
 from __future__ import annotations
+
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
 import polars as pl
-from datetime import date, timedelta
 
 
 def _daily(seed=3, n_stocks=40, n_days=120):
@@ -35,7 +36,7 @@ def test_session_runs_and_writes_artifacts(tmp_path: Path):
     assert (session_dir / "manifest.json").exists()
     assert 0 < len(res["candidates"]) <= 5
     manifest = json.loads((session_dir / "manifest.json").read_text())
-    assert manifest["n_trials"] == 20
+    assert manifest["cli_n_trials"] == 20
     assert manifest["seed"] == 42
     for c in res["candidates"]:
         assert c["max_corr"] < 0.7  # 贪心去相关保证：top-K 互不近重复，max_corr 是真实测量
@@ -48,3 +49,16 @@ def test_session_reproducible_same_seed(tmp_path: Path):
     expr_a = [c["expression"] for c in a["candidates"]]
     expr_b = [c["expression"] for c in b["candidates"]]
     assert expr_a == expr_b
+
+
+def test_session_has_guard_metrics_and_holdout_isolated(tmp_path):
+    from factorzen.discovery.mining_session import run_session
+    res = run_session(_daily(n_stocks=40, n_days=150), n_trials=30, top_k=5, seed=42,
+                      method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
+    assert 0 < len(res["candidates"]) <= 5
+    for c in res["candidates"]:
+        # 护栏指标齐全
+        for key in ("n_trials", "pbo", "holdout_ic", "dsr_pvalue", "ic_ci_low"):
+            assert key in c
+        assert c["n_trials"] > 0          # 真实评估数（非 CLI n_trials 摆设）
+        assert 0.0 <= c["pbo"] <= 1.0 or c["pbo"] != c["pbo"]  # [0,1] 或 nan

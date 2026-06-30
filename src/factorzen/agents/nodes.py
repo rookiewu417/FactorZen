@@ -62,7 +62,7 @@ def node_evaluate(state: AgentState, *, daily, bundle) -> AgentState:
         state.attempts.append(AttemptRecord(
             iteration=state.iteration, hypothesis=p.hypothesis, expression=r["expression"],
             compile_ok=r["compile_ok"], ic_train=r["ic_train"], passed_guardrails=False,
-            critic_verdict=None, error=r["error"]))
+            critic_verdict=None, error=r["error"], ir_train=r["ir_train"]))
         state.seen_expressions.add(r["expression"])
     state._pending = []  # type: ignore[attr-defined]
     return state
@@ -84,6 +84,8 @@ def node_guardrails(
     - holdout_df 只在此节点接触，生成/反思全程不见（隔离）。
     - family-aware 去冗余：新候选与已入选 candidates 截面相关 > 0.7 则跳过。
     """
+    import math
+
     from factorzen.agents.evaluation import _node_to_factor_df
     from factorzen.discovery.scoring import max_correlation
     from factorzen.validation.deflated_sharpe import deflated_sharpe
@@ -93,27 +95,38 @@ def node_guardrails(
     ledger.record(len(passed))  # N 累加本轮所有评估过的表达式（诚实多重检验）
     passed.sort(key=lambda a: abs(a.ic_train), reverse=True)
 
+    # Minor 2：跨 iteration 去重——已入选的表达式不重复入选
+    existing_exprs: set[str] = {c["expression"] for c in state.candidates}
+
     # family-aware pool: {expression: holdout_factor_df} for already-accepted candidates
     pool: dict = {}
 
     for a in passed[:top_k]:
+        # Minor 2：跨 iteration 去重
+        if a.expression in existing_exprs:
+            continue
         try:
             node = parse_expr(a.expression)
             fdf_hold = _node_to_factor_df(node, holdout_df)
             ic_h, ir_h, _ci = holdout_ic(fdf_hold, holdout_df)
-            sharpe_proxy = abs(a.ic_train or 0.0)
+            # Critical: n_obs = 交易日数（IC 序列长度），与 M2 mining_session 口径一致
+            n_obs = max(daily["trade_date"].n_unique(), 20)
+            # Important: 优先用 ir_train 作 Sharpe 代理（更稳定）；回退到 abs(ic_train)
+            sharpe = a.ir_train if a.ir_train is not None else abs(a.ic_train or 0.0)
             dsr, pval = deflated_sharpe(
-                sharpe_proxy,
+                sharpe,
                 ledger.n_trials,
-                n_obs=max(len(holdout_df), 20),
+                n_obs=n_obs,
             )
-            if ic_h is not None and dsr > dsr_threshold:
+            # Minor 1: holdout_ic 返回 float（可能 NaN），用 math.isnan 而非 is not None
+            if not math.isnan(ic_h) and dsr > dsr_threshold:
                 # family-aware 去冗余：新候选与已入选 candidates 截面相关 > 0.7 则跳过
                 corr = max_correlation(fdf_hold, pool)
                 if corr > 0.7:
                     continue
                 a.passed_guardrails = True
                 pool[a.expression] = fdf_hold
+                existing_exprs.add(a.expression)
                 state.candidates.append(
                     {
                         "expression": a.expression,

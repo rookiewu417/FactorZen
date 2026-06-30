@@ -14,6 +14,8 @@ class AttemptRecord:
     passed_guardrails: bool
     critic_verdict: str | None
     error: str | None
+    # IR（信息比率）：evaluate_expressions 返回的 ir_train；DSR 使用它作为 Sharpe 代理
+    ir_train: float | None = None
 
 
 @dataclass

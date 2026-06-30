@@ -328,11 +328,16 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     from factorzen.validation.deflated_sharpe import deflated_sharpe
 
     factor = get_factor(args.factor)()
+    uni = None
+    if getattr(args, "universe", None):
+        from factorzen.core.universe import get_universe
+        uni = get_universe(args.end, args.universe)["ts_code"].to_list()
     ctx = FactorDataContext(
         start=args.start,
         end=args.end,
         required_data=["daily", "daily_basic"],
         lookback_days=getattr(factor, "lookback_days", 60),
+        universe=uni,
     )
     fdf = factor.compute(ctx)
     bundle = DataBundle.build(ctx.daily.collect(), train_ratio=1.0)

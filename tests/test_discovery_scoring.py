@@ -1,8 +1,10 @@
 # tests/test_discovery_scoring.py
 from __future__ import annotations
+
+from datetime import date, timedelta
+
 import numpy as np
 import polars as pl
-from datetime import date, timedelta
 
 
 def _daily(seed=1, n_stocks=40, n_days=120):
@@ -56,9 +58,15 @@ def test_max_correlation_self_is_one():
     assert corr > 0.99
 
 
+def test_databundle_train_ratio_one_no_crash():
+    from factorzen.discovery.scoring import DataBundle
+    b = DataBundle.build(_daily(), train_ratio=1.0)
+    assert b.train_end is not None  # 不崩溃
+
+
 def test_score_penalizes_complexity():
-    from factorzen.discovery.scoring import DataBundle, score_candidate
     from factorzen.discovery.expression import parse_expr
+    from factorzen.discovery.scoring import DataBundle, score_candidate
     daily = _daily()
     b = DataBundle.build(daily)
     fac = _signal_factor_df(daily)

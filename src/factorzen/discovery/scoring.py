@@ -25,7 +25,7 @@ class DataBundle:
         daily = daily.sort(["ts_code", "trade_date"])
         fwd = compute_fwd_returns(daily, price_col="close_adj" if "close_adj" in daily.columns else "close")
         dates = sorted(daily["trade_date"].unique().to_list())
-        cut = dates[int(len(dates) * train_ratio)]
+        cut = dates[min(int(len(dates) * train_ratio), len(dates) - 1)]
         train_end = cut.strftime("%Y%m%d") if hasattr(cut, "strftime") else str(cut)
         return cls(daily=daily, fwd_returns=fwd, train_end=train_end)
 

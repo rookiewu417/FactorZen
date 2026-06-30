@@ -24,13 +24,17 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def _factor_values(node, daily: pl.DataFrame) -> pl.DataFrame:
+def _factor_values(node, daily: pl.DataFrame, eval_start=None) -> pl.DataFrame:
     df = daily.sort(["ts_code", "trade_date"]).with_columns(compile_expr(node).alias("factor_value"))
-    return df.select(["trade_date", "ts_code", "factor_value"]).filter(
+    out = df.select(["trade_date", "ts_code", "factor_value"]).filter(
         pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
+    if eval_start is not None:
+        from datetime import datetime
+        out = out.filter(pl.col("trade_date") >= datetime.strptime(eval_start, "%Y%m%d").date())
+    return out
 
 
-def _pool_pbo(scored: list, daily: pl.DataFrame, bundle) -> float:
+def _pool_pbo(scored: list, daily: pl.DataFrame, bundle, eval_start=None) -> float:
     """对 scored 候选（mining 段）构造日度 IC 矩阵跑 PBO；样本不足返回 nan。"""
     from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
     from factorzen.daily.preprocessing.normalizer import cross_sectional_zscore
@@ -38,7 +42,7 @@ def _pool_pbo(scored: list, daily: pl.DataFrame, bundle) -> float:
     dates_ref = None
     for c in scored[:30]:  # 取 fitness 前 30 个候选，控制成本
         try:
-            fdf = _factor_values(parse_expr(c["expression"]), daily)
+            fdf = _factor_values(parse_expr(c["expression"]), daily, eval_start)
             clean = cross_sectional_zscore(fdf, col="factor_value").rename({"factor_value_z": "factor_clean"})
             ic_res = compute_rank_ic(clean.select(["trade_date", "ts_code", "factor_clean"]),
                                      bundle.fwd_returns, factor_col="factor_clean", frequency="daily")
@@ -58,6 +62,7 @@ def _pool_pbo(scored: list, daily: pl.DataFrame, bundle) -> float:
 def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 method: str = "random", train_ratio: float = 0.7,
                 holdout_ratio: float = 0.2,
+                eval_start: str | None = None,
                 out_dir: str = "workspace/mining_sessions") -> dict:
     t0 = time.perf_counter()
     rng = np.random.default_rng(seed)
@@ -91,7 +96,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             if expr in eval_cache:
                 return eval_cache[expr]
             try:
-                fdf = _factor_values(node, daily)
+                fdf = _factor_values(node, daily, eval_start)
                 val = score_candidate(fdf, node, bundle, pool={})["fitness"] if fdf.height >= 50 else -9.9
             except Exception:
                 val = -9.9
@@ -116,7 +121,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             continue
         seen.add(expr)
         try:
-            fdf = _factor_values(node, daily)
+            fdf = _factor_values(node, daily, eval_start)
             if fdf.height < 50:
                 continue
             sc = score_candidate(fdf, node, bundle, pool={})
@@ -144,7 +149,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         if len(selected) >= top_k:
             break
         try:
-            fdf = _factor_values(parse_expr(cand["expression"]), daily)
+            fdf = _factor_values(parse_expr(cand["expression"]), daily, eval_start)
         except Exception:
             continue
         mc = max_correlation(fdf, selected_pool)
@@ -162,10 +167,15 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     ledger.record(eval_n)
     n_evaluated = ledger.n_trials
 
-    n_obs_mining = daily["trade_date"].n_unique()  # mining 段交易日数 ≈ IC 序列长度
+    if eval_start is not None:
+        from datetime import datetime as _dt
+        _es_date = _dt.strptime(eval_start, "%Y%m%d").date()
+        n_obs_mining = daily.filter(pl.col("trade_date") >= _es_date)["trade_date"].n_unique()
+    else:
+        n_obs_mining = daily["trade_date"].n_unique()  # mining 段交易日数 ≈ IC 序列长度
     ir_pool = np.array([c["ir_train"] for c in scored]) if scored else np.array([0.0])
     sharpe_var = float(ir_pool.var()) if ir_pool.size > 1 else 1.0
-    pbo = _pool_pbo(scored, daily, bundle)  # 候选池(mining 段)日度 IC 矩阵 → PBO
+    pbo = _pool_pbo(scored, daily, bundle, eval_start)  # 候选池(mining 段)日度 IC 矩阵 → PBO
     for c in top:
         node = parse_expr(c["expression"])
         fdf_hold = _factor_values(node, holdout_df)

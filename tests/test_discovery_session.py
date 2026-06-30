@@ -27,6 +27,17 @@ def _daily(seed=3, n_stocks=40, n_days=120):
     return pl.DataFrame(rows)
 
 
+def test_factor_values_eval_start_trims():
+    from factorzen.discovery.expression import parse_expr
+    from factorzen.discovery.mining_session import _factor_values
+    daily = _daily()
+    dates = sorted(daily["trade_date"].unique().to_list())
+    cutoff = dates[len(dates) // 2]
+    es = cutoff.strftime("%Y%m%d")
+    out = _factor_values(parse_expr("close"), daily, eval_start=es)
+    assert out["trade_date"].min() >= cutoff
+
+
 def test_session_runs_and_writes_artifacts(tmp_path: Path):
     from factorzen.discovery.mining_session import run_session
     res = run_session(_daily(), n_trials=20, top_k=5, seed=42,

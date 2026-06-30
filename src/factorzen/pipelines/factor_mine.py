@@ -18,4 +18,4 @@ def run_mine(*, start: str, end: str, universe: str | None = None,
                             lookback_days=60, universe=uni)
     daily = ctx.daily.collect()
     return run_session(daily, n_trials=n_trials, top_k=top_k, seed=seed, method=method,
-                       holdout_ratio=holdout_ratio)
+                       holdout_ratio=holdout_ratio, eval_start=start)

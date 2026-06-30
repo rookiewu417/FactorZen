@@ -372,6 +372,62 @@ class TestLimitUpBlocking:
 
 
 # ═══════════════════════════════════════════════════════════
+# Test: Fast path GEM limit-up float tolerance (Fix 1)
+# ═══════════════════════════════════════════════════════════
+
+
+class TestFastPathLimitUpTolerance:
+    """快速路径涨跌停浮点容差与慢路径对称（Fix 1）。
+
+    创业板 open=11.98 / pre_close=10.0 → opening_pct=(11.98/10-1)*100=19.7999...
+    在快速路径里若不加 -1e-9 容差，19.7999... >= 19.8 = False，
+    导致涨停买单被错误成交（虚高收益）。修复后阻断应生效，NAV 应 ≈ 1.0。
+    """
+
+    def test_gem_limit_up_blocks_buy_in_fast_path(self):
+        """PrecomputedWeightsStrategy 快速路径：创业板浮点边界涨停阻断买入。"""
+        weights_by_date = {
+            date(2024, 1, 1): pl.DataFrame(
+                {"ts_code": ["300001.SZ"], "target_weight": [1.0]}
+            ),
+        }
+        # close=13.0 使 intraday_ret > 0：若买单成交则 NAV > 1.0，可与阻断情形(NAV≈1)区分
+        prices = _make_prices(
+            codes=["300001.SZ"],
+            n_days=3,
+            overrides={
+                (1, "300001.SZ"): {
+                    "open": 11.98,
+                    "pre_close": 10.0,
+                    "close": 13.0,
+                },
+            },
+        )
+        result = run_strategy_backtest(
+            PrecomputedWeightsStrategy(weights_by_date),
+            _make_factors([(date(2024, 1, 1), "300001.SZ", 1.0)]),
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+            collect_positions=False,
+            collect_trades=False,
+            include_context_positions=False,
+        )
+
+        # 执行日 2024-01-02 的 NAV:
+        # - 涨停阻断生效 → filled=0 → 无仓位 → intraday_return=0 → NAV=1.0
+        # - 涨停未阻断(BUG) → filled=1.0 → intraday_ret=(13/11.98-1)>0 → NAV>1.0
+        exec_date = date(2024, 1, 2)
+        nav_rows = result.nav.filter(pl.col("trade_date") == exec_date)
+        assert not nav_rows.is_empty(), "执行日应有 NAV 记录"
+        nav_val = nav_rows["nav"][0]
+        assert nav_val == pytest.approx(1.0, abs=1e-6), (
+            f"GEM 涨停买单应被快速路径阻断 (NAV≈1.0)，实际 NAV={nav_val:.8f}；"
+            f"若 NAV>1 说明 fast path 缺少 -1e-9 浮点容差"
+        )
+
+
+# ═══════════════════════════════════════════════════════════
 # Test: Limit-down blocks sell but allows buy
 # ═══════════════════════════════════════════════════════════
 

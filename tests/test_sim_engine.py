@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from factorzen.sim.engine import run_portfolio_simulation
 
@@ -100,3 +102,21 @@ def test_run_portfolio_simulation_nav_is_parquet(tmp_path: Path):
     nav_df = pl.read_parquet(Path(res["run_dir"]) / "nav.parquet")
     assert "nav" in nav_df.columns, f"nav 列缺失, 有: {nav_df.columns}"
     assert "trade_date" in nav_df.columns
+
+
+def test_run_portfolio_simulation_warns_when_signal_date_after_trade_dates(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fix 2: signal_date 晚于回测末日时，应发出 warning，不抛错。"""
+    codes = ["000001.SZ"]
+    # 信号日 2023-03-01 > 数据末日 2023-02-28 → 权重永不生效 → nav 为空 → 应 warning
+    p1 = _write_portfolio_dir(tmp_path, "late", codes, [1.0], "2023-03-01")
+    daily = _fake_daily(codes)  # 数据截止 2023-02-28
+    with caplog.at_level(logging.WARNING, logger="factorzen.sim.engine"):
+        run_portfolio_simulation(
+            [p1], daily, out_dir=str(tmp_path / "sim_warn"), run_id="sw1"
+        )
+    warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(
+        "signal_date" in m and "调仓" in m for m in warning_messages
+    ), f"未找到预期 warning，记录到的 warning: {warning_messages}"

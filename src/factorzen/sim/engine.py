@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -36,6 +37,8 @@ from factorzen.daily.evaluation.backtest import (
     PrecomputedWeightsStrategy,
     run_strategy_backtest,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def _git_sha() -> str:
@@ -133,6 +136,20 @@ def run_portfolio_simulation(
         collect_trades=False,
         include_context_positions=False,
     )
+
+    # 若 signal_date 晚于或等于回测末日（其后无执行日），权重永不生效 → 净值为空。
+    if bt.nav.is_empty():
+        max_trade_date = (
+            daily.select("trade_date").max()["trade_date"][0]
+            if not daily.is_empty()
+            else None
+        )
+        _logger.warning(
+            "signal_date 晚于或等于回测末日，未产生任何调仓"
+            "（最早信号日=%s, 回测末日=%s）",
+            min(weights_by_date, default=None),
+            max_trade_date,
+        )
 
     # summary_stats 结构：{"portfolio": {ann_ret, ann_vol, sharpe, max_dd, ...}, "long_short": ...}
     portfolio_stats: dict[str, float] = bt.summary_stats.get(

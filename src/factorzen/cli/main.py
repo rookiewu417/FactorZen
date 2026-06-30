@@ -555,8 +555,21 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
         if mf_path.exists():
             portfolio_manifest = _json.loads(mf_path.read_text(encoding="utf-8"))
 
+    # 尝试从 sim_dir/nav.parquet 重建轻量 sim_result 对象（仅含 .nav 字段），
+    # 供 _make_returns_chart 渲染净值曲线。_make_returns_chart 只访问 .nav，
+    # _make_monthly_return_heatmap 访问 .returns（用 _safe_attr 安全取值，
+    # SimpleNamespace 无该属性时返回 None，函数静默跳过），可安全降级。
+    sim_result = None
+    if sim_dir is not None:
+        nav_path = sim_dir / "nav.parquet"
+        if nav_path.exists():
+            from types import SimpleNamespace
+            _nav_df = pl.read_parquet(nav_path)
+            if not _nav_df.is_empty():
+                sim_result = SimpleNamespace(nav=_nav_df)
+
     html = generate_portfolio_report(
-        sim_result=None,
+        sim_result=sim_result,
         metrics=metrics,
         attribution_df=attribution_df,
         risk_summary_df=risk_summary_df,

@@ -1049,8 +1049,11 @@ def _run_precomputed_weights_backtest_fast(
                 active
                 & valid_price
                 & not_suspended
-                & ~((delta > 0) & (opening_pct >= board_limits))
-                & ~((delta < 0) & (opening_pct <= -board_limits))
+                # 浮点容差与慢路径 _apply_trade_constraints 保持一致：
+                # 创业板 open=11.98/pre_close=10.0 → opening_pct=19.7999...，
+                # 若不减 1e-9 则 19.7999... >= 19.8 为 False，涨停买单被漏判。
+                & ~((delta > 0) & (opening_pct >= board_limits - 1e-9))
+                & ~((delta < 0) & (opening_pct <= -board_limits + 1e-9))
             )
             filled[tradable] = delta[tradable]
 

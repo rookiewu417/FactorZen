@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-import polars as pl  # noqa: F401
+import polars as pl
 
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 
@@ -104,3 +104,20 @@ def feature_names(node: Node) -> set[str]:
     for c in node.children:  # type: ignore[attr-defined]
         out |= feature_names(c)
     return out
+
+
+def compile_expr(node: Node) -> pl.Expr:
+    if isinstance(node, Feature):
+        return pl.col(LEAF_FEATURES[node.name])
+    if isinstance(node, Constant):
+        return pl.lit(float(node.value))
+    if isinstance(node, OpNode):
+        spec = OPERATORS[node.op]
+        child_exprs = [compile_expr(c) for c in node.children]
+        return spec.build(child_exprs, node.window)
+    raise TypeError(f"无法编译节点: {node!r}")
+
+
+def evaluate(node: Node, df: pl.DataFrame) -> pl.Series:
+    """在已按 (ts_code, trade_date) 排序的 df 上求值，返回 factor 列。"""
+    return df.with_columns(compile_expr(node).alias("__f"))["__f"]

@@ -1,9 +1,11 @@
 """Agent 闭环的函数式节点：node(State) -> State。"""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from factorzen.agents.evaluation import evaluate_expressions
+from factorzen.agents.memory import negative_recall
 from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.discovery.expression import parse_expr, to_expr_string
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
@@ -63,4 +65,103 @@ def node_evaluate(state: AgentState, *, daily, bundle) -> AgentState:
             critic_verdict=None, error=r["error"]))
         state.seen_expressions.add(r["expression"])
     state._pending = []  # type: ignore[attr-defined]
+    return state
+
+
+def node_guardrails(
+    state: AgentState,
+    *,
+    daily,
+    holdout_df,
+    ledger,
+    top_k: int = 5,
+    dsr_threshold: float = 0.5,
+) -> AgentState:
+    """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
+
+    灵魂约束：
+    - ledger.record(N)：诚实记账本轮所有编译成功且有 IC 的表达式数（多重检验）。
+    - holdout_df 只在此节点接触，生成/反思全程不见（隔离）。
+    - family-aware 去冗余：新候选与已入选 candidates 截面相关 > 0.7 则跳过。
+    """
+    from factorzen.agents.evaluation import _node_to_factor_df
+    from factorzen.discovery.scoring import max_correlation
+    from factorzen.validation.deflated_sharpe import deflated_sharpe
+    from factorzen.validation.holdout import holdout_ic
+
+    passed = [a for a in state.attempts if a.compile_ok and a.ic_train is not None]
+    ledger.record(len(passed))  # N 累加本轮所有评估过的表达式（诚实多重检验）
+    passed.sort(key=lambda a: abs(a.ic_train), reverse=True)
+
+    # family-aware pool: {expression: holdout_factor_df} for already-accepted candidates
+    pool: dict = {}
+
+    for a in passed[:top_k]:
+        try:
+            node = parse_expr(a.expression)
+            fdf_hold = _node_to_factor_df(node, holdout_df)
+            ic_h, ir_h, _ci = holdout_ic(fdf_hold, holdout_df)
+            sharpe_proxy = abs(a.ic_train or 0.0)
+            dsr, pval = deflated_sharpe(
+                sharpe_proxy,
+                ledger.n_trials,
+                n_obs=max(len(holdout_df), 20),
+            )
+            if ic_h is not None and dsr > dsr_threshold:
+                # family-aware 去冗余：新候选与已入选 candidates 截面相关 > 0.7 则跳过
+                corr = max_correlation(fdf_hold, pool)
+                if corr > 0.7:
+                    continue
+                a.passed_guardrails = True
+                pool[a.expression] = fdf_hold
+                state.candidates.append(
+                    {
+                        "expression": a.expression,
+                        "hypothesis": a.hypothesis,
+                        "ic_train": a.ic_train,
+                        "holdout_ic": ic_h,
+                        "holdout_ir": ir_h,
+                        "dsr": dsr,
+                        "dsr_pvalue": pval,
+                    }
+                )
+        except Exception:
+            continue
+    return state
+
+
+def node_critic(state: AgentState, llm_fn: LLMFn) -> AgentState:
+    """LLM 以风控审计员身份批判每个候选：keep/drop/mutate。"""
+    for a in state.attempts:
+        if a.critic_verdict is not None:
+            continue
+        msgs = [
+            {
+                "role": "system",
+                "content": (
+                    "你是风控审计员，判断因子是否过拟合/经济直觉是否成立，"
+                    '只输出 JSON: {"verdict":"keep"|"drop"|"mutate","reason":"..."}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"假设:{a.hypothesis} 表达式:{a.expression} "
+                    f"train_IC:{a.ic_train} 过护栏:{a.passed_guardrails}"
+                ),
+            },
+        ]
+        try:
+            obj = json.loads(llm_fn(msgs))
+            a.critic_verdict = str(obj.get("verdict", "keep"))
+        except Exception:
+            a.critic_verdict = "keep"
+    return state
+
+
+def node_reflect(state: AgentState, *, ic_threshold: float = 0.01) -> AgentState:
+    """更新 Negative RAG 负例库 + 推进迭代计数。"""
+    seen = [(a.expression, a.ic_train) for a in state.attempts if a.ic_train is not None]
+    state.negative_examples = negative_recall(seen, k=5, ic_threshold=ic_threshold)
+    state.iteration += 1
     return state

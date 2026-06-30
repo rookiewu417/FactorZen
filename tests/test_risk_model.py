@@ -27,6 +27,18 @@ def test_predict_risk_positive():
     risk = RiskModel().predict_risk(w, result)
     assert risk > 0
 
+    # Fix 2: 手算期望值，验证 predict_risk 公式正确性
+    X = result.factor_exposures.matrix
+    F = result.factor_covariance
+    D = result.specific_risk
+    Xw = X.T @ w
+    factor_var = float(Xw @ F @ Xw)
+    spec_var = float(np.sum((D * w) ** 2))
+    expected = np.sqrt(factor_var + spec_var) * np.sqrt(252)
+    assert math.isclose(risk, expected, rel_tol=1e-9), (
+        f"predict_risk={risk} 与手算 expected={expected} 不一致，公式有误"
+    )
+
 
 def test_decompose_risk_variance_conservation():
     """factor_risk² + specific_risk² ≈ total_risk²（方差可加）。"""
@@ -38,6 +50,26 @@ def test_decompose_risk_variance_conservation():
                         d["total_risk"]**2, rel_tol=1e-9)
     # 每个因子名都有一个贡献键
     assert "size" in d and "value" in d
+
+    # Fix 1: 跨函数验证 decompose.total_risk == predict_risk（F 用错/转置错会被抓）
+    assert math.isclose(
+        d["total_risk"], RiskModel().predict_risk(w, result), rel_tol=1e-9
+    ), "decompose_risk 的 total_risk 与 predict_risk 不一致，两者公式不同步"
+
+    # Fix 3: per-factor 贡献语义验证
+    # MCR 分解：risk_contrib_k = Xw[k]*(F@Xw)[k] / total_var * total_std * sqrt(252)
+    # 数学上：sum_k(risk_contrib_k) = factor_var / total_var * total_risk
+    #                               = factor_risk² / total_risk
+    # （这是加权 MCR 分解，非欧拉分解到 total_risk）
+    per_factor_sum = sum(d[n] for n in result.factor_names)
+    expected_factor_sum = d["factor_risk"] ** 2 / d["total_risk"]
+    assert math.isclose(per_factor_sum, expected_factor_sum, rel_tol=1e-9), (
+        f"per-factor 贡献之和 {per_factor_sum} != factor_risk²/total_risk {expected_factor_sum}"
+    )
+    # 至少一个因子贡献非零（避免退化）
+    assert any(abs(d[n]) > 1e-12 for n in result.factor_names), (
+        "所有因子贡献均为零，分解结果退化"
+    )
 
 
 def test_build_end_to_end_r_squared_in_range():
@@ -64,3 +96,8 @@ def test_build_end_to_end_r_squared_in_range():
     assert 0.0 <= result.r_squared <= 1.0
     assert result.factor_covariance.shape[0] == result.factor_covariance.shape[1]
     assert len(result.factor_names) > 0
+
+    # Fix 4: 因子协方差矩阵半正定（核心数学约束）
+    assert np.linalg.eigvalsh(result.factor_covariance).min() >= -1e-8, (
+        "factor_covariance 不是半正定矩阵，风险模型协方差估计有误"
+    )

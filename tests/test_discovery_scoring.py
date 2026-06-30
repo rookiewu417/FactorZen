@@ -65,3 +65,7 @@ def test_score_penalizes_complexity():
     simple = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.01)
     # 复杂表达式（节点更多）在相同 IC 下 fitness 更低
     assert simple["complexity"] == 1
+    # 相同因子值(IC 相同) + 更复杂的 node → complexity 更大 → fitness 更低（纯复杂度惩罚）
+    complex_score = score_candidate(fac, parse_expr("ts_mean(close, 5)"), b, pool={}, gamma=0.01)
+    assert complex_score["complexity"] > simple["complexity"]
+    assert complex_score["fitness"] < simple["fitness"]

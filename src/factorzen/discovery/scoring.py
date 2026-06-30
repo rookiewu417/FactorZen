@@ -55,12 +55,12 @@ def max_correlation(factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame]) -> f
     """factor_df 与 pool 中每个因子的截面相关性绝对值的最大值。pool 为空时返回 0。"""
     if not pool:
         return 0.0
-    fd = {"__cand__": factor_df.rename({"factor_value": "factor_clean"})
+    fd = {"__fz_cand__": factor_df.rename({"factor_value": "factor_clean"})
           if "factor_value" in factor_df.columns else factor_df}
     for name, df in pool.items():
         fd[name] = df.rename({"factor_value": "factor_clean"}) if "factor_value" in df.columns else df
     res = compute_factor_correlation(fd, factor_col="factor_clean")
-    i = res.factor_names.index("__cand__")
+    i = res.factor_names.index("__fz_cand__")
     corrs = [abs(res.corr_matrix[i][j]) for j in range(len(res.factor_names)) if j != i]
     return max(corrs) if corrs else 0.0
 

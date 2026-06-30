@@ -85,3 +85,49 @@ def test_cross_session_dedup(tmp_path: Path):
     # 第二次 run 产同样的 ts_mean(close,5)，已在 index → 本轮无新评估（n_trials 可能为 0）
     assert res2.n_trials == 0 or all(
         a.expression != "ts_mean(close, 5)" for a in res2.state.attempts)
+
+
+def test_critic_drop_removes_candidate(tmp_path: Path):
+    """scripted Critic drop → 被 drop 候选从 TeamResult.candidates 移除（系统层回归断言）。
+
+    N 诚实验证：drop 移除候选不影响 ledger（attempt 已计入 n_trials）。
+    """
+    from unittest.mock import patch
+
+    drop_expr = "ts_mean(close, 5)"
+
+    def fake_guardrails(state, *, daily, holdout_df, bundle, ledger, top_k=5):
+        """注入候选并计 N，模拟本轮过了护栏。"""
+        ledger.record(1)  # N 诚实：记 1 个试验
+        state.candidates.append({
+            "expression": drop_expr,
+            "hypothesis": "动量",
+            "ic_train": 0.05,
+            "holdout_ic": 0.04,
+            "holdout_ir": 0.3,
+            "dsr": 0.7,
+            "dsr_pvalue": 0.05,
+        })
+        return state
+
+    hyp = json.dumps({"hypotheses": ["动量"]})
+    code = json.dumps({"expressions": ["ts_mean(close,5)"]})
+    crit_drop = json.dumps({"verdict": "drop", "reason": "过拟合"})
+    seq = [hyp, code, crit_drop]
+    i = {"k": 0}
+
+    def fn(messages):
+        v = seq[i["k"]] if i["k"] < len(seq) else crit_drop
+        i["k"] += 1
+        return v
+
+    daily = _mock_daily()
+    with patch("factorzen.agents.team_orchestrator.node_guardrails", fake_guardrails):
+        res = run_team_agent(daily, fn, n_rounds=1, seed=42,
+                             index_path=str(tmp_path / "e.jsonl"))
+
+    # 系统层回归断言：Critic drop → 本轮候选必须从 candidates 移除
+    assert all(c["expression"] != drop_expr for c in res.candidates), \
+        f"drop 候选未被移除: {res.candidates}"
+    # N 诚实：drop 不影响 ledger（fake_guardrails 已调用 ledger.record(1)）
+    assert res.n_trials >= 1

@@ -104,19 +104,29 @@ def run_team_agent(
             state, exprs, hypothesis,
             daily=mining_df, bundle=bundle, mem_seen=rec.seen,
         )
+        n_before = len(state.candidates)                       # Important 1: 护栏前快照
         node_guardrails(
             state, daily=mining_df, holdout_df=holdout_df,
             bundle=bundle, ledger=ledger, top_k=top_k,
         )
+        new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
 
         # ⑤ Critic：看本轮候选（guardrails 已跑，含 dsr/holdout）
-        # 优先取本轮新增候选；无则构造 stub（不误杀）
-        cand = state.candidates[-1] if state.candidates else {
+        # Minor 2: 取本轮新增候选；无则构造 stub（不误杀，不取旧候选）
+        cand = new_cands[-1] if new_cands else {
             "expression": results[-1]["expression"] if results else (exprs[0] if exprs else ""),
             "hypothesis": hypothesis,
             "ic_train": results[-1]["ic_train"] if results else None,
         }
         verdict = critique(cand, llm_fn)
+
+        # Important 2: 回填 critic_verdict 到本轮代表 attempt
+        round_expr = cand.get("expression", "")
+        for a in state.attempts:
+            if a.iteration == state.iteration and a.expression == round_expr:
+                a.critic_verdict = verdict.verdict
+                break
+
         rounds_log.append({
             "round": state.iteration,
             "hypothesis": hypothesis,
@@ -126,7 +136,10 @@ def run_team_agent(
         })
 
         # verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
-        if verdict.verdict == "revise_expr":
+        if verdict.verdict == "drop":
+            del state.candidates[n_before:]                    # Important 1: 移除本轮新增候选
+            pending = None
+        elif verdict.verdict == "revise_expr":
             pending = {
                 "kind": "revise_expr",
                 "hypothesis": hypothesis,
@@ -138,11 +151,13 @@ def run_team_agent(
         else:
             pending = None
 
-        # ⑥ Librarian：本轮 attempts 写 experiment_index
+        # ⑥ Librarian：本轮 attempts 写 experiment_index（含 holdout_ic 回填）
+        round_attempts = [a for a in state.attempts if a.iteration == state.iteration]
         record(
             index,
-            [a for a in state.attempts if a.iteration == state.iteration],
+            round_attempts,
             run_id=f"team_{seed}",
+            candidates=new_cands,
         )
         state.iteration += 1
 

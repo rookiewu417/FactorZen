@@ -394,6 +394,52 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_portfolio_build(args: argparse.Namespace) -> int:
+    import numpy as np
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.pipelines.portfolio_build import run_portfolio
+    from factorzen.risk.model import RiskModel
+
+    stocks = get_universe(args.end, args.universe)
+    uni = stocks["ts_code"].to_list()
+    daily = loader.fetch_daily(args.start, args.end).filter(pl.col("ts_code").is_in(uni))
+    daily_basic = loader.fetch_daily_basic(args.start, args.end).filter(
+        pl.col("ts_code").is_in(uni)
+    )
+    risk_result = RiskModel().build(daily, daily_basic, stocks, args.start, args.end)
+    codes = risk_result.factor_exposures.codes
+    # α：从 --alpha-file 读取截面信号(ts_code + alpha)，对齐 codes 顺序(缺失填 0)
+    adf = (
+        pl.read_parquet(args.alpha_file)
+        if args.alpha_file.endswith(".parquet")
+        else pl.read_csv(args.alpha_file)
+    )
+    amap = dict(zip(adf["ts_code"].to_list(), adf["alpha"].to_list(), strict=False))
+    alpha = np.array([float(amap.get(c, 0.0)) for c in codes])
+    neutral = (
+        [n for n in risk_result.factor_names if n.startswith("ind_")]
+        if args.industry_neutral
+        else None
+    )
+    res = run_portfolio(
+        alpha,
+        risk_result,
+        codes=codes,
+        stock_returns=np.zeros(len(codes)),
+        sectors=list(stocks["industry"]),
+        factor_returns_latest={},
+        risk_aversion=args.lam,
+        w_max=args.w_max,
+        neutral_factors=neutral,
+        turnover_budget=args.turnover,
+    )
+    print(f"[portfolio] status={res['status']} holdings={res['n_holdings']} → {res['run_dir']}")
+    return 0
+
+
 def _cmd_risk_build(args: argparse.Namespace) -> int:
     import polars as pl  # 局部 import，仿其它 _cmd 的延迟 import 惯例
 
@@ -661,6 +707,25 @@ def build_parser() -> argparse.ArgumentParser:
     r_build.add_argument("--spec-half-life", type=int, default=90, dest="spec_half_life")
     r_build.add_argument("--spec-shrinkage", type=float, default=0.3, dest="spec_shrinkage")
     r_build.set_defaults(func=_cmd_risk_build)
+
+    # ── fz portfolio ──（顶层命令组）
+    portfolio = sub.add_parser("portfolio", help="Portfolio construction & attribution")
+    pf_sub = portfolio.add_subparsers(dest="portfolio_command", required=True)
+    p_build = pf_sub.add_parser("build", help="Build optimized portfolio + attribution")
+    p_build.add_argument("--start", required=True)
+    p_build.add_argument("--end", required=True)
+    p_build.add_argument("--universe", default="all_a")
+    p_build.add_argument(
+        "--alpha-file",
+        required=True,
+        dest="alpha_file",
+        help="α 信号文件(parquet/csv: 列 ts_code + alpha)",
+    )
+    p_build.add_argument("--lam", type=float, default=1.0, dest="lam", help="风险厌恶系数")
+    p_build.add_argument("--w-max", type=float, default=0.05, dest="w_max")
+    p_build.add_argument("--turnover", type=float, default=None)
+    p_build.add_argument("--industry-neutral", action="store_true", dest="industry_neutral")
+    p_build.set_defaults(func=_cmd_portfolio_build)
 
     return parser
 

@@ -5,7 +5,7 @@ import numpy as np
 import polars as pl
 
 
-def _daily(n_stocks=20, n_days=200, seed=1):
+def _daily(n_stocks=40, n_days=200, seed=1):
     rng = np.random.default_rng(seed)
     start = date(2024, 1, 2)
     days, d = [], start

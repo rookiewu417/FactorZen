@@ -3,7 +3,7 @@ authors = ["rookiewu417 <1007372080@qq.com>"]
 channels = ["conda-forge"]
 name = "FactorZen"
 platforms = ["win-64", "linux-64"]
-version = "0.2.0"
+version = "0.3.0"
 
 [tasks]
 lint       = "ruff check ."

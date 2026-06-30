@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "factorzen"
-version = "0.2.0"
+version = "0.3.0"
 requires-python = ">=3.10,<3.13"
 description = "FactorZen — disciplined A-share alpha research from signal to evidence"
 readme = "README.md"

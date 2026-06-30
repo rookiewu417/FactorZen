@@ -2,34 +2,42 @@
 
 > [FactorZen](../README.md) · [文档](README.md) · [架构](architecture.md) · [运行手册](runbook.md) · **路线图**
 
-本文记录当前公开版本的演进方向。最新目录结构以 [README](../README.md) 与 [architecture](architecture.md) 为准。
+本文记录 FactorZen 的演进方向与完成状态。最新目录结构以 [README](../README.md) 与 [architecture](architecture.md) 为准。
 
-## 阶段总览
+## 阶段总览（M0-M7 全部完成）
 
 | 阶段 | 主题 | 状态 |
 |------|------|------|
-| Phase 1 | 数据完整性与可靠性 | 已完成（2026-05）|
-| Phase 2 | 实验可复现性 | 核心能力已落地，持续强化 |
-| Phase 3 | 研究结论可信度 | 核心能力已落地，持续强化 |
-| Phase 4 | 报告与用户体验 | 核心能力已落地，持续强化 |
+| 基线 | 单因子研究链路（IC / 分层回测 / walk-forward / Tear Sheet） | ✅ 已完成（v0.2.0）|
+| M0 | 微观结构与回测约束 | ✅ 已完成（v0.3.0）|
+| M1 | 因子挖掘引擎（算子 + AST + 遗传搜索） | ✅ 已完成（v0.3.0）|
+| M2 | 防过拟合护栏（DSR + bootstrap CI + PBO） | ✅ 已完成（v0.3.0）|
+| M3 | Barra 风险模型（风格 + 行业 + 协方差 + MCR） | ✅ 已完成（v0.3.0）|
+| M4 | 组合优化 + 归因（QP + Brinson + 风险归因） | ✅ 已完成（v0.3.0）|
+| M5 | LLM 单 Agent 因子挖掘 | ✅ 已完成（v0.3.0）|
+| M6 | 多 Agent 团队（5 角色 + 长期记忆） | ✅ 已完成（v0.3.0）|
+| M7 | 模拟交易 + 组合绩效 Dashboard | ✅ 已完成（v0.3.0）|
 
-> 说明：Phase 2–4 的核心基础设施均已实现并随主线持续演进，并非「尚未开始」；这些主题作为长期质量投入持续维护，而非一次性交付后封板。
+## 当前定位（v0.3.0）
 
-## 当前定位
-
-FactorZen 的主线是低频单因子研究闭环：
+FactorZen 已从单因子研究框架升级为**端到端、可复现的 A 股量化研究平台**，完整链路：
 
 ```text
-本地数据缓存
-  → PIT 数据上下文
-  → 因子计算
-  → 预处理
-  → IC / 分层回测 / walk-forward（默认关闭）
-  → 数据质量与实验 manifest
-  → Tear Sheet HTML 报告
+本地数据缓存（Tushare → parquet）
+  → PIT 数据上下文 + 微观结构约束（M0）
+  → 因子计算 + 预处理
+  → 因子挖掘（随机/遗传搜索 / LLM Agent / 多 Agent 团队）（M1/M5/M6）
+  → 防过拟合护栏（holdout 永久隔离 / DSR / bootstrap CI / PBO）（M2）
+  → Barra 风险模型（风格 + 行业暴露 + 协方差）（M3）
+  → 组合优化建仓（mean-variance QP + 行业中性 + 换手约束）+ 归因（M4）
+  → 模拟交易（多周期净值 + 绩效指标）（M7）
+  → 成果展示（组合绩效 HTML Dashboard）（M7）
 ```
 
-项目暂不扩展实盘交易、OMS/EMS、撮合、Tick 数据接入或生产组合执行闭环。`intraday/` 保留为分钟线研究代码，但不作为当前路线图主线。
+设计三原则（强化保留）：
+1. 数据 PIT：无未来函数。
+2. 评估带 OOS 护栏：holdout 永久隔离 + Deflated Sharpe + PBO。
+3. 一切产物落 manifest（seed/参数/git_sha）可复现。
 
 ## 优先级原则
 
@@ -38,80 +46,100 @@ FactorZen 的主线是低频单因子研究闭环：
 3. 报告结论必须暴露样本不足、覆盖率不足与模块缺失。
 4. 新能力进入主线前必须有测试与质量门保护。
 
-## Phase 1 · 数据完整性与可靠性 — 已完成
+## M0 · 微观结构 — ✅ 已完成
 
-目标：让本地数据是否完整、是否可用于研究，在无网络环境下也能被审计。
+已落地：
 
-- 完善 `core/data_audit.py`，覆盖 `daily`、`daily_basic`、`finance` 等本地分区的数据缺口、股票覆盖率与关键字段空值率。
-- 保持 `tests/test_data_audit.py` 与 `tests/test_loader.py` 全量 mock，不依赖真实 Tushare token 或本地 `data/`。
-- 将真实数据 smoke 作为手动命令，而非默认 CI 步骤；CI 保持离线可重复。
+- `core/universe.py` universe 快照（停牌/涨跌停/ST/次新股/流通市值过滤，日级快照）。
+- `core/benchmark.py` 基准管理（HS300、ZZ500、ZZ1000 + 行业等权替代基准）。
+- `daily/evaluation/backtest.py` GEM 双路径容差 + T+1 + `signal_date` 显式集成 + ADV 零值 fallback。
 
-建议验证：
+## M1 · 因子挖掘 — ✅ 已完成
 
-```bash
-pixi run pytest tests/test_data_audit.py tests/test_loader.py -q
-pixi run lint
-pixi run typecheck
-pixi run coverage
-```
+已落地：
 
-## Phase 2 · 实验可复现性 — 核心能力已落地
+- `discovery/operators.py` 算子库（30+ 时序/截面/算术算子，group-safe `pct_change`，`ts_rank` 强制 `min_samples`）。
+- `discovery/expression.py` 表达式 AST ↔ 字符串双向序列化。
+- `discovery/search.py` 随机 + 遗传搜索。
+- `discovery/dedup.py` 贪心去相关筛选。
 
-目标：任何一次研究运行都能追溯输入、配置、代码版本与输出。
+## M2 · 防过拟合 — ✅ 已完成
 
-已落地：`core/experiment.py` 的 manifest 含 `schema_version` / `duration_seconds`，
-失败运行也记录状态；`_update_experiment_index()` 追加 `experiment_index.jsonl` 支持跨运行检索；
-`experiments/run_paths.py` 落 `universe.parquet` universe 快照；工作树 dirty 时告警。
+已落地：
 
-后续持续强化：
+- `validation/bootstrap.py` block bootstrap IC 置信区间。
+- `validation/deflated_sharpe.py` Deflated Sharpe Ratio（DSR）。
+- `validation/pbo.py` PBO/CSCV。
+- holdout 段永久隔离机制。
 
-- 继续强化 `core/experiment.py` 的 manifest 元数据，确保失败运行也记录状态与错误。
-- 保持 `workspace/factor_evaluations/{run_id}/` 为单次运行的标准输出位置。
-- 维护 `experiment_index.jsonl`，便于跨 run 检索因子、universe、状态与报告路径。
-- 对工作树 dirty、lockfile 变化、配置变更给出明确提示。
+## M3 · Barra 风险模型 — ✅ 已完成
 
-## Phase 3 · 研究结论可信度 — 核心能力已落地
+已落地：
 
-目标：降低过拟合、误读与交易可行性高估。
+- `risk/factor_model.py` Barra 风格（8 因子）+ 行业（中信一级）暴露。
+- `risk/covariance.py` Newey-West 协方差 + 半衰期衰减。
+- `risk/specific_risk.py` James-Stein 收缩特质风险。
+- `risk/mcr.py` 边际风险贡献分解。
 
-已落地：`research/combination/pipeline.py` 对样本内 IC 估权重打出 `[样本内警告]`；
-`daily/evaluation/cost_models.py` 的平方根冲击成本模型支持 `alpha` 与 `fallback_adv` 参数，
-并处理 ADV 缺失 / 零 ADV / 极端换手等场景。
+## M4 · 组合优化 + 归因 — ✅ 已完成
 
-后续持续强化：
+已落地：
 
-- 对 `research/combination/` 的样本内权重估计保持醒目标注，避免把样本内组合结果误读为 OOS 结果。
-- 持续完善成本模型与容量约束，尤其是 `square_root_impact` 的参数、ADV 缺失与极端换手场景。
-- 对收益对齐、涨跌停、停牌、容量与 rebalance threshold 的回归测试保持高优先级。
+- `portfolio/optimizer.py` cvxpy mean-variance QP（CLARABEL solver）：box / 预算 / 换手 / 行业中性约束。
+- `attribution/brinson.py` Brinson 多期归因。
+- `attribution/risk_attribution.py` 风险因子归因。
 
-## Phase 4 · 报告与用户体验 — 核心能力已落地
+## M5 · LLM 单 Agent — ✅ 已完成
 
-目标：让报告更适合研究复核，而不只是展示漂亮图表。
+已落地：
 
-已落地：`reports/tear_sheet.py` 按职责拆分为 `_formatting`/`_scoring`/`_charts`/`_strategy`/`_summaries`
-五个模块（经 re-export 保持对外接口不变）；报告引擎补齐 None/空输入防御分支；
-`reports/_charts.py` 配置 CJK 字体优先级回退，图表中文在具备字体的环境下正常渲染。
+- `agents/agent.py` 零外部依赖自建 LLM 闭环：假设 → 表达式 → 护栏 → IC 验证 → critic 反思。
+- Negative RAG 历史失败注入。
+- 候选 manifest 落盘可审计。
 
-后续持续强化：
+## M6 · 多 Agent 团队 — ✅ 已完成
 
-- 保持 Tear Sheet 的结论、证据、限制与复现信息并列呈现。
-- 对缺失模块显示明确状态与下一步建议。
-- 避免在报告中隐藏样本不足、覆盖率不足或 OOS 不成立的问题。
+已落地：
 
-## 非目标
+- `agents/roles/` 5 角色（Hypothesis / Coder / Critic / Librarian / Evaluator）。
+- `agents/team_orchestrator.py` 跨轮 Critic 否决机制。
+- `agents/experiment_index.py` 跨 session 长期记忆。
+
+## M7 · 模拟交易 + 展示 — ✅ 已完成
+
+已落地：
+
+- `sim/runner.py` 多周期权重回测（对齐行情 / 扣换手成本 / 净值序列）。
+- `sim/metrics.py` 绩效指标（年化收益 / 夏普 / 最大回撤 / 卡尔玛 / 换手 / IR）。
+- `reports/portfolio_report.py` 组合绩效 HTML Dashboard（指标卡 + 净值曲线 + 月度热图 + 归因 + 风险摘要）。
+
+## 未来可选增强（无承诺时间表）
+
+以下方向在 M0-M7 内已预留接口，但尚未实现，可按需扩展：
+
+| 增强项 | 说明 |
+|--------|------|
+| `fetch_index_weights` 真实指数基准 | M0 基准管理已预留接口；接入真实沪深 300/中证 500 成分权重 |
+| 跟踪误差约束（TEV） | M4 组合优化加入显式 TE 约束（当前通过换手约束近似） |
+| 遗传搜索并行化 | M1 搜索引擎多进程 / 分布式并行 |
+| 实盘 OMS 对接 | M7 模拟交易输出→实盘下单接口（不在当前路线图） |
+| 高频/日内因子 | `intraday/` 路径保留，分钟线因子评估框架 |
+| 多因子组合 OOS 估权重 | `research/combination/` 当前为样本内工具；补 OOS 估权 |
+
+## 非目标（长期边界）
 
 - 不内置商业行情数据。
-- 不承诺生产交易或实盘执行能力。
-- 不把真实 Tushare 网络请求放入默认 CI。
-- 不把本地 `data/`、`workspace/runs/`、`workspace/factor_evaluations/` 的运行产物提交到仓库。
+- 不承诺生产交易或实盘执行能力（不接实盘 OMS，不做实盘下单）。
+- 不把真实 Tushare 网络请求放入默认 CI（CI 保持离线可重复）。
+- 不把本地 `data/`、`workspace/` 运行产物提交到仓库。
 
-## 发布前检查
+## 质量门（持续维护）
 
 ```bash
 pixi run lint
 pixi run typecheck
-pixi run test
-pixi run coverage
+pixi run test        # 1109 用例，全部离线可重复
+pixi run coverage    # 门槛 ≥70%
 git status --short
 ```
 

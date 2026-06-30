@@ -66,21 +66,41 @@ def test_expression_factor_matches_builtin_momentum():
                              lookback_days=30).compute(ctx).sort(["trade_date", "ts_code"])
 
     j = builtin.join(mined, on=["trade_date", "ts_code"], suffix="_m")
+    assert j.height > 0
     diff = (j["factor_value"] - j["factor_value_m"]).abs().max()
-    assert diff is None or diff < 1e-9
+    assert diff is not None and diff < 1e-9
 
 
 def test_suspended_rows_masked():
-    """vol==0（停牌）行不应产出有限因子值。"""
+    """vol==0（停牌）行价量被置 null → 因子值被过滤；vol>0 行正常产出。
+    用零阶表达式 close 使单行即可判别，避免窗口不足导致的 trivial 通过。"""
     from factorzen.discovery.factor import ExpressionFactor
+
     lf = _make_daily_lf()
-    # 注入一只全停牌股票
-    extra = pl.DataFrame({"trade_date": [date(2024, 3, 15)], "ts_code": ["999999.SH"],
-                          "close": [5.0], "open": [5.0], "high": [5.0], "low": [5.0],
-                          "close_adj": [5.0], "open_adj": [5.0], "high_adj": [5.0],
-                          "low_adj": [5.0], "amount": [0.0], "vol": [0.0]}).lazy()
+    d = date(2024, 3, 15)
+    extra = pl.DataFrame({
+        "trade_date": [d, d], "ts_code": ["888888.SH", "999999.SH"],
+        "close": [5.0, 5.0], "open": [5.0, 5.0], "high": [5.0, 5.0], "low": [5.0, 5.0],
+        "close_adj": [5.0, 5.0], "open_adj": [5.0, 5.0], "high_adj": [5.0, 5.0], "low_adj": [5.0, 5.0],
+        "amount": [1e6, 0.0], "vol": [1e5, 0.0],
+    }).lazy()
     ctx = MockCtx(_daily=pl.concat([lf, extra]))
-    out = ExpressionFactor(expression="ts_mean(close, 5)", mined_name="x",
-                           lookback_days=30).compute(ctx)
-    sus = out.filter(pl.col("ts_code") == "999999.SH")
-    assert sus.height == 0 or sus["factor_value"].is_null().all()
+    out = ExpressionFactor(expression="close", mined_name="x", lookback_days=30).compute(ctx)
+    # 停牌股(vol=0)该行被掩码 → 无输出
+    sus = out.filter((pl.col("ts_code") == "999999.SH") & (pl.col("trade_date") == d))
+    assert sus.height == 0
+    # 正常股(vol>0)该行有 close=5.0
+    ok = out.filter((pl.col("ts_code") == "888888.SH") & (pl.col("trade_date") == d))
+    assert ok.height == 1 and abs(ok["factor_value"][0] - 5.0) < 1e-9
+
+
+def test_expression_factor_is_valid_dailyfactor():
+    from factorzen.daily.factors.base import DailyFactor
+    from factorzen.discovery.factor import ExpressionFactor
+    ef = ExpressionFactor(expression="ts_mean(close, 5)", mined_name="probe", lookback_days=40)
+    assert isinstance(ef, DailyFactor)
+    assert ef.name == "probe"
+    assert ef.frequency == "daily"
+    assert ef.category == "daily"
+    assert ef.lookback_days == 40
+    assert "daily" in ef.required_data

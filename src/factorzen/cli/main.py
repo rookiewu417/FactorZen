@@ -361,6 +361,32 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_risk_build(args: argparse.Namespace) -> int:
+    import polars as pl  # 局部 import，仿其它 _cmd 的延迟 import 惯例
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.pipelines.risk_build import run_risk_build
+
+    stocks = get_universe(args.end, args.universe)  # 含 industry 列
+    uni = stocks["ts_code"].to_list()
+    daily = loader.fetch_daily(args.start, args.end).filter(pl.col("ts_code").is_in(uni))
+    daily_basic = loader.fetch_daily_basic(args.start, args.end).filter(
+        pl.col("ts_code").is_in(uni)
+    )
+    res = run_risk_build(
+        daily,
+        daily_basic,
+        stocks,
+        args.start,
+        args.end,
+        cov_half_life=args.cov_half_life,
+        nw_lags=args.nw_lags,
+    )
+    print(f"[risk] factors={len(res['factor_names'])} R2={res['r_squared']:.4f} → {res['run_dir']}")
+    return 0
+
+
 def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("name", nargs="?", help="Factor name")
     parser.add_argument("--start", default=None, help="Start date YYYYMMDD")
@@ -566,6 +592,17 @@ def build_parser() -> argparse.ArgumentParser:
     vo.add_argument("--end", required=True)
     vo.add_argument("--universe", default=None)
     vo.set_defaults(func=_cmd_validate_overfit)
+
+    # ── fz risk ──（顶层命令组）
+    risk = sub.add_parser("risk", help="Risk model workflows")
+    risk_sub = risk.add_subparsers(dest="risk_command", required=True)
+    r_build = risk_sub.add_parser("build", help="Build Barra risk model")
+    r_build.add_argument("--start", required=True, help="Start date YYYYMMDD")
+    r_build.add_argument("--end", required=True, help="End date YYYYMMDD")
+    r_build.add_argument("--universe", default="all_a", help="Universe name")
+    r_build.add_argument("--cov-half-life", type=int, default=90, dest="cov_half_life")
+    r_build.add_argument("--nw-lags", type=int, default=2, dest="nw_lags")
+    r_build.set_defaults(func=_cmd_risk_build)
 
     return parser
 

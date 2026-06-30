@@ -1,0 +1,183 @@
+"""多角色团队编排：Librarian→Hypothesis→Coder→Evaluator→Critic 流水线 + 否决回路。"""
+from __future__ import annotations
+
+import json
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from factorzen.agents.evaluation import evaluate_expressions
+from factorzen.agents.experiment_index import ExperimentIndex
+from factorzen.agents.nodes import node_guardrails
+from factorzen.agents.roles.coder import revise_expressions, write_expressions
+from factorzen.agents.roles.critic import critique
+from factorzen.agents.roles.hypothesis import propose_hypotheses
+from factorzen.agents.roles.librarian import recall, record
+from factorzen.agents.state import AgentState, AttemptRecord
+from factorzen.discovery.expression import parse_expr, to_expr_string
+from factorzen.discovery.scoring import DataBundle
+from factorzen.llm.generation import LLMFn
+from factorzen.validation.holdout import split_holdout
+from factorzen.validation.multiple_testing import TrialLedger
+
+
+@dataclass
+class TeamResult:
+    state: AgentState
+    candidates: list[dict]
+    n_trials: int
+    rounds_log: list[dict] = field(default_factory=list)
+
+
+def _normalize(expr: str) -> str:
+    try:
+        return to_expr_string(parse_expr(expr))
+    except ValueError:
+        return expr
+
+
+def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
+    """评估一批表达式（跳过 mem_seen 去重），写 AttemptRecord，返回本批新评估的结果列表。
+
+    灵魂约束：此函数不碰 ledger，N 诚实记账由外层 node_guardrails 统一负责（每轮恰好一次）。
+    """
+    fresh = [e for e in exprs if _normalize(e) not in mem_seen
+             and _normalize(e) not in state.seen_expressions]
+    results = evaluate_expressions(fresh, daily, bundle) if fresh else []
+    for r in results:
+        state.attempts.append(AttemptRecord(
+            iteration=state.iteration, hypothesis=hypothesis, expression=r["expression"],
+            compile_ok=r["compile_ok"], ic_train=r["ic_train"], passed_guardrails=False,
+            critic_verdict=None, error=r["error"], ir_train=r["ir_train"]))
+        state.seen_expressions.add(r["expression"])
+    return results
+
+
+def run_team_agent(
+    daily,
+    llm_fn: LLMFn,
+    *,
+    n_rounds: int,
+    seed: int,
+    index_path: str,
+    top_k: int = 5,
+    holdout_ratio: float = 0.2,
+) -> TeamResult:
+    """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
+
+    N 诚实：node_guardrails 每轮恰好调用一次（记本轮 N），不在同轮内多次调用（避免三角和）。
+    holdout 隔离：mining_df 供角色/记忆，holdout_df 只进 node_guardrails。
+    跨轮 feedback：Critic verdict=revise_expr → 下轮 Coder.revise；revise_hypothesis → 下轮 Hypothesis（带 feedback）。
+    """
+    mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=holdout_ratio)
+    bundle = DataBundle.build(mining_df)
+    ledger = TrialLedger()
+    state = AgentState(seed=seed)
+    index = ExperimentIndex(index_path)
+    rounds_log: list[dict] = []
+    # 上一轮 Critic 反馈：{"kind", "hypothesis", "exprs", "reason"}
+    pending: dict | None = None
+
+    for _ in range(n_rounds):
+        rec = recall(index, k=5)                                   # ① Librarian
+
+        # ②/③ Hypothesis + Coder（依据上一轮 Critic 反馈，跨轮）
+        if pending and pending["kind"] == "revise_expr":
+            hypothesis = pending["hypothesis"]
+            exprs = revise_expressions(hypothesis, pending["exprs"], pending["reason"], llm_fn)
+        else:
+            fb = pending["reason"] if pending and pending["kind"] == "revise_hypothesis" else ""
+            hyps = propose_hypotheses(
+                llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+                feedback=fb, n=1,
+            )
+            if not hyps:
+                state.iteration += 1
+                pending = None
+                continue
+            hypothesis = hyps[0]
+            exprs = write_expressions(hypothesis, llm_fn, avoid=rec.known_invalid)
+
+        # ④ Evaluator：评估（跨 session + session 内去重）
+        # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）
+        results = _evaluate_and_record(
+            state, exprs, hypothesis,
+            daily=mining_df, bundle=bundle, mem_seen=rec.seen,
+        )
+        node_guardrails(
+            state, daily=mining_df, holdout_df=holdout_df,
+            bundle=bundle, ledger=ledger, top_k=top_k,
+        )
+
+        # ⑤ Critic：看本轮候选（guardrails 已跑，含 dsr/holdout）
+        # 优先取本轮新增候选；无则构造 stub（不误杀）
+        cand = state.candidates[-1] if state.candidates else {
+            "expression": results[-1]["expression"] if results else (exprs[0] if exprs else ""),
+            "hypothesis": hypothesis,
+            "ic_train": results[-1]["ic_train"] if results else None,
+        }
+        verdict = critique(cand, llm_fn)
+        rounds_log.append({
+            "round": state.iteration,
+            "hypothesis": hypothesis,
+            "expressions": [r["expression"] for r in results],
+            "verdict": verdict.verdict,
+            "reason": verdict.reason,
+        })
+
+        # verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
+        if verdict.verdict == "revise_expr":
+            pending = {
+                "kind": "revise_expr",
+                "hypothesis": hypothesis,
+                "exprs": exprs,
+                "reason": verdict.reason,
+            }
+        elif verdict.verdict == "revise_hypothesis":
+            pending = {"kind": "revise_hypothesis", "reason": verdict.reason}
+        else:
+            pending = None
+
+        # ⑥ Librarian：本轮 attempts 写 experiment_index
+        record(
+            index,
+            [a for a in state.attempts if a.iteration == state.iteration],
+            run_id=f"team_{seed}",
+        )
+        state.iteration += 1
+
+    return TeamResult(
+        state=state,
+        candidates=state.candidates,
+        n_trials=ledger.n_trials,
+        rounds_log=rounds_log,
+    )
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except Exception:
+        return "unknown"
+
+
+def write_team_manifest(
+    result: TeamResult, *, out_dir: str, run_id: str, params: dict
+) -> Path:
+    run_dir = Path(out_dir) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "run_id": run_id,
+        "seed": result.state.seed,
+        "n_trials": result.n_trials,
+        "iterations": result.state.iteration,
+        "params": params,
+        "roles": ["hypothesis", "coder", "evaluator", "critic", "librarian"],
+        "rounds_log": result.rounds_log,
+        "attempts": [a.__dict__ for a in result.state.attempts],
+        "candidates": result.candidates,
+        "git_sha": _git_sha(),
+    }
+    path = run_dir / "manifest.json"
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+    return path

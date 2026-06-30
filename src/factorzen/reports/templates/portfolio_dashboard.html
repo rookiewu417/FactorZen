@@ -152,7 +152,7 @@
   {% if has_sim %}<a href="#nav">02 净值曲线</a>{% endif %}
   <a href="#risk-attribution">03 风险归因</a>
   <a href="#holdings-meta">04 持仓 Meta</a>
-  <a href="#module-status">05 模块状态</a>
+  <a href="#module-status">05 平台能力</a>
 </nav>
 
 <main class="report-main">
@@ -298,46 +298,46 @@
   {% endif %}
 </div>
 
-<!-- 5. M1-M6 模块状态卡 -------------------------------------------------->
+<!-- 5. 平台能力总览卡 ------------------------------------------------------>
 <div class="panel" id="module-status">
-  <h2>M1-M6 模块状态</h2>
-  <p class="note">以下为各子模块的当前状态与快速入口（超链接为占位，可在集成层配置）。</p>
+  <h2>平台能力总览</h2>
+  <p class="note">以下为 FactorZen 全链路各能力模块简介与文档入口（超链接为占位，可在集成层配置）。</p>
   <div class="module-grid">
 
     <div class="module-card">
-      <div class="module-name">M1 因子挖掘</div>
+      <div class="module-name">因子挖掘</div>
       <div class="module-desc">表达式 AST + 遗传搜索；发现候选 alpha 因子。</div>
-      <a class="module-link" href="#" title="M1 因子挖掘报告（占位）">查看报告 →</a>
+      <a class="module-link" href="#" title="因子挖掘报告（占位）">查看报告 →</a>
     </div>
 
     <div class="module-card">
-      <div class="module-name">M2 防过拟合</div>
+      <div class="module-name">防过拟合护栏</div>
       <div class="module-desc">PBO / 多重检验校正 / 样本外验证；控制 false-discovery。</div>
-      <a class="module-link" href="#" title="M2 防过拟合报告（占位）">查看报告 →</a>
+      <a class="module-link" href="#" title="防过拟合护栏报告（占位）">查看报告 →</a>
     </div>
 
     <div class="module-card">
-      <div class="module-name">M3 Barra 风险模型</div>
+      <div class="module-name">风险模型</div>
       <div class="module-desc">行业 + 风格因子协方差；提供风险归因与组合约束。</div>
-      <a class="module-link" href="#" title="M3 风险模型报告（占位）">查看报告 →</a>
+      <a class="module-link" href="#" title="风险模型报告（占位）">查看报告 →</a>
     </div>
 
     <div class="module-card">
-      <div class="module-name">M4 组合优化</div>
+      <div class="module-name">组合优化</div>
       <div class="module-desc">均值-方差 / 风险平价；生成当前持仓权重。</div>
-      <a class="module-link" href="#" title="M4 组合优化报告（占位）">查看报告 →</a>
+      <a class="module-link" href="#" title="组合优化报告（占位）">查看报告 →</a>
     </div>
 
     <div class="module-card">
-      <div class="module-name">M5 LLM Agent</div>
-      <div class="module-desc">自动解读因子、生成研究假设、闭环因子评级。</div>
-      <a class="module-link" href="#" title="M5 LLM Agent 日志（占位）">查看日志 →</a>
+      <div class="module-name">AI Agent 挖掘</div>
+      <div class="module-desc">单 Agent 自动化研究闭环，叠加多 Agent 团队（Coder / Critic / Hypothesis / Librarian）协同评审产出因子。</div>
+      <a class="module-link" href="#" title="AI Agent 挖掘日志（占位）">查看日志 →</a>
     </div>
 
     <div class="module-card">
-      <div class="module-name">M6 多 Agent 协作</div>
-      <div class="module-desc">Coder / Critic / Hypothesis / Librarian 协同生产因子。</div>
-      <a class="module-link" href="#" title="M6 多 Agent 报告（占位）">查看报告 →</a>
+      <div class="module-name">模拟交易</div>
+      <div class="module-desc">按目标持仓多周期回放净值、计入交易成本，生成本报告所示净值曲线。</div>
+      <a class="module-link" href="#" title="模拟交易报告（占位）">查看报告 →</a>
     </div>
 
   </div>

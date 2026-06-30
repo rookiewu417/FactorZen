@@ -124,14 +124,23 @@ def test_no_chart_when_sim_result_none(base_metrics):
     assert 'data:image/png;base64' not in html
 
 
-def test_module_status_cards_present(base_metrics):
-    """M1-M6 模块状态卡占位存在。"""
+def test_capability_overview_cards_present(base_metrics):
+    """修复5：能力总览卡按能力命名展示，不暴露内部里程碑代号（M1-M6）。
+
+    展示页是对外可见正文，项目约定（CLAUDE.md）要求对外不暴露 M0-M7 里程碑代号；
+    旧版直接把 "M1 因子挖掘".."M6 多 Agent 协作" 写进卡片文案，违反该约定。
+    """
     html = generate_portfolio_report(None, metrics=base_metrics)
-    # At least one of M1/M2/.../M6 or their Chinese names
+    # 按能力命名的文案应存在
     assert any(
         token in html
-        for token in ("M1", "M2", "M3", "M4", "M5", "M6", "因子挖掘", "风险模型", "组合优化")
+        for token in ("因子挖掘", "防过拟合", "风险模型", "组合优化", "Agent", "模拟交易")
     )
+    # 内部里程碑代号字样不应再出现在对外可见正文中
+    for milestone_token in ("M1", "M2", "M3", "M4", "M5", "M6"):
+        assert milestone_token not in html, (
+            f"展示页正文不应出现内部里程碑代号 {milestone_token!r}（对外应按能力命名）"
+        )
 
 
 def test_all_args_together(base_metrics, attribution_df, risk_df, manifest):

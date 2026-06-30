@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import types
+from datetime import date
 
 import pandas as pd
 import polars as pl
@@ -69,6 +70,42 @@ def test_make_quantile_spread_chart_none_for_insufficient_groups():
 def test_make_quantile_spread_chart_renders_with_two_groups():
     b64 = _make_quantile_spread_chart({0: [0.01, -0.01, 0.02], 4: [0.03, 0.01, 0.04]})
     assert isinstance(b64, str) and len(b64) > 100
+
+
+def test_make_monthly_return_heatmap_renders_with_production_shaped_namespace():
+    """修复4：生产路径（cli/main.py::_cmd_report_portfolio）用
+    ``SimpleNamespace(nav=nav_df, returns=nav_df)`` 重建 sim_result。
+    本函数只读 ``.returns``（不读 ``.nav``），.returns 必须真实可用，
+    否则该函数在唯一的生产调用路径下恒返回 None（死代码，图表永不渲染）。
+    """
+    nav_df = pl.DataFrame(
+        {
+            "trade_date": [date(2023, 1, 1), date(2023, 1, 15), date(2023, 2, 1)],
+            "net_return": [0.01, -0.005, 0.02],
+            "nav": [1.01, 1.005, 1.025],
+        }
+    )
+    sim_result = _ns(nav=nav_df, returns=nav_df)
+    b64 = _make_monthly_return_heatmap(sim_result)
+    assert isinstance(b64, str) and len(b64) > 100, (
+        "sim_result.returns 已设置时，月度收益热力图应成功渲染而非返回 None"
+    )
+
+
+def test_make_monthly_return_heatmap_none_when_returns_attr_missing():
+    """对照组：只设置 .nav、不设置 .returns 时（修复前的生产路径形状），
+    函数应仍然返回 None —— 用于证明上一条用例确实在验证 .returns 生效，
+    而不是函数本身的行为已变化到总是返回非 None。
+    """
+    nav_df = pl.DataFrame(
+        {
+            "trade_date": [date(2023, 1, 1), date(2023, 1, 15), date(2023, 2, 1)],
+            "net_return": [0.01, -0.005, 0.02],
+            "nav": [1.01, 1.005, 1.025],
+        }
+    )
+    sim_result = _ns(nav=nav_df)  # 故意不设置 .returns
+    assert _make_monthly_return_heatmap(sim_result) is None
 
 
 def test_make_event_study_chart_none_when_no_events():

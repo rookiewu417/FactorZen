@@ -581,10 +581,12 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
         if mf_path.exists():
             portfolio_manifest = _json.loads(mf_path.read_text(encoding="utf-8"))
 
-    # 尝试从 sim_dir/nav.parquet 重建轻量 sim_result 对象（仅含 .nav 字段），
-    # 供 _make_returns_chart 渲染净值曲线。_make_returns_chart 只访问 .nav，
-    # _make_monthly_return_heatmap 访问 .returns（用 _safe_attr 安全取值，
-    # SimpleNamespace 无该属性时返回 None，函数静默跳过），可安全降级。
+    # 尝试从 sim_dir/nav.parquet 重建轻量 sim_result 对象，供两个图表函数使用：
+    # _make_returns_chart 只访问 .nav 渲染净值曲线；_make_monthly_return_heatmap
+    # 只访问 .returns 渲染月度收益热力图（用 _safe_attr 安全取值，缺失该属性时
+    # 返回 None、函数静默跳过不渲染）。nav.parquet 本身已含计算热力图所需的
+    # net_return 列，故 .returns 直接复用同一份 nav_df 即可——
+    # 早期版本只设置了 .nav，导致热力图在这条唯一的生产路径下恒为死代码。
     sim_result = None
     if sim_dir is not None:
         nav_path = sim_dir / "nav.parquet"
@@ -592,7 +594,7 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
             from types import SimpleNamespace
             _nav_df = pl.read_parquet(nav_path)
             if not _nav_df.is_empty():
-                sim_result = SimpleNamespace(nav=_nav_df)
+                sim_result = SimpleNamespace(nav=_nav_df, returns=_nav_df)
 
     html = generate_portfolio_report(
         sim_result=sim_result,

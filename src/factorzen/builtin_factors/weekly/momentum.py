@@ -19,7 +19,7 @@ class MomentumWeekly(DailyFactor):
         result = (
             daily.sort(["ts_code", "trade_date"])
             .with_columns(
-                (pl.col("close") / pl.col("close").shift(20).over("ts_code") - 1.0).alias(
+                (pl.col("close_adj") / pl.col("close_adj").shift(20).over("ts_code") - 1.0).alias(
                     "factor_value"
                 )
             )

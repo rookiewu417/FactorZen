@@ -20,7 +20,9 @@ class VolatilityWeekly(DailyFactor):
         result = (
             daily.sort(["ts_code", "trade_date"])
             .with_columns(
-                (pl.col("close") / pl.col("close").shift(1).over("ts_code")).log().alias("log_ret")
+                (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code"))
+                .log()
+                .alias("log_ret")
             )
             .with_columns(
                 pl.col("log_ret")

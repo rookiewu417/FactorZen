@@ -432,6 +432,12 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
     )
     _ind_map = dict(zip(stocks["ts_code"].to_list(), stocks["industry"].to_list(), strict=False))
     sectors = [(_ind_map.get(c) or "") for c in codes]
+    # 将 args.end (YYYYMMDD) 转成 ISO 格式 YYYY-MM-DD，供 sim 的 date.fromisoformat() 解析
+    _end = args.end or ""
+    if len(_end) == 8 and _end.isdigit():
+        _signal_date = f"{_end[:4]}-{_end[4:6]}-{_end[6:]}"
+    else:
+        _signal_date = _end or None
     res = run_portfolio(
         alpha,
         risk_result,
@@ -444,6 +450,7 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
         neutral_factors=neutral,
         turnover_budget=args.turnover,
         bench_weights=bench_weights,
+        signal_date=_signal_date,
     )
     print(f"[portfolio] status={res['status']} holdings={res['n_holdings']} → {res['run_dir']}")
     return 0

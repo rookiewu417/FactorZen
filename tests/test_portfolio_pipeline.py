@@ -73,6 +73,24 @@ def test_run_portfolio_attribution_available_when_returns_provided(tmp_path: Pat
     assert m["return_attribution_note"] is None
 
 
+def test_run_portfolio_records_signal_date(tmp_path: Path):
+    """run_portfolio 传 signal_date 后，manifest.json 应记录该字段供 M7 sim 对齐。"""
+    rr = _risk_result()
+    alpha = np.array([0.1, 0.05, 0.02, 0.08, 0.03, 0.01])
+    res = run_portfolio(alpha, rr, codes=rr.factor_exposures.codes,
+                        stock_returns=np.zeros(6),
+                        sectors=["A", "A", "A", "B", "B", "B"],
+                        factor_returns_latest={},
+                        risk_aversion=1.0, w_max=0.4,
+                        out_dir=str(tmp_path), run_id="sig_date",
+                        signal_date="2024-12-31")
+    run_dir = Path(res["run_dir"])
+    m = json.loads((run_dir / "manifest.json").read_text())
+    assert m.get("signal_date") == "2024-12-31", (
+        f"manifest.json 应含 signal_date='2024-12-31', 实际: {m.get('signal_date')!r}"
+    )
+
+
 def test_run_portfolio_infeasible_does_not_crash(tmp_path: Path):
     """w_max=0.1 → n*w_max=0.6 < 1，违反 Σw=1，优化器返回 infeasible，pipeline 不崩溃。"""
     rr = _risk_result()  # n=6 stocks

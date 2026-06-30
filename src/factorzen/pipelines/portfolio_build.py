@@ -26,7 +26,8 @@ def _git_sha() -> str:
 def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
                   factor_returns_latest, bench_weights=None, prev_weights=None,
                   risk_aversion=1.0, neutral_factors=None, turnover_budget=None,
-                  w_max=0.05, out_dir="workspace/portfolios", run_id=None) -> dict:
+                  w_max=0.05, out_dir="workspace/portfolios", run_id=None,
+                  signal_date: str | None = None) -> dict:
     t0 = time.perf_counter()
     cfg = ConstraintConfig(w_max=w_max, neutral_factors=neutral_factors,
                            benchmark_weights=bench_weights,
@@ -70,7 +71,8 @@ def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
     # 收益归因可用性标注：建仓时点无持仓期收益时，Brinson/factor_return 为占位 0
     _sr = np.asarray(stock_returns)
     _attrib_placeholder = bool(np.all(_sr == 0) or len(factor_returns_latest) == 0)
-    manifest = {"run_id": rid, "status": opt.status, "objective": opt.objective_value,
+    manifest = {"run_id": rid, "signal_date": signal_date, "status": opt.status,
+                "objective": opt.objective_value,
                 "n_holdings": int((w > 1e-6).sum()), "risk_aversion": risk_aversion,
                 "w_max": w_max, "neutral_factors": neutral_factors,
                 "turnover_budget": turnover_budget,

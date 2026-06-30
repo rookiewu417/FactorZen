@@ -44,14 +44,38 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     ]).with_columns(
         (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0).alias("ret_1d"))
     bundle = DataBundle.build(daily, train_ratio=train_ratio)
-    searcher = RandomSearcher(rng, max_depth=3)
 
+    # ── 按 method 选择候选节点列表 ─────────────────────────────────────
+    if method == "genetic":
+        from factorzen.discovery.search.genetic import GeneticSearcher
+        gs = GeneticSearcher(rng, max_depth=3)
+        cache: dict[str, float] = {}
+
+        def _score(node):
+            expr = to_expr_string(node)
+            if expr in cache:
+                return cache[expr]
+            try:
+                fdf = _factor_values(node, daily)
+                val = score_candidate(fdf, node, bundle, pool={})["fitness"] if fdf.height >= 50 else -9.9
+            except Exception:
+                val = -9.9
+            cache[expr] = val
+            return val
+
+        nodes = gs.evolve(_score, pop_size=max(20, n_trials // 5),
+                          generations=max(3, n_trials // 40))
+        candidate_nodes = nodes
+    else:
+        searcher = RandomSearcher(rng, max_depth=3)
+        candidate_nodes = [searcher.propose() for _ in range(n_trials)]
+
+    # ── 统一评分循环（random 与 genetic 共用）────────────────────────────
     scored: list[dict] = []
     seen: set[str] = set()
     n_errors = 0
     last_err: Exception | None = None
-    for _ in range(n_trials):
-        node = searcher.propose()
+    for node in candidate_nodes:
         expr = to_expr_string(node)
         if expr in seen:
             continue

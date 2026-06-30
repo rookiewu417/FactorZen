@@ -38,3 +38,28 @@ def test_random_searcher_proposes_distinct():
     s = RandomSearcher(np.random.default_rng(0), max_depth=3)
     exprs = {to_expr_string(s.propose()) for _ in range(30)}
     assert len(exprs) > 5  # 有多样性
+
+
+def test_crossover_and_mutate_stay_compilable():
+    from factorzen.discovery.search.random_search import random_expression
+    from factorzen.discovery.search.genetic import crossover, mutate
+    from factorzen.discovery.expression import compile_expr
+    df = _toy()
+    rng = np.random.default_rng(11)
+    for _ in range(40):
+        a = random_expression(rng, 3)
+        b = random_expression(rng, 3)
+        child = crossover(a, b, rng)
+        mutant = mutate(child, rng, 3)
+        for node in (child, mutant):
+            df.with_columns(compile_expr(node).alias("f"))  # 不抛异常即合法
+
+
+def test_genetic_improves_toy_objective():
+    """目标：偏好复杂度小的表达式 → GP 平均复杂度应下降或持平。"""
+    from factorzen.discovery.search.genetic import GeneticSearcher
+    from factorzen.discovery.expression import complexity
+    rng = np.random.default_rng(5)
+    gs = GeneticSearcher(rng, max_depth=3)
+    best = gs.evolve(lambda node: -complexity(node), pop_size=20, generations=5)
+    assert complexity(best[0]) <= 4

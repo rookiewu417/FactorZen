@@ -18,6 +18,8 @@ Style factors:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import polars as pl
 
 from factorzen.core.logger import get_logger
@@ -346,7 +348,7 @@ STYLE_FACTOR_NAMES: list[str] = [
     "leverage",
 ]
 
-STYLE_FACTOR_REGISTRY: dict[str, callable] = {
+STYLE_FACTOR_REGISTRY: dict[str, Callable[..., pl.DataFrame]] = {
     "size": factor_size,
     "value": factor_value,
     "momentum": factor_momentum,

@@ -19,7 +19,7 @@ def compute_pbo(perf_matrix: np.ndarray, n_splits: int = 10) -> float:
     # 每块每候选的平均表现 → (n_splits, n_cand)
     block_means = np.array([perf[:, i * block : (i + 1) * block].mean(axis=1) for i in range(n_splits)])
     half = n_splits // 2
-    logits = []
+    logit_list: list[float] = []
     for is_idx in combinations(range(n_splits), half):
         oos_idx = [i for i in range(n_splits) if i not in is_idx]
         is_perf = block_means[list(is_idx)].mean(axis=0)
@@ -29,6 +29,6 @@ def compute_pbo(perf_matrix: np.ndarray, n_splits: int = 10) -> float:
         rank = float((oos_perf <= oos_perf[best]).sum())  # 含自身
         rel = rank / (n_cand + 1)
         rel = min(max(rel, 1e-6), 1 - 1e-6)
-        logits.append(np.log(rel / (1 - rel)))
-    logits = np.asarray(logits)
+        logit_list.append(np.log(rel / (1 - rel)))
+    logits: np.ndarray = np.asarray(logit_list)
     return float((logits <= 0).mean())

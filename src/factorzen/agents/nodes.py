@@ -99,7 +99,7 @@ def node_guardrails(
     passed = [a for a in state.attempts
               if a.iteration == state.iteration and a.compile_ok and a.ic_train is not None]
     ledger.record(len(passed))  # N 诚实：只记本轮新评估数，消除三角和 over-count
-    passed.sort(key=lambda a: abs(a.ic_train), reverse=True)
+    passed.sort(key=lambda a: abs(a.ic_train or 0.0), reverse=True)
 
     # Minor 2：跨 iteration 去重——已入选的表达式不重复入选
     existing_exprs: set[str] = {c["expression"] for c in state.candidates}

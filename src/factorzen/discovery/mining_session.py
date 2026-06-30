@@ -143,8 +143,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
 
     scored.sort(key=lambda d: d["fitness"], reverse=True)
     # 贪心去相关选 top-K：每个入选候选记录与「已选池」的真实 max_corr，过滤近重复
-    selected = []
-    selected_pool = {}  # expression -> factor_df
+    selected: list[dict] = []
+    selected_pool: dict[str, pl.DataFrame] = {}  # expression -> factor_df
     for cand in scored:
         if len(selected) >= top_k:
             break

@@ -92,7 +92,7 @@ def parse_expr(s: str) -> Node:
 def complexity(node: Node) -> int:
     if isinstance(node, (Feature, Constant)):
         return 1
-    return 1 + sum(complexity(c) for c in node.children)  # type: ignore[attr-defined]
+    return 1 + sum(complexity(c) for c in node.children)  # type: ignore[attr-defined, misc]
 
 
 def feature_names(node: Node) -> set[str]:

@@ -33,7 +33,7 @@ def test_session_runs_and_writes_artifacts(tmp_path: Path):
     session_dir = Path(res["session_dir"])
     assert (session_dir / "candidates.csv").exists()
     assert (session_dir / "manifest.json").exists()
-    assert len(res["candidates"]) <= 5
+    assert 0 < len(res["candidates"]) <= 5
     manifest = json.loads((session_dir / "manifest.json").read_text())
     assert manifest["n_trials"] == 20
     assert manifest["seed"] == 42

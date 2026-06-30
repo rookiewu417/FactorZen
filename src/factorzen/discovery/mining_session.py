@@ -48,6 +48,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
 
     scored: list[dict] = []
     seen: set[str] = set()
+    n_errors = 0
+    last_err: Exception | None = None
     for _ in range(n_trials):
         node = searcher.propose()
         expr = to_expr_string(node)
@@ -66,8 +68,14 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                            "ir_train": sc["ir_train"], "ic_valid": valid["ic_mean"],
                            "ir_valid": valid["ir"], "max_corr": sc["max_corr"],
                            "complexity": sc["complexity"], "fitness": sc["fitness"]})
-        except Exception:
+        except Exception as e:
+            n_errors += 1
+            last_err = e
             continue
+    if not scored and n_errors > 0:
+        raise RuntimeError(
+            f"run_session: 未产出任何有效候选，且 {n_errors} 次评分抛异常; last error: {last_err}"
+        ) from last_err
 
     scored.sort(key=lambda d: d["fitness"], reverse=True)
     top = scored[:top_k]
@@ -78,7 +86,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
              ["expression", "ic_train", "ir_train", "ic_valid", "ir_valid", "max_corr", "complexity"]}}
             for i, c in enumerate(top)]
     pl.DataFrame(rows).write_csv(session_dir / "candidates.csv") if rows else \
-        (session_dir / "candidates.csv").write_text("rank,expression\n")
+        (session_dir / "candidates.csv").write_text(
+            "rank,expression,ic_train,ir_train,ic_valid,ir_valid,max_corr,complexity\n")
     manifest = {"seed": seed, "method": method, "n_trials": n_trials, "top_k": top_k,
                 "train_end": bundle.train_end, "git_sha": _git_sha(),
                 "duration_seconds": round(time.perf_counter() - t0, 3), "candidates": top}

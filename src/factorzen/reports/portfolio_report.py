@@ -5,31 +5,15 @@
 """
 
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-import jinja2
 import polars as pl
 
 from factorzen.core.logger import get_logger
 from factorzen.reports._charts import _make_monthly_return_heatmap, _make_returns_chart
-from factorzen.reports._formatting import (
-    _format_metric_number,
-    _format_metric_percent,
-    _is_finite_metric,
-)
+from factorzen.reports.tear_sheet import _ENV
 
 logger = get_logger(__name__)
-
-# ── 模板加载（与 tear_sheet.py 共用同一 templates/ 目录）──────────────────
-_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
-_ENV = jinja2.Environment(
-    loader=jinja2.FileSystemLoader(str(_TEMPLATE_DIR)),
-    autoescape=jinja2.select_autoescape(["html"]),
-)
-_ENV.filters["metric_number"] = _format_metric_number
-_ENV.filters["metric_percent"] = _format_metric_percent
-_ENV.tests["finite_metric"] = _is_finite_metric
 
 
 def generate_portfolio_report(

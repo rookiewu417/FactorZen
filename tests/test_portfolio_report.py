@@ -90,8 +90,8 @@ def test_html_has_doctype(base_metrics):
 def test_metrics_values_present(base_metrics):
     """所有 metrics 数值都出现在 HTML 里。"""
     html = generate_portfolio_report(None, metrics=base_metrics)
-    # ann_ret 12% or 0.12
-    assert "12" in html
+    # ann_ret 12% or 0.12 — must match actual rendered format
+    assert "0.12" in html or "12.0%" in html
     # ann_vol 18%
     assert "18" in html
     # sharpe

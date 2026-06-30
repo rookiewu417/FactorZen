@@ -259,11 +259,11 @@
   {% endif %}
 
   <!-- 3b. 归因明细 -->
-  {% if attribution_rows %}
-  <h3 style="font-size:14px;margin:16px 0 6px;">收益归因明细</h3>
   {% if not attribution_available %}
   <div class="warning">建仓时点占位——当前 portfolio_manifest.return_attribution_available 为 false，归因数据为占位展示。</div>
   {% endif %}
+  {% if attribution_rows %}
+  <h3 style="font-size:14px;margin:16px 0 6px;">收益归因明细</h3>
   <table>
     <thead><tr><th>类型（type）</th><th>维度（key）</th><th>贡献值</th></tr></thead>
     <tbody>

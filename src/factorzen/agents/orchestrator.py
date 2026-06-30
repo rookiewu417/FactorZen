@@ -39,7 +39,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
         state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle, feedback=feedback)
         state = node_evaluate(state, daily=mining_df, bundle=bundle)
         state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
-                                ledger=ledger, top_k=top_k)
+                                bundle=bundle, ledger=ledger, top_k=top_k)
         state = node_critic(state, llm_fn)
         if human_review:
             _human_gate(state)  # 打印候选 + 等输入（非交互/CI 跳过）

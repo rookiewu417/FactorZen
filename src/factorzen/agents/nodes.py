@@ -73,6 +73,7 @@ def node_guardrails(
     *,
     daily,
     holdout_df,
+    bundle,
     ledger,
     top_k: int = 5,
     dsr_threshold: float = 0.5,
@@ -80,26 +81,40 @@ def node_guardrails(
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
 
     灵魂约束：
-    - ledger.record(N)：诚实记账本轮所有编译成功且有 IC 的表达式数（多重检验）。
+    - ledger.record(N)：诚实记账**本轮**（state.iteration）编译成功且有 IC 的表达式数。
     - holdout_df 只在此节点接触，生成/反思全程不见（隔离）。
-    - family-aware 去冗余：新候选与已入选 candidates 截面相关 > 0.7 则跳过。
+    - family-aware 去冗余：新候选与已入选 candidates 截面相关 > 0.7 则跳过（跨轮）。
     """
     import math
+    from datetime import datetime as _dt
+
+    import polars as pl
 
     from factorzen.agents.evaluation import _node_to_factor_df
     from factorzen.discovery.scoring import max_correlation
     from factorzen.validation.deflated_sharpe import deflated_sharpe
     from factorzen.validation.holdout import holdout_ic
 
-    passed = [a for a in state.attempts if a.compile_ok and a.ic_train is not None]
-    ledger.record(len(passed))  # N 累加本轮所有评估过的表达式（诚实多重检验）
+    # Fix 1: 只取本轮 attempts（iteration == state.iteration，node_reflect 尚未推进）
+    passed = [a for a in state.attempts
+              if a.iteration == state.iteration and a.compile_ok and a.ic_train is not None]
+    ledger.record(len(passed))  # N 诚实：只记本轮新评估数，消除三角和 over-count
     passed.sort(key=lambda a: abs(a.ic_train), reverse=True)
 
     # Minor 2：跨 iteration 去重——已入选的表达式不重复入选
     existing_exprs: set[str] = {c["expression"] for c in state.candidates}
 
-    # family-aware pool: {expression: holdout_factor_df} for already-accepted candidates
+    # Fix 2: family-aware pool：从已入选 candidates 预建跨轮相关基线
     pool: dict = {}
+    for i, c in enumerate(state.candidates):
+        try:
+            pool[f"prev_{i}"] = _node_to_factor_df(parse_expr(c["expression"]), holdout_df)
+        except Exception:
+            continue
+
+    # Fix 3: n_obs 使用 train 段交易日数（与 ir_train 同源，避免高估 ~1.4x）
+    cut = _dt.strptime(bundle.train_end, "%Y%m%d").date()
+    n_obs = max(daily.filter(pl.col("trade_date") <= cut)["trade_date"].n_unique(), 20)
 
     for a in passed[:top_k]:
         # Minor 2：跨 iteration 去重
@@ -109,8 +124,6 @@ def node_guardrails(
             node = parse_expr(a.expression)
             fdf_hold = _node_to_factor_df(node, holdout_df)
             ic_h, ir_h, _ci = holdout_ic(fdf_hold, holdout_df)
-            # Critical: n_obs = 交易日数（IC 序列长度），与 M2 mining_session 口径一致
-            n_obs = max(daily["trade_date"].n_unique(), 20)
             # Important: 优先用 ir_train 作 Sharpe 代理（更稳定）；回退到 abs(ic_train)
             sharpe = a.ir_train if a.ir_train is not None else abs(a.ic_train or 0.0)
             dsr, pval = deflated_sharpe(

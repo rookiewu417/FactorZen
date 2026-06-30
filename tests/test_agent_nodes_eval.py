@@ -142,7 +142,7 @@ def test_node_guardrails_n_accounting_and_holdout_isolation():
             )
         )
     ledger = TrialLedger()
-    s = node_guardrails(s, daily=mining_df, holdout_df=holdout_df, ledger=ledger, top_k=5)
+    s = node_guardrails(s, daily=mining_df, holdout_df=holdout_df, bundle=bundle, ledger=ledger, top_k=5)
 
     # ① N 诚实累加本轮评估数
     assert ledger.n_trials >= 1
@@ -214,11 +214,103 @@ def test_node_guardrails_family_aware_dedup():
     ledger = TrialLedger()
     # dsr_threshold=0.0 绕过 DSR 门槛，专注测试 family-aware 去冗余逻辑
     s = node_guardrails(
-        s, daily=mining_df, holdout_df=holdout_df, ledger=ledger,
+        s, daily=mining_df, holdout_df=holdout_df, bundle=bundle, ledger=ledger,
         top_k=5, dsr_threshold=0.0,
     )
 
     # 两个高度相关候选只能入选 <= 1 个（family-aware 过滤同族冗余）
     assert len(s.candidates) <= 1, (
         f"Family-aware 去冗余失效：入选 {len(s.candidates)} 个候选，预期 <= 1"
+    )
+
+
+# ---------------------------------------------------------------------------
+# node_guardrails 测试：N 诚实记账灵魂回归（多轮场景）
+# ---------------------------------------------------------------------------
+
+
+def test_node_guardrails_n_honest_accounting():
+    """灵魂回归：2轮各评估2个不同表达式 → ledger.n_trials == 4（非三角和6）。
+
+    修复前：passed 取全量 attempts，第2轮记 4 → n_trials=2+4=6（三角和）。
+    修复后：passed 仅取本轮 iteration 的 attempts，每轮记2 → n_trials=2+2=4。
+    """
+    import datetime as dt
+
+    import numpy as np
+    import polars as pl
+
+    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.agents.nodes import node_guardrails, node_reflect
+    from factorzen.agents.state import AgentState, AttemptRecord
+    from factorzen.discovery.scoring import DataBundle
+    from factorzen.validation.holdout import split_holdout
+    from factorzen.validation.multiple_testing import TrialLedger
+
+    rng = np.random.default_rng(42)
+    days, d = [], dt.date(2022, 1, 3)
+    while len(days) < 180:
+        if d.weekday() < 5:
+            days.append(d)
+        d += dt.timedelta(days=1)
+    codes = [f"{i:06d}.SZ" for i in range(20)]
+    rows = []
+    for c in codes:
+        px = 10.0
+        for dd in days:
+            px *= 1 + rng.standard_normal() * 0.02
+            rows.append({
+                "trade_date": dd, "ts_code": c, "close": px, "open": px * 0.99,
+                "high": px * 1.01, "low": px * 0.98,
+                "vol": float(abs(rng.standard_normal()) * 1e6 + 1e5),
+                "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6),
+            })
+    daily = pl.DataFrame(rows)
+    mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=0.2)
+    bundle = DataBundle.build(mining_df)
+
+    s = AgentState(seed=1)
+    ledger = TrialLedger()
+
+    # 轮0：2 个表达式，iteration=0
+    exprs_r0 = ["ts_mean(close,5)", "rank(vol)"]
+    results_r0 = evaluate_expressions(exprs_r0, mining_df, bundle)
+    n_valid_r0 = 0
+    for r in results_r0:
+        s.attempts.append(AttemptRecord(
+            0, "h", r["expression"], r["compile_ok"],
+            r["ic_train"], False, None, r["error"], r.get("ir_train"),
+        ))
+        if r["compile_ok"] and r["ic_train"] is not None:
+            n_valid_r0 += 1
+
+    s = node_guardrails(s, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
+                        ledger=ledger, top_k=5)
+    assert ledger.n_trials == n_valid_r0, (
+        f"轮0后 n_trials={ledger.n_trials}，期望 {n_valid_r0}"
+    )
+
+    s = node_reflect(s)  # iteration → 1
+
+    # 轮1：2 个不同表达式，iteration=1
+    exprs_r1 = ["ts_mean(close,10)", "rank(amount)"]
+    results_r1 = evaluate_expressions(exprs_r1, mining_df, bundle)
+    n_valid_r1 = 0
+    for r in results_r1:
+        s.attempts.append(AttemptRecord(
+            1, "h", r["expression"], r["compile_ok"],
+            r["ic_train"], False, None, r["error"], r.get("ir_train"),
+        ))
+        if r["compile_ok"] and r["ic_train"] is not None:
+            n_valid_r1 += 1
+
+    s = node_guardrails(s, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
+                        ledger=ledger, top_k=5)
+
+    expected_total = n_valid_r0 + n_valid_r1
+    # 灵魂断言：N 为每轮独立记账之和，非三角和
+    assert ledger.n_trials == expected_total, (
+        f"N 诚实记账失败：ledger.n_trials={ledger.n_trials}，"
+        f"期望 {expected_total}（轮0={n_valid_r0} + 轮1={n_valid_r1}）。"
+        f"若为三角和应得 {n_valid_r0 + (n_valid_r0 + n_valid_r1)}，说明 Fix1 未生效。"
     )

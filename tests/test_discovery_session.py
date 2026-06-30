@@ -37,6 +37,8 @@ def test_session_runs_and_writes_artifacts(tmp_path: Path):
     manifest = json.loads((session_dir / "manifest.json").read_text())
     assert manifest["n_trials"] == 20
     assert manifest["seed"] == 42
+    for c in res["candidates"]:
+        assert c["max_corr"] < 0.7  # 贪心去相关保证：top-K 互不近重复，max_corr 是真实测量
 
 
 def test_session_reproducible_same_seed(tmp_path: Path):

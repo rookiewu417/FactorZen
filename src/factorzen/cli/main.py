@@ -298,7 +298,12 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         seed=args.seed,
         method=args.method,
     )
-    print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {res['session_dir']}")
+    sd = res["session_dir"]
+    print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
+    print(f"[mine] 复现：cp {sd}/exported/*.py workspace/factors/daily/ && "
+          f"fz factor run <name> --set preprocessing.neutralize=false")
+    print("[mine] 注：candidates.csv 的 IC 为挖掘内估计(plain zscore)；"
+          "fz factor run 默认带中性化，IC parity 需 neutralize=false")
     return 0
 
 
@@ -307,7 +312,7 @@ def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
 
     csv = Path(args.session_dir) / "candidates.csv"
     if not csv.exists():
-        print(f"[mine] 找不到 {csv}")
+        print(f"[mine] 找不到 {csv}", file=sys.stderr)
         return 2
     print(csv.read_text(encoding="utf-8"))
     return 0

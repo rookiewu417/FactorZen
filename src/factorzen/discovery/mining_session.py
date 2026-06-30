@@ -9,8 +9,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from factorzen.discovery.expression import compile_expr, to_expr_string
-from factorzen.discovery.scoring import DataBundle, quick_fitness, score_candidate
+from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
+from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
 from factorzen.discovery.search.random_search import RandomSearcher
 
 
@@ -102,7 +102,22 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         ) from last_err
 
     scored.sort(key=lambda d: d["fitness"], reverse=True)
-    top = scored[:top_k]
+    # 贪心去相关选 top-K：每个入选候选记录与「已选池」的真实 max_corr，过滤近重复
+    selected = []
+    selected_pool = {}  # expression -> factor_df
+    for cand in scored:
+        if len(selected) >= top_k:
+            break
+        try:
+            fdf = _factor_values(parse_expr(cand["expression"]), daily)
+        except Exception:
+            continue
+        mc = max_correlation(fdf, selected_pool)
+        if mc < 0.7:
+            cand = {**cand, "max_corr": round(float(mc), 4)}
+            selected.append(cand)
+            selected_pool[cand["expression"]] = fdf
+    top = selected
 
     session_dir = Path(out_dir) / f"session_{seed}_{method}"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -114,7 +129,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             "rank,expression,ic_train,ir_train,ic_valid,ir_valid,max_corr,complexity\n")
     manifest = {"seed": seed, "method": method, "n_trials": n_trials, "top_k": top_k,
                 "train_end": bundle.train_end, "git_sha": _git_sha(),
-                "duration_seconds": round(time.perf_counter() - t0, 3), "candidates": top}
+                "duration_seconds": round(time.perf_counter() - t0, 3), "candidates": top,
+                "reproduce_note": "导出因子在 exported/；复现需复制到 workspace/factors/daily/ 后 fz factor run <name> --set preprocessing.neutralize=false（IC parity）"}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     from factorzen.discovery.export import export_candidate
     exported_dir = session_dir / "exported"

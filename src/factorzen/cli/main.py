@@ -477,6 +477,61 @@ def _cmd_risk_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sim_run(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from factorzen.core import loader
+    from factorzen.sim.engine import run_portfolio_simulation
+
+    daily = loader.fetch_daily(args.start, args.end)
+
+    portfolio_root = Path(args.portfolio_dir)
+    if not portfolio_root.exists():
+        print(f"[sim] portfolio-dir not found: {portfolio_root}", file=sys.stderr)
+        return 2
+
+    run_dirs = sorted(
+        p for p in portfolio_root.iterdir()
+        if p.is_dir() and (p / "weights.parquet").exists()
+    )
+    if not run_dirs:
+        print(f"[sim] no portfolio run dirs found under {portfolio_root}", file=sys.stderr)
+        return 2
+
+    res = run_portfolio_simulation(
+        run_dirs,
+        daily,
+        out_dir="workspace/sim",
+        run_id=args.run_id,
+    )
+    print(
+        f"[sim] run_dir={res['run_dir']} "
+        f"sharpe={res['sharpe']:.4f} "
+        f"max_dd={res['max_dd']:.4f} "
+        f"ann_ret={res['ann_ret']:.4f}"
+    )
+    return 0
+
+
+def _cmd_sim_show(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    metrics_path = Path(args.sim_dir) / "metrics.json"
+    if not metrics_path.exists():
+        print(f"[sim] metrics.json not found: {metrics_path}", file=sys.stderr)
+        return 2
+
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    keys = ["ann_ret", "sharpe", "max_dd", "ann_turnover", "total_cost"]
+    for k in keys:
+        if k in metrics:
+            print(f"{k}: {metrics[k]}")
+    extras = {k: v for k, v in metrics.items() if k not in keys}
+    if extras:
+        print(json.dumps(extras, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("name", nargs="?", help="Factor name")
     parser.add_argument("--start", default=None, help="Start date YYYYMMDD")
@@ -735,6 +790,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--turnover", type=float, default=None)
     p_build.add_argument("--industry-neutral", action="store_true", dest="industry_neutral")
     p_build.set_defaults(func=_cmd_portfolio_build)
+
+    # ── fz sim ──（顶层命令组）
+    sim = sub.add_parser("sim", help="Portfolio simulation workflows")
+    sim_sub = sim.add_subparsers(dest="sim_command", required=True)
+
+    s_run = sim_sub.add_parser("run", help="Run portfolio simulation")
+    s_run.add_argument(
+        "--portfolio-dir",
+        required=True,
+        dest="portfolio_dir",
+        help="组合产物根目录，其下各 {run_id}/ 含 weights.parquet + manifest.json",
+    )
+    s_run.add_argument("--start", required=True, help="Start date YYYYMMDD")
+    s_run.add_argument("--end", required=True, help="End date YYYYMMDD")
+    s_run.add_argument("--run-id", default=None, dest="run_id", help="可选输出 run_id")
+    s_run.set_defaults(func=_cmd_sim_run)
+
+    s_show = sim_sub.add_parser("show", help="Show simulation metrics")
+    s_show.add_argument(
+        "--sim-dir",
+        required=True,
+        dest="sim_dir",
+        help="模拟输出目录（含 metrics.json）",
+    )
+    s_show.set_defaults(func=_cmd_sim_show)
 
     return parser
 

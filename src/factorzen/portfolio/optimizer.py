@@ -41,8 +41,12 @@ def optimize_portfolio(alpha, risk_result, *, risk_aversion: float = 1.0,
     t0 = time.perf_counter()
     try:
         prob.solve(solver=getattr(cp, solver))
-    except cp.error.SolverError:
-        return OptimizeResult(None, "solver_error", None, time.perf_counter() - t0)
+    except (cp.error.SolverError, cp.error.DCPError):
+        # SolverError：求解器本身失败；DCPError：传入的协方差矩阵在 prob.solve()
+        # 阶段被判定非 PSD(例如 _psd() 特征值裁剪后仍残留浮点级别的非PSD残差)。
+        # 两者都不是"程序错误"，而是"这组输入解不出来"，统一按 infeasible/error
+        # 既有设计处理：不返垃圾、不让异常未捕获地往外抛崩掉整条 pipeline。
+        return OptimizeResult(None, "error", None, time.perf_counter() - t0)
     dt = time.perf_counter() - t0
     if prob.status != "optimal" or w.value is None:
         return OptimizeResult(None, prob.status, None, dt)

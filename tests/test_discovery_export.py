@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -13,10 +14,12 @@ def test_render_factor_file_contains_expression():
 def test_exported_file_is_importable_and_consistent(tmp_path: Path):
     """导出的 .py 能 import，且其因子 compute 与直接用 ExpressionFactor 一致。"""
     import importlib.util
-    import numpy as np
-    import polars as pl
     from dataclasses import dataclass, field
     from datetime import date, timedelta
+
+    import numpy as np
+    import polars as pl
+
     from factorzen.discovery.export import export_candidate
     from factorzen.discovery.factor import ExpressionFactor
 
@@ -47,9 +50,12 @@ def test_exported_file_is_importable_and_consistent(tmp_path: Path):
 
     @dataclass
     class MockCtx:
-        start: str = "20240301"; end: str = "20240331"
+        start: str = "20240301"
+        end: str = "20240331"
         required_data: list = field(default_factory=lambda: ["daily", "daily_basic"])
-        lookback_days: int = 30; universe=None; snapshot_mode="daily"
+        lookback_days: int = 30
+        universe = None
+        snapshot_mode = "daily"
         @property
         def daily(self): return lf
         @property

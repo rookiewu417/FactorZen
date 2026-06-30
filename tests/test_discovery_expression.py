@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import numpy as np
 import polars as pl
 import pytest
@@ -23,13 +24,13 @@ def test_constant_and_feature():
 
 
 def test_complexity_counts_nodes():
-    from factorzen.discovery.expression import parse_expr, complexity
+    from factorzen.discovery.expression import complexity, parse_expr
     # rank(1) + ts_mean(1) + close(1) = 3
     assert complexity(parse_expr("rank(ts_mean(close, 5))")) == 3
 
 
 def test_feature_names():
-    from factorzen.discovery.expression import parse_expr, feature_names
+    from factorzen.discovery.expression import feature_names, parse_expr
     assert feature_names(parse_expr("div(close, pb)")) == {"close", "pb"}
 
 
@@ -64,7 +65,7 @@ def _toy(seed=0):
 
 
 def test_compile_ts_mean_ratio():
-    from factorzen.discovery.expression import parse_expr, evaluate
+    from factorzen.discovery.expression import evaluate, parse_expr
     df = _toy()
     series = evaluate(parse_expr("div(ts_mean(close, 5), ts_mean(close, 20))"), df)
     assert series.len() == df.height
@@ -72,7 +73,7 @@ def test_compile_ts_mean_ratio():
 
 
 def test_compile_cross_sectional_rank_per_date():
-    from factorzen.discovery.expression import parse_expr, evaluate
+    from factorzen.discovery.expression import evaluate, parse_expr
     df = _toy()
     out = df.with_columns(evaluate(parse_expr("rank(close)"), df).alias("r"))
     # 每个 trade_date 截面内 rank 落在 (0,1)

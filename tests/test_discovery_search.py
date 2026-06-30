@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import numpy as np
 import polars as pl
 
@@ -19,8 +20,8 @@ def _toy(seed=0):
 
 
 def test_random_expression_is_compilable():
+    from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
     from factorzen.discovery.search.random_search import random_expression
-    from factorzen.discovery.expression import compile_expr, to_expr_string, parse_expr
     df = _toy()
     rng = np.random.default_rng(7)
     for _ in range(50):
@@ -33,17 +34,17 @@ def test_random_expression_is_compilable():
 
 
 def test_random_searcher_proposes_distinct():
-    from factorzen.discovery.search.random_search import RandomSearcher
     from factorzen.discovery.expression import to_expr_string
+    from factorzen.discovery.search.random_search import RandomSearcher
     s = RandomSearcher(np.random.default_rng(0), max_depth=3)
     exprs = {to_expr_string(s.propose()) for _ in range(30)}
     assert len(exprs) > 5  # 有多样性
 
 
 def test_crossover_and_mutate_stay_compilable():
-    from factorzen.discovery.search.random_search import random_expression
-    from factorzen.discovery.search.genetic import crossover, mutate
     from factorzen.discovery.expression import compile_expr
+    from factorzen.discovery.search.genetic import crossover, mutate
+    from factorzen.discovery.search.random_search import random_expression
     df = _toy()
     rng = np.random.default_rng(11)
     for _ in range(40):
@@ -57,8 +58,8 @@ def test_crossover_and_mutate_stay_compilable():
 
 def test_genetic_improves_toy_objective():
     """目标：偏好复杂度小的表达式 → GP 平均复杂度应下降或持平。"""
-    from factorzen.discovery.search.genetic import GeneticSearcher
     from factorzen.discovery.expression import complexity
+    from factorzen.discovery.search.genetic import GeneticSearcher
     rng = np.random.default_rng(5)
     gs = GeneticSearcher(rng, max_depth=3)
     best = gs.evolve(lambda node: -complexity(node), pop_size=20, generations=5)
@@ -67,8 +68,8 @@ def test_genetic_improves_toy_objective():
 
 def test_genetic_terminates_under_complexity_pressure():
     """即使目标偏好高复杂度（防膨胀过滤压力最大），evolve 也必须在有限时间内终止。"""
-    from factorzen.discovery.search.genetic import GeneticSearcher
     from factorzen.discovery.expression import complexity
+    from factorzen.discovery.search.genetic import GeneticSearcher
     rng = np.random.default_rng(13)
     gs = GeneticSearcher(rng, max_depth=3)
     best = gs.evolve(lambda node: float(complexity(node)), pop_size=15, generations=6)

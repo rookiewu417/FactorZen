@@ -1,5 +1,6 @@
 # tests/test_discovery_factor.py
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -51,8 +52,8 @@ class MockCtx:
 
 def test_expression_factor_matches_builtin_momentum():
     """pct_change(close, 20) 应与内置 momentum_20d 的 compute 输出一致。"""
-    from factorzen.discovery.factor import ExpressionFactor
     from factorzen.builtin_factors.daily.momentum import Momentum20D
+    from factorzen.discovery.factor import ExpressionFactor
 
     lf = _make_daily_lf()
     ctx = MockCtx(_daily=lf)

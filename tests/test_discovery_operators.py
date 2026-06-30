@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import numpy as np
 import polars as pl
 
@@ -61,7 +62,7 @@ def test_basic_features_subset_and_no_turnover():
     allowed = {"total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm", "pe", "ps", "dv_ratio"}
     assert "turnover_rate" not in BASIC_FEATURES, "BASIC_FEATURES must not contain 'turnover_rate'"
     assert "volume_ratio" not in BASIC_FEATURES, "BASIC_FEATURES must not contain 'volume_ratio'"
-    assert BASIC_FEATURES <= allowed, f"unexpected entries: {BASIC_FEATURES - allowed}"
+    assert allowed >= BASIC_FEATURES, f"unexpected entries: {BASIC_FEATURES - allowed}"
 
 
 def test_operator_category_assignments():

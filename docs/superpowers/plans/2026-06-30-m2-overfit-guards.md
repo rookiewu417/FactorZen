@@ -794,3 +794,20 @@ git -c user.name=rookiewu417 -c user.email=1007372080@qq.com commit -m "feat(val
 ---
 
 *M2 完成后，挖掘流水线即具备「可信」属性（永久隔离 holdout + PBO/DSR/CI/记账），可支撑 M5 Agent 挖掘。*
+
+---
+
+## 实现完成记录（2026-06-30）
+
+M2 按本计划 7 个 task 全部实现，subagent 驱动执行，通过 opus 整分支 final review（+ C1/I1/I2 fix）。
+
+**成果**：`src/factorzen/validation/`（164 行源 + 测试，11 commits，54 测试全绿，ruff 0 errors）。
+TrialLedger + bootstrap + Deflated Sharpe + PBO(CSCV) + holdout(永久隔离) → 接回 M1 挖掘：挖掘只见 mining 段，top-K 在 holdout 段护栏验收，leaderboard/manifest 增列 `n_trials/pbo/holdout_ic/dsr_pvalue/ic_ci_low`；`fz validate overfit` CLI。
+
+**opus final review 验证**：holdout 隔离真闭合（无 seam 泄漏，隔离测试反向验证有效）；IC 口径一致（holdout_ic/mining 都用 `compute_rank_ic` min_samples=30）；护栏统计正确且**非摆设**（噪声→PBO 高/DSR 不显著，构造验证）；N 记账真实（genetic=`len(eval_cache)`）。
+
+**final fix 兑现**：C1 `DataBundle` ratio=1.0 防越界（修 validate 崩溃）；I1 挖掘 IC 对齐 start 窗口（**兑现 M1+M2 deferred 的 IC parity**）；I2 validate 传 universe。
+
+**deferred（非阻塞）**：bootstrap 死代码；PBO nan 分支测试/丢弃期注释；holdout_ratio 边界测试；集成路径噪声 flag 的端到端断言；sharpe_var=1.0 magic default。
+
+**下一步**：M3 Barra 风险模型（`risk/` 已有未提交工作待收口接入），或 M5 Agent 挖掘（建立在 M1+M2 可信流水线上）。

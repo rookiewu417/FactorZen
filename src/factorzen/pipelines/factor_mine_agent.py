@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
+
 from factorzen.agents.manifest import write_session_manifest
 from factorzen.agents.orchestrator import run_llm_agent
 
@@ -30,7 +32,7 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = "workspace
     write_session_manifest(result, out_dir=out_dir, run_id=rid, params=params)
     run_dir = Path(out_dir) / rid
     # candidates.csv —— 兼容 fz mine leaderboard（M1 读取格式）
-    import polars as pl
+    run_dir.mkdir(parents=True, exist_ok=True)
     cand_df = pl.DataFrame(result.candidates) if result.candidates else pl.DataFrame(
         {"expression": [], "holdout_ic": [], "dsr": []})
     cand_df.write_csv(run_dir / "candidates.csv")

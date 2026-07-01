@@ -199,6 +199,18 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
     logger.info(f"[index_member] {index_code} {year_month}: {len(df)} 条原始记录，已缓存")
 
     members = _members_as_of(df, date_str)
+    if not members:
+        # 当月数据非空，但没有任何 trade_date<=date_str 的记录（如当月首个快照
+        # 本身就晚于查询日）：不能当成"该指数当月无成分股"直接返回空列表，须
+        # 与拉取异常/拉取结果整体为空这两个分支一致，尝试回退到历史月份缓存。
+        cached = _load_latest_cached_index_members(index_code, date_str)
+        if cached:
+            logger.warning(
+                f"[index_member] {index_code} {year_month} 当月数据无 "
+                f"trade_date<={date_str} 的记录，使用最近可用成分股缓存"
+            )
+            _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(cached)
+            return cached
     logger.info(f"[index_member] {index_code} {date_str}: 截取 {len(members)} 只成分股")
     _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(members)
     return members

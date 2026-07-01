@@ -820,6 +820,37 @@ def test_load_index_members_reuses_fallback_members_in_memory(monkeypatch, tmp_p
     assert calls == 1
 
 
+def test_load_index_members_falls_back_when_current_month_has_no_eligible_snapshot(
+    monkeypatch, tmp_path
+):
+    """当月数据非空但没有任何 trade_date<=查询日 的记录（如当月首个快照本身就
+    晚于查询日）时，应回退到最近一个有效历史月份的缓存，而不是静默返回空成分
+    列表。与拉取异常/拉取结果整体为空这两个已有回退分支保持一致。
+    """
+    monkeypatch.setattr(U, "DATA_CACHE", tmp_path)
+    U._INDEX_MEMBER_MEMORY_CACHE.clear()
+
+    # 上一个月(1月)已有缓存，15号生效；查询日2月5日晚于1月15日，可作为回退结果
+    prior_cache = tmp_path / "index_member_000300_SH_202401.parquet"
+    pl.DataFrame({"con_code": ["600000.SH"], "trade_date": ["20240115"]}).write_parquet(
+        prior_cache
+    )
+
+    monkeypatch.setattr("factorzen.core.loader.init_tushare", _fake_pro)
+    # 当月(2月)拉取"成功"，但唯一一条记录的 trade_date(2月20日)晚于查询日(2月5日)，
+    # _members_as_of 对这份数据会返回空列表——不该被当成"该指数当月无成分股"处理。
+    monkeypatch.setattr(
+        "factorzen.core.loader._retry",
+        lambda fn, **kw: _index_weight_df(["999999.SZ"], ["20240220"]),
+    )
+
+    result = U._load_index_members("000300.SH", "20240205")
+
+    assert result == ["600000.SH"], (
+        f"当月数据无 trade_date<=查询日 的记录时应回退到上月缓存，实际: {result}"
+    )
+
+
 # ══════════════════════════════════════════════════════════
 # _load_index_members 按 trade_date 精确截取（回归：曾经按整月并集返回，
 # 在调样生效日（6月/12月中旬）前的查询会提前看到尚未生效的新成分，即未来函数）

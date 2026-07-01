@@ -28,6 +28,14 @@ def _psd(F: np.ndarray) -> np.ndarray:
 
 def optimize_portfolio(alpha, risk_result, *, risk_aversion: float = 1.0,
                        constraint_config, solver: str = "CLARABEL") -> OptimizeResult:
+    """因子形式 mean-variance QP：max alpha@w − risk_aversion * portfolio_variance。
+
+    注意：这里的 ``risk_aversion`` 缩放约定与 ``daily/optimization/mean_variance.py``
+    **不同**——那边的目标函数是 ``wᵀμ − (risk_aversion/2)·wᵀΣw``（含 1/2），这里没有
+    这个 1/2。两者是各自独立维护的组合构建实现（见项目 CLAUDE.md「命名空间分离」），
+    同一个 ``risk_aversion`` 数值在两边对应的实际风险惩罚强度相差 2 倍，不能跨模块
+    直接套用调参经验。
+    """
     X = risk_result.factor_exposures.matrix          # (n, k)
     F = _psd(np.asarray(risk_result.factor_covariance))  # (k, k) PSD
     D = np.asarray(risk_result.specific_risk)        # (n,) std

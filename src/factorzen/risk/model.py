@@ -312,11 +312,21 @@ class RiskModel:
             result: build() 返回的 RiskModelResult。
 
         Returns:
-            dict，包含：
-            - "total_risk": 组合总风险（年化）
-            - "factor_risk": 因子风险贡献（年化）
-            - "specific_risk": 特质风险贡献（年化）
-            - 各因子名称: 该因子的风险贡献（年化）
+            dict，包含两套**不同口径、不可混用相加**的量：
+
+            - "total_risk"/"factor_risk"/"specific_risk"：各自独立的标准差口径
+              （``sqrt(var)*sqrt(252)``）。三者满足方差可加（
+              ``factor_var + specific_var = total_var``），但标准差本身不可加——
+              ``factor_risk + specific_risk != total_risk`` 是预期行为，不是 bug。
+            - 各因子名称（如 "size"）：该因子按边际贡献（MCR）分摊到 total_risk 的
+              份额，即 ``Xw_k*(F@Xw)_k / total_var * total_std * sqrt(252)``。这套值
+              **彼此可加**，Σ(各因子份额) = ``factor_risk**2 / total_risk``（而非
+              ``factor_risk`` 本身）——这是加权 MCR 分解，不是把 factor_risk 欧拉
+              分解到各因子（详见 tests/test_risk_model.py 对应测试的注释）。
+              "specific_risk" 键**没有**对应的份额口径镜像字段；下游消费方
+              （如 attribution/risk_attribution.py）如需把「可加的各因子份额」和
+              「不可加的 specific_risk」放进同一个结果里，必须自己注明两者口径不同，
+              不能直接相加/相除。
         """
         X = result.factor_exposures.matrix
         F = result.factor_covariance

@@ -16,6 +16,13 @@ from factorzen.reports.tear_sheet import _ENV
 logger = get_logger(__name__)
 
 
+# 市场语境标签（年化天数/单位/板块措辞/资金费）。crypto 与 A 股差异全走这里。
+_MARKET_LABELS: dict[str, dict[str, Any]] = {
+    "ashare": {"ann_days": 252, "unit": "", "sector_word": "行业", "has_funding": False},
+    "crypto": {"ann_days": 365, "unit": "USDT", "sector_word": "sector", "has_funding": True},
+}
+
+
 def generate_portfolio_report(
     sim_result: Any,
     *,
@@ -23,6 +30,7 @@ def generate_portfolio_report(
     attribution_df: pl.DataFrame | None = None,
     risk_summary_df: pl.DataFrame | None = None,
     portfolio_manifest: dict[str, Any] | None = None,
+    market: str = "ashare",
 ) -> str:
     """生成组合成果展示 HTML dashboard。
 
@@ -76,6 +84,8 @@ def generate_portfolio_report(
     # 归因可用标志：manifest 明确标注 False 时提示占位
     attribution_available: bool = bool(manifest.get("return_attribution_available", True))
 
+    labels = _MARKET_LABELS.get(market, _MARKET_LABELS["ashare"])
+
     template = _ENV.get_template("portfolio_dashboard.html")
     return template.render(
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -87,4 +97,6 @@ def generate_portfolio_report(
         portfolio_manifest=manifest,
         has_sim=sim_result is not None,
         attribution_available=attribution_available,
+        market=market,
+        labels=labels,
     )

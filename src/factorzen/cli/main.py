@@ -640,14 +640,19 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
 
     sim_dir = Path(args.sim_dir) if args.sim_dir else None
 
-    # 读 metrics.json
+    # 读 metrics.json + sim manifest（含 market）
     metrics: dict = {}
     run_id = "portfolio"
+    market = getattr(args, "market", None) or "ashare"
     if sim_dir is not None:
         metrics_path = sim_dir / "metrics.json"
         if metrics_path.exists():
             metrics = _json.loads(metrics_path.read_text(encoding="utf-8"))
             run_id = sim_dir.name
+        sim_mf = sim_dir / "manifest.json"
+        if sim_mf.exists() and not getattr(args, "market", None):
+            # 未显式指定 --market 时，从 sim manifest 自动识别
+            market = _json.loads(sim_mf.read_text(encoding="utf-8")).get("market", market)
 
     # 读 portfolio_dir 产物
     attribution_df: pl.DataFrame | None = None
@@ -676,7 +681,8 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
             from types import SimpleNamespace
             _nav_df = pl.read_parquet(nav_path)
             if not _nav_df.is_empty():
-                sim_result = SimpleNamespace(nav=_nav_df)
+                # returns=nav_df（含 net_return）供月度收益热力图渲染
+                sim_result = SimpleNamespace(nav=_nav_df, returns=_nav_df)
 
     html = generate_portfolio_report(
         sim_result=sim_result,
@@ -684,6 +690,7 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
         attribution_df=attribution_df,
         risk_summary_df=risk_summary_df,
         portfolio_manifest=portfolio_manifest,
+        market=market,
     )
 
     # 输出路径
@@ -889,6 +896,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         dest="out",
         help="HTML 输出路径；默认 workspace/reports/portfolio_<run_id>.html",
+    )
+    pf_report.add_argument(
+        "--market",
+        choices=["ashare", "crypto"],
+        default=None,
+        help="市场语境(默认从 sim manifest 自动识别；crypto=USDT/365/资金费/sector)",
     )
     pf_report.set_defaults(func=_cmd_report_portfolio)
 

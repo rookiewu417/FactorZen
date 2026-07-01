@@ -121,7 +121,7 @@
     <div>
       <div class="hero-kicker">FactorZen Portfolio Dashboard</div>
       <h1>{{ portfolio_name }}</h1>
-      <div class="meta">组合成果展示 | 生成时间：{{ generated_at }}</div>
+      <div class="meta">组合成果展示 | 生成时间：{{ generated_at }}{% if market == "crypto" %} | 市场：Crypto Perps（{{ labels.unit }} 本位，可做空）| 年化按 {{ labels.ann_days }} 天{% endif %}</div>
     </div>
     <div class="hero-facts" aria-label="关键绩效">
       <div class="hero-fact">
@@ -187,6 +187,17 @@
     <div class="metric-card">
       <div class="label">年化换手率</div>
       <div class="value">{{ metrics.ann_turnover | metric_number(1) }}×</div>
+    </div>
+    {% elif metrics.avg_turnover is defined %}
+    <div class="metric-card">
+      <div class="label">平均换手率（每调仓）</div>
+      <div class="value">{{ metrics.avg_turnover | metric_number(2) }}×</div>
+    </div>
+    {% endif %}
+    {% if labels.has_funding and metrics.total_funding is defined %}
+    <div class="metric-card">
+      <div class="label">资金费成本（funding，累计）</div>
+      <div class="value">{{ metrics.total_funding | metric_percent }}</div>
     </div>
     {% endif %}
 
@@ -317,8 +328,8 @@
     </div>
 
     <div class="module-card">
-      <div class="module-name">M3 Barra 风险模型</div>
-      <div class="module-desc">行业 + 风格因子协方差；提供风险归因与组合约束。</div>
+      <div class="module-name">M3 风险模型</div>
+      <div class="module-desc">{{ labels.sector_word }} + 风格因子协方差；提供风险归因与组合约束。</div>
       <a class="module-link" href="#" title="M3 风险模型报告（占位）">查看报告 →</a>
     </div>
 

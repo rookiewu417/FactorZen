@@ -111,6 +111,7 @@ def simulate_crypto_nav(
     })
     metrics = _metrics(np.array(nets), np.array(navs), np.array(turnovers),
                        float(sum(costs)), periods_per_year)
+    metrics["total_funding"] = float(sum(fundings))  # 累计资金费成本（多头付/空头收，净额）
     return {"nav": nav_df, "metrics": metrics}
 
 

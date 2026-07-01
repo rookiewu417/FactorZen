@@ -26,11 +26,13 @@ class PaperBroker(BrokerAdapter):
         config: BacktestConfig | None = None,
         cost_model: CostModel | None = None,
         slippage_bps: float = 0.0,
+        frictionless: bool = False,
     ) -> None:
         self._cash = float(initial_cash)
         self._config = config if config is not None else BacktestConfig()
         self._cost = cost_model if cost_model is not None else CostModel()
         self._slip = slippage_bps / 10_000.0
+        self._frictionless = frictionless
         # 持仓：ts_code -> {volume, can_use_volume, avg_cost}
         self._pos: dict[str, dict[str, float]] = {}
         self._as_of: date | None = None
@@ -83,6 +85,13 @@ class PaperBroker(BrokerAdapter):
         rec = self._market.get(od.ts_code)
         if rec is None or rec.get("open") is None:
             return OrderAck(oid, od.ts_code, False, "missing_price")
+        if self._frictionless:
+            close = rec.get("close")
+            price = float(close) if close is not None else float(rec["open"])
+            signed = od.volume if od.side == "buy" else -od.volume
+            # 全额、零成本、无约束/整手/现金/T+1
+            self._apply_fill(oid, od, signed, price, 0.0)
+            return OrderAck(oid, od.ts_code, True, "")
         open_px = float(rec["open"])
         exec_price = open_px * (1.0 + self._slip if od.side == "buy" else 1.0 - self._slip)
         signed = od.volume if od.side == "buy" else -od.volume

@@ -757,7 +757,8 @@ def _cmd_live_report(args: argparse.Namespace) -> int:
     )
     print(
         f"[live] 归因: 总缺口={rep['total_gap_ann_ret'] * 1e4:.1f}bps/年 "
-        f"成本={rep['cost_bps']:.1f} 滑点={rep['slippage_bps']:.1f} residual={rep['residual_bps']:.1f}"
+        f"成本={rep['cost_bps']:.1f} 滑点={rep['slippage_bps']:.1f} residual={rep['residual_bps']:.1f} "
+        f"| 年化换手(双边)={rep.get('ann_turnover', 0.0):.2f} 成交={rep.get('n_fills', 0)}笔"
     )
     for r, v in rep["missed_by_reason"].items():
         print(f"        未成交[{r}]: {v['count']}次 名义额={v['notional']:.0f}")

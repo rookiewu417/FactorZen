@@ -105,11 +105,15 @@ def build_attribution_report(
     base = max(initial_cash, 1.0)
     cost_sum = 0.0
     slip_sum = 0.0
+    traded_sum = 0.0
+    n_fills = 0
     missed: dict[str, dict] = {}
     for r in recs:
         d = r["as_of_date"]
         for f in r["fills"]:
             cost_sum += float(f["cost"])
+            traded_sum += float(f["filled_volume"]) * float(f["price"])
+            n_fills += 1
             p = px.get((d, f["ts_code"]), {})
             o, c = p.get("open"), p.get("close")
             if o is not None and c is not None:
@@ -148,6 +152,10 @@ def build_attribution_report(
     ann_factor = TRADING_DAYS / n_days if n_days > 0 else 0.0
     cost_bps = cost_sum / base * 1e4 * ann_factor
     slip_bps = slip_sum / base * 1e4 * ann_factor
+    # 年化双边换手：整段累计成交额 / 平均 NAV / 年数（与 strategies.metrics 同口径）
+    mean_nav = sum(real_nav) / len(real_nav) if real_nav else base
+    years = n_days / TRADING_DAYS if n_days > 0 else 0.0
+    ann_turnover = traded_sum / mean_nav / years if mean_nav > 0 and years > 0 else 0.0
     ideal_m = _metrics(ideal_nav)
     real_m = _metrics(real_nav)
     total_gap = ideal_m["ann_ret"] - real_m["ann_ret"]
@@ -161,6 +169,8 @@ def build_attribution_report(
         "cost_bps": cost_bps,
         "slippage_bps": slip_bps,
         "residual_bps": residual_bps,
+        "ann_turnover": ann_turnover,
+        "n_fills": n_fills,
         "missed_by_reason": missed,
         "n_days": n_days,
     }

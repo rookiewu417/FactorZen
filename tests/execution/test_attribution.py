@@ -33,6 +33,8 @@ def test_slippage_only_scenario_residual_near_zero(tmp_path: Path):
     rep = build_attribution_report(tmp_path/"sess", [rd], daily, initial_cash=1_000_000.0)
     assert sum(v["count"] for v in rep["missed_by_reason"].values()) == 0   # 无未成交
     assert rep["cost_bps"] > 0 and rep["slippage_bps"] != 0
+    # 有成交 → 换手/成交笔数非零（换手接入归因）
+    assert rep["ann_turnover"] > 0 and rep["n_fills"] > 0
     # residual = total_gap - cost - slippage 应接近 0（纯滑点+成本场景，无未成交/时点差）。
     # 收紧为「相对成本+滑点规模的 5%」而非宽松的「< 成本+滑点之和」，后者对任意
     # residual < 2×(cost+slip) 都会通过、没有判别力；这里 5% 阈值取自实测 residual

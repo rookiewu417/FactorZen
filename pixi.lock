@@ -143,7 +143,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/9e/51/17023c0f8f1869d8806b979a2bffa3f861f26a3f1a66b094288323fba52f/rfc3986_validator-0.1.1-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/9e/6a/a83720e953b1682d2d109d3c2dbb0bc9bf28cc1cbc205be4ef4be5da709d/jsonpointer-3.1.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/9f/64/2e54428beba8d9992aa478bb8f6de9e4ecaa5f8f513bcfd567ed7fb0262d/apscheduler-3.11.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a0/32/615eb5911859e43d054941b0d0a7d06cfa2870eba86529cf385b052b111c/mypy-2.1.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/a0/61/5c78b91c3143ed5c14207f463aecfc8f9dbb5092fb2869baf37c273b2705/gitdb-4.0.12-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl
@@ -172,7 +171,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/c1/78/d2881e68894cecdcd05912a9c585cfb776ef1fb38b62c8dba98f12ab3adc/jupyter_server-2.19.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c1/d4/59e74daffcb57a07668852eeeb6035af9f32cbfd7a1d2511f17d2fe6a738/smmap-5.0.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c1/ea/53f2148663b321f21b5a606bd5f191517cf40b7072c0497d3c92c4a13b1e/executing-2.2.1-py2.py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/c2/14/e2a54fabd4f08cd7af1c07030603c3356b74da07f7cc056e600436edfa17/tzlocal-5.3.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c4/13/680c54afe3e65767bed7ec1a15571e1a2f1257128733851ade24abcefbcc/kiwisolver-1.5.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/c7/0d/67e5b4109ea4a837e80daa87c2c696711955e40449a97e8926672534def2/click-8.4.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c9/d1/56a400100559cbf154a23cd29989261941ae5c9f743898fc10e8a5508b7c/jupyterlab-4.5.8-py3-none-any.whl
@@ -344,7 +342,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/9d/c7/4beccbd5993b3d92956d450eb24edd4055b66475d9802166160bc8dfd1ad/osqp-1.1.1-cp312-cp312-win_amd64.whl
       - pypi: https://files.pythonhosted.org/packages/9e/51/17023c0f8f1869d8806b979a2bffa3f861f26a3f1a66b094288323fba52f/rfc3986_validator-0.1.1-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/9e/6a/a83720e953b1682d2d109d3c2dbb0bc9bf28cc1cbc205be4ef4be5da709d/jsonpointer-3.1.1-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/9f/64/2e54428beba8d9992aa478bb8f6de9e4ecaa5f8f513bcfd567ed7fb0262d/apscheduler-3.11.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a0/61/5c78b91c3143ed5c14207f463aecfc8f9dbb5092fb2869baf37c273b2705/gitdb-4.0.12-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl
@@ -377,7 +374,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/c1/78/d2881e68894cecdcd05912a9c585cfb776ef1fb38b62c8dba98f12ab3adc/jupyter_server-2.19.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c1/d4/59e74daffcb57a07668852eeeb6035af9f32cbfd7a1d2511f17d2fe6a738/smmap-5.0.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c1/ea/53f2148663b321f21b5a606bd5f191517cf40b7072c0497d3c92c4a13b1e/executing-2.2.1-py2.py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/c2/14/e2a54fabd4f08cd7af1c07030603c3356b74da07f7cc056e600436edfa17/tzlocal-5.3.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c5/93/e4116f2de7f56bc7406a76033dc501811ddeb22b7f056b92d632871ebb0c/rpds_py-2026.5.1-cp312-cp312-win_amd64.whl
       - pypi: https://files.pythonhosted.org/packages/c7/0d/67e5b4109ea4a837e80daa87c2c696711955e40449a97e8926672534def2/click-8.4.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c9/d1/56a400100559cbf154a23cd29989261941ae5c9f743898fc10e8a5508b7c/jupyterlab-4.5.8-py3-none-any.whl
@@ -884,7 +880,6 @@ packages:
   - jinja2>=3.1.0
   - cvxpy>=1.4
   - optuna>=3.5
-  - apscheduler>=3.10
   - pydantic>=2.5
   - joblib>=1.3
   - pyyaml>=6.0
@@ -2809,35 +2804,6 @@ packages:
   sha256: 7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523
   requires_dist:
   - ptyprocess>=0.5
-- pypi: https://files.pythonhosted.org/packages/9f/64/2e54428beba8d9992aa478bb8f6de9e4ecaa5f8f513bcfd567ed7fb0262d/apscheduler-3.11.2-py3-none-any.whl
-  name: apscheduler
-  version: 3.11.2
-  sha256: ce005177f741409db4e4dd40a7431b76feb856b9dd69d57e0da49d6715bfd26d
-  requires_dist:
-  - tzlocal>=3.0
-  - backports-zoneinfo ; python_full_version < '3.9'
-  - etcd3 ; extra == 'etcd'
-  - protobuf<=3.21.0 ; extra == 'etcd'
-  - gevent ; extra == 'gevent'
-  - pymongo>=3.0 ; extra == 'mongodb'
-  - redis>=3.0 ; extra == 'redis'
-  - rethinkdb>=2.4.0 ; extra == 'rethinkdb'
-  - sqlalchemy>=1.4 ; extra == 'sqlalchemy'
-  - tornado>=4.3 ; extra == 'tornado'
-  - twisted ; extra == 'twisted'
-  - kazoo ; extra == 'zookeeper'
-  - apscheduler[etcd,mongodb,redis,rethinkdb,sqlalchemy,tornado,zookeeper] ; extra == 'test'
-  - pytest ; extra == 'test'
-  - pytest-timeout ; extra == 'test'
-  - anyio>=4.5.2 ; extra == 'test'
-  - pyside6 ; python_full_version < '3.14' and platform_python_implementation == 'CPython' and extra == 'test'
-  - gevent ; python_full_version < '3.14' and extra == 'test'
-  - pytz ; extra == 'test'
-  - twisted ; python_full_version < '3.14' and extra == 'test'
-  - packaging ; extra == 'doc'
-  - sphinx ; extra == 'doc'
-  - sphinx-rtd-theme>=1.3.0 ; extra == 'doc'
-  requires_python: '>=3.8'
 - pypi: https://files.pythonhosted.org/packages/a0/32/615eb5911859e43d054941b0d0a7d06cfa2870eba86529cf385b052b111c/mypy-2.1.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
   name: mypy
   version: 2.1.0
@@ -3093,28 +3059,28 @@ packages:
   - opencv-python>=3.0 ; extra == 'other'
   - matplotlib>=3.0 ; extra == 'other'
   - moviepy>=1.0.0 ; extra == 'other'
-  - opencv-python>=3.0 ; extra == 'testing'
-  - lz4>=3.1.0 ; extra == 'testing'
-  - imageio>=2.14.1 ; extra == 'testing'
-  - box2d-py==2.3.5 ; extra == 'testing'
-  - mujoco-py>=2.1,<2.2 ; extra == 'testing'
   - pygame==2.1.0 ; extra == 'testing'
-  - matplotlib>=3.0 ; extra == 'testing'
+  - lz4>=3.1.0 ; extra == 'testing'
   - moviepy>=1.0.0 ; extra == 'testing'
-  - swig==4.* ; extra == 'testing'
+  - opencv-python>=3.0 ; extra == 'testing'
+  - box2d-py==2.3.5 ; extra == 'testing'
   - mujoco==2.2 ; extra == 'testing'
+  - mujoco-py>=2.1,<2.2 ; extra == 'testing'
+  - imageio>=2.14.1 ; extra == 'testing'
+  - swig==4.* ; extra == 'testing'
+  - matplotlib>=3.0 ; extra == 'testing'
   - pytest==7.0.1 ; extra == 'testing'
-  - lz4>=3.1.0 ; extra == 'all'
-  - imageio>=2.14.1 ; extra == 'all'
-  - box2d-py==2.3.5 ; extra == 'all'
-  - swig==4.* ; extra == 'all'
   - pytest==7.0.1 ; extra == 'all'
-  - mujoco-py>=2.1,<2.2 ; extra == 'all'
   - pygame==2.1.0 ; extra == 'all'
-  - matplotlib>=3.0 ; extra == 'all'
   - moviepy>=1.0.0 ; extra == 'all'
+  - lz4>=3.1.0 ; extra == 'all'
   - opencv-python>=3.0 ; extra == 'all'
+  - box2d-py==2.3.5 ; extra == 'all'
   - mujoco==2.2 ; extra == 'all'
+  - mujoco-py>=2.1,<2.2 ; extra == 'all'
+  - imageio>=2.14.1 ; extra == 'all'
+  - swig==4.* ; extra == 'all'
+  - matplotlib>=3.0 ; extra == 'all'
   - ale-py~=0.8.0 ; extra == 'all'
   requires_python: '>=3.6'
 - pypi: https://files.pythonhosted.org/packages/ab/b5/36c712098e6191d1b4e349304ef73a8d06aed77e56ceaac8c0a306c7bda1/jupyterlab_widgets-3.0.16-py3-none-any.whl
@@ -3624,18 +3590,6 @@ packages:
   - littleutils ; extra == 'tests'
   - rich ; python_full_version >= '3.11' and extra == 'tests'
   requires_python: '>=3.8'
-- pypi: https://files.pythonhosted.org/packages/c2/14/e2a54fabd4f08cd7af1c07030603c3356b74da07f7cc056e600436edfa17/tzlocal-5.3.1-py3-none-any.whl
-  name: tzlocal
-  version: 5.3.1
-  sha256: eb1a66c3ef5847adf7a834f1be0800581b683b5608e74f86ecbcef8ab91bb85d
-  requires_dist:
-  - tzdata ; sys_platform == 'win32'
-  - pytest>=4.3 ; extra == 'devenv'
-  - pytest-mock>=3.3 ; extra == 'devenv'
-  - pytest-cov ; extra == 'devenv'
-  - check-manifest ; extra == 'devenv'
-  - zest-releaser ; extra == 'devenv'
-  requires_python: '>=3.9'
 - pypi: https://files.pythonhosted.org/packages/c4/13/680c54afe3e65767bed7ec1a15571e1a2f1257128733851ade24abcefbcc/kiwisolver-1.5.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
   name: kiwisolver
   version: 1.5.0

@@ -49,6 +49,28 @@ def _ar(name, arity, fn):  # 算术算子
     return OperatorSpec(name, "arith", arity, False, lambda c, w: fn(*c))
 
 
+def _ts2(name, fn):  # 双输入时序算子（arity 2, 有 window）
+    return OperatorSpec(name, "ts", 2, True, lambda c, w: fn(c[0], c[1], w))
+
+
+def _ts_corr(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
+    ma = a.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    mb = b.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    mab = (a * b).rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    va = (a * a).rolling_mean(w, min_samples=_MIN).over("ts_code") - ma * ma  # type: ignore[arg-type]
+    vb = (b * b).rolling_mean(w, min_samples=_MIN).over("ts_code") - mb * mb  # type: ignore[arg-type]
+    cov = mab - ma * mb
+    denom = (va * vb).sqrt()
+    return pl.when(denom > 1e-12).then((cov / denom).clip(-1.0, 1.0)).otherwise(None)
+
+
+def _ts_cov(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
+    ma = a.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    mb = b.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    mab = (a * b).rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    return mab - ma * mb
+
+
 OPERATORS: dict[str, OperatorSpec] = {
     # ── 时序（.over("ts_code")）──
     "ts_mean": _ts("ts_mean", lambda x, w: x.rolling_mean(w, min_samples=_MIN).over("ts_code")),
@@ -64,6 +86,8 @@ OPERATORS: dict[str, OperatorSpec] = {
         (pl.when(x.shift(w) > 1e-12).then(x / x.shift(w) - 1.0).otherwise(None)).over("ts_code")),
     "ts_decay_linear": _ts("ts_decay_linear", lambda x, w:
         x.rolling_mean(w, min_samples=_MIN).over("ts_code")),  # MVP：等权近似线性衰减
+    "ts_corr": _ts2("ts_corr", _ts_corr),
+    "ts_cov": _ts2("ts_cov", _ts_cov),
     # ── 截面（.over("trade_date")）──
     "rank":  _cs("rank",  lambda x: (x.rank().over("trade_date") / (pl.len().over("trade_date") + 1))),
     "zscore": _cs("zscore", lambda x:

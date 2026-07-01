@@ -48,6 +48,40 @@ def test_operator_categories_present():
     assert cats == {"ts", "cs", "arith"}
 
 
+def test_ts_corr_perfect_positive_correlation():
+    from factorzen.discovery.operators import OPERATORS
+    # b = 2a + 1 完全正相关 → 滚动 corr 恒为 +1
+    rows = [{"trade_date": d, "ts_code": "A", "a": float(d), "b": 2.0 * d + 1.0}
+            for d in range(10)]
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    expr = OPERATORS["ts_corr"].build([pl.col("a"), pl.col("b")], 5)
+    got = df.with_columns(expr.alias("c"))["c"].drop_nulls().to_list()
+    assert got and all(abs(v - 1.0) < 1e-9 for v in got)
+
+
+def test_ts_corr_null_when_constant_series():
+    from factorzen.discovery.operators import OPERATORS
+    rows = [{"trade_date": d, "ts_code": "A", "a": float(d), "b": 5.0} for d in range(10)]
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    expr = OPERATORS["ts_corr"].build([pl.col("a"), pl.col("b")], 5)
+    got = df.with_columns(expr.alias("c"))
+    # b 无方差 → 分母 0 → 全 null
+    assert got["c"].drop_nulls().len() == 0
+
+
+def test_ts_cov_matches_manual():
+    from factorzen.discovery.operators import OPERATORS
+    rows = [{"trade_date": d, "ts_code": "A", "a": float(d), "b": float(d) * 3.0}
+            for d in range(8)]
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    expr = OPERATORS["ts_cov"].build([pl.col("a"), pl.col("b")], 4)
+    got = df.with_columns(expr.alias("c"))
+    manual = df.with_columns(
+        ((pl.col("a") * pl.col("b")).rolling_mean(4, min_samples=3).over("ts_code")
+         - pl.col("a").rolling_mean(4, min_samples=3).over("ts_code")
+         * pl.col("b").rolling_mean(4, min_samples=3).over("ts_code")).alias("m"))
+    assert got["c"].to_list() == manual["m"].to_list()
+
 def test_leaf_features_contains_price_volume_and_fundamental():
     from factorzen.discovery.operators import LEAF_FEATURES
     price_vol_leaves = {"close", "open", "high", "low", "vol", "amount", "vwap", "log_vol", "ret_1d"}

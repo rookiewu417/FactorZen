@@ -69,18 +69,30 @@ def test_ts_corr_null_when_constant_series():
     assert got["c"].drop_nulls().len() == 0
 
 
-def test_ts_cov_matches_manual():
+def test_ts_cov_matches_numpy_ground_truth():
     from factorzen.discovery.operators import OPERATORS
-    rows = [{"trade_date": d, "ts_code": "A", "a": float(d), "b": float(d) * 3.0}
-            for d in range(8)]
+    a = [float(d) for d in range(8)]
+    b = [float(d) * 3.0 for d in range(8)]
+    rows = [{"trade_date": d, "ts_code": "A", "a": a[d], "b": b[d]} for d in range(8)]
     df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
     expr = OPERATORS["ts_cov"].build([pl.col("a"), pl.col("b")], 4)
-    got = df.with_columns(expr.alias("c"))
-    manual = df.with_columns(
-        ((pl.col("a") * pl.col("b")).rolling_mean(4, min_samples=3).over("ts_code")
-         - pl.col("a").rolling_mean(4, min_samples=3).over("ts_code")
-         * pl.col("b").rolling_mean(4, min_samples=3).over("ts_code")).alias("m"))
-    assert got["c"].to_list() == manual["m"].to_list()
+    got = df.with_columns(expr.alias("c"))["c"].to_list()
+    # 独立 ground truth：numpy 对每个 trailing 窗口(w=4, min_samples=3)直接算总体协方差
+    na, nb = np.array(a), np.array(b)
+    exp: list[float | None] = []
+    for i in range(8):
+        lo = max(0, i - 3)
+        wa, wb = na[lo:i + 1], nb[lo:i + 1]
+        if len(wa) < 3:
+            exp.append(None)
+        else:
+            exp.append(float((wa * wb).mean() - wa.mean() * wb.mean()))
+    assert len(got) == len(exp)
+    for g, e in zip(got, exp, strict=True):
+        if e is None:
+            assert g is None
+        else:
+            assert g is not None and abs(g - e) < 1e-9
 
 def test_leaf_features_contains_price_volume_and_fundamental():
     from factorzen.discovery.operators import LEAF_FEATURES

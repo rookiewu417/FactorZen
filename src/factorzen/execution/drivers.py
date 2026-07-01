@@ -7,20 +7,24 @@ from typing import Any
 
 import polars as pl
 
+from factorzen.daily.evaluation.backtest import _precompute_adv_20d_by_date
 from factorzen.execution.brokers.paper import PaperBroker
 from factorzen.execution.engine import step
 from factorzen.execution.store import SessionStore
 from factorzen.sim.engine import _load_weights_by_date
 
 
-def _market_of_day(daily: pl.DataFrame, d: date) -> dict[str, dict[str, Any]]:
+def _market_of_day(
+    daily: pl.DataFrame, d: date, adv_by_date: dict[date, dict[str, float]]
+) -> dict[str, dict[str, Any]]:
     day = daily.filter(pl.col("trade_date") == d)
+    adv_today = adv_by_date.get(d, {})
     out: dict[str, dict[str, Any]] = {}
     for row in day.iter_rows(named=True):
         out[row["ts_code"]] = {
             "open": row.get("open"), "pre_close": row.get("pre_close"),
             "close": row.get("close"), "vol": row.get("vol"),
-            "adv": row.get("adv"),
+            "adv": adv_today.get(row["ts_code"]),
         }
     return out
 
@@ -43,11 +47,19 @@ def run_replay(
     all_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
     dates = [d for d in all_dates
              if (from_date is None or d >= from_date) and (to_date is None or d <= to_date)]
+    # 容量约束需要真实 ADV：对 daily 全量 trade_dates 预计算一次 trailing 20 日
+    # 成交额均值（_precompute_adv_20d_by_date 对当日 shift(1)，无未来函数）。
+    # daily 缺 amount 列时该函数优雅降级返回 {}，adv 保持 None，不崩、不报错。
+    adv_by_date = _precompute_adv_20d_by_date(daily, all_dates)
 
     current_weights: dict[str, float] = {}
     n_steps = 0
     for d in dates:
-        market = _market_of_day(daily, d)
+        if store.has_date(d):
+            # 幂等哨兵：重跑同一 session_dir 时跳过已落盘的交易日，避免
+            # ledger/nav 追加重复行。
+            continue
+        market = _market_of_day(daily, d, adv_by_date)
         broker.advance_to(d, market)
         # 采用「≤ 当日的最新一次信号」的目标权重（PIT）
         applicable = [s for s in weights_by_date if s <= d]

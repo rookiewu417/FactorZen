@@ -591,11 +591,6 @@ def _cmd_risk_build(args: argparse.Namespace) -> int:
 def _cmd_sim_run(args: argparse.Namespace) -> int:
     from pathlib import Path
 
-    from factorzen.core import loader
-    from factorzen.sim.engine import run_portfolio_simulation
-
-    daily = loader.fetch_daily(args.start, args.end)
-
     portfolio_root = Path(args.portfolio_dir)
     if not portfolio_root.exists():
         print(f"[sim] portfolio-dir not found: {portfolio_root}", file=sys.stderr)
@@ -609,12 +604,23 @@ def _cmd_sim_run(args: argparse.Namespace) -> int:
         print(f"[sim] no portfolio run dirs found under {portfolio_root}", file=sys.stderr)
         return 2
 
-    res = run_portfolio_simulation(
-        [str(p) for p in run_dirs],
-        daily,
-        out_dir="workspace/sim",
-        run_id=args.run_id,
-    )
+    if getattr(args, "market", "ashare") == "crypto":
+        from factorzen.markets.crypto.backtest import run_crypto_simulation
+        from factorzen.markets.crypto.profile import build_crypto_profile
+
+        profile = build_crypto_profile(top_n=getattr(args, "top_n", 50))
+        res = run_crypto_simulation(
+            [str(p) for p in run_dirs], profile, args.start, args.end,
+            out_dir="workspace/sim", run_id=args.run_id,
+        )
+    else:
+        from factorzen.core import loader
+        from factorzen.sim.engine import run_portfolio_simulation
+
+        daily = loader.fetch_daily(args.start, args.end)
+        res = run_portfolio_simulation(
+            [str(p) for p in run_dirs], daily, out_dir="workspace/sim", run_id=args.run_id,
+        )
     print(
         f"[sim] run_dir={res['run_dir']} "
         f"sharpe={res['sharpe']:.4f} "
@@ -1040,6 +1046,10 @@ def build_parser() -> argparse.ArgumentParser:
     s_run.add_argument("--start", required=True, help="Start date YYYYMMDD")
     s_run.add_argument("--end", required=True, help="End date YYYYMMDD")
     s_run.add_argument("--run-id", default=None, dest="run_id", help="可选输出 run_id")
+    s_run.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                       help="Market profile (default ashare; crypto=funding+做空 NAV 回测)")
+    s_run.add_argument("--top-n", dest="top_n", type=int, default=50,
+                       help="crypto universe size (default 50)")
     s_run.set_defaults(func=_cmd_sim_run)
 
     s_show = sim_sub.add_parser("show", help="Show simulation metrics")

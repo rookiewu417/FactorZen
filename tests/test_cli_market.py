@@ -5,6 +5,7 @@ from factorzen.cli.main import (
     _cmd_mine_export_alpha,
     _cmd_mine_search,
     _cmd_portfolio_build,
+    _cmd_sim_run,
     _cmd_validate_overfit,
     build_parser,
 )
@@ -74,5 +75,23 @@ def test_portfolio_build_default_ashare():
     args = p.parse_args([
         "portfolio", "build", "--start", "20240101", "--end", "20240224",
         "--alpha-file", "a.parquet",
+    ])
+    assert args.market == "ashare"
+
+
+def test_sim_run_market_crypto():
+    p = build_parser()
+    args = p.parse_args([
+        "sim", "run", "--portfolio-dir", "d", "--start", "20240201", "--end", "20240224",
+        "--market", "crypto",
+    ])
+    assert args.market == "crypto"
+    assert args.func is _cmd_sim_run
+
+
+def test_sim_run_default_ashare():
+    p = build_parser()
+    args = p.parse_args([
+        "sim", "run", "--portfolio-dir", "d", "--start", "20240201", "--end", "20240224",
     ])
     assert args.market == "ashare"

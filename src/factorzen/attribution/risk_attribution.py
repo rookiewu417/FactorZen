@@ -22,9 +22,10 @@ def risk_factor_attribution(
     factor_returns_latest: dict,
     *,
     stock_returns,
+    periods_per_year: int = 252,
 ) -> RiskAttributionResult:
     """收益归因：因子贡献 = 暴露×因子收益；特异 = 组合实际收益 − Σ因子贡献。
-    风险归因：复用 M3 decompose_risk。"""
+    风险归因：复用 M3 decompose_risk（年化按 ``periods_per_year``，A股252/crypto365）。"""
     w = np.asarray(weights)
     X = risk_result.factor_exposures.matrix       # (n, k)
     names = risk_result.factor_names
@@ -35,8 +36,8 @@ def risk_factor_attribution(
     }
     port_ret = float(w @ np.asarray(stock_returns))
     specific_return = port_ret - sum(factor_ret_contrib.values())
-    # 风险贡献复用 M3
-    decomp = RiskModel().decompose_risk(w, risk_result)
+    # 风险贡献复用 M3（年化周期数按市场）
+    decomp = RiskModel(periods_per_year=periods_per_year).decompose_risk(w, risk_result)
     factor_risk_contrib = {n: float(decomp[n]) for n in names}
     return RiskAttributionResult(
         factor_return_contrib=factor_ret_contrib,

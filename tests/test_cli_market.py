@@ -4,6 +4,7 @@ from __future__ import annotations
 from factorzen.cli.main import (
     _cmd_mine_export_alpha,
     _cmd_mine_search,
+    _cmd_portfolio_build,
     _cmd_validate_overfit,
     build_parser,
 )
@@ -55,3 +56,23 @@ def test_validate_overfit_ashare_positional_unchanged():
                          "--start", "20230101", "--end", "20240101"])
     assert args.market == "ashare"
     assert args.factor == "momentum_12_1"
+
+
+def test_portfolio_build_market_crypto():
+    p = build_parser()
+    args = p.parse_args([
+        "portfolio", "build", "--start", "20240101", "--end", "20240224",
+        "--alpha-file", "a.parquet", "--market", "crypto", "--gross-limit", "1.5",
+    ])
+    assert args.market == "crypto"
+    assert args.gross_limit == 1.5
+    assert args.func is _cmd_portfolio_build
+
+
+def test_portfolio_build_default_ashare():
+    p = build_parser()
+    args = p.parse_args([
+        "portfolio", "build", "--start", "20240101", "--end", "20240224",
+        "--alpha-file", "a.parquet",
+    ])
+    assert args.market == "ashare"

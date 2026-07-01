@@ -26,11 +26,12 @@ def _git_sha() -> str:
 def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
                   factor_returns_latest, bench_weights=None, prev_weights=None,
                   risk_aversion=1.0, neutral_factors=None, turnover_budget=None,
-                  w_max=0.05, out_dir="workspace/portfolios", run_id=None,
+                  w_max=0.05, long_only=True, budget=1.0, gross_limit=None,
+                  periods_per_year=252, out_dir="workspace/portfolios", run_id=None,
                   signal_date: str | None = None) -> dict:
     t0 = time.perf_counter()
-    cfg = ConstraintConfig(w_max=w_max, neutral_factors=neutral_factors,
-                           benchmark_weights=bench_weights,
+    cfg = ConstraintConfig(w_max=w_max, long_only=long_only, neutral_factors=neutral_factors,
+                           benchmark_weights=bench_weights, budget=budget, gross_limit=gross_limit,
                            turnover_budget=turnover_budget, prev_weights=prev_weights)
     opt = optimize_portfolio(alpha, risk_result, risk_aversion=risk_aversion,
                              constraint_config=cfg)
@@ -47,7 +48,8 @@ def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
     attrib_rows = []
     if opt.weights is not None:
         ra = risk_factor_attribution(w, risk_result, factor_returns_latest,
-                                     stock_returns=np.asarray(stock_returns))
+                                     stock_returns=np.asarray(stock_returns),
+                                     periods_per_year=periods_per_year)
         for k, v in ra.factor_return_contrib.items():
             attrib_rows.append({"type": "factor_return", "key": k, "value": v})
         attrib_rows.append({"type": "specific_return", "key": "specific", "value": ra.specific_return})
@@ -63,7 +65,7 @@ def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
     # 风险摘要（复用 M3 decompose）
     risk_rows = []
     if opt.weights is not None:
-        decomp = RiskModel().decompose_risk(w, risk_result)
+        decomp = RiskModel(periods_per_year=periods_per_year).decompose_risk(w, risk_result)
         risk_rows = [{"metric": k, "value": float(v)} for k, v in decomp.items()]
     pl.DataFrame(risk_rows if risk_rows else {"metric": [], "value": []}) \
         .write_csv(run_dir / "risk_summary.csv")

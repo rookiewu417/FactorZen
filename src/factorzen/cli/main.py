@@ -471,7 +471,34 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _portfolio_build_crypto(args: argparse.Namespace) -> int:
+    """crypto 市场中性做空组合（live CCXT）。"""
+    import polars as pl
+
+    from factorzen.markets.crypto.portfolio import build_crypto_portfolio
+    from factorzen.markets.crypto.profile import build_crypto_profile
+
+    profile = build_crypto_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.end)
+    adf = (
+        pl.read_parquet(args.alpha_file)
+        if args.alpha_file.endswith(".parquet")
+        else pl.read_csv(args.alpha_file)
+    )
+    _end = args.end or ""
+    signal_date = f"{_end[:4]}-{_end[4:6]}-{_end[6:]}" if len(_end) == 8 and _end.isdigit() else _end
+    res = build_crypto_portfolio(
+        profile, adf, symbols, args.start, args.end,
+        market_neutral=True, w_max=args.w_max, gross_limit=args.gross_limit,
+        risk_aversion=args.lam, signal_date=signal_date,
+    )
+    print(f"[portfolio] crypto status={res['status']} holdings={res['n_holdings']} → {res['run_dir']}")
+    return 0
+
+
 def _cmd_portfolio_build(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") == "crypto":
+        return _portfolio_build_crypto(args)
     import numpy as np
     import polars as pl
 
@@ -991,6 +1018,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--w-max", type=float, default=0.05, dest="w_max")
     p_build.add_argument("--turnover", type=float, default=None)
     p_build.add_argument("--industry-neutral", action="store_true", dest="industry_neutral")
+    p_build.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                         help="Market profile (default ashare; crypto=市场中性做空)")
+    p_build.add_argument("--top-n", dest="top_n", type=int, default=50,
+                         help="crypto universe size (default 50)")
+    p_build.add_argument("--gross-limit", dest="gross_limit", type=float, default=1.0,
+                         help="crypto 毛敞口上限 Σ|w| (default 1.0)")
     p_build.set_defaults(func=_cmd_portfolio_build)
 
     # ── fz sim ──（顶层命令组）

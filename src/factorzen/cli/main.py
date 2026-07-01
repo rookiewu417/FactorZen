@@ -286,7 +286,28 @@ def _cmd_runs_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mine_search_crypto(args: argparse.Namespace) -> int:
+    """crypto perps 挖掘（live CCXT）：universe 快照 → run_crypto_mining。"""
+    from factorzen.markets.crypto.mining import run_crypto_mining
+    from factorzen.markets.crypto.profile import build_crypto_profile
+
+    profile = build_crypto_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.end)
+    if not symbols:
+        print("[mine] crypto universe 为空（检查网络/交易所可用性）", file=sys.stderr)
+        return 1
+    res = run_crypto_mining(
+        profile, symbols, args.start, args.end,
+        n_trials=args.trials, top_k=args.top_k, seed=args.seed, method=args.method,
+    )
+    sd = res["session_dir"]
+    print(f"[mine] crypto 完成：{len(res['candidates'])} 个候选 / {len(symbols)} 标的 → {sd}")
+    return 0
+
+
 def _cmd_mine_search(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") == "crypto":
+        return _mine_search_crypto(args)
     from factorzen.pipelines.factor_mine import run_mine
 
     res = run_mine(
@@ -351,7 +372,32 @@ def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mine_export_alpha_crypto(args: argparse.Namespace) -> int:
+    """crypto export-alpha（live CCXT）：读候选表达式 → 当日截面 α → parquet。"""
+    from datetime import datetime, timedelta
+    from pathlib import Path
+
+    from factorzen.discovery.export import read_candidate_expression
+    from factorzen.markets.crypto.mining import export_crypto_alpha
+    from factorzen.markets.crypto.profile import build_crypto_profile
+
+    expr = read_candidate_expression(args.session, args.rank)
+    profile = build_crypto_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.date)
+    start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime(
+        "%Y%m%d"
+    )
+    cross = export_crypto_alpha(profile, expr, symbols, start, args.date, date=args.date)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    cross.write_parquet(args.out)
+    print(f"[mine] export-alpha(crypto): rank={args.rank} expr={expr!r} date={args.date} "
+          f"→ {args.out} ({cross.height} 个标的)")
+    return 0
+
+
 def _cmd_mine_export_alpha(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") == "crypto":
+        return _mine_export_alpha_crypto(args)
     from factorzen.core.universe import get_universe
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.discovery.export import (
@@ -839,6 +885,10 @@ def build_parser() -> argparse.ArgumentParser:
     m_search.add_argument("--start", required=True, help="Start date YYYYMMDD")
     m_search.add_argument("--end", required=True, help="End date YYYYMMDD")
     m_search.add_argument("--universe", default=None, help="Universe name (e.g. csi500)")
+    m_search.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                          help="Market profile (default ashare; crypto=USDT-M perps)")
+    m_search.add_argument("--top-n", dest="top_n", type=int, default=50,
+                          help="crypto universe size (Top-N by 30d turnover, default 50)")
     m_search.add_argument("--method", choices=["random", "genetic"], default="random")
     m_search.add_argument("--trials", type=int, default=200)
     m_search.add_argument("--top-k", dest="top_k", type=int, default=10)
@@ -859,6 +909,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Candidate rank in candidates.csv (1-based, default 1)")
     m_exp.add_argument("--date", required=True, help="Cross-section date YYYYMMDD")
     m_exp.add_argument("--universe", default="all_a", help="Universe name (default all_a)")
+    m_exp.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                       help="Market profile (default ashare; crypto=USDT-M perps)")
+    m_exp.add_argument("--top-n", dest="top_n", type=int, default=50,
+                       help="crypto universe size (Top-N by 30d turnover, default 50)")
     m_exp.add_argument("--lookback", type=int, default=60,
                        help="Trade-day lookback for time-series operators (default 60)")
     m_exp.add_argument("--out", required=True,

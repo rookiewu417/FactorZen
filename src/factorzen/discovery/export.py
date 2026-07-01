@@ -6,6 +6,7 @@ from pathlib import Path
 
 import polars as pl
 
+from factorzen.discovery.expression import compile_expr, parse_expr
 from factorzen.discovery.factor import ExpressionFactor
 
 
@@ -64,6 +65,31 @@ def alpha_cross_section(expression: str, ctx: object, date: str) -> pl.DataFrame
     """
     target = datetime.strptime(date, "%Y%m%d").date()
     fdf = ExpressionFactor(expression=expression).compute(ctx)
+    return (
+        fdf.filter(pl.col("trade_date") == target)
+        .select([pl.col("ts_code"), pl.col("factor_value").alias("alpha")])
+        .filter(pl.col("alpha").is_finite())
+    )
+
+
+def alpha_cross_section_from_daily(
+    expression: str,
+    daily: pl.DataFrame,
+    date: str,
+    leaf_map: dict[str, str] | None = None,
+) -> pl.DataFrame:
+    """市场无关版 α 截面：在**已含派生列**的 daily 帧上直接编译表达式。
+
+    与 :func:`alpha_cross_section` 不同，不依赖 A 股 ``FactorDataContext``；
+    ``leaf_map`` 为该市场叶子名→列名映射（默认 A 股 LEAF_FEATURES）。crypto 传
+    ``profile.factors.leaf_features()``，``daily`` 需先经 ``derived_columns`` 加派生列。
+    返回 ``[ts_code, alpha]``。
+    """
+    target = datetime.strptime(date, "%Y%m%d").date()
+    node = parse_expr(expression, leaf_map)
+    fdf = daily.sort(["ts_code", "trade_date"]).with_columns(
+        compile_expr(node, leaf_map).alias("factor_value")
+    )
     return (
         fdf.filter(pl.col("trade_date") == target)
         .select([pl.col("ts_code"), pl.col("factor_value").alias("alpha")])

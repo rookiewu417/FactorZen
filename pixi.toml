@@ -41,6 +41,7 @@ pyyaml           = ">=6.0"
 pyqlib           = ">=0.9.7"
 protobuf         = "<5"
 setuptools       = ">=69,<81"
+ccxt = ">=4.2"
 
 [feature.dev.pypi-dependencies]
 pytest     = ">=7.0.0"

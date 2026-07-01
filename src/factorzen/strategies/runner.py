@@ -1,7 +1,7 @@
 """择时 vs 基线实验驱动：生成两套 weights 产物 → 各走 run_replay → 汇总 NAV 指标对比。
 
 离线端到端：产物生成（``trend_timing``）→ 逐日 replay（``execution.drivers``）→
-NAV 指标（复用 ``execution.attribution._metrics``，年化 ×252）全走本地 DataFrame，
+完整指标（``strategies.metrics.session_metrics``：净值类 + 换手/成本）全走本地 DataFrame，
 无网络依赖，供真实数据场景（HS300 缓存）与单测共用同一入口。
 """
 from __future__ import annotations
@@ -13,17 +13,9 @@ from typing import Any
 
 import polars as pl
 
-from factorzen.execution.attribution import _metrics
 from factorzen.execution.drivers import run_replay
-from factorzen.execution.store import SessionStore
+from factorzen.strategies.metrics import format_metrics_table, session_metrics
 from factorzen.strategies.trend_timing import generate_trend_timing_products
-
-
-def _nav_metrics(session_dir: Path, initial_cash: float) -> dict:
-    """还原 session 的完整 NAV 序列（补回起点 ``initial_cash``）并算年化指标。"""
-    nav_df = SessionStore(session_dir).nav_frame()
-    nav = [initial_cash] + (nav_df["nav_after"].to_list() if nav_df.height else [])
-    return _metrics(nav)
 
 
 def run_trend_timing_experiment(
@@ -39,6 +31,7 @@ def run_trend_timing_experiment(
     ma_window: int = 200,
     top_n: int = 50,
     seed: int = 0,
+    print_table: bool = True,
     **kw: Any,
 ) -> dict:
     """跑「策略（择时 overlay）vs 基线（始终满仓）」两套离线实验，返回指标对比。
@@ -95,7 +88,10 @@ def run_trend_timing_experiment(
         )
 
         out[label] = {
-            "metrics": _nav_metrics(session_dir, initial_cash),
+            "metrics": session_metrics(str(session_dir), initial_cash),
             "session_dir": str(session_dir),
         }
+
+    if print_table:
+        print(format_metrics_table({lbl: out[lbl]["metrics"] for lbl in out}))
     return out

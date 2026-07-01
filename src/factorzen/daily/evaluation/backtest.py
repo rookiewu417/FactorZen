@@ -983,9 +983,18 @@ def _run_precomputed_weights_backtest_fast(
         code_idx = code_to_idx.get(code)
         if date_idx is None or code_idx is None:
             continue
-        open_px[date_idx, code_idx] = float(row["open"])
-        pre_close[date_idx, code_idx] = float(row["pre_close"])
-        vol_data[date_idx, code_idx] = float(row["vol"] or 0.0)
+        # 缺价格保护：open/pre_close 为 None 时保持数组默认的 NaN，下游
+        # valid_price 掩码会据此把该股票该日判定为不可交易（对齐慢路径
+        # _apply_trade_constraints 的 "missing_price" 语义），而不是让
+        # float(None) 抛 TypeError 崩掉整个回测。
+        open_value = row["open"]
+        pre_close_value = row["pre_close"]
+        if open_value is not None:
+            open_px[date_idx, code_idx] = float(open_value)
+        if pre_close_value is not None:
+            pre_close[date_idx, code_idx] = float(pre_close_value)
+        vol_value = row["vol"]
+        vol_data[date_idx, code_idx] = float(vol_value) if vol_value is not None else np.nan
         overnight_ret[date_idx, code_idx] = float(row["overnight_ret"] or 0.0)
         intraday_ret[date_idx, code_idx] = float(row["intraday_ret"] or 0.0)
 
@@ -1008,6 +1017,10 @@ def _run_precomputed_weights_backtest_fast(
     )
     target_by_signal_date: dict[date, tuple[np.ndarray, np.ndarray]] = {}
     for sig_date, weight_df in strategy.weights_by_date.items():
+        # 与慢路径每次 generate_weights() 后都过 _validate_target_weights 对齐：
+        # 非有限值 / 超 max_abs_weight / 超 max_gross_exposure 在此处直接抛
+        # ValueError，而不是静默放行成垃圾 NAV。
+        weight_df = _validate_target_weights(weight_df, config)
         indices: list[int] = []
         values: list[float] = []
         for row in weight_df.iter_rows(named=True):
@@ -1062,8 +1075,12 @@ def _run_precomputed_weights_backtest_fast(
                 & (open_today > 0)
                 & (pre_close_today > 0)
             )
-            # Suspended stocks have vol == 0; block both buy and sell
-            not_suspended = np.isfinite(vol_today) & (vol_today > 0)
+            # Suspended stocks have vol == 0; block both buy and sell.
+            # vol is None/NaN (missing data, distinct from a whole-column-missing
+            # default of 1.0 in _prepare_price_df) is NOT treated as suspended —
+            # 与慢路径 _apply_trade_constraints 语义一致：仅
+            # ``vol is not None and float(vol) == 0.0`` 才判停牌。
+            not_suspended = ~(np.isfinite(vol_today) & (vol_today == 0.0))
             opening_pct = np.zeros(len(codes), dtype=float)
             opening_pct[valid_price] = (
                 open_today[valid_price] / pre_close_today[valid_price] - 1.0
@@ -1114,10 +1131,15 @@ def _run_precomputed_weights_backtest_fast(
         next_weights[np.abs(next_weights) < 1e-12] = 0.0
         if cost_model is None:
             trade_cost = 0.0
+            borrow_cost = 0.0
         else:
             buy_cost = np.where(filled > 0, np.abs(filled) * cost_model.one_way_cost(), 0.0)
             sell_cost = np.where(filled < 0, np.abs(filled) * cost_model.sell_cost(), 0.0)
             trade_cost = float(np.sum(buy_cost + sell_cost))
+            # 融券成本：与慢路径一致，按本期（约束/容量过滤后）空头敞口逐期计提，
+            # 不止首次建仓那一天（持有空头期间每期都收费）。
+            short_exposure = float(np.sum(np.abs(next_weights[next_weights < 0])))
+            borrow_cost = short_exposure * cost_model.borrow_rate_per_period(config.frequency)
         turnover = float(np.sum(np.abs(filled)))
 
         intraday = intraday_ret[i]
@@ -1125,7 +1147,8 @@ def _run_precomputed_weights_backtest_fast(
         gross_return = (1.0 + overnight_return) * (1.0 + intraday_return) - 1.0
         period_cost_scale = 1.0 + overnight_return
         period_trade_cost = trade_cost * period_cost_scale
-        net_return = gross_return - period_trade_cost
+        period_borrow_cost = borrow_cost * period_cost_scale
+        net_return = gross_return - period_trade_cost - period_borrow_cost
         nav_value *= 1.0 + net_return
 
         close_denom = 1.0 + intraday_return
@@ -1146,7 +1169,7 @@ def _run_precomputed_weights_backtest_fast(
                     "trade_date": execution_date,
                     "gross_return": gross_return,
                     "cost": period_trade_cost,
-                    "borrow_cost": 0.0,
+                    "borrow_cost": period_borrow_cost,
                     "net_return": net_return,
                     "nav": nav_value,
                     "cash_weight": cash_weight,

@@ -289,6 +289,77 @@ class TestSuspendedStockBlocking:
 
 
 # ═══════════════════════════════════════════════════════════
+# Test: vol per-row None is not suspension (Fix 2)
+# ═══════════════════════════════════════════════════════════
+
+
+class TestVolNoneNotTreatedAsSuspended:
+    """vol 逐行为 None(非整列缺失)时不应被视为停牌,慢/快路径须一致。
+
+    慢路径 ``_apply_trade_constraints`` 的既有语义：只有
+    ``vol is not None and float(vol) == 0.0`` 才判停牌，``vol is None``
+    (逐行 null，区别于整列缺失时 ``_prepare_price_df`` 兜底填 1.0 的情形)
+    不视为停牌。本测试把该语义钉死为两条路径的统一行为。
+    """
+
+    def test_slow_path_does_not_block_when_vol_is_none(self):
+        """慢路径单元测试：vol=None 的整笔交易不应被判定为停牌。"""
+        prices = _make_prices(
+            n_days=2,
+            overrides={(1, "000001.SZ"): {"vol": None, "close": 11.0}},
+        )
+        result = run_strategy_backtest(
+            BuyOneStrategy(),
+            _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)]),
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+        )
+        trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
+        assert trade["block_reason"] == ""
+        assert trade["filled_delta_weight"] == pytest.approx(1.0)
+
+    def test_fast_path_matches_slow_path_when_vol_is_none(self):
+        """快速路径（PrecomputedWeightsStrategy）：vol=None 的判断须和慢路径一致。"""
+        weights_by_date = {
+            date(2024, 1, 1): pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [1.0]}),
+        }
+        prices = _make_prices(
+            n_days=2,
+            overrides={(1, "000001.SZ"): {"vol": None, "close": 11.0}},
+        )
+        factors = _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)])
+
+        slow = run_strategy_backtest(
+            PrecomputedWeightsStrategy(weights_by_date),
+            factors,
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+        )
+        fast = run_strategy_backtest(
+            PrecomputedWeightsStrategy(weights_by_date),
+            factors,
+            prices,
+            config=_default_config(),
+            cost_model=_zero_cost(),
+            collect_positions=False,
+            collect_trades=False,
+            include_context_positions=False,
+        )
+
+        exec_date = date(2024, 1, 2)
+        slow_nav = slow.nav.filter(pl.col("trade_date") == exec_date)["nav"][0]
+        fast_nav = fast.nav.filter(pl.col("trade_date") == exec_date)["nav"][0]
+        # vol=None 不应阻断买入：000001.SZ 满仓买入 + open=10→close=11 (+10%)
+        assert slow_nav == pytest.approx(1.1)
+        assert fast_nav == pytest.approx(slow_nav), (
+            f"快路径应和慢路径一致地不把 vol=None 当停牌处理，慢路径 nav={slow_nav}，"
+            f"快路径 nav={fast_nav}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════
 # Test: Limit-up blocks buy but allows sell
 # ═══════════════════════════════════════════════════════════
 

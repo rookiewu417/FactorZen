@@ -21,6 +21,7 @@ from factorzen.daily.evaluation.backtest import (
     TopNLongOnlyStrategy,
     _compute_adv_20d,
     _precompute_adv_20d_by_date,
+    _run_precomputed_weights_backtest_fast,
     _summary_stats,
     precompute_top_n_weights,
     run_strategy_backtest,
@@ -1127,6 +1128,333 @@ def test_factor_weighted_strategy_supports_long_only_and_long_short():
     assert long_only["target_weight"].sum() == pytest.approx(1.0)
     assert long_short["target_weight"].abs().sum() == pytest.approx(2.0)
     assert long_short["target_weight"].sum() == pytest.approx(0.0)
+
+
+def test_fast_path_validates_target_weights_like_slow_path():
+    """快速路径必须像慢路径一样校验 target_weight，而不是静默放行(Fix 3)。
+
+    慢路径每次 generate_weights() 后都过 _validate_target_weights；
+    PrecomputedWeightsStrategy 走快路径时此前完全跳过这层校验，非法权重
+    会静默传播成垃圾 NAV。两种非法输入都应抛出和慢路径一致的清晰错误。
+    """
+    fast_kwargs = {
+        "collect_positions": False,
+        "collect_trades": False,
+        "include_context_positions": False,
+    }
+
+    nan_weights = {
+        date(2024, 1, 1): pl.DataFrame(
+            {"ts_code": ["000001.SZ"], "target_weight": [float("nan")]}
+        ),
+    }
+    with pytest.raises(ValueError, match="finite"):
+        run_strategy_backtest(
+            PrecomputedWeightsStrategy(nan_weights),
+            _factor(),
+            _prices(),
+            **fast_kwargs,
+        )
+
+    oversized_weights = {
+        date(2024, 1, 1): pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [5.0]}),
+    }
+    with pytest.raises(ValueError, match="max_abs_weight"):
+        run_strategy_backtest(
+            PrecomputedWeightsStrategy(oversized_weights),
+            _factor(),
+            _prices(),
+            **fast_kwargs,
+        )
+
+
+def test_fast_path_charges_borrow_cost_on_short_position():
+    """快速路径满仓做空时必须按 borrow_annual 扣息，闭式解验证（Fix 1）。
+
+    2 天、单只股票、target_weight=-1.0（满仓做空），价格全程持平
+    （gross_return=0、trade_cost=0），唯一的收益拖累应是融券利息：
+    net_return = -short_exposure * borrow_rate_per_period。
+    """
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+        ]
+    )
+    weights_by_date = {
+        date(2024, 1, 1): pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [-1.0]}),
+    }
+    factors = _factor([(date(2024, 1, 1), "000001.SZ", 1.0)])
+    cfg = BacktestConfig(
+        initial_capital=1_000_000, max_participation_rate=1.0, fallback_adv=1_000_000.0
+    )
+    cost_model = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0.10)
+
+    fast = run_strategy_backtest(
+        PrecomputedWeightsStrategy(weights_by_date),
+        factors,
+        prices,
+        config=cfg,
+        cost_model=cost_model,
+        collect_positions=False,
+        collect_trades=False,
+        include_context_positions=False,
+    )
+
+    expected_borrow_cost = 1.0 * cost_model.borrow_rate_per_period("daily")
+    day2 = fast.nav.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
+    assert day2["borrow_cost"] == pytest.approx(expected_borrow_cost)
+    assert day2["net_return"] == pytest.approx(-expected_borrow_cost)
+    assert day2["nav"] == pytest.approx(1.0 - expected_borrow_cost)
+
+
+def test_fast_path_borrow_cost_matches_slow_path():
+    """快速路径的融券扣息须和慢路径数值一致（Fix 1 慢/快对照）。"""
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.5,
+                "pre_close": 10.0,
+                "pct_chg": 5.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 3),
+                "ts_code": "000001.SZ",
+                "open": 10.5,
+                "close": 10.4,
+                "pre_close": 10.5,
+                "pct_chg": -1.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+        ]
+    )
+    weights_by_date = {
+        date(2024, 1, 1): pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [-0.5]}),
+    }
+    factors = _factor([(date(2024, 1, 1), "000001.SZ", 1.0)])
+    cfg = BacktestConfig(
+        initial_capital=1_000_000, max_participation_rate=1.0, fallback_adv=1_000_000.0
+    )
+    cost_model = CostModel(commission=0.0005, stamp_tax=0.001, slippage=0.0005, borrow_annual=0.085)
+
+    slow = run_strategy_backtest(
+        PrecomputedWeightsStrategy(weights_by_date),
+        factors,
+        prices,
+        config=cfg,
+        cost_model=cost_model,
+    )
+    fast = run_strategy_backtest(
+        PrecomputedWeightsStrategy(weights_by_date),
+        factors,
+        prices,
+        config=cfg,
+        cost_model=cost_model,
+        collect_positions=False,
+        collect_trades=False,
+        include_context_positions=False,
+    )
+
+    assert fast.nav["borrow_cost"].to_list() == pytest.approx(slow.nav["borrow_cost"].to_list())
+    assert fast.nav["nav"].to_list() == pytest.approx(slow.nav["nav"].to_list())
+    # 卫生检查：确实有非零融券成本被扣除（不是两条路径都恰好为 0 而巧合相等）
+    assert any(v > 0 for v in fast.nav["borrow_cost"].to_list())
+
+
+def test_fast_path_handles_missing_open_price_without_crashing():
+    """快速路径 open 为 None 时不应崩溃，该股票当天判定不可交易，其余股票正常（Fix 4）。"""
+    weights_by_date = {
+        date(2024, 1, 1): pl.DataFrame(
+            {"ts_code": ["000001.SZ", "000002.SZ"], "target_weight": [0.5, 0.5]}
+        ),
+    }
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000002.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 11.0,
+                "pre_close": 10.0,
+                "pct_chg": 10.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000002.SZ",
+                "open": None,
+                "close": 11.0,
+                "pre_close": 10.0,
+                "pct_chg": 10.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+        ]
+    )
+    factors = _factor(
+        [
+            (date(2024, 1, 1), "000001.SZ", 1.0),
+            (date(2024, 1, 1), "000002.SZ", 1.0),
+        ]
+    )
+
+    fast = run_strategy_backtest(
+        PrecomputedWeightsStrategy(weights_by_date),
+        factors,
+        prices,
+        config=BacktestConfig(
+            initial_capital=1_000_000, max_participation_rate=1.0, fallback_adv=1_000_000.0
+        ),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+        collect_positions=False,
+        collect_trades=False,
+        include_context_positions=False,
+    )
+
+    day2_nav = fast.nav.filter(pl.col("trade_date") == date(2024, 1, 2))["nav"][0]
+    # 000002.SZ 因缺 open 不可交易（贡献 0），000001.SZ 满仓一半 + 10% 涨幅
+    assert day2_nav == pytest.approx(1.05)
+
+
+def test_fast_path_handles_missing_pre_close_without_crashing():
+    """快速路径内部函数 pre_close 为 None(open 有效)时不应崩溃，该股票当天判定不可交易（Fix 4）。
+
+    ``_prepare_price_df`` 会把逐行 ``pre_close=None`` 兜底填成同行 ``open``
+    （"用今日开盘价近似昨收"），因此公开入口 ``run_strategy_backtest`` 无法构造
+    出"pre_close=None 且 open 有效"这种组合传到快路径——这里直接调用内部函数
+    ``_run_precomputed_weights_backtest_fast``，绕开 ``_prepare_price_df`` 的
+    兜底，独立验证 pre_close 的 None 保护分支（与测试文件既有的
+    ``_compute_adv_20d`` 等私有函数直测惯例一致）。
+    """
+    weights_by_date = {
+        date(2024, 1, 1): pl.DataFrame(
+            {"ts_code": ["000001.SZ", "000002.SZ"], "target_weight": [0.5, 0.5]}
+        ),
+    }
+    trade_dates = [date(2024, 1, 1), date(2024, 1, 2)]
+    price = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+                "overnight_ret": 0.0,
+                "intraday_ret": 0.0,
+            },
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000002.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+                "overnight_ret": 0.0,
+                "intraday_ret": 0.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 11.0,
+                "pre_close": 10.0,
+                "pct_chg": 10.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+                "overnight_ret": 0.0,
+                "intraday_ret": 0.1,
+            },
+            {
+                # pre_close=None（绕过 _prepare_price_df 的 fill_null(open) 兜底），open 仍有效
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000002.SZ",
+                "open": 10.0,
+                "close": 11.0,
+                "pre_close": None,
+                "pct_chg": 10.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+                "overnight_ret": 0.0,
+                "intraday_ret": 0.1,
+            },
+        ]
+    )
+
+    result = _run_precomputed_weights_backtest_fast(
+        strategy=PrecomputedWeightsStrategy(weights_by_date),
+        price=price,
+        trade_dates=trade_dates,
+        config=BacktestConfig(
+            initial_capital=1_000_000, max_participation_rate=1.0, fallback_adv=1_000_000.0
+        ),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+        factor_name="test",
+    )
+
+    day2_nav = result.nav.filter(pl.col("trade_date") == date(2024, 1, 2))["nav"][0]
+    # 000002.SZ 因缺 pre_close 不可交易（贡献 0），000001.SZ 满仓一半 + 10% 涨幅
+    assert day2_nav == pytest.approx(1.05)
 
 
 def test_optimizer_strategy_end_to_end():

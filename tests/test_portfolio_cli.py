@@ -164,6 +164,73 @@ def test_cmd_portfolio_build_industry_neutral_uses_equal_weight_bench(
     assert "workspace/portfolios/test_run" in out
 
 
+def test_cmd_portfolio_build_signal_date_passthrough_when_end_not_yyyymmdd(
+    tmp_path, monkeypatch
+):
+    """args.end 不是 8 位纯数字（如已经是 YYYY-MM-DD 格式）时，signal_date 原样
+    透传而非重新拼接——此前只有 8 位数字格式（if 分支）有测试覆盖，else 分支
+    未被覆盖。
+    """
+    from types import SimpleNamespace
+
+    import polars as pl
+
+    from factorzen.cli import main as cli
+
+    stocks_df = pl.DataFrame({"ts_code": ["000001.SZ"], "industry": ["银行"]})
+    daily_df = pl.DataFrame({"ts_code": ["000001.SZ"], "trade_date": ["20230201"]})
+    codes = ["000001.SZ"]
+    risk_result = SimpleNamespace(
+        factor_exposures=SimpleNamespace(codes=codes),
+        factor_names=["beta"],
+    )
+    calls: dict = {}
+
+    monkeypatch.setattr("factorzen.core.universe.get_universe", lambda d, u: stocks_df)
+    monkeypatch.setattr("factorzen.core.loader.fetch_daily", lambda s, e: daily_df)
+    monkeypatch.setattr("factorzen.core.loader.fetch_daily_basic", lambda s, e: daily_df)
+
+    class FakeRiskModel:
+        def __init__(self, *a, **kw):
+            pass
+
+        def build(self, daily, daily_basic, stocks, start, end):
+            return risk_result
+
+    monkeypatch.setattr("factorzen.risk.model.RiskModel", FakeRiskModel)
+
+    def fake_run_portfolio(alpha, risk_result_arg, **kwargs):
+        calls["kwargs"] = kwargs
+        return {
+            "status": "optimal",
+            "n_holdings": 1,
+            "run_dir": "workspace/portfolios/test_run",
+        }
+
+    monkeypatch.setattr("factorzen.pipelines.portfolio_build.run_portfolio", fake_run_portfolio)
+
+    alpha_file = tmp_path / "alpha.csv"
+    pl.DataFrame({"ts_code": ["000001.SZ"], "alpha": [0.5]}).write_csv(alpha_file)
+
+    ret = cli.main(
+        [
+            "portfolio",
+            "build",
+            "--start",
+            "20230101",
+            "--end",
+            "2023-02-01",  # 非 8 位数字格式，应命中 else 分支原样透传
+            "--universe",
+            "csi500",
+            "--alpha-file",
+            str(alpha_file),
+        ]
+    )
+
+    assert ret == 0
+    assert calls["kwargs"]["signal_date"] == "2023-02-01"
+
+
 def test_cmd_portfolio_build_without_industry_neutral_has_no_bench(tmp_path, monkeypatch):
     """未传 --industry-neutral 时：neutral_factors/bench_weights/turnover_budget 均为 None，
 

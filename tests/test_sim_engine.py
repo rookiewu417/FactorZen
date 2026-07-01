@@ -234,6 +234,62 @@ def test_load_weights_by_date_keeps_manifest_without_status_field(tmp_path: Path
     assert _date(2023, 1, 10) in out
 
 
+def test_load_weights_by_date_warns_on_missing_signal_date(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """修复5：manifest 缺 signal_date 字段时应 warning 说明具体 run_dir，
+    而不是静默 continue 跳过（此前完全没有任何日志）。
+    """
+    from factorzen.sim.engine import _load_weights_by_date
+
+    codes = ["000001.SZ"]
+    good = _write_portfolio_dir(tmp_path, "good", codes, [1.0], "2023-01-10")
+
+    no_sig_dir = tmp_path / "no_sig"
+    no_sig_dir.mkdir()
+    pl.DataFrame(
+        {"ts_code": codes, "target_weight": [1.0], "prev_weight": [0.0]}
+    ).write_parquet(no_sig_dir / "weights.parquet")
+    (no_sig_dir / "manifest.json").write_text(json.dumps({"run_id": "no_sig"}))
+
+    with caplog.at_level(logging.WARNING, logger="factorzen.sim.engine"):
+        out = _load_weights_by_date([good, str(no_sig_dir)])
+
+    assert len(out) == 1, "缺 signal_date 的 run_dir 仍应被跳过（行为不变）"
+    warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("no_sig" in m and "signal_date" in m for m in warning_messages), (
+        f"manifest 缺 signal_date 时应 warning 说明具体 run_dir，实际: {warning_messages}"
+    )
+
+
+def test_load_weights_by_date_warns_on_signal_date_collision(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """修复5：多个 run_dir 撞同一 signal_date 时应 warning 说明发生了覆盖，
+    而不是静默覆盖（此前完全没有任何日志）。选择规则本身不变：仍是遍历顺序
+    中较晚的覆盖较早的。
+    """
+    from datetime import date as _date
+
+    from factorzen.sim.engine import _load_weights_by_date
+
+    codes = ["000001.SZ"]
+    first = _write_portfolio_dir(tmp_path, "a_first", codes, [1.0], "2023-01-10")
+    second = _write_portfolio_dir(tmp_path, "z_second", codes, [0.5], "2023-01-10")
+
+    with caplog.at_level(logging.WARNING, logger="factorzen.sim.engine"):
+        out = _load_weights_by_date([first, second])
+
+    assert len(out) == 1
+    assert out[_date(2023, 1, 10)]["target_weight"].to_list() == [0.5], (
+        "撞键时行为不变：仍是遍历顺序中较晚的覆盖较早的"
+    )
+    warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(
+        "2023-01-10" in m and "a_first" in m and "z_second" in m for m in warning_messages
+    ), f"撞键时应 warning 说明具体的两个 run_dir，实际: {warning_messages}"
+
+
 def test_run_portfolio_simulation_warns_for_specific_stale_signal_among_valid_ones(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

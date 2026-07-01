@@ -71,13 +71,21 @@ def _load_weights_by_date(
     这只是为了让 weights.parquet 始终可写，并不代表"清仓"是真实信号，sim 不应
     把它当作有效持仓执行。manifest 完全没有 status 字段时（历史产物/旧版
     pipeline）视为有效，保持向后兼容。
+
+    manifest 缺 signal_date 字段（跳过）、多个 run_dir 撞同一 signal_date
+    （按传入顺序后者覆盖前者）这两种情况均会 warning 说明，不再静默发生。
     """
     out: dict[date, pl.DataFrame] = {}
+    source_by_date: dict[date, str] = {}
     for rd in portfolio_run_dirs:
         rd_p = Path(rd)
         manifest = json.loads((rd_p / "manifest.json").read_text())
         sig = manifest.get("signal_date")
         if sig is None:
+            _logger.warning(
+                "跳过 run_dir=%s：manifest.json 缺 signal_date 字段，无法作为有效信号执行",
+                rd,
+            )
             continue
         status = manifest.get("status")
         if status is not None and status not in _SUCCESS_OPT_STATUSES:
@@ -90,10 +98,18 @@ def _load_weights_by_date(
             )
             continue
         sig_date = date.fromisoformat(str(sig))
+        if sig_date in out:
+            _logger.warning(
+                "signal_date=%s 撞键：run_dir=%s 覆盖 run_dir=%s（按传入顺序，后者生效）",
+                sig_date,
+                rd,
+                source_by_date[sig_date],
+            )
         w = pl.read_parquet(rd_p / "weights.parquet").select(
             ["ts_code", "target_weight"]
         )
         out[sig_date] = w
+        source_by_date[sig_date] = rd
     return out
 
 

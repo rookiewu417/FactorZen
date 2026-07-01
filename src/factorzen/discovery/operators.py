@@ -13,15 +13,20 @@ from typing import Literal
 import numpy as np
 import polars as pl
 
-# 叶子名 → 求值表中的列名。vwap/log_vol/ret_1d 为派生列（ExpressionFactor 预计算）。
+# 叶子名 → 求值表中的列名。vwap/log_vol/ret_1d/amplitude/intraday_ret/overnight_ret 为派生列（ExpressionFactor 预计算）。
 LEAF_FEATURES: dict[str, str] = {
     "close": "close_adj", "open": "open_adj", "high": "high_adj", "low": "low_adj",
     "vol": "vol", "amount": "amount", "vwap": "vwap", "log_vol": "log_vol", "ret_1d": "ret_1d",
     "amplitude": "amplitude", "intraday_ret": "intraday_ret", "overnight_ret": "overnight_ret",
     "total_mv": "total_mv", "circ_mv": "circ_mv", "pb": "pb", "pe_ttm": "pe_ttm",
     "ps_ttm": "ps_ttm", "dv_ttm": "dv_ttm",
+    "turnover_rate": "turnover_rate", "turnover_rate_f": "turnover_rate_f",
+    "volume_ratio": "volume_ratio", "float_share": "float_share",
 }
-BASIC_FEATURES: set[str] = {"total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm"}
+BASIC_FEATURES: set[str] = {
+    "total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm",
+    "turnover_rate", "turnover_rate_f", "volume_ratio", "float_share",
+}
 
 _MIN = 3  # rolling 最小样本
 

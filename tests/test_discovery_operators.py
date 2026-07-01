@@ -172,12 +172,13 @@ def test_leaf_features_contains_price_volume_and_fundamental():
     assert fundamental_leaves <= keys, f"missing fundamental leaves: {fundamental_leaves - keys}"
 
 
-def test_basic_features_subset_and_no_turnover():
-    from factorzen.discovery.operators import BASIC_FEATURES
-    allowed = {"total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm", "pe", "ps", "dv_ratio"}
-    assert "turnover_rate" not in BASIC_FEATURES, "BASIC_FEATURES must not contain 'turnover_rate'"
-    assert "volume_ratio" not in BASIC_FEATURES, "BASIC_FEATURES must not contain 'volume_ratio'"
-    assert allowed >= BASIC_FEATURES, f"unexpected entries: {BASIC_FEATURES - allowed}"
+def test_basic_features_include_turnover_and_shares():
+    from factorzen.discovery.operators import BASIC_FEATURES, LEAF_FEATURES
+    for f in ["turnover_rate", "turnover_rate_f", "volume_ratio", "float_share"]:
+        assert f in BASIC_FEATURES, f"BASIC_FEATURES missing {f}"
+        assert f in LEAF_FEATURES, f"LEAF_FEATURES missing {f}"
+    # 原有 6 个基本面叶子仍在
+    assert {"total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm"} <= BASIC_FEATURES
 
 
 def test_operator_category_assignments():

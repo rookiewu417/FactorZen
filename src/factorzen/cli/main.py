@@ -634,6 +634,32 @@ def _cmd_sim_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_live_replay(args: argparse.Namespace) -> int:
+    from datetime import date as _date
+
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.execution.drivers import run_replay
+
+    stocks = get_universe(args.end, args.universe) if args.universe else None
+    daily = loader.fetch_daily(args.start, args.end)
+    if stocks is not None:
+        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    out = run_replay(
+        session_dir=args.session_dir,
+        portfolio_run_dirs=args.portfolio_run_dirs,
+        daily=daily,
+        initial_cash=args.initial_cash,
+        from_date=_date.fromisoformat(args.from_date) if args.from_date else None,
+        to_date=_date.fromisoformat(args.to_date) if args.to_date else None,
+        seed=args.seed,
+    )
+    print(f"replay 完成: {out['n_steps']} 步, 终值 NAV={out['final_nav']:.2f} → {out['session_dir']}")
+    return 0
+
+
 def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("name", nargs="?", help="Factor name")
     parser.add_argument("--start", default=None, help="Start date YYYYMMDD")
@@ -954,6 +980,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="模拟输出目录（含 metrics.json）",
     )
     s_show.set_defaults(func=_cmd_sim_show)
+
+    # ── fz live ──（顶层命令组）
+    live = sub.add_parser("live", help="向前执行(纸面/实盘)工作流")
+    live_sub = live.add_subparsers(dest="live_command", required=True)
+    lp = live_sub.add_parser("replay", help="历史窗口 replay 出向前 NAV(A类)")
+    lp.add_argument("--session-dir", required=True, dest="session_dir")
+    lp.add_argument("--portfolio-run-dir", action="append", required=True, dest="portfolio_run_dirs")
+    lp.add_argument("--start", required=True)   # 行情窗口起(YYYYMMDD)
+    lp.add_argument("--end", required=True)      # 行情窗口止
+    lp.add_argument("--universe", default=None)
+    lp.add_argument("--initial-cash", type=float, default=1_000_000.0, dest="initial_cash")
+    lp.add_argument("--broker", choices=["paper"], default="paper")
+    lp.add_argument("--from-date", default=None, dest="from_date")  # 可选:窗口内进一步裁剪(YYYY-MM-DD)
+    lp.add_argument("--to-date", default=None, dest="to_date")
+    lp.add_argument("--seed", type=int, default=0)
+    lp.set_defaults(func=_cmd_live_replay)
 
     return parser
 

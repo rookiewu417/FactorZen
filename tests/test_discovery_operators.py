@@ -104,13 +104,29 @@ def test_ts_median_matches_manual():
     assert got["f"].to_list() == manual["m"].to_list()
 
 
-def test_ts_zscore_zero_mean_unit_scale():
+def test_ts_zscore_null_on_constant_and_matches_numpy():
+    import numpy as np
+
     from factorzen.discovery.operators import OPERATORS
-    df = _toy_df()
-    expr = OPERATORS["ts_zscore"].build([pl.col("close_adj")], 10)
-    got = df.with_columns(expr.alias("z"))["z"].drop_nulls().to_list()
-    # z-score 落在合理范围（非 NaN/inf），且存在有限值
-    assert got and all(abs(v) < 20 for v in got)
+    # 前3个常数(std=0→null),后面有方差;用 numpy 独立算每个 trailing 窗口的 z 分数
+    vals = [5.0, 5.0, 5.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    rows = [{"trade_date": d, "ts_code": "A", "close_adj": vals[d], "vol": 1.0} for d in range(8)]
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    expr = OPERATORS["ts_zscore"].build([pl.col("close_adj")], 3)
+    got = df.with_columns(expr.alias("z"))["z"].to_list()
+    na = np.array(vals)
+    for i in range(8):
+        lo = max(0, i - 2)  # 窗口 w=3
+        w = na[lo:i + 1]
+        if len(w) < 3:
+            assert got[i] is None
+        else:
+            sd = float(w.std(ddof=1))  # polars rolling_std 默认 ddof=1
+            if sd < 1e-12:
+                assert got[i] is None  # 常数窗口 std=0 → null
+            else:
+                exp = (float(w[-1]) - float(w.mean())) / sd
+                assert got[i] is not None and abs(got[i] - exp) < 1e-9
 
 
 def test_ts_argmax_on_monotonic_is_one():
@@ -122,6 +138,17 @@ def test_ts_argmax_on_monotonic_is_one():
     expr = OPERATORS["ts_argmax"].build([pl.col("close_adj")], 5)
     got = df.with_columns(expr.alias("p"))["p"].drop_nulls().to_list()
     assert got and all(abs(v - 1.0) < 1e-9 for v in got)
+
+
+def test_ts_argmin_on_monotonic_is_zero():
+    from factorzen.discovery.operators import OPERATORS
+    # 单调递增 → 窗口内最小值恒在首位 → 归一化位置 = 0.0
+    rows = [{"trade_date": d, "ts_code": "A", "close_adj": float(d + 1), "vol": 1.0}
+            for d in range(10)]
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    expr = OPERATORS["ts_argmin"].build([pl.col("close_adj")], 5)
+    got = df.with_columns(expr.alias("p"))["p"].drop_nulls().to_list()
+    assert got and all(abs(v - 0.0) < 1e-9 for v in got)
 
 
 def test_ts_skew_symmetric_is_zero():

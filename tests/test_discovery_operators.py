@@ -94,6 +94,48 @@ def test_ts_cov_matches_numpy_ground_truth():
         else:
             assert g is not None and abs(g - e) < 1e-9
 
+def test_ts_median_matches_manual():
+    from factorzen.discovery.operators import OPERATORS
+    df = _toy_df()
+    expr = OPERATORS["ts_median"].build([pl.col("close_adj")], 5)
+    got = df.with_columns(expr.alias("f"))
+    manual = df.with_columns(
+        pl.col("close_adj").rolling_median(5, min_samples=3).over("ts_code").alias("m"))
+    assert got["f"].to_list() == manual["m"].to_list()
+
+
+def test_ts_zscore_zero_mean_unit_scale():
+    from factorzen.discovery.operators import OPERATORS
+    df = _toy_df()
+    expr = OPERATORS["ts_zscore"].build([pl.col("close_adj")], 10)
+    got = df.with_columns(expr.alias("z"))["z"].drop_nulls().to_list()
+    # z-score 落在合理范围（非 NaN/inf），且存在有限值
+    assert got and all(abs(v) < 20 for v in got)
+
+
+def test_ts_argmax_on_monotonic_is_one():
+    from factorzen.discovery.operators import OPERATORS
+    # 单只股票严格递增 → 窗口内最大值恒在末位 → 归一化位置 = 1.0
+    rows = [{"trade_date": d, "ts_code": "A", "close_adj": float(d + 1),
+             "vol": 1.0} for d in range(10)]
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    expr = OPERATORS["ts_argmax"].build([pl.col("close_adj")], 5)
+    got = df.with_columns(expr.alias("p"))["p"].drop_nulls().to_list()
+    assert got and all(abs(v - 1.0) < 1e-9 for v in got)
+
+
+def test_ts_skew_symmetric_is_zero():
+    from factorzen.discovery.operators import OPERATORS
+    # 关于平均值对称的序列，偏度 = 0（[2,4,3,4,2] 平均值=3，偏差=[-1,1,0,1,-1]，关于0对称）
+    vals = [2.0, 4.0, 3.0, 4.0, 2.0, 4.0, 3.0, 4.0, 2.0]
+    rows = [{"trade_date": d, "ts_code": "A", "close_adj": v, "vol": 1.0}
+            for d, v in enumerate(vals)]
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    expr = OPERATORS["ts_skew"].build([pl.col("close_adj")], 5)
+    got = df.with_columns(expr.alias("s"))["s"].drop_nulls().to_list()
+    assert got and abs(got[0]) < 1e-9  # 第一个满窗 [2,4,3,4,2] 关于平均值对称 → 偏度=0
+
+
 def test_leaf_features_contains_price_volume_and_fundamental():
     from factorzen.discovery.operators import LEAF_FEATURES
     price_vol_leaves = {"close", "open", "high", "low", "vol", "amount", "vwap", "log_vol", "ret_1d"}

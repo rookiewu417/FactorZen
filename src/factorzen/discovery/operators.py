@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+import numpy as np
 import polars as pl
 
 # 叶子名 → 求值表中的列名。vwap/log_vol/ret_1d 为派生列（ExpressionFactor 预计算）。
@@ -71,6 +72,31 @@ def _ts_cov(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
     return mab - ma * mb
 
 
+def _rolling_argmax(s: pl.Series) -> float | None:
+    if s.len() < _MIN or s.null_count() == s.len():
+        return None
+    idx = s.arg_max()
+    return float(idx) / (s.len() - 1) if idx is not None and s.len() > 1 else None
+
+
+def _rolling_argmin(s: pl.Series) -> float | None:
+    if s.len() < _MIN or s.null_count() == s.len():
+        return None
+    idx = s.arg_min()
+    return float(idx) / (s.len() - 1) if idx is not None and s.len() > 1 else None
+
+
+def _rolling_skew(s: pl.Series) -> float | None:
+    a: np.ndarray = s.drop_nulls().to_numpy()
+    if len(a) < _MIN:
+        return None
+    m = float(a.mean())
+    sd = float(a.std())
+    if sd < 1e-12:
+        return None
+    return float((((a - m) / sd) ** 3).mean())
+
+
 OPERATORS: dict[str, OperatorSpec] = {
     # ── 时序（.over("ts_code")）──
     "ts_mean": _ts("ts_mean", lambda x, w: x.rolling_mean(w, min_samples=_MIN).over("ts_code")),
@@ -88,6 +114,17 @@ OPERATORS: dict[str, OperatorSpec] = {
         x.rolling_mean(w, min_samples=_MIN).over("ts_code")),  # MVP：等权近似线性衰减
     "ts_corr": _ts2("ts_corr", _ts_corr),
     "ts_cov": _ts2("ts_cov", _ts_cov),
+    "ts_median": _ts("ts_median", lambda x, w:
+        x.rolling_median(w, min_samples=_MIN).over("ts_code")),
+    "ts_zscore": _ts("ts_zscore", lambda x, w: _safe_div(
+        x - x.rolling_mean(w, min_samples=_MIN).over("ts_code"),
+        x.rolling_std(w, min_samples=_MIN).over("ts_code"))),
+    "ts_argmax": _ts("ts_argmax", lambda x, w:
+        x.rolling_map(_rolling_argmax, w).over("ts_code")),
+    "ts_argmin": _ts("ts_argmin", lambda x, w:
+        x.rolling_map(_rolling_argmin, w).over("ts_code")),
+    "ts_skew": _ts("ts_skew", lambda x, w:
+        x.rolling_map(_rolling_skew, w).over("ts_code")),
     # ── 截面（.over("trade_date")）──
     "rank":  _cs("rank",  lambda x: (x.rank().over("trade_date") / (pl.len().over("trade_date") + 1))),
     "zscore": _cs("zscore", lambda x:

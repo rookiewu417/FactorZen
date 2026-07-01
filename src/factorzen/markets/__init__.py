@@ -31,4 +31,5 @@ __all__ = [
 ]
 
 # 导入各市场 adapter 的 profile 模块以触发 registry 注册（import 时不联网）。
+from factorzen.markets.ashare import profile as _ashare_profile  # noqa: F401
 from factorzen.markets.crypto import profile as _crypto_profile  # noqa: F401

@@ -552,7 +552,7 @@ pixi run fz factor run momentum_20d --start 20230101 --end 20241231 --dry-run
 ```bash
 pixi run lint         # ruff 代码风格
 pixi run typecheck    # mypy 类型检查
-pixi run test         # pytest（1111 测试）
+pixi run test         # pytest（1185 测试）
 pixi run coverage     # 覆盖率报告
 ```
 

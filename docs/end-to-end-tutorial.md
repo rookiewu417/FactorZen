@@ -226,7 +226,7 @@ workspace/portfolios/<run_id>/
 **解读输出**
 
 - 命令打印一行 `status=... holdings=...`：`optimal` 为正常，`infeasible` 说明约束冲突（见下方 MVP 限制）。
-- `attribution.csv`：选股 / 行业配置 / 交叉效应（相对股票池等权基准）。
+- `attribution.csv`：选股 / 行业配置两项效应（单期 Brinson-Fachler 两项法，交互项并入选股；相对股票池等权基准）。
 - `risk_summary.csv`：各 Barra 风格因子和行业因子对组合风险的贡献（MCR 分解）。
 
 > **MVP 限制**：

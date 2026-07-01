@@ -206,7 +206,7 @@ reports/     → 组合绩效 HTML Dashboard
 
 **组合归因与报告**
 
-- Brinson 多期归因（配置 / 选股 / 相互作用效果分解）。
+- Brinson 单期归因（配置 + 选股两项效应，Brinson-Fachler 两项法，交互项并入选股）。
 - 风险因子归因（持仓风格暴露 × 因子收益）。
 - 组合绩效 HTML Dashboard：指标卡 + 净值曲线 + 月度热图 + 归因条形图 + 风险摘要。
 

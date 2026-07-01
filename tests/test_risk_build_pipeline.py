@@ -4,6 +4,26 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
+
+import factorzen.risk.exposures as exposures_module
+
+
+@pytest.fixture(autouse=True)
+def _pit_industry_unavailable_by_default(monkeypatch):
+    """run_risk_build 内部经 RiskModel.build() 循环调用 compute_exposures：默认不
+    触达真实 Tushare，PIT 历史行业数据视为不可用，走 stocks.industry 降级路径。
+
+    与 test_risk_model.py/test_risk_exposures.py 保持一致的隔离方式（同一份
+    fixture在此重复一遍，因为项目当前没有共享 conftest.py）。没有这层隔离时，
+    本文件 _mock() 用的合成代码（000000.SZ..000011.SZ）会与真实 Tushare 股票
+    代码部分撞号，混入真实行业分类后，12 只股票的行业类别数接近甚至超过样本量，
+    导致截面回归退化失败——这个失败只在本地有真实 Tushare 缓存/token 时才会
+    触发，干净 CI 环境不会复现，但仍是需要显式隔离的真实测试污染风险。
+    """
+    monkeypatch.setattr(exposures_module, "fetch_index_member_all", lambda: None)
+    monkeypatch.setattr(exposures_module, "_pit_industry_warned", False)
+    yield
 
 
 def _mock(n_stocks=12, n_days=290, seed=3):

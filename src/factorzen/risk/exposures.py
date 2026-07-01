@@ -123,10 +123,40 @@ def compute_exposures(
     # 做归属查找；任何原因不可用时降级为 stocks 里的（非 PIT）industry 列。
     ind_col_names: list[str] = []
 
-    stock_ind = _lookup_pit_industry(target_date)
-    if stock_ind is None and "industry" in stocks.columns:
-        # 降级：使用调用方传入的（当前/非 PIT）行业分类
-        stock_ind = stocks.select(["ts_code", "industry"]).unique(subset=["ts_code"])
+    fallback_ind = (
+        stocks.select(["ts_code", "industry"]).unique(subset=["ts_code"])
+        if "industry" in stocks.columns
+        else None
+    )
+
+    pit_ind = _lookup_pit_industry(target_date)
+    if pit_ind is not None:
+        # PIT 行业表是全市场口径，需先收窄到本次实际处理的股票代码——直接把
+        # 一个与本次请求无关的非空全局表当成"可用"会有两种错法：(a) 完全不
+        # 覆盖本批代码时（如测试用的合成代码）应整体回退到 stocks.industry，
+        # 而不是产出行业暴露全空的哑变量；(b) 部分覆盖时（如合成代码恰好与
+        # 真实代码撞号）不能不管未覆盖的代码，否则那部分股票会丢失行业暴露，
+        # 需要按代码级别用 stocks.industry 补齐缺口，而不是全局二选一。
+        relevant_codes = stocks["ts_code"].unique().to_list()
+        pit_ind = pit_ind.filter(pl.col("ts_code").is_in(relevant_codes))
+
+    if pit_ind is not None and not pit_ind.is_empty():
+        covered = set(pit_ind["ts_code"].to_list())
+        if fallback_ind is not None and len(covered) < len(relevant_codes):
+            gap = fallback_ind.filter(~pl.col("ts_code").is_in(covered))
+            if not gap.is_empty():
+                _warn_pit_industry_unavailable(
+                    f"PIT 数据仅覆盖 {len(covered)}/{len(relevant_codes)} 只股票，"
+                    "其余用 stocks.industry 按代码补齐"
+                )
+                pit_ind = pl.concat([pit_ind, gap], how="vertical_relaxed")
+        stock_ind = pit_ind
+    elif fallback_ind is not None:
+        if pit_ind is not None:  # 非 None 但为空：PIT 数据对本批代码完全无覆盖
+            _warn_pit_industry_unavailable("PIT 数据对本次请求的股票代码无覆盖")
+        stock_ind = fallback_ind
+    else:
+        stock_ind = None
 
     if stock_ind is not None and not stock_ind.is_empty():
         ind_dummies = get_industry_dummies(stock_ind, industry_col="industry")

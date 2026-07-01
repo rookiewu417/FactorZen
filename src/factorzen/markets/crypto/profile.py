@@ -27,6 +27,8 @@ def build_crypto_profile(
     min_amount: float = 0.0,
     min_list_days: int = 30,
 ) -> MarketProfile:
+    from factorzen.markets.crypto.risk import CryptoRiskModel
+
     provider = CryptoDataProvider(exchange_id=exchange_id, client=client, quote=quote)
     universe = CryptoUniverse(
         provider=provider,
@@ -45,7 +47,7 @@ def build_crypto_profile(
         costs=CryptoCostModel(),
         universe=universe,
         factors=CryptoFactorSet(),
-        risk=None,
+        risk=CryptoRiskModel(),
     )
 
 

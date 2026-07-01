@@ -58,6 +58,7 @@ class RiskModel:
         nw_lags: int = 2,
         spec_half_life: int = 90,
         spec_shrinkage: float = 0.3,
+        periods_per_year: int = 252,
     ) -> None:
         """初始化风险模型参数。
 
@@ -66,11 +67,13 @@ class RiskModel:
             nw_lags: Newey-West 自相关修正滞后阶数。
             spec_half_life: 特质风险指数加权半衰期。
             spec_shrinkage: 特质风险贝叶斯收缩强度。
+            periods_per_year: 年化周期数（A 股日频 252，crypto 日频 365）。
         """
         self.cov_half_life = cov_half_life
         self.nw_lags = nw_lags
         self.spec_half_life = spec_half_life
         self.spec_shrinkage = spec_shrinkage
+        self.periods_per_year = periods_per_year
 
     def build(
         self,
@@ -79,6 +82,10 @@ class RiskModel:
         stocks: pl.DataFrame,
         start_date: str,
         end_date: str,
+        style_registry: dict | None = None,
+        style_names: list[str] | None = None,
+        ret_col: str = "pct_chg",
+        ret_is_pct: bool = True,
     ) -> RiskModelResult:
         """构建风险模型。
 
@@ -130,8 +137,9 @@ class RiskModel:
         logger.info(f"风险模型构建：{len(trade_dates)} 个交易日 [{start_date} ~ {end_date}]")
 
         # ── 3. 准备收益率数据 ────────────────────────────────────────────────
-        ret_df = daily_data.select(["trade_date", "ts_code", "pct_chg"]).with_columns(
-            (pl.col("pct_chg") / 100.0).alias("ret")
+        scale = 100.0 if ret_is_pct else 1.0  # A 股 pct_chg 是百分比；crypto ret_1d 已是小数
+        ret_df = daily_data.select(["trade_date", "ts_code", ret_col]).with_columns(
+            (pl.col(ret_col) / scale).alias("ret")
         )
 
         # ── 4. 逐日截面回归 ─────────────────────────────────────────────────
@@ -143,7 +151,9 @@ class RiskModel:
 
         for trade_date_val in trade_dates:
             # 计算暴露
-            exposure = compute_exposures(daily_data, daily_basic, stocks, trade_date_val)
+            exposure = compute_exposures(
+                daily_data, daily_basic, stocks, trade_date_val, style_registry, style_names
+            )
 
             if exposure.n_stocks == 0 or exposure.n_factors == 0:
                 continue
@@ -302,8 +312,8 @@ class RiskModel:
         total_var = factor_var + specific_var
         total_std = np.sqrt(max(total_var, 0.0))
 
-        # 年化（假设日度数据）
-        return float(total_std * np.sqrt(252))
+        # 年化（A 股日频 √252，crypto √365）
+        return float(total_std * np.sqrt(self.periods_per_year))
 
     def decompose_risk(
         self,
@@ -339,10 +349,11 @@ class RiskModel:
         total_var = factor_var + specific_var
         total_std = np.sqrt(max(total_var, 0.0))
 
+        ann = np.sqrt(self.periods_per_year)  # A 股 √252，crypto √365
         decomp: dict[str, float] = {
-            "total_risk": float(total_std * np.sqrt(252)),
-            "factor_risk": float(np.sqrt(max(factor_var, 0.0)) * np.sqrt(252)),
-            "specific_risk": float(np.sqrt(max(specific_var, 0.0)) * np.sqrt(252)),
+            "total_risk": float(total_std * ann),
+            "factor_risk": float(np.sqrt(max(factor_var, 0.0)) * ann),
+            "specific_risk": float(np.sqrt(max(specific_var, 0.0)) * ann),
         }
 
         # 边际因子贡献：MCR_k = (F @ Xw)_k * Xw_k / total_var
@@ -351,7 +362,7 @@ class RiskModel:
             for i, name in enumerate(result.factor_names):
                 # 因子 k 的方差贡献 = Xw_k * (F @ Xw)_k
                 var_contrib = float(Xw[i] * F_Xw[i])
-                risk_contrib = var_contrib / total_var * total_std * np.sqrt(252)
+                risk_contrib = var_contrib / total_var * total_std * ann
                 decomp[name] = float(risk_contrib)
         else:
             for name in result.factor_names:

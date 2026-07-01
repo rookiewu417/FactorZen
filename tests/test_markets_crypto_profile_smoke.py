@@ -13,7 +13,8 @@ def test_registry_get_crypto():
     assert p.name == "crypto"
     assert p.quote_currency == "USDT"
     assert p.base_freq == "daily"
-    assert p.risk is None  # MC3 才填
+    from factorzen.markets.crypto.risk import CryptoRiskModel
+    assert isinstance(p.risk, CryptoRiskModel)  # MC3 填入 crypto 风险模型
     assert p.calendar.periods_per_year() == 365.0
 
 

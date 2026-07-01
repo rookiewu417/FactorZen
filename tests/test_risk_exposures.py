@@ -256,3 +256,50 @@ def test_compute_exposures_pit_industry_warns_only_once(monkeypatch, caplog):
         r for r in caplog.records if "PIT" in r.getMessage() or "降级" in r.getMessage()
     ]
     assert len(warnings) == 1, f"应只警告一次，实际 {len(warnings)} 次"
+
+
+def test_compute_exposures_pit_industry_partial_coverage_fills_gap_from_stocks(
+    monkeypatch, caplog
+):
+    """PIT 历史行业数据只覆盖部分股票代码（如合成代码恰好与真实代码撞号）时：
+    覆盖到的代码应使用 PIT 分类，未覆盖的代码应按代码级别用 stocks.industry
+    补齐，而不是被整体丢弃或让全部代码退化成非 PIT 模式。
+    """
+    from factorzen.risk.exposures import compute_exposures
+
+    daily, db, stocks = make_daily(), make_daily_basic(), make_stocks()
+    codes = stocks["ts_code"].to_list()  # 000000.SZ..000007.SZ
+    covered_codes = codes[:4]  # 只覆盖前4只，故意用与 stocks.industry 不同的行业名
+    membership = pl.DataFrame(
+        [
+            {"ts_code": c, "l1_name": "科技", "in_date": dt.date(2000, 1, 1), "out_date": None}
+            for c in covered_codes
+        ]
+    )
+    monkeypatch.setattr(exposures_module, "fetch_index_member_all", lambda: membership)
+
+    target = daily["trade_date"].max()
+    with caplog.at_level(logging.WARNING):
+        exp = compute_exposures(daily, db, stocks, target)
+
+    # 覆盖到的代码：用 PIT 分类"科技"，而非各自的 stocks.industry 原值
+    assert "ind_科技" in exp.factor_names
+    tech_idx = exp.factor_names.index("ind_科技")
+    for c in covered_codes:
+        row = exp.codes.index(c)
+        assert exp.matrix[row, tech_idx] == 1.0, f"{c} 应按 PIT 分类归入 ind_科技"
+
+    # 未覆盖的代码（004-007）：按代码补齐为各自的 stocks.industry 原值，而非丢失行业暴露
+    stocks_by_code = dict(zip(stocks["ts_code"], stocks["industry"], strict=True))
+    for c in codes[4:]:
+        expected_col = f"ind_{stocks_by_code[c]}"
+        assert expected_col in exp.factor_names
+        row = exp.codes.index(c)
+        col = exp.factor_names.index(expected_col)
+        assert exp.matrix[row, col] == 1.0, f"{c} 应按 stocks.industry 补齐为 {expected_col}"
+        # 且不应被错误归入 PIT 覆盖代码所用的"科技"分类
+        assert exp.matrix[row, tech_idx] == 0.0
+
+    assert any(
+        "仅覆盖" in r.getMessage() or "补齐" in r.getMessage() for r in caplog.records
+    ), f"应有警告说明部分覆盖，实际日志: {[r.getMessage() for r in caplog.records]}"

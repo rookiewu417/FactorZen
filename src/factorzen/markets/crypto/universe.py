@@ -40,14 +40,17 @@ class CryptoUniverse(Universe):
     def snapshot(self, d: date | str) -> list[str]:
         d = _to_date(d)
         window_start = d - timedelta(days=self.lookback_days)
+        meta = self.provider.fetch_symbol_meta()
+        symbols = meta["ts_code"].to_list()
+        if not symbols:
+            return []
         bars = self.provider.fetch_bars(
-            None, window_start.strftime("%Y%m%d"), d.strftime("%Y%m%d")
+            symbols, window_start.strftime("%Y%m%d"), d.strftime("%Y%m%d")
         )
         if bars.is_empty():
             return []
         vol = bars.group_by("ts_code").agg(pl.col("amount").sum().alias("tot_amount"))
-        meta = self.provider.fetch_symbol_meta().select("ts_code", "list_date")
-        vol = vol.join(meta, on="ts_code", how="left")
+        vol = vol.join(meta.select("ts_code", "list_date"), on="ts_code", how="left")
         keep = (
             vol.filter(
                 (pl.col("tot_amount") >= self.min_amount)

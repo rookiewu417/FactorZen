@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 
 from factorzen.core.experiment import get_git_sha
+from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
 from factorzen.discovery.search.random_search import RandomSearcher
@@ -65,11 +66,9 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     daily = daily.with_columns([
         pl.when(pl.col("vol") > 0).then(pl.col(c)).otherwise(None).alias(c)
         for c in _price if c in daily.columns
-    ]).with_columns([
-        (pl.col("amount") / pl.col("vol")).alias("vwap"),
-        (pl.col("vol") + 1.0).log().alias("log_vol"),
-    ]).with_columns(
-        (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0).alias("ret_1d"))
+    ])
+    # 派生列（与 factor.py 共用 add_derived_columns，消除双路径漂移）
+    daily = add_derived_columns(daily)
 
     # ── OOS holdout 永久隔离：挖掘只见 mining 段 ──
     mining_df, holdout_df, holdout_start = split_holdout(daily, holdout_ratio=holdout_ratio)

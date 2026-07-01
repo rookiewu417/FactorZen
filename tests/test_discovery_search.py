@@ -14,6 +14,7 @@ def _toy(seed=0):
             rows.append({"trade_date": d, "ts_code": code, "close_adj": p, "open_adj": p,
                          "high_adj": p, "low_adj": p, "vol": 1e5, "amount": 1e6,
                          "vwap": p, "log_vol": 11.0, "ret_1d": 0.0,
+                         "amplitude": 0.01, "intraday_ret": 0.0, "overnight_ret": 0.0,
                          "total_mv": 5e9, "circ_mv": 4e9, "pb": 2.0,
                          "pe_ttm": 20.0, "ps_ttm": 3.0, "dv_ttm": 1.0})
     return pl.DataFrame(rows).sort(["ts_code", "trade_date"])

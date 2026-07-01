@@ -17,6 +17,7 @@ import polars as pl
 LEAF_FEATURES: dict[str, str] = {
     "close": "close_adj", "open": "open_adj", "high": "high_adj", "low": "low_adj",
     "vol": "vol", "amount": "amount", "vwap": "vwap", "log_vol": "log_vol", "ret_1d": "ret_1d",
+    "amplitude": "amplitude", "intraday_ret": "intraday_ret", "overnight_ret": "overnight_ret",
     "total_mv": "total_mv", "circ_mv": "circ_mv", "pb": "pb", "pe_ttm": "pe_ttm",
     "ps_ttm": "ps_ttm", "dv_ttm": "dv_ttm",
 }

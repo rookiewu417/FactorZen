@@ -186,3 +186,38 @@ def test_operator_category_assignments():
     assert OPERATORS["pct_change"].category == "ts"
     assert OPERATORS["rank"].category == "cs"
     assert OPERATORS["add"].category == "arith"
+
+
+def test_arith_neg_square_inv():
+    from factorzen.discovery.operators import OPERATORS
+    df = _toy_df()
+    neg = df.with_columns(OPERATORS["neg"].build([pl.col("close_adj")], None).alias("n"))
+    assert neg["n"].to_list() == (-df["close_adj"]).to_list()
+    sq = df.with_columns(OPERATORS["square"].build([pl.col("close_adj")], None).alias("s"))
+    assert sq["s"].to_list() == (df["close_adj"] * df["close_adj"]).to_list()
+    inv = df.with_columns(OPERATORS["inv"].build([pl.col("close_adj")], None).alias("i"))
+    # close_adj 恒 > 0.1 → inv 有限且 = 1/x
+    got = inv["i"].to_list()
+    exp = (1.0 / df["close_adj"]).to_list()
+    assert all(abs(g - e) < 1e-12 for g, e in zip(got, exp, strict=True))
+
+
+def test_arith_max_min_horizontal():
+    from factorzen.discovery.operators import OPERATORS
+    df = _toy_df()
+    mx = df.with_columns(
+        OPERATORS["max"].build([pl.col("close_adj"), pl.col("vol")], None).alias("m"))
+    mn = df.with_columns(
+        OPERATORS["min"].build([pl.col("close_adj"), pl.col("vol")], None).alias("m"))
+    exp_max = [max(a, b) for a, b in zip(df["close_adj"], df["vol"], strict=True)]
+    exp_min = [min(a, b) for a, b in zip(df["close_adj"], df["vol"], strict=True)]
+    assert mx["m"].to_list() == exp_max
+    assert mn["m"].to_list() == exp_min
+
+
+def test_arith_inv_null_on_zero():
+    from factorzen.discovery.operators import OPERATORS
+    df = pl.DataFrame({"trade_date": [0, 1], "ts_code": ["A", "A"], "x": [0.0, 4.0]})
+    got = df.with_columns(OPERATORS["inv"].build([pl.col("x")], None).alias("i"))["i"].to_list()
+    assert got[0] is None                      # 1/0 → null(安全除法)
+    assert got[1] is not None and abs(got[1] - 0.25) < 1e-12

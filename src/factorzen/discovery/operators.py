@@ -139,4 +139,9 @@ OPERATORS: dict[str, OperatorSpec] = {
     "log": _ar("log", 1, lambda a: pl.when(a > 0).then(a.log()).otherwise(None)),
     "sign": _ar("sign", 1, lambda a: a.sign()),
     "sqrt": _ar("sqrt", 1, lambda a: pl.when(a >= 0).then(a.sqrt()).otherwise(None)),
+    "neg": _ar("neg", 1, lambda a: -a),
+    "inv": _ar("inv", 1, lambda a: _safe_div(pl.lit(1.0), a)),
+    "square": _ar("square", 1, lambda a: a * a),
+    "max": _ar("max", 2, lambda a, b: pl.max_horizontal(a, b)),
+    "min": _ar("min", 2, lambda a, b: pl.min_horizontal(a, b)),
 }

@@ -189,7 +189,7 @@ def test_run_backtest_strategies_runs_each_configured_strategy(monkeypatch):
     primary, results = mod._run_backtest_strategies(
         cfg,
         pl.DataFrame(),
-        pl.DataFrame(),
+        pl.DataFrame({"ts_code": ["000001.SZ"], "trade_date": [date(2023, 1, 3)]}),
         factor_name="x",
         frequency="daily",
     )
@@ -197,6 +197,46 @@ def test_run_backtest_strategies_runs_each_configured_strategy(monkeypatch):
     assert calls == ["topn_5", "quantile_ls_4"]
     assert primary.strategy_name == "topn_5"
     assert list(results) == ["topn_5", "quantile_ls_4"]
+
+
+def test_run_backtest_strategies_passes_is_st_by_date_to_backtest(monkeypatch):
+    """ST涨跌停容差接线：_run_backtest_strategies 应基于 daily 的
+    codes/trade_dates 构建 is_st_by_date 并传给 run_strategy_backtest。
+    """
+    from types import SimpleNamespace
+
+    from factorzen.core.config_loader import RunConfig
+    from factorzen.pipelines import daily_single as mod
+
+    cfg = RunConfig(
+        factor="x",
+        start="20230101",
+        end="20230131",
+        backtest={
+            "primary": "topn_5",
+            "strategies": [
+                {"name": "topn_5", "type": "topn_long_only", "params": {"top_n": 5}},
+            ],
+        },
+    )
+    captured: dict = {}
+
+    def fake_run_strategy_backtest(strategy, *_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(strategy_name=strategy.name)
+
+    sentinel = {date(2023, 1, 3): {"000001.SZ"}}
+    monkeypatch.setattr(mod, "run_strategy_backtest", fake_run_strategy_backtest)
+    monkeypatch.setattr(mod, "trim_backtest_to_first_trade", lambda result: result)
+    monkeypatch.setattr(mod, "build_is_st_by_date", lambda codes, dates: sentinel)
+
+    daily = pl.DataFrame({"ts_code": ["000001.SZ"], "trade_date": [date(2023, 1, 3)]})
+    mod._run_backtest_strategies(cfg, pl.DataFrame(), daily, factor_name="x", frequency="daily")
+
+    assert captured.get("is_st_by_date") == sentinel, (
+        "run_strategy_backtest 应收到由 build_is_st_by_date 构建的 is_st_by_date，"
+        f"实际收到: {captured.get('is_st_by_date')!r}"
+    )
 
 
 def test_merge_run_config_args_uses_yaml_for_missing_cli_values():

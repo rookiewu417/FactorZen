@@ -150,6 +150,41 @@ def test_run_portfolio_simulation_charges_trading_cost_on_turnover(tmp_path: Pat
     assert metrics.get("total_cost", 0.0) > 0, "metrics.json 的 total_cost 仍为 0"
 
 
+def test_run_portfolio_simulation_passes_is_st_by_date_to_backtest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """修复4（ST涨跌停容差接线）：run_portfolio_simulation 应基于 daily 的
+    codes/trade_dates 构建 is_st_by_date 并传给 run_strategy_backtest，而不是
+    让其默认为 None——此前即使 backtest.py 已支持该参数，sim 从不构造真实值
+    传入，ST 股票涨跌停判断永远退化为非 ST 阈值。
+    """
+    import factorzen.sim.engine as engine_mod
+
+    codes = ["000001.SZ"]
+    p1 = _write_portfolio_dir(tmp_path, "p1", codes, [1.0], "2023-01-10")
+    daily = _fake_daily(codes)
+
+    captured: dict = {}
+    real_run = engine_mod.run_strategy_backtest
+
+    def _capturing_run(*args, **kwargs):
+        captured.update(kwargs)
+        return real_run(*args, **kwargs)
+
+    sentinel = {daily["trade_date"][0]: {"000001.SZ"}}
+    monkeypatch.setattr(engine_mod, "run_strategy_backtest", _capturing_run)
+    monkeypatch.setattr(engine_mod, "build_is_st_by_date", lambda codes, dates: sentinel)
+
+    engine_mod.run_portfolio_simulation(
+        [p1], daily, out_dir=str(tmp_path / "sim_st"), run_id="st1"
+    )
+
+    assert captured.get("is_st_by_date") == sentinel, (
+        "run_strategy_backtest 应收到由 build_is_st_by_date 构建的 is_st_by_date，"
+        f"实际收到: {captured.get('is_st_by_date')!r}"
+    )
+
+
 def test_load_weights_by_date_skips_non_optimal_status(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

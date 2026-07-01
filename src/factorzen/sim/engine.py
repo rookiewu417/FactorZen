@@ -13,6 +13,7 @@
         collect_positions: bool = True,
         collect_trades: bool = True,
         include_context_positions: bool = True,
+        is_st_by_date: dict[date, set[str]] | None = None,
     ) -> StrategyBacktestResult
 
     StrategyBacktestResult.summary_stats:
@@ -33,6 +34,7 @@ from pathlib import Path
 
 import polars as pl
 
+from factorzen.core.universe import build_is_st_by_date
 from factorzen.daily.evaluation.backtest import (
     CostModel,
     PrecomputedWeightsStrategy,
@@ -165,6 +167,12 @@ def run_portfolio_simulation(
         cost_model if cost_model is not None else CostModel()
     )
 
+    # PIT 收窄 ST 股票涨跌停阈值（4.8% 而非主板 9.8%，见
+    # core/universe.py::_get_board_limit）；只构建一次，全程复用。
+    codes = daily.select("ts_code").unique()["ts_code"].to_list()
+    trade_dates_list = daily.select("trade_date").unique()["trade_date"].to_list()
+    is_st_by_date = build_is_st_by_date(codes, trade_dates_list)
+
     bt = run_strategy_backtest(
         strategy,
         factor_df,
@@ -173,6 +181,7 @@ def run_portfolio_simulation(
         collect_positions=False,
         collect_trades=False,
         include_context_positions=False,
+        is_st_by_date=is_st_by_date,
     )
 
     # 逐个 signal_date 检查是否落在实际回测执行的日期范围内：signal_date 晚于

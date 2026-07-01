@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -472,6 +472,21 @@ def _is_st_asof(
     return set(st_records["ts_code"].unique().to_list())
 
 
+def _st_codes_by_name(name_source: pl.DataFrame, codes: list[str]) -> set[str]:
+    """按『当前』``name`` 字段判断 ST/PT（非 PIT，日期无关）。
+
+    仅作为 namechange 不可用时的降级方案，供 ``_resolve_st_codes`` 与
+    ``build_is_st_by_date`` 共用。
+    """
+    if "name" not in name_source.columns or not codes:
+        return set()
+    return set(
+        name_source.filter(
+            pl.col("ts_code").is_in(codes) & pl.col("name").str.contains("ST|PT")
+        )["ts_code"].to_list()
+    )
+
+
 def _resolve_st_codes(
     name_source: pl.DataFrame,
     codes: list[str],
@@ -501,13 +516,51 @@ def _resolve_st_codes(
     namechange_df = _safe_fetch_namechange()
     if namechange_df is not None:
         return _is_st_asof(codes, date_str, namechange_df)
-    if "name" not in name_source.columns or not codes:
-        return set()
-    return set(
-        name_source.filter(
-            pl.col("ts_code").is_in(codes) & pl.col("name").str.contains("ST|PT")
-        )["ts_code"].to_list()
-    )
+    return _st_codes_by_name(name_source, codes)
+
+
+def build_is_st_by_date(
+    codes: list[str],
+    trade_dates: list[date],
+    name_source: pl.DataFrame | None = None,
+) -> dict[date, set[str]]:
+    """为整段回测窗口批量构建 ``execution_date -> 当日 ST 状态代码集合``。
+
+    供 ``factorzen.daily.evaluation.backtest.run_strategy_backtest`` 的
+    ``is_st_by_date`` 形参使用，让执行约束层能对 ST 股票收窄涨跌停阈值（见
+    ``_get_board_limit``）。只拉取一次 namechange 全量数据（``fetch_namechange``
+    内部走 7 天磁盘缓存），在内存中对每个交易日切片判断 PIT 状态，避免对每个
+    交易日重复触发一次磁盘 I/O。
+
+    Parameters
+    ----------
+    codes : list[str]
+        回测涉及的全部股票代码。
+    trade_dates : list[date]
+        回测窗口内的全部交易日，须与调用方传给
+        ``run_strategy_backtest`` 的 ``price_df`` 的 ``trade_date`` 列同为
+        ``datetime.date`` 取值，才能在查表时正确命中。
+    name_source : pl.DataFrame | None, optional
+        含 ``ts_code``、``name`` 列的股票池；仅在 namechange 不可用时用于
+        降级判断（按『当前』名称是否含 ST/PT，对所有交易日一致）。为
+        ``None`` 且 namechange 不可用时返回空 dict，等价于
+        ``is_st_by_date=None`` 的既有行为（一律按非 ST 阈值判断）。
+
+    Returns
+    -------
+    dict[date, set[str]]
+    """
+    namechange_df = _safe_fetch_namechange()
+    if namechange_df is not None:
+        return {
+            d: _is_st_asof(codes, d.strftime("%Y%m%d"), namechange_df) for d in trade_dates
+        }
+    if name_source is None:
+        return {}
+    fallback_codes = _st_codes_by_name(name_source, codes)
+    if not fallback_codes:
+        return {}
+    return dict.fromkeys(trade_dates, fallback_codes)
 
 
 # ══════════════════════════════════════════════════════════

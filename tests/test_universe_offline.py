@@ -377,6 +377,79 @@ def test_filter_st_namechange_failure_falls_back_and_warns_once(monkeypatch, cap
     )
 
 
+def test_build_is_st_by_date_reflects_per_date_st_transition(monkeypatch):
+    """build_is_st_by_date 应对回测窗口内每个交易日独立判断 ST 状态（PIT）。"""
+    namechange_df = _namechange_df(
+        [
+            {
+                "ts_code": "600001.SH",
+                "name": "正常股份",
+                "start_date": date(2020, 1, 1),
+                "end_date": date(2024, 6, 1),
+                "ann_date": date(2020, 1, 1),
+                "change_reason": None,
+            },
+            {
+                "ts_code": "600001.SH",
+                "name": "ST正常",
+                "start_date": date(2024, 6, 1),
+                "end_date": None,
+                "ann_date": date(2024, 6, 1),
+                "change_reason": "ST",
+            },
+        ]
+    )
+    monkeypatch.setattr(U, "fetch_namechange", lambda: namechange_df)
+
+    trade_dates = [date(2024, 5, 1), date(2024, 7, 1)]
+    result = U.build_is_st_by_date(["600001.SH"], trade_dates)
+
+    assert result[date(2024, 5, 1)] == set()
+    assert result[date(2024, 7, 1)] == {"600001.SH"}
+
+
+def test_build_is_st_by_date_fetches_namechange_only_once(monkeypatch):
+    """回测窗口横跨多个交易日时，namechange 全量数据只应拉取一次，不应逐日重复拉取。"""
+    namechange_df = _namechange_df([])
+    calls = 0
+
+    def _counting_fetch():
+        nonlocal calls
+        calls += 1
+        return namechange_df
+
+    monkeypatch.setattr(U, "fetch_namechange", _counting_fetch)
+
+    trade_dates = [date(2024, 1, i) for i in range(1, 11)]
+    U.build_is_st_by_date(["600001.SH"], trade_dates)
+
+    assert calls == 1, f"namechange 应只拉取一次，实际拉取 {calls} 次"
+
+
+def test_build_is_st_by_date_falls_back_to_name_source_when_namechange_unavailable():
+    """namechange 不可用（autouse fixture 兜底）且提供 name_source 时，按当前名称降级判断，且对所有交易日一致。"""
+    name_source = pl.DataFrame(
+        {"ts_code": ["600001.SH", "600005.SH"], "name": ["*ST东方", "正常股"]}
+    )
+    trade_dates = [date(2024, 1, 2), date(2024, 1, 3)]
+
+    result = U.build_is_st_by_date(
+        ["600001.SH", "600005.SH"], trade_dates, name_source=name_source
+    )
+
+    assert result == {
+        date(2024, 1, 2): {"600001.SH"},
+        date(2024, 1, 3): {"600001.SH"},
+    }
+
+
+def test_build_is_st_by_date_returns_empty_when_no_namechange_and_no_name_source():
+    """namechange 不可用且未提供 name_source 时返回空 dict，等价于不区分 ST（与引入本函数前行为一致）。"""
+    trade_dates = [date(2024, 1, 2), date(2024, 1, 3)]
+    result = U.build_is_st_by_date(["600001.SH"], trade_dates)
+    assert result == {}
+
+
 def test_universe_snapshot_is_st_uses_namechange_pit(stock_basic, monkeypatch):
     """namechange 可用时，get_universe_snapshot 的 is_st 列按 PIT 状态判断。"""
     monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(_daily_all_tradeable()))

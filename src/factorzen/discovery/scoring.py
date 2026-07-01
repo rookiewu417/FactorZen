@@ -74,3 +74,29 @@ def score_candidate(factor_df: pl.DataFrame, node: Node, bundle: DataBundle,
     fitness = train["ir"] - lam * mc - gamma * cplx
     return {"fitness": fitness, "ic_train": train["ic_mean"], "ir_train": train["ir"],
             "max_corr": mc, "complexity": cplx, "n_train": train["n"]}
+
+
+def ic_overfit_report(
+    factor_df: pl.DataFrame, daily: pl.DataFrame, train_ratio: float = 1.0
+) -> dict:
+    """市场无关的单因子防过拟合报告：全样本 IC/IR + bootstrap IC 95%CI + DSR(N=1)。
+
+    ``factor_df``: ``[trade_date, ts_code, factor_value]``；``daily`` 用于算前向收益。
+    A 股 ``fz validate overfit`` 与 crypto 单表达式验证共用此路径（避免双实现）。
+    """
+    from factorzen.validation.bootstrap import block_bootstrap_ic_ci
+    from factorzen.validation.deflated_sharpe import deflated_sharpe
+
+    bundle = DataBundle.build(daily, train_ratio=train_ratio)
+    clean = cross_sectional_zscore(factor_df, col="factor_value").rename(
+        {"factor_value_z": "factor_clean"}
+    )
+    ic_res = compute_rank_ic(
+        clean.select(["trade_date", "ts_code", "factor_clean"]),
+        bundle.fwd_returns, factor_col="factor_clean", frequency="daily",
+    )
+    ic_vals = ic_res.ic_series["ic"].drop_nulls().drop_nans().to_numpy()
+    lo, hi = block_bootstrap_ic_ci(ic_vals)
+    _dsr, p = deflated_sharpe(ic_res.ir, n_trials=1, n_obs=len(ic_vals))  # 单因子 N=1
+    return {"ic_mean": float(ic_res.ic_mean), "ir": float(ic_res.ir),
+            "dsr_p": float(p), "ci_lo": float(lo), "ci_hi": float(hi), "n": len(ic_vals)}

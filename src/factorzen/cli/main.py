@@ -423,14 +423,31 @@ def _cmd_mine_export_alpha(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validate_overfit_crypto(args: argparse.Namespace) -> int:
+    """crypto 单表达式防过拟合验证（live CCXT）。"""
+    if not getattr(args, "expression", None):
+        print("[validate] crypto 需 --expression \"<表达式>\"", file=sys.stderr)
+        return 1
+    from factorzen.markets.crypto.mining import validate_crypto_expression
+    from factorzen.markets.crypto.profile import build_crypto_profile
+
+    profile = build_crypto_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.end)
+    rep = validate_crypto_expression(profile, args.expression, symbols, args.start, args.end)
+    print(
+        f"[validate] {args.expression}: IC={rep['ic_mean']:.4f} IR={rep['ir']:.4f} "
+        f"DSR_p={rep['dsr_p']:.4f} IC_95%CI=[{rep['ci_lo']:.4f},{rep['ci_hi']:.4f}]"
+    )
+    print("[validate] 注：单因子 N=1（无多重检验扣减）；PBO 仅适用候选池，此处略。")
+    return 0
+
+
 def _cmd_validate_overfit(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") == "crypto":
+        return _validate_overfit_crypto(args)
     from factorzen.daily.data.context import FactorDataContext
-    from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
     from factorzen.daily.factors.registry import get_factor
-    from factorzen.daily.preprocessing.normalizer import cross_sectional_zscore
-    from factorzen.discovery.scoring import DataBundle
-    from factorzen.validation.bootstrap import block_bootstrap_ic_ci
-    from factorzen.validation.deflated_sharpe import deflated_sharpe
+    from factorzen.discovery.scoring import ic_overfit_report
 
     factor = get_factor(args.factor)()
     uni = None
@@ -445,22 +462,10 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
         universe=uni,
     )
     fdf = factor.compute(ctx)
-    bundle = DataBundle.build(ctx.daily.collect(), train_ratio=1.0)
-    clean = cross_sectional_zscore(fdf, col="factor_value").rename(
-        {"factor_value_z": "factor_clean"}
-    )
-    ic_res = compute_rank_ic(
-        clean.select(["trade_date", "ts_code", "factor_clean"]),
-        bundle.fwd_returns,
-        factor_col="factor_clean",
-        frequency="daily",
-    )
-    ic_vals = ic_res.ic_series["ic"].drop_nulls().drop_nans().to_numpy()
-    lo, hi = block_bootstrap_ic_ci(ic_vals)
-    _dsr, p = deflated_sharpe(ic_res.ir, n_trials=1, n_obs=len(ic_vals))  # 单因子：N=1
+    rep = ic_overfit_report(fdf, ctx.daily.collect(), train_ratio=1.0)
     print(
-        f"[validate] {args.factor}: IC={ic_res.ic_mean:.4f} IR={ic_res.ir:.4f} "
-        f"DSR_p={p:.4f} IC_95%CI=[{lo:.4f},{hi:.4f}]"
+        f"[validate] {args.factor}: IC={rep['ic_mean']:.4f} IR={rep['ir']:.4f} "
+        f"DSR_p={rep['dsr_p']:.4f} IC_95%CI=[{rep['ci_lo']:.4f},{rep['ci_hi']:.4f}]"
     )
     print("[validate] 注：单因子 N=1（无多重检验扣减）；PBO 仅适用候选池，此处略。")
     return 0
@@ -944,10 +949,16 @@ def build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate", help="Overfitting / robustness checks")
     validate_sub = validate.add_subparsers(dest="validate_command", required=True)
     vo = validate_sub.add_parser("overfit", help="Deflated Sharpe + bootstrap CI for one factor")
-    vo.add_argument("factor")
+    vo.add_argument("factor", nargs="?", help="Registered factor name (ashare)")
     vo.add_argument("--start", required=True)
     vo.add_argument("--end", required=True)
     vo.add_argument("--universe", default=None)
+    vo.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                    help="Market profile (default ashare)")
+    vo.add_argument("--expression", default=None,
+                    help="Factor expression to validate (required for --market crypto)")
+    vo.add_argument("--top-n", dest="top_n", type=int, default=50,
+                    help="crypto universe size (default 50)")
     vo.set_defaults(func=_cmd_validate_overfit)
 
     # ── fz risk ──（顶层命令组）

@@ -70,6 +70,32 @@ def run_crypto_mining(
     )
 
 
+def validate_crypto_expression(
+    profile: MarketProfile,
+    expression: str,
+    symbols: list[str],
+    start: str,
+    end: str,
+) -> dict:
+    """crypto 单表达式防过拟合验证：bootstrap IC 95%CI + Deflated Sharpe。
+
+    返回 ``{ic_mean, ir, dsr_p, ci_lo, ci_hi, n}``（复用市场无关 ic_overfit_report）。
+    """
+    from factorzen.discovery.expression import compile_expr, parse_expr
+    from factorzen.discovery.scoring import ic_overfit_report
+
+    provider = profile.provider
+    assert isinstance(provider, CryptoDataProvider), "validate_crypto_expression 需 crypto profile"
+    daily = build_crypto_daily(provider, symbols, start, end, profile.base_freq)
+    daily = profile.factors.derived_columns(daily)
+    leaf_map = profile.factors.leaf_features()
+    node = parse_expr(expression, leaf_map)
+    factor_df = daily.sort(["ts_code", "trade_date"]).with_columns(
+        compile_expr(node, leaf_map).alias("factor_value")
+    ).select(["trade_date", "ts_code", "factor_value"])
+    return ic_overfit_report(factor_df, daily)
+
+
 def export_crypto_alpha(
     profile: MarketProfile,
     expression: str,

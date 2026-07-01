@@ -784,6 +784,9 @@ def fetch_index_daily(index_code: str, start: str, end: str) -> pl.DataFrame:
     return load_parquet(_data_type, start=start, end=end).collect()
 
 
+_INDEX_MEMBER_ALL_MEMORY_CACHE: dict[str, pl.DataFrame | None] = {}
+
+
 def fetch_index_member_all() -> pl.DataFrame | None:
     """拉取申万一级行业历史成分（PIT，含 in_date/out_date），全市场。
 
@@ -800,20 +803,28 @@ def fetch_index_member_all() -> pl.DataFrame | None:
 
     本地缓存：单文件 ``DATA_CACHE/index_member_all.parquet``，``CACHE_EXPIRE_DAYS``
     天后过期重新拉取（与 ``fetch_stock_basic`` 的缓存模式一致）；拉取失败时若
-    存在（即使过期的）缓存，回退读取缓存而非直接返回 ``None``。
+    存在（即使过期的）缓存，回退读取缓存而非直接返回 ``None``。此外还有一层
+    进程内内存缓存（``_INDEX_MEMBER_ALL_MEMORY_CACHE``）：同一进程内重复调用
+    直接复用第一次的结果，不再重复读盘/请求，避免 ``RiskModel.build()`` 对长
+    窗口每个交易日都重新加载同一份全市场行业成分表。
 
     Returns:
         pl.DataFrame | None。失败且无可用缓存时返回 ``None``。成功时包含列：
         l1_code, l1_name, l2_code, l2_name, l3_code, l3_name, ts_code, name,
         in_date (pl.Date), out_date (pl.Date，仍在该行业则为 null), is_new。
     """
+    if "value" in _INDEX_MEMBER_ALL_MEMORY_CACHE:
+        return _INDEX_MEMBER_ALL_MEMORY_CACHE["value"]
+
     cache_file = DATA_CACHE / "index_member_all.parquet"
 
     if cache_file.exists():
         file_age = (datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)).days
         if file_age < CACHE_EXPIRE_DAYS:
             logger.info(f"[index_member_all] 使用缓存（{file_age} 天前更新）")
-            return pl.read_parquet(cache_file)
+            result = pl.read_parquet(cache_file)
+            _INDEX_MEMBER_ALL_MEMORY_CACHE["value"] = result
+            return result
 
     try:
         pro = init_tushare()
@@ -841,7 +852,10 @@ def fetch_index_member_all() -> pl.DataFrame | None:
         logger.warning(f"[index_member_all] 拉取失败（可能无权限/无 token/网络问题）: {e}")
         if cache_file.exists():
             logger.warning("[index_member_all] 回退到本地（可能过期的）缓存")
-            return pl.read_parquet(cache_file)
+            result = pl.read_parquet(cache_file)
+            _INDEX_MEMBER_ALL_MEMORY_CACHE["value"] = result
+            return result
+        _INDEX_MEMBER_ALL_MEMORY_CACHE["value"] = None
         return None
 
     df = df.unique(subset=["ts_code", "l1_code", "in_date"], keep="first").with_columns(
@@ -853,6 +867,7 @@ def fetch_index_member_all() -> pl.DataFrame | None:
     df.write_parquet(str(cache_file))
     logger.info(f"[index_member_all] 已更新缓存 ({len(df)} 行，{df['ts_code'].n_unique()} 只股票)")
 
+    _INDEX_MEMBER_ALL_MEMORY_CACHE["value"] = df
     return df
 
 

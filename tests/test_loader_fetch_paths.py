@@ -504,6 +504,7 @@ def _pd_member_all(l1_code: str, l1_name: str, ts_code: str, name: str) -> pd.Da
 
 def test_fetch_index_member_all_cache_hit_skips_api(tmp_path: Path):
     """缓存新鲜时直接读取，不调用 Tushare（index_classify / index_member_all 均不调用）。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
     cache_file = tmp_path / "index_member_all.parquet"
     pl.DataFrame({"ts_code": ["000001.SZ"], "l1_name": ["银行"]}).write_parquet(cache_file)
 
@@ -523,6 +524,7 @@ def test_fetch_index_member_all_cache_hit_skips_api(tmp_path: Path):
 def test_fetch_index_member_all_loops_l1_codes_and_caches(tmp_path: Path):
     """无缓存：先枚举一级行业(index_classify)，再逐个拉取成分(index_member_all)，
     合并、转换日期列、写入缓存。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
     mock_pro = MagicMock()
     mock_pro.index_classify.return_value = _pd_l1_classify()
 
@@ -550,6 +552,7 @@ def test_fetch_index_member_all_loops_l1_codes_and_caches(tmp_path: Path):
 
 def test_fetch_index_member_all_failure_no_cache_returns_none(tmp_path: Path):
     """无权限/网络失败且无缓存：优雅降级返回 None，不抛异常（不卡住调用方）。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
     mock_pro = MagicMock()
     with (
         patch.object(loader_module, "init_tushare", return_value=mock_pro),
@@ -565,6 +568,7 @@ def test_fetch_index_member_all_failure_no_cache_returns_none(tmp_path: Path):
 
 def test_fetch_index_member_all_failure_falls_back_to_stale_cache(tmp_path: Path):
     """拉取失败但存在（过期）缓存：回退读取缓存而非返回 None。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
     cache_file = tmp_path / "index_member_all.parquet"
     pl.DataFrame({"ts_code": ["000001.SZ"], "l1_name": ["银行"]}).write_parquet(cache_file)
     stale = time.time() - 30 * 86400
@@ -582,9 +586,34 @@ def test_fetch_index_member_all_failure_falls_back_to_stale_cache(tmp_path: Path
     assert result["ts_code"].to_list() == ["000001.SZ"]
 
 
+def test_fetch_index_member_all_reuses_in_process_cache_across_calls(tmp_path: Path):
+    """同一进程内重复调用应只真正拉取一次（index_classify/index_member_all
+    均只调一次），避免 RiskModel.build() 对长窗口每个交易日都重新从磁盘/网络
+    读取同一份全市场行业成分表。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+    mock_pro = MagicMock()
+    mock_pro.index_classify.return_value = _pd_l1_classify()
+    mock_pro.index_member_all.side_effect = lambda l1_code, fields: _pd_member_all(
+        l1_code, "行业", "000001.SZ", "平安银行"
+    )
+
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "DATA_CACHE", tmp_path),
+        patch.object(loader_module, "_rate_limit"),
+    ):
+        first = fetch_index_member_all()
+        second = fetch_index_member_all()
+
+    assert mock_pro.index_classify.call_count == 1, "第二次调用不应再拉取 index_classify"
+    assert first is not None
+    assert second is first, "第二次调用应直接返回进程内缓存的同一个对象，而非重新拉取"
+
+
 def test_fetch_index_member_all_no_token_returns_none_fast(tmp_path: Path):
     """无 TUSHARE_TOKEN（离线 CI 场景）：init_tushare 内 ensure_token 抛错，
     应被优雅捕获并立即返回 None，而不是抛异常或卡住。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
     with (
         patch.object(loader_module, "DATA_CACHE", tmp_path),
         patch.object(

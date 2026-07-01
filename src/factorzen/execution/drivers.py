@@ -52,25 +52,24 @@ def run_replay(
     # daily 缺 amount 列时该函数优雅降级返回 {}，adv 保持 None，不崩、不报错。
     adv_by_date = _precompute_adv_20d_by_date(daily, all_dates)
 
-    current_weights: dict[str, float] = {}
     n_steps = 0
     for d in dates:
         if store.has_date(d):
             # 幂等哨兵：重跑同一 session_dir 时跳过已落盘的交易日，避免
             # ledger/nav 追加重复行。
             continue
+        # 采用「≤ 当日的最新一次信号」的目标权重（PIT）。真·无适用信号才跳过；
+        # 有适用信号但目标为空（risk-off 全现金）仍需正常 step 以清仓——不能
+        # 把「空目标」误判为「无信号」而静默不动仓（见 task-1-brief）。
+        applicable = [s for s in weights_by_date if s <= d]
+        if not applicable:
+            continue
         market = _market_of_day(daily, d, adv_by_date)
         broker.advance_to(d, market)
-        # 采用「≤ 当日的最新一次信号」的目标权重（PIT）
-        applicable = [s for s in weights_by_date if s <= d]
-        if applicable:
-            latest = max(applicable)
-            wdf = weights_by_date[latest]
-            current_weights = dict(
-                zip(wdf["ts_code"].to_list(), wdf["target_weight"].to_list(), strict=True)
-            )
-        if not current_weights:
-            continue
+        wdf = weights_by_date[max(applicable)]
+        current_weights = dict(
+            zip(wdf["ts_code"].to_list(), wdf["target_weight"].to_list(), strict=True)
+        )
         ref_price = {c: m["close"] for c, m in market.items() if m.get("close")}
         rec = step(broker, current_weights, ref_price)
         rec["as_of_date"] = d.isoformat()

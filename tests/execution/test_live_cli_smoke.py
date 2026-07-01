@@ -14,7 +14,7 @@ from pathlib import Path
 import polars as pl
 
 from factorzen.execution.attribution import build_attribution_report
-from factorzen.execution.drivers import run_daily_step
+from factorzen.execution.drivers import run_daily_step, run_replay
 from factorzen.execution.store import SessionStore
 
 
@@ -131,3 +131,97 @@ def test_live_cli_parser_routes_new_subcommands() -> None:
 
     sim_show_args = parser.parse_args(["sim", "show", "--sim-dir", "workspace/sim/run1"])
     assert sim_show_args.sim_dir == "workspace/sim/run1"
+
+
+def test_live_status_handles_resumable_state_shape(tmp_path: Path, capsys) -> None:
+    # run_daily_step 落的是"可续跑态" broker.state() = {cash: float, pos, order_seq}。
+    from factorzen.cli.main import _cmd_live_status, build_parser
+
+    sess = tmp_path / "sess"
+    cfg = {"initial_cash": 1_000_000.0}
+    SessionStore(sess).init({"broker": "paper", **cfg})
+    d0 = date(2026, 1, 5)
+    daily = pl.DataFrame(
+        [
+            {
+                "trade_date": d0,
+                "ts_code": "A.SZ",
+                "open": 10.0,
+                "pre_close": 10.0,
+                "close": 10.0,
+                "vol": 1e8,
+                "amount": 1e9,
+            }
+        ]
+    )
+    pf = tmp_path / "pf"
+    pf.mkdir()
+    pl.DataFrame({"ts_code": ["A.SZ"], "target_weight": [0.5]}).write_parquet(
+        pf / "weights.parquet"
+    )
+    (pf / "manifest.json").write_text(
+        json.dumps({"signal_date": d0.isoformat(), "status": "optimal"})
+    )
+    run_daily_step(sess, d0, [str(pf)], daily, config=cfg)
+
+    args = build_parser().parse_args(["live", "status", "--session-dir", str(sess)])
+    rc = _cmd_live_status(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "持仓数=1" in out
+    # 现金应是数字（可续跑态 cash 直接是 float），不能把 dict 原样打出来
+    cash_field = out.split("现金=")[1].split(" ")[0]
+    assert "{" not in cash_field
+    float(cash_field)  # 不抛异常即说明是个可解析的数字
+
+
+def test_live_status_handles_display_view_state_shape_from_replay(
+    tmp_path: Path, capsys
+) -> None:
+    # 回归 Fix4：run_replay 落的是"显示视图" step() 的 broker_state =
+    # {positions: {...}, cash: {available,total_asset,market_value}}。
+    # 旧 _cmd_live_status 用 st.get("cash")（对显示视图取到整个 dict）、
+    # st.get("pos")（显示视图无此键，恒为空 -> 持仓数恒 0）会误报。
+    d0 = date(2026, 1, 5)
+    daily = pl.DataFrame(
+        [
+            {
+                "trade_date": d0,
+                "ts_code": "A.SZ",
+                "open": 10.0,
+                "pre_close": 10.0,
+                "close": 10.0,
+                "vol": 1e8,
+                "amount": 1e9,
+            }
+        ]
+    )
+    pf = tmp_path / "pf"
+    pf.mkdir()
+    pl.DataFrame({"ts_code": ["A.SZ"], "target_weight": [0.5]}).write_parquet(
+        pf / "weights.parquet"
+    )
+    (pf / "manifest.json").write_text(
+        json.dumps({"signal_date": d0.isoformat(), "status": "optimal"})
+    )
+    sess = tmp_path / "sess"
+    run_replay(
+        session_dir=sess,
+        portfolio_run_dirs=[str(pf)],
+        daily=daily,
+        initial_cash=1_000_000.0,
+        from_date=d0,
+        to_date=d0,
+        seed=0,
+    )
+
+    from factorzen.cli.main import _cmd_live_status, build_parser
+
+    args = build_parser().parse_args(["live", "status", "--session-dir", str(sess)])
+    rc = _cmd_live_status(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "持仓数=1" in out  # 而非误报 0
+    cash_field = out.split("现金=")[1].split(" ")[0]
+    assert "{" not in cash_field
+    float(cash_field)  # 显示视图 cash 是 dict，应被解出 available/total_asset 数值

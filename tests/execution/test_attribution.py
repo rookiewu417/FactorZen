@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import polars as pl
 
 from factorzen.execution.attribution import build_attribution_report
 from factorzen.execution.drivers import run_replay
+from factorzen.execution.store import SessionStore
 
 
 def _pf(dir_, sig, code, w):
@@ -135,3 +137,110 @@ def test_partial_fill_shortfall_attributed_by_reason(tmp_path: Path):
     assert rep["missed_by_reason"]["insufficient_cash"]["count"] >= 1
     # 手算 notional = shortfall(100 股) × close(100.0) = 10,000
     assert abs(rep["missed_by_reason"]["insufficient_cash"]["notional"] - 10_000.0) < 1e-6
+
+
+def test_build_attribution_report_backward_compat_no_acks_does_not_crash(tmp_path: Path):
+    # 手造旧形状 ledger.parquet：payload 只有 {orders, fills}，无 acks（旧版本
+    # SessionStore.append 引入 acks 字段之前落的账），orders 非空。
+    # 回归 Fix1：`for od, ack in zip(r["orders"], r["acks"], strict=True)` 在
+    # acks=[] 但 orders 非空时会因长度不一致抛 ValueError，违反"向后兼容旧
+    # ledger"的 spec。修复后应正常返回、不抛异常；成本/滑点来自 fills，不受
+    # acks 缺失影响，仍应照常算出非零值；该行的 missed_by_reason 因缺 reason
+    # 无法归因，允许为空。
+    d0 = date(2026, 1, 5)
+    daily = _daily(
+        [
+            {
+                "trade_date": d0,
+                "ts_code": "A.SZ",
+                "open": 10.1,
+                "pre_close": 10.0,
+                "close": 10.0,
+                "vol": 1e8,
+                "amount": 1e9,
+            }
+        ]
+    )
+    rd = _pf(tmp_path / "pf", d0, "A.SZ", 0.5)
+    sess = tmp_path / "sess"
+    SessionStore(sess).init({"broker": "paper", "initial_cash": 1_000_000.0})
+
+    orders = [
+        {"ts_code": "A.SZ", "side": "buy", "volume": 100, "price_type": "market", "price": None}
+    ]
+    fills = [
+        {
+            "order_id": "paper-1",
+            "ts_code": "A.SZ",
+            "side": "buy",
+            "filled_volume": 100,
+            "price": 10.1,
+            "cost": 2.5,
+            "ts": d0.isoformat(),
+        }
+    ]
+    row = {
+        "as_of_date": d0.isoformat(),
+        "nav_before": 1_000_000.0,
+        "nav_after": 999_000.0,
+        "payload": json.dumps({"orders": orders, "fills": fills}),  # 无 acks 键
+    }
+    pl.DataFrame([row]).write_parquet(sess / "ledger.parquet")
+    pl.DataFrame([{"as_of_date": d0.isoformat(), "nav_after": 999_000.0}]).write_parquet(
+        sess / "nav.parquet"
+    )
+
+    rep = build_attribution_report(sess, [rd], daily, initial_cash=1_000_000.0)
+    assert rep["missed_by_reason"] == {}
+    # 成本来自 fills，不依赖 acks，应仍正确算出（100 股 * 2.5 折算年化 bps）
+    assert rep["cost_bps"] != 0
+
+
+def test_build_attribution_report_warns_when_daily_does_not_cover_exec_date(
+    tmp_path: Path, caplog
+) -> None:
+    # 回归 Fix2：_ideal_nav 迭代 ledger 的 exec_dates，但价格取自调用方传入的
+    # daily；若 daily 窗口比 session 实际执行窗口窄（如真实停牌导致某日无行/
+    # 窗口配置过窄），_market_of_day 对该日返回空，估值/建仓静默按 0 处理，
+    # ideal/桶结果静默失真。修复后 build_attribution_report 应在开头检测到
+    # 缺口并 logging.warning（研究可信度优先，不能静默）。
+    d1, d2 = date(2026, 1, 5), date(2026, 1, 6)
+    daily_full = _daily(
+        [
+            {
+                "trade_date": d1,
+                "ts_code": "A.SZ",
+                "open": 10.1,
+                "pre_close": 10.0,
+                "close": 10.0,
+                "vol": 1e8,
+                "amount": 1e9,
+            },
+            {
+                "trade_date": d2,
+                "ts_code": "A.SZ",
+                "open": 10.2,
+                "pre_close": 10.0,
+                "close": 10.1,
+                "vol": 1e8,
+                "amount": 1e9,
+            },
+        ]
+    )
+    rd = _pf(tmp_path / "pf", d1, "A.SZ", 0.5)
+    run_replay(
+        session_dir=tmp_path / "sess",
+        portfolio_run_dirs=[rd],
+        daily=daily_full,
+        initial_cash=1_000_000.0,
+        from_date=d1,
+        to_date=d2,
+        seed=0,
+    )
+    # 调用方传入比 session 实际执行窗口更窄的 daily（只覆盖 d1，缺 d2）
+    daily_narrow = daily_full.filter(pl.col("trade_date") == d1)
+    with caplog.at_level(logging.WARNING):
+        build_attribution_report(
+            tmp_path / "sess", [rd], daily_narrow, initial_cash=1_000_000.0
+        )
+    assert any(d2.isoformat() in rec.message for rec in caplog.records)

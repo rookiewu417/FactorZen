@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from factorzen.execution.store import SessionStore
 from factorzen.sim.engine import _load_weights_by_date
 
 TRADING_DAYS = 252
+_logger = logging.getLogger(__name__)
 
 
 def _metrics(nav: list[float]) -> dict:
@@ -80,6 +82,17 @@ def build_attribution_report(
     # 与 ledger 对齐的真实执行窗口（PIT：只有 ledger 记过账的日子才算「执行过」，
     # daily 里的 ADV 预热日/from-to 过滤掉的行不应计入 frictionless 孪生）。
     exec_dates = sorted(date.fromisoformat(r["as_of_date"]) for r in recs)
+    # daily 未覆盖某 exec_date（调用方窗口过窄/真实停牌无行）会让 _market_of_day
+    # 对该日返回空，_ideal_nav/逐笔桶归因静默按 0 处理、结果静默失真。研究可信度
+    # 优先，绝不能悄悄吃掉这种口径缺口，先检测并告警（不阻断，仍尽力算）。
+    daily_dates = set(daily.select("trade_date").unique()["trade_date"].to_list())
+    missing_dates = [d for d in exec_dates if d not in daily_dates]
+    if missing_dates:
+        _logger.warning(
+            "build_attribution_report: daily 窗口未覆盖以下 exec_date，"
+            "对应日的 ideal/桶归因可能静默失真：%s",
+            [d.isoformat() for d in missing_dates],
+        )
     ideal_nav = _ideal_nav(portfolio_run_dirs, daily, initial_cash, exec_dates)
 
     # 逐笔精确桶：成本 + 滑点（滑点=filled×(open−close)，ref=close 定量、exec=open）
@@ -108,6 +121,12 @@ def build_attribution_report(
         filled_by_code: dict[str, float] = {}
         for f in r["fills"]:
             filled_by_code[f["ts_code"]] = filled_by_code.get(f["ts_code"], 0) + f["filled_volume"]
+        # 向后兼容：旧 payload 无 acks（SessionStore.ledger_records 补 []），或数量
+        # 与 orders 对不上，都无法做 per-order 的 ack 关联；跳过该行的 miss 归因
+        # （成本/滑点已在上面从 fills 算完，不受影响），而不是让 zip(strict=True)
+        # 因长度不一致抛 ValueError 崩掉整个报告。
+        if len(r["acks"]) != len(r["orders"]):
+            continue
         for od, ack in zip(r["orders"], r["acks"], strict=True):
             shortfall = od["volume"] - filled_by_code.get(od["ts_code"], 0)
             if shortfall <= 0:

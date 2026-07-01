@@ -707,8 +707,29 @@ def _cmd_live_status(args: argparse.Namespace) -> int:
     st = s.load_state()
     nav = s.nav_frame()
     last = nav["as_of_date"][-1] if nav.height else "(无)"
-    cash = st.get("cash") if st else "N/A"
-    n_pos = len(st.get("pos", {})) if st else 0
+    # state.json 有两种形状：可续跑态（run_daily_step 落的 broker.state()=
+    # {cash: float, pos, order_seq}）或显示视图（run_replay 留的 step() 返回=
+    # {positions, cash: {available,total_asset,market_value}}）。两者都要兼容，
+    # 不能假设只有前者，否则对 replay session 会打印整个 cash dict、且持仓数
+    # 因取错键（pos vs positions）恒报 0。
+    if st is None:
+        cash: float | str = "N/A"
+        n_pos = 0
+    else:
+        cash_raw = st.get("cash")
+        if isinstance(cash_raw, dict):
+            avail = cash_raw.get("available")
+            total = cash_raw.get("total_asset")
+            val = avail if avail is not None else total
+            cash = float(val) if isinstance(val, int | float) else "N/A"
+        elif isinstance(cash_raw, int | float):
+            cash = float(cash_raw)
+        else:
+            cash = "N/A"
+        positions = st.get("pos")
+        if positions is None:
+            positions = st.get("positions", {})
+        n_pos = len(positions)
     print(f"[live] 末记录日={last} 现金={cash} 持仓数={n_pos}")
     return 0
 

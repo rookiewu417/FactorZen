@@ -15,10 +15,10 @@ from factorzen.sim.engine import _load_weights_by_date
 
 
 def _market_of_day(
-    daily: pl.DataFrame, d: date, adv_by_date: dict[date, dict[str, float]]
+    daily: pl.DataFrame, d: date, adv_by_date: dict[date, dict[str, float]] | None = None
 ) -> dict[str, dict[str, Any]]:
     day = daily.filter(pl.col("trade_date") == d)
-    adv_today = adv_by_date.get(d, {})
+    adv_today = (adv_by_date or {}).get(d, {})
     out: dict[str, dict[str, Any]] = {}
     for row in day.iter_rows(named=True):
         out[row["ts_code"]] = {
@@ -79,3 +79,58 @@ def run_replay(
 
     final_nav = broker.get_cash().total_asset
     return {"session_dir": str(Path(session_dir)), "n_steps": n_steps, "final_nav": final_nav}
+
+
+def run_daily_step(
+    session_dir: str | Path,
+    as_of: date,
+    portfolio_run_dirs: list[str],
+    daily: pl.DataFrame,
+    *,
+    config: dict,
+) -> dict:
+    """单日推进：供每日调度（如 cron/DAG）逐日调用的可续跑入口。
+
+    与 ``run_replay``（单进程一次性跑完整段历史）不同，本函数每次只处理一个
+    交易日，状态靠 ``SessionStore.load_state``/``append`` 落盘续跑，容忍
+    「每天起一个新进程」的调度模式。幂等：``store.has_date`` 命中则跳过，不
+    重复下单/追加 ledger 行。
+    """
+    store = SessionStore(session_dir)
+    if store.has_date(as_of):
+        return {"as_of": as_of.isoformat(), "nav_after": None, "n_fills": 0, "skipped": True}
+    broker = PaperBroker(
+        initial_cash=float(config["initial_cash"]),
+        slippage_bps=float(config.get("slippage_bps", 0.0)),
+    )
+    st = store.load_state()
+    if st is not None:
+        broker.load_state(st)
+    # 当日 market（daily 已含所需窗口；调用方保证 daily 覆盖 as_of 及其前
+    # ~20 交易日以算 ADV）
+    all_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
+    adv_by_date = _precompute_adv_20d_by_date(daily, all_dates)
+    market = _market_of_day(daily, as_of, adv_by_date)
+    broker.advance_to(as_of, market)
+    weights_by_date = _load_weights_by_date(portfolio_run_dirs)
+    applicable = [s for s in weights_by_date if s <= as_of]
+    if not applicable:
+        return {
+            "as_of": as_of.isoformat(),
+            "nav_after": broker.get_cash().total_asset,
+            "n_fills": 0,
+            "skipped": False,
+        }
+    wdf = weights_by_date[max(applicable)]
+    weights = dict(zip(wdf["ts_code"].to_list(), wdf["target_weight"].to_list(), strict=True))
+    ref_price = {c: m["close"] for c, m in market.items() if m.get("close")}
+    rec = step(broker, weights, ref_price)
+    rec["as_of_date"] = as_of.isoformat()
+    rec["broker_state"] = broker.state()  # 可续跑态（覆盖 step 的显示视图）
+    store.append(rec)
+    return {
+        "as_of": as_of.isoformat(),
+        "nav_after": rec["nav_after"],
+        "n_fills": len(rec["fills"]),
+        "skipped": False,
+    }

@@ -20,7 +20,7 @@ _EXPERIMENT_INDEX = EXPERIMENTS_DIR / "experiment_index.jsonl"
 _RUN_ID_SAFE_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
-def _get_git_sha() -> str:
+def get_git_sha() -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -162,7 +162,7 @@ def build_manifest_base(
         start_dt = datetime.now()
     return {
         "schema_version": "1",
-        "git_sha": _get_git_sha(),
+        "git_sha": get_git_sha(),
         "git_dirty": _get_git_dirty(),
         "pixi_lock_sha256": _get_pixi_lock_hash(),
         "command": command,

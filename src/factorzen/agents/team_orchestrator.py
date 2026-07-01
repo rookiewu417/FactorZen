@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from factorzen.agents.roles.critic import critique
 from factorzen.agents.roles.hypothesis import propose_hypotheses
 from factorzen.agents.roles.librarian import recall, record
 from factorzen.agents.state import AgentState, AttemptRecord
+from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.expression import parse_expr, to_expr_string
 from factorzen.discovery.scoring import DataBundle
 from factorzen.llm.generation import LLMFn
@@ -181,13 +181,6 @@ def run_team_agent(
     )
 
 
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except Exception:
-        return "unknown"
-
-
 def write_team_manifest(
     result: TeamResult, *, out_dir: str, run_id: str, params: dict
 ) -> Path:
@@ -203,7 +196,7 @@ def write_team_manifest(
         "rounds_log": result.rounds_log,
         "attempts": [a.__dict__ for a in result.state.attempts],
         "candidates": result.candidates,
-        "git_sha": _git_sha(),
+        "git_sha": get_git_sha(),
     }
     path = run_dir / "manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))

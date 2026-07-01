@@ -28,12 +28,12 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from datetime import date
 from pathlib import Path
 
 import polars as pl
 
+from factorzen.core.experiment import get_git_sha
 from factorzen.core.universe import build_is_st_by_date
 from factorzen.daily.evaluation.backtest import (
     CostModel,
@@ -45,19 +45,11 @@ from factorzen.daily.evaluation.cost_models import CostModelBase
 _logger = logging.getLogger(__name__)
 
 # 组合优化成功状态（参考 portfolio/optimizer.py::OptimizeResult.status，来源于
-# cvxpy Problem.status）。其余状态（infeasible / infeasible_inaccurate /
-# unbounded / unbounded_inaccurate / solver_error 等）意味着 pipelines/
-# portfolio_build.py 把全零持仓兜底写盘，不能当作有效信号执行。
+# cvxpy Problem.status，或捕获 SolverError/DCPError 时固定的 "error"）。其余
+# 状态（infeasible / infeasible_inaccurate / unbounded / unbounded_inaccurate /
+# error 等）意味着 pipelines/portfolio_build.py 把全零持仓兜底写盘，不能当作
+# 有效信号执行。
 _SUCCESS_OPT_STATUSES = frozenset({"optimal", "optimal_inaccurate"})
-
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True
-        ).strip()
-    except Exception:
-        return "unknown"
 
 
 def _load_weights_by_date(
@@ -66,8 +58,8 @@ def _load_weights_by_date(
     """各 run_dir 的 weights.parquet + manifest.json → {signal_date: DataFrame[ts_code, target_weight]}。
 
     跳过 manifest.status 为非成功状态的 run_dir：组合优化 infeasible/unbounded/
-    solver_error 时，pipelines/portfolio_build.py 会把全零持仓兜底写盘（见该
-    模块 ``w = opt.weights if opt.weights is not None else np.zeros(...)``）。
+    error 时，pipelines/portfolio_build.py 会把全零持仓兜底写盘（见该模块
+    ``w = opt.weights if opt.weights is not None else np.zeros(...)``）。
     这只是为了让 weights.parquet 始终可写，并不代表"清仓"是真实信号，sim 不应
     把它当作有效持仓执行。manifest 完全没有 status 字段时（历史产物/旧版
     pipeline）视为有效，保持向后兼容。
@@ -175,7 +167,7 @@ def run_portfolio_simulation(
     #   collect_positions=False, collect_trades=False, include_context_positions=False
     # factor_df 仍须满足列校验，但实际值不影响回测结果。
     # cost_model 必须是 None 或 CostModel（dataclass）才能走快路径，见
-    # backtest.py::_should_use_precomputed_weights_fast_path；传 CostModelBase
+    # backtest.py::_can_use_precomputed_fast_path；传 CostModelBase
     # 子类（LinearCostModel/SquareRootImpactCostModel）会被退回慢路径。
     factor_df = _build_dummy_factor_df(weights_by_date)
     strategy = PrecomputedWeightsStrategy(weights_by_date)
@@ -237,7 +229,7 @@ def run_portfolio_simulation(
             {
                 "run_id": rid,
                 "n_signals": len(weights_by_date),
-                "git_sha": _git_sha(),
+                "git_sha": get_git_sha(),
             },
             ensure_ascii=False,
             indent=2,

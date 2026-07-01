@@ -208,7 +208,7 @@ def test_build_manifest_base_returns_reproducibility_fields(monkeypatch):
     """build_manifest_base() 是可被其它 pipeline（risk_build/portfolio_build）复用的基础字段构造器。"""
     from factorzen.core import experiment as exp_mod
 
-    monkeypatch.setattr(exp_mod, "_get_git_sha", lambda: "deadbeef")
+    monkeypatch.setattr(exp_mod, "get_git_sha", lambda: "deadbeef")
     monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: False)
     monkeypatch.setattr(exp_mod, "_get_pixi_lock_hash", lambda: "lockhash123")
 

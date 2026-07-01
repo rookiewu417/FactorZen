@@ -2,26 +2,19 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import time
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
+from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
 from factorzen.discovery.search.random_search import RandomSearcher
 from factorzen.validation.deflated_sharpe import deflated_sharpe
 from factorzen.validation.holdout import holdout_ic, split_holdout
 from factorzen.validation.pbo import compute_pbo
-
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except Exception:
-        return "unknown"
 
 
 def _factor_values(node, daily: pl.DataFrame, eval_start=None) -> pl.DataFrame:
@@ -197,7 +190,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         (session_dir / "candidates.csv").write_text("rank,n_trials," + ",".join(_cols) + "\n")
     manifest = {"seed": seed, "method": method, "n_trials": n_evaluated, "cli_n_trials": n_trials,
                 "top_k": top_k, "train_end": bundle.train_end, "holdout_start": str(holdout_start),
-                "git_sha": _git_sha(), "duration_seconds": round(time.perf_counter() - t0, 3),
+                "git_sha": get_git_sha(), "duration_seconds": round(time.perf_counter() - t0, 3),
                 "candidates": top,
                 "reproduce_note": "导出因子在 exported/；复现需复制到 workspace/factors/daily/ 后 fz factor run <name> --set preprocessing.neutralize=false（IC parity）"}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))

@@ -318,6 +318,32 @@ def test_is_st_asof_end_date_null_means_ongoing():
     assert before_start == set()
 
 
+def test_is_st_asof_treats_downgrade_from_star_st_as_still_st():
+    """change_reason="摘星"（从 *ST 降级为 ST，即摘掉"星号"，不是摘帽/彻底摘星）
+    对应的股票该记录的 name 仍以 "ST" 开头，说明这段时期股票仍处于 ST 状态，
+    应判定为 ST——不能仅凭 change_reason 字符串本身不含 "ST" 子串就排除。
+
+    用真实 Tushare token 核对过本仓库 data/cache/namechange.parquet 的真实数据：
+    change_reason="摘星" 时 name 确实仍是 "ST沈机"/"ST张家界" 这类前缀，而非
+    恢复正常的名称（这与 change_reason="撤销ST"/"撤销*ST" 时 name 已恢复正常
+    完全不同）。全量数据里约 2.7% 的记录（269/10000）受这类误判影响。
+    """
+    namechange_df = _namechange_df(
+        [
+            {
+                "ts_code": "000410.SZ",
+                "name": "ST沈机",
+                "start_date": date(2021, 6, 24),
+                "end_date": None,
+                "ann_date": date(2021, 6, 23),
+                "change_reason": "摘星",
+            },
+        ]
+    )
+    result = U._is_st_asof(["000410.SZ"], "20240101", namechange_df)
+    assert result == {"000410.SZ"}
+
+
 def test_filter_st_uses_namechange_pit_over_current_name(monkeypatch):
     """namechange 可用时，filter_st 按 PIT 状态过滤，不再依赖当前最新 name。"""
     namechange_df = _namechange_df(

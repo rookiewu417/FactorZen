@@ -429,9 +429,18 @@ def _is_st_asof(
 ) -> set[str]:
     """基于 namechange 曾用名记录，判断给定股票在 ``trade_date`` 当天是否处于 ST 状态（PIT）。
 
-    使用 ``change_reason`` 含 "ST"（涵盖 "ST"、"\\*ST"）且不含 "撤销"/"摘星" 的
-    记录，按 ``[start_date, end_date)`` 区间判断（``end_date`` 为空表示状态持续
-    至今）。
+    直接判断该记录对应的历史 ``name`` 是否含 "ST"/"PT"（与非 PIT 降级路径
+    ``_st_codes_by_name`` 的判断口径一致，只是这里按 ``[start_date, end_date)``
+    区间取历史某一时刻的 name，而非当前 name），按该区间判断（``end_date``
+    为空表示状态持续至今）。
+
+    2026-07-01 用真实 Tushare token 核对 ``change_reason`` 实际取值分布后发现：
+    早期版本按 ``change_reason`` 关键词过滤（含"ST"且不含"撤销"/"摘星"）存在
+    漏判——``change_reason="摘星"``（从 *ST 降级为 ST，仍是 ST 状态，不是摘帽）
+    对应记录的 ``name`` 仍以 "ST" 开头（如 "ST沈机"），但 ``change_reason``
+    字符串本身不含 "ST" 子串，导致这类记录被误判为非 ST。真实数据抽样统计：
+    全量约 2.7%（269/10000）的 namechange 记录受此影响。改为直接检查 ``name``
+    后不再有此类误判。
 
     Parameters
     ----------
@@ -441,7 +450,7 @@ def _is_st_asof(
         判断基准日期 ``"YYYYMMDD"``。
     namechange_df : pl.DataFrame
         ``fetch_namechange()`` 返回的全量曾用名变更记录，需含列
-        ``ts_code, start_date, end_date, change_reason``。
+        ``ts_code, name, start_date, end_date``。
 
     Returns
     -------
@@ -452,7 +461,7 @@ def _is_st_asof(
         return set()
 
     target_date = datetime.strptime(trade_date, "%Y%m%d").date()
-    reason = pl.col("change_reason").fill_null("")
+    name = pl.col("name").fill_null("")
 
     st_records = (
         namechange_df.filter(pl.col("ts_code").is_in(codes))
@@ -461,9 +470,7 @@ def _is_st_asof(
             pl.col("end_date").cast(pl.Date),
         )
         .filter(
-            reason.str.contains("ST", literal=True)
-            & ~reason.str.contains("撤销", literal=True)
-            & ~reason.str.contains("摘星", literal=True)
+            name.str.contains("ST|PT")
             & pl.col("start_date").is_not_null()
             & (pl.col("start_date") <= pl.lit(target_date))
             & (pl.col("end_date").is_null() | (pl.col("end_date") > pl.lit(target_date)))

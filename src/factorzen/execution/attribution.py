@@ -5,12 +5,12 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
-from factorzen.daily.evaluation.backtest import _precompute_adv_20d_by_date
 from factorzen.execution.brokers.paper import PaperBroker
 from factorzen.execution.drivers import _market_of_day
 from factorzen.execution.engine import step
@@ -36,16 +36,23 @@ def _metrics(nav: list[float]) -> dict:
     return {"ann_ret": ann, "sharpe": sharpe, "max_dd": max_dd}
 
 
-def _ideal_nav(portfolio_run_dirs: list[str], daily: pl.DataFrame, initial_cash: float) -> list[float]:
-    """frictionless 孪生：同 weights/dates，按 close 全额零成本成交，收集理想 nav 序列。"""
+def _ideal_nav(
+    portfolio_run_dirs: list[str],
+    daily: pl.DataFrame,
+    initial_cash: float,
+    exec_dates: list[date],
+) -> list[float]:
+    """frictionless 孪生：只在 ledger 实际执行的 exec_dates 窗口内、按 close 全额零成本
+    成交，收集理想 nav 序列。必须与 real_nav 同窗口/同长度（len(exec_dates)+1），否则
+    两侧 `_metrics` 的年化口径（依赖 ann_factor=252/n_days）不可比、total_gap 失真
+    （daily 里 ledger 从未执行的预热日/边界外行会把 ideal 稀释或放大）。frictionless
+    孪生跳过容量约束，不需要 ADV，故不再预计算 adv_by_date。"""
     weights_by_date = _load_weights_by_date(portfolio_run_dirs)
-    all_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
-    adv_by_date = _precompute_adv_20d_by_date(daily, all_dates)
     broker = PaperBroker(initial_cash=initial_cash, frictionless=True)
     nav = [initial_cash]
     cur: dict[str, float] = {}
-    for d in all_dates:
-        market = _market_of_day(daily, d, adv_by_date)
+    for d in exec_dates:
+        market = _market_of_day(daily, d)
         broker.advance_to(d, market)
         applicable = [s for s in weights_by_date if s <= d]
         if applicable:
@@ -70,7 +77,10 @@ def build_attribution_report(
     store = SessionStore(session_dir)
     recs = store.ledger_records()
     real_nav = [initial_cash] + [r["nav_after"] for r in recs]
-    ideal_nav = _ideal_nav(portfolio_run_dirs, daily, initial_cash)
+    # 与 ledger 对齐的真实执行窗口（PIT：只有 ledger 记过账的日子才算「执行过」，
+    # daily 里的 ADV 预热日/from-to 过滤掉的行不应计入 frictionless 孪生）。
+    exec_dates = sorted(date.fromisoformat(r["as_of_date"]) for r in recs)
+    ideal_nav = _ideal_nav(portfolio_run_dirs, daily, initial_cash, exec_dates)
 
     # 逐笔精确桶：成本 + 滑点（滑点=filled×(open−close)，ref=close 定量、exec=open）
     px: dict[tuple[str, str], dict] = {}
@@ -92,16 +102,18 @@ def build_attribution_report(
             if o is not None and c is not None:
                 sign = 1.0 if f["side"] == "buy" else -1.0
                 slip_sum += f["filled_volume"] * (float(o) - float(c)) * sign
-        # 未成交/部分成交：按 ack reason 归名义额
+        # 未成交/部分成交：按 ack reason 归名义额。注意不能只看 accepted——容量/
+        # 现金/整手/T+1 截断的部分成交单 accepted=True 但 filled < volume，缺口
+        # 同样要归因，否则「拒单」与「部分成交」两类踏空只统计了前者。
         filled_by_code: dict[str, float] = {}
         for f in r["fills"]:
             filled_by_code[f["ts_code"]] = filled_by_code.get(f["ts_code"], 0) + f["filled_volume"]
         for od, ack in zip(r["orders"], r["acks"], strict=True):
-            if ack.get("accepted"):
+            shortfall = od["volume"] - filled_by_code.get(od["ts_code"], 0)
+            if shortfall <= 0:
                 continue
             reason = ack.get("reason") or "unknown"
             c = px.get((d, od["ts_code"]), {}).get("close")
-            shortfall = od["volume"] - filled_by_code.get(od["ts_code"], 0)
             notional = shortfall * float(c) if c is not None else 0.0
             m = missed.setdefault(reason, {"count": 0, "notional": 0.0})
             m["count"] += 1

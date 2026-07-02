@@ -129,28 +129,6 @@ def test_ts_zscore_null_on_constant_and_matches_numpy():
                 assert got[i] is not None and abs(got[i] - exp) < 1e-9
 
 
-def test_ts_argmax_on_monotonic_is_one():
-    from factorzen.discovery.operators import OPERATORS
-    # 单只股票严格递增 → 窗口内最大值恒在末位 → 归一化位置 = 1.0
-    rows = [{"trade_date": d, "ts_code": "A", "close_adj": float(d + 1),
-             "vol": 1.0} for d in range(10)]
-    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
-    expr = OPERATORS["ts_argmax"].build([pl.col("close_adj")], 5)
-    got = df.with_columns(expr.alias("p"))["p"].drop_nulls().to_list()
-    assert got and all(abs(v - 1.0) < 1e-9 for v in got)
-
-
-def test_ts_argmin_on_monotonic_is_zero():
-    from factorzen.discovery.operators import OPERATORS
-    # 单调递增 → 窗口内最小值恒在首位 → 归一化位置 = 0.0
-    rows = [{"trade_date": d, "ts_code": "A", "close_adj": float(d + 1), "vol": 1.0}
-            for d in range(10)]
-    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
-    expr = OPERATORS["ts_argmin"].build([pl.col("close_adj")], 5)
-    got = df.with_columns(expr.alias("p"))["p"].drop_nulls().to_list()
-    assert got and all(abs(v - 0.0) < 1e-9 for v in got)
-
-
 def test_ts_skew_symmetric_is_zero():
     from factorzen.discovery.operators import OPERATORS
     # 关于平均值对称的序列，偏度 = 0（[2,4,3,4,2] 平均值=3，偏差=[-1,1,0,1,-1]，关于0对称）
@@ -161,6 +139,31 @@ def test_ts_skew_symmetric_is_zero():
     expr = OPERATORS["ts_skew"].build([pl.col("close_adj")], 5)
     got = df.with_columns(expr.alias("s"))["s"].drop_nulls().to_list()
     assert got and abs(got[0]) < 1e-9  # 第一个满窗 [2,4,3,4,2] 关于平均值对称 → 偏度=0
+
+
+def test_ts_skew_matches_numpy_ground_truth():
+    import numpy as np
+
+    from factorzen.discovery.operators import OPERATORS
+    vals = [1.0, 1.0, 1.0, 1.0, 10.0, 2.0, 3.0, 4.0]
+    rows = [{"trade_date": d, "ts_code": "A", "close_adj": vals[d], "vol": 1.0} for d in range(8)]
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    expr = OPERATORS["ts_skew"].build([pl.col("close_adj")], 4)
+    got = df.with_columns(expr.alias("s"))["s"].to_list()
+    na = np.array(vals)
+    for i in range(8):
+        lo = max(0, i - 3)
+        w = na[lo:i + 1]
+        if len(w) < 3:
+            assert got[i] is None
+        else:
+            m = float(w.mean())
+            sd = float(w.std())  # numpy ddof=0 总体
+            if sd < 1e-12:
+                assert got[i] is None
+            else:
+                exp = float((((w - m) / sd) ** 3).mean())
+                assert got[i] is not None and abs(got[i] - exp) < 1e-6
 
 
 def test_leaf_features_contains_price_volume_and_fundamental():

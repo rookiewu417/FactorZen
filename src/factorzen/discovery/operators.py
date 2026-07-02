@@ -10,7 +10,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-import numpy as np
 import polars as pl
 
 # 叶子名 → 求值表中的列名。vwap/log_vol/ret_1d/amplitude/intraday_ret/overnight_ret 为派生列（ExpressionFactor 预计算）。
@@ -78,29 +77,15 @@ def _ts_cov(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
     return mab - ma * mb
 
 
-def _rolling_argmax(s: pl.Series) -> float | None:
-    if s.len() < _MIN or s.null_count() == s.len():
-        return None
-    idx = s.arg_max()
-    return float(idx) / (s.len() - 1) if idx is not None and s.len() > 1 else None
-
-
-def _rolling_argmin(s: pl.Series) -> float | None:
-    if s.len() < _MIN or s.null_count() == s.len():
-        return None
-    idx = s.arg_min()
-    return float(idx) / (s.len() - 1) if idx is not None and s.len() > 1 else None
-
-
-def _rolling_skew(s: pl.Series) -> float | None:
-    a: np.ndarray = s.drop_nulls().to_numpy()
-    if len(a) < _MIN:
-        return None
-    m = float(a.mean())
-    sd = float(a.std())
-    if sd < 1e-12:
-        return None
-    return float((((a - m) / sd) ** 3).mean())
+def _ts_skew(x: pl.Expr, w: int | None) -> pl.Expr:
+    # 滚动总体偏度 μ3/σ³，用原始矩组合，避免逐窗口 Python 回调
+    m1 = x.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    m2 = (x * x).rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    m3 = (x * x * x).rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    var = m2 - m1 * m1
+    m3c = m3 - 3.0 * m1 * m2 + 2.0 * m1 * m1 * m1  # 中心三阶矩 E[(x-μ)³]
+    sd = var.sqrt()
+    return pl.when(sd > 1e-12).then(m3c / (sd * sd * sd)).otherwise(None)
 
 
 OPERATORS: dict[str, OperatorSpec] = {
@@ -110,8 +95,6 @@ OPERATORS: dict[str, OperatorSpec] = {
     "ts_sum":  _ts("ts_sum",  lambda x, w: x.rolling_sum(w, min_samples=_MIN).over("ts_code")),
     "ts_min":  _ts("ts_min",  lambda x, w: x.rolling_min(w, min_samples=_MIN).over("ts_code")),
     "ts_max":  _ts("ts_max",  lambda x, w: x.rolling_max(w, min_samples=_MIN).over("ts_code")),
-    "ts_rank": _ts("ts_rank", lambda x, w:
-        x.rolling_map(lambda s: (float(s.rank()[-1]) / s.len()) if s.len() >= _MIN else None, w).over("ts_code")),
     "delay":   _ts("delay",   lambda x, w: x.shift(w).over("ts_code")),
     "delta":   _ts("delta",   lambda x, w: (x - x.shift(w)).over("ts_code")),
     "pct_change": _ts("pct_change", lambda x, w:
@@ -125,12 +108,7 @@ OPERATORS: dict[str, OperatorSpec] = {
     "ts_zscore": _ts("ts_zscore", lambda x, w: _safe_div(
         x - x.rolling_mean(w, min_samples=_MIN).over("ts_code"),
         x.rolling_std(w, min_samples=_MIN).over("ts_code"))),
-    "ts_argmax": _ts("ts_argmax", lambda x, w:
-        x.rolling_map(_rolling_argmax, w).over("ts_code")),
-    "ts_argmin": _ts("ts_argmin", lambda x, w:
-        x.rolling_map(_rolling_argmin, w).over("ts_code")),
-    "ts_skew": _ts("ts_skew", lambda x, w:
-        x.rolling_map(_rolling_skew, w).over("ts_code")),
+    "ts_skew": _ts("ts_skew", _ts_skew),
     # ── 截面（.over("trade_date")）──
     "rank":  _cs("rank",  lambda x: (x.rank().over("trade_date") / (pl.len().over("trade_date") + 1))),
     "zscore": _cs("zscore", lambda x:

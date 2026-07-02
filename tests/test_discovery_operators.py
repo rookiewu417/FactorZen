@@ -138,7 +138,9 @@ def test_ts_skew_symmetric_is_zero():
     df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
     expr = OPERATORS["ts_skew"].build([pl.col("close_adj")], 5)
     got = df.with_columns(expr.alias("s"))["s"].drop_nulls().to_list()
-    assert got and abs(got[0]) < 1e-9  # 第一个满窗 [2,4,3,4,2] 关于平均值对称 → 偏度=0
+    # window=5、min_samples=3 → 第一个非空点是偏窗 [2,4,3]（均值=3，偏差=[-1,1,0]），
+    # 关于 0 对称 → 偏度=0；不是满窗 [2,4,3,4,2](那是第二个非空点，同样对称)。
+    assert got and abs(got[0]) < 1e-9
 
 
 def test_ts_skew_matches_numpy_ground_truth():
@@ -164,6 +166,35 @@ def test_ts_skew_matches_numpy_ground_truth():
             else:
                 exp = float((((w - m) / sd) ** 3).mean())
                 assert got[i] is not None and abs(got[i] - exp) < 1e-6
+
+
+def test_ts_rank_matches_manual():
+    from factorzen.discovery.operators import OPERATORS
+
+    def _avg_rank_of_last(window: np.ndarray) -> float:
+        # 平均排名(并列取均值): rank = (#严格小于) + (#等于(含自身) + 1) / 2。
+        # 与 polars rolling_rank(method="average") 官方文档示例([1,4,4,1,9], w=3
+        # → [null,null,2.5,1.0,3.0])逐点手算核对一致，等价于 scipy
+        # rankdata(method="average") 对窗口末尾元素的排名。
+        last = window[-1]
+        less = float((window < last).sum())
+        equal = float((window == last).sum())
+        return less + (equal + 1.0) / 2.0
+
+    vals = [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0, 5.0, 5.0]  # 含并列：1.0×2, 5.0×3
+    rows = [{"trade_date": d, "ts_code": "A", "close_adj": vals[d], "vol": 1.0}
+            for d in range(len(vals))]
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    w = 4
+    expr = OPERATORS["ts_rank"].build([pl.col("close_adj")], w)
+    got = df.with_columns(expr.alias("r"))["r"].to_list()
+
+    na = np.array(vals)
+    for i in range(w - 1, len(vals)):  # 只比对满窗区 index>=w-1(偏窗区旧/新实现语义不同，见 fix report)
+        window = na[i - w + 1: i + 1]
+        exp = _avg_rank_of_last(window) / w
+        assert got[i] is not None
+        assert abs(got[i] - exp) < 1e-9
 
 
 def test_leaf_features_contains_price_volume_and_fundamental():

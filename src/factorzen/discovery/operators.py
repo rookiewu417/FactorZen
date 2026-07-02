@@ -77,17 +77,6 @@ def _ts_cov(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
     return mab - ma * mb
 
 
-def _ts_skew(x: pl.Expr, w: int | None) -> pl.Expr:
-    # 滚动总体偏度 μ3/σ³，用原始矩组合，避免逐窗口 Python 回调
-    m1 = x.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
-    m2 = (x * x).rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
-    m3 = (x * x * x).rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
-    var = m2 - m1 * m1
-    m3c = m3 - 3.0 * m1 * m2 + 2.0 * m1 * m1 * m1  # 中心三阶矩 E[(x-μ)³]
-    sd = var.sqrt()
-    return pl.when(sd > 1e-12).then(m3c / (sd * sd * sd)).otherwise(None)
-
-
 OPERATORS: dict[str, OperatorSpec] = {
     # ── 时序（.over("ts_code")）──
     "ts_mean": _ts("ts_mean", lambda x, w: x.rolling_mean(w, min_samples=_MIN).over("ts_code")),
@@ -95,6 +84,10 @@ OPERATORS: dict[str, OperatorSpec] = {
     "ts_sum":  _ts("ts_sum",  lambda x, w: x.rolling_sum(w, min_samples=_MIN).over("ts_code")),
     "ts_min":  _ts("ts_min",  lambda x, w: x.rolling_min(w, min_samples=_MIN).over("ts_code")),
     "ts_max":  _ts("ts_max",  lambda x, w: x.rolling_max(w, min_samples=_MIN).over("ts_code")),
+    # polars 1.41.2 原生 rolling_rank，标记 unstable(升级 polars 时需重验语义)。
+    # method="average" 并列取均值排名；/w 归一化到 (0,1]。
+    "ts_rank": _ts("ts_rank", lambda x, w:
+        x.rolling_rank(w, method="average", min_samples=_MIN).over("ts_code") / w),
     "delay":   _ts("delay",   lambda x, w: x.shift(w).over("ts_code")),
     "delta":   _ts("delta",   lambda x, w: (x - x.shift(w)).over("ts_code")),
     "pct_change": _ts("pct_change", lambda x, w:
@@ -108,7 +101,12 @@ OPERATORS: dict[str, OperatorSpec] = {
     "ts_zscore": _ts("ts_zscore", lambda x, w: _safe_div(
         x - x.rolling_mean(w, min_samples=_MIN).over("ts_code"),
         x.rolling_std(w, min_samples=_MIN).over("ts_code"))),
-    "ts_skew": _ts("ts_skew", _ts_skew),
+    # polars 1.41.2 原生 rolling_skew，标记 unstable(升级 polars 时需重验语义)。
+    # bias=True = 总体偏度(ddof=0)，对应现有 numpy ground-truth 测试口径。
+    # fill_nan(None)：零方差窗口原生实现是 0/0 → NaN 而非 null，必须显式转 null，
+    # 否则又是一次"NaN 泄漏"（polars 中 NaN > 阈值 判定为 True，下游 pl.when 防护会被绕过）。
+    "ts_skew": _ts("ts_skew", lambda x, w:
+        x.rolling_skew(w, bias=True, min_samples=_MIN).over("ts_code").fill_nan(None)),
     # ── 截面（.over("trade_date")）──
     "rank":  _cs("rank",  lambda x: (x.rank().over("trade_date") / (pl.len().over("trade_date") + 1))),
     "zscore": _cs("zscore", lambda x:

@@ -14,6 +14,17 @@ from factorzen.discovery.expression import Node
 from factorzen.discovery.expression import complexity as _complexity
 
 
+def _cut_literal(df: pl.DataFrame, yyyymmdd: str):
+    """"YYYYMMDD" → 与 df.trade_date dtype 匹配的比较字面量(Date→date,Datetime→当日零点)。
+
+    日频帧行为与旧 ``.date()`` 完全一致;intraday(Datetime 键)返回 datetime,
+    避免 polars Datetime 列与 date 字面量比较的类型错误。
+    """
+    from datetime import datetime
+    dt = datetime.strptime(yyyymmdd, "%Y%m%d")
+    return dt if isinstance(df.schema["trade_date"], pl.Datetime) else dt.date()
+
+
 @dataclass
 class DataBundle:
     daily: pl.DataFrame
@@ -30,8 +41,7 @@ class DataBundle:
         return cls(daily=daily, fwd_returns=fwd, train_end=train_end)
 
     def _segment_mask(self, df: pl.DataFrame, segment: str) -> pl.DataFrame:
-        from datetime import datetime
-        cut = datetime.strptime(self.train_end, "%Y%m%d").date()
+        cut = _cut_literal(df, self.train_end)
         if segment == "train":
             return df.filter(pl.col("trade_date") <= cut)
         return df.filter(pl.col("trade_date") > cut)

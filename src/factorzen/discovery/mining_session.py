@@ -31,8 +31,8 @@ def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) ->
     out = df.select(["trade_date", "ts_code", "factor_value"]).filter(
         pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
     if eval_start is not None:
-        from datetime import datetime
-        out = out.filter(pl.col("trade_date") >= datetime.strptime(eval_start, "%Y%m%d").date())
+        from factorzen.discovery.scoring import _cut_literal
+        out = out.filter(pl.col("trade_date") >= _cut_literal(out, eval_start))
     return out
 
 
@@ -180,9 +180,9 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     n_evaluated = ledger.n_trials
 
     if eval_start is not None:
-        from datetime import datetime as _dt
-        _es_date = _dt.strptime(eval_start, "%Y%m%d").date()
-        n_obs_mining = daily.filter(pl.col("trade_date") >= _es_date)["trade_date"].n_unique()
+        from factorzen.discovery.scoring import _cut_literal
+        _es = _cut_literal(daily, eval_start)
+        n_obs_mining = daily.filter(pl.col("trade_date") >= _es)["trade_date"].n_unique()
     else:
         n_obs_mining = daily["trade_date"].n_unique()  # mining 段交易日数 ≈ IC 序列长度
     ir_pool = np.array([c["ir_train"] for c in scored]) if scored else np.array([0.0])

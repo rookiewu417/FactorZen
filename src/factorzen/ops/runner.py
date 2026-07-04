@@ -18,6 +18,7 @@ from factorzen.ops.stages import (
     stage_data,
     stage_guard,
     stage_live_step,
+    stage_publish,
     stage_report,
     stage_signal,
 )
@@ -32,6 +33,7 @@ STAGES: list[tuple[str, StageFn]] = [
     ("signal", stage_signal),
     ("live_step", stage_live_step),
     ("report", stage_report),
+    ("publish", stage_publish),
 ]
 
 

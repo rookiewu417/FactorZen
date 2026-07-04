@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
+from jinja2 import Environment, FileSystemLoader
 
 from factorzen.core.data_audit import build_raw_data_audit
 from factorzen.core.data_ensure import (
@@ -26,6 +27,9 @@ from factorzen.core.universe import get_universe
 from factorzen.execution.drivers import run_daily_step
 from factorzen.execution.store import SessionStore
 from factorzen.ops.config import OpsConfig
+
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
+_ENV = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=True)
 
 
 class OpsStageError(RuntimeError):
@@ -141,3 +145,50 @@ def stage_report(cfg: OpsConfig, as_of: date, ctx: dict[str, Any]) -> dict[str, 
         f"订单 {n_orders} 笔 · 成交 {n_fills} 笔"
     )
     return {"summary_text": text, "nav_after": nav_after, "n_fills": n_fills}
+
+
+def _max_drawdown(navs: list[float]) -> float:
+    """净值序列的最大回撤(<=0)。"""
+    peak = float("-inf")
+    mdd = 0.0
+    for v in navs:
+        peak = max(peak, v)
+        if peak > 0:
+            mdd = min(mdd, v / peak - 1.0)
+    return mdd
+
+
+def render_track_record(nav_df: pl.DataFrame, as_of: date) -> str:
+    """把净值序列渲染为 track record 静态页 HTML。"""
+    points = (
+        [
+            {"date": r["as_of_date"], "nav": float(r["nav_after"])}
+            for r in nav_df.iter_rows(named=True)
+        ]
+        if nav_df.height
+        else []
+    )
+    navs = [p["nav"] for p in points]
+    latest = navs[-1] if navs else None
+    first = navs[0] if navs else None
+    total_return = (latest / first - 1.0) if (latest and first) else 0.0
+    return _ENV.get_template("track_record.html").render(
+        points=points,
+        latest_nav=latest,
+        total_return=total_return,
+        max_drawdown=_max_drawdown(navs),
+        n_days=len(points),
+        as_of=as_of.isoformat(),
+    )
+
+
+def stage_publish(cfg: OpsConfig, as_of: date, ctx: dict[str, Any]) -> dict[str, Any]:
+    """发布 track record 静态页(publish_enabled 才跑,否则跳过)。"""
+    if not cfg.publish_enabled:
+        return {"skipped": True}
+    nav = SessionStore(cfg.session_dir).nav_frame()
+    site = Path(cfg.publish_site_dir)
+    site.mkdir(parents=True, exist_ok=True)
+    out_path = site / "index.html"
+    out_path.write_text(render_track_record(nav, as_of), encoding="utf-8")
+    return {"skipped": False, "path": str(out_path)}

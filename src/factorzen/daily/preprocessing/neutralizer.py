@@ -79,7 +79,7 @@ def neutralize_ols(
 
         if valid.sum() < 30:
             logger.warning(f"neutralize_ols: {d} 有效样本数 {valid.sum()} < 30，跳过")
-            return cross.with_columns(pl.lit(None).alias(out_col))
+            return cross.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
 
         # 构建设计矩阵
         X_parts: list[np.ndarray] = [np.ones((len(codes), 1), dtype=float)]

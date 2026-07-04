@@ -2,15 +2,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except Exception:
-        return "unknown"
+from factorzen.core.experiment import get_git_sha
 
 
 def write_session_manifest(result, *, out_dir: str, run_id: str, params: dict) -> Path:
@@ -22,7 +16,7 @@ def write_session_manifest(result, *, out_dir: str, run_id: str, params: dict) -
         "iterations": state.iteration, "params": params,
         "attempts": [a.__dict__ for a in state.attempts],
         "candidates": result.candidates,
-        "git_sha": _git_sha(),
+        "git_sha": get_git_sha(),
     }
     path = run_dir / "manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))

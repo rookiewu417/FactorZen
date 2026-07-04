@@ -13,6 +13,7 @@
         collect_positions: bool = True,
         collect_trades: bool = True,
         include_context_positions: bool = True,
+        is_st_by_date: dict[date, set[str]] | None = None,
     ) -> StrategyBacktestResult
 
     StrategyBacktestResult.summary_stats:
@@ -27,45 +28,80 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from datetime import date
 from pathlib import Path
 
 import polars as pl
 
+from factorzen.core.experiment import get_git_sha
+from factorzen.core.universe import build_is_st_by_date
 from factorzen.daily.evaluation.backtest import (
+    CostModel,
     PrecomputedWeightsStrategy,
     run_strategy_backtest,
 )
+from factorzen.daily.evaluation.cost_models import CostModelBase
 
 _logger = logging.getLogger(__name__)
 
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True
-        ).strip()
-    except Exception:
-        return "unknown"
+# 组合优化成功状态（参考 portfolio/optimizer.py::OptimizeResult.status，来源于
+# cvxpy Problem.status，或捕获 SolverError/DCPError 时固定的 "error"）。其余
+# 状态（infeasible / infeasible_inaccurate / unbounded / unbounded_inaccurate /
+# error 等）意味着 pipelines/portfolio_build.py 把全零持仓兜底写盘，不能当作
+# 有效信号执行。
+_SUCCESS_OPT_STATUSES = frozenset({"optimal", "optimal_inaccurate"})
 
 
 def _load_weights_by_date(
     portfolio_run_dirs: list[str],
 ) -> dict[date, pl.DataFrame]:
-    """各 run_dir 的 weights.parquet + manifest.json → {signal_date: DataFrame[ts_code, target_weight]}。"""
+    """各 run_dir 的 weights.parquet + manifest.json → {signal_date: DataFrame[ts_code, target_weight]}。
+
+    跳过 manifest.status 为非成功状态的 run_dir：组合优化 infeasible/unbounded/
+    error 时，pipelines/portfolio_build.py 会把全零持仓兜底写盘（见该模块
+    ``w = opt.weights if opt.weights is not None else np.zeros(...)``）。
+    这只是为了让 weights.parquet 始终可写，并不代表"清仓"是真实信号，sim 不应
+    把它当作有效持仓执行。manifest 完全没有 status 字段时（历史产物/旧版
+    pipeline）视为有效，保持向后兼容。
+
+    manifest 缺 signal_date 字段（跳过）、多个 run_dir 撞同一 signal_date
+    （按传入顺序后者覆盖前者）这两种情况均会 warning 说明，不再静默发生。
+    """
     out: dict[date, pl.DataFrame] = {}
+    source_by_date: dict[date, str] = {}
     for rd in portfolio_run_dirs:
         rd_p = Path(rd)
         manifest = json.loads((rd_p / "manifest.json").read_text())
         sig = manifest.get("signal_date")
         if sig is None:
+            _logger.warning(
+                "跳过 run_dir=%s：manifest.json 缺 signal_date 字段，无法作为有效信号执行",
+                rd,
+            )
+            continue
+        status = manifest.get("status")
+        if status is not None and status not in _SUCCESS_OPT_STATUSES:
+            _logger.warning(
+                "跳过 run_dir=%s（signal_date=%s）：组合优化 status=%r 非成功状态，"
+                "可能是 infeasible/unbounded 兜底的全零持仓，不作为有效信号执行",
+                rd,
+                sig,
+                status,
+            )
             continue
         sig_date = date.fromisoformat(str(sig))
+        if sig_date in out:
+            _logger.warning(
+                "signal_date=%s 撞键：run_dir=%s 覆盖 run_dir=%s（按传入顺序，后者生效）",
+                sig_date,
+                rd,
+                source_by_date[sig_date],
+            )
         w = pl.read_parquet(rd_p / "weights.parquet").select(
             ["ts_code", "target_weight"]
         )
         out[sig_date] = w
+        source_by_date[sig_date] = rd
     return out
 
 
@@ -103,16 +139,21 @@ def run_portfolio_simulation(
     *,
     out_dir: str = "workspace/sim",
     run_id: str | None = None,
+    cost_model: CostModel | CostModelBase | None = None,
 ) -> dict:
     """把 M4 目标组合喂给回测引擎，落盘净值与绩效指标。
 
     Args:
         portfolio_run_dirs: 各 run_dir 路径列表，每个目录含
             ``weights.parquet``（列 ts_code, target_weight）和
-            ``manifest.json``（含 signal_date）。
+            ``manifest.json``（含 signal_date，可选 status）。
         daily: 日线行情 DataFrame（列 trade_date, ts_code, open, close, …）。
         out_dir: 输出根目录。
         run_id: 本次模拟 ID；None 时默认 "sim"。
+        cost_model: 交易成本模型；None（默认）时使用项目默认费率的
+            ``CostModel()``（佣金+滑点+印花税），**不会**得到零成本回测——
+            如确实需要零成本对照，显式传入
+            ``CostModel(commission=0, stamp_tax=0, slippage=0)``。
 
     Returns:
         dict 含 run_dir, sharpe, max_dd, ann_ret。
@@ -125,31 +166,49 @@ def run_portfolio_simulation(
     # PrecomputedWeightsStrategy 走快速路径：
     #   collect_positions=False, collect_trades=False, include_context_positions=False
     # factor_df 仍须满足列校验，但实际值不影响回测结果。
+    # cost_model 必须是 None 或 CostModel（dataclass）才能走快路径，见
+    # backtest.py::_can_use_precomputed_fast_path；传 CostModelBase
+    # 子类（LinearCostModel/SquareRootImpactCostModel）会被退回慢路径。
     factor_df = _build_dummy_factor_df(weights_by_date)
     strategy = PrecomputedWeightsStrategy(weights_by_date)
+    effective_cost_model: CostModel | CostModelBase = (
+        cost_model if cost_model is not None else CostModel()
+    )
+
+    # PIT 收窄 ST 股票涨跌停阈值（4.8% 而非主板 9.8%，见
+    # core/universe.py::_get_board_limit）；只构建一次，全程复用。
+    codes = daily.select("ts_code").unique()["ts_code"].to_list()
+    trade_dates_list = daily.select("trade_date").unique()["trade_date"].to_list()
+    is_st_by_date = build_is_st_by_date(codes, trade_dates_list)
 
     bt = run_strategy_backtest(
         strategy,
         factor_df,
         daily,
+        cost_model=effective_cost_model,
         collect_positions=False,
         collect_trades=False,
         include_context_positions=False,
+        is_st_by_date=is_st_by_date,
     )
 
-    # 若 signal_date 晚于或等于回测末日（其后无执行日），权重永不生效 → 净值为空。
-    if bt.nav.is_empty():
-        max_trade_date = (
-            daily.select("trade_date").max()["trade_date"][0]
-            if not daily.is_empty()
-            else None
-        )
-        _logger.warning(
-            "signal_date 晚于或等于回测末日，未产生任何调仓"
-            "（最早信号日=%s, 回测末日=%s）",
-            min(weights_by_date, default=None),
-            max_trade_date,
-        )
+    # 逐个 signal_date 检查是否落在实际回测执行的日期范围内：signal_date 晚于
+    # 或等于回测末日（其后无执行日）时，该信号永不生效。此前只看整体
+    # bt.nav.is_empty() 会漏掉"N 个 run_dir 中只有最新一次过期、其余历史信号
+    # 仍正常执行"这一更常见的真实场景（如每日/每周 build 后立即 sim，但行情
+    # 数据还没更新到位）——此时 nav 整体非空，但过期的那个信号被悄悄忽略，
+    # 不会有任何告警。
+    max_trade_date = (
+        daily.select("trade_date").max()["trade_date"][0] if not daily.is_empty() else None
+    )
+    for sig_date in sorted(weights_by_date):
+        if max_trade_date is None or sig_date >= max_trade_date:
+            _logger.warning(
+                "signal_date=%s 晚于或等于回测末日（回测末日=%s），未产生任何调仓，"
+                "该信号未被消费",
+                sig_date,
+                max_trade_date,
+            )
 
     # summary_stats 结构：{"portfolio": {ann_ret, ann_vol, sharpe, max_dd, ...}, "long_short": ...}
     portfolio_stats: dict[str, float] = bt.summary_stats.get(
@@ -170,7 +229,7 @@ def run_portfolio_simulation(
             {
                 "run_id": rid,
                 "n_signals": len(weights_by_date),
-                "git_sha": _git_sha(),
+                "git_sha": get_git_sha(),
             },
             ensure_ascii=False,
             indent=2,

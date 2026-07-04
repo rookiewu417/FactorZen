@@ -29,6 +29,9 @@ from factorzen.config.constants import (
 from factorzen.core.universe import _get_board_limit
 from factorzen.core.validation import require_columns
 from factorzen.daily.evaluation.cost_models import CostModelBase
+from factorzen.daily.evaluation.trade_constraints import (
+    apply_trade_constraints as _apply_trade_constraints,
+)
 
 
 @dataclass
@@ -486,8 +489,20 @@ def run_strategy_backtest(
     collect_positions: bool = True,
     collect_trades: bool = True,
     include_context_positions: bool = True,
+    is_st_by_date: dict[date, set[str]] | None = None,
 ) -> StrategyBacktestResult:
-    """运行策略回测。"""
+    """运行策略回测。
+
+    Parameters
+    ----------
+    is_st_by_date : dict[date, set[str]] | None, optional
+        按 ``execution_date`` 给出当日处于 ST/\\*ST 状态的 ``ts_code`` 集合，
+        用于 PIT 正确地收窄主板 ST 股票的涨跌停阈值（4.8% 而非 9.8%，参见
+        ``factorzen.core.universe._get_board_limit``）。为 ``None``（默认）
+        时行为与未引入此参数前完全一致：一律按非 ST 板块阈值判断涨跌停。
+        慢路径、快路径（``_run_precomputed_weights_backtest_fast``）均消费
+        此参数。
+    """
     cfg = config or BacktestConfig()
     factor = _prepare_factor_df(factor_df, cfg.factor_col)
     price = _prepare_price_df(price_df)
@@ -506,6 +521,7 @@ def run_strategy_backtest(
             config=cfg,
             cost_model=cast(CostModel | None, cost_model),
             factor_name=factor_name,
+            is_st_by_date=is_st_by_date,
         )
 
     current_weights: dict[str, float] = {}
@@ -569,6 +585,9 @@ def run_strategy_backtest(
             target_weights = dict(open_weights)
 
         all_codes = sorted(set(open_weights) | set(target_weights))
+        st_codes_today: set[str] = (
+            is_st_by_date.get(execution_date, set()) if is_st_by_date else set()
+        )
         next_weights = dict(open_weights)
         trade_cost = 0.0
         turnover = 0.0
@@ -582,6 +601,7 @@ def run_strategy_backtest(
                 portfolio_value=open_nav_value * cfg.initial_capital,
                 config=cfg,
                 adv=adv_20d.get(code),
+                is_st=code in st_codes_today,
             )
             next_weight = prev_weight + filled_delta
             if abs(next_weight) < 1e-12:
@@ -947,6 +967,7 @@ def _run_precomputed_weights_backtest_fast(
     config: BacktestConfig,
     cost_model: CostModel | None,
     factor_name: str,
+    is_st_by_date: dict[date, set[str]] | None = None,
 ) -> StrategyBacktestResult:
     codes = price.select("ts_code").unique().sort("ts_code")["ts_code"].to_list()
     code_to_idx = {code: idx for idx, code in enumerate(codes)}
@@ -965,9 +986,18 @@ def _run_precomputed_weights_backtest_fast(
         code_idx = code_to_idx.get(code)
         if date_idx is None or code_idx is None:
             continue
-        open_px[date_idx, code_idx] = float(row["open"])
-        pre_close[date_idx, code_idx] = float(row["pre_close"])
-        vol_data[date_idx, code_idx] = float(row["vol"] or 0.0)
+        # 缺价格保护：open/pre_close 为 None 时保持数组默认的 NaN，下游
+        # valid_price 掩码会据此把该股票该日判定为不可交易（对齐慢路径
+        # _apply_trade_constraints 的 "missing_price" 语义），而不是让
+        # float(None) 抛 TypeError 崩掉整个回测。
+        open_value = row["open"]
+        pre_close_value = row["pre_close"]
+        if open_value is not None:
+            open_px[date_idx, code_idx] = float(open_value)
+        if pre_close_value is not None:
+            pre_close[date_idx, code_idx] = float(pre_close_value)
+        vol_value = row["vol"]
+        vol_data[date_idx, code_idx] = float(vol_value) if vol_value is not None else np.nan
         overnight_ret[date_idx, code_idx] = float(row["overnight_ret"] or 0.0)
         intraday_ret[date_idx, code_idx] = float(row["intraday_ret"] or 0.0)
 
@@ -983,8 +1013,17 @@ def _run_precomputed_weights_backtest_fast(
                 adv[date_idx, code_idx] = float(value)
 
     board_limits = np.array([_get_board_limit(code) * 100.0 for code in codes], dtype=float)
+    board_limits_st: np.ndarray | None = (
+        np.array([_get_board_limit(code, is_st=True) * 100.0 for code in codes], dtype=float)
+        if is_st_by_date
+        else None
+    )
     target_by_signal_date: dict[date, tuple[np.ndarray, np.ndarray]] = {}
     for sig_date, weight_df in strategy.weights_by_date.items():
+        # 与慢路径每次 generate_weights() 后都过 _validate_target_weights 对齐：
+        # 非有限值 / 超 max_abs_weight / 超 max_gross_exposure 在此处直接抛
+        # ValueError，而不是静默放行成垃圾 NAV。
+        weight_df = _validate_target_weights(weight_df, config)
         indices: list[int] = []
         values: list[float] = []
         for row in weight_df.iter_rows(named=True):
@@ -1039,12 +1078,25 @@ def _run_precomputed_weights_backtest_fast(
                 & (open_today > 0)
                 & (pre_close_today > 0)
             )
-            # Suspended stocks have vol == 0; block both buy and sell
-            not_suspended = np.isfinite(vol_today) & (vol_today > 0)
+            # Suspended stocks have vol == 0; block both buy and sell.
+            # vol is None/NaN (missing data, distinct from a whole-column-missing
+            # default of 1.0 in _prepare_price_df) is NOT treated as suspended —
+            # 与慢路径 _apply_trade_constraints 语义一致：仅
+            # ``vol is not None and float(vol) == 0.0`` 才判停牌。
+            not_suspended = ~(np.isfinite(vol_today) & (vol_today == 0.0))
             opening_pct = np.zeros(len(codes), dtype=float)
             opening_pct[valid_price] = (
                 open_today[valid_price] / pre_close_today[valid_price] - 1.0
             ) * 100.0
+            # ST 股票主板涨跌停阈值收窄（4.8% 而非 9.8%）：按 execution_date 当天
+            # 的 ST 集合逐日选择有效阈值，is_st_by_date 为 None 时与未引入该参数
+            # 前行为完全一致（始终用 board_limits）。
+            effective_board_limits = board_limits
+            if is_st_by_date and board_limits_st is not None:
+                st_today = is_st_by_date.get(execution_date)
+                if st_today:
+                    st_mask = np.array([c in st_today for c in codes], dtype=bool)
+                    effective_board_limits = np.where(st_mask, board_limits_st, board_limits)
             tradable = (
                 active
                 & valid_price
@@ -1052,8 +1104,8 @@ def _run_precomputed_weights_backtest_fast(
                 # 浮点容差与慢路径 _apply_trade_constraints 保持一致：
                 # 创业板 open=11.98/pre_close=10.0 → opening_pct=19.7999...，
                 # 若不减 1e-9 则 19.7999... >= 19.8 为 False，涨停买单被漏判。
-                & ~((delta > 0) & (opening_pct >= board_limits - 1e-9))
-                & ~((delta < 0) & (opening_pct <= -board_limits + 1e-9))
+                & ~((delta > 0) & (opening_pct >= effective_board_limits - 1e-9))
+                & ~((delta < 0) & (opening_pct <= -effective_board_limits + 1e-9))
             )
             filled[tradable] = delta[tradable]
 
@@ -1082,10 +1134,15 @@ def _run_precomputed_weights_backtest_fast(
         next_weights[np.abs(next_weights) < 1e-12] = 0.0
         if cost_model is None:
             trade_cost = 0.0
+            borrow_cost = 0.0
         else:
             buy_cost = np.where(filled > 0, np.abs(filled) * cost_model.one_way_cost(), 0.0)
             sell_cost = np.where(filled < 0, np.abs(filled) * cost_model.sell_cost(), 0.0)
             trade_cost = float(np.sum(buy_cost + sell_cost))
+            # 融券成本：与慢路径一致，按本期（约束/容量过滤后）空头敞口逐期计提，
+            # 不止首次建仓那一天（持有空头期间每期都收费）。
+            short_exposure = float(np.sum(np.abs(next_weights[next_weights < 0])))
+            borrow_cost = short_exposure * cost_model.borrow_rate_per_period(config.frequency)
         turnover = float(np.sum(np.abs(filled)))
 
         intraday = intraday_ret[i]
@@ -1093,7 +1150,8 @@ def _run_precomputed_weights_backtest_fast(
         gross_return = (1.0 + overnight_return) * (1.0 + intraday_return) - 1.0
         period_cost_scale = 1.0 + overnight_return
         period_trade_cost = trade_cost * period_cost_scale
-        net_return = gross_return - period_trade_cost
+        period_borrow_cost = borrow_cost * period_cost_scale
+        net_return = gross_return - period_trade_cost - period_borrow_cost
         nav_value *= 1.0 + net_return
 
         close_denom = 1.0 + intraday_return
@@ -1114,7 +1172,7 @@ def _run_precomputed_weights_backtest_fast(
                     "trade_date": execution_date,
                     "gross_return": gross_return,
                     "cost": period_trade_cost,
-                    "borrow_cost": 0.0,
+                    "borrow_cost": period_borrow_cost,
                     "net_return": net_return,
                     "nav": nav_value,
                     "cash_weight": cash_weight,
@@ -1213,61 +1271,6 @@ def _drift_weights(
         if abs(drifted_weight) >= 1e-12:
             drifted[code] = drifted_weight
     return drifted
-
-
-def _apply_trade_constraints(
-    *,
-    code: str,
-    delta: float,
-    price_map: dict[str, dict[str, Any]],
-    portfolio_value: float,
-    config: BacktestConfig,
-    adv: float | None = None,
-) -> tuple[float, str]:
-    if abs(delta) < 1e-12:
-        return 0.0, ""
-    rec = price_map.get(code)
-    if rec is None or rec.get("open") is None or rec.get("pre_close") is None:
-        return 0.0, "missing_price"
-    open_price = float(rec["open"])
-    pre_close = float(rec["pre_close"])
-    if (
-        not np.isfinite(open_price)
-        or not np.isfinite(pre_close)
-        or open_price <= 0
-        or pre_close <= 0
-    ):
-        return 0.0, "missing_price"
-
-    # Check if stock is suspended (vol == 0)
-    vol = rec.get("vol")
-    if vol is not None and float(vol) == 0.0:
-        return 0.0, "suspended"
-
-    opening_pct = (open_price / pre_close - 1.0) * 100.0
-    board_limit_pct = _get_board_limit(code) * 100 if code else config.limit_up_pct
-    effective_limit_up = board_limit_pct
-    effective_limit_down = -board_limit_pct
-    # 浮点容差：防止 (11.98/10-1)*100=19.7999... >= 19.8 漏判
-    if delta > 0 and opening_pct >= effective_limit_up - 1e-9:
-        return 0.0, "limit_up"
-    if delta < 0 and opening_pct <= effective_limit_down + 1e-9:
-        return 0.0, "limit_down"
-
-    adv_value = float(adv) if adv is not None else 0.0
-    if not np.isfinite(adv_value) or adv_value <= 0:
-        fallback_adv = config.fallback_adv
-        adv_value = float(fallback_adv) if fallback_adv is not None else 0.0
-    if not np.isfinite(adv_value) or adv_value <= 0:
-        return delta, ""
-
-    max_trade_value = adv_value * config.max_participation_rate
-    if portfolio_value <= 0:
-        return 0.0, "invalid_portfolio_value"
-    max_delta = max_trade_value / portfolio_value
-    if abs(delta) > max_delta + 1e-12:
-        return float(np.sign(delta) * max_delta), "capacity"
-    return delta, ""
 
 
 def _summary_stats(

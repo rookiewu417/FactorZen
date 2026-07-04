@@ -18,7 +18,7 @@ class AmihudIlliquidity(DailyFactor):
             daily.sort(["ts_code", "trade_date"])
             .with_columns(
                 [
-                    (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0)
+                    (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0)
                     .abs()
                     .alias("_abs_ret"),
                     (pl.col("amount") + 1e-6).alias("_amount"),

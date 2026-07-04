@@ -670,10 +670,12 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
         if mf_path.exists():
             portfolio_manifest = _json.loads(mf_path.read_text(encoding="utf-8"))
 
-    # 尝试从 sim_dir/nav.parquet 重建轻量 sim_result 对象（仅含 .nav 字段），
-    # 供 _make_returns_chart 渲染净值曲线。_make_returns_chart 只访问 .nav，
-    # _make_monthly_return_heatmap 访问 .returns（用 _safe_attr 安全取值，
-    # SimpleNamespace 无该属性时返回 None，函数静默跳过），可安全降级。
+    # 尝试从 sim_dir/nav.parquet 重建轻量 sim_result 对象，供两个图表函数使用：
+    # _make_returns_chart 只访问 .nav 渲染净值曲线；_make_monthly_return_heatmap
+    # 只访问 .returns 渲染月度收益热力图（用 _safe_attr 安全取值，缺失该属性时
+    # 返回 None、函数静默跳过不渲染）。nav.parquet 本身已含计算热力图所需的
+    # net_return 列，故 .returns 直接复用同一份 nav_df 即可——
+    # 早期版本只设置了 .nav，导致热力图在这条唯一的生产路径下恒为死代码。
     sim_result = None
     if sim_dir is not None:
         nav_path = sim_dir / "nav.parquet"
@@ -720,6 +722,137 @@ def _cmd_sim_show(args: argparse.Namespace) -> int:
     extras = {k: v for k, v in metrics.items() if k not in keys}
     if extras:
         print(json.dumps(extras, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_live_replay(args: argparse.Namespace) -> int:
+    from datetime import date as _date
+
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.execution.drivers import run_replay
+
+    stocks = get_universe(args.end, args.universe) if args.universe else None
+    daily = loader.fetch_daily(args.start, args.end)
+    if stocks is not None:
+        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    out = run_replay(
+        session_dir=args.session_dir,
+        portfolio_run_dirs=args.portfolio_run_dirs,
+        daily=daily,
+        initial_cash=args.initial_cash,
+        from_date=_date.fromisoformat(args.from_date) if args.from_date else None,
+        to_date=_date.fromisoformat(args.to_date) if args.to_date else None,
+        seed=args.seed,
+    )
+    print(f"replay 完成: {out['n_steps']} 步, 终值 NAV={out['final_nav']:.2f} → {out['session_dir']}")
+    return 0
+
+
+def _cmd_live_init(args: argparse.Namespace) -> int:
+    from factorzen.execution.store import SessionStore
+
+    SessionStore(args.session_dir).init(
+        {
+            "broker": args.broker,
+            "command": ["fz", "live", "init"],
+            "initial_cash": args.initial_cash,
+            "slippage_bps": args.slippage_bps,
+        }
+    )
+    print(f"[live] init 会话 → {args.session_dir}")
+    return 0
+
+
+def _cmd_live_step(args: argparse.Namespace) -> int:
+    import json as _json
+    from datetime import date as _date
+    from pathlib import Path
+
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.execution.drivers import run_daily_step
+
+    stocks = get_universe(args.end, args.universe) if args.universe else None
+    daily = loader.fetch_daily(args.start, args.end)
+    if stocks is not None:
+        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    cfg = _json.loads((Path(args.session_dir) / "manifest.json").read_text()).get("config", {})
+    cfg.setdefault("initial_cash", 1_000_000.0)
+    cfg.setdefault("slippage_bps", 0.0)
+    d = _date.fromisoformat(f"{args.date[:4]}-{args.date[4:6]}-{args.date[6:]}")
+    out = run_daily_step(args.session_dir, d, args.portfolio_run_dirs, daily, config=cfg)
+    status = "跳过(已记录)" if out["skipped"] else f"{out['n_fills']}成交 NAV={out['nav_after']}"
+    print(f"[live] step {out['as_of']}: {status}")
+    return 0
+
+
+def _cmd_live_status(args: argparse.Namespace) -> int:
+    from factorzen.execution.store import SessionStore
+
+    s = SessionStore(args.session_dir)
+    st = s.load_state()
+    nav = s.nav_frame()
+    last = nav["as_of_date"][-1] if nav.height else "(无)"
+    # state.json 有两种形状：可续跑态（run_daily_step 落的 broker.state()=
+    # {cash: float, pos, order_seq}）或显示视图（run_replay 留的 step() 返回=
+    # {positions, cash: {available,total_asset,market_value}}）。两者都要兼容，
+    # 不能假设只有前者，否则对 replay session 会打印整个 cash dict、且持仓数
+    # 因取错键（pos vs positions）恒报 0。
+    if st is None:
+        cash: float | str = "N/A"
+        n_pos = 0
+    else:
+        cash_raw = st.get("cash")
+        if isinstance(cash_raw, dict):
+            avail = cash_raw.get("available")
+            total = cash_raw.get("total_asset")
+            val = avail if avail is not None else total
+            cash = float(val) if isinstance(val, int | float) else "N/A"
+        elif isinstance(cash_raw, int | float):
+            cash = float(cash_raw)
+        else:
+            cash = "N/A"
+        positions = st.get("pos")
+        if positions is None:
+            positions = st.get("positions", {})
+        n_pos = len(positions)
+    print(f"[live] 末记录日={last} 现金={cash} 持仓数={n_pos}")
+    return 0
+
+
+def _cmd_live_report(args: argparse.Namespace) -> int:
+    import json as _json
+    from pathlib import Path
+
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.execution.attribution import build_attribution_report
+
+    stocks = get_universe(args.end, args.universe) if args.universe else None
+    daily = loader.fetch_daily(args.start, args.end)
+    if stocks is not None:
+        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    cfg = _json.loads((Path(args.session_dir) / "manifest.json").read_text()).get("config", {})
+    rep = build_attribution_report(
+        args.session_dir,
+        args.portfolio_run_dirs,
+        daily,
+        initial_cash=float(cfg.get("initial_cash", 1_000_000.0)),
+    )
+    print(
+        f"[live] 归因: 总缺口={rep['total_gap_ann_ret'] * 1e4:.1f}bps/年 "
+        f"成本={rep['cost_bps']:.1f} 滑点={rep['slippage_bps']:.1f} residual={rep['residual_bps']:.1f} "
+        f"| 年化换手(双边)={rep.get('ann_turnover', 0.0):.2f} 成交={rep.get('n_fills', 0)}笔"
+    )
+    for r, v in rep["missed_by_reason"].items():
+        print(f"        未成交[{r}]: {v['count']}次 名义额={v['notional']:.0f}")
     return 0
 
 
@@ -1073,6 +1206,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="模拟输出目录（含 metrics.json）",
     )
     s_show.set_defaults(func=_cmd_sim_show)
+
+    # ── fz live ──（顶层命令组）
+    live = sub.add_parser("live", help="向前执行(纸面/实盘)工作流")
+    live_sub = live.add_subparsers(dest="live_command", required=True)
+    lp = live_sub.add_parser("replay", help="历史窗口 replay 出向前 NAV(A类)")
+    lp.add_argument("--session-dir", required=True, dest="session_dir")
+    lp.add_argument("--portfolio-run-dir", action="append", required=True, dest="portfolio_run_dirs")
+    lp.add_argument("--start", required=True)   # 行情窗口起(YYYYMMDD)
+    lp.add_argument("--end", required=True)      # 行情窗口止
+    lp.add_argument("--universe", default=None)
+    lp.add_argument("--initial-cash", type=float, default=1_000_000.0, dest="initial_cash")
+    lp.add_argument("--broker", choices=["paper"], default="paper")
+    lp.add_argument("--from-date", default=None, dest="from_date")  # 可选:窗口内进一步裁剪(YYYY-MM-DD)
+    lp.add_argument("--to-date", default=None, dest="to_date")
+    lp.add_argument("--seed", type=int, default=0)
+    lp.set_defaults(func=_cmd_live_replay)
+
+    li = live_sub.add_parser("init", help="初始化向前会话")
+    li.add_argument("--session-dir", required=True, dest="session_dir")
+    li.add_argument("--initial-cash", type=float, default=1_000_000.0, dest="initial_cash")
+    li.add_argument("--slippage-bps", type=float, default=0.0, dest="slippage_bps")
+    li.add_argument("--broker", choices=["paper"], default="paper")
+    li.set_defaults(func=_cmd_live_init)
+
+    ls = live_sub.add_parser("step", help="推进一个交易日(可续跑)")
+    ls.add_argument("--session-dir", required=True, dest="session_dir")
+    ls.add_argument("--date", required=True)  # YYYYMMDD
+    ls.add_argument(
+        "--portfolio-run-dir", action="append", required=True, dest="portfolio_run_dirs"
+    )
+    ls.add_argument("--start", required=True)  # 行情窗口(含ADV回看)
+    ls.add_argument("--end", required=True)
+    ls.add_argument("--universe", default=None)
+    ls.set_defaults(func=_cmd_live_step)
+
+    lst = live_sub.add_parser("status", help="打印会话当前状态")
+    lst.add_argument("--session-dir", required=True, dest="session_dir")
+    lst.set_defaults(func=_cmd_live_status)
+
+    lr = live_sub.add_parser("report", help="生成A类分歧归因报告")
+    lr.add_argument("--session-dir", required=True, dest="session_dir")
+    lr.add_argument(
+        "--portfolio-run-dir", action="append", required=True, dest="portfolio_run_dirs"
+    )
+    lr.add_argument("--start", required=True)
+    lr.add_argument("--end", required=True)
+    lr.add_argument("--universe", default=None)
+    lr.set_defaults(func=_cmd_live_report)
 
     return parser
 

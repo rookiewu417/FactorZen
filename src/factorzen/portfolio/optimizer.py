@@ -28,6 +28,14 @@ def _psd(F: np.ndarray) -> np.ndarray:
 
 def optimize_portfolio(alpha, risk_result, *, risk_aversion: float = 1.0,
                        constraint_config, solver: str = "CLARABEL") -> OptimizeResult:
+    """因子形式 mean-variance QP：max alpha@w − risk_aversion * portfolio_variance。
+
+    注意：这里的 ``risk_aversion`` 缩放约定与 ``daily/optimization/mean_variance.py``
+    **不同**——那边的目标函数是 ``wᵀμ − (risk_aversion/2)·wᵀΣw``（含 1/2），这里没有
+    这个 1/2。两者是各自独立维护的组合构建实现（见项目 CLAUDE.md「命名空间分离」），
+    同一个 ``risk_aversion`` 数值在两边对应的实际风险惩罚强度相差 2 倍，不能跨模块
+    直接套用调参经验。
+    """
     X = risk_result.factor_exposures.matrix          # (n, k)
     F = _psd(np.asarray(risk_result.factor_covariance))  # (k, k) PSD
     D = np.asarray(risk_result.specific_risk)        # (n,) std
@@ -41,8 +49,12 @@ def optimize_portfolio(alpha, risk_result, *, risk_aversion: float = 1.0,
     t0 = time.perf_counter()
     try:
         prob.solve(solver=getattr(cp, solver))
-    except cp.error.SolverError:
-        return OptimizeResult(None, "solver_error", None, time.perf_counter() - t0)
+    except (cp.error.SolverError, cp.error.DCPError):
+        # SolverError：求解器本身失败；DCPError：传入的协方差矩阵在 prob.solve()
+        # 阶段被判定非 PSD(例如 _psd() 特征值裁剪后仍残留浮点级别的非PSD残差)。
+        # 两者都不是"程序错误"，而是"这组输入解不出来"，统一按 infeasible/error
+        # 既有设计处理：不返垃圾、不让异常未捕获地往外抛崩掉整条 pipeline。
+        return OptimizeResult(None, "error", None, time.perf_counter() - t0)
     dt = time.perf_counter() - t0
     if prob.status != "optimal" or w.value is None:
         return OptimizeResult(None, prob.status, None, dt)

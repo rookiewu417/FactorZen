@@ -36,7 +36,7 @@ from factorzen.core.logger import get_logger, setup_logging
 from factorzen.core.progress import OverallProgress
 from factorzen.core.storage import load_parquet
 from factorzen.core.timing import StageTimer
-from factorzen.core.universe import get_universe
+from factorzen.core.universe import build_is_st_by_date, get_universe
 from factorzen.daily.data.context import FactorDataContext
 from factorzen.daily.evaluation.backtest import run_strategy_backtest, trim_backtest_to_first_trade
 from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
@@ -535,6 +535,11 @@ def _run_backtest_strategies(
 ) -> tuple[Any, dict[str, Any]]:
     strategy_results: dict[str, Any] = {}
     specs = {spec.name: spec for spec in config.backtest.strategy_specs}
+    # PIT 收窄 ST 股票涨跌停阈值（4.8% 而非主板 9.8%，见
+    # core/universe.py::_get_board_limit）；只构建一次，全程复用。
+    codes = daily.select("ts_code").unique()["ts_code"].to_list()
+    trade_dates_list = daily.select("trade_date").unique()["trade_date"].to_list()
+    is_st_by_date = build_is_st_by_date(codes, trade_dates_list)
     for strategy_name, strategy in build_backtest_strategies(config).items():
         spec = specs[strategy_name]
         result = run_strategy_backtest(
@@ -549,6 +554,7 @@ def _run_backtest_strategies(
             ),
             cost_model=build_cost_model(config, spec),
             factor_name=factor_name,
+            is_st_by_date=is_st_by_date,
         )
         result = trim_backtest_to_first_trade(result)
         strategy_results[strategy_name] = result

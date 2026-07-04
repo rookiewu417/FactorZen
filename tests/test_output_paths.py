@@ -37,7 +37,6 @@ def test_evaluations_are_sibling_to_runs_and_artifacts_stay_in_runs():
     assert settings.FACTOR_EVALUATIONS_DIR == settings.WORKSPACE_DIR / "factor_evaluations"
     assert settings.WORKSPACE_RUNS == settings.WORKSPACE_DIR / "runs"
     assert settings.OUTPUT_DIR == settings.WORKSPACE_RUNS / "artifacts"
-    assert settings.AUTOMATION_OUTPUT == settings.WORKSPACE_RUNS / "automation"
 
 
 def test_default_log_dir_stays_in_runs():

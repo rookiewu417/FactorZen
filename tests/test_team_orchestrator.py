@@ -88,17 +88,32 @@ def test_cross_session_dedup(tmp_path: Path):
 
 
 def test_critic_drop_removes_candidate(tmp_path: Path):
-    """scripted Critic drop → 被 drop 候选从 TeamResult.candidates 移除（系统层回归断言）。
+    """scripted Critic drop → 被 drop 候选从 TeamResult.candidates 移除，且状态/持久化记录一致。
+
+    回归覆盖（原 bug：跨轮否决名存实亡）：node_guardrails 把通过定量护栏的
+    AttemptRecord.passed_guardrails 置 True 后，全仓库没有任何地方把它重置回 False。
+    若 Critic 判定 drop 时编排层不同步重置该标记，Librarian 落盘会写出
+    {"passed": true, "verdict": "drop", ...} 的自相矛盾记录，
+    且该记录会被 ExperimentIndex.known_valid() 当作"已验证有效"，
+    喂给后续轮次/session 的假设生成——否决回路被绕过。
+    fake_guardrails 在这里忠实复刻真实 node_guardrails 的副作用（设 passed_guardrails=True），
+    才能真正复现该场景；否则该 mock 形同虚设（被否决的 attempt 从未被标记为"已过护栏"）。
 
     N 诚实验证：drop 移除候选不影响 ledger（attempt 已计入 n_trials）。
     """
     from unittest.mock import patch
 
+    from factorzen.agents.experiment_index import ExperimentIndex
+
     drop_expr = "ts_mean(close, 5)"
 
     def fake_guardrails(state, *, daily, holdout_df, bundle, ledger, top_k=5):
-        """注入候选并计 N，模拟本轮过了护栏。"""
+        """注入候选并计 N，模拟本轮过了护栏（含真实 node_guardrails 会做的状态写入）。"""
         ledger.record(1)  # N 诚实：记 1 个试验
+        # 忠实复刻 node_guardrails 第140行的副作用：候选过护栏时标记对应 AttemptRecord
+        for a in state.attempts:
+            if a.iteration == state.iteration and a.expression == drop_expr:
+                a.passed_guardrails = True
         state.candidates.append({
             "expression": drop_expr,
             "hypothesis": "动量",
@@ -122,12 +137,30 @@ def test_critic_drop_removes_candidate(tmp_path: Path):
         return v
 
     daily = _mock_daily()
+    idx_path = str(tmp_path / "e.jsonl")
     with patch("factorzen.agents.team_orchestrator.node_guardrails", fake_guardrails):
-        res = run_team_agent(daily, fn, n_rounds=1, seed=42,
-                             index_path=str(tmp_path / "e.jsonl"))
+        res = run_team_agent(daily, fn, n_rounds=1, seed=42, index_path=idx_path)
 
     # 系统层回归断言：Critic drop → 本轮候选必须从 candidates 移除
     assert all(c["expression"] != drop_expr for c in res.candidates), \
         f"drop 候选未被移除: {res.candidates}"
     # N 诚实：drop 不影响 ledger（fake_guardrails 已调用 ledger.record(1)）
     assert res.n_trials >= 1
+
+    # 内存状态回归断言：候选被 drop 后，对应 AttemptRecord.passed_guardrails 必须同步重置
+    dropped_attempts = [a for a in res.state.attempts if a.expression == drop_expr]
+    assert dropped_attempts, f"未找到 {drop_expr} 的 AttemptRecord"
+    assert all(not a.passed_guardrails for a in dropped_attempts), \
+        f"被 drop 的 AttemptRecord.passed_guardrails 未重置为 False: {dropped_attempts}"
+
+    # 持久化层回归断言（原 bug 的核心症状）：experiment_index.jsonl 不能落盘自相矛盾记录
+    index = ExperimentIndex(idx_path)
+    persisted = [r for r in index.load() if r.get("expression") == drop_expr]
+    assert persisted, f"experiment_index.jsonl 未找到 {drop_expr} 的记录"
+    assert all(r.get("passed") is False for r in persisted), \
+        f"被 drop 的持久化记录 passed 字段应为 False: {persisted}"
+
+    # 最终不变量（无论用哪种修复方案，这条都必须成立）：
+    # 被 Critic 否决的表达式不能被 known_valid() 当作"已验证有效"
+    assert drop_expr not in index.known_valid(k=10), \
+        f"被否决的表达式 {drop_expr} 不应出现在 known_valid() 中"

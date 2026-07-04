@@ -340,7 +340,7 @@ pixi run fz portfolio build \
   --industry-neutral
 ```
 
-**产物**：`workspace/portfolios/{run_id}/`（`weights.parquet`（列 `ts_code/weight/prev_weight`）+ `attribution.csv` + `risk_summary.csv` + `manifest.json`，无 HTML）
+**产物**：`workspace/portfolios/{run_id}/`（`weights.parquet`（列 `ts_code/target_weight/prev_weight`）+ `attribution.csv` + `risk_summary.csv` + `manifest.json`，无 HTML）
 
 > **MVP 限制**：`--industry-neutral` 行业中性约束目前以股票池行业等权为基准（不是市值加权基准）。
 
@@ -456,7 +456,7 @@ pixi run fz report path <run_id>
 pixi run fz data fetch daily --start 20200101 --end 20241231
 ```
 
-**产物**：`data/tushare/daily/YYYYMMDD.parquet`（分区缓存，增量更新）
+**产物**：`data/raw/daily/year=YYYY/month=MM/data.parquet`（按年/月分区缓存，增量更新）
 
 ---
 
@@ -468,7 +468,7 @@ pixi run fz data fetch daily --start 20200101 --end 20241231
 pixi run fz data fetch daily-basic --start 20200101 --end 20241231
 ```
 
-**产物**：`data/tushare/daily_basic/YYYYMMDD.parquet`
+**产物**：`data/raw/daily_basic/year=YYYY/month=MM/data.parquet`
 
 ---
 
@@ -521,7 +521,7 @@ walk_forward:
   embargo_days: 5
 
 preprocessing:
-  normalizer: rank_normal   # zscore | rank_normal
+  normalizer: rank_normal   # zscore | rank_uniform | rank_normal | quantile_normal
   neutralize: true
 
 backtest:
@@ -552,7 +552,7 @@ pixi run fz factor run momentum_20d --start 20230101 --end 20241231 --dry-run
 ```bash
 pixi run lint         # ruff 代码风格
 pixi run typecheck    # mypy 类型检查
-pixi run test         # pytest（1111 测试）
+pixi run test         # pytest（1185 测试）
 pixi run coverage     # 覆盖率报告
 ```
 

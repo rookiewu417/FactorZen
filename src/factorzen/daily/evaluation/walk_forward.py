@@ -17,6 +17,7 @@ import numpy as np
 import polars as pl
 
 from factorzen.config.constants import TRADING_DAYS_PER_YEAR
+from factorzen.core.universe import build_is_st_by_date
 from factorzen.daily.evaluation.backtest import BacktestConfig, Strategy, run_strategy_backtest
 
 logger = logging.getLogger(__name__)
@@ -259,6 +260,10 @@ def run_walk_forward(
     dates: list[Any] = (
         price_df.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
     )
+    # PIT 收窄 ST 股票涨跌停阈值（见 core/universe.py::_get_board_limit）；
+    # 只构建一次，IS/OOS 每折均复用。
+    codes = price_df.select("ts_code").unique()["ts_code"].to_list()
+    is_st_by_date = build_is_st_by_date(codes, dates)
 
     folds_data = splitter.split(dates)
     if not folds_data:
@@ -304,7 +309,12 @@ def run_walk_forward(
         try:
             strategy_is = strategy_factory(effective_params)
             is_result = run_strategy_backtest(
-                strategy_is, train_factor, train_price, cfg, factor_name=factor_name
+                strategy_is,
+                train_factor,
+                train_price,
+                cfg,
+                factor_name=factor_name,
+                is_st_by_date=is_st_by_date,
             )
             is_sharpe = _extract_sharpe(is_result)
         except Exception as exc:
@@ -319,7 +329,12 @@ def run_walk_forward(
         try:
             strategy_oos = strategy_factory(effective_params)
             oos_result = run_strategy_backtest(
-                strategy_oos, test_factor, test_price, cfg, factor_name=factor_name
+                strategy_oos,
+                test_factor,
+                test_price,
+                cfg,
+                factor_name=factor_name,
+                is_st_by_date=is_st_by_date,
             )
             oos_sharpe = _extract_sharpe(oos_result)
             oos_ann_ret = _extract_ann_ret(oos_result)
@@ -416,6 +431,10 @@ def run_walk_forward_search(
     dates: list[Any] = (
         price_df.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
     )
+    # PIT 收窄 ST 股票涨跌停阈值（见 core/universe.py::_get_board_limit）；只
+    # 构建一次，IS 全量缓存 / 逐折 IS 搜索 / OOS 三处调用均复用同一份。
+    codes = price_df.select("ts_code").unique()["ts_code"].to_list()
+    is_st_by_date = build_is_st_by_date(codes, dates)
 
     folds_data = splitter.split(dates)
     if not folds_data:
@@ -453,6 +472,7 @@ def run_walk_forward_search(
                     collect_positions=False,
                     collect_trades=False,
                     include_context_positions=include_context_positions,
+                    is_st_by_date=is_st_by_date,
                 )
                 cached_is_returns.append((dict(params), result.returns))
             except Exception as exc:
@@ -496,6 +516,7 @@ def run_walk_forward_search(
                         collect_positions=False,
                         collect_trades=False,
                         include_context_positions=include_context_positions,
+                        is_st_by_date=is_st_by_date,
                     )
                     sharpe = _extract_sharpe(result)
                 except Exception as exc:
@@ -536,6 +557,7 @@ def run_walk_forward_search(
                 collect_positions=False,
                 collect_trades=False,
                 include_context_positions=include_context_positions,
+                is_st_by_date=is_st_by_date,
             )
             oos_sharpe = _extract_sharpe(oos_result)
             oos_ann_ret = _extract_ann_ret(oos_result)

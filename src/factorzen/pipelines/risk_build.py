@@ -2,26 +2,20 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
+from factorzen.core.experiment import build_manifest_base
 from factorzen.risk import RiskModel
-
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except Exception:
-        return "unknown"
 
 
 def run_risk_build(daily, daily_basic, stocks, start, end, *, out_dir="workspace/risk_models",
                    cov_half_life=90, nw_lags=2, spec_half_life=90, spec_shrinkage=0.3,
-                   run_id=None) -> dict:
+                   run_id=None, command: list[str] | None = None) -> dict:
     t0 = time.perf_counter()
     model = RiskModel(cov_half_life=cov_half_life, nw_lags=nw_lags,
                       spec_half_life=spec_half_life, spec_shrinkage=spec_shrinkage)
@@ -104,13 +98,22 @@ def run_risk_build(daily, daily_basic, stocks, start, end, *, out_dir="workspace
     pl.DataFrame(rows if rows else {"section": [], "metric": [], "value": []}) \
         .write_csv(run_dir / "risk_summary.csv")
 
-    manifest = {"run_id": rid, "start": start, "end": end, "universe_size": exp.n_stocks,
-                "cov_half_life": cov_half_life, "nw_lags": nw_lags,
-                "spec_half_life": spec_half_life, "spec_shrinkage": spec_shrinkage,
-                "r_squared": result.r_squared, "factor_names": names,
-                "specific_risk_mean": float(sr.mean()) if sr.size else 0.0,
-                "equal_weight_decomp": {k: round(v, 6) for k, v in decomp.items()},
-                "git_sha": _git_sha(), "duration_seconds": round(time.perf_counter() - t0, 3)}
+    # 可复现性基础字段（schema_version/git_sha/git_dirty/pixi_lock_sha256/command/config/start_ts）
+    # 复用 core.experiment.build_manifest_base，与 daily_single/generate_report 的 manifest 同源，
+    # 不再各自手写精简版 _git_sha()。command 缺省时取当前进程 argv（记录“当时具体怎么跑的”）。
+    build_config = {"start": start, "end": end, "out_dir": str(out_dir),
+                    "cov_half_life": cov_half_life, "nw_lags": nw_lags,
+                    "spec_half_life": spec_half_life, "spec_shrinkage": spec_shrinkage}
+    manifest = build_manifest_base(command if command is not None else list(sys.argv), build_config)
+    manifest.update({
+        "run_id": rid, "start": start, "end": end, "universe_size": exp.n_stocks,
+        "cov_half_life": cov_half_life, "nw_lags": nw_lags,
+        "spec_half_life": spec_half_life, "spec_shrinkage": spec_shrinkage,
+        "r_squared": result.r_squared, "factor_names": names,
+        "specific_risk_mean": float(sr.mean()) if sr.size else 0.0,
+        "equal_weight_decomp": {k: round(v, 6) for k, v in decomp.items()},
+        "duration_seconds": round(time.perf_counter() - t0, 3),
+    })
     (run_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
 
     return {"run_dir": str(run_dir), "r_squared": result.r_squared, "factor_names": names}

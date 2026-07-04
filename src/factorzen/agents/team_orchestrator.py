@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from factorzen.agents.roles.critic import critique
 from factorzen.agents.roles.hypothesis import propose_hypotheses
 from factorzen.agents.roles.librarian import recall, record
 from factorzen.agents.state import AgentState, AttemptRecord
+from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.expression import parse_expr, to_expr_string
 from factorzen.discovery.scoring import DataBundle
 from factorzen.llm.generation import LLMFn
@@ -138,6 +138,18 @@ def run_team_agent(
         # verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
         if verdict.verdict == "drop":
             del state.candidates[n_before:]                    # Important 1: 移除本轮新增候选
+            # Bug fix（否决回路名存实亡）：node_guardrails 把通过定量护栏的 AttemptRecord
+            # .passed_guardrails 置 True 后，全仓库没有其它地方重置回 False。候选被 Critic
+            # drop 时必须同步重置，否则 Librarian 落盘会写出 passed=True + verdict=drop 的
+            # 自相矛盾记录，被 ExperimentIndex.known_valid() 当作"已验证有效"喂给后续轮次/
+            # session 的假设生成，否决回路被绕过。
+            # 按 new_cands（本轮新增候选快照）整体重置，而非只重置 Critic 直接点评的代表候选
+            # cand——同一轮内若有多个候选因 drop 被一并删除，状态也要一并清理，不留连坐残留。
+            dropped_exprs = {c["expression"] for c in new_cands}
+            for a in state.attempts:
+                if a.iteration == state.iteration and a.expression in dropped_exprs:
+                    a.passed_guardrails = False
+            new_cands = []          # 不再回填 holdout_ic 等"已验证"字段（Librarian 写入用）
             pending = None
         elif verdict.verdict == "revise_expr":
             pending = {
@@ -169,13 +181,6 @@ def run_team_agent(
     )
 
 
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except Exception:
-        return "unknown"
-
-
 def write_team_manifest(
     result: TeamResult, *, out_dir: str, run_id: str, params: dict
 ) -> Path:
@@ -191,7 +196,7 @@ def write_team_manifest(
         "rounds_log": result.rounds_log,
         "attempts": [a.__dict__ for a in result.state.attempts],
         "candidates": result.candidates,
-        "git_sha": _git_sha(),
+        "git_sha": get_git_sha(),
     }
     path = run_dir / "manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))

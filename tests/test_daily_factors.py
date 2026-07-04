@@ -129,6 +129,228 @@ def test_amihud_illiquidity(ctx):
     assert (non_null >= 0).all(), "Amihud illiquidity must be non-negative"
 
 
+# ── close_adj regression tests (复权 close_adj vs 未复权 close) ─────────────
+#
+# Amihud / MomentumWeekly / VolatilityWeekly 的收益率计算必须基于 close_adj
+# （复权收盘价），否则分红/拆股除权日会在未复权 close 上制造虚假价格断崖，污染
+# 滚动窗口。下面构造一份 close_adj 平滑、close 在除权日断崖下跌的合成数据，
+# 验证三个因子的输出只取决于 close_adj，不受 close 断崖影响。
+
+
+def _trading_days(start: date, n: int) -> list[date]:
+    days: list[date] = []
+    d = start
+    while len(days) < n:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    return days
+
+
+def _make_dividend_jump_daily_lf(
+    days: list[date],
+    split_index: int | None = None,
+    n_stocks: int = 4,
+    jump_ratio: float = 0.5,
+    seed: int = 99,
+) -> pl.LazyFrame:
+    """构造合成日线数据：close_adj 是平滑随机游走（"真实"复权价格序列）。
+
+    若指定 split_index，未复权 close 从该交易日起按 jump_ratio 折算，模拟分红/
+    拆股除权造成的未复权价格断崖（close_adj 保持连续、不受影响）。
+    split_index=None 时 close == close_adj，即无除权事件的对照基线。
+    """
+    rng = np.random.default_rng(seed)
+    stocks = [f"{i:06d}.SZ" for i in range(n_stocks)]
+    rows = []
+    for s in stocks:
+        adj_price = 10.0
+        for i, day in enumerate(days):
+            adj_price = float(max(adj_price * (1 + rng.standard_normal() * 0.015), 0.5))
+            if split_index is not None and i >= split_index:
+                raw_close = adj_price * jump_ratio
+            else:
+                raw_close = adj_price
+            rows.append(
+                {
+                    "trade_date": day,
+                    "ts_code": s,
+                    "close": raw_close,
+                    "close_adj": adj_price,
+                    "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6),
+                }
+            )
+    return pl.DataFrame(rows).lazy()
+
+
+@dataclass
+class _DividendJumpContext:
+    """轻量 mock context：snapshot_dates 可由调用方指定，便于精确控制除权日是否
+    落入因子的回看窗口。"""
+
+    start: str
+    end: str
+    _daily_lf: pl.LazyFrame
+    _snapshot_dates: list = field(default_factory=list)
+    required_data: list = field(default_factory=lambda: ["daily"])
+    lookback_days: int = 20
+    universe: list | None = None
+    snapshot_mode: str = "weekly"
+
+    @property
+    def daily(self) -> pl.LazyFrame:
+        return self._daily_lf
+
+    @property
+    def snapshot_dates(self) -> list:
+        return self._snapshot_dates
+
+
+def test_amihud_illiquidity_unaffected_by_unadjusted_close_jump():
+    """除权造成的未复权 close 断崖不应污染 Amihud 非流动性（须基于 close_adj 计算）。"""
+    from factorzen.builtin_factors.daily.amihud import AmihudIlliquidity
+
+    days = _trading_days(date(2024, 1, 2), 45)
+    split_index = 15
+    start, end = days[0].strftime("%Y%m%d"), days[-1].strftime("%Y%m%d")
+
+    ctx_jump = _DividendJumpContext(
+        start=start, end=end, _daily_lf=_make_dividend_jump_daily_lf(days, split_index=split_index)
+    )
+    ctx_clean = _DividendJumpContext(
+        start=start, end=end, _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None)
+    )
+
+    # sanity check：确认合成数据本身在除权日确实制造了 close 断崖（否则测试无判别力）
+    split_row = ctx_jump.daily.collect().filter(
+        (pl.col("trade_date") == days[split_index]) & (pl.col("ts_code") == "000000.SZ")
+    )
+    assert abs(split_row["close"][0] - split_row["close_adj"][0]) > 1.0
+
+    factor = AmihudIlliquidity()
+    result_jump = factor.compute(ctx_jump).sort(["ts_code", "trade_date"])
+    result_clean = factor.compute(ctx_clean).sort(["ts_code", "trade_date"])
+
+    np.testing.assert_allclose(
+        result_jump["factor_value"].to_numpy(),
+        result_clean["factor_value"].to_numpy(),
+        rtol=1e-7,
+        atol=1e-12,
+        equal_nan=True,
+    )
+
+
+def test_momentum_weekly_basic():
+    """MomentumWeekly 之前未被任何测试引用，补基本覆盖。"""
+    from factorzen.builtin_factors.weekly.momentum import MomentumWeekly
+
+    days = _trading_days(date(2024, 1, 2), 30)
+    snapshot_date = days[25]
+    ctx = _DividendJumpContext(
+        start=days[0].strftime("%Y%m%d"),
+        end=days[-1].strftime("%Y%m%d"),
+        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
+        _snapshot_dates=[snapshot_date],
+    )
+    factor = MomentumWeekly()
+    assert isinstance(factor, DailyFactor)
+    result = factor.compute(ctx)
+    _check_result(result, "momentum_weekly")
+    assert result["trade_date"].unique().to_list() == [snapshot_date]
+
+
+def test_momentum_weekly_unaffected_by_unadjusted_close_jump():
+    """除权造成的未复权 close 断崖不应污染周频动量（须基于 close_adj 计算）。"""
+    from factorzen.builtin_factors.weekly.momentum import MomentumWeekly
+
+    days = _trading_days(date(2024, 1, 2), 45)
+    split_index = 15
+    snapshot_date = days[30]  # 距 split_index 仅 15 个交易日，落在 20 日回看窗口内
+    start, end = days[0].strftime("%Y%m%d"), days[-1].strftime("%Y%m%d")
+
+    ctx_jump = _DividendJumpContext(
+        start=start,
+        end=end,
+        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=split_index),
+        _snapshot_dates=[snapshot_date],
+    )
+    ctx_clean = _DividendJumpContext(
+        start=start,
+        end=end,
+        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
+        _snapshot_dates=[snapshot_date],
+    )
+
+    factor = MomentumWeekly()
+    result_jump = factor.compute(ctx_jump).sort(["ts_code"])
+    result_clean = factor.compute(ctx_clean).sort(["ts_code"])
+
+    assert result_jump.shape[0] > 0
+    np.testing.assert_allclose(
+        result_jump["factor_value"].to_numpy(),
+        result_clean["factor_value"].to_numpy(),
+        rtol=1e-7,
+        atol=1e-12,
+        equal_nan=True,
+    )
+
+
+def test_volatility_weekly_basic():
+    """VolatilityWeekly 之前未被任何测试引用，补基本覆盖。"""
+    from factorzen.builtin_factors.weekly.volatility import VolatilityWeekly
+
+    days = _trading_days(date(2024, 1, 2), 30)
+    snapshot_date = days[25]
+    ctx = _DividendJumpContext(
+        start=days[0].strftime("%Y%m%d"),
+        end=days[-1].strftime("%Y%m%d"),
+        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
+        _snapshot_dates=[snapshot_date],
+    )
+    factor = VolatilityWeekly()
+    assert isinstance(factor, DailyFactor)
+    result = factor.compute(ctx)
+    _check_result(result, "volatility_weekly")
+    non_null = result["factor_value"].drop_nulls().to_numpy()
+    assert np.all(non_null >= 0), "Volatility must be non-negative"
+
+
+def test_volatility_weekly_unaffected_by_unadjusted_close_jump():
+    """除权造成的未复权 close 断崖不应污染周频波动率（须基于 close_adj 计算）。"""
+    from factorzen.builtin_factors.weekly.volatility import VolatilityWeekly
+
+    days = _trading_days(date(2024, 1, 2), 45)
+    split_index = 15
+    snapshot_date = days[30]
+    start, end = days[0].strftime("%Y%m%d"), days[-1].strftime("%Y%m%d")
+
+    ctx_jump = _DividendJumpContext(
+        start=start,
+        end=end,
+        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=split_index),
+        _snapshot_dates=[snapshot_date],
+    )
+    ctx_clean = _DividendJumpContext(
+        start=start,
+        end=end,
+        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
+        _snapshot_dates=[snapshot_date],
+    )
+
+    factor = VolatilityWeekly()
+    result_jump = factor.compute(ctx_jump).sort(["ts_code"])
+    result_clean = factor.compute(ctx_clean).sort(["ts_code"])
+
+    assert result_jump.shape[0] > 0
+    np.testing.assert_allclose(
+        result_jump["factor_value"].to_numpy(),
+        result_clean["factor_value"].to_numpy(),
+        rtol=1e-7,
+        atol=1e-12,
+        equal_nan=True,
+    )
+
+
 def test_max_return_5d(ctx):
     from factorzen.builtin_factors.daily.max_return import MaxReturn5D
 

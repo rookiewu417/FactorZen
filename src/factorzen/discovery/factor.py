@@ -46,19 +46,21 @@ class ExpressionFactor(DailyFactor):
             pl.when(pl.col("vol") > 0).then(pl.col(c)).otherwise(None).alias(c)
             for c in _PRICE_COLS if c in daily.columns
         ])
-        # 派生列
-        daily = daily.with_columns([
-            (pl.col("amount") / pl.col("vol")).alias("vwap"),
-            (pl.col("vol") + 1.0).log().alias("log_vol"),
-        ]).with_columns(
-            (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0).alias("ret_1d")
-        )
         # 仅在表达式引用基本面叶子时 join daily_basic
         if self._feats & BASIC_FEATURES:
             basic = ctx.daily_basic.collect()
             if not basic.is_empty():
                 daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
+        # 排序必须在依赖行序的派生列（shift/over）之前完成，否则 ret_1d 等会用到
+        # 乱序的「上一行」当成「前一交易日」算出错误结果（与 mining_session.py 保持一致）
         df = daily.sort(["ts_code", "trade_date"])
+        # 派生列
+        df = df.with_columns([
+            (pl.col("amount") / pl.col("vol")).alias("vwap"),
+            (pl.col("vol") + 1.0).log().alias("log_vol"),
+        ]).with_columns(
+            (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0).alias("ret_1d")
+        )
         df = df.with_columns(compile_expr(self.node).alias("factor_value"))
         start = datetime.strptime(ctx.start, "%Y%m%d").date()
         return (

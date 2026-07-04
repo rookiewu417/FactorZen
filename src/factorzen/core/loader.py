@@ -596,6 +596,67 @@ def fetch_stock_basic(list_status: str = "L,D,P") -> pl.DataFrame:
     return df
 
 
+def fetch_namechange() -> pl.DataFrame:
+    """拉取全量股票曾用名变更记录（含 ST/\\*ST 状态变更历史），缓存 7 天。
+
+    用于重建任意历史日期的 ST 状态时间线（PIT），参见
+    ``factorzen.core.universe._is_st_asof``。
+
+    已知坑：若调用时传入 start_date/end_date，Tushare ``namechange`` 接口底层
+    按 ann_date 过滤，早期 ann_date 为空的记录会被静默丢弃。因此这里固定
+    **不传日期参数**全量拉取，缓存到本地后由调用方自行按日期区间在本地切片。
+
+    Returns:
+        pl.DataFrame，包含列:
+        ts_code, name, start_date, end_date, ann_date, change_reason。
+
+    Raises:
+        拉取失败且无可用本地缓存时，向上抛出底层异常，由调用方决定如何降级
+        （参见 ``factorzen.core.universe._safe_fetch_namechange``）。
+    """
+    cache_file = DATA_CACHE / "namechange.parquet"
+
+    if cache_file.exists():
+        file_age = (datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)).days
+        if file_age < CACHE_EXPIRE_DAYS:
+            logger.info(f"[namechange] 使用缓存（{file_age} 天前更新）")
+            return pl.read_parquet(cache_file)
+
+    pro = init_tushare()
+    fields_str = "ts_code,name,start_date,end_date,ann_date,change_reason"
+
+    try:
+        df_pd = _retry(pro.namechange, fields=fields_str)
+    except Exception as e:
+        logger.error(f"[namechange] 拉取失败: {e}")
+        if cache_file.exists():
+            logger.warning("[namechange] 拉取失败，使用过期缓存")
+            return pl.read_parquet(cache_file)
+        raise
+
+    if df_pd is None or df_pd.empty:
+        logger.warning("[namechange] 无数据")
+        if cache_file.exists():
+            return pl.read_parquet(cache_file)
+        return pl.DataFrame()
+
+    df = (
+        pl.from_pandas(df_pd)
+        .with_columns(
+            _str_to_date(pl.col("start_date")),
+            _str_to_date(pl.col("end_date")),
+            _str_to_date(pl.col("ann_date")),
+        )
+        .sort(["ts_code", "start_date"])
+    )
+
+    DATA_CACHE.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(str(cache_file))
+    logger.info(f"[namechange] 已更新缓存 ({len(df)} 条)")
+
+    return df
+
+
 def fetch_adj_factor(
     start: str,
     end: str,
@@ -721,6 +782,93 @@ def fetch_index_daily(index_code: str, start: str, end: str) -> pl.DataFrame:
         logger.info(f"[index_daily] {index_code} {year} 已保存 ({len(merged)} 行)")
 
     return load_parquet(_data_type, start=start, end=end).collect()
+
+
+_INDEX_MEMBER_ALL_MEMORY_CACHE: dict[str, pl.DataFrame | None] = {}
+
+
+def fetch_index_member_all() -> pl.DataFrame | None:
+    """拉取申万一级行业历史成分（PIT，含 in_date/out_date），全市场。
+
+    用于风险模型按 ``trade_date`` 做历史行业归属查找（PIT 行业暴露），替代
+    "用当前分类污染历史窗口"的非 PIT 做法。``index_member_all`` 积分门槛较高，
+    当前 token 是否有权限未知：任何原因（无权限/无 token/网络失败/字段不符等）
+    失败都优雅降级，返回 ``None``（不抛异常），调用方应自行回退到非 PIT 的
+    现有行为。
+
+    全市场覆盖通过按申万一级行业（L1）分别拉取再合并实现：``index_member_all``
+    不带过滤条件时单次调用会截断在固定行数（实测 3000 行 / 3000 只股票，覆盖
+    不到全市场 5000+ 只股票的成分历史），必须按 ``l1_code`` 循环拉取才能覆盖
+    全市场，故先用 ``index_classify(level="L1")`` 枚举一级行业代码。
+
+    本地缓存：单文件 ``DATA_CACHE/index_member_all.parquet``，``CACHE_EXPIRE_DAYS``
+    天后过期重新拉取（与 ``fetch_stock_basic`` 的缓存模式一致）；拉取失败时若
+    存在（即使过期的）缓存，回退读取缓存而非直接返回 ``None``。此外还有一层
+    进程内内存缓存（``_INDEX_MEMBER_ALL_MEMORY_CACHE``）：同一进程内重复调用
+    直接复用第一次的结果，不再重复读盘/请求，避免 ``RiskModel.build()`` 对长
+    窗口每个交易日都重新加载同一份全市场行业成分表。
+
+    Returns:
+        pl.DataFrame | None。失败且无可用缓存时返回 ``None``。成功时包含列：
+        l1_code, l1_name, l2_code, l2_name, l3_code, l3_name, ts_code, name,
+        in_date (pl.Date), out_date (pl.Date，仍在该行业则为 null), is_new。
+    """
+    if "value" in _INDEX_MEMBER_ALL_MEMORY_CACHE:
+        return _INDEX_MEMBER_ALL_MEMORY_CACHE["value"]
+
+    cache_file = DATA_CACHE / "index_member_all.parquet"
+
+    if cache_file.exists():
+        file_age = (datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)).days
+        if file_age < CACHE_EXPIRE_DAYS:
+            logger.info(f"[index_member_all] 使用缓存（{file_age} 天前更新）")
+            result = pl.read_parquet(cache_file)
+            _INDEX_MEMBER_ALL_MEMORY_CACHE["value"] = result
+            return result
+
+    try:
+        pro = init_tushare()
+
+        l1_df = _retry(pro.index_classify, level="L1", src="SW2021")
+        if l1_df is None or l1_df.empty:
+            raise RuntimeError("index_classify(level=L1) 返回空，无法枚举一级行业")
+        l1_codes = l1_df["index_code"].tolist()
+
+        fields = (
+            "l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,"
+            "ts_code,name,in_date,out_date,is_new"
+        )
+        parts: list[pl.DataFrame] = []
+        for l1_code in l1_codes:
+            df_pd = _retry(pro.index_member_all, l1_code=l1_code, fields=fields)
+            if df_pd is not None and not df_pd.empty:
+                parts.append(pl.from_pandas(df_pd))
+
+        if not parts:
+            raise RuntimeError("index_member_all 所有一级行业均无数据")
+
+        df = pl.concat(parts, how="vertical_relaxed")
+    except Exception as e:
+        logger.warning(f"[index_member_all] 拉取失败（可能无权限/无 token/网络问题）: {e}")
+        if cache_file.exists():
+            logger.warning("[index_member_all] 回退到本地（可能过期的）缓存")
+            result = pl.read_parquet(cache_file)
+            _INDEX_MEMBER_ALL_MEMORY_CACHE["value"] = result
+            return result
+        _INDEX_MEMBER_ALL_MEMORY_CACHE["value"] = None
+        return None
+
+    df = df.unique(subset=["ts_code", "l1_code", "in_date"], keep="first").with_columns(
+        _str_to_date(pl.col("in_date")),
+        _str_to_date(pl.col("out_date")),
+    )
+
+    DATA_CACHE.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(str(cache_file))
+    logger.info(f"[index_member_all] 已更新缓存 ({len(df)} 行，{df['ts_code'].n_unique()} 只股票)")
+
+    _INDEX_MEMBER_ALL_MEMORY_CACHE["value"] = df
+    return df
 
 
 def fetch_trade_cal(start: str, end: str) -> pl.DataFrame:

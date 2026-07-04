@@ -19,13 +19,13 @@
 from __future__ import annotations
 
 import calendar
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
 
 from factorzen.config.settings import DATA_CACHE
-from factorzen.core.loader import fetch_stock_basic
+from factorzen.core.loader import fetch_namechange, fetch_stock_basic
 from factorzen.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -76,20 +76,57 @@ _INDEX_MEMBER_MEMORY_CACHE: dict[tuple[str, str, str], tuple[str, ...]] = {}
 # ══════════════════════════════════════════════════════════
 
 
+def _members_as_of(df: pl.DataFrame, date_str: str) -> list[str]:
+    """从指数成分股原始数据中按 ``trade_date`` 精确截取 ``date_str`` 当天有效的成分股。
+
+    取 ``trade_date <= date_str`` 中**最近一个 trade_date** 对应的 ``con_code``
+    集合，而不是整批/整月数据的并集——避免在调样生效日（6月/12月中旬等）前就
+    看到尚未生效的新成分（look-ahead bias）。
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Tushare ``index_weight`` 原始返回（或其月度缓存），需含 ``trade_date``、
+        ``con_code`` 列。
+    date_str : str
+        交易日 ``"YYYYMMDD"``。
+
+    Returns
+    -------
+    list[str]
+        ``date_str`` 当天有效的 ``con_code`` 列表；若无 ``trade_date <= date_str``
+        的记录（或缺少必需列）则为空列表。
+    """
+    if "con_code" not in df.columns or "trade_date" not in df.columns:
+        return []
+
+    eligible = df.filter(pl.col("trade_date").cast(pl.Utf8) <= date_str)
+    if eligible.is_empty():
+        return []
+
+    latest_trade_date = eligible["trade_date"].cast(pl.Utf8).max()
+    return (
+        eligible.filter(pl.col("trade_date").cast(pl.Utf8) == latest_trade_date)["con_code"]
+        .drop_nulls()
+        .to_list()
+    )
+
+
 def _load_index_members(index_code: str, date_str: str) -> list[str]:
-    """从 Tushare ``index_weight`` 加载指数成分股，按月缓存。
+    """从 Tushare ``index_weight`` 加载指数成分股，按月缓存、按日精确截取。
 
     Parameters
     ----------
     index_code : str
         Tushare 指数代码，如 ``"000300.SH"``。
     date_str : str
-        日期 ``"YYYYMMDD"``，用于确定拉取月份。
+        日期 ``"YYYYMMDD"``，用于确定拉取月份，并精确截取该日生效的成分股。
 
     Returns
     -------
     list[str]
-        ``ts_code`` 列表（成分股代码，如 ``"000001.SZ"``）。
+        ``ts_code`` 列表（成分股代码，如 ``"000001.SZ"``），按 ``trade_date <=
+        date_str`` 截取自最近一次调样后的集合，不包含尚未生效的未来调样结果。
 
     Raises
     ------
@@ -98,7 +135,7 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
     """
     from factorzen.core.loader import _retry, init_tushare
 
-    # 计算当月第一天及最后一天
+    # 计算当月第一天及最后一天（月度缓存粒度，减少 Tushare 调用次数）
     dt = datetime.strptime(date_str, "%Y%m%d")
     year_month = date_str[:6]
     last_day = calendar.monthrange(dt.year, dt.month)[1]
@@ -107,20 +144,23 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
 
     safe_name = index_code.replace(".", "_")
     cache_file = DATA_CACHE / f"index_member_{safe_name}_{year_month}.parquet"
-    memory_key = (str(DATA_CACHE), index_code, year_month)
+    # 内存缓存按精确 date_str 区分（而非 year_month）：同一月内调样前后成分不同，
+    # 若按月共享会导致调样生效日前后的查询互相串用过期/超前结果。
+    memory_key = (str(DATA_CACHE), index_code, date_str)
 
     cached_members = _INDEX_MEMBER_MEMORY_CACHE.get(memory_key)
     if cached_members is not None:
-        logger.info(f"[index_member] {index_code} {year_month} 内存缓存命中")
+        logger.info(f"[index_member] {index_code} {date_str} 内存缓存命中")
         return list(cached_members)
 
     if cache_file.exists():
         logger.info(f"[index_member] {index_code} {year_month} 缓存命中")
-        members = _read_index_member_cache(cache_file)
+        cached_df = _read_index_member_cache(cache_file)
+        members = _members_as_of(cached_df, date_str)
         _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(members)
         return members
 
-    # 从 Tushare 拉取
+    # 从 Tushare 拉取（按月范围，原始数据含 trade_date，供按日精确截取复用）
     pro = init_tushare()
     try:
         df_pd = _retry(
@@ -130,7 +170,7 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
             end_date=end_date,
         )
     except Exception:
-        cached = _load_latest_cached_index_members(index_code, year_month)
+        cached = _load_latest_cached_index_members(index_code, date_str)
         if cached:
             logger.warning(
                 f"[index_member] {index_code} {year_month} 拉取失败，使用最近可用成分股缓存"
@@ -140,7 +180,7 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
         raise
 
     if df_pd is None or df_pd.empty:
-        cached = _load_latest_cached_index_members(index_code, year_month)
+        cached = _load_latest_cached_index_members(index_code, date_str)
         if cached:
             logger.warning(
                 f"[index_member] {index_code} {year_month} 无成分股数据，使用最近可用成分股缓存"
@@ -153,24 +193,41 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
 
     df = pl.from_pandas(df_pd)
 
-    # 写入缓存
+    # 写入缓存（原始月度数据，含 trade_date，供后续按日精确截取复用）
     DATA_CACHE.mkdir(parents=True, exist_ok=True)
     df.write_parquet(str(cache_file))
-    logger.info(f"[index_member] {index_code} {year_month}: {len(df)} 只成分股，已缓存")
+    logger.info(f"[index_member] {index_code} {year_month}: {len(df)} 条原始记录，已缓存")
 
-    members = df["con_code"].drop_nulls().to_list()
+    members = _members_as_of(df, date_str)
+    if not members:
+        # 当月数据非空，但没有任何 trade_date<=date_str 的记录（如当月首个快照
+        # 本身就晚于查询日）：不能当成"该指数当月无成分股"直接返回空列表，须
+        # 与拉取异常/拉取结果整体为空这两个分支一致，尝试回退到历史月份缓存。
+        cached = _load_latest_cached_index_members(index_code, date_str)
+        if cached:
+            logger.warning(
+                f"[index_member] {index_code} {year_month} 当月数据无 "
+                f"trade_date<={date_str} 的记录，使用最近可用成分股缓存"
+            )
+            _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(cached)
+            return cached
+    logger.info(f"[index_member] {index_code} {date_str}: 截取 {len(members)} 只成分股")
     _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(members)
     return members
 
 
-def _read_index_member_cache(cache_file: Path) -> list[str]:
-    df = pl.read_parquet(cache_file)
-    if "con_code" not in df.columns:
-        return []
-    return df["con_code"].drop_nulls().to_list()
+def _read_index_member_cache(cache_file: Path) -> pl.DataFrame:
+    """读取月度成分股缓存文件的原始数据（含 trade_date，供按日精确截取复用）。"""
+    return pl.read_parquet(cache_file)
 
 
-def _load_latest_cached_index_members(index_code: str, year_month: str) -> list[str]:
+def _load_latest_cached_index_members(index_code: str, date_str: str) -> list[str]:
+    """当月数据不可用时，回退到最近一个有缓存的历史月份。
+
+    按 ``trade_date <= date_str`` 截取该历史月份中最近一次调样后的成分股
+    （而非整月并集），与 ``_load_index_members`` 的截取口径保持一致。
+    """
+    year_month = date_str[:6]
     safe_name = index_code.replace(".", "_")
     prefix = f"index_member_{safe_name}_"
     candidates: list[tuple[str, Path]] = []
@@ -180,7 +237,7 @@ def _load_latest_cached_index_members(index_code: str, year_month: str) -> list[
             candidates.append((month, path))
 
     for month, path in sorted(candidates, reverse=True):
-        members = _read_index_member_cache(path)
+        members = _members_as_of(_read_index_member_cache(path), date_str)
         if members:
             logger.info(f"[index_member] {index_code} {year_month} 回退到 {month} 缓存")
             return members
@@ -347,26 +404,211 @@ def create_universe(
 
 
 # ══════════════════════════════════════════════════════════
+# PIT ST 状态判定（基于 namechange 曾用名变更记录）
+# ══════════════════════════════════════════════════════════
+
+_namechange_unavailable_warned = False
+
+
+def _safe_fetch_namechange() -> pl.DataFrame | None:
+    """安全获取 namechange 全量数据。
+
+    获取失败（无 token / 网络异常 / 接口异常等任意原因）时返回 ``None``，不向
+    上抛出异常；仅在进程内警告一次，避免日志刷屏。
+
+    Returns
+    -------
+    pl.DataFrame | None
+        成功时返回 ``fetch_namechange()`` 结果；失败时返回 ``None``。
+    """
+    global _namechange_unavailable_warned
+    try:
+        return fetch_namechange()
+    except Exception as e:
+        if not _namechange_unavailable_warned:
+            logger.warning(
+                f"[st] namechange 数据获取失败（{e}），ST 判断降级为按当前 name "
+                "字符串匹配（非 PIT 模式，本进程内仅警告一次）"
+            )
+            _namechange_unavailable_warned = True
+        return None
+
+
+def _is_st_asof(
+    codes: list[str],
+    trade_date: str,
+    namechange_df: pl.DataFrame,
+) -> set[str]:
+    """基于 namechange 曾用名记录，判断给定股票在 ``trade_date`` 当天是否处于 ST 状态（PIT）。
+
+    直接判断该记录对应的历史 ``name`` 是否含 "ST"/"PT"（与非 PIT 降级路径
+    ``_st_codes_by_name`` 的判断口径一致，只是这里按 ``[start_date, end_date)``
+    区间取历史某一时刻的 name，而非当前 name），按该区间判断（``end_date``
+    为空表示状态持续至今）。
+
+    2026-07-01 用真实 Tushare token 核对 ``change_reason`` 实际取值分布后发现：
+    早期版本按 ``change_reason`` 关键词过滤（含"ST"且不含"撤销"/"摘星"）存在
+    漏判——``change_reason="摘星"``（从 *ST 降级为 ST，仍是 ST 状态，不是摘帽）
+    对应记录的 ``name`` 仍以 "ST" 开头（如 "ST沈机"），但 ``change_reason``
+    字符串本身不含 "ST" 子串，导致这类记录被误判为非 ST。真实数据抽样统计：
+    全量约 2.7%（269/10000）的 namechange 记录受此影响。改为直接检查 ``name``
+    后不再有此类误判。
+
+    Parameters
+    ----------
+    codes : list[str]
+        待判断的股票代码列表。
+    trade_date : str
+        判断基准日期 ``"YYYYMMDD"``。
+    namechange_df : pl.DataFrame
+        ``fetch_namechange()`` 返回的全量曾用名变更记录，需含列
+        ``ts_code, name, start_date, end_date``。
+
+    Returns
+    -------
+    set[str]
+        在 ``trade_date`` 当天处于 ST/\\*ST 状态的股票代码集合。
+    """
+    if namechange_df.is_empty() or not codes:
+        return set()
+
+    target_date = datetime.strptime(trade_date, "%Y%m%d").date()
+    name = pl.col("name").fill_null("")
+
+    st_records = (
+        namechange_df.filter(pl.col("ts_code").is_in(codes))
+        .with_columns(
+            pl.col("start_date").cast(pl.Date),
+            pl.col("end_date").cast(pl.Date),
+        )
+        .filter(
+            name.str.contains("ST|PT")
+            & pl.col("start_date").is_not_null()
+            & (pl.col("start_date") <= pl.lit(target_date))
+            & (pl.col("end_date").is_null() | (pl.col("end_date") > pl.lit(target_date)))
+        )
+    )
+    return set(st_records["ts_code"].unique().to_list())
+
+
+def _st_codes_by_name(name_source: pl.DataFrame, codes: list[str]) -> set[str]:
+    """按『当前』``name`` 字段判断 ST/PT（非 PIT，日期无关）。
+
+    仅作为 namechange 不可用时的降级方案，供 ``_resolve_st_codes`` 与
+    ``build_is_st_by_date`` 共用。
+    """
+    if "name" not in name_source.columns or not codes:
+        return set()
+    return set(
+        name_source.filter(
+            pl.col("ts_code").is_in(codes) & pl.col("name").str.contains("ST|PT")
+        )["ts_code"].to_list()
+    )
+
+
+def _resolve_st_codes(
+    name_source: pl.DataFrame,
+    codes: list[str],
+    date_str: str,
+) -> set[str]:
+    """解析 ``codes`` 在 ``date_str`` 当天处于 ST 状态的子集。
+
+    优先使用 ``namechange`` 曾用名记录做 PIT 正确判断；若获取失败，优雅降级
+    为按 ``name_source`` 的 ``name`` 列是否含 ``"ST"``/``"PT"`` 判断（非 PIT，
+    但保证离线可用、不崩溃）。降级时仅警告一次由 ``_safe_fetch_namechange``
+    负责。
+
+    Parameters
+    ----------
+    name_source : pl.DataFrame
+        含 ``ts_code``、``name`` 列的股票池，仅在降级模式下使用。
+    codes : list[str]
+        待判断的股票代码全集。
+    date_str : str
+        判断基准日期 ``"YYYYMMDD"``。
+
+    Returns
+    -------
+    set[str]
+        处于 ST 状态的股票代码集合。
+    """
+    namechange_df = _safe_fetch_namechange()
+    if namechange_df is not None:
+        return _is_st_asof(codes, date_str, namechange_df)
+    return _st_codes_by_name(name_source, codes)
+
+
+def build_is_st_by_date(
+    codes: list[str],
+    trade_dates: list[date],
+    name_source: pl.DataFrame | None = None,
+) -> dict[date, set[str]]:
+    """为整段回测窗口批量构建 ``execution_date -> 当日 ST 状态代码集合``。
+
+    供 ``factorzen.daily.evaluation.backtest.run_strategy_backtest`` 的
+    ``is_st_by_date`` 形参使用，让执行约束层能对 ST 股票收窄涨跌停阈值（见
+    ``_get_board_limit``）。只拉取一次 namechange 全量数据（``fetch_namechange``
+    内部走 7 天磁盘缓存），在内存中对每个交易日切片判断 PIT 状态，避免对每个
+    交易日重复触发一次磁盘 I/O。
+
+    Parameters
+    ----------
+    codes : list[str]
+        回测涉及的全部股票代码。
+    trade_dates : list[date]
+        回测窗口内的全部交易日，须与调用方传给
+        ``run_strategy_backtest`` 的 ``price_df`` 的 ``trade_date`` 列同为
+        ``datetime.date`` 取值，才能在查表时正确命中。
+    name_source : pl.DataFrame | None, optional
+        含 ``ts_code``、``name`` 列的股票池；仅在 namechange 不可用时用于
+        降级判断（按『当前』名称是否含 ST/PT，对所有交易日一致）。为
+        ``None`` 且 namechange 不可用时返回空 dict，等价于
+        ``is_st_by_date=None`` 的既有行为（一律按非 ST 阈值判断）。
+
+    Returns
+    -------
+    dict[date, set[str]]
+    """
+    namechange_df = _safe_fetch_namechange()
+    if namechange_df is not None:
+        return {
+            d: _is_st_asof(codes, d.strftime("%Y%m%d"), namechange_df) for d in trade_dates
+        }
+    if name_source is None:
+        return {}
+    fallback_codes = _st_codes_by_name(name_source, codes)
+    if not fallback_codes:
+        return {}
+    return dict.fromkeys(trade_dates, fallback_codes)
+
+
+# ══════════════════════════════════════════════════════════
 # 过滤器
 # ══════════════════════════════════════════════════════════
 
 
 def filter_st(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
-    """剔除 ST / *ST / PT 股票。基于 name 字段包含 ``"ST"`` 或 ``"PT"``。
+    """剔除 ST / *ST / PT 股票。
+
+    优先使用 ``namechange`` 曾用名记录做 PIT 正确的 ST 状态判断（即
+    ``date_str`` 当天是否处于 ST/\\*ST 状态，而非按当前最新名称判断）；若获取
+    失败（无 token / 网络异常等任意原因），优雅降级为按当前 ``name`` 字段是否
+    含 ``"ST"``/``"PT"`` 判断（非 PIT，但保证离线可用、不崩溃）。
 
     Parameters
     ----------
     stocks : pl.DataFrame
-        待过滤股票池，必须包含 ``name`` 列。
+        待过滤股票池，必须包含 ``ts_code``、``name`` 列。
     date_str : str
-        日期（仅用于接口签名一致性，实际不依赖）。
+        判断基准日期 ``"YYYYMMDD"``，用于 PIT 切片。
 
     Returns
     -------
     pl.DataFrame
     """
     before = len(stocks)
-    result = stocks.filter(~pl.col("name").str.contains("ST|PT"))
+    st_codes = _resolve_st_codes(stocks, stocks["ts_code"].to_list(), date_str)
+    result = stocks.filter(~pl.col("ts_code").is_in(list(st_codes)))
     after = len(result)
     if before > after:
         logger.info(f"[filter_st] 剔除 {before - after} 只 ST/PT 股票")
@@ -442,13 +684,21 @@ def filter_suspended(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
         return stocks
 
 
-def _get_board_limit(ts_code: str) -> float:
-    """按板块返回单边涨跌停幅度（不含1）。主板9.8%，创业板/科创板19.8%，北交所29.8%。
+def _get_board_limit(ts_code: str, is_st: bool = False) -> float:
+    """按板块返回单边涨跌停幅度（不含1）。
+
+    主板 9.8%（ST/\\*ST 收窄为 4.8%），创业板/科创板 19.8%，北交所 29.8%。
 
     Parameters
     ----------
     ts_code : str
         股票代码，如 ``"300001.SZ"``、``"688001.SH"``。
+    is_st : bool, default False
+        是否为 ST/\\*ST 股票。仅影响主板：真实涨跌幅限制为 5%，这里与其余
+        板块阈值同样的容差处理方式保持一致（nominal - 0.2pp，对应
+        9.8%/19.8%/29.8% 的构造方式），返回 4.8%。创业板/科创板 2020 年
+        注册制改革后 ST 与非 ST 股票涨跌幅规则相同（统一 20%），北交所同理
+        统一 30%，均不受此参数影响。
 
     Returns
     -------
@@ -462,7 +712,9 @@ def _get_board_limit(ts_code: str) -> float:
         return 0.198
     if code.endswith(".BJ"):  # 北交所
         return 0.298
-    return 0.098  # 主板（含ST的4.95%由调用方另外判断）
+    if is_st:
+        return 0.048  # 主板 ST/*ST：5% 真实限额 - 0.2pp 容差（与其余板块一致）
+    return 0.098  # 主板
 
 
 def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
@@ -494,9 +746,10 @@ def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
             logger.warning(f"[filter_limit] {date_str} 无日线数据，不过滤")
             return stocks
 
-        # 按板块构建每只股票的涨跌停阈值（pct_chg 单位为百分比）
+        # 按板块 + ST 状态（PIT）构建每只股票的涨跌停阈值（pct_chg 单位为百分比）
         codes = daily["ts_code"].unique().to_list()
-        limits = {code: _get_board_limit(code) * 100 for code in codes}
+        st_codes = _resolve_st_codes(stocks, codes, date_str)
+        limits = {code: _get_board_limit(code, is_st=(code in st_codes)) * 100 for code in codes}
         limit_df = pl.DataFrame(
             {
                 "ts_code": list(limits.keys()),
@@ -506,7 +759,11 @@ def filter_limit(stocks: pl.DataFrame, date_str: str) -> pl.DataFrame:
 
         not_limit = (
             daily.join(limit_df, on="ts_code", how="left")
-            .filter(pl.col("pct_chg").abs() < pl.col("_limit_pct"))
+            # 浮点容差与 backtest.py（_apply_trade_constraints / 快路径）保持一致：
+            # 创业板 open=11.98/pre_close=10.0 → pct_chg=19.7999...997（非字面量
+            # 19.8），若不减 1e-9 则 abs(pct_chg) < limit_pct 为 True，涨停股被
+            # 误判为「未到涨停」而漏过滤。
+            .filter(pl.col("pct_chg").abs() < pl.col("_limit_pct") - 1e-9)
             .select("ts_code")
             .unique()
         )
@@ -622,7 +879,9 @@ def get_universe_snapshot(
 
     追加列
     ------
-    - ``is_st``         : ``True`` 如果股票名含 ST 或 PT
+    - ``is_st``         : ``True`` 如果 ``date_str`` 当天处于 ST/\\*ST 状态
+      （PIT，基于 namechange；namechange 不可用时降级为按当前 name 含
+      ST/PT 判断）
     - ``is_suspended``  : ``True`` 如果当日成交量 == 0
     - ``is_limit_up``   : ``True`` 如果当日涨幅 >= 板块涨停阈值
     - ``is_limit_down`` : ``True`` 如果当日跌幅 <= -板块跌停阈值
@@ -647,9 +906,10 @@ def get_universe_snapshot(
     """
     base = get_universe(date_str, universe_name)
 
-    # ── is_st ──
+    # ── is_st（PIT：优先 namechange，失败优雅降级为按当前 name 匹配）──
+    st_codes = _resolve_st_codes(base, base["ts_code"].to_list(), date_str)
     base = base.with_columns(
-        pl.col("name").str.contains("ST|PT").alias("is_st"),
+        pl.col("ts_code").is_in(list(st_codes)).alias("is_st"),
     )
 
     # ── is_new_listing ──
@@ -676,9 +936,9 @@ def get_universe_snapshot(
         )
         return base
 
-    # 构建每只股票的涨跌停阈值
+    # 构建每只股票的涨跌停阈值（ST 主板复用上面已解析的 st_codes）
     codes = daily["ts_code"].unique().to_list()
-    limits = {code: _get_board_limit(code) * 100 for code in codes}
+    limits = {code: _get_board_limit(code, is_st=(code in st_codes)) * 100 for code in codes}
     limit_df = pl.DataFrame(
         {
             "ts_code": list(limits.keys()),
@@ -692,8 +952,14 @@ def get_universe_snapshot(
         [
             "ts_code",
             (pl.col("vol") == 0).fill_null(True).alias("is_suspended"),
-            (pl.col("pct_chg") >= pl.col("_limit_pct")).fill_null(False).alias("is_limit_up"),
-            (pl.col("pct_chg") <= -pl.col("_limit_pct")).fill_null(False).alias("is_limit_down"),
+            # 浮点容差与 filter_limit / backtest.py 保持一致，避免
+            # 19.7999...997 这类浮点舍入误差导致涨跌停状态漏判。
+            (pl.col("pct_chg") >= pl.col("_limit_pct") - 1e-9)
+            .fill_null(False)
+            .alias("is_limit_up"),
+            (pl.col("pct_chg") <= -pl.col("_limit_pct") + 1e-9)
+            .fill_null(False)
+            .alias("is_limit_down"),
         ]
     )
 

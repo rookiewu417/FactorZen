@@ -139,3 +139,16 @@ def test_cmd_report_portfolio_renders_nav_chart_from_parquet(tmp_path: Path) -> 
     assert "data:image/png;base64" in html, (
         "sim_dir 含 nav.parquet 时，report 应渲染净值图；未找到 base64 图表"
     )
+
+    # 修复4：_cmd_report_portfolio 重建的 sim_result 此前只设置 .nav、未设置
+    # .returns，导致 _make_monthly_return_heatmap（只读 .returns）在生产路径下
+    # 恒返回 None，月度收益热力图永不渲染（死代码）。同一份 nav_df 已含
+    # net_return 列，足够同时驱动两张图。
+    assert "月度收益热力图" in html, (
+        "月度收益热力图应被渲染进 HTML；sim_result.returns 未设置会导致该图永远是"
+        "死代码（'暂无数据'而非真正接通）"
+    )
+    assert html.count("data:image/png;base64") >= 2, (
+        f"应同时渲染净值曲线图与月度收益热力图两张 base64 图表，实际出现"
+        f" {html.count('data:image/png;base64')} 次"
+    )

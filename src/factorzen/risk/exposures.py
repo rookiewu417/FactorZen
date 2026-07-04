@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 import polars as pl
 
+from factorzen.core.loader import fetch_index_member_all
 from factorzen.core.logger import get_logger
 from factorzen.risk.industry_factors import get_industry_dummies
 from factorzen.risk.style_factors import (
@@ -17,6 +19,9 @@ from factorzen.risk.style_factors import (
 )
 
 logger = get_logger(__name__)
+
+# 行业归属降级为非 PIT（stocks.industry）时，进程内只警告一次，避免逐日刷屏。
+_pit_industry_warned = False
 
 
 @dataclass
@@ -70,8 +75,6 @@ def compute_exposures(
     Returns:
         ExposureMatrix，包含该日所有可用标的的因子暴露。
     """
-    import datetime as dt
-
     registry = STYLE_FACTOR_REGISTRY if style_registry is None else style_registry
     names = STYLE_FACTOR_NAMES if style_names is None else style_names
 
@@ -125,12 +128,46 @@ def compute_exposures(
         merged = merged.join(style_dfs[name], on="ts_code", how="full", coalesce=True)
 
     # ── 2. 行业哑变量 ──────────────────────────────────────────────────────────
-    # 匹配股票的行业信息
+    # 匹配股票的行业信息：优先用 PIT 历史行业成分（index_member_all）按 trade_date
+    # 做归属查找；任何原因不可用时降级为 stocks 里的（非 PIT）industry 列。
     ind_col_names: list[str] = []
 
-    if "industry" in stocks.columns:
-        # 获取当日有效股票的行业
-        stock_ind = stocks.select(["ts_code", "industry"]).unique(subset=["ts_code"])
+    fallback_ind = (
+        stocks.select(["ts_code", "industry"]).unique(subset=["ts_code"])
+        if "industry" in stocks.columns
+        else None
+    )
+
+    pit_ind = _lookup_pit_industry(target_date)
+    if pit_ind is not None:
+        # PIT 行业表是全市场口径，需先收窄到本次实际处理的股票代码——直接把
+        # 一个与本次请求无关的非空全局表当成"可用"会有两种错法：(a) 完全不
+        # 覆盖本批代码时（如测试用的合成代码）应整体回退到 stocks.industry，
+        # 而不是产出行业暴露全空的哑变量；(b) 部分覆盖时（如合成代码恰好与
+        # 真实代码撞号）不能不管未覆盖的代码，否则那部分股票会丢失行业暴露，
+        # 需要按代码级别用 stocks.industry 补齐缺口，而不是全局二选一。
+        relevant_codes = stocks["ts_code"].unique().to_list()
+        pit_ind = pit_ind.filter(pl.col("ts_code").is_in(relevant_codes))
+
+    if pit_ind is not None and not pit_ind.is_empty():
+        covered = set(pit_ind["ts_code"].to_list())
+        if fallback_ind is not None and len(covered) < len(relevant_codes):
+            gap = fallback_ind.filter(~pl.col("ts_code").is_in(covered))
+            if not gap.is_empty():
+                _warn_pit_industry_unavailable(
+                    f"PIT 数据仅覆盖 {len(covered)}/{len(relevant_codes)} 只股票，"
+                    "其余用 stocks.industry 按代码补齐"
+                )
+                pit_ind = pl.concat([pit_ind, gap], how="vertical_relaxed")
+        stock_ind = pit_ind
+    elif fallback_ind is not None:
+        if pit_ind is not None:  # 非 None 但为空：PIT 数据对本批代码完全无覆盖
+            _warn_pit_industry_unavailable("PIT 数据对本次请求的股票代码无覆盖")
+        stock_ind = fallback_ind
+    else:
+        stock_ind = None
+
+    if stock_ind is not None and not stock_ind.is_empty():
         ind_dummies = get_industry_dummies(stock_ind, industry_col="industry")
 
         if not ind_dummies.is_empty():
@@ -168,3 +205,62 @@ def compute_exposures(
         matrix = np.empty((len(codes), 0))
 
     return ExposureMatrix(codes=codes, factor_names=factor_names, matrix=matrix)
+
+
+def _warn_pit_industry_unavailable(reason: str) -> None:
+    """降级为非 PIT 行业分类时发出一次性警告（避免每次 compute_exposures 调用刷屏）。"""
+    global _pit_industry_warned
+    if not _pit_industry_warned:
+        logger.warning(
+            f"[compute_exposures] PIT 历史行业数据不可用（{reason}），"
+            "降级使用 stocks.industry（非 PIT，可能用当前行业分类污染历史窗口的因子收益回归）"
+        )
+        _pit_industry_warned = True
+
+
+def _lookup_pit_industry(target_date: dt.date) -> pl.DataFrame | None:
+    """优先尝试用 Tushare 历史行业成分（``index_member_all``）做 PIT 行业归属查找。
+
+    任何原因不可用（无权限/无 token/网络失败/字段缺失/该日期无匹配记录等）均
+    优雅降级，返回 ``None``，调用方应回退到 ``stocks`` 里的（非 PIT）industry
+    列。降级只 warning 一次，不逐日刷屏。
+
+    Args:
+        target_date: 查询日期（PIT 截面日期）。
+
+    Returns:
+        pl.DataFrame，含 ts_code、industry 两列（该 target_date 实际归属的一级
+        行业名）；PIT 数据不可用时返回 ``None``。
+    """
+    try:
+        membership = fetch_index_member_all()
+    except Exception as e:  # 双保险：fetch_index_member_all 自身已兜底，理论不会抛出
+        _warn_pit_industry_unavailable(f"获取异常: {e}")
+        return None
+
+    if membership is None or membership.is_empty():
+        _warn_pit_industry_unavailable("数据源不可用或为空")
+        return None
+
+    required_cols = {"ts_code", "l1_name", "in_date", "out_date"}
+    if not required_cols.issubset(set(membership.columns)):
+        _warn_pit_industry_unavailable(f"字段缺失，需要 {sorted(required_cols)}")
+        return None
+
+    # PIT 归属查找：in_date <= target_date < (out_date 或仍在该行业则不设上限)
+    asof = (
+        membership.filter(
+            (pl.col("in_date") <= pl.lit(target_date))
+            & (pl.col("out_date").is_null() | (pl.col("out_date") > pl.lit(target_date)))
+        )
+        .sort("in_date")
+        .unique(subset=["ts_code"], keep="last")
+        .select(["ts_code", "l1_name"])
+        .rename({"l1_name": "industry"})
+    )
+
+    if asof.is_empty():
+        _warn_pit_industry_unavailable(f"{target_date} 无匹配记录")
+        return None
+
+    return asof

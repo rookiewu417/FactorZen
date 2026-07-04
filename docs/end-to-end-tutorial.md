@@ -50,9 +50,9 @@ pixi run fz data fetch daily-basic --start 20200101 --end 20241231
 **产物位置**
 
 ```
-data/tushare/
-├── daily/               # 按日期分区的行情 parquet
-└── daily_basic/         # 按日期分区的基础数据 parquet
+data/raw/
+├── daily/year=YYYY/month=MM/data.parquet         # 按年/月分区的行情 parquet
+└── daily_basic/year=YYYY/month=MM/data.parquet   # 按年/月分区的基础数据 parquet
 ```
 
 **解读输出**
@@ -217,7 +217,7 @@ pixi run fz portfolio build \
 
 ```
 workspace/portfolios/<run_id>/
-├── weights.parquet     # 单截面权重（列 ts_code / weight / prev_weight）
+├── weights.parquet     # 单截面权重（列 ts_code / target_weight / prev_weight）
 ├── attribution.csv     # Brinson 归因
 ├── risk_summary.csv    # 风险因子归因摘要
 └── manifest.json       # 含 signal_date（供 Step 5 串接持仓）
@@ -226,7 +226,7 @@ workspace/portfolios/<run_id>/
 **解读输出**
 
 - 命令打印一行 `status=... holdings=...`：`optimal` 为正常，`infeasible` 说明约束冲突（见下方 MVP 限制）。
-- `attribution.csv`：选股 / 行业配置 / 交叉效应（相对股票池等权基准）。
+- `attribution.csv`：选股 / 行业配置两项效应（单期 Brinson-Fachler 两项法，交互项并入选股；相对股票池等权基准）。
 - `risk_summary.csv`：各 Barra 风格因子和行业因子对组合风险的贡献（MCR 分解）。
 
 > **MVP 限制**：
@@ -353,7 +353,7 @@ pixi run fz report portfolio \
 
 | 步骤 | 命令 | 产物 |
 |------|------|------|
-| Step 0 拉数据 | `fz data fetch daily / daily-basic` | `data/tushare/`（parquet 缓存，PIT 对齐） |
+| Step 0 拉数据 | `fz data fetch daily / daily-basic` | `data/raw/{daily,daily_basic}/year=YYYY/month=MM/data.parquet`（parquet 缓存，PIT 对齐） |
 | Step 1 挖因子 | `fz mine search / agent / team` + `fz mine export-alpha` | `workspace/mining_sessions/session_{seed}_{method}/`（candidates.csv + exported/）→ `alpha.parquet` |
 | Step 2 防过拟合 | `fz validate overfit` | 终端打印 IC / IR / DSR p / bootstrap CI（不落盘） |
 | Step 3 风险模型 | `fz risk build`（独立诊断，可选） | `workspace/risk_models/<run>/`（exposures / covariance / specific_risk） |

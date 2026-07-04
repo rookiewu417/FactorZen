@@ -17,6 +17,7 @@ tmp/
 
 # Local agent/tool state
 .claude/
+CLAUDE.md
 
 workspace/runs/*
 !workspace/runs/.gitkeep

@@ -223,3 +223,92 @@ class TestRunWalkForward:
             assert isinstance(fold.oos_ann_ret, float)
             assert isinstance(fold.oos_max_dd, float)
             assert isinstance(fold.params, dict)
+
+
+def _wf_strategy_factory(params: dict) -> object:
+    from factorzen.daily.evaluation.backtest import QuantileLongShortStrategy
+
+    return QuantileLongShortStrategy(n_groups=params.get("n_groups", 5))
+
+
+def _fake_backtest_result() -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        summary_stats={"portfolio": {"sharpe": 0.1, "ann_ret": 0.0, "max_dd": 0.0}},
+        returns=pl.DataFrame(schema={"trade_date": pl.Date, "net_return": pl.Float64}),
+    )
+
+
+def test_run_walk_forward_passes_is_st_by_date_to_backtest(
+    factor_df: pl.DataFrame, price_df: pl.DataFrame, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ST涨跌停容差接线：run_walk_forward 应基于 price_df 的 codes/trade_dates
+    只构建一次 is_st_by_date，并传给 IS、OOS 两处 run_strategy_backtest 调用。
+    """
+    import factorzen.daily.evaluation.walk_forward as wf_mod
+
+    calls: list[dict] = []
+
+    def _fake_run_strategy_backtest(strategy, factor, price, cfg=None, **kwargs):
+        calls.append(kwargs)
+        return _fake_backtest_result()
+
+    sentinel = {date(2022, 1, 3): {"000000.SZ"}}
+    monkeypatch.setattr(wf_mod, "run_strategy_backtest", _fake_run_strategy_backtest)
+    monkeypatch.setattr(wf_mod, "build_is_st_by_date", lambda codes, dates: sentinel)
+
+    splitter = WalkForwardSplitter(train_days=100, test_days=30, step_days=30, embargo_days=5)
+    run_walk_forward(
+        strategy_factory=_wf_strategy_factory,
+        factor_df=factor_df,
+        price_df=price_df,
+        splitter=splitter,
+        params={"n_groups": 5},
+    )
+
+    assert calls, "run_strategy_backtest 应至少被调用一次（IS + OOS）"
+    assert all(c.get("is_st_by_date") == sentinel for c in calls), (
+        f"IS/OOS 调用都应收到相同的 is_st_by_date，实际: {[c.get('is_st_by_date') for c in calls]}"
+    )
+
+
+def test_run_walk_forward_search_passes_is_st_by_date_to_all_backtest_calls(
+    factor_df: pl.DataFrame, price_df: pl.DataFrame, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ST涨跌停容差接线：run_walk_forward_search 的三处 run_strategy_backtest
+    调用（IS 全量缓存 / 逐折 IS 搜索 / OOS）都应收到同一份 is_st_by_date，
+    只构建一次、不逐折/逐候选重复构建。reuse_is_backtests 的 True/False 两条
+    分支各自覆盖不同的 IS 调用位置，OOS 调用位置两条分支都会覆盖。
+    """
+    import factorzen.daily.evaluation.walk_forward as wf_mod
+    from factorzen.daily.evaluation.walk_forward import run_walk_forward_search
+
+    calls: list[dict] = []
+
+    def _fake_run_strategy_backtest(strategy, factor, price, cfg=None, **kwargs):
+        calls.append(kwargs)
+        return _fake_backtest_result()
+
+    sentinel = {date(2022, 1, 3): {"000000.SZ"}}
+    monkeypatch.setattr(wf_mod, "run_strategy_backtest", _fake_run_strategy_backtest)
+    monkeypatch.setattr(wf_mod, "build_is_st_by_date", lambda codes, dates: sentinel)
+
+    splitter = WalkForwardSplitter(train_days=100, test_days=30, step_days=30, embargo_days=5)
+
+    for reuse in (False, True):
+        calls.clear()
+        run_walk_forward_search(
+            strategy_factory=_wf_strategy_factory,
+            factor_df=factor_df,
+            price_df=price_df,
+            splitter=splitter,
+            param_candidates=[{"n_groups": 5}],
+            reuse_is_backtests=reuse,
+            parallel_workers=1,
+        )
+        assert calls, f"reuse_is_backtests={reuse} 时 run_strategy_backtest 应至少被调用一次"
+        assert all(c.get("is_st_by_date") == sentinel for c in calls), (
+            f"reuse_is_backtests={reuse} 时全部调用都应收到相同的 is_st_by_date，"
+            f"实际: {[c.get('is_st_by_date') for c in calls]}"
+        )

@@ -105,3 +105,46 @@ def test_expression_factor_is_valid_dailyfactor():
     assert ef.category == "daily"
     assert ef.lookback_days == 40
     assert "daily" in ef.required_data
+
+
+def test_ret_1d_correct_when_ctx_daily_rows_unsorted():
+    """compute() 必须先排序(ts_code, trade_date)再派生依赖行序的 ret_1d(shift().over())。
+
+    构造收盘价逐日单调上涨（每天 +1%）但行序被打乱（非 ts_code/trade_date 有序）的数据：
+    若 compute() 在排序前就用 shift(1).over("ts_code") 算 ret_1d，会把同一只股票里
+    乱序的「上一行」当成「前一交易日」，算出包含负值的错误结果；正确实现下，因为
+    收盘价严格单调上涨，每只股票每天的 ret_1d 必须全部是同一个正值 0.01。"""
+    from factorzen.discovery.factor import ExpressionFactor
+
+    start = date(2024, 1, 2)
+    n_days = 20
+    days: list[date] = []
+    d = start
+    while len(days) < n_days:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+
+    rows = []
+    for s in ["000001.SH", "000002.SH", "000003.SH"]:
+        price = 10.0
+        for day in days:
+            price *= 1.01  # 严格单调上涨：每天 +1%
+            rows.append({
+                "trade_date": day, "ts_code": s,
+                "close": price, "open": price, "high": price, "low": price,
+                "close_adj": price, "open_adj": price, "high_adj": price, "low_adj": price,
+                "amount": 1e7, "vol": 1e5,
+            })
+
+    # 行序打乱（固定 seed 可复现）：不再是 (ts_code, trade_date) 有序
+    daily_df = pl.DataFrame(rows).sample(fraction=1.0, shuffle=True, seed=7)
+    per_stock = daily_df.filter(pl.col("ts_code") == "000001.SH")["trade_date"].to_list()
+    assert per_stock != sorted(per_stock), "fixture 未真正打乱行序，测试无法复现 bug"
+
+    ctx = MockCtx(_daily=daily_df.lazy(), start="20240101")
+    out = ExpressionFactor(expression="ret_1d", mined_name="r1", lookback_days=5).compute(ctx)
+
+    assert out.height > 0
+    assert (out["factor_value"] > 0).all(), "收盘价逐日单调上涨，ret_1d 必须全部为正"
+    assert (out["factor_value"] - 0.01).abs().max() < 1e-9

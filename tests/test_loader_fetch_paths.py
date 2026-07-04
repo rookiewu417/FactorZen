@@ -25,6 +25,7 @@ from factorzen.core.loader import (
     fetch_daily_basic,
     fetch_finance,
     fetch_index_daily,
+    fetch_index_member_all,
     fetch_stock_basic,
     fetch_trade_cal,
 )
@@ -456,3 +457,169 @@ def _pd_stock_basic_status(code: str) -> pd.DataFrame:
             "delist_date": [None],
         }
     )
+
+
+# ══════════════════════════════════════════════════════════
+# fetch_index_member_all：PIT 申万一级行业历史成分（循环 l1_code 拉全市场）
+#
+# 真实字段名已对项目 .env 中的 TUSHARE_TOKEN 实打 index_member_all 接口确认
+# （非凭空猜测）：l1_code/l1_name/l2_code/l2_name/l3_code/l3_name/ts_code/name/
+# in_date/out_date/is_new。同时确认该接口不带过滤条件时单次调用截断在 3000 行
+# （全市场远超 3000 只股票的成分历史），所以必须按 l1_code 循环拉取才能覆盖全市场，
+# 不能直接裸调用。
+# ══════════════════════════════════════════════════════════
+
+
+def _pd_l1_classify() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "index_code": ["801780.SI", "801150.SI"],
+            "industry_name": ["银行", "医药生物"],
+            "level": ["L1", "L1"],
+            "industry_code": ["480000", "370000"],
+            "is_pub": ["1", "1"],
+            "parent_code": ["0", "0"],
+            "src": ["SW2021", "SW2021"],
+        }
+    )
+
+
+def _pd_member_all(l1_code: str, l1_name: str, ts_code: str, name: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "l1_code": [l1_code],
+            "l1_name": [l1_name],
+            "l2_code": ["xxxxxx.SI"],
+            "l2_name": ["二级行业"],
+            "l3_code": ["yyyyyy.SI"],
+            "l3_name": ["三级行业"],
+            "ts_code": [ts_code],
+            "name": [name],
+            "in_date": ["19910403"],
+            "out_date": [None],
+            "is_new": ["Y"],
+        }
+    )
+
+
+def test_fetch_index_member_all_cache_hit_skips_api(tmp_path: Path):
+    """缓存新鲜时直接读取，不调用 Tushare（index_classify / index_member_all 均不调用）。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+    cache_file = tmp_path / "index_member_all.parquet"
+    pl.DataFrame({"ts_code": ["000001.SZ"], "l1_name": ["银行"]}).write_parquet(cache_file)
+
+    mock_pro = MagicMock()
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "DATA_CACHE", tmp_path),
+    ):
+        result = fetch_index_member_all()
+
+    mock_pro.index_classify.assert_not_called()
+    mock_pro.index_member_all.assert_not_called()
+    assert result is not None
+    assert result["ts_code"].to_list() == ["000001.SZ"]
+
+
+def test_fetch_index_member_all_loops_l1_codes_and_caches(tmp_path: Path):
+    """无缓存：先枚举一级行业(index_classify)，再逐个拉取成分(index_member_all)，
+    合并、转换日期列、写入缓存。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+    mock_pro = MagicMock()
+    mock_pro.index_classify.return_value = _pd_l1_classify()
+
+    def _member(l1_code, fields):
+        if l1_code == "801780.SI":
+            return _pd_member_all("801780.SI", "银行", "000001.SZ", "平安银行")
+        return _pd_member_all("801150.SI", "医药生物", "600196.SH", "复星医药")
+
+    mock_pro.index_member_all.side_effect = _member
+
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "DATA_CACHE", tmp_path),
+        patch.object(loader_module, "_rate_limit"),
+    ):
+        result = fetch_index_member_all()
+
+    assert mock_pro.index_member_all.call_count == 2
+    assert result is not None
+    assert set(result["ts_code"].to_list()) == {"000001.SZ", "600196.SH"}
+    assert result["in_date"].dtype == pl.Date
+    assert result["out_date"].dtype == pl.Date
+    assert (tmp_path / "index_member_all.parquet").exists()
+
+
+def test_fetch_index_member_all_failure_no_cache_returns_none(tmp_path: Path):
+    """无权限/网络失败且无缓存：优雅降级返回 None，不抛异常（不卡住调用方）。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+    mock_pro = MagicMock()
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "DATA_CACHE", tmp_path),
+        patch.object(
+            loader_module, "_retry", side_effect=RuntimeError("抱歉，您没有访问该接口的权限")
+        ),
+    ):
+        result = fetch_index_member_all()
+
+    assert result is None
+
+
+def test_fetch_index_member_all_failure_falls_back_to_stale_cache(tmp_path: Path):
+    """拉取失败但存在（过期）缓存：回退读取缓存而非返回 None。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+    cache_file = tmp_path / "index_member_all.parquet"
+    pl.DataFrame({"ts_code": ["000001.SZ"], "l1_name": ["银行"]}).write_parquet(cache_file)
+    stale = time.time() - 30 * 86400
+    os.utime(cache_file, (stale, stale))
+
+    mock_pro = MagicMock()
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "DATA_CACHE", tmp_path),
+        patch.object(loader_module, "_retry", side_effect=RuntimeError("网络错误")),
+    ):
+        result = fetch_index_member_all()
+
+    assert result is not None
+    assert result["ts_code"].to_list() == ["000001.SZ"]
+
+
+def test_fetch_index_member_all_reuses_in_process_cache_across_calls(tmp_path: Path):
+    """同一进程内重复调用应只真正拉取一次（index_classify/index_member_all
+    均只调一次），避免 RiskModel.build() 对长窗口每个交易日都重新从磁盘/网络
+    读取同一份全市场行业成分表。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+    mock_pro = MagicMock()
+    mock_pro.index_classify.return_value = _pd_l1_classify()
+    mock_pro.index_member_all.side_effect = lambda l1_code, fields: _pd_member_all(
+        l1_code, "行业", "000001.SZ", "平安银行"
+    )
+
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "DATA_CACHE", tmp_path),
+        patch.object(loader_module, "_rate_limit"),
+    ):
+        first = fetch_index_member_all()
+        second = fetch_index_member_all()
+
+    assert mock_pro.index_classify.call_count == 1, "第二次调用不应再拉取 index_classify"
+    assert first is not None
+    assert second is first, "第二次调用应直接返回进程内缓存的同一个对象，而非重新拉取"
+
+
+def test_fetch_index_member_all_no_token_returns_none_fast(tmp_path: Path):
+    """无 TUSHARE_TOKEN（离线 CI 场景）：init_tushare 内 ensure_token 抛错，
+    应被优雅捕获并立即返回 None，而不是抛异常或卡住。"""
+    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+    with (
+        patch.object(loader_module, "DATA_CACHE", tmp_path),
+        patch.object(
+            loader_module, "init_tushare", side_effect=RuntimeError("请设置 TUSHARE_TOKEN 环境变量")
+        ),
+    ):
+        result = fetch_index_member_all()
+
+    assert result is None

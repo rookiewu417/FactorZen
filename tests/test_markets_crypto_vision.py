@@ -59,8 +59,15 @@ def test_list_um_symbols_from_s3_xml():
            b"<CommonPrefixes><Prefix>data/futures/um/monthly/klines/ETHUSDT/</Prefix></CommonPrefixes>"
            b"<CommonPrefixes><Prefix>data/futures/um/monthly/klines/BTCUSD_PERP/</Prefix></CommonPrefixes>"
            b"<IsTruncated>false</IsTruncated></ListBucketResult>")
-    syms = list_um_symbols(fetch=lambda url: xml)
+    seen = {}
+
+    def _fetch(url):
+        seen["url"] = url
+        return xml
+
+    syms = list_um_symbols(fetch=_fetch)
     assert syms == ["BTCUSDT", "ETHUSDT"]  # 非 USDT 结尾剔除
+    assert "s3" in seen["url"]  # listing 必须走 S3 endpoint(CDN 前端只返回 HTML)
 
 
 def test_fetch_zip_csv_retries_then_none():

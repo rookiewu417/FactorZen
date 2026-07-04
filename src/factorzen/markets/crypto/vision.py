@@ -21,6 +21,9 @@ import polars as pl
 from factorzen.markets.crypto.lake import CryptoLake, day_range, month_range
 
 _BASE = "https://data.binance.vision"
+# 目录列举必须走 S3 bucket endpoint(返回 XML ListBucketResult);
+# CDN 前端 data.binance.vision 的 ?prefix= 只返回 HTML 浏览页,regex 匹配不到 → 选池为空。
+_S3_BASE = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 _UM = "data/futures/um"
 
 Fetch = Callable[[str], bytes]
@@ -102,7 +105,7 @@ def _list_prefixes(prefix: str, fetch: Fetch) -> list[str]:
     out: list[str] = []
     marker = ""
     while True:
-        url = f"{_BASE}/?prefix={prefix}&delimiter=/" + (f"&marker={marker}" if marker else "")
+        url = f"{_S3_BASE}/?prefix={prefix}&delimiter=/" + (f"&marker={marker}" if marker else "")
         xml = fetch(url).decode()
         page = re.findall(r"<Prefix>([^<]+)</Prefix>", xml)
         out += [p for p in page if p != prefix]
@@ -120,7 +123,7 @@ def list_um_symbols(quote: str = "USDT", fetch: Fetch = _http_get) -> list[str]:
 
 def list_symbol_months(symbol: str, fetch: Fetch = _http_get) -> list[str]:
     prefix = f"{_UM}/monthly/klines/{symbol}/1m/"
-    xml = fetch(f"{_BASE}/?prefix={prefix}").decode()
+    xml = fetch(f"{_S3_BASE}/?prefix={prefix}").decode()
     pat = rf"{symbol}-1m-(\d{{4}}-\d{{2}})\.zip</Key>"
     return sorted(set(re.findall(pat, xml)))
 

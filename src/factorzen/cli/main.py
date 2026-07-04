@@ -250,7 +250,9 @@ def _cmd_data_crypto_backfill(args: argparse.Namespace) -> int:
         symbols = vision.rank_symbols_by_amount(all_syms, rank_month, args.top_n)
         print(f"[backfill] Top-{args.top_n} by {rank_month} 成交额: {symbols[:5]}...")
     manifest = vision.backfill(lake, symbols, args.start, args.end)
-    print(f"[backfill] 完成: {len(symbols)} 标的 → {lake.root} (gaps={len(manifest['gaps'])})")
+    gaps = manifest["gaps"]
+    n_gaps = len(gaps) if isinstance(gaps, list) else 0
+    print(f"[backfill] 完成: {len(symbols)} 标的 → {lake.root} (gaps={n_gaps})")
     return 0
 
 

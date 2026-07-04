@@ -34,14 +34,21 @@ def crossover(a: Node, b: Node, rng: np.random.Generator) -> Node:
     return _replace_random_subtree(a, donor, rng)
 
 
-def mutate(node: Node, rng: np.random.Generator, max_depth: int = 3) -> Node:
-    return _replace_random_subtree(node, random_expression(rng, max_depth=max_depth - 1), rng)
+def mutate(
+    node: Node, rng: np.random.Generator, max_depth: int = 3, leaves: list[str] | None = None
+) -> Node:
+    return _replace_random_subtree(
+        node, random_expression(rng, max_depth=max_depth - 1, leaves=leaves), rng
+    )
 
 
 class GeneticSearcher:
-    def __init__(self, rng: np.random.Generator, max_depth: int = 3) -> None:
+    def __init__(
+        self, rng: np.random.Generator, max_depth: int = 3, leaves: list[str] | None = None
+    ) -> None:
         self.rng = rng
         self.max_depth = max_depth
+        self.leaves = leaves
 
     def evolve(
         self,
@@ -50,7 +57,7 @@ class GeneticSearcher:
         generations: int = 8,
         elite: int = 2,
     ) -> list[Node]:
-        pop = [random_expression(self.rng, self.max_depth) for _ in range(pop_size)]
+        pop = [random_expression(self.rng, self.max_depth, self.leaves) for _ in range(pop_size)]
         for _ in range(generations):
             scored = sorted(pop, key=lambda n: score_fn(n), reverse=True)
             survivors = scored[: max(elite, pop_size // 2)]
@@ -61,7 +68,7 @@ class GeneticSearcher:
                 b = survivors[int(self.rng.integers(len(survivors)))]
                 child = crossover(a, b, self.rng)
                 if self.rng.random() < 0.3:
-                    child = mutate(child, self.rng, self.max_depth)
+                    child = mutate(child, self.rng, self.max_depth, self.leaves)
                 if complexity(child) <= 12 or attempts > pop_size * 20:  # 防膨胀（软约束）
                     children.append(child)
                 attempts += 1

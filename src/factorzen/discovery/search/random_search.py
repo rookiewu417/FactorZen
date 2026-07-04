@@ -10,23 +10,33 @@ _OPS = list(OPERATORS.keys())
 _WINDOWS = [3, 5, 10, 20, 60]
 
 
-def random_expression(rng: np.random.Generator, max_depth: int = 3) -> Node:
-    """按算子类型签名递归生成合法 AST。叶子为特征或（少量）常数。"""
+def random_expression(
+    rng: np.random.Generator, max_depth: int = 3, leaves: list[str] | None = None
+) -> Node:
+    """按算子类型签名递归生成合法 AST。叶子为特征或（少量）常数。
+
+    ``leaves`` 为可用叶子名列表(默认 A 股 _LEAVES)，传入其他市场叶子集即可
+    在该市场叶子空间搜索。
+    """
+    leaf_names = _LEAVES if leaves is None else leaves
     if max_depth <= 0 or rng.random() < 0.25:
         if rng.random() < 0.1:
             return Constant(float(rng.choice([0.5, 1.0, 2.0])))
-        return Feature(str(rng.choice(_LEAVES)))
+        return Feature(str(rng.choice(leaf_names)))
     op = str(rng.choice(_OPS))
     spec = OPERATORS[op]
-    children = [random_expression(rng, max_depth - 1) for _ in range(spec.arity)]
+    children = [random_expression(rng, max_depth - 1, leaf_names) for _ in range(spec.arity)]
     window = int(rng.choice(_WINDOWS)) if spec.has_window else None
     return OpNode(op, children, window)
 
 
 class RandomSearcher:
-    def __init__(self, rng: np.random.Generator, max_depth: int = 3) -> None:
+    def __init__(
+        self, rng: np.random.Generator, max_depth: int = 3, leaves: list[str] | None = None
+    ) -> None:
         self.rng = rng
         self.max_depth = max_depth
+        self.leaves = leaves
 
     def propose(self) -> Node:
-        return random_expression(self.rng, self.max_depth)
+        return random_expression(self.rng, self.max_depth, self.leaves)

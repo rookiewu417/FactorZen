@@ -15,6 +15,8 @@ class ConstraintConfig:
     benchmark_weights: np.ndarray | None = None    # 中性目标基准权重（None → 中性到 0）
     turnover_budget: float | None = None
     prev_weights: np.ndarray | None = None
+    budget: float | None = 1.0                     # Σw 目标（A股=1 全额；crypto 市场中性=0；None 不约束）
+    gross_limit: float | None = None               # Σ|w| 上限（做空组合的杠杆约束）
 
 
 def build_constraints(w, *, exposures, config: ConstraintConfig) -> list:
@@ -29,10 +31,16 @@ def build_constraints(w, *, exposures, config: ConstraintConfig) -> list:
         向量），将约束改为 ``X_s.T @ w == X_s.T @ w_benchmark``，使中性目标
         对齐基准而非绝对零点。
     """
-    cons = [cp.sum(w) == 1.0]                       # budget 全额
+    cons = []
+    if config.budget is not None:
+        cons.append(cp.sum(w) == config.budget)     # budget（A股=1 全额；crypto 市场中性=0）
+    cons.append(w <= config.w_max)                  # box 个股上限
     if config.long_only:
         cons.append(w >= 0.0)
-    cons.append(w <= config.w_max)                  # box 个股上限
+    else:
+        cons.append(w >= -config.w_max)             # 做空下界（对称 box）
+    if config.gross_limit is not None:
+        cons.append(cp.norm1(w) <= config.gross_limit)  # 杠杆/毛敞口上限
     # 行业/风格中性：选定列暴露 == benchmark 暴露（或 0）
     if config.neutral_factors:
         idx = [exposures.factor_names.index(n) for n in config.neutral_factors

@@ -24,8 +24,8 @@ def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) ->
     out = df.select(["trade_date", "ts_code", "factor_value"]).filter(
         pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
     if eval_start is not None:
-        from datetime import datetime
-        out = out.filter(pl.col("trade_date") >= datetime.strptime(eval_start, "%Y%m%d").date())
+        from factorzen.discovery.scoring import _cut_literal
+        out = out.filter(pl.col("trade_date") >= _cut_literal(out, eval_start))
     return out
 
 

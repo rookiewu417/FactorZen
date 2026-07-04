@@ -237,6 +237,25 @@ def _cmd_data_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_data_crypto_backfill(args: argparse.Namespace) -> int:
+    from factorzen.markets.crypto import vision
+    from factorzen.markets.crypto.lake import CryptoLake, month_range
+
+    lake = CryptoLake(args.lake_root)
+    if args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    else:
+        all_syms = vision.list_um_symbols()
+        rank_month = vision._prev_month(month_range(args.end, args.end)[0])
+        symbols = vision.rank_symbols_by_amount(all_syms, rank_month, args.top_n)
+        print(f"[backfill] Top-{args.top_n} by {rank_month} 成交额: {symbols[:5]}...")
+    manifest = vision.backfill(lake, symbols, args.start, args.end)
+    gaps = manifest["gaps"]
+    n_gaps = len(gaps) if isinstance(gaps, list) else 0
+    print(f"[backfill] 完成: {len(symbols)} 标的 → {lake.root} (gaps={n_gaps})")
+    return 0
+
+
 def _cmd_config_validate(args: argparse.Namespace) -> int:
     from factorzen.core.config_loader import default_benchmark_for_universe, load_run_config
 
@@ -299,6 +318,7 @@ def _mine_search_crypto(args: argparse.Namespace) -> int:
     res = run_crypto_mining(
         profile, symbols, args.start, args.end,
         n_trials=args.trials, top_k=args.top_k, seed=args.seed, method=args.method,
+        freq=args.freq,
     )
     sd = res["session_dir"]
     print(f"[mine] crypto 完成：{len(res['candidates'])} 个候选 / {len(symbols)} 标的 → {sd}")
@@ -306,6 +326,9 @@ def _mine_search_crypto(args: argparse.Namespace) -> int:
 
 
 def _cmd_mine_search(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[mine] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
     if getattr(args, "market", "ashare") == "crypto":
         return _mine_search_crypto(args)
     from factorzen.pipelines.factor_mine import run_mine
@@ -387,7 +410,8 @@ def _mine_export_alpha_crypto(args: argparse.Namespace) -> int:
     start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime(
         "%Y%m%d"
     )
-    cross = export_crypto_alpha(profile, expr, symbols, start, args.date, date=args.date)
+    cross = export_crypto_alpha(profile, expr, symbols, start, args.date, date=args.date,
+                                freq=args.freq)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     cross.write_parquet(args.out)
     print(f"[mine] export-alpha(crypto): rank={args.rank} expr={expr!r} date={args.date} "
@@ -396,6 +420,9 @@ def _mine_export_alpha_crypto(args: argparse.Namespace) -> int:
 
 
 def _cmd_mine_export_alpha(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[mine] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
     if getattr(args, "market", "ashare") == "crypto":
         return _mine_export_alpha_crypto(args)
     from factorzen.core.universe import get_universe
@@ -433,7 +460,8 @@ def _validate_overfit_crypto(args: argparse.Namespace) -> int:
 
     profile = build_crypto_profile(top_n=args.top_n)
     symbols = profile.universe.snapshot(args.end)
-    rep = validate_crypto_expression(profile, args.expression, symbols, args.start, args.end)
+    rep = validate_crypto_expression(profile, args.expression, symbols, args.start, args.end,
+                                     freq=args.freq)
     print(
         f"[validate] {args.expression}: IC={rep['ic_mean']:.4f} IR={rep['ir']:.4f} "
         f"DSR_p={rep['dsr_p']:.4f} IC_95%CI=[{rep['ci_lo']:.4f},{rep['ci_hi']:.4f}]"
@@ -443,6 +471,9 @@ def _validate_overfit_crypto(args: argparse.Namespace) -> int:
 
 
 def _cmd_validate_overfit(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[validate] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
     if getattr(args, "market", "ashare") == "crypto":
         return _validate_overfit_crypto(args)
     from factorzen.daily.data.context import FactorDataContext
@@ -490,13 +521,16 @@ def _portfolio_build_crypto(args: argparse.Namespace) -> int:
     res = build_crypto_portfolio(
         profile, adf, symbols, args.start, args.end,
         market_neutral=True, w_max=args.w_max, gross_limit=args.gross_limit,
-        risk_aversion=args.lam, signal_date=signal_date,
+        risk_aversion=args.lam, signal_date=signal_date, freq=args.freq,
     )
     print(f"[portfolio] crypto status={res['status']} holdings={res['n_holdings']} → {res['run_dir']}")
     return 0
 
 
 def _cmd_portfolio_build(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[portfolio] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
     if getattr(args, "market", "ashare") == "crypto":
         return _portfolio_build_crypto(args)
     import numpy as np
@@ -589,6 +623,9 @@ def _cmd_risk_build(args: argparse.Namespace) -> int:
 
 
 def _cmd_sim_run(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[sim] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
     from pathlib import Path
 
     portfolio_root = Path(args.portfolio_dir)
@@ -611,7 +648,7 @@ def _cmd_sim_run(args: argparse.Namespace) -> int:
         profile = build_crypto_profile(top_n=getattr(args, "top_n", 50))
         res = run_crypto_simulation(
             [str(p) for p in run_dirs], profile, args.start, args.end,
-            out_dir="workspace/sim", run_id=args.run_id,
+            out_dir="workspace/sim", run_id=args.run_id, freq=args.freq,
         )
     else:
         from factorzen.core import loader
@@ -930,6 +967,11 @@ def _add_report_build_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--llm-refresh", action="store_true")
 
 
+def _add_freq_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--freq", choices=["1m", "5m", "15m", "1h", "daily"], default="daily",
+                   help="bar 粒度(仅 crypto;ashare 只支持 daily)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fz", description="FactorZen research CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1046,6 +1088,16 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--end", required=True, help="End date YYYYMMDD")
     fetch.set_defaults(func=_cmd_data_fetch)
 
+    crypto_p = data_sub.add_parser("crypto", help="Crypto data lake workflows")
+    crypto_sub = crypto_p.add_subparsers(dest="crypto_command", required=True)
+    bf = crypto_sub.add_parser("backfill", help="Backfill 1m klines/funding/OI from Binance Vision")
+    bf.add_argument("--start", required=True)
+    bf.add_argument("--end", required=True)
+    bf.add_argument("--symbols", default=None, help="逗号分隔;缺省=按上月成交额 Top-N 自动选池")
+    bf.add_argument("--top-n", dest="top_n", type=int, default=50)
+    bf.add_argument("--lake-root", dest="lake_root", default="workspace/crypto_lake")
+    bf.set_defaults(func=_cmd_data_crypto_backfill)
+
     config = sub.add_parser("config", help="Config workflows")
     config_sub = config.add_subparsers(dest="config_command", required=True)
     validate = config_sub.add_parser("validate", help="Validate a YAML run config")
@@ -1077,6 +1129,7 @@ def build_parser() -> argparse.ArgumentParser:
     m_search.add_argument("--trials", type=int, default=200)
     m_search.add_argument("--top-k", dest="top_k", type=int, default=10)
     m_search.add_argument("--seed", type=int, default=42)
+    _add_freq_arg(m_search)
     m_search.set_defaults(func=_cmd_mine_search)
 
     m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
@@ -1101,6 +1154,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Trade-day lookback for time-series operators (default 60)")
     m_exp.add_argument("--out", required=True,
                        help="Output parquet path (columns: ts_code, alpha)")
+    _add_freq_arg(m_exp)
     m_exp.set_defaults(func=_cmd_mine_export_alpha)
 
     m_agent = mine_sub.add_parser("agent", help="LLM-guided agent factor mining")
@@ -1138,6 +1192,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Factor expression to validate (required for --market crypto)")
     vo.add_argument("--top-n", dest="top_n", type=int, default=50,
                     help="crypto universe size (default 50)")
+    _add_freq_arg(vo)
     vo.set_defaults(func=_cmd_validate_overfit)
 
     # ── fz risk ──（顶层命令组）
@@ -1176,6 +1231,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="crypto universe size (default 50)")
     p_build.add_argument("--gross-limit", dest="gross_limit", type=float, default=1.0,
                          help="crypto 毛敞口上限 Σ|w| (default 1.0)")
+    _add_freq_arg(p_build)
     p_build.set_defaults(func=_cmd_portfolio_build)
 
     # ── fz sim ──（顶层命令组）
@@ -1196,6 +1252,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Market profile (default ashare; crypto=funding+做空 NAV 回测)")
     s_run.add_argument("--top-n", dest="top_n", type=int, default=50,
                        help="crypto universe size (default 50)")
+    _add_freq_arg(s_run)
     s_run.set_defaults(func=_cmd_sim_run)
 
     s_show = sim_sub.add_parser("show", help="Show simulation metrics")

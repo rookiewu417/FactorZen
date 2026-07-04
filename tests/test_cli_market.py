@@ -95,3 +95,30 @@ def test_sim_run_default_ashare():
         "sim", "run", "--portfolio-dir", "d", "--start", "20240201", "--end", "20240224",
     ])
     assert args.market == "ashare"
+
+
+def test_freq_parsed_for_crypto_and_defaults_daily():
+    p = build_parser()
+    a = p.parse_args(["mine", "search", "--start", "20260501", "--end", "20260502",
+                      "--market", "crypto", "--freq", "15m"])
+    assert a.freq == "15m"
+    b = p.parse_args(["mine", "search", "--start", "20260501", "--end", "20260502"])
+    assert b.freq == "daily"  # 默认 daily,ashare 零回归
+
+
+def test_data_crypto_backfill_parser():
+    from factorzen.cli.main import _cmd_data_crypto_backfill
+    p = build_parser()
+    a = p.parse_args(["data", "crypto", "backfill", "--start", "20260501", "--end", "20260502",
+                      "--symbols", "BTCUSDT,ETHUSDT", "--lake-root", "/tmp/lk"])
+    assert a.func is _cmd_data_crypto_backfill
+    assert a.symbols == "BTCUSDT,ETHUSDT" and a.start == "20260501"
+
+
+def test_ashare_rejects_intraday_freq(capsys):
+    from factorzen.cli.main import _cmd_mine_search
+    p = build_parser()
+    a = p.parse_args(["mine", "search", "--start", "20260501", "--end", "20260502",
+                      "--freq", "15m"])  # market 默认 ashare
+    assert _cmd_mine_search(a) == 2
+    assert "仅 crypto" in capsys.readouterr().err

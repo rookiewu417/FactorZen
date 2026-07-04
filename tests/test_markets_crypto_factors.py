@@ -55,3 +55,23 @@ def test_derived_columns_ground_truth():
     eth = out.filter(pl.col("ts_code") == "ETHUSDT").sort("trade_date")
     assert eth["ret_1d"][0] is None
     assert math.isclose(eth["ret_1d"][1], 0.1, rel_tol=1e-12)
+
+
+def test_taker_buy_ratio_derived_and_guarded():
+    fs = CryptoFactorSet()
+    assert "taker_buy_ratio" in fs.leaf_features()
+    bars = pl.DataFrame({
+        "ts_code": ["BTCUSDT"] * 2, "trade_date": [1, 2],
+        "close": [1.0, 2.0], "vol": [10.0, 0.0], "amount": [10.0, 0.0],
+        "taker_buy_volume": [6.0, 3.0],
+    })
+    out = fs.derived_columns(bars)
+    assert out["taker_buy_ratio"].to_list()[0] == 0.6
+    assert out["taker_buy_ratio"][1] is None  # vol=0 → null 不除零
+
+
+def test_taker_buy_ratio_null_when_source_missing():
+    bars = pl.DataFrame({"ts_code": ["BTCUSDT"], "trade_date": [1],
+                         "close": [1.0], "vol": [1.0], "amount": [1.0]})
+    out = CryptoFactorSet().derived_columns(bars)  # ccxt 旧路径无 taker_buy_volume
+    assert out["taker_buy_ratio"].to_list() == [None]

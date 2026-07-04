@@ -8,14 +8,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 from factorzen.markets.base import Calendar
-
-# 年化周期数（无休市 → 365 天/年）
-_PERIODS_PER_YEAR: dict[str, float] = {
-    "daily": 365.0,
-    "hourly": 365.0 * 24,
-    "weekly": 52.0,
-    "monthly": 12.0,
-}
+from factorzen.markets.crypto.frequency import periods_per_year as _freq_periods_per_year
 
 
 def _to_date(d: date | str) -> date:
@@ -46,6 +39,4 @@ class CryptoCalendar(Calendar):
         return _to_date(d) - timedelta(days=n)
 
     def periods_per_year(self, freq: str = "daily") -> float:
-        if freq not in _PERIODS_PER_YEAR:
-            raise ValueError(f"未知频率: {freq!r}，支持 {sorted(_PERIODS_PER_YEAR)}")
-        return _PERIODS_PER_YEAR[freq]
+        return _freq_periods_per_year(freq)

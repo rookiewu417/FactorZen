@@ -23,6 +23,13 @@ workspace/runs/*
 !workspace/runs/.gitkeep
 workspace/factor_evaluations/*
 !workspace/factor_evaluations/.gitkeep
+workspace/mining_sessions/
+workspace/risk_models/
+workspace/portfolios/
+workspace/sim/
+workspace/reports/
+workspace/crypto_lake*/
+workspace/first_reversal/
 
 # Python
 __pycache__/

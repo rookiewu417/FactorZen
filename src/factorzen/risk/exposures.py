@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -51,6 +52,8 @@ def compute_exposures(
     daily_basic: pl.DataFrame,
     stocks: pl.DataFrame,
     trade_date: str | object,
+    style_registry: dict[str, Callable] | None = None,
+    style_names: list[str] | None = None,
 ) -> ExposureMatrix:
     """计算指定日期的因子暴露矩阵。
 
@@ -62,13 +65,19 @@ def compute_exposures(
 
     Args:
         daily_data: 日线行情 DataFrame（含历史数据，用于滚动窗口计算）。
-        daily_basic: 每日估值指标 DataFrame。
-        stocks: 股票基本信息 DataFrame，需含 ts_code, industry 列。
+        daily_basic: 每日估值指标 DataFrame（crypto 可复用 daily_data）。
+        stocks: 标的基本信息 DataFrame，需含 ts_code, industry 列（crypto 的 industry=sector）。
         trade_date: 目标日期，str("YYYYMMDD" 或 "YYYY-MM-DD") 或 date 对象。
+        style_registry: 风格因子注册表（默认 A 股 STYLE_FACTOR_REGISTRY），
+            每个 fn 签名 ``(daily_data, daily_basic) -> [trade_date, ts_code, factor_value]``。
+        style_names: 风格因子名列表（默认 A 股 STYLE_FACTOR_NAMES）。
 
     Returns:
-        ExposureMatrix，包含该日所有可用股票的因子暴露。
+        ExposureMatrix，包含该日所有可用标的的因子暴露。
     """
+    registry = STYLE_FACTOR_REGISTRY if style_registry is None else style_registry
+    names = STYLE_FACTOR_NAMES if style_names is None else style_names
+
     # 标准化日期
     if isinstance(trade_date, str):
         if "-" in trade_date:
@@ -84,8 +93,8 @@ def compute_exposures(
 
     # ── 1. 计算风格因子并标准化 ─────────────────────────────────────────────────
     style_dfs: dict[str, pl.DataFrame] = {}
-    for name in STYLE_FACTOR_NAMES:
-        fn = STYLE_FACTOR_REGISTRY[name]
+    for name in names:
+        fn = registry[name]
         try:
             factor_df = fn(daily_data, daily_basic)
             if factor_df.is_empty():

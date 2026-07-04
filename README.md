@@ -9,7 +9,6 @@
 把量化研究从「单因子 IC 检验」扩展为「因子挖掘 → 防过拟合 → 风险建模 → AI 智能挖掘 → 组合优化与归因 → 模拟交易 → 成果展示」的完整买方级链路，<br>
 每一步都落 manifest、可审计、可复现。
 
-[![CI](https://github.com/rookiewu417/FactorZen/actions/workflows/ci.yml/badge.svg)](https://github.com/rookiewu417/FactorZen/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10--3.12-blue.svg)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)

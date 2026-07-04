@@ -237,6 +237,25 @@ def _cmd_data_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_data_crypto_backfill(args: argparse.Namespace) -> int:
+    from factorzen.markets.crypto import vision
+    from factorzen.markets.crypto.lake import CryptoLake, month_range
+
+    lake = CryptoLake(args.lake_root)
+    if args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    else:
+        all_syms = vision.list_um_symbols()
+        rank_month = vision._prev_month(month_range(args.end, args.end)[0])
+        symbols = vision.rank_symbols_by_amount(all_syms, rank_month, args.top_n)
+        print(f"[backfill] Top-{args.top_n} by {rank_month} 成交额: {symbols[:5]}...")
+    manifest = vision.backfill(lake, symbols, args.start, args.end)
+    gaps = manifest["gaps"]
+    n_gaps = len(gaps) if isinstance(gaps, list) else 0
+    print(f"[backfill] 完成: {len(symbols)} 标的 → {lake.root} (gaps={n_gaps})")
+    return 0
+
+
 def _cmd_config_validate(args: argparse.Namespace) -> int:
     from factorzen.core.config_loader import default_benchmark_for_universe, load_run_config
 
@@ -286,7 +305,32 @@ def _cmd_runs_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mine_search_crypto(args: argparse.Namespace) -> int:
+    """crypto perps 挖掘（live CCXT）：universe 快照 → run_crypto_mining。"""
+    from factorzen.markets.crypto.mining import run_crypto_mining
+    from factorzen.markets.crypto.profile import build_crypto_profile
+
+    profile = build_crypto_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.end)
+    if not symbols:
+        print("[mine] crypto universe 为空（检查网络/交易所可用性）", file=sys.stderr)
+        return 1
+    res = run_crypto_mining(
+        profile, symbols, args.start, args.end,
+        n_trials=args.trials, top_k=args.top_k, seed=args.seed, method=args.method,
+        freq=args.freq,
+    )
+    sd = res["session_dir"]
+    print(f"[mine] crypto 完成：{len(res['candidates'])} 个候选 / {len(symbols)} 标的 → {sd}")
+    return 0
+
+
 def _cmd_mine_search(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[mine] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
+    if getattr(args, "market", "ashare") == "crypto":
+        return _mine_search_crypto(args)
     from factorzen.pipelines.factor_mine import run_mine
 
     res = run_mine(
@@ -351,7 +395,36 @@ def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mine_export_alpha_crypto(args: argparse.Namespace) -> int:
+    """crypto export-alpha（live CCXT）：读候选表达式 → 当日截面 α → parquet。"""
+    from datetime import datetime, timedelta
+    from pathlib import Path
+
+    from factorzen.discovery.export import read_candidate_expression
+    from factorzen.markets.crypto.mining import export_crypto_alpha
+    from factorzen.markets.crypto.profile import build_crypto_profile
+
+    expr = read_candidate_expression(args.session, args.rank)
+    profile = build_crypto_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.date)
+    start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime(
+        "%Y%m%d"
+    )
+    cross = export_crypto_alpha(profile, expr, symbols, start, args.date, date=args.date,
+                                freq=args.freq)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    cross.write_parquet(args.out)
+    print(f"[mine] export-alpha(crypto): rank={args.rank} expr={expr!r} date={args.date} "
+          f"→ {args.out} ({cross.height} 个标的)")
+    return 0
+
+
 def _cmd_mine_export_alpha(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[mine] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
+    if getattr(args, "market", "ashare") == "crypto":
+        return _mine_export_alpha_crypto(args)
     from factorzen.core.universe import get_universe
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.discovery.export import (
@@ -377,14 +450,35 @@ def _cmd_mine_export_alpha(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validate_overfit_crypto(args: argparse.Namespace) -> int:
+    """crypto 单表达式防过拟合验证（live CCXT）。"""
+    if not getattr(args, "expression", None):
+        print("[validate] crypto 需 --expression \"<表达式>\"", file=sys.stderr)
+        return 1
+    from factorzen.markets.crypto.mining import validate_crypto_expression
+    from factorzen.markets.crypto.profile import build_crypto_profile
+
+    profile = build_crypto_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.end)
+    rep = validate_crypto_expression(profile, args.expression, symbols, args.start, args.end,
+                                     freq=args.freq)
+    print(
+        f"[validate] {args.expression}: IC={rep['ic_mean']:.4f} IR={rep['ir']:.4f} "
+        f"DSR_p={rep['dsr_p']:.4f} IC_95%CI=[{rep['ci_lo']:.4f},{rep['ci_hi']:.4f}]"
+    )
+    print("[validate] 注：单因子 N=1（无多重检验扣减）；PBO 仅适用候选池，此处略。")
+    return 0
+
+
 def _cmd_validate_overfit(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[validate] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
+    if getattr(args, "market", "ashare") == "crypto":
+        return _validate_overfit_crypto(args)
     from factorzen.daily.data.context import FactorDataContext
-    from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
     from factorzen.daily.factors.registry import get_factor
-    from factorzen.daily.preprocessing.normalizer import cross_sectional_zscore
-    from factorzen.discovery.scoring import DataBundle
-    from factorzen.validation.bootstrap import block_bootstrap_ic_ci
-    from factorzen.validation.deflated_sharpe import deflated_sharpe
+    from factorzen.discovery.scoring import ic_overfit_report
 
     factor = get_factor(args.factor)()
     uni = None
@@ -399,28 +493,46 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
         universe=uni,
     )
     fdf = factor.compute(ctx)
-    bundle = DataBundle.build(ctx.daily.collect(), train_ratio=1.0)
-    clean = cross_sectional_zscore(fdf, col="factor_value").rename(
-        {"factor_value_z": "factor_clean"}
-    )
-    ic_res = compute_rank_ic(
-        clean.select(["trade_date", "ts_code", "factor_clean"]),
-        bundle.fwd_returns,
-        factor_col="factor_clean",
-        frequency="daily",
-    )
-    ic_vals = ic_res.ic_series["ic"].drop_nulls().drop_nans().to_numpy()
-    lo, hi = block_bootstrap_ic_ci(ic_vals)
-    _dsr, p = deflated_sharpe(ic_res.ir, n_trials=1, n_obs=len(ic_vals))  # 单因子：N=1
+    rep = ic_overfit_report(fdf, ctx.daily.collect(), train_ratio=1.0)
     print(
-        f"[validate] {args.factor}: IC={ic_res.ic_mean:.4f} IR={ic_res.ir:.4f} "
-        f"DSR_p={p:.4f} IC_95%CI=[{lo:.4f},{hi:.4f}]"
+        f"[validate] {args.factor}: IC={rep['ic_mean']:.4f} IR={rep['ir']:.4f} "
+        f"DSR_p={rep['dsr_p']:.4f} IC_95%CI=[{rep['ci_lo']:.4f},{rep['ci_hi']:.4f}]"
     )
     print("[validate] 注：单因子 N=1（无多重检验扣减）；PBO 仅适用候选池，此处略。")
     return 0
 
 
+def _portfolio_build_crypto(args: argparse.Namespace) -> int:
+    """crypto 市场中性做空组合（live CCXT）。"""
+    import polars as pl
+
+    from factorzen.markets.crypto.portfolio import build_crypto_portfolio
+    from factorzen.markets.crypto.profile import build_crypto_profile
+
+    profile = build_crypto_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.end)
+    adf = (
+        pl.read_parquet(args.alpha_file)
+        if args.alpha_file.endswith(".parquet")
+        else pl.read_csv(args.alpha_file)
+    )
+    _end = args.end or ""
+    signal_date = f"{_end[:4]}-{_end[4:6]}-{_end[6:]}" if len(_end) == 8 and _end.isdigit() else _end
+    res = build_crypto_portfolio(
+        profile, adf, symbols, args.start, args.end,
+        market_neutral=True, w_max=args.w_max, gross_limit=args.gross_limit,
+        risk_aversion=args.lam, signal_date=signal_date, freq=args.freq,
+    )
+    print(f"[portfolio] crypto status={res['status']} holdings={res['n_holdings']} → {res['run_dir']}")
+    return 0
+
+
 def _cmd_portfolio_build(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[portfolio] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
+    if getattr(args, "market", "ashare") == "crypto":
+        return _portfolio_build_crypto(args)
     import numpy as np
     import polars as pl
 
@@ -511,12 +623,10 @@ def _cmd_risk_build(args: argparse.Namespace) -> int:
 
 
 def _cmd_sim_run(args: argparse.Namespace) -> int:
+    if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
+        print("[sim] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        return 2
     from pathlib import Path
-
-    from factorzen.core import loader
-    from factorzen.sim.engine import run_portfolio_simulation
-
-    daily = loader.fetch_daily(args.start, args.end)
 
     portfolio_root = Path(args.portfolio_dir)
     if not portfolio_root.exists():
@@ -531,12 +641,23 @@ def _cmd_sim_run(args: argparse.Namespace) -> int:
         print(f"[sim] no portfolio run dirs found under {portfolio_root}", file=sys.stderr)
         return 2
 
-    res = run_portfolio_simulation(
-        [str(p) for p in run_dirs],
-        daily,
-        out_dir="workspace/sim",
-        run_id=args.run_id,
-    )
+    if getattr(args, "market", "ashare") == "crypto":
+        from factorzen.markets.crypto.backtest import run_crypto_simulation
+        from factorzen.markets.crypto.profile import build_crypto_profile
+
+        profile = build_crypto_profile(top_n=getattr(args, "top_n", 50))
+        res = run_crypto_simulation(
+            [str(p) for p in run_dirs], profile, args.start, args.end,
+            out_dir="workspace/sim", run_id=args.run_id, freq=args.freq,
+        )
+    else:
+        from factorzen.core import loader
+        from factorzen.sim.engine import run_portfolio_simulation
+
+        daily = loader.fetch_daily(args.start, args.end)
+        res = run_portfolio_simulation(
+            [str(p) for p in run_dirs], daily, out_dir="workspace/sim", run_id=args.run_id,
+        )
     print(
         f"[sim] run_dir={res['run_dir']} "
         f"sharpe={res['sharpe']:.4f} "
@@ -556,14 +677,19 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
 
     sim_dir = Path(args.sim_dir) if args.sim_dir else None
 
-    # 读 metrics.json
+    # 读 metrics.json + sim manifest（含 market）
     metrics: dict = {}
     run_id = "portfolio"
+    market = getattr(args, "market", None) or "ashare"
     if sim_dir is not None:
         metrics_path = sim_dir / "metrics.json"
         if metrics_path.exists():
             metrics = _json.loads(metrics_path.read_text(encoding="utf-8"))
             run_id = sim_dir.name
+        sim_mf = sim_dir / "manifest.json"
+        if sim_mf.exists() and not getattr(args, "market", None):
+            # 未显式指定 --market 时，从 sim manifest 自动识别
+            market = _json.loads(sim_mf.read_text(encoding="utf-8")).get("market", market)
 
     # 读 portfolio_dir 产物
     attribution_df: pl.DataFrame | None = None
@@ -594,6 +720,7 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
             from types import SimpleNamespace
             _nav_df = pl.read_parquet(nav_path)
             if not _nav_df.is_empty():
+                # returns=nav_df（含 net_return）供月度收益热力图渲染
                 sim_result = SimpleNamespace(nav=_nav_df, returns=_nav_df)
 
     html = generate_portfolio_report(
@@ -602,6 +729,7 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
         attribution_df=attribution_df,
         risk_summary_df=risk_summary_df,
         portfolio_manifest=portfolio_manifest,
+        market=market,
     )
 
     # 输出路径
@@ -631,6 +759,137 @@ def _cmd_sim_show(args: argparse.Namespace) -> int:
     extras = {k: v for k, v in metrics.items() if k not in keys}
     if extras:
         print(json.dumps(extras, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_live_replay(args: argparse.Namespace) -> int:
+    from datetime import date as _date
+
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.execution.drivers import run_replay
+
+    stocks = get_universe(args.end, args.universe) if args.universe else None
+    daily = loader.fetch_daily(args.start, args.end)
+    if stocks is not None:
+        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    out = run_replay(
+        session_dir=args.session_dir,
+        portfolio_run_dirs=args.portfolio_run_dirs,
+        daily=daily,
+        initial_cash=args.initial_cash,
+        from_date=_date.fromisoformat(args.from_date) if args.from_date else None,
+        to_date=_date.fromisoformat(args.to_date) if args.to_date else None,
+        seed=args.seed,
+    )
+    print(f"replay 完成: {out['n_steps']} 步, 终值 NAV={out['final_nav']:.2f} → {out['session_dir']}")
+    return 0
+
+
+def _cmd_live_init(args: argparse.Namespace) -> int:
+    from factorzen.execution.store import SessionStore
+
+    SessionStore(args.session_dir).init(
+        {
+            "broker": args.broker,
+            "command": ["fz", "live", "init"],
+            "initial_cash": args.initial_cash,
+            "slippage_bps": args.slippage_bps,
+        }
+    )
+    print(f"[live] init 会话 → {args.session_dir}")
+    return 0
+
+
+def _cmd_live_step(args: argparse.Namespace) -> int:
+    import json as _json
+    from datetime import date as _date
+    from pathlib import Path
+
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.execution.drivers import run_daily_step
+
+    stocks = get_universe(args.end, args.universe) if args.universe else None
+    daily = loader.fetch_daily(args.start, args.end)
+    if stocks is not None:
+        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    cfg = _json.loads((Path(args.session_dir) / "manifest.json").read_text()).get("config", {})
+    cfg.setdefault("initial_cash", 1_000_000.0)
+    cfg.setdefault("slippage_bps", 0.0)
+    d = _date.fromisoformat(f"{args.date[:4]}-{args.date[4:6]}-{args.date[6:]}")
+    out = run_daily_step(args.session_dir, d, args.portfolio_run_dirs, daily, config=cfg)
+    status = "跳过(已记录)" if out["skipped"] else f"{out['n_fills']}成交 NAV={out['nav_after']}"
+    print(f"[live] step {out['as_of']}: {status}")
+    return 0
+
+
+def _cmd_live_status(args: argparse.Namespace) -> int:
+    from factorzen.execution.store import SessionStore
+
+    s = SessionStore(args.session_dir)
+    st = s.load_state()
+    nav = s.nav_frame()
+    last = nav["as_of_date"][-1] if nav.height else "(无)"
+    # state.json 有两种形状：可续跑态（run_daily_step 落的 broker.state()=
+    # {cash: float, pos, order_seq}）或显示视图（run_replay 留的 step() 返回=
+    # {positions, cash: {available,total_asset,market_value}}）。两者都要兼容，
+    # 不能假设只有前者，否则对 replay session 会打印整个 cash dict、且持仓数
+    # 因取错键（pos vs positions）恒报 0。
+    if st is None:
+        cash: float | str = "N/A"
+        n_pos = 0
+    else:
+        cash_raw = st.get("cash")
+        if isinstance(cash_raw, dict):
+            avail = cash_raw.get("available")
+            total = cash_raw.get("total_asset")
+            val = avail if avail is not None else total
+            cash = float(val) if isinstance(val, int | float) else "N/A"
+        elif isinstance(cash_raw, int | float):
+            cash = float(cash_raw)
+        else:
+            cash = "N/A"
+        positions = st.get("pos")
+        if positions is None:
+            positions = st.get("positions", {})
+        n_pos = len(positions)
+    print(f"[live] 末记录日={last} 现金={cash} 持仓数={n_pos}")
+    return 0
+
+
+def _cmd_live_report(args: argparse.Namespace) -> int:
+    import json as _json
+    from pathlib import Path
+
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.core.universe import get_universe
+    from factorzen.execution.attribution import build_attribution_report
+
+    stocks = get_universe(args.end, args.universe) if args.universe else None
+    daily = loader.fetch_daily(args.start, args.end)
+    if stocks is not None:
+        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    cfg = _json.loads((Path(args.session_dir) / "manifest.json").read_text()).get("config", {})
+    rep = build_attribution_report(
+        args.session_dir,
+        args.portfolio_run_dirs,
+        daily,
+        initial_cash=float(cfg.get("initial_cash", 1_000_000.0)),
+    )
+    print(
+        f"[live] 归因: 总缺口={rep['total_gap_ann_ret'] * 1e4:.1f}bps/年 "
+        f"成本={rep['cost_bps']:.1f} 滑点={rep['slippage_bps']:.1f} residual={rep['residual_bps']:.1f} "
+        f"| 年化换手(双边)={rep.get('ann_turnover', 0.0):.2f} 成交={rep.get('n_fills', 0)}笔"
+    )
+    for r, v in rep["missed_by_reason"].items():
+        print(f"        未成交[{r}]: {v['count']}次 名义额={v['notional']:.0f}")
     return 0
 
 
@@ -706,6 +965,11 @@ def _add_report_build_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--event-study", action="store_true", dest="event_study")
     parser.add_argument("--llm-explain", action="store_true")
     parser.add_argument("--llm-refresh", action="store_true")
+
+
+def _add_freq_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--freq", choices=["1m", "5m", "15m", "1h", "daily"], default="daily",
+                   help="bar 粒度(仅 crypto;ashare 只支持 daily)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -808,6 +1072,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="out",
         help="HTML 输出路径；默认 workspace/reports/portfolio_<run_id>.html",
     )
+    pf_report.add_argument(
+        "--market",
+        choices=["ashare", "crypto"],
+        default=None,
+        help="市场语境(默认从 sim manifest 自动识别；crypto=USDT/365/资金费/sector)",
+    )
     pf_report.set_defaults(func=_cmd_report_portfolio)
 
     data = sub.add_parser("data", help="Data workflows")
@@ -817,6 +1087,16 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--start", required=True, help="Start date YYYYMMDD")
     fetch.add_argument("--end", required=True, help="End date YYYYMMDD")
     fetch.set_defaults(func=_cmd_data_fetch)
+
+    crypto_p = data_sub.add_parser("crypto", help="Crypto data lake workflows")
+    crypto_sub = crypto_p.add_subparsers(dest="crypto_command", required=True)
+    bf = crypto_sub.add_parser("backfill", help="Backfill 1m klines/funding/OI from Binance Vision")
+    bf.add_argument("--start", required=True)
+    bf.add_argument("--end", required=True)
+    bf.add_argument("--symbols", default=None, help="逗号分隔;缺省=按上月成交额 Top-N 自动选池")
+    bf.add_argument("--top-n", dest="top_n", type=int, default=50)
+    bf.add_argument("--lake-root", dest="lake_root", default="workspace/crypto_lake")
+    bf.set_defaults(func=_cmd_data_crypto_backfill)
 
     config = sub.add_parser("config", help="Config workflows")
     config_sub = config.add_subparsers(dest="config_command", required=True)
@@ -841,10 +1121,15 @@ def build_parser() -> argparse.ArgumentParser:
     m_search.add_argument("--start", required=True, help="Start date YYYYMMDD")
     m_search.add_argument("--end", required=True, help="End date YYYYMMDD")
     m_search.add_argument("--universe", default=None, help="Universe name (e.g. csi500)")
+    m_search.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                          help="Market profile (default ashare; crypto=USDT-M perps)")
+    m_search.add_argument("--top-n", dest="top_n", type=int, default=50,
+                          help="crypto universe size (Top-N by 30d turnover, default 50)")
     m_search.add_argument("--method", choices=["random", "genetic"], default="random")
     m_search.add_argument("--trials", type=int, default=200)
     m_search.add_argument("--top-k", dest="top_k", type=int, default=10)
     m_search.add_argument("--seed", type=int, default=42)
+    _add_freq_arg(m_search)
     m_search.set_defaults(func=_cmd_mine_search)
 
     m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
@@ -861,10 +1146,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Candidate rank in candidates.csv (1-based, default 1)")
     m_exp.add_argument("--date", required=True, help="Cross-section date YYYYMMDD")
     m_exp.add_argument("--universe", default="all_a", help="Universe name (default all_a)")
+    m_exp.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                       help="Market profile (default ashare; crypto=USDT-M perps)")
+    m_exp.add_argument("--top-n", dest="top_n", type=int, default=50,
+                       help="crypto universe size (Top-N by 30d turnover, default 50)")
     m_exp.add_argument("--lookback", type=int, default=60,
                        help="Trade-day lookback for time-series operators (default 60)")
     m_exp.add_argument("--out", required=True,
                        help="Output parquet path (columns: ts_code, alpha)")
+    _add_freq_arg(m_exp)
     m_exp.set_defaults(func=_cmd_mine_export_alpha)
 
     m_agent = mine_sub.add_parser("agent", help="LLM-guided agent factor mining")
@@ -892,10 +1182,17 @@ def build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate", help="Overfitting / robustness checks")
     validate_sub = validate.add_subparsers(dest="validate_command", required=True)
     vo = validate_sub.add_parser("overfit", help="Deflated Sharpe + bootstrap CI for one factor")
-    vo.add_argument("factor")
+    vo.add_argument("factor", nargs="?", help="Registered factor name (ashare)")
     vo.add_argument("--start", required=True)
     vo.add_argument("--end", required=True)
     vo.add_argument("--universe", default=None)
+    vo.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                    help="Market profile (default ashare)")
+    vo.add_argument("--expression", default=None,
+                    help="Factor expression to validate (required for --market crypto)")
+    vo.add_argument("--top-n", dest="top_n", type=int, default=50,
+                    help="crypto universe size (default 50)")
+    _add_freq_arg(vo)
     vo.set_defaults(func=_cmd_validate_overfit)
 
     # ── fz risk ──（顶层命令组）
@@ -928,6 +1225,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--w-max", type=float, default=0.05, dest="w_max")
     p_build.add_argument("--turnover", type=float, default=None)
     p_build.add_argument("--industry-neutral", action="store_true", dest="industry_neutral")
+    p_build.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                         help="Market profile (default ashare; crypto=市场中性做空)")
+    p_build.add_argument("--top-n", dest="top_n", type=int, default=50,
+                         help="crypto universe size (default 50)")
+    p_build.add_argument("--gross-limit", dest="gross_limit", type=float, default=1.0,
+                         help="crypto 毛敞口上限 Σ|w| (default 1.0)")
+    _add_freq_arg(p_build)
     p_build.set_defaults(func=_cmd_portfolio_build)
 
     # ── fz sim ──（顶层命令组）
@@ -944,6 +1248,11 @@ def build_parser() -> argparse.ArgumentParser:
     s_run.add_argument("--start", required=True, help="Start date YYYYMMDD")
     s_run.add_argument("--end", required=True, help="End date YYYYMMDD")
     s_run.add_argument("--run-id", default=None, dest="run_id", help="可选输出 run_id")
+    s_run.add_argument("--market", choices=["ashare", "crypto"], default="ashare",
+                       help="Market profile (default ashare; crypto=funding+做空 NAV 回测)")
+    s_run.add_argument("--top-n", dest="top_n", type=int, default=50,
+                       help="crypto universe size (default 50)")
+    _add_freq_arg(s_run)
     s_run.set_defaults(func=_cmd_sim_run)
 
     s_show = sim_sub.add_parser("show", help="Show simulation metrics")
@@ -954,6 +1263,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="模拟输出目录（含 metrics.json）",
     )
     s_show.set_defaults(func=_cmd_sim_show)
+
+    # ── fz live ──（顶层命令组）
+    live = sub.add_parser("live", help="向前执行(纸面/实盘)工作流")
+    live_sub = live.add_subparsers(dest="live_command", required=True)
+    lp = live_sub.add_parser("replay", help="历史窗口 replay 出向前 NAV(A类)")
+    lp.add_argument("--session-dir", required=True, dest="session_dir")
+    lp.add_argument("--portfolio-run-dir", action="append", required=True, dest="portfolio_run_dirs")
+    lp.add_argument("--start", required=True)   # 行情窗口起(YYYYMMDD)
+    lp.add_argument("--end", required=True)      # 行情窗口止
+    lp.add_argument("--universe", default=None)
+    lp.add_argument("--initial-cash", type=float, default=1_000_000.0, dest="initial_cash")
+    lp.add_argument("--broker", choices=["paper"], default="paper")
+    lp.add_argument("--from-date", default=None, dest="from_date")  # 可选:窗口内进一步裁剪(YYYY-MM-DD)
+    lp.add_argument("--to-date", default=None, dest="to_date")
+    lp.add_argument("--seed", type=int, default=0)
+    lp.set_defaults(func=_cmd_live_replay)
+
+    li = live_sub.add_parser("init", help="初始化向前会话")
+    li.add_argument("--session-dir", required=True, dest="session_dir")
+    li.add_argument("--initial-cash", type=float, default=1_000_000.0, dest="initial_cash")
+    li.add_argument("--slippage-bps", type=float, default=0.0, dest="slippage_bps")
+    li.add_argument("--broker", choices=["paper"], default="paper")
+    li.set_defaults(func=_cmd_live_init)
+
+    ls = live_sub.add_parser("step", help="推进一个交易日(可续跑)")
+    ls.add_argument("--session-dir", required=True, dest="session_dir")
+    ls.add_argument("--date", required=True)  # YYYYMMDD
+    ls.add_argument(
+        "--portfolio-run-dir", action="append", required=True, dest="portfolio_run_dirs"
+    )
+    ls.add_argument("--start", required=True)  # 行情窗口(含ADV回看)
+    ls.add_argument("--end", required=True)
+    ls.add_argument("--universe", default=None)
+    ls.set_defaults(func=_cmd_live_step)
+
+    lst = live_sub.add_parser("status", help="打印会话当前状态")
+    lst.add_argument("--session-dir", required=True, dest="session_dir")
+    lst.set_defaults(func=_cmd_live_status)
+
+    lr = live_sub.add_parser("report", help="生成A类分歧归因报告")
+    lr.add_argument("--session-dir", required=True, dest="session_dir")
+    lr.add_argument(
+        "--portfolio-run-dir", action="append", required=True, dest="portfolio_run_dirs"
+    )
+    lr.add_argument("--start", required=True)
+    lr.add_argument("--end", required=True)
+    lr.add_argument("--universe", default=None)
+    lr.set_defaults(func=_cmd_live_report)
 
     return parser
 

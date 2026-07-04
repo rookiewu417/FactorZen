@@ -65,12 +65,15 @@ def _split_args(s: str) -> list[str]:
     return args
 
 
-def parse_expr(s: str) -> Node:
+def parse_expr(s: str, leaves: dict[str, str] | set[str] | None = None) -> Node:
+    """解析表达式字符串。``leaves`` 为合法叶子集(默认 A 股 LEAF_FEATURES)，
+    传入其他市场的叶子集(dict 键或 set)即可解析该市场表达式。"""
+    valid_leaves = LEAF_FEATURES if leaves is None else leaves
     s = s.strip()
     if "(" not in s:
         if _NUM.match(s):
             return Constant(float(s))
-        if s in LEAF_FEATURES:
+        if s in valid_leaves:
             return Feature(s)
         raise ValueError(f"未知叶子: {s}")
     op = s[: s.index("(")].strip()
@@ -83,7 +86,7 @@ def parse_expr(s: str) -> Node:
     if spec.has_window:
         window = int(raw_args[-1])
         raw_args = raw_args[:-1]
-    children = [parse_expr(a) for a in raw_args]
+    children = [parse_expr(a, valid_leaves) for a in raw_args]
     if len(children) != spec.arity:
         raise ValueError(f"{op} 期望 {spec.arity} 个子节点，得到 {len(children)}")
     return OpNode(op, children, window)
@@ -106,14 +109,17 @@ def feature_names(node: Node) -> set[str]:
     return out
 
 
-def compile_expr(node: Node) -> pl.Expr:
+def compile_expr(node: Node, leaf_map: dict[str, str] | None = None) -> pl.Expr:
+    """把 AST 编译成 polars 表达式。``leaf_map`` 为叶子名→列名映射
+    (默认 A 股 LEAF_FEATURES)，传入其他市场映射即可编译该市场表达式。"""
+    lm = LEAF_FEATURES if leaf_map is None else leaf_map
     if isinstance(node, Feature):
-        return pl.col(LEAF_FEATURES[node.name])
+        return pl.col(lm[node.name])
     if isinstance(node, Constant):
         return pl.lit(float(node.value))
     if isinstance(node, OpNode):
         spec = OPERATORS[node.op]
-        child_exprs = [compile_expr(c) for c in node.children]
+        child_exprs = [compile_expr(c, lm) for c in node.children]
         return spec.build(child_exprs, node.window)
     raise TypeError(f"无法编译节点: {node!r}")
 

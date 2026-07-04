@@ -113,13 +113,15 @@ def _install_fake_overfit_pipeline(monkeypatch):
     monkeypatch.setattr("factorzen.daily.factors.registry.get_factor", fake_get_factor)
     monkeypatch.setattr("factorzen.daily.data.context.FactorDataContext", FakeContext)
     monkeypatch.setattr("factorzen.core.universe.get_universe", fake_get_universe)
+    # 合并后 validate 走 scoring.ic_overfit_report(crypto 共用重构),它在 scoring 顶层
+    # import 了这两个函数,故须 patch scoring 命名空间(patch 源模块对已绑定名字无效)。
     monkeypatch.setattr(
-        "factorzen.daily.preprocessing.normalizer.cross_sectional_zscore",
+        "factorzen.discovery.scoring.cross_sectional_zscore",
         fake_cross_sectional_zscore,
     )
     monkeypatch.setattr("factorzen.discovery.scoring.DataBundle", FakeDataBundle)
     monkeypatch.setattr(
-        "factorzen.daily.evaluation.ic_analysis.compute_rank_ic", fake_compute_rank_ic
+        "factorzen.discovery.scoring.compute_rank_ic", fake_compute_rank_ic
     )
     monkeypatch.setattr(
         "factorzen.validation.bootstrap.block_bootstrap_ic_ci", fake_block_bootstrap_ic_ci

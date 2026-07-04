@@ -99,7 +99,10 @@ class CryptoDataProvider(DataProvider):
         ).drop("_ms").sort(["ts_code", "trade_date"])
 
     # ── 资金费（perps 特有）────────────────────────────────
-    def fetch_funding(self, symbols: list[str] | None, start: str, end: str) -> pl.DataFrame:
+    def fetch_funding(self, symbols: list[str] | None, start: str, end: str,
+                      freq: str = "daily") -> pl.DataFrame:
+        if freq != "daily":
+            raise ValueError("CryptoDataProvider(ccxt) 仅支持 daily;intraday 请用数据湖 provider")
         start_ms = _date_to_ms(start)
         end_ms = _date_to_ms(end) + 86_400_000 - 1  # 含 end 当日所有档
         rows: list[tuple] = []
@@ -128,8 +131,10 @@ class CryptoDataProvider(DataProvider):
 
     # ── 持仓量（best-effort）───────────────────────────────
     def fetch_open_interest(
-        self, symbols: list[str] | None, start: str, end: str
+        self, symbols: list[str] | None, start: str, end: str, freq: str = "daily"
     ) -> pl.DataFrame:
+        if freq != "daily":
+            raise ValueError("CryptoDataProvider(ccxt) 仅支持 daily;intraday 请用数据湖 provider")
         empty = pl.DataFrame(
             schema={"ts_code": pl.String, "trade_date": pl.Date, "open_interest": pl.Float64}
         )

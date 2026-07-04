@@ -134,7 +134,6 @@ def run_crypto_simulation(
     import subprocess
     from pathlib import Path
 
-    from factorzen.markets.crypto.provider import CryptoDataProvider
     from factorzen.sim.engine import _load_weights_by_date
 
     weights_by_date = _load_weights_by_date(portfolio_run_dirs)
@@ -144,7 +143,7 @@ def run_crypto_simulation(
         symbols = sorted({c for w in weights_by_date.values() for c in w["ts_code"].to_list()})
 
     provider = profile.provider
-    assert isinstance(provider, CryptoDataProvider), "run_crypto_simulation 需 crypto profile"
+    assert hasattr(provider, "fetch_funding"), "run_crypto_simulation 需 crypto profile(provider 缺 funding 扩展)"
     bars = provider.fetch_bars(symbols, start, end, profile.base_freq)
     funding = provider.fetch_funding(symbols, start, end)
     sim = simulate_crypto_nav(

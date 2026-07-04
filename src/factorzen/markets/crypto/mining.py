@@ -12,11 +12,10 @@ import polars as pl
 from factorzen.discovery.export import alpha_cross_section_from_daily
 from factorzen.discovery.mining_session import run_session
 from factorzen.markets.base import MarketProfile
-from factorzen.markets.crypto.provider import CryptoDataProvider
 
 
 def build_crypto_daily(
-    provider: CryptoDataProvider, symbols: list[str], start: str, end: str, freq: str = "daily"
+    provider: Any, symbols: list[str], start: str, end: str, freq: str = "daily"
 ) -> pl.DataFrame:
     """拉 bars + funding + open_interest 并对齐成挖掘用 daily 帧。
 
@@ -56,7 +55,7 @@ def run_crypto_mining(
 ) -> dict:
     """crypto perps 因子挖掘：装配数据 → run_session(profile=crypto)。"""
     provider = profile.provider
-    assert isinstance(provider, CryptoDataProvider), "run_crypto_mining 需 crypto profile"
+    assert hasattr(provider, "fetch_funding"), "run_crypto_mining 需 crypto profile(provider 缺 funding 扩展)"
     daily = build_crypto_daily(provider, symbols, start, end, profile.base_freq)
     return run_session(
         daily,
@@ -85,7 +84,7 @@ def validate_crypto_expression(
     from factorzen.discovery.scoring import ic_overfit_report
 
     provider = profile.provider
-    assert isinstance(provider, CryptoDataProvider), "validate_crypto_expression 需 crypto profile"
+    assert hasattr(provider, "fetch_funding"), "validate_crypto_expression 需 crypto profile(provider 缺 funding 扩展)"
     daily = build_crypto_daily(provider, symbols, start, end, profile.base_freq)
     daily = profile.factors.derived_columns(daily)
     leaf_map = profile.factors.leaf_features()
@@ -106,7 +105,7 @@ def export_crypto_alpha(
 ) -> pl.DataFrame:
     """计算 crypto 表达式在 ``date`` 当日截面 α，返回 ``[ts_code, alpha]``。"""
     provider = profile.provider
-    assert isinstance(provider, CryptoDataProvider), "export_crypto_alpha 需 crypto profile"
+    assert hasattr(provider, "fetch_funding"), "export_crypto_alpha 需 crypto profile(provider 缺 funding 扩展)"
     daily = build_crypto_daily(provider, symbols, start, end, profile.base_freq)
     daily = profile.factors.derived_columns(daily)
     return alpha_cross_section_from_daily(

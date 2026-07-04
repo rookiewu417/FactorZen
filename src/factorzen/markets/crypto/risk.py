@@ -10,7 +10,6 @@ from datetime import date
 import polars as pl
 
 from factorzen.markets.base import MarketProfile, RiskModel
-from factorzen.markets.crypto.provider import CryptoDataProvider
 from factorzen.markets.crypto.risk_factors import CRYPTO_STYLE_NAMES, CRYPTO_STYLE_REGISTRY
 from factorzen.markets.crypto.sectors import build_sector_frame
 
@@ -54,7 +53,7 @@ def build_crypto_risk_model(
     from factorzen.risk.model import RiskModel as CoreRiskModel
 
     provider = profile.provider
-    assert isinstance(provider, CryptoDataProvider), "build_crypto_risk_model 需 crypto profile"
+    assert hasattr(provider, "fetch_funding"), "build_crypto_risk_model 需 crypto profile(provider 缺 funding 扩展)"
     daily = build_crypto_daily(provider, symbols, start, end, profile.base_freq)
     daily = profile.factors.derived_columns(daily)
     stocks = build_sector_frame(symbols, sector_map)

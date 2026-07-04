@@ -1,0 +1,11 @@
+[Unit]
+Description=FactorZen 每交易日收盘后触发 ops daily
+
+[Timer]
+# 工作日 18:30(A 股收盘后,留足数据落地时间)。非交易日由 guard 阶段自动短路。
+OnCalendar=Mon..Fri 18:30 Asia/Shanghai
+# 错过触发(机器关机)时开机补跑
+Persistent=true
+
+[Install]
+WantedBy=timers.target

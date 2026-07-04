@@ -14,8 +14,8 @@ from typing import Any
 import polars as pl
 
 from factorzen.markets.base import DataProvider
+from factorzen.markets.crypto.frequency import BAR_FREQS, normalize_freq
 
-_TIMEFRAME_MAP: dict[str, str] = {"daily": "1d", "hourly": "1h"}
 _BAR_SCHEMA = ["ts_code", "open", "high", "low", "close", "vol", "_ms"]
 
 
@@ -63,7 +63,7 @@ class CryptoDataProvider(DataProvider):
     def fetch_bars(
         self, symbols: list[str] | None, start: str, end: str, freq: str = "daily"
     ) -> pl.DataFrame:
-        tf = _TIMEFRAME_MAP.get(freq, "1d")
+        tf = BAR_FREQS[normalize_freq(freq)].timeframe
         start_ms = _date_to_ms(start)
         end_ms = _date_to_ms(end)
         rows: list[tuple] = []

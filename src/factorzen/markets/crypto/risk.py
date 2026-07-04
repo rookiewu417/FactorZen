@@ -10,10 +10,9 @@ from datetime import date
 import polars as pl
 
 from factorzen.markets.base import MarketProfile, RiskModel
+from factorzen.markets.crypto.frequency import periods_per_year as _freq_ppy
 from factorzen.markets.crypto.risk_factors import CRYPTO_STYLE_NAMES, CRYPTO_STYLE_REGISTRY
 from factorzen.markets.crypto.sectors import build_sector_frame
-
-_CRYPTO_PERIODS_PER_YEAR = 365
 
 
 class CryptoRiskModel(RiskModel):
@@ -39,6 +38,7 @@ def build_crypto_risk_model(
     start: str,
     end: str,
     *,
+    freq: str | None = None,
     sector_map: dict[str, str] | None = None,
     cov_half_life: int = 90,
     nw_lags: int = 2,
@@ -52,9 +52,10 @@ def build_crypto_risk_model(
     from factorzen.markets.crypto.mining import build_crypto_daily
     from factorzen.risk.model import RiskModel as CoreRiskModel
 
+    freq = freq or profile.base_freq
     provider = profile.provider
     assert hasattr(provider, "fetch_funding"), "build_crypto_risk_model 需 crypto profile(provider 缺 funding 扩展)"
-    daily = build_crypto_daily(provider, symbols, start, end, profile.base_freq)
+    daily = build_crypto_daily(provider, symbols, start, end, freq)
     daily = profile.factors.derived_columns(daily)
     stocks = build_sector_frame(symbols, sector_map)
     model = CoreRiskModel(
@@ -62,7 +63,7 @@ def build_crypto_risk_model(
         nw_lags=nw_lags,
         spec_half_life=spec_half_life,
         spec_shrinkage=spec_shrinkage,
-        periods_per_year=_CRYPTO_PERIODS_PER_YEAR,
+        periods_per_year=int(_freq_ppy(freq)),
     )
     result = model.build(
         daily, daily, stocks, start, end,

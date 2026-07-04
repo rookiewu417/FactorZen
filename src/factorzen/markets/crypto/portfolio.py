@@ -10,9 +10,8 @@ import numpy as np
 import polars as pl
 
 from factorzen.markets.base import MarketProfile
+from factorzen.markets.crypto.frequency import periods_per_year as _freq_ppy
 from factorzen.markets.crypto.risk import build_crypto_risk_model
-
-_CRYPTO_PERIODS_PER_YEAR = 365
 
 
 def _latest_factor_returns(risk_result) -> dict:
@@ -39,6 +38,7 @@ def build_crypto_portfolio(
     run_id: str | None = None,
     signal_date: str | None = None,
     sector_map: dict[str, str] | None = None,
+    freq: str | None = None,
 ) -> dict:
     """构建 crypto 组合（返回 run_portfolio 的落盘结果 dict）。
 
@@ -46,8 +46,9 @@ def build_crypto_portfolio(
     """
     from factorzen.pipelines.portfolio_build import run_portfolio
 
+    freq = freq or profile.base_freq
     _model, risk_result = build_crypto_risk_model(
-        profile, symbols, start, end, sector_map=sector_map
+        profile, symbols, start, end, freq=freq, sector_map=sector_map
     )
     codes = risk_result.factor_exposures.codes
     if not codes:
@@ -78,7 +79,7 @@ def build_crypto_portfolio(
         long_only=not market_neutral,  # 市场中性 → 允许做空
         budget=0.0 if market_neutral else 1.0,
         gross_limit=gross_limit if market_neutral else None,
-        periods_per_year=_CRYPTO_PERIODS_PER_YEAR,
+        periods_per_year=int(_freq_ppy(freq)),
         out_dir=out_dir,
         run_id=run_id,
         signal_date=signal_date,

@@ -33,6 +33,19 @@ def _matrix(df: pl.DataFrame | None, value_col: str, dates: list, date_idx: dict
     return m
 
 
+def _coerce_signal_keys(weights_by_date: dict, freq: str) -> dict:
+    """intraday 时把 date 信号键升为当日零点 datetime(date/datetime 混排会 TypeError)。"""
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+    if freq == "daily":
+        return weights_by_date
+    return {
+        (_datetime(k.year, k.month, k.day)
+         if isinstance(k, _date) and not isinstance(k, _datetime) else k): v
+        for k, v in weights_by_date.items()
+    }
+
+
 def simulate_crypto_nav(
     weights_by_date: dict,
     daily: pl.DataFrame,
@@ -122,6 +135,7 @@ def run_crypto_simulation(
     end: str,
     *,
     symbols: list[str] | None = None,
+    freq: str | None = None,
     out_dir: str = "workspace/sim",
     run_id: str | None = None,
 ) -> dict:
@@ -136,19 +150,21 @@ def run_crypto_simulation(
 
     from factorzen.sim.engine import _load_weights_by_date
 
+    freq = freq or profile.base_freq
     weights_by_date = _load_weights_by_date(portfolio_run_dirs)
     if not weights_by_date:
         raise ValueError("未从组合目录读到任何权重（缺 manifest.signal_date 或 weights.parquet）")
+    weights_by_date = _coerce_signal_keys(weights_by_date, freq)
     if symbols is None:
         symbols = sorted({c for w in weights_by_date.values() for c in w["ts_code"].to_list()})
 
     provider = profile.provider
     assert hasattr(provider, "fetch_funding"), "run_crypto_simulation 需 crypto profile(provider 缺 funding 扩展)"
-    bars = provider.fetch_bars(symbols, start, end, profile.base_freq)
-    funding = provider.fetch_funding(symbols, start, end)
+    bars = provider.fetch_bars(symbols, start, end, freq)
+    funding = provider.fetch_funding(symbols, start, end, freq)
     sim = simulate_crypto_nav(
         weights_by_date, bars, funding, cost_model=profile.costs,
-        periods_per_year=int(profile.calendar.periods_per_year(profile.base_freq)),
+        periods_per_year=int(profile.calendar.periods_per_year(freq)),
     )
 
     rid = run_id or "sim"
@@ -161,8 +177,9 @@ def run_crypto_simulation(
     except Exception:
         git_sha = "unknown"
     (run_dir / "manifest.json").write_text(json.dumps(
-        {"run_id": rid, "market": profile.name, "n_signals": len(weights_by_date),
-         "n_symbols": len(symbols), "git_sha": git_sha}, ensure_ascii=False, indent=2))
+        {"run_id": rid, "market": profile.name, "freq": freq,
+         "n_signals": len(weights_by_date), "n_symbols": len(symbols),
+         "git_sha": git_sha}, ensure_ascii=False, indent=2))
     m = sim["metrics"]
     return {"run_dir": str(run_dir), "sharpe": m["sharpe"], "max_dd": m["max_dd"],
             "ann_ret": m["ann_ret"]}

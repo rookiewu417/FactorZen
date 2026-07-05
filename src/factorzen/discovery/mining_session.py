@@ -54,7 +54,9 @@ def _guard_passed(c: dict, dsr_alpha: float = 0.05) -> bool:
     h_ic = c.get("holdout_ic")
     ci_lo = c.get("ic_ci_low")
     ic_tr = c.get("ic_train")
-    if any(v is None or v != v for v in (dsr, h_ic, ci_lo, ic_tr)):  # None 或 NaN
+    if dsr is None or h_ic is None or ci_lo is None or ic_tr is None:
+        return False
+    if any(v != v for v in (dsr, h_ic, ci_lo, ic_tr)):  # NaN 保守判否
         return False
     same_sign = (h_ic > 0) == (ic_tr > 0)
     return dsr < dsr_alpha and same_sign and ci_lo > 0

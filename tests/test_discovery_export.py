@@ -20,6 +20,7 @@ def _write_candidates_csv(tmp_path, *, with_passed=True):
 def test_read_candidate_require_passed_rejects_unpassed(tmp_path: Path):
     """R1：require_passed=True 时，请求未过护栏的 rank 报错并提示 --all；过的正常返回。"""
     import pytest
+
     from factorzen.discovery.export import read_candidate_expression
     sess = _write_candidates_csv(tmp_path)
     assert read_candidate_expression(sess, rank=1, require_passed=True) == "close"       # 过

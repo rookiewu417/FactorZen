@@ -106,6 +106,7 @@ def test_guard_passed_criteria():
 def test_session_writes_passed_flag(tmp_path: Path):
     """R1 集成：每个候选带 bool passed，candidates.csv 有 passed 列；passed=True 者确满足护栏。"""
     import polars as pl
+
     from factorzen.discovery.mining_session import run_session
     res = run_session(_daily(n_stocks=40, n_days=150), n_trials=30, top_k=5, seed=42,
                       method="random", holdout_ratio=0.2, out_dir=str(tmp_path))

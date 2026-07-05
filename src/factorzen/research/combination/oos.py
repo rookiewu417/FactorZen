@@ -1,11 +1,12 @@
-"""滚动样本外(OOS)多因子组合器。
+"""滚动样本外(OOS)多因子组合 + 逐折骨架。
 
-逐折用 train 段估权、test 段应用,拼接为完整 OOS 组合因子——消除 methods 里
-「全样本估权」的样本内偏差(README 自承的缺陷)。估权只用 train 的因子+收益,
-应用只用 test 的因子(不碰收益),配合 PurgedWalkForwardCV 的 purge/embargo 防泄漏。
+for_each_fold 是 combine_oos(线性权重)与 combine_lgbm(树模型)共用的逐折骨架:
+逐折 filter train/test → 对每折调 fold_fn → 拼接加 fold_id。估权/训练只用 train,
+应用/预测只用 test 因子(不碰收益),配合 CV 的 purge/embargo 防泄漏。
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import polars as pl
@@ -17,6 +18,57 @@ from factorzen.research.combination.methods import (
     estimate_ic_weights,
     estimate_max_ir_weights,
 )
+
+# fold_fn(all_factor_dfs, train_factor_dfs, train_ret, test_factor_dfs) -> df(trade_date,ts_code,factor_value)
+FoldFn = Callable[
+    [
+        dict[str, pl.DataFrame],
+        dict[str, pl.DataFrame],
+        pl.DataFrame,
+        dict[str, pl.DataFrame],
+    ],
+    pl.DataFrame,
+]
+
+_EMPTY_SCHEMA = {
+    "trade_date": pl.Utf8,
+    "ts_code": pl.Utf8,
+    "factor_value": pl.Float64,
+    "fold_id": pl.Int32,
+}
+
+
+def for_each_fold(
+    factor_dfs: dict[str, pl.DataFrame],
+    ret_df: pl.DataFrame,
+    cv: PurgedWalkForwardCV,
+    fold_fn: FoldFn,
+) -> pl.DataFrame:
+    """逐折切分 train/test,对每折调 fold_fn,拼接结果并标 fold_id。"""
+    if not factor_dfs:
+        raise ValueError("factor_dfs 不能为空")
+    fdfs = {
+        n: df.with_columns(pl.col("trade_date").cast(pl.Utf8))
+        for n, df in factor_dfs.items()
+    }
+    rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
+    all_dates = sorted({d for df in fdfs.values() for d in df["trade_date"].to_list()})
+
+    parts: list[pl.DataFrame] = []
+    for fid, (train_dates, test_dates) in enumerate(cv.split(all_dates)):
+        train_f = {
+            n: df.filter(pl.col("trade_date").is_in(train_dates)) for n, df in fdfs.items()
+        }
+        train_r = rdf.filter(pl.col("trade_date").is_in(train_dates))
+        test_f = {
+            n: df.filter(pl.col("trade_date").is_in(test_dates)) for n, df in fdfs.items()
+        }
+        combined = fold_fn(fdfs, train_f, train_r, test_f)
+        parts.append(combined.with_columns(pl.lit(fid).alias("fold_id")))
+
+    if not parts:
+        return pl.DataFrame(schema=_EMPTY_SCHEMA)
+    return pl.concat(parts)
 
 
 def _estimate_fold(
@@ -43,50 +95,10 @@ def combine_oos(
     method: str,
     **method_kwargs: Any,
 ) -> pl.DataFrame:
-    """逐折 train 估权 → test 应用,拼接为样本外组合因子(带 fold_id)。
+    """线性权重滚动 OOS 组合(equal_weight/ic_weighted/max_ir)。"""
 
-    Args:
-        factor_dfs: {name: DataFrame(trade_date, ts_code, factor_value)}
-        ret_df: DataFrame(trade_date, ts_code, ret) — 前向收益
-        cv: 切分协议
-        method: equal_weight | ic_weighted | max_ir
-        method_kwargs: 透传给估权(如 ic_window / lookback)
+    def _fold(all_f, train_f, train_r, test_f):
+        weights = _estimate_fold(method, all_f, train_f, train_r, method_kwargs)
+        return apply_weights(test_f, weights)
 
-    Returns:
-        DataFrame(trade_date, ts_code, factor_value, fold_id)
-    """
-    if not factor_dfs:
-        raise ValueError("factor_dfs 不能为空")
-    # 统一 trade_date 为字符串,保证与 cv 切分的日期类型一致
-    fdfs = {
-        n: df.with_columns(pl.col("trade_date").cast(pl.Utf8))
-        for n, df in factor_dfs.items()
-    }
-    rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
-    all_dates = sorted({d for df in fdfs.values() for d in df["trade_date"].to_list()})
-
-    parts: list[pl.DataFrame] = []
-    for fid, (train_dates, test_dates) in enumerate(cv.split(all_dates)):
-        train_f = {
-            n: df.filter(pl.col("trade_date").is_in(train_dates)) for n, df in fdfs.items()
-        }
-        train_r = rdf.filter(pl.col("trade_date").is_in(train_dates))
-        weights = _estimate_fold(method, fdfs, train_f, train_r, method_kwargs)
-        test_f = {
-            n: df.filter(pl.col("trade_date").is_in(test_dates)) for n, df in fdfs.items()
-        }
-        combined = apply_weights(test_f, weights).with_columns(
-            pl.lit(fid).alias("fold_id")
-        )
-        parts.append(combined)
-
-    if not parts:
-        return pl.DataFrame(
-            schema={
-                "trade_date": pl.Utf8,
-                "ts_code": pl.Utf8,
-                "factor_value": pl.Float64,
-                "fold_id": pl.Int32,
-            }
-        )
-    return pl.concat(parts)
+    return for_each_fold(factor_dfs, ret_df, cv, _fold)

@@ -26,6 +26,7 @@ def test_cmd_risk_build_forwards_params_and_filters_by_universe(monkeypatch, cap
     import polars as pl
 
     from factorzen.cli import main as cli
+    from factorzen.pipelines.risk_build import risk_lookback_start
 
     stocks_df = pl.DataFrame(
         {"ts_code": ["000001.SZ", "000002.SZ"], "industry": ["银行", "地产"]}
@@ -93,8 +94,12 @@ def test_cmd_risk_build_forwards_params_and_filters_by_universe(monkeypatch, cap
 
     assert ret == 0
     assert calls["get_universe"] == ("20230201", "csi500")
-    assert calls["fetch_daily"] == ("20230101", "20230201")
-    assert calls["fetch_daily_basic"] == ("20230101", "20230201")
+    # daily/daily_basic 拉取须补 lookback 历史（预热滚动风格因子），故 start 早于 --start、
+    # end 不变；截面回归区间仍由传给 run_risk_build 的原始 start/end 界定（见下 start_arg）。
+    lb_start = risk_lookback_start("20230101")
+    assert lb_start < "20230101"
+    assert calls["fetch_daily"] == (lb_start, "20230201")
+    assert calls["fetch_daily_basic"] == (lb_start, "20230201")
 
     daily_arg, daily_basic_arg, stocks_arg, start_arg, end_arg = calls["run_risk_build_args"]
     # daily/daily_basic 在 handler 内被过滤到 universe codes，999999.SZ（不在 stocks 里）应被剔除

@@ -132,3 +132,76 @@ def test_run_risk_build_manifest_command_override(tmp_path: Path):
                          command=["fz", "risk", "build", "--start", start, "--end", end])
     manifest = json.loads((Path(res["run_dir"]) / "manifest.json").read_text())
     assert manifest["command"] == ["fz", "risk", "build", "--start", start, "--end", end]
+
+
+def _ymd_to_date(s: str) -> dt.date:
+    return dt.datetime.strptime(s.replace("-", ""), "%Y%m%d").date()
+
+
+def test_risk_lookback_start_covers_max_rolling_window():
+    """lookback 起始日须往前推足够覆盖最长滚动风格因子窗（momentum rolling_sum(252)、
+    growth shift(252)）。252 交易日在 A 股约需 380 日历日，默认应有余量。"""
+    from factorzen.pipelines.risk_build import risk_lookback_start
+
+    lb = risk_lookback_start("20240101")
+    assert lb < "20240101"
+    gap_days = (dt.date(2024, 1, 1) - _ymd_to_date(lb)).days
+    assert gap_days >= 380, f"lookback 应≥380 日历日以覆盖 252 交易日，实际 {gap_days}"
+    # 支持 YYYY-MM-DD 输入
+    assert risk_lookback_start("2024-01-01") == lb
+
+
+def test_load_risk_inputs_fetches_lookback_so_build_keeps_all_style_factors():
+    """生产回归测试：CLI 若只 fetch [start,end]，窗口首日滚动风格因子全空、
+    build 退化为 4 风格因子并跳过大量交易日。load_risk_inputs 须补 lookback 历史，
+    使 8 个风格因子在窗口首日即齐全、无交易日被丢弃。"""
+    from factorzen.pipelines.risk_build import load_risk_inputs
+    from factorzen.risk import RiskModel
+
+    daily_all, db_all, stocks, start, end = _mock(n_days=290)  # start=days[260]，前有 260 天历史
+    codes = stocks["ts_code"].to_list()
+
+    class _SliceLoader:
+        """模拟真实 loader：fetch_daily(s,e) 只返回 [s,e] 切片。"""
+
+        def fetch_daily(self, s: str, e: str) -> pl.DataFrame:
+            return daily_all.filter(
+                (pl.col("trade_date") >= _ymd_to_date(s)) & (pl.col("trade_date") <= _ymd_to_date(e))
+            )
+
+        def fetch_daily_basic(self, s: str, e: str) -> pl.DataFrame:
+            return db_all.filter(
+                (pl.col("trade_date") >= _ymd_to_date(s)) & (pl.col("trade_date") <= _ymd_to_date(e))
+            )
+
+    daily, daily_basic = load_risk_inputs(_SliceLoader(), start, end, codes)
+
+    # 补了 lookback：窗口首日之前应有 ≥252 交易日历史用于滚动因子预热
+    hist_days = daily.filter(pl.col("trade_date") < _ymd_to_date(start))["trade_date"].n_unique()
+    assert hist_days >= 252, f"应补≥252 交易日 lookback，实际 {hist_days}"
+
+    res = RiskModel().build(daily, daily_basic, stocks, start, end)
+    names = set(res.factor_names)
+    # momentum/volatility/growth = 252/60/252 长窗滚动因子，无 lookback 时窗口内全空
+    rolling = {"momentum", "volatility", "growth"}
+    assert rolling <= names, f"补 lookback 后长窗滚动风格因子应齐全，实际缺 {rolling - names}"
+    assert res.n_dropped_dates == 0, "窗口内因子集应稳定，不应有交易日被跳过"
+
+
+def test_build_flags_degradation_when_lookback_missing():
+    """无 lookback（只喂 [start,end]）时 build 会退化：静默 continue 掩盖了退化，
+    修复后 n_dropped_dates 应暴露被跳过的交易日，风格因子亦不足 8 个。"""
+    from factorzen.risk import RiskModel
+
+    # 用整段数据作回归窗、且首日无更早历史 → 模拟 CLI fetch_daily(start,end) 无 lookback。
+    # 窗口够长（~290 交易日），volatility(60)/momentum(252) 随窗口推进才逐步出现，
+    # 使因子集与首个有效截面（仅 4 个非滚动风格因子）不一致。
+    daily_all, db_all, stocks, _, _ = _mock(n_days=290)
+    all_days = daily_all.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
+    start, end = all_days[0].strftime("%Y%m%d"), all_days[-1].strftime("%Y%m%d")
+
+    res = RiskModel().build(daily_all, db_all, stocks, start, end)
+    assert res.n_dropped_dates > 0, "无 lookback 时因子集中途变化，被跳过的交易日应可见而非静默"
+    names = set(res.factor_names)
+    rolling = {"momentum", "volatility", "growth"}
+    assert not (rolling & names), f"无 lookback 时长窗滚动因子应缺席，却出现 {rolling & names}"

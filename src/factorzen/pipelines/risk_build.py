@@ -5,12 +5,52 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
 
 from factorzen.core.experiment import build_manifest_base
 from factorzen.risk import RiskModel
+
+
+def risk_lookback_start(start: str, calendar_days: int = 420) -> str:
+    """风险模型的滚动风格因子（momentum rolling_sum(252)、growth shift(252) 等最长
+    252 交易日窗）需要 start 之前的历史预热，否则窗口早期这些因子全空、模型静默
+    退化为少数非滚动因子。返回 start 往前推 calendar_days 日历日的 "YYYYMMDD"。
+
+    252 交易日在 A 股约需 380 日历日，默认 420 日历日留有春节等长假余量。
+    """
+    from datetime import datetime, timedelta
+
+    d = datetime.strptime(start.replace("-", ""), "%Y%m%d").date() - timedelta(days=calendar_days)
+    return d.strftime("%Y%m%d")
+
+
+def load_risk_inputs(
+    loader: Any, start: str, end: str, universe_codes: list[str]
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """为风险模型构建拉取 daily / daily_basic，并补足 lookback 历史。
+
+    生产 CLI 若只 fetch [start,end]，窗口首日的滚动风格因子（252/60 日窗）全空，
+    RiskModel.build 会把因子集钉死在退化的截面并跳过大量交易日。这里统一用
+    risk_lookback_start 往前多拉历史用于因子预热；build 内部仍只对 [start,end]
+    做截面回归（按 trade_date 过滤），故不改变回归区间、只补数据。
+
+    Args:
+        loader: 提供 fetch_daily / fetch_daily_basic 的数据加载器（core.loader 模块）。
+        start, end: 回归区间 "YYYYMMDD"。
+        universe_codes: 股票池代码，用于收窄行情。
+
+    Returns:
+        (daily, daily_basic)，含 [lookback_start, end] 且已按 universe 过滤。
+    """
+    lb_start = risk_lookback_start(start)
+    daily = loader.fetch_daily(lb_start, end).filter(pl.col("ts_code").is_in(universe_codes))
+    daily_basic = loader.fetch_daily_basic(lb_start, end).filter(
+        pl.col("ts_code").is_in(universe_codes)
+    )
+    return daily, daily_basic
 
 
 def run_risk_build(daily, daily_basic, stocks, start, end, *, out_dir="workspace/risk_models",

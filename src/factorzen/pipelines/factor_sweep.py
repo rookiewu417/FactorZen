@@ -67,8 +67,11 @@ def run_sweep(
         row: dict[str, Any] = {"overrides": overrides}
         try:
             row.update(runner(extra + overrides))
-        except Exception as exc:
-            row["error"] = str(exc)
+        except (Exception, SystemExit) as exc:
+            # daily_single.main() 用 sys.exit(1/2) 报告内部错误 = SystemExit(BaseException，
+            # 非 Exception)，会逃逸 except Exception 而中止整批网格、丢掉已跑组合。本函数
+            # 契约是"单组合失败不中断整个 sweep"，故一并捕获、记 error 并继续。
+            row["error"] = str(exc) or f"SystemExit(code={getattr(exc, 'code', None)})"
         rows.append(row)
 
     def sort_key(row: dict[str, Any]) -> float:

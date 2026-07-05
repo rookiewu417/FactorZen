@@ -103,6 +103,23 @@ def test_run_sweep_tolerates_runner_failure():
     assert "ir" not in rows[1]
 
 
+def test_run_sweep_tolerates_runner_systemexit():
+    # daily_single.main() 内部错误统一走 sys.exit(1/2) = SystemExit（BaseException，
+    # 非 Exception），会逃逸 except Exception 而中止整个 sweep、丢掉前面已跑组合。
+    # run_sweep 契约是"单组合失败不中断"，须一并捕获 SystemExit。
+    def flaky_runner(overrides):
+        if overrides[0].endswith("50"):
+            raise SystemExit(2)  # 模拟 daily_single.main() sys.exit(2)
+        return {"ir": 0.3}
+
+    rows = run_sweep(["backtest.top_n=30,50"], flaky_runner, sort_by="ir")
+    assert len(rows) == 2
+    assert rows[0]["overrides"] == ["backtest.top_n=30"]
+    assert rows[0]["ir"] == 0.3
+    assert "error" in rows[1]
+    assert "ir" not in rows[1]
+
+
 def test_run_sweep_nan_sorts_last():
     def runner(overrides):
         return {"ir": float("nan")} if overrides[0].endswith("50") else {"ir": 0.1}

@@ -49,16 +49,21 @@ class DataBundle:
 
 def quick_fitness(factor_df: pl.DataFrame, bundle: DataBundle,
                   segment: Literal["train", "valid"] = "train") -> dict:
-    """factor_df: [trade_date, ts_code, factor_value] → {ic_mean, ir, n}。"""
+    """factor_df: [trade_date, ts_code, factor_value] → {ic_mean, ir, tstat, n}。
+
+    ``tstat`` 为 IC 序列的 Newey-West HAC t 统计量（``compute_rank_ic`` 已算），
+    仅当有效 IC 天数 >4 且 ic_std>0 时非零，天然惩罚低样本 —— 用作排序键可避免
+    小样本 ic_std 虚低把 IR 撑爆的假象（见 score_candidate）。
+    """
     seg = bundle._segment_mask(factor_df, segment)
     if seg.is_empty():
-        return {"ic_mean": 0.0, "ir": 0.0, "n": 0}
+        return {"ic_mean": 0.0, "ir": 0.0, "tstat": 0.0, "n": 0}
     # 截面 zscore（cross_sectional_zscore 新增列 factor_value_z）
     clean = cross_sectional_zscore(seg, col="factor_value").rename({"factor_value_z": "factor_clean"})
     ret = bundle._segment_mask(bundle.fwd_returns, segment)
     res = compute_rank_ic(clean.select(["trade_date", "ts_code", "factor_clean"]),
                           ret, factor_col="factor_clean", frequency="daily")
-    return {"ic_mean": res.ic_mean, "ir": res.ir, "n": res.n_periods}
+    return {"ic_mean": res.ic_mean, "ir": res.ir, "tstat": res.ic_tstat, "n": res.n_periods}
 
 
 def max_correlation(factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame]) -> float:
@@ -92,9 +97,13 @@ def score_candidate(factor_df: pl.DataFrame, node: Node, bundle: DataBundle,
     train = quick_fitness(factor_df, bundle, "train")
     mc = max_correlation(factor_df, pool)
     cplx = _complexity(node)
-    fitness = train["ir"] - lam * mc - gamma * cplx
+    # 排序键用 t-stat 而非裸 IR：t-stat 自带 n>4 门槛（低样本→0），避免小样本 ic_std
+    # 虚低把 IR 撑成假象（历史 rank1: ic≈2.4e-16 却 IR=14.68、n=7 排第一）。
+    # ir_train 仍保留在结果里供 DSR / CSV 使用。
+    tstat = train["tstat"]
+    fitness = tstat - lam * mc - gamma * cplx
     return {"fitness": fitness, "ic_train": train["ic_mean"], "ir_train": train["ir"],
-            "max_corr": mc, "complexity": cplx, "n_train": train["n"]}
+            "tstat_train": tstat, "max_corr": mc, "complexity": cplx, "n_train": train["n"]}
 
 
 def ic_overfit_report(

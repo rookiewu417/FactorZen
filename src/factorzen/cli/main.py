@@ -357,6 +357,25 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_research_run(args: argparse.Namespace) -> int:
+    from factorzen.pipelines.research_run import run_research
+
+    res = run_research(
+        start=args.start, end=args.end, universe=args.universe,
+        n_trials=args.trials, method=args.method, seed=args.seed, top_k=args.top_k,
+        rebalance_days=args.rebalance_days, warmup=args.warmup,
+        risk_aversion=args.lam, w_max=args.w_max, turnover=args.turnover,
+        industry_neutral=args.industry_neutral, lookback=args.lookback,
+        run_id=args.run_id, command=["research", "run"],
+    )
+    print(f"[research] 完成 run_id={res['run_id']} 因子={res['expression']!r}")
+    print(f"[research] 调仓 {res['n_rebalances']} 次 · sharpe={res['sharpe']} · ann_ret={res['ann_ret']}")
+    print(f"[research] mining={res['mining_session_dir']}")
+    print(f"[research] portfolios={res['portfolios_root']}  sim={res['sim_dir']}")
+    print(f"[research] dashboard → {res['report_html']}")
+    return 0
+
+
 def _cmd_mine_agent(args: argparse.Namespace) -> int:
     from factorzen.core import loader
     from factorzen.core.universe import get_universe
@@ -1264,6 +1283,34 @@ def build_parser() -> argparse.ArgumentParser:
     m_team.set_defaults(func=_cmd_mine_team)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
+    # ── fz research ──（端到端编排：mine → 头部 passed 因子 → 循环 build → sim → report）
+    research = sub.add_parser("research", help="End-to-end research orchestration")
+    research_sub = research.add_subparsers(dest="research_command", required=True)
+    r_run = research_sub.add_parser(
+        "run", help="mine → 头部 passed 因子 → 按调仓日循环 build → sim → report（同一 run_id）")
+    r_run.add_argument("--start", required=True, help="Start date YYYYMMDD")
+    r_run.add_argument("--end", required=True, help="End date YYYYMMDD")
+    r_run.add_argument("--universe", default=None, help="Universe name (default all_a)")
+    r_run.add_argument("--method", choices=["random", "genetic"], default="random")
+    r_run.add_argument("--trials", type=int, default=200)
+    r_run.add_argument("--top-k", dest="top_k", type=int, default=10)
+    r_run.add_argument("--seed", type=int, default=42)
+    r_run.add_argument("--rebalance-days", dest="rebalance_days", type=int, default=20,
+                       help="调仓间隔（交易日数，默认 20≈月频）")
+    r_run.add_argument("--warmup", type=int, default=60,
+                       help="起始跳过的交易日数，留给时序算子 lookback（默认 60）")
+    r_run.add_argument("--lookback", type=int, default=60,
+                       help="因子计算 lookback 交易日数（默认 60）")
+    r_run.add_argument("--lam", type=float, default=1.0, help="风险厌恶系数（默认 1.0）")
+    r_run.add_argument("--w-max", dest="w_max", type=float, default=0.05,
+                       help="单票权重上限（默认 0.05）")
+    r_run.add_argument("--turnover", type=float, default=None, help="换手预算（默认无约束）")
+    r_run.add_argument("--industry-neutral", dest="industry_neutral", action="store_true",
+                       help="行业中性到 universe 等权基准")
+    r_run.add_argument("--run-id", dest="run_id", default=None,
+                       help="贯穿全链路的 run_id（默认 research_<seed>_<method>）")
+    r_run.set_defaults(func=_cmd_research_run)
+
     validate = sub.add_parser("validate", help="Overfitting / robustness checks")
     validate_sub = validate.add_subparsers(dest="validate_command", required=True)
     vo = validate_sub.add_parser("overfit", help="Deflated Sharpe + bootstrap CI for one factor")

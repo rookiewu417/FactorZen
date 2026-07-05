@@ -43,6 +43,11 @@ def run_replay(
     store.init({"broker": "paper", "initial_cash": initial_cash, "seed": seed,
                 "command": ["fz", "live", "replay"]})
     broker = PaperBroker(initial_cash=initial_cash)
+    # resume：已有部分 ledger 的 session（扩窗 --to / 崩溃恢复）须重建 broker 状态，
+    # 否则 has_date 跳过已落盘日后 broker 仍停在空仓 initial_cash，续跑日 nav 全错。
+    st = store.load_state()
+    if st is not None:
+        broker.load_state(st)
 
     all_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
     dates = [d for d in all_dates
@@ -73,6 +78,9 @@ def run_replay(
         ref_price = {c: m["close"] for c, m in market.items() if m.get("close")}
         rec = step(broker, current_weights, ref_price)
         rec["as_of_date"] = d.isoformat()
+        # 落可续跑态（覆盖 step 的显示视图），使扩窗 replay / 后续 fz live step 能
+        # load_state 续跑，而非读到 {positions, cash:{...}} 显示视图后 float(dict) 崩。
+        rec["broker_state"] = broker.state()
         store.append(rec)
         n_steps += 1
 

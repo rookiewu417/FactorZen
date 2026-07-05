@@ -35,7 +35,7 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
 
     captured: dict[str, object] = {}
 
-    def fake_run_mine(*, start, end, universe, n_trials, top_k, seed, method):
+    def fake_run_mine(*, start, end, universe, n_trials, top_k, seed, method, workers=1):
         captured.update(
             start=start,
             end=end,
@@ -44,6 +44,7 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
             top_k=top_k,
             seed=seed,
             method=method,
+            workers=workers,
         )
         return {"session_dir": str(tmp_path / "session-1"), "candidates": [1, 2, 3]}
 
@@ -79,6 +80,7 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
         "top_k": 5,
         "seed": 7,
         "method": "genetic",
+        "workers": 1,
     }
 
     sd = str(tmp_path / "session-1")

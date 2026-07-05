@@ -43,8 +43,8 @@ def _oos_adjusted_fitness(train_fitness: float, train_tstat: float, valid_tstat:
     return train_fitness
 
 
-def _guard_passed(c: dict) -> bool:
-    """防过拟合护栏软标记：DSR 显著(p<0.05) & holdout IC 与 train 同号 & holdout IC 95%CI 下界>0。
+def _guard_passed(c: dict, dsr_alpha: float = 0.05) -> bool:
+    """防过拟合护栏软标记：DSR 显著(p<dsr_alpha) & holdout IC 与 train 同号 & holdout IC 95%CI 下界>0。
 
     任一指标缺失/NaN → 判否(保守)。护栏历史上「只算不判」——四个指标算出来只写进 CSV，
     候选入选只看 fitness 排序，过拟合垃圾照样导出。这里把它变成可被 leaderboard/export-alpha
@@ -57,7 +57,7 @@ def _guard_passed(c: dict) -> bool:
     if any(v is None or v != v for v in (dsr, h_ic, ci_lo, ic_tr)):  # None 或 NaN
         return False
     same_sign = (h_ic > 0) == (ic_tr > 0)
-    return dsr < 0.05 and same_sign and ci_lo > 0
+    return dsr < dsr_alpha and same_sign and ci_lo > 0
 
 
 def _cross_section_variability(fdf: pl.DataFrame) -> float:
@@ -124,6 +124,8 @@ def _pool_pbo(scored: list, daily: pl.DataFrame, bundle, eval_start=None, leaf_m
 def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 method: str = "random", train_ratio: float = 0.7,
                 holdout_ratio: float = 0.2,
+                decorr_threshold: float = 0.7, min_n_train: int = 5,
+                dsr_alpha: float = 0.05,
                 eval_start: str | None = None,
                 out_dir: str = "workspace/mining_sessions",
                 profile=None, workers: int = 1) -> dict:
@@ -230,7 +232,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                     continue
                 seen_fp.add(fp)
             sc = score_candidate(fdf, node, bundle, pool={})
-            if sc["n_train"] < 5:
+            if sc["n_train"] < min_n_train:
                 continue
             valid = quick_fitness(fdf, bundle, "valid")
             # R6：把 valid OOS 一致性折进排序键——valid 反号候选被降权（历史上算了不用）
@@ -261,7 +263,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         except Exception:
             continue
         mc = max_correlation(fdf, selected_pool)
-        if mc < 0.7:
+        if mc < decorr_threshold:
             cand = {**cand, "max_corr": round(float(mc), 4)}
             selected.append(cand)
             selected_pool[cand["expression"]] = fdf
@@ -297,7 +299,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         c["dsr_pvalue"] = round(float(p), 4)
         c["ic_ci_low"] = round(float(ci_lo), 4) if ci_lo == ci_lo else float("nan")
         # 护栏软标记：算完立刻判，供 leaderboard/export-alpha 默认过滤（--all 逃生口）
-        c["passed"] = _guard_passed(c)
+        c["passed"] = _guard_passed(c, dsr_alpha)
 
     session_dir = Path(out_dir) / f"session_{seed}_{method}"
     session_dir.mkdir(parents=True, exist_ok=True)

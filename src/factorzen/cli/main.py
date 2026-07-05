@@ -341,6 +341,11 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         top_k=args.top_k,
         seed=args.seed,
         method=args.method,
+        holdout_ratio=args.holdout_ratio,
+        train_ratio=args.train_ratio,
+        decorr_threshold=args.decorr_threshold,
+        min_n_train=args.min_n_train,
+        dsr_alpha=args.dsr_alpha,
         workers=args.workers,
     )
     sd = res["session_dir"]
@@ -1194,6 +1199,16 @@ def build_parser() -> argparse.ArgumentParser:
     m_search.add_argument("--seed", type=int, default=42)
     m_search.add_argument("--workers", type=int, default=1,
                           help="遗传搜索并行评分线程数(默认 1;同 seed 结果与串行等价)")
+    m_search.add_argument("--holdout-ratio", dest="holdout_ratio", type=float, default=0.2,
+                          help="永久隔离的 OOS holdout 占比（默认 0.2）")
+    m_search.add_argument("--train-ratio", dest="train_ratio", type=float, default=0.7,
+                          help="mining 段内 train/valid 切分比例（默认 0.7）")
+    m_search.add_argument("--decorr-threshold", dest="decorr_threshold", type=float, default=0.7,
+                          help="top-K 贪心去相关的 |corr| 门槛，≥该值视为近重复剔除（默认 0.7）")
+    m_search.add_argument("--min-n-train", dest="min_n_train", type=int, default=5,
+                          help="候选 train 段最少有效 IC 天数，不足则丢弃（默认 5）")
+    m_search.add_argument("--dsr-alpha", dest="dsr_alpha", type=float, default=0.05,
+                          help="护栏 passed 标记的 DSR 显著性阈值（默认 0.05）")
     _add_freq_arg(m_search)
     m_search.set_defaults(func=_cmd_mine_search)
 

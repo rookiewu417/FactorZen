@@ -72,6 +72,25 @@ def test_oos_adjusted_fitness_demotes_valid_reversal():
     assert _oos_adjusted_fitness(3.0, 3.0, -2.0) < _oos_adjusted_fitness(2.0, 2.0, 1.0)
 
 
+def test_run_session_respects_config_knobs(tmp_path):
+    """cfg：去相关阈值不再写死——decorr_threshold=0.0 时 mc<0.0 恒 False → top-K 一个都选不进。"""
+    from factorzen.discovery.mining_session import run_session
+    daily = _daily(n_stocks=40, n_days=150)
+    base = dict(n_trials=30, top_k=5, seed=42, method="random", holdout_ratio=0.2)
+    r_default = run_session(daily, out_dir=str(tmp_path / "d"), **base)
+    r_strict = run_session(daily, decorr_threshold=0.0, out_dir=str(tmp_path / "s"), **base)
+    assert len(r_default["candidates"]) > 0        # 默认阈值 0.7 → 有候选
+    assert len(r_strict["candidates"]) == 0        # 阈值 0.0 → 全被去相关门槛挡下
+
+
+def test_guard_passed_respects_dsr_alpha():
+    """cfg：护栏 DSR 阈值可配——收紧 dsr_alpha 会让边界候选从 passed 变 not passed。"""
+    from factorzen.discovery.mining_session import _guard_passed
+    c = {"dsr_pvalue": 0.03, "holdout_ic": 0.05, "ic_ci_low": 0.02, "ic_train": 0.06}
+    assert _guard_passed(c, dsr_alpha=0.05) is True     # 0.03 < 0.05 → 过
+    assert _guard_passed(c, dsr_alpha=0.01) is False    # 0.03 ≥ 0.01 → 收紧后不过
+
+
 def test_guard_passed_criteria():
     """R1：护栏软标记 = DSR<0.05 & holdout 与 train 同号 & holdout CI 下界>0；任一 NaN→不过。"""
     from factorzen.discovery.mining_session import _guard_passed

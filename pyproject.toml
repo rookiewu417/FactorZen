@@ -47,6 +47,9 @@ dev = [
     "coverage>=7.4.0",
     "ruff>=0.3.0",
     "jupyterlab>=4.0.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
     "shap>=0.44",
 ]
 
@@ -88,6 +91,8 @@ python_functions = ["test_*"]
 # 仅精确屏蔽这一条 cosmetic 告警，其余告警照常暴露。
 filterwarnings = [
     "ignore:Glyph .* missing from font.*:UserWarning",
+    # starlette TestClient 内部 httpx 兼容告警(第三方,非本项目代码)
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated.*",
 ]
 
 [tool.mypy]

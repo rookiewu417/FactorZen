@@ -17,6 +17,7 @@ smoke-data = "python tools/smoke_data.py"
 daily      = "python -m factorzen.pipelines.daily_single"
 report     = "python -m factorzen.pipelines.generate_report"
 fz         = "python -m factorzen.cli.main"
+serve      = "uvicorn factorzen.server.api:app --host 0.0.0.0 --port 8000"
 
 [dependencies]
 python = ">=3.10,<3.13"

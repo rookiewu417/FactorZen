@@ -1295,6 +1295,82 @@ def test_fast_path_borrow_cost_matches_slow_path():
     assert any(v > 0 for v in fast.nav["borrow_cost"].to_list())
 
 
+def test_borrow_cost_is_daily_regardless_of_frequency():
+    """融券是每日持有成本：回测循环恒按日迭代，融券成本必须按【日】费率计提，
+    不随 frequency(weekly/monthly) 放大。
+
+    历史 bug：monthly 下每个交易日按 21 天融券费计提，一个交易日就被扣 21 天利息，
+    全年累计高估约 21x（weekly 约 5x），足以把盈利的市场中性因子在 Tear Sheet 上
+    翻成亏损。慢路径(通用循环)与快路径(precomputed fast)都必须正确。
+    """
+    prices = pl.DataFrame(
+        [
+            {
+                "trade_date": date(2024, 1, 1),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+            {
+                "trade_date": date(2024, 1, 2),
+                "ts_code": "000001.SZ",
+                "open": 10.0,
+                "close": 10.0,
+                "pre_close": 10.0,
+                "pct_chg": 0.0,
+                "vol": 1000.0,
+                "amount": 1_000_000.0,
+            },
+        ]
+    )
+    weights_by_date = {
+        date(2024, 1, 1): pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [-1.0]}),
+    }
+    factors = _factor([(date(2024, 1, 1), "000001.SZ", 1.0)])
+    cost_model = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0.10)
+    # 满仓做空持有一个交易日，应恰好扣 annual/252，与 frequency 无关
+    expected_daily_borrow = 1.0 * cost_model.borrow_rate_per_period("daily")
+
+    for frequency in ("weekly", "monthly"):
+        cfg = BacktestConfig(
+            initial_capital=1_000_000,
+            max_participation_rate=1.0,
+            fallback_adv=1_000_000.0,
+            frequency=frequency,
+        )
+        # collect_positions 默认 True -> 慢路径（通用循环）
+        slow = run_strategy_backtest(
+            PrecomputedWeightsStrategy(weights_by_date),
+            factors,
+            prices,
+            config=cfg,
+            cost_model=cost_model,
+        )
+        # collect 全关 -> 快路径（_run_precomputed_weights_backtest_fast）
+        fast = run_strategy_backtest(
+            PrecomputedWeightsStrategy(weights_by_date),
+            factors,
+            prices,
+            config=cfg,
+            cost_model=cost_model,
+            collect_positions=False,
+            collect_trades=False,
+            include_context_positions=False,
+        )
+        slow_day2 = slow.nav.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
+        fast_day2 = fast.nav.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
+        assert slow_day2["borrow_cost"] == pytest.approx(expected_daily_borrow), (
+            f"慢路径 {frequency} 融券应按日计提"
+        )
+        assert fast_day2["borrow_cost"] == pytest.approx(expected_daily_borrow), (
+            f"快路径 {frequency} 融券应按日计提"
+        )
+
+
 def test_fast_path_handles_missing_open_price_without_crashing():
     """快速路径 open 为 None 时不应崩溃，该股票当天判定不可交易，其余股票正常（Fix 4）。"""
     weights_by_date = {

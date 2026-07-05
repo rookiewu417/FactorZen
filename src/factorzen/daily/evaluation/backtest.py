@@ -635,7 +635,10 @@ def run_strategy_backtest(
         borrow_cost = 0.0
         if cost_model is not None:
             short_exposure = sum(abs(w) for w in next_weights.values() if w < 0)
-            borrow_cost = short_exposure * cost_model.borrow_rate_per_period(cfg.frequency)
+            # 融券是每日持有成本：回测循环恒按日迭代（trade_dates=全量日线，从不按
+            # frequency 重采样），每次迭代=持有一个交易日，故必须按【日】费率计提。
+            # 传 cfg.frequency 会在 weekly/monthly 下每天多收 5/21 天利息（5x/21x 高估）。
+            borrow_cost = short_exposure * cost_model.borrow_rate_per_period("daily")
         gross_return = (1.0 + overnight_return) * (1.0 + intraday_return) - 1.0
         period_cost_scale = 1.0 + overnight_return
         period_trade_cost = trade_cost * period_cost_scale
@@ -1139,10 +1142,11 @@ def _run_precomputed_weights_backtest_fast(
             buy_cost = np.where(filled > 0, np.abs(filled) * cost_model.one_way_cost(), 0.0)
             sell_cost = np.where(filled < 0, np.abs(filled) * cost_model.sell_cost(), 0.0)
             trade_cost = float(np.sum(buy_cost + sell_cost))
-            # 融券成本：与慢路径一致，按本期（约束/容量过滤后）空头敞口逐期计提，
-            # 不止首次建仓那一天（持有空头期间每期都收费）。
+            # 融券成本：与慢路径一致，按本期（约束/容量过滤后）空头敞口逐日计提，
+            # 不止首次建仓那一天（持有空头期间每个交易日都收费）。循环恒按日迭代，
+            # 故按【日】费率计提，不随 frequency 放大（见 run_strategy_backtest 注释）。
             short_exposure = float(np.sum(np.abs(next_weights[next_weights < 0])))
-            borrow_cost = short_exposure * cost_model.borrow_rate_per_period(config.frequency)
+            borrow_cost = short_exposure * cost_model.borrow_rate_per_period("daily")
         turnover = float(np.sum(np.abs(filled)))
 
         intraday = intraday_ret[i]

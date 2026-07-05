@@ -62,6 +62,16 @@ def test_cross_section_variability_flags_degenerate():
     assert _cross_section_variability(varying) > 0.5
 
 
+def test_oos_adjusted_fitness_demotes_valid_reversal():
+    """R6：valid t-stat 与 train 反号时按 |valid_tstat| 扣分（同尺度），把 train 高/valid 反号降权。"""
+    from factorzen.discovery.mining_session import _oos_adjusted_fitness
+    assert _oos_adjusted_fitness(3.0, 3.0, 1.5) == 3.0     # 同号一致 → 不调整
+    assert _oos_adjusted_fitness(3.0, 3.0, -2.0) == 1.0    # 反号 → 扣 |valid_tstat|
+    assert _oos_adjusted_fitness(3.0, 3.0, 0.0) == 3.0     # valid 样本不足(tstat=0) → 不调整
+    # 反号候选(train fitness 3.0→1.0) 应排到一致候选(2.0)之后
+    assert _oos_adjusted_fitness(3.0, 3.0, -2.0) < _oos_adjusted_fitness(2.0, 2.0, 1.0)
+
+
 def test_guard_passed_criteria():
     """R1：护栏软标记 = DSR<0.05 & holdout 与 train 同号 & holdout CI 下界>0；任一 NaN→不过。"""
     from factorzen.discovery.mining_session import _guard_passed

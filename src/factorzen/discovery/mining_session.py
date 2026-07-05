@@ -31,6 +31,18 @@ def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) ->
     return out
 
 
+def _oos_adjusted_fitness(train_fitness: float, train_tstat: float, valid_tstat: float) -> float:
+    """把 valid 段 OOS 一致性折进排序键：valid t-stat 与 train **反号**时按 ``|valid_tstat|`` 扣分。
+
+    train 与 valid 的 t-stat 同尺度，扣 ``|valid_tstat|`` 是无 magic 系数、尺度一致、连续的降权，
+    直接把「train 高但 valid 反号」的过拟合候选压到一致候选之后。valid 样本不足（HAC t-stat=0，
+    n≤4）时不调整（保守，不足以判 OOS 一致性）。历史上 ic_valid/ir_valid 算了只写 CSV、不进选择。
+    """
+    if train_tstat != 0.0 and valid_tstat != 0.0 and (train_tstat > 0) != (valid_tstat > 0):
+        return train_fitness - abs(valid_tstat)
+    return train_fitness
+
+
 def _guard_passed(c: dict) -> bool:
     """防过拟合护栏软标记：DSR 显著(p<0.05) & holdout IC 与 train 同号 & holdout IC 95%CI 下界>0。
 
@@ -221,10 +233,12 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             if sc["n_train"] < 5:
                 continue
             valid = quick_fitness(fdf, bundle, "valid")
+            # R6：把 valid OOS 一致性折进排序键——valid 反号候选被降权（历史上算了不用）
+            fitness = _oos_adjusted_fitness(sc["fitness"], sc["tstat_train"], valid["tstat"])
             scored.append({"expression": expr, "ic_train": sc["ic_train"],
                            "ir_train": sc["ir_train"], "ic_valid": valid["ic_mean"],
                            "ir_valid": valid["ir"], "max_corr": sc["max_corr"],
-                           "complexity": sc["complexity"], "fitness": sc["fitness"],
+                           "complexity": sc["complexity"], "fitness": fitness,
                            "n_train": sc["n_train"]})
         except Exception as e:
             n_errors += 1

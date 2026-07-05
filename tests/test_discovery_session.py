@@ -28,6 +28,40 @@ def _daily(seed=3, n_stocks=40, n_days=120):
     return pl.DataFrame(rows)
 
 
+def _mk_factor(vals_per_stock, n_days=5):
+    """构造 [trade_date, ts_code, factor_value]：每只股票取 vals_per_stock[i]，每日相同。"""
+    rows = []
+    for d in range(n_days):
+        dt = date(2024, 1, 2) + timedelta(days=d)
+        for i, v in enumerate(vals_per_stock):
+            rows.append({"trade_date": dt, "ts_code": f"{i:06d}.SH", "factor_value": float(v)})
+    return pl.DataFrame(rows)
+
+
+def test_rank_fingerprint_merges_monotone_equivalents():
+    """R5：截面 rank 指纹对单调(同向)变换一致 → 数学等价簇同指纹；反向/不同向不同指纹。"""
+    from factorzen.discovery.mining_session import _rank_fingerprint
+    base = [((i * 37) % 40) + 0.5 for i in range(40)]  # 40 个互异值
+    f_inc = _mk_factor(base)
+    f_inc2 = _mk_factor([x * 3.0 + 7.0 for x in base])   # 单调递增变换 → rank 序不变
+    f_dec = _mk_factor([-x for x in base])               # neg → 递减
+    f_dec2 = _mk_factor([100.0 - x for x in base])       # 2-x 型 → 同样递减，与 f_dec 同序
+    f_other = _mk_factor([((i * 11) % 40) + 0.5 for i in range(40)])  # 不同排序
+    assert _rank_fingerprint(f_inc) == _rank_fingerprint(f_inc2)      # 递增簇合并
+    assert _rank_fingerprint(f_dec) == _rank_fingerprint(f_dec2)      # 递减簇合并
+    assert _rank_fingerprint(f_inc) != _rank_fingerprint(f_dec)       # 方向不同 → 区分
+    assert _rank_fingerprint(f_inc) != _rank_fingerprint(f_other)     # 不同因子 → 区分
+
+
+def test_cross_section_variability_flags_degenerate():
+    """R7：近常数因子截面变异占比≈0（被过滤）；有变异因子≈1（保留）。"""
+    from factorzen.discovery.mining_session import _cross_section_variability
+    const = _mk_factor([1.0] * 40)
+    varying = _mk_factor([((i * 37) % 40) + 0.5 for i in range(40)])
+    assert _cross_section_variability(const) < 0.5
+    assert _cross_section_variability(varying) > 0.5
+
+
 def test_factor_values_eval_start_trims():
     from factorzen.discovery.expression import parse_expr
     from factorzen.discovery.mining_session import _factor_values

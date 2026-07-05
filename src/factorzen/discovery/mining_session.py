@@ -1,6 +1,7 @@
 # src/factorzen/discovery/mining_session.py
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -28,6 +29,42 @@ def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) ->
         from factorzen.discovery.scoring import _cut_literal
         out = out.filter(pl.col("trade_date") >= _cut_literal(out, eval_start))
     return out
+
+
+def _cross_section_variability(fdf: pl.DataFrame) -> float:
+    """有截面变异的交易日占比 ∈ [0,1]。近常数因子(多数截面 std≈0)→接近 0。
+
+    R7 退化过滤用：随机/遗传会大量产出截面恒定的表达式(常数、amplitude=high-low=0 等),
+    它们无截面信号且会拖累去相关/护栏,应在打分前剔除。
+    """
+    if fdf.is_empty():
+        return 0.0
+    g = fdf.group_by("trade_date").agg(pl.col("factor_value").std().alias("s"))
+    s = g["s"].fill_null(0.0).to_numpy()
+    return float(np.mean(s > 1e-12)) if s.size else 0.0
+
+
+def _rank_fingerprint(fdf: pl.DataFrame, n_dates: int = 4) -> str | None:
+    """截面 rank 签名指纹(sha1)。单调(同向)变换的因子截面 rank 序完全一致 → 同指纹。
+
+    R5 去重用:字符串去重挡不住 neg(amount)/sub(2,amount)/neg(abs(amount)) 这类数学等价簇
+    (表达式串不同、rank IC 逐位相同)。对均匀取样的几个交易日取截面平均 rank(ties 稳健)哈希,
+    同时并入该日的 ts_code 成员集 → 不同 universe 不会误并。**不做符号规范化**:X 与 −X 是
+    相反方向的赌注,预打分阶段合并会有丢掉正确符号因子的风险;反向由 top-K 的 |corr| 门槛收尾。
+    样本日不足(<2)返回 None(不去重)。
+    """
+    dates = fdf.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
+    if len(dates) < 2:
+        return None
+    idx = sorted(set(np.linspace(0, len(dates) - 1, min(n_dates, len(dates))).round().astype(int).tolist()))
+    h = hashlib.sha1()
+    for i in idx:
+        cross = fdf.filter(pl.col("trade_date") == dates[i]).sort("ts_code")
+        h.update("|".join(cross["ts_code"].to_list()).encode())
+        ranks = cross["factor_value"].rank(method="average").to_list()
+        h.update((",".join(f"{float(x):.1f}" for x in ranks)).encode())
+        h.update(b";")
+    return h.hexdigest()
 
 
 def _pool_pbo(scored: list, daily: pl.DataFrame, bundle, eval_start=None, leaf_map=None) -> float:
@@ -142,6 +179,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     # ── 统一评分循环（random 与 genetic 共用）────────────────────────────
     scored: list[dict] = []
     seen: set[str] = set()
+    seen_fp: set[str] = set()  # 截面 rank 指纹，合并数学等价/单调簇（R5）
     n_errors = 0
     last_err: Exception | None = None
     for node in candidate_nodes:
@@ -153,6 +191,15 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             fdf = _factor_values(node, daily, eval_start, leaf_map)
             if fdf.height < 50:
                 continue
+            # R7 退化过滤：多数截面近常数的因子无信号，打分前剔除
+            if _cross_section_variability(fdf) < 0.5:
+                continue
+            # R5 指纹去重：单调/符号等价簇（neg(amount)/2-amount/…）rank 序相同 → 只留首个
+            fp = _rank_fingerprint(fdf)
+            if fp is not None:
+                if fp in seen_fp:
+                    continue
+                seen_fp.add(fp)
             sc = score_candidate(fdf, node, bundle, pool={})
             if sc["n_train"] < 5:
                 continue

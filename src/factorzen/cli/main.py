@@ -972,6 +972,34 @@ def _add_freq_arg(p: argparse.ArgumentParser) -> None:
                    help="bar 粒度(仅 crypto;ashare 只支持 daily)")
 
 
+def _ops_as_of(date_arg: str | None):
+    from datetime import date as _date
+
+    if date_arg:
+        return _date.fromisoformat(f"{date_arg[:4]}-{date_arg[4:6]}-{date_arg[6:]}")
+    return _date.today()
+
+
+def _cmd_ops_daily(args: argparse.Namespace) -> int:
+    from factorzen.ops.config import load_ops_config
+    from factorzen.ops.runner import run_ops_daily
+
+    cfg = load_ops_config(args.config)
+    return run_ops_daily(cfg, _ops_as_of(args.date))
+
+
+def _cmd_ops_status(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from factorzen.ops.config import load_ops_config
+    from factorzen.ops.state import OpsState
+
+    cfg = load_ops_config(args.config)
+    summary = OpsState(cfg.state_dir, _ops_as_of(args.date)).summary()
+    print(_json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fz", description="FactorZen research CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1311,6 +1339,20 @@ def build_parser() -> argparse.ArgumentParser:
     lr.add_argument("--end", required=True)
     lr.add_argument("--universe", default=None)
     lr.set_defaults(func=_cmd_live_report)
+
+    # ── ops:无人值守运营 ──
+    ops = sub.add_parser("ops", help="无人值守运营(每日链路)")
+    ops_sub = ops.add_subparsers(dest="ops_command", required=True)
+
+    od = ops_sub.add_parser("daily", help="执行一个交易日的无人值守链路")
+    od.add_argument("--config", required=True, help="ops.yaml 配置路径")
+    od.add_argument("--date", default=None, help="YYYYMMDD,缺省今天")
+    od.set_defaults(func=_cmd_ops_daily)
+
+    ost = ops_sub.add_parser("status", help="打印某日各阶段状态")
+    ost.add_argument("--config", required=True, help="ops.yaml 配置路径")
+    ost.add_argument("--date", default=None, help="YYYYMMDD,缺省今天")
+    ost.set_defaults(func=_cmd_ops_status)
 
     return parser
 

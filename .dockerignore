@@ -1,0 +1,15 @@
+.git
+.pixi
+.venv
+data
+workspace
+.cache
+tmp
+docs/plans
+docs/superpowers
+.claude
+__pycache__
+*.pyc
+.coverage
+.ruff_cache
+.benchmarks

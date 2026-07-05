@@ -45,6 +45,7 @@ def test_exported_file_is_importable_and_consistent(tmp_path: Path):
             p = float(max(p * (1 + rng.standard_normal() * 0.02), 0.1))
             rows.append({"trade_date": day, "ts_code": s, "close": p, "open": p, "high": p,
                          "low": p, "close_adj": p, "open_adj": p, "high_adj": p, "low_adj": p,
+                         "pre_close": p,
                          "amount": 1e7, "vol": 1e5})
     lf = pl.DataFrame(rows).lazy()
 

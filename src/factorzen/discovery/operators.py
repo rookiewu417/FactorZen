@@ -12,14 +12,20 @@ from typing import Literal
 
 import polars as pl
 
-# 叶子名 → 求值表中的列名。vwap/log_vol/ret_1d 为派生列（ExpressionFactor 预计算）。
+# 叶子名 → 求值表中的列名。vwap/log_vol/ret_1d/amplitude/intraday_ret/overnight_ret 为派生列（ExpressionFactor 预计算）。
 LEAF_FEATURES: dict[str, str] = {
     "close": "close_adj", "open": "open_adj", "high": "high_adj", "low": "low_adj",
     "vol": "vol", "amount": "amount", "vwap": "vwap", "log_vol": "log_vol", "ret_1d": "ret_1d",
+    "amplitude": "amplitude", "intraday_ret": "intraday_ret", "overnight_ret": "overnight_ret",
     "total_mv": "total_mv", "circ_mv": "circ_mv", "pb": "pb", "pe_ttm": "pe_ttm",
     "ps_ttm": "ps_ttm", "dv_ttm": "dv_ttm",
+    "turnover_rate": "turnover_rate", "turnover_rate_f": "turnover_rate_f",
+    "volume_ratio": "volume_ratio", "float_share": "float_share",
 }
-BASIC_FEATURES: set[str] = {"total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm"}
+BASIC_FEATURES: set[str] = {
+    "total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm",
+    "turnover_rate", "turnover_rate_f", "volume_ratio", "float_share",
+}
 
 _MIN = 3  # rolling 最小样本
 
@@ -49,6 +55,28 @@ def _ar(name, arity, fn):  # 算术算子
     return OperatorSpec(name, "arith", arity, False, lambda c, w: fn(*c))
 
 
+def _ts2(name, fn):  # 双输入时序算子（arity 2, 有 window）
+    return OperatorSpec(name, "ts", 2, True, lambda c, w: fn(c[0], c[1], w))
+
+
+def _ts_corr(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
+    ma = a.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    mb = b.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    mab = (a * b).rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    va = (a * a).rolling_mean(w, min_samples=_MIN).over("ts_code") - ma * ma  # type: ignore[arg-type]
+    vb = (b * b).rolling_mean(w, min_samples=_MIN).over("ts_code") - mb * mb  # type: ignore[arg-type]
+    cov = mab - ma * mb
+    denom = (va * vb).sqrt()
+    return pl.when(denom > 1e-12).then((cov / denom).clip(-1.0, 1.0)).otherwise(None)
+
+
+def _ts_cov(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
+    ma = a.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    mb = b.rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    mab = (a * b).rolling_mean(w, min_samples=_MIN).over("ts_code")  # type: ignore[arg-type]
+    return mab - ma * mb
+
+
 OPERATORS: dict[str, OperatorSpec] = {
     # ── 时序（.over("ts_code")）──
     "ts_mean": _ts("ts_mean", lambda x, w: x.rolling_mean(w, min_samples=_MIN).over("ts_code")),
@@ -56,14 +84,29 @@ OPERATORS: dict[str, OperatorSpec] = {
     "ts_sum":  _ts("ts_sum",  lambda x, w: x.rolling_sum(w, min_samples=_MIN).over("ts_code")),
     "ts_min":  _ts("ts_min",  lambda x, w: x.rolling_min(w, min_samples=_MIN).over("ts_code")),
     "ts_max":  _ts("ts_max",  lambda x, w: x.rolling_max(w, min_samples=_MIN).over("ts_code")),
+    # polars 1.41.2 原生 rolling_rank，标记 unstable(升级 polars 时需重验语义)。
+    # method="average" 并列取均值排名；/w 归一化到 (0,1]。
     "ts_rank": _ts("ts_rank", lambda x, w:
-        x.rolling_map(lambda s: (float(s.rank()[-1]) / s.len()) if s.len() >= _MIN else None, w).over("ts_code")),
+        x.rolling_rank(w, method="average", min_samples=_MIN).over("ts_code") / w),
     "delay":   _ts("delay",   lambda x, w: x.shift(w).over("ts_code")),
     "delta":   _ts("delta",   lambda x, w: (x - x.shift(w)).over("ts_code")),
     "pct_change": _ts("pct_change", lambda x, w:
         (pl.when(x.shift(w) > 1e-12).then(x / x.shift(w) - 1.0).otherwise(None)).over("ts_code")),
     "ts_decay_linear": _ts("ts_decay_linear", lambda x, w:
         x.rolling_mean(w, min_samples=_MIN).over("ts_code")),  # MVP：等权近似线性衰减
+    "ts_corr": _ts2("ts_corr", _ts_corr),
+    "ts_cov": _ts2("ts_cov", _ts_cov),
+    "ts_median": _ts("ts_median", lambda x, w:
+        x.rolling_median(w, min_samples=_MIN).over("ts_code")),
+    "ts_zscore": _ts("ts_zscore", lambda x, w: _safe_div(
+        x - x.rolling_mean(w, min_samples=_MIN).over("ts_code"),
+        x.rolling_std(w, min_samples=_MIN).over("ts_code"))),
+    # polars 1.41.2 原生 rolling_skew，标记 unstable(升级 polars 时需重验语义)。
+    # bias=True = 总体偏度(ddof=0)，对应现有 numpy ground-truth 测试口径。
+    # fill_nan(None)：零方差窗口原生实现是 0/0 → NaN 而非 null，必须显式转 null，
+    # 否则又是一次"NaN 泄漏"（polars 中 NaN > 阈值 判定为 True，下游 pl.when 防护会被绕过）。
+    "ts_skew": _ts("ts_skew", lambda x, w:
+        x.rolling_skew(w, bias=True, min_samples=_MIN).over("ts_code").fill_nan(None)),
     # ── 截面（.over("trade_date")）──
     "rank":  _cs("rank",  lambda x: (x.rank().over("trade_date") / (pl.len().over("trade_date") + 1))),
     "zscore": _cs("zscore", lambda x:
@@ -78,4 +121,9 @@ OPERATORS: dict[str, OperatorSpec] = {
     "log": _ar("log", 1, lambda a: pl.when(a > 0).then(a.log()).otherwise(None)),
     "sign": _ar("sign", 1, lambda a: a.sign()),
     "sqrt": _ar("sqrt", 1, lambda a: pl.when(a >= 0).then(a.sqrt()).otherwise(None)),
+    "neg": _ar("neg", 1, lambda a: -a),
+    "inv": _ar("inv", 1, lambda a: _safe_div(pl.lit(1.0), a)),
+    "square": _ar("square", 1, lambda a: a * a),
+    "max": _ar("max", 2, lambda a, b: pl.max_horizontal(a, b)),
+    "min": _ar("min", 2, lambda a, b: pl.min_horizontal(a, b)),
 }

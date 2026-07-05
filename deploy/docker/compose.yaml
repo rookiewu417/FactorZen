@@ -1,0 +1,18 @@
+# FactorZen 无人值守运营 compose。
+# 用法(在仓库根):
+#   docker compose -f deploy/docker/compose.yaml run --rm ops
+# 或配 VPS 上的 cron 定时触发该命令。数据与产物经卷挂载持久化到宿主机。
+services:
+  ops:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: factorzen:latest
+    env_file:
+      - ../../.env            # 需含 TUSHARE_TOKEN(及可选 FACTORZEN_NOTIFY_WEBHOOK)
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ../../data:/app/data           # Tushare parquet 缓存
+      - ../../workspace:/app/workspace # 运行产物(执行会话/ops 状态/发布页)
+    command: ["ops", "daily", "--config", "workspace/configs/ops.yaml"]

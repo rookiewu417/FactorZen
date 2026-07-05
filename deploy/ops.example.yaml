@@ -1,0 +1,35 @@
+# FactorZen 无人值守运营配置示例。
+# 复制为 workspace/configs/ops.yaml 后按需修改;字段拼错会被 extra=forbid 直接拒绝。
+
+# ── 必填 ──
+session_dir: workspace/execution/prod           # 纸面执行会话目录(首跑自动 init)
+portfolio_run_dirs_glob: 'workspace/portfolios/prod-*'   # 目标组合产物(glob)
+
+# ── 信号生成(可选)──
+# 省略 signal_command 则直接消费已有 portfolio 产物;
+# 也可挂外部命令每日重建组合,例如:
+# signal_command: ["pixi", "run", "fz", "portfolio", "build", "--run-id", "prod"]
+
+# ── 数据窗口与基准 ──
+lookback_days: 90
+benchmark: '000300.SH'
+# universe: hs300            # 可选,限制股票池;省略=全市场
+
+# ── 数据质量门 ──
+audit_types: ['daily', 'daily_basic']
+audit_fail_on: error         # error=仅 error 拦截 | warning=warning 也拦截
+
+# ── 纸面执行 ──
+initial_cash: 1000000.0
+slippage_bps: 5.0
+
+# ── 通知 ──
+notify_kind: stdout          # stdout | webhook
+notify_url_env: FACTORZEN_NOTIFY_WEBHOOK   # webhook 模式从此环境变量读 URL(企业微信机器人/PushPlus 等)
+
+# ── 发布 track record 页 ──
+publish_enabled: false       # true=渲染净值页到 publish_site_dir
+publish_site_dir: workspace/ops/site
+
+# ── 幂等状态 ──
+state_dir: workspace/ops/state

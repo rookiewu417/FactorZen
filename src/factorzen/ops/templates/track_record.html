@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FactorZen · 纸面模拟净值追踪</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262b36;
+    --fg: #e6e9ef; --muted: #8b93a7; --accent: #4f8cff;
+    --up: #35c28b; --down: #f2555a;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #ffffff; --border: #e3e6ec;
+      --fg: #1c2027; --muted: #667085; --accent: #2f6bff;
+      --up: #12996b; --down: #d63a3f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.5; padding: 32px 20px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  header h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: .5px; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .disclaimer {
+    margin: 20px 0; padding: 10px 14px; font-size: 13px;
+    background: color-mix(in srgb, var(--down) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--down) 35%, transparent);
+    border-radius: 8px; color: var(--fg);
+  }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 20px 0; }
+  @media (max-width: 620px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .card .value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .value.up { color: var(--up); } .value.down { color: var(--down); }
+  #chart { height: 380px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-top: 4px; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 20px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>FactorZen · 净值追踪</h1>
+    <div class="sub">A 股量化策略 · 无人值守纸面模拟</div>
+  </header>
+
+  <div class="disclaimer">
+    ⚠️ 本页为<strong>纸面模拟</strong>交易净值记录(开盘价撮合 + 滑点/费用模型),
+    非真实交易、非投资建议;不构成任何收益承诺。
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="label">最新净值</div>
+      <div class="value">{% if latest_nav %}{{ "{:,.0f}".format(latest_nav) }}{% else %}—{% endif %}</div>
+    </div>
+    <div class="card">
+      <div class="label">累计收益</div>
+      <div class="value {{ 'up' if total_return >= 0 else 'down' }}">{{ "%+.2f"|format(total_return * 100) }}%</div>
+    </div>
+    <div class="card">
+      <div class="label">最大回撤</div>
+      <div class="value down">{{ "%.2f"|format(max_drawdown * 100) }}%</div>
+    </div>
+    <div class="card">
+      <div class="label">运行天数</div>
+      <div class="value">{{ n_days }}</div>
+    </div>
+  </div>
+
+  <div id="chart"></div>
+  <footer>数据截至 {{ as_of }} · 由 FactorZen 无人值守运营链路自动生成</footer>
+</div>
+
+<script>
+  const DATA = {{ points|tojson }};
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue('--accent').trim();
+  const muted = css.getPropertyValue('--muted').trim();
+  const border = css.getPropertyValue('--border').trim();
+  const chart = echarts.init(document.getElementById('chart'), null, { renderer: 'canvas' });
+  chart.setOption({
+    grid: { left: 56, right: 20, top: 24, bottom: 40 },
+    tooltip: { trigger: 'axis', valueFormatter: v => Number(v).toLocaleString() },
+    xAxis: {
+      type: 'category', data: DATA.map(p => p.date), boundaryGap: false,
+      axisLine: { lineStyle: { color: border } }, axisLabel: { color: muted }
+    },
+    yAxis: {
+      type: 'value', scale: true,
+      splitLine: { lineStyle: { color: border } }, axisLabel: { color: muted }
+    },
+    series: [{
+      type: 'line', smooth: true, showSymbol: false,
+      data: DATA.map(p => p.nav),
+      lineStyle: { color: accent, width: 2 },
+      areaStyle: {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: accent + '55' }, { offset: 1, color: accent + '00' }
+        ])
+      }
+    }]
+  });
+  window.addEventListener('resize', () => chart.resize());
+</script>
+</body>
+</html>

@@ -53,6 +53,7 @@ def _mining_daily(n_stocks: int = _N_STOCKS, n_days: int = 150, seed: int = 42) 
             p = float(max(p * (1 + rng.standard_normal() * 0.02), 0.1))
             rows.append({"trade_date": day, "ts_code": s, "close": p, "close_adj": p,
                          "open_adj": p, "high_adj": p, "low_adj": p, "open": p, "high": p, "low": p,
+                         "pre_close": p,
                          "amount": 1e7, "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4)})
     return pl.DataFrame(rows)
 

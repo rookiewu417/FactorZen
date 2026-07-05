@@ -577,6 +577,96 @@ CI 在 push / PR 到 `main` 或 `master` 时运行同一套检查。
 
 ---
 
+## 无人值守运营（ops）
+
+把「数据补齐 → 质量门 → 信号 → 纸面执行 → 摘要 → 发布」编排为幂等的每日链路，由外部调度触发、失败可重入续跑。
+
+### 配置
+
+复制 `deploy/ops.example.yaml` 为 `workspace/configs/ops.yaml` 并按需修改。关键字段：
+
+| 字段 | 说明 |
+|------|------|
+| `session_dir` | 纸面执行会话目录（首跑自动 init）|
+| `portfolio_run_dirs_glob` | 目标组合产物 glob（如 `workspace/portfolios/prod-*`）|
+| `signal_command` | 可选外部命令每日重建组合；省略则直接消费已有产物 |
+| `audit_fail_on` | `error`（默认）或 `warning`：质量门拦截级别 |
+| `notify_kind` | `stdout` 或 `webhook`（从 `notify_url_env` 环境变量读 URL）|
+| `publish_enabled` | `true` 则渲染 track record 净值页 |
+
+字段拼错会被直接拒绝（extra=forbid），不会静默忽略。
+
+### 命令
+
+```bash
+# 执行某交易日链路（缺省今天）；同日重跑自动跳过已完成阶段、从失败处续跑
+pixi run fz ops daily --config workspace/configs/ops.yaml [--date 20260704]
+
+# 查看某日各阶段状态
+pixi run fz ops status --config workspace/configs/ops.yaml --date 20260704
+```
+
+非交易日由 guard 阶段自动短路（成功退出，不执行后续）。
+
+### 调度（三选一，按可靠性递增）
+
+1. **WSL2 systemd timer**（推荐起步）
+   ```bash
+   # 先确保 WSL 启用 systemd：/etc/wsl.conf 加 [boot]\nsystemd=true，然后 wsl --shutdown 重启
+   cp deploy/systemd/factorzen-ops.{service,timer} ~/.config/systemd/user/
+   systemctl --user daemon-reload
+   systemctl --user enable --now factorzen-ops.timer
+   systemctl --user list-timers | grep factorzen   # 确认下次触发
+   ```
+2. **Windows 任务计划兜底**（WSL 未常驻时）：见 `deploy/windows-task.md`。
+3. **VPS + Docker + cron**（真无人值守）：见下「Docker / VPS 部署」。
+
+### 通知接入
+
+`notify_kind: webhook` 时，把渠道 webhook URL 放进环境变量（默认名 `FACTORZEN_NOTIFY_WEBHOOK`）：
+
+```bash
+echo 'FACTORZEN_NOTIFY_WEBHOOK=https://qyapi.weixin.qq.com/...' >> .env   # 企业微信机器人
+```
+
+每日成功推送日报（NAV / 成交 / 期间收益），任一阶段失败推送错误告警；通知失败不影响主链路。
+
+### 发布 track record 页
+
+配置 `publish_enabled: true` 后，每日渲染净值页到 `workspace/ops/site/index.html`。发布到 GitHub Pages：
+
+```bash
+tools/publish_track_record.sh    # 推到 gh-pages 分支 live/ 路径（用临时 worktree，不碰主工作区）
+```
+
+GitHub 仓库 Settings → Pages 选 gh-pages 分支，生效后访问 `https://<user>.github.io/<repo>/live/`。
+
+### Docker / VPS 部署
+
+```bash
+docker build -t factorzen:latest -f deploy/docker/Dockerfile .
+docker compose -f deploy/docker/compose.yaml run --rm ops    # 挂载 data/workspace 卷持久化
+```
+
+VPS 上把 compose 命令挂 cron（工作日 18:30）：
+
+```cron
+30 18 * * 1-5 cd /path/to/FactorZen && docker compose -f deploy/docker/compose.yaml run --rm ops >> /var/log/factorzen-ops.log 2>&1
+```
+
+### 故障处置
+
+| 现象 | 处理 |
+|------|------|
+| 某日中途失败 | 看 `workspace/ops/state/<日期>.json` 的 failed 阶段与 detail；修因后同日重跑 `fz ops daily` 自动从失败处续跑 |
+| 数据质量门拦截 | detail 含缺口/空值信息；补数据（`fz data fetch`）后重跑，或临时放宽 `audit_fail_on` |
+| 通知没收到 | 确认 `FACTORZEN_NOTIFY_WEBHOOK` 已设且 URL 有效；stdout 模式看日志 `workspace/runs/logs/` |
+| WSL systemd timer 不触发 | 确认 `/etc/wsl.conf` 启用 systemd 且 `systemctl --user` 可用；否则用 Windows 任务计划兜底 |
+
+诚实边界：纸面撮合是模型（开盘价 + 滑点，不建模盘口深度/排队）；WSL 方案非真无人值守，常态运营需 VPS。
+
+---
+
 ## 兼容入口
 
 `pixi run daily`、`pixi run report`、`fz factor test`、`fz report open` 仍保留为兼容入口。新增脚本与文档优先使用 `fz factor run`、`fz report build`、`fz report path`。

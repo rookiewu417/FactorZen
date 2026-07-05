@@ -22,7 +22,7 @@ def _make_daily_lf(n_stocks=8, n_days=60, seed=42) -> pl.LazyFrame:
         for day in days:
             price = float(max(price * (1 + rng.standard_normal() * 0.02), 0.1))
             rows.append({"trade_date": day, "ts_code": s, "close": price,
-                         "open": price, "high": price, "low": price,
+                         "open": price, "high": price, "low": price, "pre_close": price,
                          "close_adj": price, "open_adj": price, "high_adj": price,
                          "low_adj": price,
                          "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6),

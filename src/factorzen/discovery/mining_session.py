@@ -269,10 +269,12 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
 
     # ── 护栏验收（holdout 只用一次）──
     from factorzen.validation.multiple_testing import TrialLedger
-    # random=去重评估数；genetic=evolve 内评估的不同表达式数（eval_cache）
-    eval_n = len(eval_cache) if method == "genetic" else len(seen)
+    # R8: DSR 的 N 与 sharpe_variance 必须同源（同一批 trial），否则 expected_max_sharpe
+    # 的 deflation 基准不自洽。历史 bug：N 取 seen/eval_cache（含被 height<50 / n_train<5 /
+    # 退化 / 去重跳过者），sharpe_var 取存活集 scored —— 不同源。统一到存活集 scored：它是唯一
+    # 有真实 Sharpe(IR) 的 population，也是 top-K argmax 实际选择的范围。
     ledger = TrialLedger()
-    ledger.record(eval_n)
+    ledger.record(len(scored))
     n_evaluated = ledger.n_trials
 
     ir_pool = np.array([c["ir_train"] for c in scored]) if scored else np.array([0.0])
@@ -314,5 +316,6 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     exported_dir = session_dir / "exported"
     for i, c in enumerate(top):
         export_candidate(c["expression"], f"mined_{seed}_{i+1}", str(exported_dir))
-    return {"candidates": top, "n_trials": n_evaluated, "session_dir": str(session_dir),
+    return {"candidates": top, "n_trials": n_evaluated, "n_scored": len(scored),
+            "session_dir": str(session_dir),
             "holdout_start": str(holdout_start), "mining_end": str(daily["trade_date"].max())}

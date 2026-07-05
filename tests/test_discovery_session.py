@@ -149,6 +149,27 @@ def test_session_has_guard_metrics_and_holdout_isolated(tmp_path):
     assert res["mining_end"] < res["holdout_start"]
 
 
+def test_dsr_n_trials_same_source_as_sharpe_variance(tmp_path, monkeypatch):
+    """R8：DSR 的 n_trials 必须与 sharpe_variance 同源（都来自存活集 scored），
+    而非取被 height/n_train/退化/去重跳过者膨胀的 seen/eval_cache 计数。"""
+    import factorzen.discovery.mining_session as ms
+    captured: list[int] = []
+    real = ms.deflated_sharpe
+
+    def spy(sharpe, n_trials, n_obs, **kw):
+        captured.append(n_trials)
+        return real(sharpe, n_trials, n_obs, **kw)
+
+    monkeypatch.setattr(ms, "deflated_sharpe", spy)
+    res = ms.run_session(_daily(n_stocks=40, n_days=150), n_trials=40, top_k=5, seed=42,
+                         method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
+    assert captured, "deflated_sharpe 应至少被调用一次"
+    assert len(set(captured)) == 1                      # 所有候选共用同一 N
+    assert captured[0] == res["n_scored"]               # N == 存活集大小（与 sharpe_var 同源）
+    assert res["n_scored"] >= len(res["candidates"])    # 存活集 ⊇ top-K
+    assert res["n_scored"] > 0
+
+
 def test_deflated_sharpe_train_n_vs_mining_window_n_flips_significance():
     """数值对照：DSR 显著性检验必须用候选自己的 train 段样本数(n_train)，不能用
     mining 全段交易日数(n_obs_mining)——后者系统性偏大（约 1.43x：500/350），且放大

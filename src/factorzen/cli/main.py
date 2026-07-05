@@ -972,6 +972,28 @@ def _add_freq_arg(p: argparse.ArgumentParser) -> None:
                    help="bar 粒度(仅 crypto;ashare 只支持 daily)")
 
 
+def _cmd_combine_run(args: argparse.Namespace) -> int:
+    from factorzen.pipelines.factor_combine import run_factor_combination
+
+    methods = None if args.methods == "all" else args.methods.split(",")
+    res = run_factor_combination(
+        factor_files=args.factors,
+        ret_file=args.ret,
+        train_days=args.train_days,
+        test_days=args.test_days,
+        purge_days=args.purge_days,
+        embargo_days=args.embargo_days,
+        methods=methods,
+        seed=args.seed,
+        out_dir=args.out_dir,
+        run_id=args.run_id,
+        command=["combine", "run"],
+    )
+    print(f"[combine] 完成 → {res['run_dir']}")
+    print(res["comparison"])
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fz", description="FactorZen research CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1311,6 +1333,25 @@ def build_parser() -> argparse.ArgumentParser:
     lr.add_argument("--end", required=True)
     lr.add_argument("--universe", default=None)
     lr.set_defaults(func=_cmd_live_report)
+
+    # ── combine:多因子组合 OOS 对比 ──
+    combine = sub.add_parser("combine", help="多因子组合 OOS 对比实验")
+    combine_sub = combine.add_subparsers(dest="combine_command", required=True)
+    cr = combine_sub.add_parser("run", help="四方法(等权/IC加权/max_ir/lgbm)OOS 对比")
+    cr.add_argument(
+        "--factor", action="append", required=True, dest="factors",
+        help="因子 parquet[trade_date,ts_code,factor_value](可多次)",
+    )
+    cr.add_argument("--ret", required=True, help="前向收益 parquet[trade_date,ts_code,ret]")
+    cr.add_argument("--train-days", type=int, default=120, dest="train_days")
+    cr.add_argument("--test-days", type=int, default=20, dest="test_days")
+    cr.add_argument("--purge-days", type=int, default=5, dest="purge_days")
+    cr.add_argument("--embargo-days", type=int, default=0, dest="embargo_days")
+    cr.add_argument("--methods", default="all", help="逗号分隔(equal_weight,ic_weighted,max_ir,lgbm)或 all")
+    cr.add_argument("--seed", type=int, default=0)
+    cr.add_argument("--run-id", default=None, dest="run_id")
+    cr.add_argument("--out-dir", default="workspace/combinations", dest="out_dir")
+    cr.set_defaults(func=_cmd_combine_run)
 
     return parser
 

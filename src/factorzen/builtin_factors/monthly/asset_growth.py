@@ -20,7 +20,10 @@ class AssetGrowthMonthly(DailyFactor):
     name = "asset_growth"
     category = "monthly"
     frequency = "monthly"
-    required_data = ["daily_basic"]
+    # compute 读 finance parquet；pipeline 还需 ctx.daily 算前向收益（否则 raise）。
+    # 不读 daily_basic。注：clean 环境 finance 需先 loader.fetch_finance 拉取（ensure
+    # 暂无 finance 分支，见 required_data 声明缺陷修复的 follow-up）。
+    required_data = ["finance", "daily"]
     lookback_days = 5
     description = "YoY total asset growth rate (Cooper et al. 2008 asset growth anomaly)"
 

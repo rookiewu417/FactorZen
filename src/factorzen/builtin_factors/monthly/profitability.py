@@ -15,7 +15,9 @@ class RoeTtmMonthly(DailyFactor):
     name = "roe_ttm"
     category = "monthly"
     frequency = "monthly"
-    required_data = ["daily_basic"]
+    # compute 读 finance parquet；pipeline 还需 ctx.daily 算前向收益（否则 raise）。
+    # 不读 daily_basic。clean 环境 finance 需先 loader.fetch_finance 拉取（follow-up）。
+    required_data = ["finance", "daily"]
     lookback_days = 5
     description = "月频 ROE TTM（PIT 对齐），每月末截面"
 

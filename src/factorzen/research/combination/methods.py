@@ -1,7 +1,9 @@
 """多因子合成方法。
 
-三种合成策略：等权平均、IC 加权、最大化 IR（闭式解）。
-所有方法均在 z-score 化后的因子值上操作，输入需包含 trade_date, ts_code, factor_value。
+估权(estimate_*)与应用(apply_weights)拆开:估权只吃「因子 + 前向收益」产出权重向量,
+应用只吃「因子 + 权重」产出合成因子。三种公开方法(equal_weight/ic_weighted/max_ir)
+是「估权 + 应用」的薄包装;OOS 协议(oos.combine_oos)则逐折用 train 估权、test 应用。
+所有方法在截面 z-score 化后的因子值上操作,输入需含 trade_date, ts_code, factor_value。
 """
 
 from __future__ import annotations
@@ -38,8 +40,8 @@ def _compute_ic_series(
     merged = factor_df.rename({"factor_value": "_fv"}).join(
         ret_df.rename({"ret": "_ret"}), on=["trade_date", "ts_code"], how="inner"
     )
-    ic_rows = []
-    for _date, group in merged.group_by("trade_date"):
+    ic_rows: list[tuple[object, float]] = []
+    for date_key, group in merged.group_by("trade_date"):
         g = group.drop_nulls(subset=["_fv", "_ret"])
         if len(g) < 10:
             continue
@@ -51,57 +53,67 @@ def _compute_ic_series(
         rv_rank = rv.argsort().argsort().astype(float)
         ic = float(np.corrcoef(fv_rank, rv_rank)[0, 1])
         if np.isfinite(ic):
-            ic_rows.append(ic)
-    return np.array(ic_rows)
+            ic_rows.append((date_key[0], ic))
+    # 按交易日排序:ic_window 取「最近」窗口依赖时序,而 group_by 迭代顺序不保证
+    ic_rows.sort(key=lambda x: x[0])  # type: ignore[return-value,arg-type]
+    return np.array([ic for _, ic in ic_rows])
 
 
-def equal_weight(
+def _zscore_and_merge(
     factor_dfs: dict[str, pl.DataFrame],
-) -> pl.DataFrame:
-    """等权合成：对每个因子截面 z-score 后取均值。
-
-    Args:
-        factor_dfs: {factor_name: DataFrame(trade_date, ts_code, factor_value)}
-
-    Returns:
-        DataFrame(trade_date, ts_code, factor_value) — 合成后因子
-    """
+) -> tuple[pl.DataFrame, list[str]]:
+    """各因子截面 z-score 后 inner join 成宽表(列名 `_f_<name>`)。"""
     if not factor_dfs:
         raise ValueError("factor_dfs 不能为空")
-
     normed = []
     for name, df in factor_dfs.items():
         z = _zscore_factor(df.select(["trade_date", "ts_code", "factor_value"]))
         normed.append(z.rename({"factor_value": f"_f_{name}"}))
-
     merged = normed[0]
     for z in normed[1:]:
         merged = merged.join(z, on=["trade_date", "ts_code"], how="inner")
-
-    factor_cols = [f"_f_{n}" for n in factor_dfs]
-    combined = merged.with_columns(
-        pl.concat_list(factor_cols).list.mean().alias("factor_value")
-    ).select(["trade_date", "ts_code", "factor_value"])
-    return combined
+    return merged, list(factor_dfs.keys())
 
 
-def ic_weighted(
-    factor_dfs: dict[str, pl.DataFrame],
-    ret_df: pl.DataFrame,
-    ic_window: int = 60,
+def apply_weights(
+    factor_dfs: dict[str, pl.DataFrame], weights: dict[str, float]
 ) -> pl.DataFrame:
-    """IC 加权合成：以历史 IC 均值（仅正向）为权重，加权平均各因子 z-score。
-
-    使用全历史 IC 作为权重（in-sample 研究口径）。
-    权重 = max(0, IC_mean) / sum(max(0, IC_mean_i))，若所有因子 IC ≤ 0 则退化为等权。
+    """按给定权重加权合成(先各因子截面 z-score)。
 
     Args:
         factor_dfs: {factor_name: DataFrame(trade_date, ts_code, factor_value)}
-        ret_df: DataFrame(trade_date, ts_code, ret) — 对齐到因子的前向收益
-        ic_window: 计算 IC 的最近窗口天数（-1 表示全历史）
+        weights: {factor_name: weight}
 
     Returns:
         DataFrame(trade_date, ts_code, factor_value) — 加权合成因子
+    """
+    merged, names = _zscore_and_merge(factor_dfs)
+    exprs = [pl.col(f"_f_{n}") * weights[n] for n in names]
+    expr: pl.Expr = exprs[0]
+    for e in exprs[1:]:
+        expr = expr + e
+    return merged.with_columns(expr.alias("factor_value")).select(
+        ["trade_date", "ts_code", "factor_value"]
+    )
+
+
+def estimate_equal_weights(factor_dfs: dict[str, pl.DataFrame]) -> dict[str, float]:
+    """等权:每因子 1/k。"""
+    if not factor_dfs:
+        raise ValueError("factor_dfs 不能为空")
+    k = len(factor_dfs)
+    return {n: 1.0 / k for n in factor_dfs}
+
+
+def estimate_ic_weights(
+    factor_dfs: dict[str, pl.DataFrame],
+    ret_df: pl.DataFrame,
+    ic_window: int = 60,
+) -> dict[str, float]:
+    """IC 加权:权重 = max(0, IC_mean) 归一化;全非正则退化等权。
+
+    Args:
+        ic_window: 计算 IC 的最近窗口天数(-1 表示全历史)。
     """
     weights: dict[str, float] = {}
     for name, df in factor_dfs.items():
@@ -111,32 +123,61 @@ def ic_weighted(
         else:
             tail = ic_series[-ic_window:] if ic_window > 0 else ic_series
             weights[name] = float(max(0.0, np.mean(tail)))
-
     total_w = sum(weights.values())
     if total_w < 1e-12:
-        # 退化为等权
-        weights = {n: 1.0 / len(factor_dfs) for n in factor_dfs}
-    else:
-        weights = {n: w / total_w for n, w in weights.items()}
+        return {n: 1.0 / len(factor_dfs) for n in factor_dfs}
+    return {n: w / total_w for n, w in weights.items()}
 
-    normed = []
+
+def estimate_max_ir_weights(
+    factor_dfs: dict[str, pl.DataFrame],
+    ret_df: pl.DataFrame,
+    lookback: int = 120,
+) -> dict[str, float] | None:
+    """最大化 IR 闭式解 w = Σ⁻¹μ(Ledoit-Wolf 收缩)。数据不足返回 None(调用方退化等权)。"""
+    names = list(factor_dfs.keys())
+    k = len(names)
+    ic_series_map: dict[str, np.ndarray] = {}
+    min_len: int | None = None
     for name, df in factor_dfs.items():
-        z = _zscore_factor(df.select(["trade_date", "ts_code", "factor_value"]))
-        normed.append((name, z.rename({"factor_value": f"_f_{name}"})))
+        ic = _compute_ic_series(df, ret_df, name)
+        ic_series_map[name] = ic
+        if min_len is None or len(ic) < min_len:
+            min_len = len(ic)
+    if min_len is None or min_len < k + 1:
+        return None
+    tail_len = min(lookback, min_len)
+    ic_mat = np.column_stack([ic_series_map[n][-tail_len:] for n in names])  # (T, K)
+    mu = ic_mat.mean(axis=0)
+    try:
+        from sklearn.covariance import LedoitWolf  # type: ignore[import]
 
-    merged = normed[0][1]
-    for _, z in normed[1:]:
-        merged = merged.join(z, on=["trade_date", "ts_code"], how="inner")
+        sigma = LedoitWolf().fit(ic_mat).covariance_
+    except ImportError:
+        sigma = np.cov(ic_mat, rowvar=False) + np.eye(k) * 1e-6
+    try:
+        sigma_inv = np.linalg.inv(sigma + np.eye(k) * 1e-6)
+    except np.linalg.LinAlgError:
+        sigma_inv = np.eye(k)
+    w_raw = sigma_inv @ mu
+    w_pos = np.maximum(w_raw, 0.0)
+    if w_pos.sum() < 1e-12:
+        w_pos = np.ones(k)
+    return dict(zip(names, (w_pos / w_pos.sum()).tolist(), strict=True))
 
-    # 加权求和（用循环避免 sum() 从 int(0) 起步导致的类型歧义）
-    weight_exprs = [pl.col(f"_f_{n}") * weights[n] for n in factor_dfs]
-    expr: pl.Expr = weight_exprs[0]
-    for e in weight_exprs[1:]:
-        expr = expr + e
-    combined = merged.with_columns(expr.alias("factor_value")).select(
-        ["trade_date", "ts_code", "factor_value"]
-    )
-    return combined
+
+def equal_weight(factor_dfs: dict[str, pl.DataFrame]) -> pl.DataFrame:
+    """等权合成(薄包装:估等权 + 应用)。"""
+    return apply_weights(factor_dfs, estimate_equal_weights(factor_dfs))
+
+
+def ic_weighted(
+    factor_dfs: dict[str, pl.DataFrame],
+    ret_df: pl.DataFrame,
+    ic_window: int = 60,
+) -> pl.DataFrame:
+    """IC 加权合成(薄包装;in-sample 研究口径,OOS 请用 oos.combine_oos)。"""
+    return apply_weights(factor_dfs, estimate_ic_weights(factor_dfs, ret_df, ic_window))
 
 
 def max_ir(
@@ -144,73 +185,8 @@ def max_ir(
     ret_df: pl.DataFrame,
     lookback: int = 120,
 ) -> pl.DataFrame:
-    """最大化 IR 合成：闭式解 w = Σ^{-1} · μ（Ledoit-Wolf 收缩正则化）。
-
-    μ = 各因子 IC 均值向量，Σ = 因子 IC 协方差矩阵。
-    w 归一化为 L1 单位（仅取正权重因子）。
-
-    Args:
-        factor_dfs: {factor_name: DataFrame(trade_date, ts_code, factor_value)}
-        ret_df: DataFrame(trade_date, ts_code, ret)
-        lookback: IC 历史窗口长度
-
-    Returns:
-        DataFrame(trade_date, ts_code, factor_value)
-    """
-    names = list(factor_dfs.keys())
-    k = len(names)
-
-    min_len = None
-
-    ic_series_map: dict[str, np.ndarray] = {}
-    for name, df in factor_dfs.items():
-        ic = _compute_ic_series(df, ret_df, name)
-        ic_series_map[name] = ic
-        if min_len is None or len(ic) < min_len:
-            min_len = len(ic)
-
-    if min_len is None or min_len < k + 1:
-        # 数据不足，退化为等权
+    """最大化 IR 合成(薄包装;数据不足退化等权)。"""
+    w = estimate_max_ir_weights(factor_dfs, ret_df, lookback)
+    if w is None:
         return equal_weight(factor_dfs)
-
-    # 截取最近 lookback 期，并对齐长度
-    tail_len = min(lookback, min_len)
-    ic_mat = np.column_stack([ic_series_map[n][-tail_len:] for n in names])  # (T, K)
-
-    mu = ic_mat.mean(axis=0)
-    try:
-        from sklearn.covariance import LedoitWolf  # type: ignore[import]
-
-        lw = LedoitWolf().fit(ic_mat)
-        sigma = lw.covariance_
-    except ImportError:
-        sigma = np.cov(ic_mat, rowvar=False) + np.eye(k) * 1e-6
-
-    try:
-        sigma_inv = np.linalg.inv(sigma + np.eye(k) * 1e-6)
-    except np.linalg.LinAlgError:
-        sigma_inv = np.eye(k)
-
-    w_raw = sigma_inv @ mu
-    w_pos = np.maximum(w_raw, 0.0)
-    if w_pos.sum() < 1e-12:
-        w_pos = np.ones(k)
-    weights = dict(zip(names, w_pos / w_pos.sum(), strict=True))
-
-    normed = []
-    for name, df in factor_dfs.items():
-        z = _zscore_factor(df.select(["trade_date", "ts_code", "factor_value"]))
-        normed.append((name, z.rename({"factor_value": f"_f_{name}"})))
-
-    merged = normed[0][1]
-    for _, z in normed[1:]:
-        merged = merged.join(z, on=["trade_date", "ts_code"], how="inner")
-
-    weight_exprs = [pl.col(f"_f_{n}") * weights[n] for n in names]
-    expr: pl.Expr = weight_exprs[0]
-    for e in weight_exprs[1:]:
-        expr = expr + e
-    combined = merged.with_columns(expr.alias("factor_value")).select(
-        ["trade_date", "ts_code", "factor_value"]
-    )
-    return combined
+    return apply_weights(factor_dfs, w)

@@ -48,6 +48,7 @@ coverage   = ">=7.4.0"
 ruff       = ">=0.3.0"
 mypy       = ">=1.9.0"
 jupyterlab = ">=4.0.0"
+hypothesis = ">=6.90"
 
 [environments]
 default = { features = ["dev"], solve-group = "default" }

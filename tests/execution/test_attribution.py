@@ -246,3 +246,92 @@ def test_build_attribution_report_warns_when_daily_does_not_cover_exec_date(
             tmp_path / "sess", [rd], daily_narrow, initial_cash=1_000_000.0
         )
     assert any(d2.isoformat() in rec.message for rec in caplog.records)
+
+
+def test_ideal_nav_liquidates_on_empty_target(tmp_path: Path):
+    """理想孪生(_ideal_nav)遇到空目标信号(risk-off)必须与 real 一致地清仓，
+    而非继续持有旧仓——否则空目标后的价格波动只进 ideal、不进 real，total_gap
+    被结构性持仓差污染。直接白盒测 _ideal_nav 的 nav 序列。"""
+    from factorzen.execution.attribution import _ideal_nav
+
+    d1, d2, d3 = date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)
+    # d3 价格翻倍：若 ideal 错误地持有到 d3 会使 nav 暴涨，清仓则不受影响。
+    daily = _daily([
+        {"trade_date": d1, "ts_code": "A.SZ", "open": 10.0, "pre_close": 10.0,
+         "close": 10.0, "vol": 1e8, "amount": 1e9},
+        {"trade_date": d2, "ts_code": "A.SZ", "open": 10.0, "pre_close": 10.0,
+         "close": 10.0, "vol": 1e8, "amount": 1e9},
+        {"trade_date": d3, "ts_code": "A.SZ", "open": 20.0, "pre_close": 10.0,
+         "close": 20.0, "vol": 1e8, "amount": 1e9},
+    ])
+    buy = _pf(tmp_path / "buy", d1, "A.SZ", 0.9)
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    pl.DataFrame(
+        {"ts_code": [], "target_weight": []},
+        schema={"ts_code": pl.Utf8, "target_weight": pl.Float64},
+    ).write_parquet(empty_dir / "weights.parquet")
+    (empty_dir / "manifest.json").write_text(
+        json.dumps({"signal_date": d2.isoformat(), "status": "optimal"})
+    )
+
+    nav = _ideal_nav([buy, str(empty_dir)], daily, 1_000_000.0, [d1, d2, d3])
+    # nav = [init, d1, d2, d3]；d2 空目标 → 清仓 → 全现金；d3 价格翻倍但已清仓 → nav 不变。
+    assert len(nav) == 4
+    assert abs(nav[3] - nav[2]) < 1.0, f"空目标清仓后 d3 涨幅不应影响 ideal nav: {nav}"
+
+
+def test_broker_slippage_enters_slippage_bucket_not_residual(tmp_path: Path):
+    """撮合滑点(fill 成交价相对参考价 close 的偏离)必须进 slippage 桶，而非静默
+    落入 residual。当 broker 有 slippage_bps 时 fill price 偏离 open，slip 桶须基于
+    实际成交价 fill['price']，而非 daily 的 open。"""
+    d0 = date(2026, 1, 5)
+    # open=10.2、close=10.0；fill 成交价 10.5（含 broker 滑点，偏离 open）。
+    daily = _daily([{"trade_date": d0, "ts_code": "A.SZ", "open": 10.2, "pre_close": 10.0,
+                     "close": 10.0, "vol": 1e8, "amount": 1e9}])
+    sess = tmp_path / "sess"
+    SessionStore(sess).init({"broker": "paper", "initial_cash": 1_000_000.0})
+    orders = [{"ts_code": "A.SZ", "side": "buy", "volume": 100, "price_type": "market", "price": None}]
+    fills = [{"order_id": "paper-1", "ts_code": "A.SZ", "side": "buy", "filled_volume": 100,
+              "price": 10.5, "cost": 0.0, "ts": d0.isoformat()}]
+    row = {"as_of_date": d0.isoformat(), "nav_before": 1_000_000.0, "nav_after": 998_950.0,
+           "payload": json.dumps({"orders": orders, "fills": fills})}  # 无 acks → 跳过 missed
+    pl.DataFrame([row]).write_parquet(sess / "ledger.parquet")
+    rd = _pf(tmp_path / "pf", d0, "A.SZ", 0.5)
+
+    rep = build_attribution_report(sess, [rd], daily, initial_cash=1_000_000.0)
+    # slip_sum = filled(100) × (fill_price 10.5 − close 10.0) × sign(buy +1) = 50
+    # slip_bps = 50 / 1e6 × 1e4 × (252/1) = 126.0（基于 open 会错成 20 → 50.4）
+    assert abs(rep["slippage_bps"] - 126.0) < 0.5, (
+        f"滑点桶应基于成交价 fill_price，实际 {rep['slippage_bps']}"
+    )
+
+
+def test_real_nav_aligned_by_date_when_ledger_out_of_order(tmp_path: Path):
+    """乱序落盘的 ledger（如乱序 daily step）——real_nav 必须按 as_of_date 排序对齐
+    exec_dates(sorted)，否则与 ideal_nav 日错位、real 指标失真。"""
+    d1, d2 = date(2026, 1, 5), date(2026, 1, 6)
+    daily = _daily([
+        {"trade_date": d1, "ts_code": "A.SZ", "open": 10.0, "pre_close": 10.0,
+         "close": 10.0, "vol": 1e8, "amount": 1e9},
+        {"trade_date": d2, "ts_code": "A.SZ", "open": 11.0, "pre_close": 10.0,
+         "close": 11.0, "vol": 1e8, "amount": 1e9},
+    ])
+    sess = tmp_path / "sess"
+    SessionStore(sess).init({"broker": "paper", "initial_cash": 1_000_000.0})
+    empty_payload = json.dumps({"orders": [], "acks": [], "fills": []})
+    # 乱序落盘：d2 行在前、d1 行在后。nav 从 d1(1.0e6) 到 d2(1.05e6) 单调上升。
+    rows = [
+        {"as_of_date": d2.isoformat(), "nav_before": 1_000_000.0, "nav_after": 1_050_000.0,
+         "payload": empty_payload},
+        {"as_of_date": d1.isoformat(), "nav_before": 1_000_000.0, "nav_after": 1_000_000.0,
+         "payload": empty_payload},
+    ]
+    pl.DataFrame(rows).write_parquet(sess / "ledger.parquet")
+    rd = _pf(tmp_path / "pf", d1, "A.SZ", 0.5)
+
+    rep = build_attribution_report(sess, [rd], daily, initial_cash=1_000_000.0)
+    # 正确排序后 real_nav=[1e6, 1e6, 1.05e6] 单调不减 → max_dd=0；乱序则 1.05e6→1e6 出现回撤。
+    assert rep["real"]["max_dd"] == 0.0, (
+        f"real_nav 应按日期对齐、无虚假回撤，实际 max_dd={rep['real']['max_dd']}"
+    )

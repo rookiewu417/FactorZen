@@ -1,0 +1,16 @@
+[Unit]
+Description=FactorZen 无人值守每日运营链路(数据→质量门→信号→纸面执行→摘要→发布)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ivenwu
+WorkingDirectory=/home/ivenwu/projects/FactorZen
+# pixi 绝对路径按 `which pixi` 调整(常见 ~/.pixi/bin/pixi)
+ExecStart=/home/ivenwu/.pixi/bin/pixi run fz ops daily --config workspace/configs/ops.yaml
+# 幂等:同日重跑自动跳过已完成阶段、从失败处续跑
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target

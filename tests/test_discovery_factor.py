@@ -22,7 +22,7 @@ def _make_daily_lf(n_stocks=8, n_days=60, seed=42) -> pl.LazyFrame:
         for day in days:
             price = float(max(price * (1 + rng.standard_normal() * 0.02), 0.1))
             rows.append({"trade_date": day, "ts_code": s, "close": price,
-                         "open": price, "high": price, "low": price,
+                         "open": price, "high": price, "low": price, "pre_close": price,
                          "close_adj": price, "open_adj": price, "high_adj": price, "low_adj": price,
                          "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6),
                          "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4)})
@@ -82,6 +82,7 @@ def test_suspended_rows_masked():
     extra = pl.DataFrame({
         "trade_date": [d, d], "ts_code": ["888888.SH", "999999.SH"],
         "close": [5.0, 5.0], "open": [5.0, 5.0], "high": [5.0, 5.0], "low": [5.0, 5.0],
+        "pre_close": [5.0, 5.0],
         "close_adj": [5.0, 5.0], "open_adj": [5.0, 5.0], "high_adj": [5.0, 5.0], "low_adj": [5.0, 5.0],
         "amount": [1e6, 0.0], "vol": [1e5, 0.0],
     }).lazy()
@@ -132,7 +133,7 @@ def test_ret_1d_correct_when_ctx_daily_rows_unsorted():
             price *= 1.01  # 严格单调上涨：每天 +1%
             rows.append({
                 "trade_date": day, "ts_code": s,
-                "close": price, "open": price, "high": price, "low": price,
+                "close": price, "open": price, "high": price, "low": price, "pre_close": price,
                 "close_adj": price, "open_adj": price, "high_adj": price, "low_adj": price,
                 "amount": 1e7, "vol": 1e5,
             })

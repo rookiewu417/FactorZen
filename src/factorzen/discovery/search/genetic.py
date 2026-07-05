@@ -56,9 +56,17 @@ class GeneticSearcher:
         pop_size: int = 30,
         generations: int = 8,
         elite: int = 2,
+        score_many: Callable[[list[Node]], None] | None = None,
     ) -> list[Node]:
+        # score_many:每代排序前批量(可并行)预热分数缓存;score_fn 随后读缓存,
+        # 结果只依赖表达式本身,与批量求值的完成顺序无关 → 与串行完全等价。
+        def _prime(nodes: list[Node]) -> None:
+            if score_many is not None:
+                score_many(nodes)
+
         pop = [random_expression(self.rng, self.max_depth, self.leaves) for _ in range(pop_size)]
         for _ in range(generations):
+            _prime(pop)
             scored = sorted(pop, key=lambda n: score_fn(n), reverse=True)
             survivors = scored[: max(elite, pop_size // 2)]
             children = list(scored[:elite])
@@ -73,4 +81,5 @@ class GeneticSearcher:
                     children.append(child)
                 attempts += 1
             pop = children
+        _prime(pop)
         return sorted(pop, key=lambda n: score_fn(n), reverse=True)

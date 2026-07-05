@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 
 from factorzen.core.experiment import get_git_sha
+from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
 from factorzen.discovery.operators import LEAF_FEATURES
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
@@ -59,7 +60,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 holdout_ratio: float = 0.2,
                 eval_start: str | None = None,
                 out_dir: str = "workspace/mining_sessions",
-                profile=None) -> dict:
+                profile=None, workers: int = 1) -> dict:
     t0 = time.perf_counter()
     rng = np.random.default_rng(seed)
     daily = daily.sort(["ts_code", "trade_date"])
@@ -71,17 +72,16 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     else:
         leaf_map = LEAF_FEATURES
         leaves = None  # 搜索用 random_search 默认 A 股叶子
-        # 停牌掩码（与 ExpressionFactor 一致）+ A 股派生列（复权 close_adj）
+        # 停牌掩码（与 ExpressionFactor 一致）
         _price = ["open", "high", "low", "close", "open_adj", "high_adj", "low_adj",
                   "close_adj", "vol", "amount"]
         daily = daily.with_columns([
             pl.when(pl.col("vol") > 0).then(pl.col(c)).otherwise(None).alias(c)
             for c in _price if c in daily.columns
-        ]).with_columns([
-            (pl.col("amount") / pl.col("vol")).alias("vwap"),
-            (pl.col("vol") + 1.0).log().alias("log_vol"),
-        ]).with_columns(
-            (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0).alias("ret_1d"))
+        ])
+        # A 股派生列（与 factor.py 共用 add_derived_columns，消除双路径漂移
+        # + amplitude/intraday_ret/overnight_ret 派生叶子）
+        daily = add_derived_columns(daily)
 
     # ── OOS holdout 永久隔离：挖掘只见 mining 段 ──
     mining_df, holdout_df, holdout_start = split_holdout(daily, holdout_ratio=holdout_ratio)
@@ -96,20 +96,44 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         from factorzen.discovery.search.genetic import GeneticSearcher
         gs = GeneticSearcher(rng, max_depth=3, leaves=leaves)
 
-        def _score(node):
-            expr = to_expr_string(node)
-            if expr in eval_cache:
-                return eval_cache[expr]
+        def _score_one(node):
             try:
                 fdf = _factor_values(node, daily, eval_start, leaf_map)
-                val = score_candidate(fdf, node, bundle, pool={})["fitness"] if fdf.height >= 50 else -9.9
+                return score_candidate(fdf, node, bundle, pool={})["fitness"] if fdf.height >= 50 else -9.9
             except Exception:
-                val = -9.9
-            eval_cache[expr] = val
-            return val
+                return -9.9
+
+        def _score(node):
+            expr = to_expr_string(node)
+            if expr not in eval_cache:
+                eval_cache[expr] = _score_one(node)
+            return eval_cache[expr]
+
+        def _score_many(nodes):
+            # 批量预热缓存:去重未评估表达式,workers>1 时线程池并行(polars 求值释放 GIL);
+            # 缓存键为表达式串、值只依赖表达式,填充顺序无关 → 与串行完全等价(确定性)。
+            uniq: dict = {}
+            for n in nodes:
+                e = to_expr_string(n)
+                if e not in eval_cache:
+                    uniq.setdefault(e, n)
+            if not uniq:
+                return
+            if workers > 1:
+                from concurrent.futures import ThreadPoolExecutor
+
+                items = list(uniq.items())
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    vals = list(ex.map(lambda it: _score_one(it[1]), items))
+                for (e, _n), v in zip(items, vals, strict=True):
+                    eval_cache[e] = v
+            else:
+                for e, n in uniq.items():
+                    eval_cache[e] = _score_one(n)
 
         nodes = gs.evolve(_score, pop_size=max(20, n_trials // 5),
-                          generations=max(3, n_trials // 40))
+                          generations=max(3, n_trials // 40),
+                          score_many=_score_many)
         candidate_nodes = nodes
     else:
         searcher = RandomSearcher(rng, max_depth=3, leaves=leaves)

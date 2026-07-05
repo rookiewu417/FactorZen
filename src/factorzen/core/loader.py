@@ -218,6 +218,14 @@ def fetch_daily(
     return load_parquet("daily", start=start, end=end).collect()
 
 
+DAILY_BASIC_COLS: list[str] = [
+    "trade_date", "ts_code", "pe", "pe_ttm", "pb", "ps", "ps_ttm",
+    "dv_ratio", "dv_ttm", "total_mv", "circ_mv",
+    "turnover_rate", "turnover_rate_f", "volume_ratio",
+    "total_share", "float_share", "free_share",
+]
+
+
 def fetch_daily_basic(
     start: str,
     end: str,
@@ -233,7 +241,9 @@ def fetch_daily_basic(
     Returns:
         pl.DataFrame，包含列:
         trade_date, ts_code, pe, pe_ttm, pb, ps, ps_ttm,
-        dv_ratio, dv_ttm, total_mv, circ_mv。
+        dv_ratio, dv_ttm, total_mv, circ_mv,
+        turnover_rate, turnover_rate_f, volume_ratio,
+        total_share, float_share, free_share。
     """
     pro = init_tushare()
     start_year = int(start[:4])
@@ -288,20 +298,7 @@ def fetch_daily_basic(
             .sort(["trade_date", "ts_code"])
         )
 
-        std_cols = [
-            "trade_date",
-            "ts_code",
-            "pe",
-            "pe_ttm",
-            "pb",
-            "ps",
-            "ps_ttm",
-            "dv_ratio",
-            "dv_ttm",
-            "total_mv",
-            "circ_mv",
-        ]
-        merged = merged.select([c for c in std_cols if c in merged.columns])
+        merged = merged.select([c for c in DAILY_BASIC_COLS if c in merged.columns])
 
         save_parquet(merged, data_type="daily_basic")
         logger.info(f"[daily_basic] {year} 已保存 ({len(merged)} 行)")

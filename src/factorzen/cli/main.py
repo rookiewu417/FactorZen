@@ -341,6 +341,7 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         top_k=args.top_k,
         seed=args.seed,
         method=args.method,
+        workers=args.workers,
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
@@ -972,6 +973,56 @@ def _add_freq_arg(p: argparse.ArgumentParser) -> None:
                    help="bar 粒度(仅 crypto;ashare 只支持 daily)")
 
 
+def _cmd_combine_run(args: argparse.Namespace) -> int:
+    from factorzen.pipelines.factor_combine import run_factor_combination
+
+    methods = None if args.methods == "all" else args.methods.split(",")
+    res = run_factor_combination(
+        factor_files=args.factors,
+        ret_file=args.ret,
+        train_days=args.train_days,
+        test_days=args.test_days,
+        purge_days=args.purge_days,
+        embargo_days=args.embargo_days,
+        methods=methods,
+        seed=args.seed,
+        out_dir=args.out_dir,
+        run_id=args.run_id,
+        command=["combine", "run"],
+    )
+    print(f"[combine] 完成 → {res['run_dir']}")
+    print(res["comparison"])
+    return 0
+
+
+def _ops_as_of(date_arg: str | None):
+    from datetime import date as _date
+
+    if date_arg:
+        return _date.fromisoformat(f"{date_arg[:4]}-{date_arg[4:6]}-{date_arg[6:]}")
+    return _date.today()
+
+
+def _cmd_ops_daily(args: argparse.Namespace) -> int:
+    from factorzen.ops.config import load_ops_config
+    from factorzen.ops.runner import run_ops_daily
+
+    cfg = load_ops_config(args.config)
+    return run_ops_daily(cfg, _ops_as_of(args.date))
+
+
+def _cmd_ops_status(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from factorzen.ops.config import load_ops_config
+    from factorzen.ops.state import OpsState
+
+    cfg = load_ops_config(args.config)
+    summary = OpsState(cfg.state_dir, _ops_as_of(args.date)).summary()
+    print(_json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fz", description="FactorZen research CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1129,6 +1180,8 @@ def build_parser() -> argparse.ArgumentParser:
     m_search.add_argument("--trials", type=int, default=200)
     m_search.add_argument("--top-k", dest="top_k", type=int, default=10)
     m_search.add_argument("--seed", type=int, default=42)
+    m_search.add_argument("--workers", type=int, default=1,
+                          help="遗传搜索并行评分线程数(默认 1;同 seed 结果与串行等价)")
     _add_freq_arg(m_search)
     m_search.set_defaults(func=_cmd_mine_search)
 
@@ -1311,6 +1364,39 @@ def build_parser() -> argparse.ArgumentParser:
     lr.add_argument("--end", required=True)
     lr.add_argument("--universe", default=None)
     lr.set_defaults(func=_cmd_live_report)
+
+    # ── combine:多因子组合 OOS 对比 ──
+    combine = sub.add_parser("combine", help="多因子组合 OOS 对比实验")
+    combine_sub = combine.add_subparsers(dest="combine_command", required=True)
+    cr = combine_sub.add_parser("run", help="四方法(等权/IC加权/max_ir/lgbm)OOS 对比")
+    cr.add_argument(
+        "--factor", action="append", required=True, dest="factors",
+        help="因子 parquet[trade_date,ts_code,factor_value](可多次)",
+    )
+    cr.add_argument("--ret", required=True, help="前向收益 parquet[trade_date,ts_code,ret]")
+    cr.add_argument("--train-days", type=int, default=120, dest="train_days")
+    cr.add_argument("--test-days", type=int, default=20, dest="test_days")
+    cr.add_argument("--purge-days", type=int, default=5, dest="purge_days")
+    cr.add_argument("--embargo-days", type=int, default=0, dest="embargo_days")
+    cr.add_argument("--methods", default="all", help="逗号分隔(equal_weight,ic_weighted,max_ir,lgbm)或 all")
+    cr.add_argument("--seed", type=int, default=0)
+    cr.add_argument("--run-id", default=None, dest="run_id")
+    cr.add_argument("--out-dir", default="workspace/combinations", dest="out_dir")
+    cr.set_defaults(func=_cmd_combine_run)
+
+    # ── ops:无人值守运营 ──
+    ops = sub.add_parser("ops", help="无人值守运营(每日链路)")
+    ops_sub = ops.add_subparsers(dest="ops_command", required=True)
+
+    od = ops_sub.add_parser("daily", help="执行一个交易日的无人值守链路")
+    od.add_argument("--config", required=True, help="ops.yaml 配置路径")
+    od.add_argument("--date", default=None, help="YYYYMMDD,缺省今天")
+    od.set_defaults(func=_cmd_ops_daily)
+
+    ost = ops_sub.add_parser("status", help="打印某日各阶段状态")
+    ost.add_argument("--config", required=True, help="ops.yaml 配置路径")
+    ost.add_argument("--date", default=None, help="YYYYMMDD,缺省今天")
+    ost.set_defaults(func=_cmd_ops_status)
 
     return parser
 

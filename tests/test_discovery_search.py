@@ -5,17 +5,22 @@ import polars as pl
 
 
 def _toy(seed=0):
+    # 动态覆盖 LEAF_FEATURES 的所有列名，避免每次新增叶子都要手动同步 fixture
+    # （历史上 amplitude、turnover_rate 等新叶子都曾因此漏加，导致随机表达式 compile 时崩）。
+    # 本文件的测试只验证「可编译 / 可求值不抛异常」，故所有叶子列填同一正值即可。
+    from factorzen.discovery.operators import LEAF_FEATURES
+
+    leaf_cols = sorted(set(LEAF_FEATURES.values()))
     rng = np.random.default_rng(seed)
     rows = []
     for code in ["A", "B", "C", "D"]:
         p = 10.0
         for d in range(30):
             p = float(max(p * (1 + rng.standard_normal() * 0.02), 0.1))
-            rows.append({"trade_date": d, "ts_code": code, "close_adj": p, "open_adj": p,
-                         "high_adj": p, "low_adj": p, "vol": 1e5, "amount": 1e6,
-                         "vwap": p, "log_vol": 11.0, "ret_1d": 0.0,
-                         "total_mv": 5e9, "circ_mv": 4e9, "pb": 2.0,
-                         "pe_ttm": 20.0, "ps_ttm": 3.0, "dv_ttm": 1.0})
+            row: dict = {"trade_date": d, "ts_code": code}
+            for col in leaf_cols:
+                row[col] = p
+            rows.append(row)
     return pl.DataFrame(rows).sort(["ts_code", "trade_date"])
 
 

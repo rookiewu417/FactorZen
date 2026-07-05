@@ -46,6 +46,9 @@ def create_app(workspace_dir: str | Path | None = None) -> FastAPI:
             "nav": idx.nav_series(domain, run_id),
         }
 
+    from factorzen.server.views import register_views
+
+    register_views(app, idx)
     return app
 
 

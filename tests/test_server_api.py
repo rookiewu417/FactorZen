@@ -64,3 +64,16 @@ def test_nav(tmp_path):
 
 def test_openapi_docs_available(tmp_path):
     assert _client(tmp_path).get("/openapi.json").status_code == 200
+
+
+def test_dashboard_page(tmp_path):
+    _write_run(tmp_path, "portfolios", "run1", {"git_sha": "abc123def", "status": "optimal"})
+    r = _client(tmp_path).get("/")
+    assert r.status_code == 200
+    assert "FactorZen" in r.text
+    assert "run1" in r.text
+
+
+def test_dashboard_page_empty_workspace(tmp_path):
+    r = _client(tmp_path).get("/")
+    assert r.status_code == 200

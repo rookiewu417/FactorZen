@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FactorZen · 平台总览</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --border:#262b36; --fg:#e6e9ef; --muted:#8b93a7; --accent:#4f8cff; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f6f7f9; --panel:#fff; --border:#e3e6ec; --fg:#1c2027; --muted:#667085; --accent:#2f6bff; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system,"Segoe UI","PingFang SC",sans-serif; padding:32px 20px; }
+  .wrap { max-width:1000px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:20px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:24px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .card .label { color:var(--muted); font-size:12px; }
+  .card .value { font-size:26px; font-weight:600; font-variant-numeric:tabular-nums; }
+  #chart { height:340px; background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:24px; }
+  h2 { font-size:15px; margin:18px 0 8px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:500; }
+  code { font-size:12px; color:var(--muted); }
+  footer { color:var(--muted); font-size:12px; margin-top:24px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FactorZen · 平台总览</h1>
+  <div class="sub">A 股量化研究平台 · 只读产物 Dashboard</div>
+
+  <div class="cards">
+    {% for d in domains %}
+    <div class="card"><div class="label">{{ d }}</div><div class="value">{{ counts[d] }}</div></div>
+    {% endfor %}
+  </div>
+
+  {% if nav %}
+  <h2>纸面执行净值(最新会话)</h2>
+  <div id="chart"></div>
+  {% endif %}
+
+  {% for d in domains %}
+    {% if summary[d] %}
+    <h2>{{ d }}</h2>
+    <table>
+      <thead><tr><th>run_id</th><th>status</th><th>git_sha</th></tr></thead>
+      <tbody>
+      {% for r in summary[d][-8:] %}
+        <tr><td>{{ r.run_id }}</td><td>{{ r.status or "—" }}</td><td><code>{{ (r.git_sha or "")[:8] }}</code></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  {% endfor %}
+
+  <footer>FactorZen · 只读服务层 · 纸面模拟,非投资建议</footer>
+</div>
+
+{% if nav %}
+<script>
+  const NAV = {{ nav|tojson }};
+  const css = getComputedStyle(document.documentElement);
+  const chart = echarts.init(document.getElementById('chart'));
+  chart.setOption({
+    grid:{left:56,right:20,top:20,bottom:36},
+    tooltip:{trigger:'axis'},
+    xAxis:{type:'category',data:NAV.map(p=>p[0]),axisLabel:{color:css.getPropertyValue('--muted')}},
+    yAxis:{type:'value',scale:true,axisLabel:{color:css.getPropertyValue('--muted')}},
+    series:[{type:'line',smooth:true,showSymbol:false,data:NAV.map(p=>p[1]),lineStyle:{color:css.getPropertyValue('--accent').trim(),width:2}}]
+  });
+  window.addEventListener('resize',()=>chart.resize());
+</script>
+{% endif %}
+</body>
+</html>

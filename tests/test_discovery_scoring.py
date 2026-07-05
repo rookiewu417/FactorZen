@@ -58,6 +58,23 @@ def test_max_correlation_self_is_one():
     assert corr > 0.99
 
 
+def test_max_correlation_pairwise_ignores_degenerate_pool_factor():
+    """R3 复现：池里混入一个退化(截面常数)因子，不应把候选与真实高相关因子的相关性抹成 0。
+
+    历史 bug：max_correlation 把候选 + 全池一次性 inner-join 交给 compute_factor_correlation，
+    任一池因子截面 std==0 就丢掉整条截面 → count=0 → 所有真实相关一起被抹成 0.0。
+    pairwise 修法：候选对池中每个因子单独算，退化因子只影响它自己那一对。
+    """
+    from factorzen.discovery.scoring import max_correlation
+    daily = _daily()
+    good = _signal_factor_df(daily).rename({"factor_value": "factor_clean"})  # 好池因子
+    # 退化：同一 (trade_date, ts_code) 键上的常数因子，截面 std==0
+    degenerate = good.with_columns(pl.lit(1.0).alias("factor_clean"))
+    cand = _signal_factor_df(daily)  # 候选 == good（完全相关）
+    corr = max_correlation(cand, {"good": good, "degenerate": degenerate})
+    assert corr > 0.99  # 修前因退化因子污染整表返回 0.0
+
+
 def test_databundle_train_ratio_one_no_crash():
     from factorzen.discovery.scoring import DataBundle
     b = DataBundle.build(_daily(), train_ratio=1.0)

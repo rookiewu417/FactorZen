@@ -62,17 +62,28 @@ def quick_fitness(factor_df: pl.DataFrame, bundle: DataBundle,
 
 
 def max_correlation(factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame]) -> float:
-    """factor_df 与 pool 中每个因子的截面相关性绝对值的最大值。pool 为空时返回 0。"""
+    """factor_df 与 pool 中每个因子的截面相关性绝对值的最大值。pool 为空时返回 0。
+
+    逐对(pairwise)计算：候选与池中**每个**因子单独算相关。这样一个退化的池因子
+    (截面 std==0 / 不足 30 只 / NaN) 只会让它自己那一对得 0，不会污染其它对。
+    历史 bug：把候选 + 全池一次性 inner-join 交给 compute_factor_correlation，任一
+    池因子退化就 continue 丢整条截面 → count=0 → 所有真实高相关一起被抹成 0.0，
+    数学等价簇因此逃过 0.7 去重门槛。不动 compute_factor_correlation（daily 报告仍用其语义）。
+    """
     if not pool:
         return 0.0
-    fd = {"__fz_cand__": factor_df.rename({"factor_value": "factor_clean"})
-          if "factor_value" in factor_df.columns else factor_df}
+    cand = (factor_df.rename({"factor_value": "factor_clean"})
+            if "factor_value" in factor_df.columns else factor_df)
+    best = 0.0
     for name, df in pool.items():
-        fd[name] = df.rename({"factor_value": "factor_clean"}) if "factor_value" in df.columns else df
-    res = compute_factor_correlation(fd, factor_col="factor_clean")
-    i = res.factor_names.index("__fz_cand__")
-    corrs = [abs(res.corr_matrix[i][j]) for j in range(len(res.factor_names)) if j != i]
-    return max(corrs) if corrs else 0.0
+        other = df.rename({"factor_value": "factor_clean"}) if "factor_value" in df.columns else df
+        res = compute_factor_correlation({"__fz_cand__": cand, name: other}, factor_col="factor_clean")
+        if len(res.factor_names) < 2:
+            continue
+        c = abs(float(res.corr_matrix[0][1]))  # [cand, other] 按插入序，[0][1]=候选对该因子
+        if c == c:  # 排除 NaN
+            best = max(best, c)
+    return best
 
 
 def score_candidate(factor_df: pl.DataFrame, node: Node, bundle: DataBundle,

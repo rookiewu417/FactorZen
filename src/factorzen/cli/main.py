@@ -341,6 +341,7 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         top_k=args.top_k,
         seed=args.seed,
         method=args.method,
+        workers=args.workers,
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
@@ -1129,6 +1130,8 @@ def build_parser() -> argparse.ArgumentParser:
     m_search.add_argument("--trials", type=int, default=200)
     m_search.add_argument("--top-k", dest="top_k", type=int, default=10)
     m_search.add_argument("--seed", type=int, default=42)
+    m_search.add_argument("--workers", type=int, default=1,
+                          help="遗传搜索并行评分线程数(默认 1;同 seed 结果与串行等价)")
     _add_freq_arg(m_search)
     m_search.set_defaults(func=_cmd_mine_search)
 

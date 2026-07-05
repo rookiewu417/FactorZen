@@ -7,7 +7,8 @@ from factorzen.discovery.mining_session import run_session
 
 def run_mine(*, start: str, end: str, universe: str | None = None,
              n_trials: int = 200, top_k: int = 10, seed: int = 42,
-             method: str = "random", holdout_ratio: float = 0.2) -> dict:
+             method: str = "random", holdout_ratio: float = 0.2,
+             workers: int = 1) -> dict:
     from factorzen.core.universe import get_universe
     from factorzen.daily.data.context import FactorDataContext
 
@@ -18,4 +19,4 @@ def run_mine(*, start: str, end: str, universe: str | None = None,
                             lookback_days=60, universe=uni)
     daily = ctx.daily.collect()
     return run_session(daily, n_trials=n_trials, top_k=top_k, seed=seed, method=method,
-                       holdout_ratio=holdout_ratio, eval_start=start)
+                       holdout_ratio=holdout_ratio, eval_start=start, workers=workers)

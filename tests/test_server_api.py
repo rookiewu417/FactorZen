@@ -77,3 +77,8 @@ def test_dashboard_page(tmp_path):
 def test_dashboard_page_empty_workspace(tmp_path):
     r = _client(tmp_path).get("/")
     assert r.status_code == 200
+
+
+def test_nav_unknown_domain_404(tmp_path):
+    # /api/nav 此前对非白名单 domain 返回 200 {nav: []}（跳过 DOMAINS 校验）；应 404
+    assert _client(tmp_path).get("/api/nav/badcorp/x").status_code == 404

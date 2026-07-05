@@ -58,8 +58,22 @@ class ArtifactIndex:
             )
         return out
 
+    def _safe_run_dir(self, domain: str, run_id: str) -> Path:
+        """校验 domain 白名单 + run_id 无路径遍历，返回安全的 run 目录。
+
+        非白名单 domain、或 run_id 含 ../ 等导致逃出 <root>/<domain> 时 raise
+        FileNotFoundError（防路径遍历读到 workspace 外的任意文件）。
+        """
+        if domain not in DOMAINS:
+            raise FileNotFoundError(f"未知 domain: {domain}")
+        base = (self.root / domain).resolve()
+        target = (base / run_id).resolve()
+        if target.parent != base or not target.is_relative_to(base):
+            raise FileNotFoundError(f"非法 run_id: {run_id}")
+        return target
+
     def run_detail(self, domain: str, run_id: str) -> dict[str, Any]:
-        d = self.root / domain / run_id
+        d = self._safe_run_dir(domain, run_id)
         mani = d / "manifest.json"
         if not mani.exists():
             raise FileNotFoundError(f"产物不存在: {domain}/{run_id}")
@@ -77,10 +91,18 @@ class ArtifactIndex:
         return detail
 
     def nav_series(self, domain: str, run_id: str) -> list[tuple[str, float]]:
-        nav_f = self.root / domain / run_id / "nav.parquet"
+        try:
+            d = self._safe_run_dir(domain, run_id)
+        except FileNotFoundError:
+            return []
+        nav_f = d / "nav.parquet"
         if not nav_f.exists():
             return []
-        df = pl.read_parquet(nav_f)
+        try:
+            df = pl.read_parquet(nav_f)
+        except Exception as exc:
+            logger.warning(f"[artifacts] nav.parquet 读取失败 {nav_f}: {exc}")
+            return []
         cols = df.columns
         date_col = next(
             (c for c in ("as_of_date", "trade_date", "date") if c in cols), cols[0]

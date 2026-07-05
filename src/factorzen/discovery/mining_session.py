@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 
 from factorzen.core.experiment import get_git_sha
+from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
 from factorzen.discovery.operators import LEAF_FEATURES
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
@@ -71,17 +72,16 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     else:
         leaf_map = LEAF_FEATURES
         leaves = None  # 搜索用 random_search 默认 A 股叶子
-        # 停牌掩码（与 ExpressionFactor 一致）+ A 股派生列（复权 close_adj）
+        # 停牌掩码（与 ExpressionFactor 一致）
         _price = ["open", "high", "low", "close", "open_adj", "high_adj", "low_adj",
                   "close_adj", "vol", "amount"]
         daily = daily.with_columns([
             pl.when(pl.col("vol") > 0).then(pl.col(c)).otherwise(None).alias(c)
             for c in _price if c in daily.columns
-        ]).with_columns([
-            (pl.col("amount") / pl.col("vol")).alias("vwap"),
-            (pl.col("vol") + 1.0).log().alias("log_vol"),
-        ]).with_columns(
-            (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0).alias("ret_1d"))
+        ])
+        # A 股派生列（与 factor.py 共用 add_derived_columns，消除双路径漂移
+        # + amplitude/intraday_ret/overnight_ret 派生叶子）
+        daily = add_derived_columns(daily)
 
     # ── OOS holdout 永久隔离：挖掘只见 mining 段 ──
     mining_df, holdout_df, holdout_start = split_holdout(daily, holdout_ratio=holdout_ratio)

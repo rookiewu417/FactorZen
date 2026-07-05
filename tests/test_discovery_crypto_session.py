@@ -73,10 +73,12 @@ def test_run_session_ashare_default_unchanged(tmp_path):
         code = f"00000{s}.SZ"
         price = 10.0 + s
         for d in range(50):
+            prev_price = price
             price = max(1.0, price * (1 + rng.normal(0, 0.02)))
             vol = float(rng.uniform(1e5, 1e6))
             rows.append({
                 "ts_code": code, "trade_date": start + timedelta(days=d),
+                "pre_close": prev_price,
                 "open": price, "high": price * 1.01, "low": price * 0.99, "close": price,
                 "open_adj": price, "high_adj": price * 1.01, "low_adj": price * 0.99,
                 "close_adj": price, "vol": vol, "amount": price * vol,
@@ -85,6 +87,13 @@ def test_run_session_ashare_default_unchanged(tmp_path):
                 "pe_ttm": 15.0, "ps_ttm": 3.0, "dv_ttm": 2.0,
             })
     daily = pl.DataFrame(rows)
+    # 动态补齐 mining 扩容新增的基本面叶子(turnover_rate/turnover_rate_f/volume_ratio/float_share)，
+    # 避免随机表达式引用 BASIC_FEATURES 新叶子时 compile 报 missing(同 test_discovery_search 思路)。
+    from factorzen.discovery.operators import BASIC_FEATURES
+
+    daily = daily.with_columns([
+        pl.lit(1.0).alias(c) for c in sorted(BASIC_FEATURES) if c not in daily.columns
+    ])
     result = run_session(daily, n_trials=30, top_k=3, seed=2, out_dir=str(tmp_path))
     assert "candidates" in result
     assert (tmp_path / "session_2_random" / "candidates.csv").exists()

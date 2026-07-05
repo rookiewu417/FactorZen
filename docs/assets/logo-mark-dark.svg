@@ -1,15 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" aria-labelledby="title desc" viewBox="0 0 512 512">
-  <title id="title">FactorZen factor grid logo mark dark</title>
-  <desc id="desc">A minimal light two-by-two factor grid with one green selected signal point for dark backgrounds.</desc>
-  <style>
-    .frame{fill:none;stroke:#f8faf6;stroke-width:36;stroke-linejoin:round}
-    .solid{fill:#f8faf6}
-    .soft{fill:#f8faf6;opacity:.32}
-    .accent{fill:#69c88f}
-  </style>
-  <rect class="frame" x="118" y="118" width="276" height="276" rx="54"/>
-  <circle class="solid" cx="206" cy="206" r="28"/>
-  <circle class="soft" cx="306" cy="206" r="28"/>
-  <circle class="soft" cx="206" cy="306" r="28"/>
-  <circle class="accent" cx="306" cy="306" r="28"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100"><g><path fill="#EDEFF2" d="M0 16 L0 18 Q0 23 5 23 L81.9 23 Q86.9 23 83.4 26.5 L51.9 58.1 Q46.9 63 53.9 63 L95 63 Q100 63 100 58 L100 16 Q100 0 84 0 L16 0 Q0 0 0 16 Z"/><path fill="#8E7BFF" d="M100 84 L100 82 Q100 77 95 77 L18.1 77 Q13.1 77 16.6 73.5 L48.1 41.9 Q53.1 37 46.1 37 L5 37 Q0 37 0 42 L0 84 Q0 100 16 100 L84 100 Q100 100 100 84 Z"/></g></svg>

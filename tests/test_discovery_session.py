@@ -62,6 +62,33 @@ def test_cross_section_variability_flags_degenerate():
     assert _cross_section_variability(varying) > 0.5
 
 
+def test_guard_passed_criteria():
+    """R1：护栏软标记 = DSR<0.05 & holdout 与 train 同号 & holdout CI 下界>0；任一 NaN→不过。"""
+    from factorzen.discovery.mining_session import _guard_passed
+    ok = {"dsr_pvalue": 0.01, "holdout_ic": 0.05, "ic_ci_low": 0.02, "ic_train": 0.06}
+    assert _guard_passed(ok) is True
+    assert _guard_passed({**ok, "dsr_pvalue": 0.2}) is False          # DSR 不显著
+    assert _guard_passed({**ok, "ic_ci_low": -0.01}) is False         # holdout CI 下界≤0
+    assert _guard_passed({**ok, "holdout_ic": -0.05}) is False        # 与 train 反号
+    assert _guard_passed({**ok, "holdout_ic": float("nan")}) is False  # NaN 保守判否
+    assert _guard_passed({"dsr_pvalue": 0.01}) is False               # 缺字段保守判否
+
+
+def test_session_writes_passed_flag(tmp_path: Path):
+    """R1 集成：每个候选带 bool passed，candidates.csv 有 passed 列；passed=True 者确满足护栏。"""
+    import polars as pl
+    from factorzen.discovery.mining_session import run_session
+    res = run_session(_daily(n_stocks=40, n_days=150), n_trials=30, top_k=5, seed=42,
+                      method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
+    for c in res["candidates"]:
+        assert isinstance(c["passed"], bool)
+        if c["passed"]:  # 标记为过的候选，独立复核确满足三条件
+            assert c["dsr_pvalue"] < 0.05
+            assert c["ic_ci_low"] > 0
+    df = pl.read_csv(Path(res["session_dir"]) / "candidates.csv")
+    assert "passed" in df.columns
+
+
 def test_factor_values_eval_start_trims():
     from factorzen.discovery.expression import parse_expr
     from factorzen.discovery.mining_session import _factor_values

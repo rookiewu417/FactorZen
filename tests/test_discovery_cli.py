@@ -102,7 +102,7 @@ def test_cmd_mine_export_alpha_forwards_args_and_prints_summary(monkeypatch, tmp
 
     read_calls: list[tuple[str, int]] = []
 
-    def fake_read_candidate_expression(session, rank):
+    def fake_read_candidate_expression(session, rank, require_passed=False):
         read_calls.append((session, rank))
         return "rank(close_adj)"
 

@@ -31,6 +31,23 @@ def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) ->
     return out
 
 
+def _guard_passed(c: dict) -> bool:
+    """防过拟合护栏软标记：DSR 显著(p<0.05) & holdout IC 与 train 同号 & holdout IC 95%CI 下界>0。
+
+    任一指标缺失/NaN → 判否(保守)。护栏历史上「只算不判」——四个指标算出来只写进 CSV，
+    候选入选只看 fitness 排序，过拟合垃圾照样导出。这里把它变成可被 leaderboard/export-alpha
+    默认过滤的软标记(留 --all 逃生口)，不删候选、不破坏产物契约。
+    """
+    dsr = c.get("dsr_pvalue")
+    h_ic = c.get("holdout_ic")
+    ci_lo = c.get("ic_ci_low")
+    ic_tr = c.get("ic_train")
+    if any(v is None or v != v for v in (dsr, h_ic, ci_lo, ic_tr)):  # None 或 NaN
+        return False
+    same_sign = (h_ic > 0) == (ic_tr > 0)
+    return dsr < 0.05 and same_sign and ci_lo > 0
+
+
 def _cross_section_variability(fdf: pl.DataFrame) -> float:
     """有截面变异的交易日占比 ∈ [0,1]。近常数因子(多数截面 std≈0)→接近 0。
 
@@ -263,11 +280,13 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         c["holdout_ic"] = round(float(h_ic), 4) if h_ic == h_ic else float("nan")
         c["dsr_pvalue"] = round(float(p), 4)
         c["ic_ci_low"] = round(float(ci_lo), 4) if ci_lo == ci_lo else float("nan")
+        # 护栏软标记：算完立刻判，供 leaderboard/export-alpha 默认过滤（--all 逃生口）
+        c["passed"] = _guard_passed(c)
 
     session_dir = Path(out_dir) / f"session_{seed}_{method}"
     session_dir.mkdir(parents=True, exist_ok=True)
     _cols = ["expression", "ic_train", "ir_train", "ic_valid", "ir_valid", "max_corr",
-             "complexity", "holdout_ic", "dsr_pvalue", "pbo", "ic_ci_low"]
+             "complexity", "holdout_ic", "dsr_pvalue", "pbo", "ic_ci_low", "passed"]
     rows = [{"rank": i + 1, "n_trials": n_evaluated, **{k: c.get(k) for k in _cols}} for i, c in enumerate(top)]
     pl.DataFrame(rows).write_csv(session_dir / "candidates.csv") if rows else \
         (session_dir / "candidates.csv").write_text("rank,n_trials," + ",".join(_cols) + "\n")

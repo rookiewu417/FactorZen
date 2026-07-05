@@ -42,8 +42,13 @@ def export_candidate(expression: str, name: str, dest_dir: str) -> Path:
     return path
 
 
-def read_candidate_expression(session_dir: str, rank: int = 1) -> str:
-    """从挖掘 session 的 candidates.csv 读取第 ``rank`` 名（1-based）候选表达式。"""
+def read_candidate_expression(session_dir: str, rank: int = 1, require_passed: bool = False) -> str:
+    """从挖掘 session 的 candidates.csv 读取第 ``rank`` 名（1-based）候选表达式。
+
+    ``require_passed=True`` 时，若该候选未通过防过拟合护栏（``passed`` 列为 false）则报错，
+    提示用 ``--all`` 强制导出——这是 export-alpha 默认只放行 passed 候选的实现。老 session
+    无 ``passed`` 列时该参数不生效（向后兼容）。
+    """
     csv = Path(session_dir) / "candidates.csv"
     if not csv.exists():
         raise FileNotFoundError(f"找不到候选文件: {csv}")
@@ -53,6 +58,13 @@ def read_candidate_expression(session_dir: str, rank: int = 1) -> str:
     row = df.filter(pl.col("rank") == rank)
     if row.height == 0:
         raise ValueError(f"rank={rank} 不在 {csv}（共 {df.height} 个候选）")
+    if require_passed and "passed" in df.columns:
+        pv = row["passed"][0]
+        if not (pv is True or str(pv).strip().lower() == "true"):
+            raise ValueError(
+                f"rank={rank} 未通过防过拟合护栏（passed=false）；用 --all 强制导出，"
+                f"或换一个 passed=true 的候选。session: {csv}"
+            )
     return str(row["expression"][0])
 
 

@@ -37,6 +37,9 @@ class PaperBroker(BrokerAdapter):
         self._pos: dict[str, dict[str, float]] = {}
         self._as_of: date | None = None
         self._market: dict[str, dict[str, float]] = {}
+        # 每只标的最近已知收盘价：停牌日（当日 market 无该股行情）按此估值，
+        # 避免 NAV 凭空塌陷。随 state 持久化，续跑后仍可用。
+        self._last_price: dict[str, float] = {}
         self._fill_buf: list[Fill] = []
         self._order_seq = 0
 
@@ -48,6 +51,11 @@ class PaperBroker(BrokerAdapter):
                 p["can_use_volume"] = p["volume"]
         self._as_of = as_of
         self._market = market
+        # 更新最近已知价（只对当日有收盘价的标的）
+        for code, m in market.items():
+            close = m.get("close")
+            if close is not None:
+                self._last_price[code] = float(close)
 
     # ---- BrokerAdapter 接口 ----
     def get_positions(self) -> dict[str, Position]:
@@ -60,9 +68,14 @@ class PaperBroker(BrokerAdapter):
     def get_cash(self) -> Cash:
         mv = 0.0
         for code, p in self._pos.items():
+            if p["volume"] <= 0:
+                continue
             close = self._market.get(code, {}).get("close")
-            if close is not None:
-                mv += p["volume"] * float(close)
+            # 当日无收盘价（停牌）→ 用最近已知价估值，而非按 0（否则 NAV 塌陷、
+            # engine.step 用被低估的 nav_before 误卖其他正常持仓）。
+            px = float(close) if close is not None else self._last_price.get(code)
+            if px is not None:
+                mv += p["volume"] * px
         return Cash(available=self._cash, total_asset=self._cash + mv, market_value=mv)
 
     def place_orders(self, orders: list[Order]) -> list[OrderAck]:
@@ -159,9 +172,15 @@ class PaperBroker(BrokerAdapter):
 
     # ---- 续跑态（供 store）----
     def state(self) -> dict:
-        return {"cash": self._cash, "pos": self._pos, "order_seq": self._order_seq}
+        return {
+            "cash": self._cash,
+            "pos": self._pos,
+            "order_seq": self._order_seq,
+            "last_price": self._last_price,
+        }
 
     def load_state(self, d: dict) -> None:
         self._cash = float(d["cash"])
         self._pos = {k: dict(v) for k, v in d["pos"].items()}
         self._order_seq = int(d.get("order_seq", 0))
+        self._last_price = {k: float(v) for k, v in d.get("last_price", {}).items()}

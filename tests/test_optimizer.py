@@ -148,3 +148,58 @@ class TestCovarianceEstimators:
         cov = ledoit_wolf_shrinkage(returns)
         eigenvalues = np.linalg.eigvalsh(cov)
         assert np.all(eigenvalues >= -1e-10), f"协方差矩阵含负特征值: {eigenvalues.min()}"
+
+
+class TestUnsupportedConstraintWarnings:
+    """MaxSharpe/RiskParity 不施加 turnover/net/gross 约束——必须显式告警而非静默忽略，
+    否则用户以为约束生效、实际换手/暴露不受限，net-of-cost 研究结论失真。"""
+
+    def test_helper_lists_only_nondefault_unsupported_constraints(self):
+        from factorzen.daily.optimization.base import unsupported_constraint_warnings
+
+        assert unsupported_constraint_warnings(OptimizerConstraints()) == []
+        cons = OptimizerConstraints(turnover_limit=0.1, net_exposure=2.0, gross_exposure=1.5)
+        msgs = unsupported_constraint_warnings(cons)
+        assert any("turnover" in m for m in msgs)
+        assert any("net_exposure" in m for m in msgs)
+        assert any("gross_exposure" in m for m in msgs)
+
+    def test_max_sharpe_warns_when_turnover_limit_ignored(self, caplog):
+        import logging
+
+        opt = MaxSharpeOptimizer()
+        mu = np.array([0.02, 0.01])
+        cov = np.eye(2) * 1e-4
+        cons = OptimizerConstraints(turnover_limit=0.1, prev_weights=np.array([0.5, 0.5]))
+        with caplog.at_level(logging.WARNING):
+            opt.solve(mu, cov, cons)
+        assert any("turnover" in r.message for r in caplog.records), (
+            "MaxSharpe 忽略 turnover_limit 时应告警"
+        )
+
+    def test_risk_parity_warns_when_net_exposure_ignored(self, caplog):
+        import logging
+
+        opt = RiskParityOptimizer()
+        mu = np.array([0.0, 0.0])
+        cov = np.array([[1e-4, 0.0], [0.0, 4e-4]])
+        cons = OptimizerConstraints(net_exposure=2.0)
+        with caplog.at_level(logging.WARNING):
+            opt.solve(mu, cov, cons)
+        assert any("net_exposure" in r.message for r in caplog.records), (
+            "RiskParity 忽略 net_exposure 时应告警"
+        )
+
+    def test_default_constraints_do_not_warn(self, caplog):
+        import logging
+
+        mu = np.array([0.02, 0.01])
+        cov = np.eye(2) * 1e-4
+        with caplog.at_level(logging.WARNING):
+            MaxSharpeOptimizer().solve(mu, cov, OptimizerConstraints())
+            RiskParityOptimizer().solve(
+                mu, np.array([[1e-4, 0.0], [0.0, 4e-4]]), OptimizerConstraints()
+            )
+        assert not any("不施加" in r.message for r in caplog.records), (
+            "默认约束(turnover=None, net/gross=1.0)不应产生未施加约束告警"
+        )

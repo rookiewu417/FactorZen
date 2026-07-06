@@ -4,7 +4,11 @@ from __future__ import annotations
 import numpy as np
 
 from factorzen.core.logger import get_logger
-from factorzen.daily.optimization.base import OptimizerConstraints, PortfolioOptimizer
+from factorzen.daily.optimization.base import (
+    OptimizerConstraints,
+    PortfolioOptimizer,
+    unsupported_constraint_warnings,
+)
 
 logger = get_logger(__name__)
 
@@ -30,6 +34,13 @@ class RiskParityOptimizer(PortfolioOptimizer):
         from scipy.optimize import minimize
 
         n = len(expected_returns)
+        unsupported = unsupported_constraint_warnings(constraints)
+        if unsupported:
+            logger.warning(
+                "RiskParityOptimizer 不施加以下约束（静默忽略，恒归一到 sum(w)=1、换手不受限）："
+                "%s；如需这些约束请改用 MeanVarianceOptimizer",
+                unsupported,
+            )
         fallback = (
             constraints.prev_weights
             if len(constraints.prev_weights) == n

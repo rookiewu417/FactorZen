@@ -68,6 +68,32 @@ def test_sector_ic_returns_sector_ic_result():
     assert isinstance(result.sector_ic_df, pl.DataFrame)
 
 
+def test_sector_ic_excludes_degenerate_two_stock_cross_section():
+    """单日单行业仅 2 只股票时，秩相关恒为 ±1（退化、零信息），应被排除，
+    而非以虚假的 ±1 污染行业 IC 均值。截面充足的正常行业不受影响。
+    """
+    rows = []
+    # Big：单日 30 只，factor 与 ret 完全同序 → IC≈1（有效，应保留）
+    for i in range(30):
+        rows.append({
+            "ts_code": f"big{i}", "trade_date": "2026-01-05",
+            "factor_value": float(i), "fwd_ret": float(i) * 0.01, "sector": "Big",
+        })
+    # Duo：单日仅 2 只 → n=2 时秩相关恒为 -1（退化），应被排除
+    rows.append({"ts_code": "duo0", "trade_date": "2026-01-05",
+                 "factor_value": 1.0, "fwd_ret": 0.0, "sector": "Duo"})
+    rows.append({"ts_code": "duo1", "trade_date": "2026-01-05",
+                 "factor_value": 0.0, "fwd_ret": 1.0, "sector": "Duo"})
+    df = pl.DataFrame(rows)
+
+    result = compute_sector_ic(
+        df, factor_col="factor_value", ret_col="fwd_ret", sector_col="sector"
+    )
+    sectors = result["sector"].to_list()
+    assert "Big" in sectors, "截面充足(30 只)的正常行业应保留"
+    assert "Duo" not in sectors, "单日仅 2 只的退化行业(秩相关恒 ±1)应被排除"
+
+
 def test_sector_ic_drops_undefined_correlations():
     df = pl.DataFrame(
         {

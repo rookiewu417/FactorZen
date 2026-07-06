@@ -10,6 +10,11 @@ from factorzen.core.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 单日单行业截面 IC 的最小样本数：n=2 时秩相关恒为 ±1（退化、零信息），n≤4 也
+# 极粗糙。要求 ≥5 只才计入该日 IC，避免小截面的虚假 ±1 污染行业 IC 均值。
+# （比主 IC 的 _MIN_CROSS_SAMPLES=30 宽松：行业截面天然比全市场小。）
+_MIN_SECTOR_CROSS_SAMPLES = 5
+
 
 @dataclass
 class SectorICResult:
@@ -95,7 +100,7 @@ def compute_sector_ic(
                     pl.len().alias("_n"),
                 ]
             )
-            .filter(pl.col("_n") >= 2)
+            .filter(pl.col("_n") >= _MIN_SECTOR_CROSS_SAMPLES)
             .filter(pl.col("ic").is_not_null() & pl.col("ic").is_finite())
             .drop("_n")
             .group_by(sector_col)

@@ -13,6 +13,13 @@ class AShareDataProvider(DataProvider):
     def fetch_bars(
         self, symbols: list[str] | None, start: str, end: str, freq: str = "daily"
     ) -> pl.DataFrame:
+        # 本 adapter 仅经 core.loader.fetch_daily 取日频；非 daily freq 显式报错，
+        # 不静默返回日频数据（否则 weekly/monthly/intraday 请求会拿到错频数据而不自知）。
+        if freq != "daily":
+            raise ValueError(
+                f"AShareDataProvider 仅支持 freq='daily'（经 Tushare fetch_daily），"
+                f"收到 freq={freq!r}"
+            )
         from factorzen.core.loader import fetch_daily
 
         return fetch_daily(start, end, ts_codes=symbols)

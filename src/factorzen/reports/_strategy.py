@@ -76,7 +76,9 @@ def _resolve_is_long_short(bt_result: Any, stats: dict[str, Any]) -> bool:
         return True
     if "factor_weighted" in lowered:
         return True
-    return "long_short" in stats
+    # 兜底默认长仅：_summary_stats 恒把 portfolio 复制成 long_short 别名，
+    # `"long_short" in stats` 恒真、不含"是否多空"的信息，不能作为判据。
+    return False
 
 
 def _slugify_strategy_name(name: str) -> str:

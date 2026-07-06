@@ -175,10 +175,13 @@ def _extract_metrics(
             m["primary_ann_ret"] = primary_stats.get("ann_ret")
             m["primary_sharpe"] = primary_stats.get("sharpe")
             m["primary_max_dd"] = primary_stats.get("max_dd")
-            if "long_short" in stats:
-                m["ls_ann_ret"] = stats["long_short"].get("ann_ret", 0)
-                m["ls_sharpe"] = stats["long_short"].get("sharpe", 0)
-                m["ls_max_dd"] = stats["long_short"].get("max_dd", 0)
+            # 仅当策略确为多空时才填 ls_*——_summary_stats 恒把 portfolio 复制成
+            # long_short 别名，`"long_short" in stats` 恒真，会把长仅组合(含 β)的
+            # Sharpe 冒充多空绩效，虚高可交易性评分、并使"缺少多空绩效最高3星"上限失效。
+            if primary_is_long_short:
+                m["ls_ann_ret"] = primary_stats.get("ann_ret", 0)
+                m["ls_sharpe"] = primary_stats.get("sharpe", 0)
+                m["ls_max_dd"] = primary_stats.get("max_dd", 0)
         nav = _safe_attr(bt_result, "nav")
         if nav is not None and not nav.is_empty() and "trade_date" in nav.columns:
             dates = nav.select("trade_date").sort("trade_date")["trade_date"]

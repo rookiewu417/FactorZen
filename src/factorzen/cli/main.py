@@ -377,15 +377,11 @@ def _cmd_research_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_mine_agent(args: argparse.Namespace) -> int:
-    from factorzen.core import loader
-    from factorzen.core.universe import get_universe
+    from factorzen.pipelines.factor_mine import prepare_mining_daily
     from factorzen.pipelines.factor_mine_agent import run_agent_mine
 
-    stocks = get_universe(args.end, args.universe) if args.universe else None
-    daily = loader.fetch_daily(args.start, args.end)
-    if stocks is not None:
-        import polars as pl
-        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    # 与搜索路径共用数据准备：复权价 + daily_basic（否则 agent 用未复权价冒充复权、缺叶子）
+    daily = prepare_mining_daily(args.start, args.end, args.universe)
     res = run_agent_mine(daily, n_rounds=args.iterations, seed=args.seed,
                          top_k=args.top_k, human_review=args.human_review)
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
@@ -393,16 +389,11 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
 
 
 def _cmd_mine_team(args: argparse.Namespace) -> int:
-    import polars as pl
-
-    from factorzen.core import loader
-    from factorzen.core.universe import get_universe
+    from factorzen.pipelines.factor_mine import prepare_mining_daily
     from factorzen.pipelines.factor_mine_team import run_team_mine
 
-    stocks = get_universe(args.end, args.universe) if args.universe else None
-    daily = loader.fetch_daily(args.start, args.end)
-    if stocks is not None:
-        daily = daily.filter(pl.col("ts_code").is_in(stocks["ts_code"].to_list()))
+    # 与搜索路径共用数据准备：复权价 + daily_basic（消除双路径漂移）
+    daily = prepare_mining_daily(args.start, args.end, args.universe)
     res = run_team_mine(daily, n_rounds=args.iterations, seed=args.seed,
                         top_k=args.top_k, index_path=args.index_path)
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")

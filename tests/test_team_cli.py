@@ -37,10 +37,10 @@ def test_cmd_mine_team_forwards_args_to_run_team_mine(monkeypatch, capsys) -> No
 
     fake_daily = pl.DataFrame({"ts_code": ["600000.SH"]})
 
-    fetch_calls: list[tuple[str, str]] = []
+    prep_calls: list[tuple] = []
 
-    def fake_fetch_daily(start, end):
-        fetch_calls.append((start, end))
+    def fake_prepare(start, end, universe=None):
+        prep_calls.append((start, end, universe))
         return fake_daily
 
     run_calls: list[dict[str, object]] = []
@@ -61,7 +61,7 @@ def test_cmd_mine_team_forwards_args_to_run_team_mine(monkeypatch, capsys) -> No
             "run_dir": "workspace/mine_team/team_1_2r",
         }
 
-    monkeypatch.setattr("factorzen.core.loader.fetch_daily", fake_fetch_daily)
+    monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
     monkeypatch.setattr(
         "factorzen.pipelines.factor_mine_team.run_team_mine", fake_run_team_mine
     )
@@ -86,10 +86,10 @@ def test_cmd_mine_team_forwards_args_to_run_team_mine(monkeypatch, capsys) -> No
     )
 
     assert rc == 0
-    assert fetch_calls == [("20220101", "20231231")]
+    assert prep_calls == [("20220101", "20231231", None)]  # 无 --universe
     assert len(run_calls) == 1
     call = run_calls[0]
-    assert call["daily"] is fake_daily  # 未传 --universe，daily 原样转发、不过滤
+    assert call["daily"] is fake_daily  # prepare_mining_daily 结果原样转发
     assert call["n_rounds"] == 2
     assert call["seed"] == 1
     assert call["top_k"] == 6
@@ -101,22 +101,19 @@ def test_cmd_mine_team_forwards_args_to_run_team_mine(monkeypatch, capsys) -> No
     )
 
 
-def test_cmd_mine_team_filters_daily_by_universe(monkeypatch) -> None:
-    """`fz mine team --universe` 应先 get_universe 再按 ts_code 过滤 daily。"""
+def test_cmd_mine_team_passes_universe_to_prepare(monkeypatch) -> None:
+    """`fz mine team --universe` 应把 universe 透传给 prepare_mining_daily。"""
     import polars as pl
 
     from factorzen.cli import main as cli
 
-    fake_daily = pl.DataFrame({"ts_code": ["000001.SZ", "000002.SZ", "000003.SZ"]})
+    fake_daily = pl.DataFrame({"ts_code": ["000002.SZ"]})
 
-    def fake_fetch_daily(start, end):
+    prep_calls: list[tuple] = []
+
+    def fake_prepare(start, end, universe=None):
+        prep_calls.append((start, end, universe))
         return fake_daily
-
-    universe_calls: list[tuple[str, str]] = []
-
-    def fake_get_universe(date_str, universe_name):
-        universe_calls.append((date_str, universe_name))
-        return pl.DataFrame({"ts_code": ["000002.SZ"]})
 
     captured: dict[str, object] = {}
 
@@ -124,8 +121,7 @@ def test_cmd_mine_team_filters_daily_by_universe(monkeypatch) -> None:
         captured["daily"] = daily
         return {"n_candidates": 0, "n_trials": 0, "run_dir": "workspace/mine_team/x"}
 
-    monkeypatch.setattr("factorzen.core.loader.fetch_daily", fake_fetch_daily)
-    monkeypatch.setattr("factorzen.core.universe.get_universe", fake_get_universe)
+    monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
     monkeypatch.setattr(
         "factorzen.pipelines.factor_mine_team.run_team_mine", fake_run_team_mine
     )
@@ -144,5 +140,5 @@ def test_cmd_mine_team_filters_daily_by_universe(monkeypatch) -> None:
     )
 
     assert rc == 0
-    assert universe_calls == [("20231231", "csi300")]
-    assert captured["daily"]["ts_code"].to_list() == ["000002.SZ"]
+    assert prep_calls == [("20220101", "20231231", "csi300")]
+    assert captured["daily"] is fake_daily

@@ -160,6 +160,9 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
 
     # eval_cache 提到 method 分支之前，供 genetic 统计真实评估数
     eval_cache: dict[str, float] = {}
+    # eval_ir：genetic 跨代评估过的每个唯一表达式的 train 段 IR，供 DSR 的 N 与
+    # sharpe_variance 同源计算（见下方护栏验收处 F6）。
+    eval_ir: dict[str, float] = {}
 
     # ── 按 method 选择候选节点列表 ─────────────────────────────────────
     if method == "genetic":
@@ -169,7 +172,12 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         def _score_one(node):
             try:
                 fdf = _factor_values(node, daily, eval_start, leaf_map)
-                return score_candidate(fdf, node, bundle, pool={})["fitness"] if fdf.height >= 50 else -9.9
+                if fdf.height < 50:
+                    return -9.9
+                sc = score_candidate(fdf, node, bundle, pool={})
+                # 记录该表达式的 train IR，供 DSR 的 N 与 sharpe_var 同源（跨代全体评估）
+                eval_ir[to_expr_string(node)] = float(sc["ir_train"])
+                return sc["fitness"]
             except Exception:
                 return -9.9
 
@@ -274,14 +282,17 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     # ── 护栏验收（holdout 只用一次）──
     from factorzen.validation.multiple_testing import TrialLedger
     # R8: DSR 的 N 与 sharpe_variance 必须同源（同一批 trial），否则 expected_max_sharpe
-    # 的 deflation 基准不自洽。历史 bug：N 取 seen/eval_cache（含被 height<50 / n_train<5 /
-    # 退化 / 去重跳过者），sharpe_var 取存活集 scored —— 不同源。统一到存活集 scored：它是唯一
-    # 有真实 Sharpe(IR) 的 population，也是 top-K argmax 实际选择的范围。
+    # 的 deflation 基准不自洽。二者都取「真实评估过、拿到有效 Sharpe(IR) 的唯一表达式」population。
+    # F6：random 路径这个 population 就是存活集 scored（候选即评估过的全部）；genetic 路径则是
+    # 跨代 eval_ir——因为 elitism 使最终代最优即全程 argmax，选择实际发生在整个搜索空间上，而非
+    # 仅最终代存活集 len(scored)≈pop_size；只数最终代会系统性低估 N、放松 DSR（passed 偏松，危险方向）。
+    if method == "genetic" and eval_ir:
+        ir_pool = np.array(list(eval_ir.values()))
+    else:
+        ir_pool = np.array([c["ir_train"] for c in scored]) if scored else np.array([0.0])
     ledger = TrialLedger()
-    ledger.record(len(scored))
+    ledger.record(int(ir_pool.size))
     n_evaluated = ledger.n_trials
-
-    ir_pool = np.array([c["ir_train"] for c in scored]) if scored else np.array([0.0])
     sharpe_var = float(ir_pool.var()) if ir_pool.size > 1 else 1.0
     pbo = _pool_pbo(scored, daily, bundle, eval_start, leaf_map)  # 候选池日度 IC 矩阵 → PBO
     for c in top:

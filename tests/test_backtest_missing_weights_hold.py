@@ -33,7 +33,7 @@ def _factors():
 
 def _prices():
     rows = []
-    for di, d in enumerate(_DATES):
+    for d in _DATES:
         for idx, c in enumerate(_CODES):
             # 让持仓股 000001 每天有正的日内收益 → 持有 vs 清仓 NAV 明显不同
             rows.append({

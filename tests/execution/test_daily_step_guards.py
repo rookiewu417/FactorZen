@@ -60,3 +60,26 @@ def test_backwards_as_of_rejected(tmp_path: Path):
     assert r["skipped"], "早于已推进日期的补跑应被拒绝"
     nav_after = SessionStore(sess).nav_frame()["as_of_date"].to_list()
     assert nav_after == nav_before, "乱序补跑不应改动 ledger"
+
+
+def test_inconsistent_state_ledger_raises(tmp_path: Path):
+    """崩溃恢复：state._last_as_of 与 ledger 末行不一致（ledger 写完、state 未写完就崩）
+    → run_daily_step 报错要求重建，而非用错状态静默续跑。"""
+    import pytest
+
+    d5, d6, d7 = date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)
+    daily = _daily([d5, d6, d7], "A.SZ")
+    rd = _pf(tmp_path / "pf", date(2026, 1, 2), "A.SZ", 0.5)
+    cfg = {"initial_cash": 1_000_000.0}
+    sess = tmp_path / "sess"
+    SessionStore(sess).init({"broker": "paper", **cfg})
+    run_daily_step(sess, d5, [rd], daily, config=cfg)
+    run_daily_step(sess, d6, [rd], daily, config=cfg)
+
+    # 手动制造不一致：state 回退到 d5（模拟 d6 的 ledger 写完但 state 未更新就崩）
+    st = SessionStore(sess).load_state()
+    st["_last_as_of"] = d5.isoformat()
+    (sess / "state.json").write_text(json.dumps(st))
+
+    with pytest.raises(RuntimeError, match="不一致"):
+        run_daily_step(sess, d7, [rd], daily, config=cfg)

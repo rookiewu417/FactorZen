@@ -11,8 +11,13 @@ from datetime import date
 
 
 def round_lot(shares: float) -> int:
-    """向零取整到 100 股整手（绝不超量）。execution 共享，paper/engine 都 import。"""
-    return int(math.floor(abs(shares) / 100.0) * 100.0) * (1 if shares >= 0 else -1)
+    """向零取整到 100 股整手（绝不超量）。execution 共享，paper/engine 都 import。
+
+    +1e-6(手)容差吸收权重空间往返(shares→delta_w→shares)的浮点 ulp——否则 12900 整手
+    在往返后常为 12899.999999999998，被 floor 掉一整手；该容差远小于 1 股，不影响真实非整手。
+    """
+    lots = math.floor(abs(shares) / 100.0 + 1e-6)
+    return int(lots * 100) * (1 if shares >= 0 else -1)
 
 
 @dataclass(frozen=True)

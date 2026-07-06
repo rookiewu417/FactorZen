@@ -121,9 +121,17 @@ def run_daily_step(
     st = store.load_state()
     if st is not None:
         broker.load_state(st)
-        # E2 日期单调性守卫：state 记录 last_as_of，拒绝乱序补跑——否则用「未来的」broker
-        # 状态步进过去的日期，ledger 乱序、state 被污染。相等由上面 has_date 幂等处理。
         last_as_of = st.get("_last_as_of")
+        # 崩溃恢复一致性：state._last_as_of 须与 ledger 末行日期一致；不一致=上次写完
+        # ledger、未写完 state 就崩溃，续跑会用错状态。报错要求重建，而非静默账实分叉。
+        ledger_last = store.last_ledger_date()
+        if last_as_of is not None and ledger_last is not None and last_as_of != ledger_last:
+            raise RuntimeError(
+                f"execution 会话状态不一致: state._last_as_of={last_as_of} 与 ledger 末行"
+                f"={ledger_last} 不符（疑似崩溃于 ledger 写入后、state 写入前），请重建会话。"
+            )
+        # E2 日期单调性守卫：拒绝乱序补跑——否则用「未来的」broker 状态步进过去的日期，
+        # ledger 乱序、state 被污染。相等由上面 has_date 幂等处理。
         if last_as_of is not None and as_of.isoformat() <= last_as_of:
             return {"as_of": as_of.isoformat(), "nav_after": None, "n_fills": 0,
                     "skipped": True, "reason": "stale_as_of"}

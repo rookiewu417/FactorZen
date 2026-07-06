@@ -24,7 +24,12 @@ def _load_dotenv(path: Path, env: MutableMapping[str, str] | None = None) -> Non
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
-            value = value.strip().strip('"').strip("'")
+            value = value.strip()
+            # 剥行内注释（` #` 空格+井号，dotenv 常见写法 `KEY=val # 说明`）；
+            # 无空格的 `#`（如 URL fragment）不当注释。在去引号前处理。
+            if " #" in value:
+                value = value.split(" #", 1)[0].rstrip()
+            value = value.strip('"').strip("'")
             if key and key not in target:
                 target[key] = value
 
@@ -51,8 +56,18 @@ def ensure_token() -> str:
 
 
 # ── 积分与限流 ─────────────────────────────────────────
-TUSHARE_POINTS: int = int(os.environ.get("TUSHARE_POINTS", "2000"))
-MAX_RPS: int = int(os.environ.get("TUSHARE_MAX_RPS", "5"))
+def _int_env(key: str, default: str) -> int:
+    """import 期安全解析 int：剥行内注释、非数字回退默认，避免 .env 写法失误令整个
+    CLI 在 import 阶段崩溃（连与 Tushare 无关的离线命令都用不了）。"""
+    raw = os.environ.get(key, default)
+    try:
+        return int(str(raw).split("#", 1)[0].strip())
+    except (ValueError, TypeError):
+        return int(default)
+
+
+TUSHARE_POINTS: int = _int_env("TUSHARE_POINTS", "2000")
+MAX_RPS: int = _int_env("TUSHARE_MAX_RPS", "5")
 MAX_RETRIES: int = 3
 RETRY_DELAY: float = 1.0
 BATCH_SIZE: int = 5000

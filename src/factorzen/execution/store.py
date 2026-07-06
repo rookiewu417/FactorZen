@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
 from pathlib import Path
 
@@ -19,11 +20,14 @@ class SessionStore:
 
     def init(self, config: dict) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = self.dir / "manifest.json"
+        # 已有会话再 init（如 fz live replay 复用 fz live init 建的 session）不覆盖——
+        # 否则 init 设的 slippage_bps/initial_cash 会被 replay 的默认 config 静默清掉。
+        if manifest_path.exists():
+            return
         manifest = build_manifest_base(list(config.get("command", [])), config)
         manifest.update({"git_sha": get_git_sha(), "config": config})
-        (self.dir / "manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2)
-        )
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
 
     def has_date(self, as_of: date) -> bool:
         if not self._ledger.exists():
@@ -44,12 +48,33 @@ class SessionStore:
         df = pl.DataFrame([row])
         if self._ledger.exists():
             df = pl.concat([pl.read_parquet(self._ledger), df], how="vertical")
-        df.write_parquet(self._ledger)
-        df.select(["as_of_date", "nav_after"]).write_parquet(self._nav)
-        # 在续跑态里嵌入 _last_as_of，供 run_daily_step 做日期单调性守卫(E2)。
+        # 三个文件各自 tmp + os.replace 原子替换，避免写到一半崩溃留下损坏 parquet/json。
+        self._atomic_parquet(df, self._ledger)
+        self._atomic_parquet(df.select(["as_of_date", "nav_after"]), self._nav)
+        # 在续跑态里嵌入 _last_as_of，供 run_daily_step 做日期单调性守卫(E2) +
+        # 崩溃恢复一致性校验（state._last_as_of 须与 ledger 末行日期一致）。
         # broker.load_state 只读 cash/pos/order_seq/last_price，忽略 _last_as_of。
         state_out = {**record["broker_state"], "_last_as_of": record["as_of_date"]}
-        self._state.write_text(json.dumps(state_out, ensure_ascii=False))
+        self._atomic_text(json.dumps(state_out, ensure_ascii=False), self._state)
+
+    @staticmethod
+    def _atomic_parquet(df: pl.DataFrame, path: Path) -> None:
+        tmp = path.with_name(path.name + ".tmp")
+        df.write_parquet(tmp)
+        os.replace(tmp, path)
+
+    @staticmethod
+    def _atomic_text(text: str, path: Path) -> None:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+
+    def last_ledger_date(self) -> str | None:
+        """ledger 末行(最大)交易日 ISO 字符串；空/无 ledger 返回 None。"""
+        if not self._ledger.exists():
+            return None
+        dates = pl.read_parquet(self._ledger)["as_of_date"].to_list()
+        return max(dates) if dates else None
 
     def ledger_records(self) -> list[dict]:
         """逐行还原 {as_of_date,nav_before,nav_after,orders,acks,fills}；旧 payload 无 acks 视为 []。"""

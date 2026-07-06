@@ -25,6 +25,7 @@ from factorzen.config.tushare_config import (
     RETRY_DELAY,
     ensure_token,
 )
+from factorzen.core.calendar import get_trade_dates
 from factorzen.core.logger import get_logger
 from factorzen.core.storage import load_parquet, partition_exists, save_parquet
 
@@ -116,6 +117,100 @@ def _str_to_date(series: pl.Expr, fmt: str = "%Y%m%d") -> pl.Expr:
     return series.str.strptime(pl.Date, fmt, strict=False)
 
 
+DAILY_STD_COLS: list[str] = [
+    "trade_date", "ts_code", "open", "high", "low", "close",
+    "pre_close", "change", "pct_chg", "vol", "amount",
+]
+
+
+def _missing_trade_dates(
+    data_type: str, start: str, end: str, date_col: str = "trade_date"
+) -> list[str]:
+    """请求区间 [start, end] 内交易日历应有、但本地缓存缺失的交易日（``YYYYMMDD``）。
+
+    用交易日历覆盖审计替代「季度首月分区存在」启发式：后者会把部分年数据误判为整年
+    完整（回测末段悄悄变短、增量更新永久失效）。get_trade_dates 走 7 天文件缓存，不额外
+    打 Tushare。
+    """
+    expected = [d.strftime("%Y%m%d") for d in get_trade_dates(start, end)]
+    if not expected:
+        return []
+    try:
+        cached = load_parquet(data_type, start=start, end=end, date_col=date_col).collect()
+    except Exception:
+        cached = pl.DataFrame()
+    if cached.is_empty() or date_col not in cached.columns:
+        return expected
+    present = set(
+        cached.select(pl.col(date_col).dt.strftime("%Y%m%d")).to_series().to_list()
+    )
+    return [d for d in expected if d not in present]
+
+
+def _fetch_market_by_missing_dates(
+    api: Any, missing_dates: list[str], *, data_type: str, std_cols: list[str]
+) -> None:
+    """全市场逐交易日拉取「缺失日」并写缓存（按年批量 flush，控内存）。"""
+    if not missing_dates:
+        return
+    buf: list[pl.DataFrame] = []
+
+    def _flush() -> None:
+        if not buf:
+            return
+        merged = (
+            pl.concat(buf)
+            .with_columns(_str_to_date(pl.col("trade_date")))
+            .sort(["trade_date", "ts_code"])
+        )
+        merged = merged.select([c for c in std_cols if c in merged.columns])
+        save_parquet(merged, data_type=data_type)
+        buf.clear()
+
+    last_year: str | None = None
+    for date_str in missing_dates:
+        year = date_str[:4]
+        if last_year is not None and year != last_year:
+            _flush()
+        last_year = year
+        try:
+            df_pd = _retry(api, trade_date=date_str)
+        except Exception as e:
+            logger.error(f"[{data_type}] {date_str} 拉取失败: {e}")
+            continue
+        if df_pd is not None and not df_pd.empty:
+            buf.append(pl.from_pandas(df_pd))
+    _flush()
+
+
+def _fetch_subset_by_codes(
+    api: Any, start: str, end: str, ts_codes: list[str], *, data_type: str, std_cols: list[str]
+) -> pl.DataFrame:
+    """子集（ts_codes）模式：逐代码直拉 [start, end]、按 ts_codes 过滤返回，**不写共享全市场缓存**。
+
+    子集写进共享缓存会让全市场完整性审计误判「该区间已缓存」→ 后续全市场请求静默返回子集；
+    故子集走独立取数路径、直接返回（不参与全市场缓存）。
+    """
+    parts: list[pl.DataFrame] = []
+    for code in ts_codes:
+        try:
+            df_pd = _retry(api, ts_code=code, start_date=start, end_date=end)
+        except Exception as e:
+            logger.error(f"[{data_type}] {code} 拉取失败: {e}")
+            continue
+        if df_pd is not None and not df_pd.empty:
+            parts.append(pl.from_pandas(df_pd))
+    if not parts:
+        return pl.DataFrame()
+    merged = (
+        pl.concat(parts)
+        .with_columns(_str_to_date(pl.col("trade_date")))
+        .sort(["trade_date", "ts_code"])
+    )
+    merged = merged.select([c for c in std_cols if c in merged.columns])
+    return merged.filter(pl.col("ts_code").is_in(ts_codes))
+
+
 # ══════════════════════════════════════════════════════════
 # 数据拉取函数
 # ══════════════════════════════════════════════════════════
@@ -139,82 +234,21 @@ def fetch_daily(
         pre_close, change, pct_chg, vol, amount。
     """
     pro = init_tushare()
-    start_year = int(start[:4])
-    end_year = int(end[:4])
 
-    for year in range(start_year, end_year + 1):
-        # 缓存检查：该年份是否已有数据（用每季度第一个月作为检查点）
-        if all(partition_exists("daily", year, q_month) for q_month in (1, 4, 7, 10)):
-            logger.info(f"[daily] {year} 已缓存，跳过")
-            continue
-
-        year_start = max(f"{year}0101", start)
-        year_end = min(f"{year}1231", end)  # 不拉超出请求范围的未来日期
-        parts: list[pl.DataFrame] = []
-
-        if ts_codes is not None:
-            # 逐股票拉取
-            for code in ts_codes:
-                try:
-                    df_pd = _retry(
-                        pro.daily, ts_code=code, start_date=year_start, end_date=year_end
-                    )
-                except Exception as e:
-                    logger.error(f"[daily] {code} {year} 拉取失败: {e}")
-                    continue
-                if df_pd is not None and not df_pd.empty:
-                    parts.append(pl.from_pandas(df_pd))
-            if not parts:
-                logger.warning(f"[daily] {year} 无数据（逐股模式）")
-                continue
-        else:
-            # 全市场按日期逐日拉取（避免 API 行数限制）
-            cal = fetch_trade_cal(year_start, year_end)
-            trade_dates_list = (
-                cal.filter(pl.col("is_open") == 1)
-                .select(pl.col("cal_date").dt.strftime("%Y%m%d"))
-                .to_series()
-                .to_list()
-            )
-            for date_str in trade_dates_list:
-                try:
-                    df_pd = _retry(pro.daily, trade_date=date_str)
-                except Exception as e:
-                    logger.error(f"[daily] {date_str} 拉取失败: {e}")
-                    continue
-                if df_pd is not None and not df_pd.empty:
-                    parts.append(pl.from_pandas(df_pd))
-            if not parts:
-                logger.warning(f"[daily] {year} 全市场无数据")
-                continue
-
-        # 合并并统一格式
-        merged = (
-            pl.concat(parts)
-            .with_columns(_str_to_date(pl.col("trade_date")))
-            .sort(["trade_date", "ts_code"])
+    # 子集模式：不参与共享全市场缓存（避免污染完整性审计），直拉并按 ts_codes 过滤返回。
+    if ts_codes is not None:
+        return _fetch_subset_by_codes(
+            pro.daily, start, end, ts_codes, data_type="daily", std_cols=DAILY_STD_COLS
         )
 
-        # 选取标准字段（避免多余列干扰分区写入）
-        std_cols = [
-            "trade_date",
-            "ts_code",
-            "open",
-            "high",
-            "low",
-            "close",
-            "pre_close",
-            "change",
-            "pct_chg",
-            "vol",
-            "amount",
-        ]
-        merged = merged.select([c for c in std_cols if c in merged.columns])
-
-        save_parquet(merged, data_type="daily")
-        logger.info(f"[daily] {year} 已保存 ({len(merged)} 行)")
-
-    # 从缓存完整加载
+    # 全市场：交易日历覆盖审计，只拉缺失交易日
+    missing = _missing_trade_dates("daily", start, end)
+    if not missing:
+        logger.info(f"[daily] {start}~{end} 已完整缓存，跳过拉取")
+    else:
+        _fetch_market_by_missing_dates(
+            pro.daily, missing, data_type="daily", std_cols=DAILY_STD_COLS
+        )
     return load_parquet("daily", start=start, end=end).collect()
 
 
@@ -246,63 +280,20 @@ def fetch_daily_basic(
         total_share, float_share, free_share。
     """
     pro = init_tushare()
-    start_year = int(start[:4])
-    end_year = int(end[:4])
 
-    for year in range(start_year, end_year + 1):
-        if all(partition_exists("daily_basic", year, q_month) for q_month in (1, 4, 7, 10)):
-            logger.info(f"[daily_basic] {year} 已缓存，跳过")
-            continue
-
-        year_start = max(f"{year}0101", start)
-        year_end = min(f"{year}1231", end)
-        parts: list[pl.DataFrame] = []
-
-        if ts_codes is not None:
-            for code in ts_codes:
-                try:
-                    df_pd = _retry(
-                        pro.daily_basic, ts_code=code, start_date=year_start, end_date=year_end
-                    )
-                except Exception as e:
-                    logger.error(f"[daily_basic] {code} {year} 拉取失败: {e}")
-                    continue
-                if df_pd is not None and not df_pd.empty:
-                    parts.append(pl.from_pandas(df_pd))
-            if not parts:
-                continue
-        else:
-            # 全市场按日期逐日拉取（避免 API 行数限制）
-            cal = fetch_trade_cal(year_start, year_end)
-            trade_dates_list = (
-                cal.filter(pl.col("is_open") == 1)
-                .select(pl.col("cal_date").dt.strftime("%Y%m%d"))
-                .to_series()
-                .to_list()
-            )
-            for date_str in trade_dates_list:
-                try:
-                    df_pd = _retry(pro.daily_basic, trade_date=date_str)
-                except Exception as e:
-                    logger.error(f"[daily_basic] {date_str} 拉取失败: {e}")
-                    continue
-                if df_pd is not None and not df_pd.empty:
-                    parts.append(pl.from_pandas(df_pd))
-            if not parts:
-                logger.warning(f"[daily_basic] {year} 全市场无数据")
-                continue
-
-        merged = (
-            pl.concat(parts)
-            .with_columns(_str_to_date(pl.col("trade_date")))
-            .sort(["trade_date", "ts_code"])
+    if ts_codes is not None:
+        return _fetch_subset_by_codes(
+            pro.daily_basic, start, end, ts_codes,
+            data_type="daily_basic", std_cols=DAILY_BASIC_COLS,
         )
 
-        merged = merged.select([c for c in DAILY_BASIC_COLS if c in merged.columns])
-
-        save_parquet(merged, data_type="daily_basic")
-        logger.info(f"[daily_basic] {year} 已保存 ({len(merged)} 行)")
-
+    missing = _missing_trade_dates("daily_basic", start, end)
+    if not missing:
+        logger.info(f"[daily_basic] {start}~{end} 已完整缓存，跳过拉取")
+    else:
+        _fetch_market_by_missing_dates(
+            pro.daily_basic, missing, data_type="daily_basic", std_cols=DAILY_BASIC_COLS
+        )
     return load_parquet("daily_basic", start=start, end=end).collect()
 
 
@@ -332,6 +323,9 @@ def fetch_minute(
     pro = init_tushare()
     start_dt = datetime.strptime(start, "%Y%m%d")
     end_dt = datetime.strptime(end, "%Y%m%d")
+    # freq 纳入分区命名空间：不同频率(1min/5min/…)分开缓存，否则缓存键只有
+    # (year, month, ts_code)，先拉 5min 再请求 1min 会命中同分区被跳过、返回错频率数据。
+    data_type = f"minute_{freq}"
 
     # 按月迭代
     current = start_dt.replace(day=1)
@@ -350,9 +344,9 @@ def fetch_minute(
         seg_end = min(month_end, end_dt).strftime("%Y%m%d")
 
         # 缓存检查（按 ts_code 粒度，支持多只股票追加写入同一分区）
-        if partition_exists("minute", year, month):
+        if partition_exists(data_type, year, month):
             try:
-                _fp = DATA_RAW / "minute" / f"year={year}" / f"month={month:02d}" / "data.parquet"
+                _fp = DATA_RAW / data_type / f"year={year}" / f"month={month:02d}" / "data.parquet"
                 _existing_codes = (
                     pl.read_parquet(str(_fp), columns=["ts_code"])["ts_code"].unique().to_list()
                 )
@@ -403,8 +397,8 @@ def fetch_minute(
         std_cols = ["ts_code", "trade_time", "open", "high", "low", "close", "vol", "amount"]
         df = df.select([c for c in std_cols if c in df.columns])
 
-        save_parquet(df, data_type="minute", date_col="trade_time")
-        logger.info(f"[minute] {ts_code} {year}-{month:02d} 已保存 ({len(df)} 行)")
+        save_parquet(df, data_type=data_type, date_col="trade_time")
+        logger.info(f"[minute/{freq}] {ts_code} {year}-{month:02d} 已保存 ({len(df)} 行)")
 
         # stk_mins 有严格限速（如 2000积分：2次/分钟），确保间隔 >= call_delay
         if call_delay > 0:
@@ -415,7 +409,7 @@ def fetch_minute(
 
         current = next_month
 
-    return load_parquet("minute", start=start, end=end, date_col="trade_time").collect()
+    return load_parquet(data_type, start=start, end=end, date_col="trade_time").collect()
 
 
 _FINANCE_BATCH_SIZE = 50  # 每批股票数（Tushare fina_indicator 需要 ts_code，不支持全市场无参拉取）
@@ -446,6 +440,9 @@ def fetch_finance(
     end_dt = datetime.strptime(end, "%Y%m%d")
 
     fin_api = getattr(pro, api_name)
+    # 每个接口(income/cashflow/fina_indicator/…)列集不同，必须分命名空间缓存：
+    # 否则共用 "finance" 分区，append concat 会 schema 冲突崩溃、或把不同接口数据串在一起。
+    data_type = f"finance_{api_name}"
 
     # 全市场模式：先获取所有股票代码
     if ts_codes is None:
@@ -472,7 +469,9 @@ def fetch_finance(
             q_start_str = max(seg_start, start_dt).strftime("%Y%m%d")
             q_end_str = min(seg_end, end_dt).strftime("%Y%m%d")
 
-            if partition_exists("finance", year, q_start_month):
+            # 完整性检查用季末月(3/6/9/12)：数据以 end_date 落盘，end_date 月份是季末，
+            # 而非季初月(1/4/7/10)——用季初月检查会永不命中、缓存形同虚设、每次全量重拉。
+            if partition_exists(data_type, year, q_end_month):
                 logger.info(f"[finance/{api_name}] {year} Q{q_start_month // 3 + 1} 已缓存，跳过")
                 continue
 
@@ -521,12 +520,12 @@ def fetch_finance(
                 .sort("end_date")
             )
 
-            save_parquet(df, data_type="finance", date_col="end_date")
+            save_parquet(df, data_type=data_type, date_col="end_date")
             logger.info(
                 f"[finance/{api_name}] {year} Q{q_start_month // 3 + 1} 已保存 ({len(df)} 行)"
             )
 
-    return load_parquet("finance", start=start, end=end, date_col="end_date").collect()
+    return load_parquet(data_type, start=start, end=end, date_col="end_date").collect()
 
 
 def fetch_stock_basic(list_status: str = "L,D,P") -> pl.DataFrame:
@@ -668,49 +667,15 @@ def fetch_adj_factor(
         pl.DataFrame，包含列: ts_code, trade_date, adj_factor。
     """
     pro = init_tushare()
-    start_year = int(start[:4])
-    end_year = int(end[:4])
 
-    for year in range(start_year, end_year + 1):
-        if all(partition_exists("adj_factor", year, q_month) for q_month in (1, 4, 7, 10)):
-            logger.info(f"[adj_factor] {year} 已缓存，跳过")
-            continue
-
-        year_start = max(f"{year}0101", start)
-        year_end = min(f"{year}1231", end)
-
-        cal = fetch_trade_cal(year_start, year_end)
-        trade_dates_list = (
-            cal.filter(pl.col("is_open") == 1)
-            .select(pl.col("cal_date").dt.strftime("%Y%m%d"))
-            .to_series()
-            .to_list()
+    missing = _missing_trade_dates("adj_factor", start, end)
+    if not missing:
+        logger.info(f"[adj_factor] {start}~{end} 已完整缓存，跳过拉取")
+    else:
+        _fetch_market_by_missing_dates(
+            pro.adj_factor, missing, data_type="adj_factor",
+            std_cols=["ts_code", "trade_date", "adj_factor"],
         )
-
-        parts: list[pl.DataFrame] = []
-        for date_str in trade_dates_list:
-            try:
-                df_pd = _retry(pro.adj_factor, trade_date=date_str)
-            except Exception as e:
-                logger.error(f"[adj_factor] {date_str} 拉取失败: {e}")
-                continue
-            if df_pd is not None and not df_pd.empty:
-                parts.append(pl.from_pandas(df_pd))
-
-        if not parts:
-            logger.warning(f"[adj_factor] {year} 无数据")
-            continue
-
-        merged = (
-            pl.concat(parts)
-            .with_columns(_str_to_date(pl.col("trade_date")))
-            .select(["ts_code", "trade_date", "adj_factor"])
-            .sort(["trade_date", "ts_code"])
-        )
-
-        save_parquet(merged, data_type="adj_factor")
-        logger.info(f"[adj_factor] {year} 已保存 ({len(merged)} 行)")
-
     return load_parquet("adj_factor", start=start, end=end).collect()
 
 
@@ -732,12 +697,13 @@ def fetch_index_daily(index_code: str, start: str, end: str) -> pl.DataFrame:
     _data_type = f"index_daily_{index_code.replace('.', '_')}"
 
     for year in range(start_year, end_year + 1):
-        if all(partition_exists(_data_type, year, q_month) for q_month in (1, 4, 7, 10)):
-            logger.info(f"[index_daily] {index_code} {year} 已缓存，跳过")
-            continue
-
         year_start = max(f"{year}0101", start)
         year_end = min(f"{year}1231", end)
+
+        # 交易日历覆盖审计替代分区存在启发式（避免部分年被误判整年完整）
+        if not _missing_trade_dates(_data_type, year_start, year_end):
+            logger.info(f"[index_daily] {index_code} {year} 已完整缓存，跳过")
+            continue
 
         try:
             df_pd = _retry(

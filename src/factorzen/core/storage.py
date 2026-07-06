@@ -3,7 +3,7 @@
 分区路径格式: ``{base_dir}/{data_type}/year={YYYY}/month={MM}/data.parquet``
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -89,8 +89,11 @@ def load_parquet(
         start_dt = datetime.strptime(start, "%Y%m%d")
         lf = lf.filter(pl.col(date_col) >= start_dt)
     if end is not None:
-        end_dt = datetime.strptime(end, "%Y%m%d")
-        lf = lf.filter(pl.col(date_col) <= end_dt)
+        # 半开区间 [start, end+1day)：对 Date 列等价于闭区间含 end；对 Datetime 列
+        # （分钟 bar）则含 end 当天全部盘中 bar——用 `<= end` 会把 end 解析成当日 00:00，
+        # 静默排除截止日所有盘中数据。
+        end_next = datetime.strptime(end, "%Y%m%d") + timedelta(days=1)
+        lf = lf.filter(pl.col(date_col) < end_next)
 
     return lf
 

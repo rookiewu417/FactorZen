@@ -7,6 +7,7 @@ fetch_stock_basic 缓存命中/失效。
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -199,42 +200,42 @@ class TestRetryEmptyResult:
 
 
 class TestFetchDailyCacheSkip:
-    def test_all_quarters_cached_skips_api(self):
-        """四季度分区全部命中时，pro.daily 不被调用。"""
+    def test_fully_cached_skips_api(self):
+        """交易日历覆盖审计：请求区间所有交易日都在缓存 → pro.daily 不被调用。"""
         mock_pro = MagicMock()
+        cached = pl.DataFrame({
+            "trade_date": [date(2022, 1, 4), date(2022, 1, 5)],
+            "ts_code": ["000001.SZ", "000001.SZ"],
+        })
         lf_mock = MagicMock()
-        lf_mock.collect.return_value = pl.DataFrame()
+        lf_mock.collect.return_value = cached
 
         with (
             patch.object(loader_module, "init_tushare", return_value=mock_pro),
-            patch.object(loader_module, "partition_exists", return_value=True),
+            patch.object(loader_module, "get_trade_dates",
+                         return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
             patch.object(loader_module, "load_parquet", return_value=lf_mock),
         ):
             fetch_daily("20220101", "20221231")
 
         mock_pro.daily.assert_not_called()
 
-    def test_two_year_range_checks_each_year(self):
-        """跨两年区间：每年都做缓存检查（两年都命中则不调 API）。"""
+    def test_multi_year_range_audited_as_whole(self):
+        """跨年区间按整段交易日历审计：全部命中则不调 API。"""
         mock_pro = MagicMock()
+        expected = [date(2022, 6, 1), date(2023, 6, 1)]
+        cached = pl.DataFrame({"trade_date": expected, "ts_code": ["000001.SZ", "000001.SZ"]})
         lf_mock = MagicMock()
-        lf_mock.collect.return_value = pl.DataFrame()
-        partition_calls: list[tuple] = []
-
-        def _fake_partition_exists(data_type: str, year: int, month: int, **_) -> bool:
-            partition_calls.append((data_type, year, month))
-            return True  # all cached
+        lf_mock.collect.return_value = cached
 
         with (
             patch.object(loader_module, "init_tushare", return_value=mock_pro),
-            patch.object(loader_module, "partition_exists", side_effect=_fake_partition_exists),
+            patch.object(loader_module, "get_trade_dates", return_value=expected),
             patch.object(loader_module, "load_parquet", return_value=lf_mock),
         ):
             fetch_daily("20220101", "20231231")
 
-        years_checked = {y for (_, y, _) in partition_calls}
-        assert 2022 in years_checked
-        assert 2023 in years_checked
+        mock_pro.daily.assert_not_called()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -257,7 +258,7 @@ class TestFetchDailyBasicOutputType:
 
         with (
             patch.object(loader_module, "init_tushare", return_value=mock_pro),
-            patch.object(loader_module, "partition_exists", return_value=True),
+            patch.object(loader_module, "get_trade_dates", return_value=[]),
             patch.object(loader_module, "load_parquet", return_value=lf_mock),
         ):
             result = fetch_daily_basic("20220101", "20221231")

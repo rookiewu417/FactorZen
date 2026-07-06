@@ -229,6 +229,97 @@ def test_node_guardrails_family_aware_dedup():
 # ---------------------------------------------------------------------------
 
 
+def _controlled_daily(holdout_sign: float, n_stocks: int = 30, n_days: int = 180,
+                      eps: float = 0.001):
+    """构造 holdout 段 IC(amount) 符号确定的数据（供 OOS 护栏/双向 DSR 测试）。
+
+    每只股票 amount 截面严格单调（= 1e6 + i·1000），holdout 段每股日收益 = holdout_sign·eps·i。
+    → 因子 `amount` 与 holdout 段前向收益完全（反）单调 → holdout rank IC ≡ holdout_sign，
+    bootstrap CI = (holdout_sign, holdout_sign)（离 0）。mining 段收益固定正序（不影响注入的
+    train IC/IR——node_guardrails 只读 AttemptRecord 的注入值，不重算 train IC）。
+    """
+    import datetime as dt
+
+    import polars as pl
+
+    days, d = [], dt.date(2022, 1, 3)
+    while len(days) < n_days:
+        if d.weekday() < 5:
+            days.append(d)
+        d += dt.timedelta(days=1)
+    cut = int(len(days) * 0.8)  # 与 split_holdout(holdout_ratio=0.2) 一致
+    rows = []
+    for i in range(n_stocks):
+        amt = float(1_000_000 + i * 1000)  # 截面严格单调 → rank(amount)=i
+        px = 100.0
+        for di, dd in enumerate(days):
+            sign = holdout_sign if di >= cut else 1.0
+            px *= 1.0 + sign * eps * i  # 高 i → 高/低收益(按 sign) → 与 amount 同/反序
+            rows.append({
+                "trade_date": dd, "ts_code": f"{i:06d}.SZ", "close": px,
+                "open": px, "high": px, "low": px, "vol": amt, "amount": amt,
+            })
+    return pl.DataFrame(rows)
+
+
+def test_node_guardrails_admits_bidirectional_negative_ic():
+    """#128：强负 IC(做空)因子——train 段按 abs(ic) 排序纳入 top_k，DSR 须用 abs(ir_train)。
+
+    修复前：sharpe=signed ir_train=-2.5 → DSR≈0 < 阈值 → 被系统性误杀。
+    修复后：sharpe=abs(ir_train)=2.5 → DSR≈1，且 holdout 同向为负(一致)→ 入选。
+    """
+    from factorzen.agents.nodes import node_guardrails
+    from factorzen.agents.state import AgentState, AttemptRecord
+    from factorzen.discovery.scoring import DataBundle
+    from factorzen.validation.holdout import split_holdout
+    from factorzen.validation.multiple_testing import TrialLedger
+
+    daily = _controlled_daily(holdout_sign=-1.0)  # holdout IC(amount) ≡ -1
+    mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=0.2)
+    bundle = DataBundle.build(mining_df)
+
+    s = AgentState(seed=1)
+    # 注入：强负 train IC + 负 ir_train（做空因子）；holdout 同向为负 → OOS 一致
+    s.attempts.append(AttemptRecord(0, "h", "amount", True, -0.06, False, None, None, -2.5))
+    ledger = TrialLedger()
+    node_guardrails(s, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
+                    ledger=ledger, top_k=5, dsr_threshold=0.5)
+
+    assert len(s.candidates) == 1, (
+        f"强负 IC 做空因子应过关(abs(ir) 喂 DSR + holdout 同向负一致)，实得 "
+        f"{len(s.candidates)} —— signed ir_train 喂 DSR 会把负 IC 因子 DSR 压到 ≈0 误杀"
+    )
+
+
+def test_node_guardrails_rejects_holdout_sign_flip():
+    """#135：train 正 IC 过 DSR，但 holdout IC 反号 → OOS 护栏须拒(不能只查 NaN)。
+
+    修复前：OOS 门槛 = not isnan(ic_h) → holdout IC=-1 是实数 → 照样入选（护栏虚设）。
+    修复后：OOS 门槛 = holdout CI 在 train 方向离 0（train 正→ci_lo>0），holdout CI<0 → 拒。
+    """
+    from factorzen.agents.nodes import node_guardrails
+    from factorzen.agents.state import AgentState, AttemptRecord
+    from factorzen.discovery.scoring import DataBundle
+    from factorzen.validation.holdout import split_holdout
+    from factorzen.validation.multiple_testing import TrialLedger
+
+    daily = _controlled_daily(holdout_sign=-1.0)  # holdout IC(amount) ≡ -1（与正 train 反号）
+    mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=0.2)
+    bundle = DataBundle.build(mining_df)
+
+    s = AgentState(seed=1)
+    # 注入：正 train IC/IR（过 DSR），但 holdout 反号 → 过拟合，OOS 应拒
+    s.attempts.append(AttemptRecord(0, "h", "amount", True, 0.06, False, None, None, 2.5))
+    ledger = TrialLedger()
+    node_guardrails(s, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
+                    ledger=ledger, top_k=5, dsr_threshold=0.5)
+
+    assert len(s.candidates) == 0, (
+        f"train 正、holdout 反号的过拟合因子应被 OOS 护栏拒，实得 {len(s.candidates)} "
+        f"—— holdout 只查 NaN 时反号候选照样入选，OOS 隔离形同虚设"
+    )
+
+
 def test_node_guardrails_n_honest_accounting():
     """灵魂回归：2轮各评估2个不同表达式 → ledger.n_trials == 4（非三角和6）。
 

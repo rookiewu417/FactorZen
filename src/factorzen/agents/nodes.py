@@ -123,16 +123,27 @@ def node_guardrails(
         try:
             node = parse_expr(a.expression)
             fdf_hold = _node_to_factor_df(node, holdout_df)
-            ic_h, ir_h, _ci = holdout_ic(fdf_hold, holdout_df)
-            # Important: 优先用 ir_train 作 Sharpe 代理（更稳定）；回退到 abs(ic_train)
-            sharpe = a.ir_train if a.ir_train is not None else abs(a.ic_train or 0.0)
+            ic_h, ir_h, (ci_lo, ci_hi) = holdout_ic(fdf_hold, holdout_df)
+            # #128 双向一致：top_k 按 abs(ic_train) 排序（承认做空/负 IC 因子），DSR 的
+            # Sharpe 代理也须用 abs(ir_train)——否则强负 IC 因子 signed ir<0 → DSR≈0，
+            # 占了 top_k 名额却被系统性误杀，与 abs 排序自相矛盾。回退仍用 abs(ic_train)。
+            sharpe = abs(a.ir_train) if a.ir_train is not None else abs(a.ic_train or 0.0)
             dsr, pval = deflated_sharpe(
                 sharpe,
                 ledger.n_trials,
                 n_obs=n_obs,
             )
-            # Minor 1: holdout_ic 返回 float（可能 NaN），用 math.isnan 而非 is not None
-            if not math.isnan(ic_h) and dsr > dsr_threshold:
+            # #135 OOS 护栏不能「只算不判」：仅查 NaN 时，holdout IC 反号/近零的过拟合候选照样
+            # 入选，隔离形同虚设。对齐 M1 _guard_passed 的 CI 方向门槛（双向泛化）——holdout IC
+            # 95% bootstrap CI 须在 train 方向上整体离 0：train 正 → ci 下界>0；train 负 → ci 上界<0。
+            ic_tr = a.ic_train or 0.0
+            oos_ok = (
+                not math.isnan(ic_h)
+                and not math.isnan(ci_lo)
+                and not math.isnan(ci_hi)
+                and (ci_lo > 0 if ic_tr > 0 else ci_hi < 0)
+            )
+            if oos_ok and dsr > dsr_threshold:
                 # family-aware 去冗余：新候选与已入选 candidates 截面相关 > 0.7 则跳过
                 corr = max_correlation(fdf_hold, pool)
                 if corr > 0.7:

@@ -11,7 +11,7 @@ class LiquidityStyle(DailyFactor):
     category = "daily"
     description = "流动性因子：21 日换手率均值，Barra LIQUIDITY"
     lookback_days = 30
-    required_data = ["daily_basic"]
+    required_data = ["daily_basic", "daily"]
 
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         result = (

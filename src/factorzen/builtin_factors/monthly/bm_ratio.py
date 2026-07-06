@@ -10,7 +10,7 @@ class BmRatioMonthly(DailyFactor):
     name = "bm_ratio"
     category = "monthly"
     frequency = "monthly"
-    required_data = ["daily_basic"]
+    required_data = ["daily_basic", "daily"]
     lookback_days = 5
     description = "Monthly B/M = 1/PB; value factor, high B/M predicts higher returns"
 

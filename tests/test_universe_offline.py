@@ -660,6 +660,45 @@ def test_universe_snapshot_floating_point_tolerance_is_limit_down(stock_basic, m
     )
 
 
+def test_universe_snapshot_missing_daily_bar_marked_suspended(stock_basic, monkeypatch):
+    """无日线行的股票（A股停牌当日 Tushare 不发日线行）应标 is_suspended=True。
+
+    修复前：base 左 join markers（仅含有日线行的股票），停牌股 is_suspended 为 null →
+    fill_null(False) → 被标「未停牌」，停牌过滤形同虚设（主流停牌=无行的情形全漏）。
+    修复后：null（无日线行）视为不可交易 → fill_null(True)。
+    """
+    # 600000.SH 当日停牌无日线行；其余 3 只正常交易
+    daily = pl.DataFrame(
+        {
+            "ts_code": ["600001.SH", "600002.SH", "300003.SZ"],
+            "vol": [1000.0] * 3,
+            "pct_chg": [1.0] * 3,
+        }
+    )
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(daily))
+    result = get_universe_snapshot("20240115", "all_a")
+    susp = result.filter(pl.col("ts_code") == "600000.SH")["is_suspended"].to_list()
+    assert susp == [True], f"停牌股（无日线行）应 is_suspended=True，实得 {susp}"
+    # 有日线行、正常交易的股仍为 False（不误伤）
+    ok = result.filter(pl.col("ts_code") == "600001.SH")["is_suspended"].to_list()
+    assert ok == [False], f"正常交易股应 is_suspended=False，实得 {ok}"
+
+
+def test_universe_snapshot_zero_volume_bar_marked_suspended(stock_basic, monkeypatch):
+    """有日线行但 vol==0（部分数据源发零量行）仍应判停牌——修复不能回归此路径。"""
+    daily = pl.DataFrame(
+        {
+            "ts_code": ["600000.SH", "600001.SH", "600002.SH", "300003.SZ"],
+            "vol": [0.0, 1000.0, 1000.0, 1000.0],
+            "pct_chg": [0.0, 1.0, 1.0, 1.0],
+        }
+    )
+    monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(daily))
+    result = get_universe_snapshot("20240115", "all_a")
+    susp = result.filter(pl.col("ts_code") == "600000.SH")["is_suspended"].to_list()
+    assert susp == [True], f"vol==0 应 is_suspended=True，实得 {susp}"
+
+
 def test_filter_liquidity_drops_low_amount(monkeypatch):
     daily = pl.DataFrame({"ts_code": ["rich", "poor"], "amount": [2_000_000_000.0, 100.0]})
     monkeypatch.setattr("factorzen.core.storage.load_parquet", _fake_daily(daily))

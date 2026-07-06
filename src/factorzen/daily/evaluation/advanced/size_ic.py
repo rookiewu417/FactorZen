@@ -76,6 +76,7 @@ def compute_size_ic(
 
     valid_df = df.filter(
         pl.col(factor_col).is_not_null()
+        & pl.col(factor_col).is_finite()  # NaN 非 null 且 rank 排最大，须显式排除
         & pl.col(ret_col).is_not_null()
         & pl.col(ret_col).is_finite()
     )

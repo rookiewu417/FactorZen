@@ -108,12 +108,24 @@ class CryptoDataProvider(DataProvider):
         rows: list[tuple] = []
         for sym in symbols or []:
             unified = self._to_unified(sym)
-            hist = self.client.fetch_funding_rate_history(unified, since=start_ms, limit=1000)
-            for rec in hist:
-                ts = int(rec["timestamp"])
-                if ts > end_ms:
-                    continue
-                rows.append((sym, int(ts), float(rec["fundingRate"])))
+            # 分页：单次 limit=1000(~333 天，8h×3/日)，长区间须翻页拉全，否则尾部
+            # funding 静默丢失、下游 fill 0（仿 fetch_bars 的 since=last+1 分页）。
+            since = start_ms
+            while since <= end_ms:
+                hist = self.client.fetch_funding_rate_history(unified, since=since, limit=1000)
+                if not hist:
+                    break
+                stop = False
+                for rec in hist:
+                    ts = int(rec["timestamp"])
+                    if ts > end_ms:
+                        stop = True
+                        break
+                    rows.append((sym, ts, float(rec["fundingRate"])))
+                last_ts = int(hist[-1]["timestamp"])
+                if stop or last_ts < since:
+                    break
+                since = last_ts + 1
         df = pl.DataFrame(rows, schema=["ts_code", "_ms", "funding_rate"], orient="row")
         if df.is_empty():
             return pl.DataFrame(
@@ -145,21 +157,39 @@ class CryptoDataProvider(DataProvider):
         rows: list[tuple] = []
         for sym in symbols or []:
             unified = self._to_unified(sym)
-            hist = self.client.fetch_open_interest_history(unified, since=start_ms, limit=1000)
-            for rec in hist:
-                ts = int(rec["timestamp"])
-                if ts > end_ms:
-                    continue
-                amount = rec.get("openInterestAmount") or rec.get("openInterestValue") or 0.0
-                rows.append((sym, int(ts), float(amount)))
+            # 显式传 timeframe='1d'：ccxt 的 fetch_open_interest_history 默认 '1h'，
+            # 不传会返回小时级 OI，同一 (ts_code, trade_date) 24 行 → join 后日频帧爆炸
+            # 24 倍。分页拉全（Binance OI history 仅保留约 30 天，超范围自然返回空）。
+            since = start_ms
+            while since <= end_ms:
+                hist = self.client.fetch_open_interest_history(
+                    unified, timeframe="1d", since=since, limit=1000
+                )
+                if not hist:
+                    break
+                stop = False
+                for rec in hist:
+                    ts = int(rec["timestamp"])
+                    if ts > end_ms:
+                        stop = True
+                        break
+                    amount = rec.get("openInterestAmount") or rec.get("openInterestValue") or 0.0
+                    rows.append((sym, ts, float(amount)))
+                last_ts = int(hist[-1]["timestamp"])
+                if stop or last_ts < since:
+                    break
+                since = last_ts + 1
         if not rows:
             return empty
         return (
             pl.DataFrame(rows, schema=["ts_code", "_ms", "open_interest"], orient="row")
+            .sort(["ts_code", "_ms"])  # 先按时间排序，保证组内 last() 取当日最后一档
             .with_columns(
                 pl.from_epoch(pl.col("_ms"), time_unit="ms").cast(pl.Date).alias("trade_date")
             )
-            .drop("_ms")
+            # 兜底按 (ts_code, trade_date) 聚合去重（即便数据源仍返回多档/日）：取当日最后一档
+            .group_by(["ts_code", "trade_date"], maintain_order=True)
+            .agg(pl.col("open_interest").last())
             .sort(["ts_code", "trade_date"])
         )
 

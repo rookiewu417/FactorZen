@@ -341,6 +341,11 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         top_k=args.top_k,
         seed=args.seed,
         method=args.method,
+        holdout_ratio=args.holdout_ratio,
+        train_ratio=args.train_ratio,
+        decorr_threshold=args.decorr_threshold,
+        min_n_train=args.min_n_train,
+        dsr_alpha=args.dsr_alpha,
         workers=args.workers,
     )
     sd = res["session_dir"]
@@ -388,11 +393,23 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
 def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
     from pathlib import Path
 
+    import polars as pl
+
     csv = Path(args.session_dir) / "candidates.csv"
     if not csv.exists():
         print(f"[mine] 找不到 {csv}", file=sys.stderr)
         return 2
-    print(csv.read_text(encoding="utf-8"))
+    df = pl.read_csv(csv)
+    # 默认只列通过防过拟合护栏的候选；--all 显示全部（老 session 无 passed 列时显示全部）
+    if not getattr(args, "all", False) and "passed" in df.columns:
+        kept = df.filter(pl.col("passed").cast(pl.Utf8).str.to_lowercase() == "true")
+        if kept.height == 0:
+            print(f"[mine] {csv}: 无候选通过防过拟合护栏；用 --all 查看全部 {df.height} 个候选",
+                  file=sys.stderr)
+            return 0
+        df = kept
+    with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=80, tbl_width_chars=200):
+        print(df)
     return 0
 
 
@@ -405,7 +422,7 @@ def _mine_export_alpha_crypto(args: argparse.Namespace) -> int:
     from factorzen.markets.crypto.mining import export_crypto_alpha
     from factorzen.markets.crypto.profile import build_crypto_profile
 
-    expr = read_candidate_expression(args.session, args.rank)
+    expr = read_candidate_expression(args.session, args.rank, require_passed=not args.all)
     profile = build_crypto_profile(top_n=args.top_n)
     symbols = profile.universe.snapshot(args.date)
     start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime(
@@ -433,7 +450,7 @@ def _cmd_mine_export_alpha(args: argparse.Namespace) -> int:
         read_candidate_expression,
     )
 
-    expr = read_candidate_expression(args.session, args.rank)
+    expr = read_candidate_expression(args.session, args.rank, require_passed=not args.all)
     uni = get_universe(args.date, args.universe)["ts_code"].to_list()
     ctx = FactorDataContext(
         start=args.date,
@@ -1177,11 +1194,23 @@ def build_parser() -> argparse.ArgumentParser:
     m_search.add_argument("--seed", type=int, default=42)
     m_search.add_argument("--workers", type=int, default=1,
                           help="遗传搜索并行评分线程数(默认 1;同 seed 结果与串行等价)")
+    m_search.add_argument("--holdout-ratio", dest="holdout_ratio", type=float, default=0.2,
+                          help="永久隔离的 OOS holdout 占比（默认 0.2）")
+    m_search.add_argument("--train-ratio", dest="train_ratio", type=float, default=0.7,
+                          help="mining 段内 train/valid 切分比例（默认 0.7）")
+    m_search.add_argument("--decorr-threshold", dest="decorr_threshold", type=float, default=0.7,
+                          help="top-K 贪心去相关的 |corr| 门槛，≥该值视为近重复剔除（默认 0.7）")
+    m_search.add_argument("--min-n-train", dest="min_n_train", type=int, default=5,
+                          help="候选 train 段最少有效 IC 天数，不足则丢弃（默认 5）")
+    m_search.add_argument("--dsr-alpha", dest="dsr_alpha", type=float, default=0.05,
+                          help="护栏 passed 标记的 DSR 显著性阈值（默认 0.05）")
     _add_freq_arg(m_search)
     m_search.set_defaults(func=_cmd_mine_search)
 
     m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
     m_lb.add_argument("session_dir", help="Path to a mining session directory")
+    m_lb.add_argument("--all", action="store_true",
+                      help="Show all candidates, including those failing the overfitting guardrails")
     m_lb.set_defaults(func=_cmd_mine_leaderboard)
 
     m_exp = mine_sub.add_parser(
@@ -1202,6 +1231,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Trade-day lookback for time-series operators (default 60)")
     m_exp.add_argument("--out", required=True,
                        help="Output parquet path (columns: ts_code, alpha)")
+    m_exp.add_argument("--all", action="store_true",
+                       help="Allow exporting a candidate that failed the overfitting guardrails "
+                            "(default: only passed candidates)")
     _add_freq_arg(m_exp)
     m_exp.set_defaults(func=_cmd_mine_export_alpha)
 

@@ -28,6 +28,97 @@ def _daily(seed=3, n_stocks=40, n_days=120):
     return pl.DataFrame(rows)
 
 
+def _mk_factor(vals_per_stock, n_days=5):
+    """构造 [trade_date, ts_code, factor_value]：每只股票取 vals_per_stock[i]，每日相同。"""
+    rows = []
+    for d in range(n_days):
+        dt = date(2024, 1, 2) + timedelta(days=d)
+        for i, v in enumerate(vals_per_stock):
+            rows.append({"trade_date": dt, "ts_code": f"{i:06d}.SH", "factor_value": float(v)})
+    return pl.DataFrame(rows)
+
+
+def test_rank_fingerprint_merges_monotone_equivalents():
+    """R5：截面 rank 指纹对单调(同向)变换一致 → 数学等价簇同指纹；反向/不同向不同指纹。"""
+    from factorzen.discovery.mining_session import _rank_fingerprint
+    base = [((i * 37) % 40) + 0.5 for i in range(40)]  # 40 个互异值
+    f_inc = _mk_factor(base)
+    f_inc2 = _mk_factor([x * 3.0 + 7.0 for x in base])   # 单调递增变换 → rank 序不变
+    f_dec = _mk_factor([-x for x in base])               # neg → 递减
+    f_dec2 = _mk_factor([100.0 - x for x in base])       # 2-x 型 → 同样递减，与 f_dec 同序
+    f_other = _mk_factor([((i * 11) % 40) + 0.5 for i in range(40)])  # 不同排序
+    assert _rank_fingerprint(f_inc) == _rank_fingerprint(f_inc2)      # 递增簇合并
+    assert _rank_fingerprint(f_dec) == _rank_fingerprint(f_dec2)      # 递减簇合并
+    assert _rank_fingerprint(f_inc) != _rank_fingerprint(f_dec)       # 方向不同 → 区分
+    assert _rank_fingerprint(f_inc) != _rank_fingerprint(f_other)     # 不同因子 → 区分
+
+
+def test_cross_section_variability_flags_degenerate():
+    """R7：近常数因子截面变异占比≈0（被过滤）；有变异因子≈1（保留）。"""
+    from factorzen.discovery.mining_session import _cross_section_variability
+    const = _mk_factor([1.0] * 40)
+    varying = _mk_factor([((i * 37) % 40) + 0.5 for i in range(40)])
+    assert _cross_section_variability(const) < 0.5
+    assert _cross_section_variability(varying) > 0.5
+
+
+def test_oos_adjusted_fitness_demotes_valid_reversal():
+    """R6：valid t-stat 与 train 反号时按 |valid_tstat| 扣分（同尺度），把 train 高/valid 反号降权。"""
+    from factorzen.discovery.mining_session import _oos_adjusted_fitness
+    assert _oos_adjusted_fitness(3.0, 3.0, 1.5) == 3.0     # 同号一致 → 不调整
+    assert _oos_adjusted_fitness(3.0, 3.0, -2.0) == 1.0    # 反号 → 扣 |valid_tstat|
+    assert _oos_adjusted_fitness(3.0, 3.0, 0.0) == 3.0     # valid 样本不足(tstat=0) → 不调整
+    # 反号候选(train fitness 3.0→1.0) 应排到一致候选(2.0)之后
+    assert _oos_adjusted_fitness(3.0, 3.0, -2.0) < _oos_adjusted_fitness(2.0, 2.0, 1.0)
+
+
+def test_run_session_respects_config_knobs(tmp_path):
+    """cfg：去相关阈值不再写死——decorr_threshold=0.0 时 mc<0.0 恒 False → top-K 一个都选不进。"""
+    from factorzen.discovery.mining_session import run_session
+    daily = _daily(n_stocks=40, n_days=150)
+    base = dict(n_trials=30, top_k=5, seed=42, method="random", holdout_ratio=0.2)
+    r_default = run_session(daily, out_dir=str(tmp_path / "d"), **base)
+    r_strict = run_session(daily, decorr_threshold=0.0, out_dir=str(tmp_path / "s"), **base)
+    assert len(r_default["candidates"]) > 0        # 默认阈值 0.7 → 有候选
+    assert len(r_strict["candidates"]) == 0        # 阈值 0.0 → 全被去相关门槛挡下
+
+
+def test_guard_passed_respects_dsr_alpha():
+    """cfg：护栏 DSR 阈值可配——收紧 dsr_alpha 会让边界候选从 passed 变 not passed。"""
+    from factorzen.discovery.mining_session import _guard_passed
+    c = {"dsr_pvalue": 0.03, "holdout_ic": 0.05, "ic_ci_low": 0.02, "ic_train": 0.06}
+    assert _guard_passed(c, dsr_alpha=0.05) is True     # 0.03 < 0.05 → 过
+    assert _guard_passed(c, dsr_alpha=0.01) is False    # 0.03 ≥ 0.01 → 收紧后不过
+
+
+def test_guard_passed_criteria():
+    """R1：护栏软标记 = DSR<0.05 & holdout 与 train 同号 & holdout CI 下界>0；任一 NaN→不过。"""
+    from factorzen.discovery.mining_session import _guard_passed
+    ok = {"dsr_pvalue": 0.01, "holdout_ic": 0.05, "ic_ci_low": 0.02, "ic_train": 0.06}
+    assert _guard_passed(ok) is True
+    assert _guard_passed({**ok, "dsr_pvalue": 0.2}) is False          # DSR 不显著
+    assert _guard_passed({**ok, "ic_ci_low": -0.01}) is False         # holdout CI 下界≤0
+    assert _guard_passed({**ok, "holdout_ic": -0.05}) is False        # 与 train 反号
+    assert _guard_passed({**ok, "holdout_ic": float("nan")}) is False  # NaN 保守判否
+    assert _guard_passed({"dsr_pvalue": 0.01}) is False               # 缺字段保守判否
+
+
+def test_session_writes_passed_flag(tmp_path: Path):
+    """R1 集成：每个候选带 bool passed，candidates.csv 有 passed 列；passed=True 者确满足护栏。"""
+    import polars as pl
+
+    from factorzen.discovery.mining_session import run_session
+    res = run_session(_daily(n_stocks=40, n_days=150), n_trials=30, top_k=5, seed=42,
+                      method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
+    for c in res["candidates"]:
+        assert isinstance(c["passed"], bool)
+        if c["passed"]:  # 标记为过的候选，独立复核确满足三条件
+            assert c["dsr_pvalue"] < 0.05
+            assert c["ic_ci_low"] > 0
+    df = pl.read_csv(Path(res["session_dir"]) / "candidates.csv")
+    assert "passed" in df.columns
+
+
 def test_factor_values_eval_start_trims():
     from factorzen.discovery.expression import parse_expr
     from factorzen.discovery.mining_session import _factor_values
@@ -76,6 +167,27 @@ def test_session_has_guard_metrics_and_holdout_isolated(tmp_path):
         assert 0.0 <= c["pbo"] <= 1.0 or c["pbo"] != c["pbo"]  # [0,1] 或 nan
     # holdout 永久隔离：挖掘期数据严格早于 holdout（删除 daily=mining_df 会让此断言失败）
     assert res["mining_end"] < res["holdout_start"]
+
+
+def test_dsr_n_trials_same_source_as_sharpe_variance(tmp_path, monkeypatch):
+    """R8：DSR 的 n_trials 必须与 sharpe_variance 同源（都来自存活集 scored），
+    而非取被 height/n_train/退化/去重跳过者膨胀的 seen/eval_cache 计数。"""
+    import factorzen.discovery.mining_session as ms
+    captured: list[int] = []
+    real = ms.deflated_sharpe
+
+    def spy(sharpe, n_trials, n_obs, **kw):
+        captured.append(n_trials)
+        return real(sharpe, n_trials, n_obs, **kw)
+
+    monkeypatch.setattr(ms, "deflated_sharpe", spy)
+    res = ms.run_session(_daily(n_stocks=40, n_days=150), n_trials=40, top_k=5, seed=42,
+                         method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
+    assert captured, "deflated_sharpe 应至少被调用一次"
+    assert len(set(captured)) == 1                      # 所有候选共用同一 N
+    assert captured[0] == res["n_scored"]               # N == 存活集大小（与 sharpe_var 同源）
+    assert res["n_scored"] >= len(res["candidates"])    # 存活集 ⊇ top-K
+    assert res["n_scored"] > 0
 
 
 def test_deflated_sharpe_train_n_vs_mining_window_n_flips_significance():

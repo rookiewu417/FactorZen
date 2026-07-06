@@ -1,6 +1,7 @@
 # src/factorzen/discovery/mining_session.py
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -28,6 +29,73 @@ def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) ->
         from factorzen.discovery.scoring import _cut_literal
         out = out.filter(pl.col("trade_date") >= _cut_literal(out, eval_start))
     return out
+
+
+def _oos_adjusted_fitness(train_fitness: float, train_tstat: float, valid_tstat: float) -> float:
+    """把 valid 段 OOS 一致性折进排序键：valid t-stat 与 train **反号**时按 ``|valid_tstat|`` 扣分。
+
+    train 与 valid 的 t-stat 同尺度，扣 ``|valid_tstat|`` 是无 magic 系数、尺度一致、连续的降权，
+    直接把「train 高但 valid 反号」的过拟合候选压到一致候选之后。valid 样本不足（HAC t-stat=0，
+    n≤4）时不调整（保守，不足以判 OOS 一致性）。历史上 ic_valid/ir_valid 算了只写 CSV、不进选择。
+    """
+    if train_tstat != 0.0 and valid_tstat != 0.0 and (train_tstat > 0) != (valid_tstat > 0):
+        return train_fitness - abs(valid_tstat)
+    return train_fitness
+
+
+def _guard_passed(c: dict, dsr_alpha: float = 0.05) -> bool:
+    """防过拟合护栏软标记：DSR 显著(p<dsr_alpha) & holdout IC 与 train 同号 & holdout IC 95%CI 下界>0。
+
+    任一指标缺失/NaN → 判否(保守)。护栏历史上「只算不判」——四个指标算出来只写进 CSV，
+    候选入选只看 fitness 排序，过拟合垃圾照样导出。这里把它变成可被 leaderboard/export-alpha
+    默认过滤的软标记(留 --all 逃生口)，不删候选、不破坏产物契约。
+    """
+    dsr = c.get("dsr_pvalue")
+    h_ic = c.get("holdout_ic")
+    ci_lo = c.get("ic_ci_low")
+    ic_tr = c.get("ic_train")
+    if dsr is None or h_ic is None or ci_lo is None or ic_tr is None:
+        return False
+    if any(v != v for v in (dsr, h_ic, ci_lo, ic_tr)):  # NaN 保守判否
+        return False
+    same_sign = (h_ic > 0) == (ic_tr > 0)
+    return dsr < dsr_alpha and same_sign and ci_lo > 0
+
+
+def _cross_section_variability(fdf: pl.DataFrame) -> float:
+    """有截面变异的交易日占比 ∈ [0,1]。近常数因子(多数截面 std≈0)→接近 0。
+
+    R7 退化过滤用：随机/遗传会大量产出截面恒定的表达式(常数、amplitude=high-low=0 等),
+    它们无截面信号且会拖累去相关/护栏,应在打分前剔除。
+    """
+    if fdf.is_empty():
+        return 0.0
+    g = fdf.group_by("trade_date").agg(pl.col("factor_value").std().alias("s"))
+    s = g["s"].fill_null(0.0).to_numpy()
+    return float(np.mean(s > 1e-12)) if s.size else 0.0
+
+
+def _rank_fingerprint(fdf: pl.DataFrame, n_dates: int = 4) -> str | None:
+    """截面 rank 签名指纹(sha1)。单调(同向)变换的因子截面 rank 序完全一致 → 同指纹。
+
+    R5 去重用:字符串去重挡不住 neg(amount)/sub(2,amount)/neg(abs(amount)) 这类数学等价簇
+    (表达式串不同、rank IC 逐位相同)。对均匀取样的几个交易日取截面平均 rank(ties 稳健)哈希,
+    同时并入该日的 ts_code 成员集 → 不同 universe 不会误并。**不做符号规范化**:X 与 −X 是
+    相反方向的赌注,预打分阶段合并会有丢掉正确符号因子的风险;反向由 top-K 的 |corr| 门槛收尾。
+    样本日不足(<2)返回 None(不去重)。
+    """
+    dates = fdf.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
+    if len(dates) < 2:
+        return None
+    idx = sorted(set(np.linspace(0, len(dates) - 1, min(n_dates, len(dates))).round().astype(int).tolist()))
+    h = hashlib.sha1()
+    for i in idx:
+        cross = fdf.filter(pl.col("trade_date") == dates[i]).sort("ts_code")
+        h.update("|".join(cross["ts_code"].to_list()).encode())
+        ranks = cross["factor_value"].rank(method="average").to_list()
+        h.update((",".join(f"{float(x):.1f}" for x in ranks)).encode())
+        h.update(b";")
+    return h.hexdigest()
 
 
 def _pool_pbo(scored: list, daily: pl.DataFrame, bundle, eval_start=None, leaf_map=None) -> float:
@@ -58,6 +126,8 @@ def _pool_pbo(scored: list, daily: pl.DataFrame, bundle, eval_start=None, leaf_m
 def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 method: str = "random", train_ratio: float = 0.7,
                 holdout_ratio: float = 0.2,
+                decorr_threshold: float = 0.7, min_n_train: int = 5,
+                dsr_alpha: float = 0.05,
                 eval_start: str | None = None,
                 out_dir: str = "workspace/mining_sessions",
                 profile=None, workers: int = 1) -> dict:
@@ -142,6 +212,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     # ── 统一评分循环（random 与 genetic 共用）────────────────────────────
     scored: list[dict] = []
     seen: set[str] = set()
+    seen_fp: set[str] = set()  # 截面 rank 指纹，合并数学等价/单调簇（R5）
     n_errors = 0
     last_err: Exception | None = None
     for node in candidate_nodes:
@@ -153,14 +224,25 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             fdf = _factor_values(node, daily, eval_start, leaf_map)
             if fdf.height < 50:
                 continue
+            # R7 退化过滤：多数截面近常数的因子无信号，打分前剔除
+            if _cross_section_variability(fdf) < 0.5:
+                continue
+            # R5 指纹去重：单调/符号等价簇（neg(amount)/2-amount/…）rank 序相同 → 只留首个
+            fp = _rank_fingerprint(fdf)
+            if fp is not None:
+                if fp in seen_fp:
+                    continue
+                seen_fp.add(fp)
             sc = score_candidate(fdf, node, bundle, pool={})
-            if sc["n_train"] < 5:
+            if sc["n_train"] < min_n_train:
                 continue
             valid = quick_fitness(fdf, bundle, "valid")
+            # R6：把 valid OOS 一致性折进排序键——valid 反号候选被降权（历史上算了不用）
+            fitness = _oos_adjusted_fitness(sc["fitness"], sc["tstat_train"], valid["tstat"])
             scored.append({"expression": expr, "ic_train": sc["ic_train"],
                            "ir_train": sc["ir_train"], "ic_valid": valid["ic_mean"],
                            "ir_valid": valid["ir"], "max_corr": sc["max_corr"],
-                           "complexity": sc["complexity"], "fitness": sc["fitness"],
+                           "complexity": sc["complexity"], "fitness": fitness,
                            "n_train": sc["n_train"]})
         except Exception as e:
             n_errors += 1
@@ -183,7 +265,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         except Exception:
             continue
         mc = max_correlation(fdf, selected_pool)
-        if mc < 0.7:
+        if mc < decorr_threshold:
             cand = {**cand, "max_corr": round(float(mc), 4)}
             selected.append(cand)
             selected_pool[cand["expression"]] = fdf
@@ -191,10 +273,12 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
 
     # ── 护栏验收（holdout 只用一次）──
     from factorzen.validation.multiple_testing import TrialLedger
-    # random=去重评估数；genetic=evolve 内评估的不同表达式数（eval_cache）
-    eval_n = len(eval_cache) if method == "genetic" else len(seen)
+    # R8: DSR 的 N 与 sharpe_variance 必须同源（同一批 trial），否则 expected_max_sharpe
+    # 的 deflation 基准不自洽。历史 bug：N 取 seen/eval_cache（含被 height<50 / n_train<5 /
+    # 退化 / 去重跳过者），sharpe_var 取存活集 scored —— 不同源。统一到存活集 scored：它是唯一
+    # 有真实 Sharpe(IR) 的 population，也是 top-K argmax 实际选择的范围。
     ledger = TrialLedger()
-    ledger.record(eval_n)
+    ledger.record(len(scored))
     n_evaluated = ledger.n_trials
 
     ir_pool = np.array([c["ir_train"] for c in scored]) if scored else np.array([0.0])
@@ -216,11 +300,13 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         c["holdout_ic"] = round(float(h_ic), 4) if h_ic == h_ic else float("nan")
         c["dsr_pvalue"] = round(float(p), 4)
         c["ic_ci_low"] = round(float(ci_lo), 4) if ci_lo == ci_lo else float("nan")
+        # 护栏软标记：算完立刻判，供 leaderboard/export-alpha 默认过滤（--all 逃生口）
+        c["passed"] = _guard_passed(c, dsr_alpha)
 
     session_dir = Path(out_dir) / f"session_{seed}_{method}"
     session_dir.mkdir(parents=True, exist_ok=True)
     _cols = ["expression", "ic_train", "ir_train", "ic_valid", "ir_valid", "max_corr",
-             "complexity", "holdout_ic", "dsr_pvalue", "pbo", "ic_ci_low"]
+             "complexity", "holdout_ic", "dsr_pvalue", "pbo", "ic_ci_low", "passed"]
     rows = [{"rank": i + 1, "n_trials": n_evaluated, **{k: c.get(k) for k in _cols}} for i, c in enumerate(top)]
     pl.DataFrame(rows).write_csv(session_dir / "candidates.csv") if rows else \
         (session_dir / "candidates.csv").write_text("rank,n_trials," + ",".join(_cols) + "\n")
@@ -234,5 +320,6 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     exported_dir = session_dir / "exported"
     for i, c in enumerate(top):
         export_candidate(c["expression"], f"mined_{seed}_{i+1}", str(exported_dir))
-    return {"candidates": top, "n_trials": n_evaluated, "session_dir": str(session_dir),
+    return {"candidates": top, "n_trials": n_evaluated, "n_scored": len(scored),
+            "session_dir": str(session_dir),
             "holdout_start": str(holdout_start), "mining_end": str(daily["trade_date"].max())}

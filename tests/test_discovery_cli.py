@@ -35,7 +35,9 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
 
     captured: dict[str, object] = {}
 
-    def fake_run_mine(*, start, end, universe, n_trials, top_k, seed, method, workers=1):
+    def fake_run_mine(*, start, end, universe, n_trials, top_k, seed, method, workers=1,
+                      holdout_ratio=0.2, train_ratio=0.7, decorr_threshold=0.7,
+                      min_n_train=5, dsr_alpha=0.05):
         captured.update(
             start=start,
             end=end,
@@ -45,6 +47,11 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
             seed=seed,
             method=method,
             workers=workers,
+            holdout_ratio=holdout_ratio,
+            train_ratio=train_ratio,
+            decorr_threshold=decorr_threshold,
+            min_n_train=min_n_train,
+            dsr_alpha=dsr_alpha,
         )
         return {"session_dir": str(tmp_path / "session-1"), "candidates": [1, 2, 3]}
 
@@ -68,6 +75,16 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
             "5",
             "--seed",
             "7",
+            "--holdout-ratio",
+            "0.25",
+            "--train-ratio",
+            "0.6",
+            "--decorr-threshold",
+            "0.8",
+            "--min-n-train",
+            "8",
+            "--dsr-alpha",
+            "0.1",
         ]
     )
 
@@ -81,6 +98,11 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
         "seed": 7,
         "method": "genetic",
         "workers": 1,
+        "holdout_ratio": 0.25,
+        "train_ratio": 0.6,
+        "decorr_threshold": 0.8,
+        "min_n_train": 8,
+        "dsr_alpha": 0.1,
     }
 
     sd = str(tmp_path / "session-1")
@@ -102,7 +124,7 @@ def test_cmd_mine_export_alpha_forwards_args_and_prints_summary(monkeypatch, tmp
 
     read_calls: list[tuple[str, int]] = []
 
-    def fake_read_candidate_expression(session, rank):
+    def fake_read_candidate_expression(session, rank, require_passed=False):
         read_calls.append((session, rank))
         return "rank(close_adj)"
 

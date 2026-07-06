@@ -5,6 +5,7 @@ from datetime import date, timedelta
 
 import numpy as np
 import polars as pl
+import pytest
 
 
 def _daily(seed=1, n_stocks=40, n_days=120):
@@ -30,6 +31,16 @@ def _signal_factor_df(daily: pl.DataFrame) -> pl.DataFrame:
     df = daily.sort(["ts_code", "trade_date"]).with_columns(
         (pl.col("close_adj").shift(-1).over("ts_code") / pl.col("close_adj") - 1.0).alias("fwd"))
     return df.select(["trade_date", "ts_code", pl.col("fwd").alias("factor_value")]).drop_nulls()
+
+
+def _noisy_signal_factor_df(daily: pl.DataFrame, noise: float = 0.6, seed: int = 3) -> pl.DataFrame:
+    """与次日收益正相关但含噪的因子：日频 IC 为正但 <1、逐日波动（IR/t-stat 有限且不相等）。"""
+    rng = np.random.default_rng(seed)
+    df = (daily.sort(["ts_code", "trade_date"])
+          .with_columns((pl.col("close_adj").shift(-1).over("ts_code") / pl.col("close_adj") - 1.0).alias("fwd"))
+          .drop_nulls())
+    vals = df["fwd"].to_numpy() + rng.standard_normal(df.height) * noise
+    return df.select(["trade_date", "ts_code"]).with_columns(pl.Series("factor_value", vals))
 
 
 def test_databundle_split():
@@ -58,10 +69,55 @@ def test_max_correlation_self_is_one():
     assert corr > 0.99
 
 
+def test_max_correlation_pairwise_ignores_degenerate_pool_factor():
+    """R3 复现：池里混入一个退化(截面常数)因子，不应把候选与真实高相关因子的相关性抹成 0。
+
+    历史 bug：max_correlation 把候选 + 全池一次性 inner-join 交给 compute_factor_correlation，
+    任一池因子截面 std==0 就丢掉整条截面 → count=0 → 所有真实相关一起被抹成 0.0。
+    pairwise 修法：候选对池中每个因子单独算，退化因子只影响它自己那一对。
+    """
+    from factorzen.discovery.scoring import max_correlation
+    daily = _daily()
+    good = _signal_factor_df(daily).rename({"factor_value": "factor_clean"})  # 好池因子
+    # 退化：同一 (trade_date, ts_code) 键上的常数因子，截面 std==0
+    degenerate = good.with_columns(pl.lit(1.0).alias("factor_clean"))
+    cand = _signal_factor_df(daily)  # 候选 == good（完全相关）
+    corr = max_correlation(cand, {"good": good, "degenerate": degenerate})
+    assert corr > 0.99  # 修前因退化因子污染整表返回 0.0
+
+
 def test_databundle_train_ratio_one_no_crash():
     from factorzen.discovery.scoring import DataBundle
     b = DataBundle.build(_daily(), train_ratio=1.0)
     assert b.train_end is not None  # 不崩溃
+
+
+def test_fitness_sort_key_is_tstat_not_raw_ir():
+    """R2：排序键由裸 IR 换成 t-stat。fitness 现在跟 t-stat 走，且 t-stat≠IR（换的是键而非恒等）。"""
+    from factorzen.discovery.expression import parse_expr
+    from factorzen.discovery.scoring import DataBundle, score_candidate
+    daily = _daily(n_stocks=40, n_days=120)
+    b = DataBundle.build(daily, train_ratio=0.7)
+    fac = _noisy_signal_factor_df(daily)
+    sc = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.002)
+    assert sc["tstat_train"] != 0.0
+    # fitness == t-stat − 复杂度惩罚（pool 空 → mc=0）；若仍用 ir 则会与此不符（因 t-stat≠ir）
+    assert sc["fitness"] == pytest.approx(sc["tstat_train"] - 0.002 * sc["complexity"], abs=1e-9)
+    assert abs(sc["tstat_train"] - sc["ir_train"]) > 1e-6
+
+
+def test_fitness_low_sample_tstat_gate_kills_ir_illusion():
+    """R2 核心：n<=4 时 HAC t-stat=0 → 低样本候选 fitness 不再吃 raw IR 的虚高。"""
+    from factorzen.discovery.expression import parse_expr
+    from factorzen.discovery.scoring import DataBundle, quick_fitness, score_candidate
+    daily = _daily(n_stocks=40, n_days=6)          # train 段仅 4 个有效 IC 日
+    b = DataBundle.build(daily, train_ratio=0.5)
+    fac = _noisy_signal_factor_df(daily)
+    train = quick_fitness(fac, b, segment="train")
+    sc = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.002)
+    assert train["n"] <= 4                          # 低样本
+    assert sc["tstat_train"] == 0.0                 # t-stat 的 n>4 门槛未过
+    assert sc["fitness"] <= 1e-9                    # 只剩复杂度惩罚，raw IR 被无视
 
 
 def test_score_penalizes_complexity():

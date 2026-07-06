@@ -163,21 +163,37 @@ def backfill(lake: CryptoLake, symbols: list[str], start: str, end: str, *,
     last_full = _prev_month(months[-1])  # 末月可能未出月包
     for sym in symbols:
         for month in months:
-            # klines:先月包,404 再逐日日包
-            if not lake.kline_path(sym, month).exists():
-                csv = fetch_zip_csv(kline_month_url(sym, month), fetch=fetch)
-                if csv is not None:
-                    lake.write_klines(sym, month, parse_kline_csv(csv))
-                else:
-                    frames = []
+            kpath = lake.kline_path(sym, month)
+            # 当月(未出月包)分区由日包拼成、可能不完整：不能因文件已存在就整月跳过，
+            # 否则后续扩日期回填时新增天永久缺失。仅「非当月且分区已存在」才跳过。
+            is_current = month > last_full
+            if kpath.exists() and not is_current:
+                pass  # 完整月包已在
+            else:
+                wrote_month_pack = False
+                if not kpath.exists():
+                    csv = fetch_zip_csv(kline_month_url(sym, month), fetch=fetch)
+                    if csv is not None:
+                        lake.write_klines(sym, month, parse_kline_csv(csv))
+                        wrote_month_pack = True
+                if not wrote_month_pack:
+                    # 日包(增量)：读已有分区，只补该月尚缺的日，合并去重后重写
+                    present, frames = _existing_month_days(kpath)
                     for day in day_range(month, start, end):
+                        if day in present:
+                            continue
                         dcsv = fetch_zip_csv(kline_day_url(sym, day), fetch=fetch)
                         if dcsv is None:
                             gaps.append(f"klines/{sym}/{day}")
                         else:
                             frames.append(parse_kline_csv(dcsv))
                     if frames:
-                        lake.write_klines(sym, month, pl.concat(frames))
+                        merged = (
+                            pl.concat(frames, how="vertical_relaxed")
+                            .unique(subset=["trade_date"], keep="last")
+                            .sort("trade_date")
+                        )
+                        lake.write_klines(sym, month, merged)
                     elif month <= last_full:
                         gaps.append(f"klines/{sym}/{month}")
             # funding:仅月包
@@ -197,11 +213,58 @@ def backfill(lake: CryptoLake, symbols: list[str], start: str, end: str, *,
                 else:
                     lake.write_metrics(sym, day, parse_metrics_csv(mcsv))
         log(f"[backfill] {sym} 完成")
-    manifest: dict[str, object] = {"start": start, "end": end, "symbols": symbols, "gaps": gaps}
+
+    # M4：写 meta，否则 lake universe.snapshot 恒空 → backfill→mine 官方链路断。
+    # list_date 用该 symbol 湖内最早 kline 日作上市日代理（snapshot 要求 list_date 非空）。
+    _write_lake_meta(lake, symbols, start, end)
+
+    # gaps 与已有 manifest 合并，避免增量重跑覆写掉历史缺口记录
+    prev_gaps = []
+    try:
+        prev_gaps = list(lake.read_manifest().get("gaps", []))
+    except Exception:
+        prev_gaps = []
+    all_gaps = sorted(set(prev_gaps) | set(gaps))
+    manifest: dict[str, object] = {"start": start, "end": end, "symbols": symbols, "gaps": all_gaps}
     lake.write_manifest(manifest)
     if gaps:
         log(f"[backfill] ⚠ {len(gaps)} 个缺口(详见 manifest.json gaps)")
     return manifest
+
+
+def _existing_month_days(kpath) -> tuple[set[str], list[pl.DataFrame]]:
+    """读已有当月分区，返回(已覆盖日集合 YYYYMMDD, [去掉 ts_code 列的既有帧])。"""
+    if not kpath.exists():
+        return set(), []
+    df = pl.read_parquet(kpath)
+    if df.is_empty() or "trade_date" not in df.columns:
+        return set(), []
+    present = set(df.select(pl.col("trade_date").dt.strftime("%Y%m%d")).to_series().to_list())
+    base = df.drop("ts_code") if "ts_code" in df.columns else df
+    return present, [base]
+
+
+def _write_lake_meta(lake: CryptoLake, symbols: list[str], start: str, end: str) -> None:
+    rows: list[dict[str, object]] = []
+    for sym in symbols:
+        kdf = lake.read_klines([sym], start, end)
+        if kdf.is_empty() or "trade_date" not in kdf.columns:
+            continue
+        first = kdf.select(pl.col("trade_date").min()).item()
+        list_date = first.date() if hasattr(first, "date") else first
+        rows.append({"ts_code": sym, "name": sym, "list_date": list_date})
+    if not rows:
+        return
+    new_meta = pl.DataFrame(
+        rows, schema={"ts_code": pl.String, "name": pl.String, "list_date": pl.Date}
+    )
+    existing = lake.read_meta()
+    if not existing.is_empty():
+        # 合并已有 meta（增量新增 symbol），同 ts_code 以新值为准
+        new_meta = pl.concat([existing, new_meta], how="vertical_relaxed").unique(
+            subset=["ts_code"], keep="last"
+        )
+    lake.write_meta(new_meta.sort("ts_code"))
 
 
 def _prev_month(month: str) -> str:

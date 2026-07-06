@@ -37,6 +37,9 @@ class RiskModelResult:
     factor_returns: pl.DataFrame = field(default_factory=pl.DataFrame)
     r_squared: float = 0.0
     factor_names: list[str] = field(default_factory=list)
+    # 因因子集与首个有效截面不一致而被跳过的交易日数（>0 通常表示窗口早期滚动风格
+    # 因子数据不足、模型退化；见 build 内告警与 pipelines.risk_build.load_risk_inputs）。
+    n_dropped_dates: int = 0
 
 
 class RiskModel:
@@ -150,6 +153,7 @@ class RiskModel:
         r_squared_list: list[float] = []
         last_exposure: ExposureMatrix | None = None
         factor_names: list[str] | None = None
+        n_factor_mismatch = 0  # 因子集与首个有效截面不一致被跳过的交易日数（退化可见性）
 
         for trade_date_val in trade_dates:
             # 计算暴露
@@ -194,9 +198,11 @@ class RiskModel:
             y = np.array(matched_rets)
             X = exposure.matrix[matched_rows, :]
 
-            # 确保 factor_names 与当前暴露一致
-            # 如果因子数不同，跳过（通常不会发生）
+            # 确保 factor_names 与当前暴露一致。因子数不同通常源于窗口早期滚动风格
+            # 因子数据不足，使当日因子集与首个有效截面不一致——跳过，但计数以便可见，
+            # 不再静默吞掉（历史上这会让 8 因子模型悄悄退化成 4 因子而无任何提示）。
             if X.shape[1] != len(factor_names):
+                n_factor_mismatch += 1
                 continue
 
             # ── 截面 OLS 回归（不加截距，行业哑变量已包含）──────────────────
@@ -263,6 +269,14 @@ class RiskModel:
         # ── 8. 汇总 ─────────────────────────────────────────────────────────
         avg_r2 = float(np.mean(r_squared_list)) if r_squared_list else 0.0
 
+        if n_factor_mismatch > 0:
+            logger.warning(
+                f"风险模型：{n_factor_mismatch}/{len(trade_dates)} 个交易日因因子集与首个"
+                "有效截面不一致被跳过——通常是窗口早期滚动风格因子（momentum/volatility/"
+                "growth 等 252/60 日窗）数据不足所致；请确保输入 daily/daily_basic 含足够"
+                " lookback 历史，否则因子协方差仅由少数退化截面估计。"
+            )
+
         return RiskModelResult(
             factor_exposures=last_exposure,
             factor_covariance=factor_cov,
@@ -270,6 +284,7 @@ class RiskModel:
             factor_returns=factor_returns_df,
             r_squared=avg_r2,
             factor_names=factor_names,
+            n_dropped_dates=n_factor_mismatch,
         )
 
     def predict_risk(

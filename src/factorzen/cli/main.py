@@ -540,14 +540,13 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
     from factorzen.core import loader
     from factorzen.core.universe import get_universe
     from factorzen.pipelines.portfolio_build import run_portfolio
+    from factorzen.pipelines.risk_build import load_risk_inputs
     from factorzen.risk.model import RiskModel
 
     stocks = get_universe(args.end, args.universe)
     uni = stocks["ts_code"].to_list()
-    daily = loader.fetch_daily(args.start, args.end).filter(pl.col("ts_code").is_in(uni))
-    daily_basic = loader.fetch_daily_basic(args.start, args.end).filter(
-        pl.col("ts_code").is_in(uni)
-    )
+    # 补 lookback 历史预热滚动风格因子（否则 build 静默退化为少数因子，见 load_risk_inputs）
+    daily, daily_basic = load_risk_inputs(loader, args.start, args.end, uni)
     risk_result = RiskModel().build(daily, daily_basic, stocks, args.start, args.end)
     codes = risk_result.factor_exposures.codes
     # α：从 --alpha-file 读取截面信号(ts_code + alpha)，对齐 codes 顺序(缺失填 0)
@@ -596,18 +595,14 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
 
 
 def _cmd_risk_build(args: argparse.Namespace) -> int:
-    import polars as pl  # 局部 import，仿其它 _cmd 的延迟 import 惯例
-
     from factorzen.core import loader
     from factorzen.core.universe import get_universe
-    from factorzen.pipelines.risk_build import run_risk_build
+    from factorzen.pipelines.risk_build import load_risk_inputs, run_risk_build
 
     stocks = get_universe(args.end, args.universe)  # 含 industry 列
     uni = stocks["ts_code"].to_list()
-    daily = loader.fetch_daily(args.start, args.end).filter(pl.col("ts_code").is_in(uni))
-    daily_basic = loader.fetch_daily_basic(args.start, args.end).filter(
-        pl.col("ts_code").is_in(uni)
-    )
+    # 补 lookback 历史预热滚动风格因子（否则 build 静默退化为少数因子，见 load_risk_inputs）
+    daily, daily_basic = load_risk_inputs(loader, args.start, args.end, uni)
     res = run_risk_build(
         daily,
         daily_basic,

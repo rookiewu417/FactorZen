@@ -20,6 +20,12 @@ def run_mine(*, start: str, end: str, universe: str | None = None,
     ctx = FactorDataContext(start=start, end=end, required_data=["daily", "daily_basic"],
                             lookback_days=60, universe=uni)
     daily = ctx.daily.collect()
+    # 把 daily_basic join 进来（与 ExpressionFactor.compute 一致），否则搜索空间里
+    # total_mv/pb/pe_ttm 等 BASIC_FEATURES 叶子在缓存帧里不存在→候选 compile
+    # ColumnNotFound 被静默跳过，估值/换手类因子永远挖不出。
+    basic = ctx.daily_basic.collect()
+    if not basic.is_empty():
+        daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
     return run_session(daily, n_trials=n_trials, top_k=top_k, seed=seed, method=method,
                        holdout_ratio=holdout_ratio, train_ratio=train_ratio,
                        decorr_threshold=decorr_threshold, min_n_train=min_n_train,

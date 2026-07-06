@@ -57,7 +57,7 @@ def test_suspended_scenario_missed_notional_and_positive_residual(tmp_path: Path
         {"trade_date": dates[1], "ts_code": "A.SZ", "open": 10.5, "pre_close": 10.0,
          "close": 10.5, "vol": 1e8, "amount": 1e9},  # 复牌，缺口 +5%
     ])
-    rd = _pf(tmp_path/"pf", dates[0], "A.SZ", 0.5)
+    rd = _pf(tmp_path/"pf", date(2026, 1, 2), "A.SZ", 0.5)  # 信号早于 d1，次日(d1)执行
     run_replay(session_dir=tmp_path/"sess", portfolio_run_dirs=[rd], daily=daily,
                initial_cash=1_000_000.0, from_date=dates[0], to_date=dates[-1], seed=0)
     rep = build_attribution_report(tmp_path/"sess", [rd], daily, initial_cash=1_000_000.0)
@@ -95,7 +95,7 @@ def test_ideal_nav_aligned_to_exec_window_ignores_warmup_rows(tmp_path: Path):
 
     def _run(with_warmup: bool, sess_name: str) -> dict:
         daily = _daily(_rows(with_warmup))
-        rd = _pf(tmp_path / f"pf_{sess_name}", e1, "A.SZ", 0.5)
+        rd = _pf(tmp_path / f"pf_{sess_name}", date(2026, 1, 2), "A.SZ", 0.5)  # 早于 e1，e1 起执行
         run_replay(session_dir=tmp_path / sess_name, portfolio_run_dirs=[rd], daily=daily,
                    initial_cash=1_000_000.0, from_date=e1, to_date=e3, seed=0)
         return build_attribution_report(tmp_path / sess_name, [rd], daily, initial_cash=1_000_000.0)
@@ -132,7 +132,7 @@ def test_partial_fill_shortfall_attributed_by_reason(tmp_path: Path):
     d0 = date(2026, 1, 5)
     daily = _daily([{"trade_date": d0, "ts_code": "A.SZ", "open": 100.0, "pre_close": 100.0,
                      "close": 100.0, "vol": 1e8, "amount": 1e9}])
-    rd = _pf(tmp_path / "pf", d0, "A.SZ", 1.0)
+    rd = _pf(tmp_path / "pf", date(2026, 1, 2), "A.SZ", 1.0)  # 早于 d0，d0 执行
     run_replay(session_dir=tmp_path / "sess", portfolio_run_dirs=[rd], daily=daily,
                initial_cash=1_000_000.0, from_date=d0, to_date=d0, seed=0)
     rep = build_attribution_report(tmp_path / "sess", [rd], daily, initial_cash=1_000_000.0)

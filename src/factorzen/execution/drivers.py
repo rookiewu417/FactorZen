@@ -63,10 +63,12 @@ def run_replay(
             # 幂等哨兵：重跑同一 session_dir 时跳过已落盘的交易日，避免
             # ledger/nav 追加重复行。
             continue
-        # 采用「≤ 当日的最新一次信号」的目标权重（PIT）。真·无适用信号才跳过；
-        # 有适用信号但目标为空（risk-off 全现金）仍需正常 step 以清仓——不能
-        # 把「空目标」误判为「无信号」而静默不动仓（见 task-1-brief）。
-        applicable = [s for s in weights_by_date if s <= d]
+        # 采用「严格早于当日的最新一次信号」的目标权重：signal_date=组合建仓的数据
+        # 截止日(用了当日收盘)，须在**次一交易日**才执行（`s < d`），与 sim 快/慢路径
+        # `signal_date = trade_dates[i-1]` 对齐；用 `s <= d` 会在信号当日开盘就按当日
+        # 收盘算出的权重成交=未来函数。真·无适用信号才跳过；有适用信号但目标为空
+        # （risk-off 全现金）仍需正常 step 以清仓（见 task-1-brief）。
+        applicable = [s for s in weights_by_date if s < d]
         if not applicable:
             continue
         market = _market_of_day(daily, d, adv_by_date)
@@ -120,7 +122,8 @@ def run_daily_step(
     market = _market_of_day(daily, as_of, adv_by_date)
     broker.advance_to(as_of, market)
     weights_by_date = _load_weights_by_date(portfolio_run_dirs)
-    applicable = [s for s in weights_by_date if s <= as_of]
+    # `s < as_of`：信号次一交易日才执行，与 sim 对齐、避免未来函数（见 run_replay 注释）
+    applicable = [s for s in weights_by_date if s < as_of]
     if not applicable:
         return {
             "as_of": as_of.isoformat(),

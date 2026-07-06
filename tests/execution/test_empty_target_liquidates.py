@@ -31,10 +31,10 @@ def test_empty_applicable_signal_liquidates(tmp_path: Path):
                initial_cash=1_000_000.0, from_date=d1, to_date=d3, seed=0)
     store = SessionStore(tmp_path/"s")
     ledger = store.ledger_records()
-    # d2 应有卖单把 A.SZ 清掉
-    d2rec = next(r for r in ledger if r["as_of_date"] == d2.isoformat())
-    sells = [o for o in d2rec["orders"] if o.get("side") == "sell" and o.get("ts_code") == "A.SZ"]
-    assert sells, f"d2 空目标应有清仓卖单, 实际 orders={d2rec['orders']}"
+    # 次日执行(s<d)：d1 建仓信号于 d2 生效建仓，d2 空目标信号于 d3 生效清仓。
+    d3rec = next(r for r in ledger if r["as_of_date"] == d3.isoformat())
+    sells = [o for o in d3rec["orders"] if o.get("side") == "sell" and o.get("ts_code") == "A.SZ"]
+    assert sells, f"d3 空目标应有清仓卖单, 实际 orders={d3rec['orders']}"
     # d3 起（持久化的 broker 续跑态）持仓为空
     bs = store.load_state()
     held = {c: p for c, p in bs.get("pos", bs.get("positions", {})).items()

@@ -39,8 +39,9 @@ def test_init_step_report_pipeline(tmp_path: Path) -> None:
     pl.DataFrame({"ts_code": ["A.SZ"], "target_weight": [0.5]}).write_parquet(
         pf / "weights.parquet"
     )
+    # 信号早于首个执行日 → dates 三天都执行(s<d，次日执行)
     (pf / "manifest.json").write_text(
-        json.dumps({"signal_date": dates[0].isoformat(), "status": "optimal"})
+        json.dumps({"signal_date": date(2026, 1, 2).isoformat(), "status": "optimal"})
     )
     cfg = {"initial_cash": 1_000_000.0, "slippage_bps": 0.0}
     sess = tmp_path / "sess"
@@ -159,8 +160,9 @@ def test_live_status_handles_resumable_state_shape(tmp_path: Path, capsys) -> No
     pl.DataFrame({"ts_code": ["A.SZ"], "target_weight": [0.5]}).write_parquet(
         pf / "weights.parquet"
     )
+    # 信号早于 d0 → 次日 d0 执行(s<d)，产生持仓
     (pf / "manifest.json").write_text(
-        json.dumps({"signal_date": d0.isoformat(), "status": "optimal"})
+        json.dumps({"signal_date": date(2026, 1, 2).isoformat(), "status": "optimal"})
     )
     run_daily_step(sess, d0, [str(pf)], daily, config=cfg)
 

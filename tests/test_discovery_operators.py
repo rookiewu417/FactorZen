@@ -34,6 +34,26 @@ def test_cs_rank_is_within_unit_interval():
     assert all(0.0 < v < 1.0 for v in got)
 
 
+def test_cs_rank_normalization_scale_invariant_to_null_ratio():
+    """截面 rank 归一化尺度不应随当日 null 比例漂移：相同非空值、不同 null 数的两日，
+    归一化排名应一致。此前分母用 pl.len()（含 null 行）→ 含 null 日尺度被压小。
+    """
+    from factorzen.discovery.operators import OPERATORS
+
+    df = pl.DataFrame({
+        "trade_date": [1, 1, 1, 2, 2, 2, 2, 2],
+        "ts_code": [f"c{i}" for i in range(8)],
+        "close_adj": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0, None, None],
+    })
+    expr = OPERATORS["rank"].build([pl.col("close_adj")], None)
+    out = df.with_columns(expr.alias("r"))
+    d1_max = out.filter(pl.col("trade_date") == 1)["r"].max()
+    d2_max = out.filter(pl.col("trade_date") == 2)["r"].max()
+    assert abs(d1_max - d2_max) < 1e-12, (
+        f"归一化排名尺度随 null 比例漂移：无 null 日 max={d1_max}，含 2 null 日 max={d2_max}"
+    )
+
+
 def test_arith_add():
     from factorzen.discovery.operators import OPERATORS
     df = _toy_df()

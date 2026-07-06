@@ -49,7 +49,6 @@ from factorzen.daily.evaluation.backtest import (
 from factorzen.daily.evaluation.ic_analysis import (
     BothIcResult,
     IcStats,
-    compute_fwd_returns,
     compute_rank_ic,
 )
 from factorzen.daily.evaluation.turnover import compute_turnover
@@ -75,10 +74,45 @@ from factorzen.pipelines._report_persistence import (
     _save_quality_report,
     _save_results,
 )
+from factorzen.pipelines.daily_single import _build_forward_return_frame
 from factorzen.reports.tear_sheet import generate_tear_sheet
 
 setup_logging()
 logger = get_logger(__name__)
+
+
+def _attach_close_adj(daily: pl.DataFrame, adj: pl.DataFrame) -> pl.DataFrame:
+    """join 复权因子派生 close_adj = close * adj_factor（与 DailyContext.daily 同口径）。
+    adj 为空/缺 adj_factor 时原样返回，下游 _build_forward_return_frame 会回退未复权 close。"""
+    if adj.is_empty() or "adj_factor" not in adj.columns:
+        return daily
+    return (
+        daily.join(
+            adj.select(["ts_code", "trade_date", "adj_factor"]),
+            on=["ts_code", "trade_date"],
+            how="left",
+        )
+        .with_columns((pl.col("close") * pl.col("adj_factor")).alias("close_adj"))
+        .drop("adj_factor")
+    )
+
+
+def _load_daily_with_close_adj(start: str, end: str) -> pl.DataFrame:
+    """load 日线并 join 复权因子派生 close_adj，供前向收益/IC 标签使用。
+
+    fz report build 历史上用未复权 close 构造前向收益，与 fz factor test（走
+    DailyContext.daily，优先 close_adj）口径分叉，且 A 股除权除息日 close 跳空
+    会污染 IC/单调性/分层 IC。这里补上 close_adj；adj_factor 缺失时优雅回退。
+    """
+    daily = load_parquet("daily", start=start, end=end).collect()
+    if daily.is_empty():
+        return daily
+    try:
+        adj = load_parquet("adj_factor", start=start, end=end).collect()
+    except Exception as e:  # adj_factor 分区不存在等 → 回退未复权 close
+        logger.warning("adj_factor 加载失败，前向收益回退未复权 close：%s", e)
+        return daily
+    return _attach_close_adj(daily, adj)
 
 
 def _run_backtest_strategies(
@@ -404,15 +438,9 @@ def _run(
             fetch_daily(args.start, args.end)
         except Exception as e:
             logger.warning(f"数据拉取失败（高级评价可能跳过）: {e}")
-        daily = load_parquet("daily", start=args.start, end=args.end).collect()
+        daily = _load_daily_with_close_adj(args.start, args.end)
         if not daily.is_empty():
-            ret_df = daily.select(["trade_date", "ts_code", "close"]).sort(
-                ["ts_code", "trade_date"]
-            )
-            ret_df = ret_df.with_columns(
-                (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1).alias("ret")
-            )
-            ret_df = compute_fwd_returns(ret_df, ret_col="ret")
+            ret_df = _build_forward_return_frame(daily)
             if len(effective_config.backtest.strategy_specs) > 1:
                 backtest_df = _apply_backtest_direction(clean_df, backtest_direction)
                 bt_result, strategy_results = _run_backtest_strategies(
@@ -486,17 +514,13 @@ def _run(
         clean_df = build_preprocessing_pipeline(effective_config).run(factor_df, col="factor_value")
         logger.info("预处理完成 (去极值 → 填充 → 标准化)")
 
-        # ── 6. 前向收益 ──
-        daily = load_parquet("daily", start=args.start, end=args.end).collect()
+        # ── 6. 前向收益（用复权价，与 fz factor test 口径一致，避免除权跳空污染 IC）──
+        daily = _load_daily_with_close_adj(args.start, args.end)
         if daily.is_empty():
             logger.error("日线数据为空，无法计算收益")
             raise RuntimeError("empty daily data")
-        ret_df = daily.select(["trade_date", "ts_code", "close"]).sort(["ts_code", "trade_date"])
-        ret_df = ret_df.with_columns(
-            (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1).alias("ret")
-        )
-        ret_df = compute_fwd_returns(ret_df, ret_col="ret")
-        logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
+        ret_df = _build_forward_return_frame(daily)
+        logger.info("前向收益计算完成 (horizons: 1/5/10/20d，复权价)")
 
         try:
             quality_report = build_daily_quality_report(

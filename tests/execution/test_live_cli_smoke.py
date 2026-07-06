@@ -14,7 +14,7 @@ from pathlib import Path
 import polars as pl
 
 from factorzen.execution.attribution import build_attribution_report
-from factorzen.execution.drivers import run_daily_step, run_replay
+from factorzen.execution.drivers import run_daily_step
 from factorzen.execution.store import SessionStore
 
 
@@ -175,53 +175,37 @@ def test_live_status_handles_resumable_state_shape(tmp_path: Path, capsys) -> No
     float(cash_field)  # 不抛异常即说明是个可解析的数字
 
 
-def test_live_status_handles_display_view_state_shape_from_replay(
-    tmp_path: Path, capsys
-) -> None:
-    # 回归 Fix4：run_replay 落的是"显示视图" step() 的 broker_state =
-    # {positions: {...}, cash: {available,total_asset,market_value}}。
-    # 旧 _cmd_live_status 用 st.get("cash")（对显示视图取到整个 dict）、
-    # st.get("pos")（显示视图无此键，恒为空 -> 持仓数恒 0）会误报。
-    d0 = date(2026, 1, 5)
-    daily = pl.DataFrame(
-        [
-            {
-                "trade_date": d0,
-                "ts_code": "A.SZ",
-                "open": 10.0,
-                "pre_close": 10.0,
-                "close": 10.0,
-                "vol": 1e8,
-                "amount": 1e9,
-            }
-        ]
-    )
-    pf = tmp_path / "pf"
-    pf.mkdir()
-    pl.DataFrame({"ts_code": ["A.SZ"], "target_weight": [0.5]}).write_parquet(
-        pf / "weights.parquet"
-    )
-    (pf / "manifest.json").write_text(
-        json.dumps({"signal_date": d0.isoformat(), "status": "optimal"})
-    )
-    sess = tmp_path / "sess"
-    run_replay(
-        session_dir=sess,
-        portfolio_run_dirs=[str(pf)],
-        daily=daily,
-        initial_cash=1_000_000.0,
-        from_date=d0,
-        to_date=d0,
-        seed=0,
-    )
-
+def test_live_status_handles_legacy_display_view_state(tmp_path: Path, capsys) -> None:
+    # legacy 兼容：旧 session 的 state.json 可能是 step() 的"显示视图"
+    # {positions: {...}, cash: {available,total_asset,market_value}}——旧版 run_replay
+    # 曾落这种格式（现已改落可续跑态，见 test_replay_state_resumable_by_daily_step），
+    # 但历史 session 仍需能读。_cmd_live_status 须解析它、不误报：cash 从 dict 取数值、
+    # 持仓从 "positions" 键取（而非可续跑态的 "pos"）。直接构造显示视图以锁死该兼容分支。
     from factorzen.cli.main import _cmd_live_status, build_parser
+
+    sess = tmp_path / "sess"
+    SessionStore(sess).init({"broker": "paper", "initial_cash": 1_000_000.0})
+    (sess / "state.json").write_text(
+        json.dumps(
+            {
+                "positions": {
+                    "A.SZ": {"ts_code": "A.SZ", "volume": 50000,
+                             "can_use_volume": 50000, "avg_cost": 10.0}
+                },
+                "cash": {"available": 500000.0, "total_asset": 1000000.0,
+                         "market_value": 500000.0},
+            }
+        )
+    )
+    pl.DataFrame(
+        {"as_of_date": [date(2026, 1, 5).isoformat()], "nav_after": [1_000_000.0]}
+    ).write_parquet(sess / "nav.parquet")
 
     args = build_parser().parse_args(["live", "status", "--session-dir", str(sess)])
     rc = _cmd_live_status(args)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "持仓数=1" in out  # 而非误报 0
+    assert "持仓数=1" in out  # 从 "positions" 键取，而非误报 0
     cash_field = out.split("现金=")[1].split(" ")[0]
-    assert "{" not in cash_field
-    float(cash_field)  # 显示视图 cash 是 dict，应被解出 available/total_asset 数值
+    assert "{" not in cash_field  # 显示视图 cash 是 dict，应被解成数值而非原样打印
+    float(cash_field)

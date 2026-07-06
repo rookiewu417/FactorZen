@@ -332,6 +332,9 @@ def fetch_minute(
     pro = init_tushare()
     start_dt = datetime.strptime(start, "%Y%m%d")
     end_dt = datetime.strptime(end, "%Y%m%d")
+    # freq 纳入分区命名空间：不同频率(1min/5min/…)分开缓存，否则缓存键只有
+    # (year, month, ts_code)，先拉 5min 再请求 1min 会命中同分区被跳过、返回错频率数据。
+    data_type = f"minute_{freq}"
 
     # 按月迭代
     current = start_dt.replace(day=1)
@@ -350,9 +353,9 @@ def fetch_minute(
         seg_end = min(month_end, end_dt).strftime("%Y%m%d")
 
         # 缓存检查（按 ts_code 粒度，支持多只股票追加写入同一分区）
-        if partition_exists("minute", year, month):
+        if partition_exists(data_type, year, month):
             try:
-                _fp = DATA_RAW / "minute" / f"year={year}" / f"month={month:02d}" / "data.parquet"
+                _fp = DATA_RAW / data_type / f"year={year}" / f"month={month:02d}" / "data.parquet"
                 _existing_codes = (
                     pl.read_parquet(str(_fp), columns=["ts_code"])["ts_code"].unique().to_list()
                 )
@@ -403,8 +406,8 @@ def fetch_minute(
         std_cols = ["ts_code", "trade_time", "open", "high", "low", "close", "vol", "amount"]
         df = df.select([c for c in std_cols if c in df.columns])
 
-        save_parquet(df, data_type="minute", date_col="trade_time")
-        logger.info(f"[minute] {ts_code} {year}-{month:02d} 已保存 ({len(df)} 行)")
+        save_parquet(df, data_type=data_type, date_col="trade_time")
+        logger.info(f"[minute/{freq}] {ts_code} {year}-{month:02d} 已保存 ({len(df)} 行)")
 
         # stk_mins 有严格限速（如 2000积分：2次/分钟），确保间隔 >= call_delay
         if call_delay > 0:
@@ -415,7 +418,7 @@ def fetch_minute(
 
         current = next_month
 
-    return load_parquet("minute", start=start, end=end, date_col="trade_time").collect()
+    return load_parquet(data_type, start=start, end=end, date_col="trade_time").collect()
 
 
 _FINANCE_BATCH_SIZE = 50  # 每批股票数（Tushare fina_indicator 需要 ts_code，不支持全市场无参拉取）

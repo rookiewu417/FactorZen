@@ -69,6 +69,40 @@ def _pd_adj(trade_date: str = "20220103", code: str = "000001.SZ") -> pd.DataFra
     )
 
 
+def _pd_minute(code: str = "000001.SZ") -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "ts_code": [code],
+            "trade_time": ["2022-01-03 09:31:00"],
+            "open": [10.0], "high": [11.0], "low": [9.0], "close": [10.5],
+            "vol": [1000.0], "amount": [10000.0],
+        }
+    )
+
+
+def test_fetch_minute_namespaces_partition_by_freq():
+    """不同 freq 写入不同分区命名空间 minute_{freq}，避免跨频率脏缓存。"""
+    from factorzen.core.loader import fetch_minute
+
+    mock_pro = MagicMock()
+    mock_pro.stk_mins.return_value = _pd_minute()
+    saved_types: list[str] = []
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "partition_exists", return_value=False),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "save_parquet",
+                     side_effect=lambda df, data_type, **k: saved_types.append(data_type)),
+        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+    ):
+        fetch_minute("000001.SZ", "1min", "20220101", "20220131")
+        fetch_minute("000001.SZ", "5min", "20220101", "20220131")
+
+    assert "minute_1min" in saved_types
+    assert "minute_5min" in saved_types
+    assert "minute" not in saved_types, "不应再写入无 freq 的共享 minute 分区"
+
+
 def _cal(dates: list[str]) -> pl.DataFrame:
     """构造交易日历 DataFrame（cal_date 为 Date，is_open=1）。"""
     return pl.DataFrame(

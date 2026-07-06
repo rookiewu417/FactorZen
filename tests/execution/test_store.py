@@ -39,3 +39,17 @@ def test_resume_reads_latest_state(tmp_path: Path):
     s2 = SessionStore(tmp_path / "sess1")  # 新实例重载
     assert s2.load_state()["cash"] == 9e5
     assert s2.has_date(date(2026, 1, 5))
+
+
+def test_init_preserves_existing_manifest_config(tmp_path: Path):
+    """已有会话再 init（如 fz live replay 复用 session）不应覆盖原 config——
+    否则 fz live init 设的 slippage_bps/initial_cash 被 replay 的默认值清掉。"""
+    import json
+
+    s = SessionStore(tmp_path / "sess")
+    s.init({"broker": "paper", "initial_cash": 2_000_000.0, "slippage_bps": 5.0})
+    # 模拟 replay 用默认 config 再 init 同一 session
+    s.init({"broker": "paper", "initial_cash": 1_000_000.0})
+    cfg = json.loads((tmp_path / "sess" / "manifest.json").read_text())["config"]
+    assert cfg["slippage_bps"] == 5.0, "已有会话的 slippage_bps 不应被覆盖"
+    assert cfg["initial_cash"] == 2_000_000.0

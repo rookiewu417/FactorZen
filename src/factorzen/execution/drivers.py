@@ -63,10 +63,12 @@ def run_replay(
             # 幂等哨兵：重跑同一 session_dir 时跳过已落盘的交易日，避免
             # ledger/nav 追加重复行。
             continue
-        # 采用「≤ 当日的最新一次信号」的目标权重（PIT）。真·无适用信号才跳过；
-        # 有适用信号但目标为空（risk-off 全现金）仍需正常 step 以清仓——不能
-        # 把「空目标」误判为「无信号」而静默不动仓（见 task-1-brief）。
-        applicable = [s for s in weights_by_date if s <= d]
+        # 采用「严格早于当日的最新一次信号」的目标权重：signal_date=组合建仓的数据
+        # 截止日(用了当日收盘)，须在**次一交易日**才执行（`s < d`），与 sim 快/慢路径
+        # `signal_date = trade_dates[i-1]` 对齐；用 `s <= d` 会在信号当日开盘就按当日
+        # 收盘算出的权重成交=未来函数。真·无适用信号才跳过；有适用信号但目标为空
+        # （risk-off 全现金）仍需正常 step 以清仓（见 task-1-brief）。
+        applicable = [s for s in weights_by_date if s < d]
         if not applicable:
             continue
         market = _market_of_day(daily, d, adv_by_date)
@@ -106,6 +108,12 @@ def run_daily_step(
     store = SessionStore(session_dir)
     if store.has_date(as_of):
         return {"as_of": as_of.isoformat(), "nav_after": None, "n_fills": 0, "skipped": True}
+    # E3 交易日历守卫：as_of 非交易日（daily 无该日行）时 market 为空，若照常 step 会落
+    # 一条纯现金塌陷 nav 行且被 has_date 永久锁死、无法修复。直接跳过、不落盘。
+    all_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
+    if as_of not in all_dates:
+        return {"as_of": as_of.isoformat(), "nav_after": None, "n_fills": 0,
+                "skipped": True, "reason": "not_trading_day"}
     broker = PaperBroker(
         initial_cash=float(config["initial_cash"]),
         slippage_bps=float(config.get("slippage_bps", 0.0)),
@@ -113,14 +121,28 @@ def run_daily_step(
     st = store.load_state()
     if st is not None:
         broker.load_state(st)
+        last_as_of = st.get("_last_as_of")
+        # 崩溃恢复一致性：state._last_as_of 须与 ledger 末行日期一致；不一致=上次写完
+        # ledger、未写完 state 就崩溃，续跑会用错状态。报错要求重建，而非静默账实分叉。
+        ledger_last = store.last_ledger_date()
+        if last_as_of is not None and ledger_last is not None and last_as_of != ledger_last:
+            raise RuntimeError(
+                f"execution 会话状态不一致: state._last_as_of={last_as_of} 与 ledger 末行"
+                f"={ledger_last} 不符（疑似崩溃于 ledger 写入后、state 写入前），请重建会话。"
+            )
+        # E2 日期单调性守卫：拒绝乱序补跑——否则用「未来的」broker 状态步进过去的日期，
+        # ledger 乱序、state 被污染。相等由上面 has_date 幂等处理。
+        if last_as_of is not None and as_of.isoformat() <= last_as_of:
+            return {"as_of": as_of.isoformat(), "nav_after": None, "n_fills": 0,
+                    "skipped": True, "reason": "stale_as_of"}
     # 当日 market（daily 已含所需窗口；调用方保证 daily 覆盖 as_of 及其前
     # ~20 交易日以算 ADV）
-    all_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
     adv_by_date = _precompute_adv_20d_by_date(daily, all_dates)
     market = _market_of_day(daily, as_of, adv_by_date)
     broker.advance_to(as_of, market)
     weights_by_date = _load_weights_by_date(portfolio_run_dirs)
-    applicable = [s for s in weights_by_date if s <= as_of]
+    # `s < as_of`：信号次一交易日才执行，与 sim 对齐、避免未来函数（见 run_replay 注释）
+    applicable = [s for s in weights_by_date if s < as_of]
     if not applicable:
         return {
             "as_of": as_of.isoformat(),

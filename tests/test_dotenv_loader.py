@@ -73,3 +73,13 @@ def test_load_value_with_equals_sign(tmp_path):
     env: dict[str, str] = {}
     _load_dotenv(f, env)
     assert env["URL"] == "https://x/y?a=1&b=2"
+
+
+def test_load_strips_inline_comment(tmp_path):
+    """`KEY=val # 说明` 的行内注释应被剥离（dotenv 常见写法）。"""
+    f = tmp_path / ".env"
+    f.write_text("TUSHARE_MAX_RPS=5 # 限流说明\nKEY=val#nospace\n", encoding="utf-8")
+    env: dict[str, str] = {}
+    _load_dotenv(f, env)
+    assert env["TUSHARE_MAX_RPS"] == "5"
+    assert env["KEY"] == "val#nospace"  # 无空格的 # 不当注释（如 URL fragment）

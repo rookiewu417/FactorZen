@@ -57,9 +57,9 @@ def test_replay_binds_adv_capacity_constraint(tmp_path: Path):
         for d in dates
     ]
     daily = pl.DataFrame(rows)
-    # 只在 day2 发一次满仓信号；day1 无信号（current_weights 为空,不下单），
-    # 但仍参与行情驱动,为 day2 的 ADV 提供历史 amount。
-    rd = _write_portfolio_run(tmp_path / "pf", dates[1], code, 1.0)
+    # day1 发满仓信号，次日 day2 执行(s<d)；day1 参与行情驱动为 day2 的 ADV 提供
+    # 历史 amount。day1 自身无更早信号→不下单。
+    rd = _write_portfolio_run(tmp_path / "pf", dates[0], code, 1.0)
     run_replay(
         session_dir=tmp_path / "sess", portfolio_run_dirs=[rd],
         daily=daily, initial_cash=1_000_000.0,

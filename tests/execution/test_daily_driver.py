@@ -37,7 +37,7 @@ def _daily(dates, code):
 def test_daily_step_idempotent_and_resumes(tmp_path: Path):
     d1, d2 = date(2026, 1, 5), date(2026, 1, 6)
     daily = _daily([d1, d2], "A.SZ")
-    rd = _pf(tmp_path / "pf", d1, "A.SZ", 0.5)
+    rd = _pf(tmp_path / "pf", date(2026, 1, 2), "A.SZ", 0.5)
     cfg = {"initial_cash": 1_000_000.0, "slippage_bps": 0.0}
     s = SessionStore(tmp_path / "sess")
     s.init({"broker": "paper", **cfg})
@@ -55,13 +55,13 @@ def test_daily_step_idempotent_and_resumes(tmp_path: Path):
 def test_state_json_is_resumable_shape(tmp_path: Path):
     d1 = date(2026, 1, 5)
     daily = _daily([d1], "A.SZ")
-    rd = _pf(tmp_path / "pf", d1, "A.SZ", 0.5)
+    rd = _pf(tmp_path / "pf", date(2026, 1, 2), "A.SZ", 0.5)
     cfg = {"initial_cash": 1_000_000.0, "slippage_bps": 0.0}
     s = SessionStore(tmp_path / "sess")
     s.init({"broker": "paper", **cfg})
     run_daily_step(tmp_path / "sess", d1, [rd], daily, config=cfg)
     st = SessionStore(tmp_path / "sess").load_state()
-    assert set(st) == {"cash", "pos", "order_seq"}  # 可续跑态(非显示视图)
+    assert {"cash", "pos", "order_seq"}.issubset(st)  # 可续跑核心态(非显示视图)
 
 
 def test_daily_step_resume_nav_matches_single_shot_replay(tmp_path: Path) -> None:
@@ -71,7 +71,7 @@ def test_daily_step_resume_nav_matches_single_shot_replay(tmp_path: Path) -> Non
     # broker 逻辑，只是驱动方式不同：分次落盘续跑 vs 单进程内存循环）。
     d1, d2, d3 = date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)
     daily = _daily([d1, d2, d3], "A.SZ")
-    rd = _pf(tmp_path / "pf", d1, "A.SZ", 0.5)
+    rd = _pf(tmp_path / "pf", date(2026, 1, 2), "A.SZ", 0.5)
     cfg = {"initial_cash": 1_000_000.0, "slippage_bps": 0.0}
 
     sess_replay = tmp_path / "sess_replay"
@@ -119,7 +119,7 @@ def test_replay_resume_extends_window_matches_single_shot(tmp_path: Path) -> Non
     扩窗 replay 的 nav 序列须与一次性 replay 相同。"""
     d1, d2, d3 = date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)
     daily = _daily_var([(d1, 10.0), (d2, 11.0), (d3, 12.0)], "A.SZ")  # 价格逐日上涨
-    rd = _pf(tmp_path / "pf", d1, "A.SZ", 0.5)
+    rd = _pf(tmp_path / "pf", date(2026, 1, 2), "A.SZ", 0.5)
 
     full = tmp_path / "full"
     run_replay(session_dir=full, portfolio_run_dirs=[rd], daily=daily,
@@ -143,14 +143,33 @@ def test_replay_state_resumable_by_daily_step(tmp_path: Path) -> None:
     run_daily_step 能 load_state 续跑，而非因显示视图 float(dict) 抛 TypeError。"""
     d1, d2 = date(2026, 1, 5), date(2026, 1, 6)
     daily = _daily_var([(d1, 10.0), (d2, 11.0)], "A.SZ")
-    rd = _pf(tmp_path / "pf", d1, "A.SZ", 0.5)
+    rd = _pf(tmp_path / "pf", date(2026, 1, 2), "A.SZ", 0.5)
     sess = tmp_path / "sess"
     run_replay(session_dir=sess, portfolio_run_dirs=[rd], daily=daily,
                initial_cash=1_000_000.0, from_date=d1, to_date=d1, seed=0)
 
     st = SessionStore(sess).load_state()
-    assert set(st) == {"cash", "pos", "order_seq"}, f"replay 应落可续跑态，实际 {set(st)}"
+    assert {"cash", "pos", "order_seq"}.issubset(st), f"replay 应落可续跑态，实际 {set(st)}"
 
     # 后续 fz live step 续跑不应因显示视图 float(dict) 崩溃
     r = run_daily_step(sess, d2, [rd], daily, config={"initial_cash": 1_000_000.0})
     assert not r["skipped"] and r["nav_after"] is not None
+
+
+def test_signal_executes_next_trading_day_not_same_day(tmp_path: Path) -> None:
+    """E1：signal_date=组合数据截止日(用当日收盘算权重)，须在**次一交易日**执行，
+    与 sim(trade_dates[i-1])对齐；同日执行=用当日收盘在当日开盘成交的未来函数。"""
+    sig, d_next = date(2026, 1, 5), date(2026, 1, 6)
+    daily = _daily([sig, d_next], "A.SZ")
+    rd = _pf(tmp_path / "pf", sig, "A.SZ", 0.5)  # 信号日 = sig
+    cfg = {"initial_cash": 1_000_000.0, "slippage_bps": 0.0}
+    sess = tmp_path / "sess"
+    SessionStore(sess).init({"broker": "paper", **cfg})
+
+    # 信号日当天 step：不应成交（信号次日才生效）
+    r_sig = run_daily_step(sess, sig, [rd], daily, config=cfg)
+    assert r_sig["n_fills"] == 0, "信号当日不应成交（未来函数）"
+
+    # 次一交易日 step：应成交
+    r_next = run_daily_step(sess, d_next, [rd], daily, config=cfg)
+    assert r_next["n_fills"] >= 1, "信号应于次一交易日执行"

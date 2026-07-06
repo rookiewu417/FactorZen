@@ -63,7 +63,9 @@ def test_strategy_vs_baseline_experiment(tmp_path: Path):
     idx = _idx(dates, closes)
 
     t_on = dates[4]  # close=18, MA(tail3<=t_on)=mean(14,16,18)=16 → 18>16 risk-on
-    t_off = dates[9]  # close=5, MA(tail3<=t_off)=mean(5,5,5)=5 → 5>5 False risk-off
+    # t_off 放在 dates[8]（而非最后一天 dates[9]）：signal 次一交易日才执行（s<d，与 sim
+    # 对齐），放最后一天则其清仓信号无执行日、永不生效。dates[8] 的清仓于 dates[9] 执行。
+    t_off = dates[8]  # close=5, MA(tail3<=t_off)=mean(22,5,5)=10.67 → 5<10.67 risk-off
     rebalance_dates = [t_on, t_off]
 
     out = run_trend_timing_experiment(

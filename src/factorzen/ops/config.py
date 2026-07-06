@@ -26,7 +26,7 @@ class OpsConfig(BaseModel):
     signal_command: list[str] | None = None
 
     # ── 数据窗口与基准 ──
-    lookback_days: int = 90
+    lookback_days: int = Field(90, gt=0)  # 零/负窗口无法取数,配置层直接拒绝
     benchmark: str = "000300.SH"
     universe: str | None = None
 
@@ -35,8 +35,8 @@ class OpsConfig(BaseModel):
     audit_fail_on: Literal["error", "warning"] = "error"
 
     # ── 纸面执行参数 ──
-    initial_cash: float = 1_000_000.0
-    slippage_bps: float = 0.0
+    initial_cash: float = Field(1_000_000.0, gt=0)  # 零/负本金无法纸面执行
+    slippage_bps: float = Field(0.0, ge=0)  # 负滑点无经济意义(0 允许=零滑点对照)
 
     # ── 通知 ──
     notify_kind: Literal["webhook", "stdout"] = "stdout"

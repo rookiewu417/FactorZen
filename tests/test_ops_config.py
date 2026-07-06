@@ -73,6 +73,32 @@ def test_load_ops_config_missing_file_raises(tmp_path):
         load_ops_config(missing)
 
 
+@pytest.mark.parametrize("bad", [0, -1, -90])
+def test_ops_config_rejects_nonpositive_lookback_days(bad):
+    """lookback_days 必须 > 0：零/负窗口无法取数，须在配置层拒绝而非跑到中途才崩。"""
+    with pytest.raises(ValueError):
+        OpsConfig(session_dir="s", portfolio_run_dirs_glob="g", lookback_days=bad)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0])
+def test_ops_config_rejects_nonpositive_initial_cash(bad):
+    """initial_cash 必须 > 0：零/负本金无法纸面执行。"""
+    with pytest.raises(ValueError):
+        OpsConfig(session_dir="s", portfolio_run_dirs_glob="g", initial_cash=bad)
+
+
+def test_ops_config_rejects_negative_slippage():
+    """slippage_bps 必须 >= 0：负滑点无经济意义（0 允许，表示零滑点对照）。"""
+    with pytest.raises(ValueError):
+        OpsConfig(session_dir="s", portfolio_run_dirs_glob="g", slippage_bps=-1.0)
+
+
+def test_ops_config_accepts_zero_slippage():
+    """slippage_bps=0.0 合法（零滑点对照），不应被 >=0 约束误伤。"""
+    cfg = OpsConfig(session_dir="s", portfolio_run_dirs_glob="g", slippage_bps=0.0)
+    assert cfg.slippage_bps == 0.0
+
+
 def test_ops_config_defaults_directly():
     """直接构造(仅两个必填)时全部默认值就位。"""
     cfg = OpsConfig(session_dir="s", portfolio_run_dirs_glob="g")

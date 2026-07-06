@@ -14,9 +14,16 @@ def cross_sectional_zscore(
     col: str = "factor_value_clip_fill",
 ) -> pl.DataFrame:
     out_col = f"{col}_z"
-    mean = pl.col(col).mean().over("trade_date")
-    std = pl.col(col).std().over("trade_date")
-    safe_z = pl.when(std > 0).then((pl.col(col) - mean) / std).otherwise(0.0)
+    # NaN → null，使 mean/std 聚合跳过它而非被传染成 NaN（否则截面内任一 NaN 会让
+    # 整个交易日 z 值全变 NaN、整日被静默丢弃）。
+    clean = pl.col(col).fill_nan(None)
+    mean = clean.mean().over("trade_date")
+    std = clean.std().over("trade_date")
+    safe_z = (
+        pl.when(clean.is_null()).then(pl.col(col))   # 本行是 NaN/缺失 → 保留原值，不置 0
+        .when(std > 0).then((clean - mean) / std)
+        .otherwise(0.0)                              # 有效行但截面无离散度(n=1 或常数) → 0
+    )
     return df.with_columns(safe_z.alias(out_col))
 
 
@@ -48,10 +55,13 @@ def cross_sectional_rank(
         原地替换 factor_col 列的 rank 标准化结果。
     """
     # rank / (n + 1): average ties, per trade_date cross-section
+    # NaN → null，否则 polars rank 把 NaN 排为最大 → NaN 股票获最高分位，且 count 把
+    # NaN 计入分母。fill_nan(None) 后 NaN 得 null 秩、被 count 排除。
+    clean = pl.col(factor_col).fill_nan(None)
     result = df.with_columns(
         (
-            pl.col(factor_col).rank("average").over("trade_date")
-            / (pl.col(factor_col).count().over("trade_date") + 1)
+            clean.rank("average").over("trade_date")
+            / (clean.count().over("trade_date") + 1)
         ).alias(factor_col)
     )
     if method == "normal":

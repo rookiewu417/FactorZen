@@ -45,6 +45,29 @@ def test_infeasible_returns_none_not_garbage():
     assert res.status != "optimal"          # infeasible/unbounded 等
 
 
+def test_optimize_accepts_optimal_inaccurate(monkeypatch):
+    """CLARABEL 因数值精度返回 'optimal_inaccurate'（AlmostSolved）时 w.value 非 None，
+    必须当可用解返回、而非丢弃成全零兜底——否则下游 sim(_SUCCESS_OPT_STATUSES 含
+    optimal_inaccurate)会把'全零仓位'当真实清仓信号执行。与 daily/optimization 及集成
+    测试(test_integration_mine_export_validate 断言 Σw≈1)口径对齐。"""
+    orig_solve = cp.Problem.solve
+
+    def fake_solve(self, *args, **kwargs):
+        orig_solve(self, *args, **kwargs)  # 真实求解 → w.value 是可行解，status='optimal'
+        self._status = "optimal_inaccurate"  # 降级模拟 AlmostSolved
+        return self.value
+
+    monkeypatch.setattr(cp.Problem, "solve", fake_solve)
+
+    r = _RiskResult()
+    alpha = np.array([0.1, 0.05, 0.02, 0.08, 0.03, 0.01])
+    res = optimize_portfolio(alpha, r, risk_aversion=1.0,
+                             constraint_config=ConstraintConfig(w_max=0.3))
+    assert res.status == "optimal_inaccurate"
+    assert res.weights is not None, "optimal_inaccurate 的可用解不应被丢弃"
+    assert abs(res.weights.sum() - 1.0) < 1e-2, "应返回真实权重(Σw≈1)，而非全零兜底"
+
+
 def test_non_psd_covariance_dcp_error_returns_error_status_not_raises(monkeypatch):
     """非PSD协方差矩阵在 prob.solve() 阶段抛 cp.error.DCPError(而非 SolverError)。
 

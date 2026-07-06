@@ -6,8 +6,6 @@ M2：fetch_open_interest 不传 timeframe(真实 ccxt 默认 '1h')且不按日�
 """
 from __future__ import annotations
 
-import polars as pl
-
 from factorzen.markets.crypto.provider import CryptoDataProvider
 
 _DAY_MS = 86_400_000

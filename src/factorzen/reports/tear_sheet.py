@@ -4,6 +4,7 @@
 稳健性验证、风险归因和附录的 HTML 因子研究报告。
 """
 
+import html
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -364,10 +365,12 @@ def _generate_summary_text(
             )
 
     if llm_explanation is not None:
-        evidence = str(llm_explanation.get("evidence_assessment", "")).strip()
-        usage = str(llm_explanation.get("usage_suggestion", "")).strip()
-        rating_label = str(llm_explanation.get("rating", "")).strip()
-        confidence = str(llm_explanation.get("confidence", "")).strip()
+        # LLM 输出是外部不可信文本，summary_html 经 `{{ ... | safe }}` 渲染（绕过
+        # autoescape），必须 html.escape 防止注入 <script>/<img onerror> 等。
+        evidence = html.escape(str(llm_explanation.get("evidence_assessment", "")).strip())
+        usage = html.escape(str(llm_explanation.get("usage_suggestion", "")).strip())
+        rating_label = html.escape(str(llm_explanation.get("rating", "")).strip())
+        confidence = html.escape(str(llm_explanation.get("confidence", "")).strip())
         if evidence or usage:
             label = f"{rating_label}/{confidence}".strip("/")
             label_html = f"（{label}）" if label else ""

@@ -108,7 +108,10 @@ OPERATORS: dict[str, OperatorSpec] = {
     "ts_skew": _ts("ts_skew", lambda x, w:
         x.rolling_skew(w, bias=True, min_samples=_MIN).over("ts_code").fill_nan(None)),
     # ── 截面（.over("trade_date")）──
-    "rank":  _cs("rank",  lambda x: (x.rank().over("trade_date") / (pl.len().over("trade_date") + 1))),
+    # 分母用 x.count()（非空计数）而非 pl.len()（含 null 行）：x.rank() 只给非空值
+    # 1..k 排名，若除以含 null 的总行数，归一化尺度会随当日 null 比例漂移（同样的
+    # 非空排名，null 多的日被系统性压小），破坏截面可比性。
+    "rank":  _cs("rank",  lambda x: (x.rank().over("trade_date") / (x.count().over("trade_date") + 1))),
     "zscore": _cs("zscore", lambda x:
         _safe_div(x - x.mean().over("trade_date"), x.std().over("trade_date"))),
     "scale": _cs("scale", lambda x: _safe_div(x, x.abs().sum().over("trade_date"))),

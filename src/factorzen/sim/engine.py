@@ -36,6 +36,7 @@ import polars as pl
 from factorzen.core.experiment import get_git_sha
 from factorzen.core.universe import build_is_st_by_date
 from factorzen.daily.evaluation.backtest import (
+    BacktestConfig,
     CostModel,
     PrecomputedWeightsStrategy,
     run_strategy_backtest,
@@ -181,10 +182,22 @@ def run_portfolio_simulation(
     trade_dates_list = daily.select("trade_date").unique()["trade_date"].to_list()
     is_st_by_date = build_is_st_by_date(codes, trade_dates_list)
 
+    # 组合流权重来自 portfolio/ 优化器，已受其自身 OptimizerConstraints（gross /
+    # 单票上限）约束——sim 不应再拿 daily-research 的默认 BacktestConfig 上限
+    # （max_gross_exposure=2.0 / max_abs_weight=1.0）二次校验，否则杠杆/多空/集中
+    # 组合（gross>2.0 或单票>1.0）会触发 ValueError 崩掉整批模拟（portfolio/ 与
+    # daily/optimization/ 命名空间的约束语义本就不同，不可互相套用）。这里把两个
+    # exposure 上限放到 inf（信任优化器的暴露决策），但 _validate_target_weights
+    # 仍保留 NaN/inf/重复 ts_code 的数据损坏防线。
+    sim_config = BacktestConfig(
+        max_gross_exposure=float("inf"),
+        max_abs_weight=float("inf"),
+    )
     bt = run_strategy_backtest(
         strategy,
         factor_df,
         daily,
+        config=sim_config,
         cost_model=effective_cost_model,
         collect_positions=False,
         collect_trades=False,

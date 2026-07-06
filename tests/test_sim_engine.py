@@ -122,6 +122,47 @@ def test_run_portfolio_simulation_warns_when_signal_date_after_trade_dates(
     ), f"未找到预期 warning，记录到的 warning: {warning_messages}"
 
 
+def test_run_portfolio_simulation_accepts_leveraged_portfolio_weights(tmp_path: Path):
+    """组合流权重可能 gross>2.0（杠杆/多空），sim 不应用 daily-research 默认
+    BacktestConfig(max_gross_exposure=2.0) 去校验已优化的组合权重而崩溃整批模拟。
+
+    修复前：run_strategy_backtest 未传 config → 默认 gross 上限 2.0 → gross=2.4
+    的杠杆组合触发 ValueError("gross exposure exceeds max_gross_exposure")，整批崩。
+    """
+    codes = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    # gross=2.4（>2.0 默认上限），单票 0.8（<1.0）：杠杆多头组合
+    p1 = _write_portfolio_dir(tmp_path, "lev", codes, [0.8, 0.8, 0.8], "2023-01-10")
+    daily = _fake_daily(codes)
+    res = run_portfolio_simulation(
+        [p1], daily, out_dir=str(tmp_path / "sim_lev"), run_id="lev1"
+    )
+    nav_df = pl.read_parquet(Path(res["run_dir"]) / "nav.parquet")
+    assert "nav" in nav_df.columns, "杠杆组合应正常产出 nav，而非被默认 gross 上限崩掉"
+
+
+def test_run_portfolio_simulation_accepts_concentrated_weight_over_one(tmp_path: Path):
+    """单票权重 > 1.0（杠杆集中/多空腿）也不应触发默认 max_abs_weight=1.0 校验崩溃。"""
+    codes = ["000001.SZ", "000002.SZ"]
+    # 单票 1.5（>1.0 默认上限）
+    p1 = _write_portfolio_dir(tmp_path, "conc", codes, [1.5, -0.5], "2023-01-10")
+    daily = _fake_daily(codes)
+    res = run_portfolio_simulation(
+        [p1], daily, out_dir=str(tmp_path / "sim_conc"), run_id="conc1"
+    )
+    assert (Path(res["run_dir"]) / "nav.parquet").exists()
+
+
+def test_run_portfolio_simulation_still_rejects_nonfinite_weights(tmp_path: Path):
+    """放宽 gross/abs 上限后，NaN/inf 权重的数据损坏防线仍须保留（不能一起放掉）。"""
+    codes = ["000001.SZ", "000002.SZ"]
+    p1 = _write_portfolio_dir(tmp_path, "bad", codes, [float("nan"), 0.5], "2023-01-10")
+    daily = _fake_daily(codes)
+    with pytest.raises(ValueError, match="finite"):
+        run_portfolio_simulation(
+            [p1], daily, out_dir=str(tmp_path / "sim_bad"), run_id="bad1"
+        )
+
+
 # ── 代码评审修复回归测试 ───────────────────────────────────────────────────
 
 

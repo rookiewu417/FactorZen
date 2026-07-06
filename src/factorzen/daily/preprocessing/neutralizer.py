@@ -116,8 +116,10 @@ def neutralize_ols(
             model = sm.OLS(y[valid], X[valid]).fit()
             residuals = y - model.predict(X)
         except Exception as e:
-            logger.warning(f"neutralize_ols: {d} 回归失败 ({e})，使用原值")
-            residuals = y
+            # 回归失败必须标 NaN（与 docstring 承诺、<30 样本分支一致）：返回原值 y
+            # 会让该日因子带满行业/市值暴露漏到下游，下游却以为已中性化（研究可信度隐患）。
+            logger.warning(f"neutralize_ols: {d} 回归失败 ({e})，标记为 NaN")
+            return cross.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
 
         return cross.with_columns(pl.Series(out_col, residuals))
 

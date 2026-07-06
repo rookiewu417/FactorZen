@@ -406,6 +406,53 @@ def test_fetch_finance_merges_and_casts():
     assert saved_df["end_date"].dtype == pl.Date
 
 
+def test_fetch_finance_namespaces_by_api_name():
+    """不同接口写入不同命名空间 finance_{api_name}，避免共用 finance 分区 schema 冲突。"""
+    mock_pro = MagicMock()
+    mock_pro.income.return_value = pd.DataFrame(
+        {"ts_code": ["000001.SZ"], "ann_date": ["20220430"], "end_date": ["20220331"]}
+    )
+    mock_pro.cashflow.return_value = pd.DataFrame(
+        {"ts_code": ["000001.SZ"], "ann_date": ["20220430"], "end_date": ["20220331"]}
+    )
+    saved_types: list[str] = []
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "partition_exists", return_value=False),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "save_parquet",
+                     side_effect=lambda df, data_type, **k: saved_types.append(data_type)),
+        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+    ):
+        fetch_finance("income", "20220101", "20220331", ts_codes=["000001.SZ"])
+        fetch_finance("cashflow", "20220101", "20220331", ts_codes=["000001.SZ"])
+    assert "finance_income" in saved_types
+    assert "finance_cashflow" in saved_types
+    assert "finance" not in saved_types
+
+
+def test_fetch_finance_cache_check_uses_quarter_end_month():
+    """完整性检查须用季末月(Q1=3)，数据以 end_date(3/6/9/12) 落盘；用季初月(1)永不命中。"""
+    checked: list[tuple] = []
+
+    def _fake_partition_exists(data_type, year, month, **k):
+        checked.append((data_type, year, month))
+        return month == 3  # 只有季末月 3 有分区
+
+    mock_pro = MagicMock()
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "partition_exists", side_effect=_fake_partition_exists),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "save_parquet") as save,
+        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+    ):
+        fetch_finance("income", "20220101", "20220331", ts_codes=["000001.SZ"])
+    # 检查用了季末月 3（命中 → 跳过拉取），而非季初月 1
+    assert ("finance_income", 2022, 3) in checked
+    save.assert_not_called()  # 已缓存 → 不拉取
+
+
 def test_fetch_finance_market_mode_uses_stock_basic():
     """ts_codes=None 时应调用 fetch_stock_basic 获取全市场代码。"""
     mock_pro = MagicMock()

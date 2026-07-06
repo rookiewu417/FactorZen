@@ -449,6 +449,9 @@ def fetch_finance(
     end_dt = datetime.strptime(end, "%Y%m%d")
 
     fin_api = getattr(pro, api_name)
+    # 每个接口(income/cashflow/fina_indicator/…)列集不同，必须分命名空间缓存：
+    # 否则共用 "finance" 分区，append concat 会 schema 冲突崩溃、或把不同接口数据串在一起。
+    data_type = f"finance_{api_name}"
 
     # 全市场模式：先获取所有股票代码
     if ts_codes is None:
@@ -475,7 +478,9 @@ def fetch_finance(
             q_start_str = max(seg_start, start_dt).strftime("%Y%m%d")
             q_end_str = min(seg_end, end_dt).strftime("%Y%m%d")
 
-            if partition_exists("finance", year, q_start_month):
+            # 完整性检查用季末月(3/6/9/12)：数据以 end_date 落盘，end_date 月份是季末，
+            # 而非季初月(1/4/7/10)——用季初月检查会永不命中、缓存形同虚设、每次全量重拉。
+            if partition_exists(data_type, year, q_end_month):
                 logger.info(f"[finance/{api_name}] {year} Q{q_start_month // 3 + 1} 已缓存，跳过")
                 continue
 
@@ -524,12 +529,12 @@ def fetch_finance(
                 .sort("end_date")
             )
 
-            save_parquet(df, data_type="finance", date_col="end_date")
+            save_parquet(df, data_type=data_type, date_col="end_date")
             logger.info(
                 f"[finance/{api_name}] {year} Q{q_start_month // 3 + 1} 已保存 ({len(df)} 行)"
             )
 
-    return load_parquet("finance", start=start, end=end, date_col="end_date").collect()
+    return load_parquet(data_type, start=start, end=end, date_col="end_date").collect()
 
 
 def fetch_stock_basic(list_status: str = "L,D,P") -> pl.DataFrame:

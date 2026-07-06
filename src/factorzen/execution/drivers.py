@@ -108,6 +108,12 @@ def run_daily_step(
     store = SessionStore(session_dir)
     if store.has_date(as_of):
         return {"as_of": as_of.isoformat(), "nav_after": None, "n_fills": 0, "skipped": True}
+    # E3 交易日历守卫：as_of 非交易日（daily 无该日行）时 market 为空，若照常 step 会落
+    # 一条纯现金塌陷 nav 行且被 has_date 永久锁死、无法修复。直接跳过、不落盘。
+    all_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
+    if as_of not in all_dates:
+        return {"as_of": as_of.isoformat(), "nav_after": None, "n_fills": 0,
+                "skipped": True, "reason": "not_trading_day"}
     broker = PaperBroker(
         initial_cash=float(config["initial_cash"]),
         slippage_bps=float(config.get("slippage_bps", 0.0)),
@@ -115,9 +121,14 @@ def run_daily_step(
     st = store.load_state()
     if st is not None:
         broker.load_state(st)
+        # E2 日期单调性守卫：state 记录 last_as_of，拒绝乱序补跑——否则用「未来的」broker
+        # 状态步进过去的日期，ledger 乱序、state 被污染。相等由上面 has_date 幂等处理。
+        last_as_of = st.get("_last_as_of")
+        if last_as_of is not None and as_of.isoformat() <= last_as_of:
+            return {"as_of": as_of.isoformat(), "nav_after": None, "n_fills": 0,
+                    "skipped": True, "reason": "stale_as_of"}
     # 当日 market（daily 已含所需窗口；调用方保证 daily 覆盖 as_of 及其前
     # ~20 交易日以算 ADV）
-    all_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
     adv_by_date = _precompute_adv_20d_by_date(daily, all_dates)
     market = _market_of_day(daily, as_of, adv_by_date)
     broker.advance_to(as_of, market)

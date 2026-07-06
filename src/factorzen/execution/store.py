@@ -46,7 +46,10 @@ class SessionStore:
             df = pl.concat([pl.read_parquet(self._ledger), df], how="vertical")
         df.write_parquet(self._ledger)
         df.select(["as_of_date", "nav_after"]).write_parquet(self._nav)
-        self._state.write_text(json.dumps(record["broker_state"], ensure_ascii=False))
+        # 在续跑态里嵌入 _last_as_of，供 run_daily_step 做日期单调性守卫(E2)。
+        # broker.load_state 只读 cash/pos/order_seq/last_price，忽略 _last_as_of。
+        state_out = {**record["broker_state"], "_last_as_of": record["as_of_date"]}
+        self._state.write_text(json.dumps(state_out, ensure_ascii=False))
 
     def ledger_records(self) -> list[dict]:
         """逐行还原 {as_of_date,nav_before,nav_after,orders,acks,fills}；旧 payload 无 acks 视为 []。"""

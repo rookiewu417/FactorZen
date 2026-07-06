@@ -5,6 +5,7 @@ from datetime import date
 
 import numpy as np
 import polars as pl
+import pytest
 
 from factorzen.config.constants import (
     COMMISSION_RATE,
@@ -76,6 +77,36 @@ def test_rules_long_only_t1():
     assert r.execution_price_col == "open"
     bars = pl.DataFrame({"ts_code": ["A", "B"], "vol": [10.0, 0.0]})
     assert r.tradable_mask(bars, "buy").to_list() == [True, False]
+
+
+def test_ashare_provider_fetch_bars_rejects_non_daily():
+    """AShareDataProvider 仅经 fetch_daily 取日频；非 daily freq 须显式报错，
+    而非静默返回日频数据（与 CryptoDataProvider.fetch_funding 的守卫一致）。
+    """
+    from factorzen.markets.ashare.provider import AShareDataProvider
+
+    p = AShareDataProvider()
+    for bad in ["weekly", "monthly", "1min", "60min"]:
+        with pytest.raises(ValueError):
+            p.fetch_bars(None, "20240101", "20240131", freq=bad)
+
+
+def test_ashare_provider_fetch_bars_daily_delegates(monkeypatch):
+    """freq='daily'（默认）委托 core.loader.fetch_daily，参数透传。"""
+    import factorzen.core.loader as loader
+    from factorzen.markets.ashare.provider import AShareDataProvider
+
+    sentinel = pl.DataFrame({"ts_code": ["000001.SZ"], "trade_date": [date(2024, 1, 2)]})
+    called: dict = {}
+
+    def _fake_fetch_daily(start, end, ts_codes=None):
+        called["args"] = (start, end, ts_codes)
+        return sentinel
+
+    monkeypatch.setattr(loader, "fetch_daily", _fake_fetch_daily)
+    out = AShareDataProvider().fetch_bars(["000001.SZ"], "20240101", "20240131")
+    assert out.equals(sentinel)
+    assert called["args"] == ("20240101", "20240131", ["000001.SZ"])
 
 
 def test_registry_get_ashare():

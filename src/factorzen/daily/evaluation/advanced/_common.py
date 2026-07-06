@@ -20,8 +20,10 @@ def _grouped_ic(
 
     原理：rank within (group, date) → pearson_corr grouped by (group, date) → mean by group。
     """
+    # 因子列须 is_finite()：polars 中 NaN 非 null 且 rank 排最大，会污染分组 IC。
     valid_df = df.filter(
         pl.col(factor_col).is_not_null()
+        & pl.col(factor_col).is_finite()
         & pl.col(ret_col).is_not_null()
         & pl.col(ret_col).is_finite()
     )

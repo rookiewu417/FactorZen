@@ -77,6 +77,21 @@ def neutralize_ols(
         y = cross[col].to_numpy()
         valid = ~np.isnan(y)
 
+        # 市值回归列：total_mv(万元)取 log。log 对尺度不敏感（万元/元的常数差被截距吸收），
+        # 唯一要防的是 log(非正)。缺失/非正市值 → NaN 并入 valid 掩码从回归中剔除，
+        # 不再用 1e6 下限把 <100亿元 的股票夹成常数（会使 size 列退化、中性化失效），
+        # 也不再用 1e8 巨常数冒充缺失值。
+        log_mv: np.ndarray | None = None
+        if daily_basic is not None:
+            mv_cross = daily_basic.filter(pl.col("trade_date") == d).select(["ts_code", "total_mv"])
+            mv_map = dict(
+                zip(mv_cross["ts_code"].to_list(), mv_cross["total_mv"].to_list(), strict=False)
+            )
+            mv_arr = np.array([mv_map.get(c, np.nan) for c in codes], dtype=float)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                log_mv = np.where(mv_arr > 0, np.log(mv_arr), np.nan)
+            valid = valid & ~np.isnan(log_mv)
+
         if valid.sum() < 30:
             logger.warning(f"neutralize_ols: {d} 有效样本数 {valid.sum()} < 30，跳过")
             return cross.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
@@ -97,30 +112,23 @@ def neutralize_ols(
                     ind_dummies[i, ind_to_idx[ind] - 1] = 1
             X_parts.append(ind_dummies)
 
-        if daily_basic is not None:
-            mv_cross = daily_basic.filter(pl.col("trade_date") == d).select(["ts_code", "total_mv"])
-            mv_map = dict(
-                zip(mv_cross["ts_code"].to_list(), mv_cross["total_mv"].to_list(), strict=False)
-            )
-            log_mv = np.array(
-                [
-                    np.log(max(mv if (mv := mv_map.get(c)) is not None else 1e8, 1e6))
-                    for c in codes
-                ]
-            )
-            X_parts.append(log_mv.reshape(-1, 1))
+        if log_mv is not None:
+            # 无效行(被 valid 剔除)填 0 仅占位、不参与拟合/预测，不影响结果。
+            X_parts.append(np.nan_to_num(log_mv, nan=0.0).reshape(-1, 1))
 
         X = np.hstack(X_parts)
 
         try:
             model = sm.OLS(y[valid], X[valid]).fit()
-            residuals = y - model.predict(X)
         except Exception as e:
             # 回归失败必须标 NaN（与 docstring 承诺、<30 样本分支一致）：返回原值 y
             # 会让该日因子带满行业/市值暴露漏到下游，下游却以为已中性化（研究可信度隐患）。
             logger.warning(f"neutralize_ols: {d} 回归失败 ({e})，标记为 NaN")
             return cross.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
 
+        # 只对参与回归的有效行输出残差；缺失 y/市值的行标 NaN（被剔除）。
+        residuals = np.full(len(y), np.nan)
+        residuals[valid] = y[valid] - model.predict(X[valid])
         return cross.with_columns(pl.Series(out_col, residuals))
 
     # 对每个日期做截面回归（支持并行）

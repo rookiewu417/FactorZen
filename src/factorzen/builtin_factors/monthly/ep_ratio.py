@@ -10,7 +10,7 @@ class EpRatioMonthly(DailyFactor):
     name = "ep_ratio"
     category = "monthly"
     frequency = "monthly"
-    required_data = ["daily_basic"]
+    required_data = ["daily_basic", "daily"]
     lookback_days = 5
     description = "Monthly E/P = 1/PE_TTM; earnings value factor, high E/P predicts higher returns"
 

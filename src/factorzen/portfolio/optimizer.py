@@ -56,6 +56,9 @@ def optimize_portfolio(alpha, risk_result, *, risk_aversion: float = 1.0,
         # 既有设计处理：不返垃圾、不让异常未捕获地往外抛崩掉整条 pipeline。
         return OptimizeResult(None, "error", None, time.perf_counter() - t0)
     dt = time.perf_counter() - t0
-    if prob.status != "optimal" or w.value is None:
+    # optimal_inaccurate(CLARABEL AlmostSolved)也是可用解，必须接受——否则丢成全零
+    # 兜底后，下游 sim(_SUCCESS_OPT_STATUSES 含 optimal_inaccurate)会把它当真实清仓
+    # 信号执行。与 daily/optimization/mean_variance 及集成测试口径一致。
+    if prob.status not in ("optimal", "optimal_inaccurate") or w.value is None:
         return OptimizeResult(None, prob.status, None, dt)
     return OptimizeResult(np.asarray(w.value), prob.status, float(prob.value), dt)

@@ -119,6 +119,13 @@ class Strategy(ABC):
     def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
         """返回列 ts_code, target_weight。"""
 
+    def has_target_for(self, signal_date: date) -> bool:
+        """该策略在 ``signal_date`` 是否有明确调仓目标。默认 True（每个信号日都调仓）。
+        PrecomputedWeightsStrategy 覆盖为『仅在有预计算权重的日期调仓，其余日持有』，
+        使慢路径与快路径 ``_run_precomputed_weights_backtest_fast`` 语义一致——
+        否则 signal 日在因子日历内但无权重时，慢路径清仓、快路径持有，两路径分叉。"""
+        return True
+
 
 @dataclass
 class StrategyBacktestResult:
@@ -285,6 +292,10 @@ class PrecomputedWeightsStrategy(Strategy):
         if weights is None:
             return _empty_weights()
         return weights
+
+    def has_target_for(self, signal_date: date) -> bool:
+        # 只有该 signal 日有预计算权重才算调仓日；否则持有（与快路径一致）。
+        return signal_date in self.weights_by_date
 
 
 class FactorWeightedStrategy(Strategy):
@@ -549,7 +560,14 @@ def run_strategy_backtest(
 
         target_weights: dict[str, float] = {}
         adv_20d: dict[str, float] = {}
-        has_signal = signal_date is not None and signal_date in factor_by_date
+        # signal_date 需在因子日历内，且策略确有该日调仓目标——否则（如
+        # PrecomputedWeightsStrategy 无该日权重）落到 else 分支持有，不清仓，
+        # 与快路径 _run_precomputed_weights_backtest_fast 语义一致。
+        has_signal = (
+            signal_date is not None
+            and signal_date in factor_by_date
+            and strategy.has_target_for(signal_date)
+        )
         if has_signal:
             assert signal_date is not None  # has_signal 已蕴含
             has_started = True

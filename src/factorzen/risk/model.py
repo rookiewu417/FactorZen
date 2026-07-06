@@ -198,10 +198,11 @@ class RiskModel:
             y = np.array(matched_rets)
             X = exposure.matrix[matched_rows, :]
 
-            # 确保 factor_names 与当前暴露一致。因子数不同通常源于窗口早期滚动风格
-            # 因子数据不足，使当日因子集与首个有效截面不一致——跳过，但计数以便可见，
-            # 不再静默吞掉（历史上这会让 8 因子模型悄悄退化成 4 因子而无任何提示）。
-            if X.shape[1] != len(factor_names):
+            # 确保 factor_names 与当前暴露一致。比较因子**名字序列**而非仅列数——
+            # 行业成分漂移会使某日因子集「名字不同但个数相同」（如 ind_B 调出、ind_C
+            # 调入），只比列数会让该日回归系数被错标到别的因子名下，污染因子收益→协方差→
+            # 归因。因子数不同通常源于窗口早期滚动风格因子数据不足。两种不一致都跳过并计数。
+            if exposure.factor_names != factor_names:
                 n_factor_mismatch += 1
                 continue
 

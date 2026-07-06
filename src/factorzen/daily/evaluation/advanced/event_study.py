@@ -117,8 +117,10 @@ def compute_event_study(
         if not valid_event:
             continue
 
-        # 计算以事件日（w=0）为基准的累计收益
-        # cumret[i] = prod(1 + ret[event_day..i]) - 1
+        # 以事件日收盘为基准的累计收益：cumret[w] = price[w]/price[0] - 1。
+        # daily_arr[i] 是窗口日 windows[i] 的日收益（前一交易日收盘→当日收盘），
+        # 故事件日收益 daily_arr[base_idx] 是"day-1→day0"，只用于把事件前折算到基准，
+        # 绝不计入事件后（否则 w=+1 会含 r0，w=0→+1 出现约 2*r0 的假跳变）。
         daily_arr = np.array(daily_rets, dtype=float)
 
         # 如果缺失数据过多（超过 50%），跳过该事件
@@ -130,18 +132,17 @@ def compute_event_study(
         base_idx = pre_window
         cumrets = np.zeros(n_windows)
         for i in range(n_windows):
-            if i <= base_idx:
-                # 事件前：反向累乘（忽略 NaN）
-                segment = daily_arr[i : base_idx + 1]
-                if len(segment) == 0:
-                    cumrets[i] = 0.0
-                else:
-                    cumrets[i] = float(np.nanprod(1.0 + segment)) - 1.0
-                    cumrets[i] = -cumrets[i]  # 负号：事件前为反向
-            else:
-                # 事件后：正向累乘（忽略 NaN）
-                segment = daily_arr[base_idx : i + 1]
+            if i == base_idx:
+                cumrets[i] = 0.0  # 事件日基准
+            elif i > base_idx:
+                # 事件后：price[+k]/price[0] = prod(1 + r_{1..k})，不含事件日收益
+                segment = daily_arr[base_idx + 1 : i + 1]
                 cumrets[i] = float(np.nanprod(1.0 + segment)) - 1.0
+            else:
+                # 事件前：price[-k]/price[0] = 1 / prod(1 + r_{-k+1..0})（含事件日收益折算）
+                segment = daily_arr[i + 1 : base_idx + 1]
+                denom = float(np.nanprod(1.0 + segment))
+                cumrets[i] = (1.0 / denom) - 1.0 if denom != 0 else np.nan
 
         event_cumrets.append(cumrets)
 

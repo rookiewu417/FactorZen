@@ -11,7 +11,7 @@ class SizeStyle(DailyFactor):
     category = "daily"
     description = "规模因子：log(total_mv)，Barra SIZE"
     lookback_days = 5
-    required_data = ["daily_basic"]
+    required_data = ["daily_basic", "daily"]
 
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         result = (

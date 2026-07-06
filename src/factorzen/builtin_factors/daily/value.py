@@ -11,7 +11,7 @@ class ValueStyle(DailyFactor):
     category = "daily"
     description = "价值因子：-log(PB)，即 log(B/P)，Barra VALUE"
     lookback_days = 5
-    required_data = ["daily_basic"]
+    required_data = ["daily_basic", "daily"]
 
     def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
         result = (

@@ -235,3 +235,31 @@ def test_session_dsr_uses_candidate_own_train_n(tmp_path, monkeypatch):
         assert "n_train" in c
         assert n_obs_used == c["n_train"]          # 用的是候选自己的 train 段样本数
         assert n_obs_used < legacy_n_obs_mining     # 不是放大过的 mining 全段样本数（旧 bug）
+
+
+def test_genetic_dsr_n_spans_generations_not_just_survivors(tmp_path):
+    """F6：genetic 的 DSR N 应反映跨代真实评估过的唯一表达式数（eval_cache），而非
+    仅最终代存活集 len(scored)≈pop_size。elitism 使最终代最优即全程 argmax，选择实际
+    发生在整个搜索上；N 低估会系统性放松 DSR（passed 偏松，危险方向）。"""
+    from factorzen.discovery.mining_session import run_session
+
+    res = run_session(_daily(n_stocks=40, n_days=150), n_trials=120, top_k=5, seed=42,
+                      method="genetic", holdout_ratio=0.2, out_dir=str(tmp_path))
+    assert res["n_scored"] > 0
+    assert res["n_trials"] > res["n_scored"], (
+        f"genetic 的 DSR N({res['n_trials']}) 应大于最终代存活集 n_scored({res['n_scored']})"
+        "——反映跨代评估广度，而非只数最终代 pop_size"
+    )
+
+
+def test_random_dsr_n_still_equals_scored(tmp_path, monkeypatch):
+    """回归：random 路径 N 仍等于存活集大小（与 sharpe_variance 同源，R8 不变）。"""
+    import factorzen.discovery.mining_session as ms
+    captured: list[int] = []
+    real = ms.deflated_sharpe
+    monkeypatch.setattr(ms, "deflated_sharpe",
+                        lambda s, n, o, **k: (captured.append(n), real(s, n, o, **k))[1])
+    res = ms.run_session(_daily(n_stocks=40, n_days=150), n_trials=40, top_k=5, seed=42,
+                         method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
+    assert captured and len(set(captured)) == 1
+    assert captured[0] == res["n_scored"]

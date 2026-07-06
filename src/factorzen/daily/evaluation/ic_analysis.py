@@ -132,9 +132,12 @@ def _rank_ic_by_date(
     Returns:
         pl.DataFrame with columns [trade_date, ic]，已按 trade_date 排序。
     """
-    # 联合有效掩码（因子 + 前向收益都不为 null/inf）
+    # 联合有效掩码（因子 + 前向收益都不为 null/NaN/inf）
+    # 注意：polars 中 NaN 不是 null，且 rank 把 NaN 排为最大值——因子列必须显式
+    # is_finite() 排除 NaN/inf，否则 NaN 行以最高秩参与 Rank IC 污染结果。
     valid_df = df.filter(
         pl.col(factor_col).is_not_null()
+        & pl.col(factor_col).is_finite()
         & pl.col(ret_col).is_not_null()
         & pl.col(ret_col).is_finite()
     )

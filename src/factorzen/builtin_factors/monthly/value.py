@@ -10,7 +10,7 @@ class PeTtmMonthly(DailyFactor):
     name = "pe_ttm"
     category = "monthly"
     frequency = "monthly"
-    required_data = ["daily_basic"]
+    required_data = ["daily_basic", "daily"]
     lookback_days = 5
     description = "月频滚动市盈率（PE-TTM），每月末截面"
 
@@ -34,7 +34,7 @@ class PbMonthly(DailyFactor):
     name = "pb"
     category = "monthly"
     frequency = "monthly"
-    required_data = ["daily_basic"]
+    required_data = ["daily_basic", "daily"]
     lookback_days = 5
     description = "月频市净率（PB），每月末截面"
 

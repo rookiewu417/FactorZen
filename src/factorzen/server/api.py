@@ -40,6 +40,8 @@ def create_app(workspace_dir: str | Path | None = None) -> FastAPI:
 
     @app.get("/api/nav/{domain}/{run_id}")
     def nav(domain: str, run_id: str) -> dict:
+        if domain not in DOMAINS:
+            raise HTTPException(status_code=404, detail=f"未知 domain: {domain}")
         return {
             "domain": domain,
             "run_id": run_id,

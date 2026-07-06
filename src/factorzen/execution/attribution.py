@@ -57,13 +57,15 @@ def _ideal_nav(
         market = _market_of_day(daily, d)
         broker.advance_to(d, market)
         applicable = [s for s in weights_by_date if s <= d]
-        if applicable:
-            wdf = weights_by_date[max(applicable)]
-            cur = dict(zip(wdf["ts_code"].to_list(), wdf["target_weight"].to_list(), strict=True))
-        if not cur:
+        if not applicable:
+            # 与 real(run_replay)一致：真·无适用信号才不动仓
             nav.append(broker.get_cash().total_asset)
             continue
+        wdf = weights_by_date[max(applicable)]
+        cur = dict(zip(wdf["ts_code"].to_list(), wdf["target_weight"].to_list(), strict=True))
         ref_price = {c: m["close"] for c, m in market.items() if m.get("close")}
+        # cur 为空(risk-off 空目标)时 step 会把持仓全部卖出清仓，与 real 一致；
+        # 旧逻辑 `if not cur: continue` 会让理想孪生错误地继续持有旧仓，污染 total_gap。
         step(broker, cur, ref_price)
         nav.append(broker.get_cash().total_asset)
     return nav
@@ -77,7 +79,9 @@ def build_attribution_report(
     initial_cash: float,
 ) -> dict:
     store = SessionStore(session_dir)
-    recs = store.ledger_records()
+    # 按 as_of_date 排序，使 real_nav 与 exec_dates(sorted)/ideal_nav 逐日对齐；
+    # 乱序 daily step 落盘时 ledger 插入序 != 时间序，不排序会日错位、real 指标失真。
+    recs = sorted(store.ledger_records(), key=lambda r: r["as_of_date"])
     real_nav = [initial_cash] + [r["nav_after"] for r in recs]
     # 与 ledger 对齐的真实执行窗口（PIT：只有 ledger 记过账的日子才算「执行过」，
     # daily 里的 ADV 预热日/from-to 过滤掉的行不应计入 frictionless 孪生）。
@@ -115,10 +119,13 @@ def build_attribution_report(
             traded_sum += float(f["filled_volume"]) * float(f["price"])
             n_fills += 1
             p = px.get((d, f["ts_code"]), {})
-            o, c = p.get("open"), p.get("close")
-            if o is not None and c is not None:
+            c = p.get("close")
+            if c is not None:
+                # 滑点 = 实际成交价 fill['price'] 相对参考价 close 的偏离（含执行时点
+                # open/close 差 + broker slippage_bps）；用 open 会漏掉 broker 滑点，
+                # 使那部分静默落入 residual。
                 sign = 1.0 if f["side"] == "buy" else -1.0
-                slip_sum += f["filled_volume"] * (float(o) - float(c)) * sign
+                slip_sum += f["filled_volume"] * (float(f["price"]) - float(c)) * sign
         # 未成交/部分成交：按 ack reason 归名义额。注意不能只看 accepted——容量/
         # 现金/整手/T+1 截断的部分成交单 accepted=True 但 filled < volume，缺口
         # 同样要归因，否则「拒单」与「部分成交」两类踏空只统计了前者。

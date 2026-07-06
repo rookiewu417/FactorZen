@@ -809,7 +809,11 @@ def filter_liquidity(
             logger.warning(f"[filter_liquidity] {date_str} 无日线数据，不过滤")
             return stocks
 
-        liquid = daily.filter(pl.col("amount") >= min_amount).select("ts_code").unique()
+        # Tushare daily.amount 单位是千元，min_amount 语义是元 → 先换算再比较，
+        # 否则等价于要求 1000×min_amount 元（默认 1000万→假门槛 100 亿，股票池塌缩）。
+        liquid = (
+            daily.filter(pl.col("amount") * 1000.0 >= min_amount).select("ts_code").unique()
+        )
         before = len(stocks)
         result = stocks.join(liquid, on="ts_code", how="inner")
         after = len(result)

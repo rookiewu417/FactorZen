@@ -176,9 +176,9 @@ def test_daily_default_applies_full_filter_chain(stock_basic, monkeypatch):
 def test_intraday_default_adds_liquidity_filter(stock_basic, monkeypatch):
     """intraday_default：在 daily_default 基础上再剔除低流动性股。"""
     daily = _daily_all_tradeable().with_columns(
-        # 600000 成交额低于 1000 万 → 被流动性过滤剔除
+        # amount 单位=千元；5_000 千元=500万元 < 1000万元 门槛 → 被流动性过滤剔除
         pl.when(pl.col("ts_code") == "600000.SH")
-        .then(1_000_000.0)
+        .then(5_000.0)
         .otherwise(pl.col("amount"))
         .alias("amount")
     )

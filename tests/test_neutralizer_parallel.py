@@ -105,3 +105,37 @@ def test_neutralize_ols_handles_mixed_low_and_high_sample_days():
     assert low_result["factor_neutral"].null_count() == low_result.height
     assert high_result["factor_neutral"].null_count() == 0
     assert np.all(np.isfinite(high_result["factor_neutral"].to_numpy()))
+
+
+def test_neutralize_ols_regression_failure_returns_nan(monkeypatch):
+    """回归失败（>=30 样本但 OLS 抛异常）时中性化列应为 NaN，与 docstring 承诺
+    及 <30 样本分支一致。此前静默返回未中性化的原值 y，会让因子带满行业/市值
+    暴露漏到下游，下游却以为已中性化（研究可信度隐患）。
+    """
+    import factorzen.daily.preprocessing.neutralizer as neut
+    from factorzen.daily.preprocessing.neutralizer import neutralize_ols
+
+    n = 40  # >= 30 有效样本 → 进入 OLS 回归分支
+    codes = [f"{i:06d}.SZ" for i in range(n)]
+    df = pl.DataFrame({
+        "trade_date": ["2023-01-04"] * n,
+        "ts_code": codes,
+        "factor": [float(i) for i in range(n)],
+    })
+    stock_basic = pl.DataFrame({
+        "ts_code": codes,
+        "industry": ["银行" if i % 2 else "医药" for i in range(n)],
+    })
+
+    class _BoomOLS:
+        def __init__(self, *args, **kwargs) -> None: ...
+
+        def fit(self):
+            raise RuntimeError("singular design matrix")
+
+    monkeypatch.setattr(neut.sm, "OLS", _BoomOLS)
+    result = neutralize_ols(df, col="factor", stock_basic=stock_basic)
+
+    assert result["factor_neutral"].null_count() == result.height, (
+        "回归失败时中性化列应全为 NaN，而非静默返回未中性化的原值"
+    )

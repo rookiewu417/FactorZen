@@ -963,8 +963,12 @@ def get_universe_snapshot(
         ]
     )
 
+    # A股停牌股当日 Tushare 不发日线行 → 左 join 后 markers 列为 null。
+    # is_suspended 的 null 语义 = 无日线行 = 当日不可交易 → 判停牌（True）;
+    # 只有 vol==0 的显式零量行才靠 markers 判——仅此漏了主流「无行」停牌。
+    # 涨跌停无行时保持 False（无价无法判涨跌停）。
     base = base.join(markers, on="ts_code", how="left").with_columns(
-        pl.col("is_suspended").fill_null(False),
+        pl.col("is_suspended").fill_null(True),
         pl.col("is_limit_up").fill_null(False),
         pl.col("is_limit_down").fill_null(False),
     )

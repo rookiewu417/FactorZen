@@ -204,7 +204,7 @@ def test_merge_report_config_args_all_enables_report_defaults():
 
     assert merged.universe == "csi300"
     assert merged.benchmark == "000300.SH"
-    assert merged.reuse is False
+    assert merged.reuse is True  # --all help 承诺启用 reuse，代码须与之一致
     assert merged.ic_method == "both"
     assert merged.neutralized_ic is True
     assert merged.event_study is True
@@ -272,7 +272,7 @@ def test_merge_report_config_args_all_overrides_yaml_benchmark():
     merged = mod._merge_report_config_args(args, cfg)
 
     assert merged.benchmark == "000905.SH"
-    assert merged.reuse is False
+    assert merged.reuse is True  # --all 启用 reuse
     assert merged.ic_method == "both"
     assert merged.neutralized_ic is True
     assert merged.event_study is True

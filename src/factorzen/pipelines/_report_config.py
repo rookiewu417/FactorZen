@@ -46,6 +46,10 @@ def _merge_report_config_args(args: argparse.Namespace, run_config: RunConfig | 
         if not cli_event_study:
             args.event_study = True
         args.llm_explain = True
+        # --all help 承诺启用 reuse（复用缓存的深度结果）；此前漏置→与 help 漂移、
+        # 用户期待复用却全量重算。reuse 有优雅回退（无缓存则完整计算），置 True 安全。
+        if not getattr(args, "reuse", False):
+            args.reuse = True
 
     if getattr(args, "ic_method", None) is None:
         args.ic_method = "rank"

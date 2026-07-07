@@ -63,7 +63,7 @@ def _fake_trade_dates(n=10):
 @pytest.fixture
 def patched_stages(monkeypatch, tmp_path):
     """把 run_research 内部所有数据密集调用替换成注入合成数据的 fake，捕获调用参数。"""
-    calls: dict = {"portfolio": [], "sim": [], "report": 0}
+    calls: dict = {"portfolio": [], "sim": [], "report": 0, "fetch_daily_starts": []}
     tdates = _fake_trade_dates(10)
     codes = ["000001.SZ", "000002.SZ", "000003.SZ"]
 
@@ -93,6 +93,7 @@ def patched_stages(monkeypatch, tmp_path):
             return pl.DataFrame(rows)
 
     def fake_fetch_daily(start, end):
+        calls["fetch_daily_starts"].append(start)
         rows = [{"trade_date": d, "ts_code": c, "close": 10.0 + i}
                 for i, d in enumerate(tdates) for c in codes]
         return pl.DataFrame(rows)
@@ -175,6 +176,11 @@ def test_run_research_end_to_end_wiring(patched_stages, tmp_path):
     assert res["sharpe"] == 1.2
     # 顶层可复现 manifest 落盘
     assert (tmp_path / "research" / res["run_id"] / "manifest.json").exists()
+    # L1：风险模型走 lookback 预热（load_risk_inputs），即有一次 fetch_daily 的 start
+    # 早于研究区间起点（否则窗口首日滚动风格因子退化，与 portfolio build 双路径漂移）
+    assert any(s < "20240101" for s in calls["fetch_daily_starts"]), (
+        f"风险模型应带 lookback 预热(start<20240101)，实得 {calls['fetch_daily_starts']}"
+    )
 
 
 def test_run_research_custom_run_id_threads_everywhere(patched_stages, tmp_path):

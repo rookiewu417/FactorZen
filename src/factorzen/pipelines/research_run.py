@@ -145,7 +145,11 @@ def run_research(*, start: str, end: str, universe: str | None = None,
 
     # ── 3) 全区间日频（sim 用 + 派生调仓日）──
     daily_full = loader.fetch_daily(start, end).filter(pl.col("ts_code").is_in(uni_full))
-    daily_basic_full = loader.fetch_daily_basic(start, end).filter(pl.col("ts_code").is_in(uni_full))
+    # 风险模型专用：带 lookback 预热的历史（与 fz portfolio build 的 load_risk_inputs
+    # 同口径，消除双路径漂移）——否则每个调仓日 RiskModel.build 的窗口首日滚动风格因子
+    # 全空、因子集钉死在退化截面、静默退化，且与 portfolio build 产出不同风险模型。
+    from factorzen.pipelines.risk_build import load_risk_inputs
+    risk_daily_full, risk_db_full = load_risk_inputs(loader, start, end, uni_full)
     trade_dates = sorted(daily_full["trade_date"].unique().to_list())
     rb_dates = _rebalance_dates(trade_dates, rebalance_days, warmup)
     if not rb_dates:
@@ -163,8 +167,9 @@ def run_research(*, start: str, end: str, universe: str | None = None,
         iso = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
         stocks_d = get_universe(d_str, uni_name)
         uni_d = stocks_d["ts_code"].to_list()
-        daily_d = daily_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
-        db_d = daily_basic_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
+        # 风险模型用带 lookback 预热的历史（含调仓日之前的滚动窗口数据）
+        daily_d = risk_daily_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
+        db_d = risk_db_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
         risk_result = RiskModel().build(daily_d, db_d, stocks_d, start, d_str)
         codes = risk_result.factor_exposures.codes
         alpha_file = _alpha_file_for_date(panel, d, alpha_tmp / f"{d_str}.parquet")

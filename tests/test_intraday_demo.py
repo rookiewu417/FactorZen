@@ -142,3 +142,34 @@ def test_validate_returns_stats():
     assert "coverage" in stats
     assert stats["coverage"] == 1.0
     assert stats["n_stocks"] == 1
+
+
+def _make_two_day_minute(code: str = "000001.SZ", bars_per_day: int = 10) -> pl.DataFrame:
+    """构造两个交易日、每日 bars_per_day 根的分钟数据（trade_time 为字符串，模拟隔夜缺口）。"""
+    rows = []
+    for day in ("2026-05-14", "2026-05-15"):
+        for i in range(bars_per_day):
+            hour = 9 + (i + 30) // 60
+            minute = (i + 30) % 60
+            close = 100.0 + i * 1.0 + (0.0 if day == "2026-05-14" else 50.0)  # 隔夜跳空
+            rows.append({"trade_time": f"{day} {hour:02d}:{minute:02d}:00", "ts_code": code,
+                         "open": close, "high": close, "low": close, "close": close,
+                         "vol": 1000.0, "amount": close * 1000.0})
+    return pl.DataFrame(rows).sort(["ts_code", "trade_time"])
+
+
+def test_momentum_does_not_cross_trading_days():
+    """5-bar 动量不得跨交易日：每个交易日前 5 根 bar 的 factor_value 应为 null（被过滤掉）。
+
+    否则次日开盘首根 bar 会用前一日尾盘价算动量，把隔夜跳空当成日内动量（未来函数式污染）。
+    """
+    factor = Momentum1Min()
+    result = factor.compute(_MockContext(_minute_data=_make_two_day_minute(bars_per_day=10)))
+
+    # trade_time 字符串前 10 位是日期
+    result = result.with_columns(pl.col("trade_time").cast(pl.Utf8).str.slice(0, 10).alias("_d"))
+    per_day = {d[0]: sub.height for d, sub in result.group_by("_d")}
+    # 每日 10 根，前 5 根 null 被过滤 → 每日各剩 5 根有效值；共 2 天 → 10 行
+    assert per_day.get("2026-05-14") == 5, per_day
+    assert per_day.get("2026-05-15") == 5, per_day  # 次日不会因跨日多出有效值
+    assert result.height == 10

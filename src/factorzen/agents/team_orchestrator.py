@@ -48,7 +48,8 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
         state.attempts.append(AttemptRecord(
             iteration=state.iteration, hypothesis=hypothesis, expression=r["expression"],
             compile_ok=r["compile_ok"], ic_train=r["ic_train"], passed_guardrails=False,
-            critic_verdict=None, error=r["error"], ir_train=r["ir_train"]))
+            critic_verdict=None, error=r["error"], ir_train=r["ir_train"],
+            turnover=r.get("turnover")))
         state.seen_expressions.add(r["expression"])
     return results
 
@@ -117,6 +118,8 @@ def run_team_agent(
             "expression": results[-1]["expression"] if results else (exprs[0] if exprs else ""),
             "hypothesis": hypothesis,
             "ic_train": results[-1]["ic_train"] if results else None,
+            "ir_train": results[-1]["ir_train"] if results else None,
+            "turnover": results[-1].get("turnover") if results else None,
         }
         verdict = critique(cand, llm_fn)
 

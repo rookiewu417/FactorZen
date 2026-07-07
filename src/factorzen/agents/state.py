@@ -14,8 +14,8 @@ class AttemptRecord:
     passed_guardrails: bool
     critic_verdict: str | None
     error: str | None
-    # IR（信息比率）：evaluate_expressions 返回的 ir_train；DSR 使用它作为 Sharpe 代理
     ir_train: float | None = None
+    turnover: float | None = None
 
 
 @dataclass
@@ -24,8 +24,9 @@ class AgentState:
     iteration: int = 0
     attempts: list[AttemptRecord] = field(default_factory=list)
     candidates: list[dict] = field(default_factory=list)
-    seen_expressions: set[str] = field(default_factory=set)   # session 记忆
-    negative_examples: list[str] = field(default_factory=list)  # Negative RAG
+    seen_expressions: set[str] = field(default_factory=set)
+    negative_examples: list[str] = field(default_factory=list)
+    pbo: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -35,4 +36,5 @@ class AgentState:
             "candidates": self.candidates,
             "seen_expressions": sorted(self.seen_expressions),
             "negative_examples": self.negative_examples,
+            "pbo": self.pbo,
         }

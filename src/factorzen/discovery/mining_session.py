@@ -12,6 +12,7 @@ import polars as pl
 from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
+from factorzen.discovery.guardrails import guardrail_passed
 from factorzen.discovery.operators import LEAF_FEATURES
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
 from factorzen.discovery.search.random_search import RandomSearcher
@@ -50,16 +51,13 @@ def _guard_passed(c: dict, dsr_alpha: float = 0.05) -> bool:
     候选入选只看 fitness 排序，过拟合垃圾照样导出。这里把它变成可被 leaderboard/export-alpha
     默认过滤的软标记(留 --all 逃生口)，不删候选、不破坏产物契约。
     """
-    dsr = c.get("dsr_pvalue")
-    h_ic = c.get("holdout_ic")
-    ci_lo = c.get("ic_ci_low")
-    ic_tr = c.get("ic_train")
-    if dsr is None or h_ic is None or ci_lo is None or ic_tr is None:
-        return False
-    if any(v != v for v in (dsr, h_ic, ci_lo, ic_tr)):  # NaN 保守判否
-        return False
-    same_sign = (h_ic > 0) == (ic_tr > 0)
-    return dsr < dsr_alpha and same_sign and ci_lo > 0
+    return guardrail_passed(
+        ic_train=c.get("ic_train"),
+        holdout_ic=c.get("holdout_ic"),
+        dsr_pvalue=c.get("dsr_pvalue"),
+        ci_low=c.get("ic_ci_low"),
+        dsr_alpha=dsr_alpha,
+    )
 
 
 def _cross_section_variability(fdf: pl.DataFrame) -> float:

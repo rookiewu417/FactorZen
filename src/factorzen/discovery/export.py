@@ -6,8 +6,23 @@ from pathlib import Path
 
 import polars as pl
 
-from factorzen.discovery.expression import compile_expr, parse_expr
+from factorzen.discovery.expression import (
+    compile_expr,
+    parse_expr,
+    required_lookback,
+)
 from factorzen.discovery.factor import ExpressionFactor
+
+# 导出因子 lookback 下限（与内置默认一致）；表达式实际需求更大时按 AST 上取。
+_MIN_LOOKBACK_DAYS = 60
+
+
+def _lookback_for_expression(expression: str) -> int:
+    """按表达式 AST 推导 lookback_days，至少 _MIN_LOOKBACK_DAYS。畸形表达式回退下限。"""
+    try:
+        return max(_MIN_LOOKBACK_DAYS, required_lookback(parse_expr(expression)))
+    except ValueError:
+        return _MIN_LOOKBACK_DAYS
 
 
 def agent_candidates_csv_df(candidates: list[dict]) -> pl.DataFrame:
@@ -31,6 +46,7 @@ def _class_name(name: str) -> str:
 def render_factor_file(expression: str, name: str) -> str:
     cls = _class_name(name)
     expr_literal = repr(expression)
+    lookback = _lookback_for_expression(expression)
     return f'''"""Mined factor: {name}. 由 fz mine 自动生成。表达式: {expression}"""
 
 from factorzen.discovery.factor import ExpressionFactor
@@ -41,7 +57,7 @@ class {cls}(ExpressionFactor):
     frequency = "daily"
     expression = {expr_literal}
     mined_name = "{name}"
-    lookback_days = 60
+    lookback_days = {lookback}
 
 
 {cls}()  # 模块级实例化供 registry 自动发现

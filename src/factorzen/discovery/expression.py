@@ -84,7 +84,15 @@ def parse_expr(s: str, leaves: dict[str, str] | set[str] | None = None) -> Node:
     spec = OPERATORS[op]
     window = None
     if spec.has_window:
-        window = int(raw_args[-1])
+        # 统一异常契约：空参数/窗口非整数都抛 ValueError（而非 IndexError），
+        # 否则畸形 LLM 输出（如 'ts_mean()'）越界的 IndexError 逃过只捕 ValueError 的
+        # 解析点，崩掉整个挖掘 session。
+        if not raw_args:
+            raise ValueError(f"{op} 需要窗口参数，但表达式无参数")
+        try:
+            window = int(raw_args[-1])
+        except ValueError as e:
+            raise ValueError(f"{op} 的窗口参数非整数: {raw_args[-1]!r}") from e
         raw_args = raw_args[:-1]
     children = [parse_expr(a, valid_leaves) for a in raw_args]
     if len(children) != spec.arity:

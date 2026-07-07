@@ -183,6 +183,20 @@ def test_run_research_end_to_end_wiring(patched_stages, tmp_path):
     )
 
 
+def test_run_research_threads_prev_weights_for_turnover(patched_stages, tmp_path):
+    """L2：多期 build 须把上一期权重作为 prev_weights 传下去，否则 --turnover 静默失效。"""
+    from factorzen.pipelines.research_run import run_research
+    calls = patched_stages
+    run_research(start="20240101", end="20240110", n_trials=10, seed=42,
+                 rebalance_days=2, warmup=2, turnover=0.5, out_root=str(tmp_path))
+    ports = calls["portfolio"]
+    assert len(ports) >= 2
+    assert ports[0].get("prev_weights") is None                  # 首期无上一期
+    for c in ports[1:]:
+        assert c.get("prev_weights") is not None                 # 后续期传上期权重
+        assert c.get("turnover_budget") == 0.5
+
+
 def test_run_research_custom_run_id_threads_everywhere(patched_stages, tmp_path):
     from factorzen.pipelines.research_run import run_research
     calls = patched_stages

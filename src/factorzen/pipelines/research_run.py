@@ -162,6 +162,7 @@ def run_research(*, start: str, end: str, universe: str | None = None,
     portfolios_root = Path(out_root) / "portfolios" / rid
     alpha_tmp = portfolios_root / "_alpha"
     build_dirs: list[str] = []
+    prev_w_map: dict[str, float] = {}  # 上期调仓权重（ts_code→w），供换手约束
     for d in rb_dates:
         d_str = _to_yyyymmdd(d)
         iso = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
@@ -181,15 +182,23 @@ def run_research(*, start: str, end: str, universe: str | None = None,
         bench_weights = np.full(len(codes), 1.0 / len(codes)) if industry_neutral else None
         _ind = dict(zip(stocks_d["ts_code"].to_list(), stocks_d["industry"].to_list(), strict=False))
         sectors = [(_ind.get(c) or "") for c in codes]
+        # 换手约束需要上期权重（按当日 codes 对齐）；否则 turnover_budget 被静默丢弃
+        prev_weights = (
+            np.array([float(prev_w_map.get(c, 0.0)) for c in codes]) if prev_w_map else None
+        )
         res = run_portfolio(
             alpha, risk_result, codes=codes, stock_returns=np.zeros(len(codes)),
             sectors=sectors, factor_returns_latest={}, risk_aversion=risk_aversion,
             w_max=w_max, neutral_factors=neutral, turnover_budget=turnover,
-            bench_weights=bench_weights, signal_date=iso,
+            prev_weights=prev_weights, bench_weights=bench_weights, signal_date=iso,
             out_dir=str(portfolios_root), run_id=d_str,
             command=(command or ["research", "run"]),
         )
         build_dirs.append(res["run_dir"])
+        # 记录本期权重供下期换手约束
+        _wdf = pl.read_parquet(Path(res["run_dir"]) / "weights.parquet")
+        prev_w_map = dict(zip(_wdf["ts_code"].to_list(), _wdf["target_weight"].to_list(),
+                              strict=False))
 
     # ── 5) sim（一次扫 portfolios_root 下所有调仓 run_dir，拼净值）──
     sim_res = run_portfolio_simulation(

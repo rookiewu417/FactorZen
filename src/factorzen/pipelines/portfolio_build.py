@@ -25,6 +25,14 @@ def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
                   signal_date: str | None = None,
                   command: list[str] | None = None) -> dict:
     t0 = time.perf_counter()
+    # 换手约束仅在同时有 turnover_budget 与 prev_weights 时生效；只给预算不给上期权重
+    # （如单次 fz portfolio build，无上一期）会被静默丢弃——显式告警，避免"约束已生效"假象。
+    if turnover_budget is not None and prev_weights is None:
+        print(
+            f"[portfolio] ⚠ 设了 turnover_budget={turnover_budget} 但无 prev_weights，"
+            "换手约束不生效（单次构建无上一期权重；多期请用 fz research run 或串联传 prev_weights）",
+            file=sys.stderr,
+        )
     cfg = ConstraintConfig(w_max=w_max, long_only=long_only, neutral_factors=neutral_factors,
                            benchmark_weights=bench_weights, budget=budget, gross_limit=gross_limit,
                            turnover_budget=turnover_budget, prev_weights=prev_weights)

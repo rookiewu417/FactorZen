@@ -35,7 +35,8 @@ def _select_passed_expression(candidates: list[dict]) -> str:
     if not passed:
         raise RuntimeError(
             "research run: 挖掘未产出任何通过防过拟合护栏(passed=true)的因子。"
-            "可放宽 --dsr-alpha、加大 --trials，或先 fz mine search + fz mine leaderboard --all 排查候选质量。"
+            "可加大 --trials，或先用 fz mine search（其 --dsr-alpha/--holdout-ratio 可调护栏）"
+            "+ fz mine leaderboard --all 排查候选质量。"
         )
     return str(passed[0]["expression"])
 
@@ -145,7 +146,11 @@ def run_research(*, start: str, end: str, universe: str | None = None,
 
     # ── 3) 全区间日频（sim 用 + 派生调仓日）──
     daily_full = loader.fetch_daily(start, end).filter(pl.col("ts_code").is_in(uni_full))
-    daily_basic_full = loader.fetch_daily_basic(start, end).filter(pl.col("ts_code").is_in(uni_full))
+    # 风险模型专用：带 lookback 预热的历史（与 fz portfolio build 的 load_risk_inputs
+    # 同口径，消除双路径漂移）——否则每个调仓日 RiskModel.build 的窗口首日滚动风格因子
+    # 全空、因子集钉死在退化截面、静默退化，且与 portfolio build 产出不同风险模型。
+    from factorzen.pipelines.risk_build import load_risk_inputs
+    risk_daily_full, risk_db_full = load_risk_inputs(loader, start, end, uni_full)
     trade_dates = sorted(daily_full["trade_date"].unique().to_list())
     rb_dates = _rebalance_dates(trade_dates, rebalance_days, warmup)
     if not rb_dates:
@@ -158,13 +163,15 @@ def run_research(*, start: str, end: str, universe: str | None = None,
     portfolios_root = Path(out_root) / "portfolios" / rid
     alpha_tmp = portfolios_root / "_alpha"
     build_dirs: list[str] = []
+    prev_w_map: dict[str, float] = {}  # 上期调仓权重（ts_code→w），供换手约束
     for d in rb_dates:
         d_str = _to_yyyymmdd(d)
         iso = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
         stocks_d = get_universe(d_str, uni_name)
         uni_d = stocks_d["ts_code"].to_list()
-        daily_d = daily_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
-        db_d = daily_basic_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
+        # 风险模型用带 lookback 预热的历史（含调仓日之前的滚动窗口数据）
+        daily_d = risk_daily_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
+        db_d = risk_db_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
         risk_result = RiskModel().build(daily_d, db_d, stocks_d, start, d_str)
         codes = risk_result.factor_exposures.codes
         alpha_file = _alpha_file_for_date(panel, d, alpha_tmp / f"{d_str}.parquet")
@@ -176,15 +183,23 @@ def run_research(*, start: str, end: str, universe: str | None = None,
         bench_weights = np.full(len(codes), 1.0 / len(codes)) if industry_neutral else None
         _ind = dict(zip(stocks_d["ts_code"].to_list(), stocks_d["industry"].to_list(), strict=False))
         sectors = [(_ind.get(c) or "") for c in codes]
+        # 换手约束需要上期权重（按当日 codes 对齐）；否则 turnover_budget 被静默丢弃
+        prev_weights = (
+            np.array([float(prev_w_map.get(c, 0.0)) for c in codes]) if prev_w_map else None
+        )
         res = run_portfolio(
             alpha, risk_result, codes=codes, stock_returns=np.zeros(len(codes)),
             sectors=sectors, factor_returns_latest={}, risk_aversion=risk_aversion,
             w_max=w_max, neutral_factors=neutral, turnover_budget=turnover,
-            bench_weights=bench_weights, signal_date=iso,
+            prev_weights=prev_weights, bench_weights=bench_weights, signal_date=iso,
             out_dir=str(portfolios_root), run_id=d_str,
             command=(command or ["research", "run"]),
         )
         build_dirs.append(res["run_dir"])
+        # 记录本期权重供下期换手约束
+        _wdf = pl.read_parquet(Path(res["run_dir"]) / "weights.parquet")
+        prev_w_map = dict(zip(_wdf["ts_code"].to_list(), _wdf["target_weight"].to_list(),
+                              strict=False))
 
     # ── 5) sim（一次扫 portfolios_root 下所有调仓 run_dir，拼净值）──
     sim_res = run_portfolio_simulation(

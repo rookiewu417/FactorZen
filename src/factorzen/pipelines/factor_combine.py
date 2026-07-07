@@ -1,8 +1,10 @@
 """fz combine run 流水线:加载因子/收益 parquet → 四方法 OOS 对比实验。
 
-因子 parquet 需含 [trade_date, ts_code, factor_value](来源:因子评估产物或
-`fz mine export-alpha` 导出的 α 截面);收益 parquet 需含 [trade_date, ts_code, ret]
-(对齐到因子日的前向收益)。因子名取文件名 stem。
+因子 parquet 需含 [trade_date, ts_code, factor_value] 的**整段面板**(来源:因子评估产物
+等含时间序列的因子面板);收益 parquet 需含 [trade_date, ts_code, ret](对齐到因子日的
+前向收益)。因子名取文件名 stem。
+注意:`fz mine export-alpha` 产物是 [ts_code, alpha] 的**单日截面**(缺 trade_date/
+factor_value 列且只有一天),不能直接喂本流水线(walk-forward CV 需时间序列)。
 """
 from __future__ import annotations
 

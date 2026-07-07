@@ -162,3 +162,15 @@ def test_run_portfolio_manifest_command_override(tmp_path: Path):
     run_dir = Path(res["run_dir"])
     m = json.loads((run_dir / "manifest.json").read_text())
     assert m["command"] == ["fz", "portfolio", "build", "--w-max", "0.4"]
+
+
+def test_run_portfolio_warns_when_turnover_set_without_prev_weights(tmp_path: Path, capsys):
+    """L2：给了 turnover_budget 但无 prev_weights → 换手约束静默丢弃，须告警。"""
+    rr = _risk_result()
+    alpha = np.array([0.1, 0.05, 0.02, 0.08, 0.03, 0.01])
+    run_portfolio(alpha, rr, codes=rr.factor_exposures.codes,
+                  stock_returns=np.zeros(6), sectors=["A"] * 6,
+                  factor_returns_latest={}, risk_aversion=1.0, w_max=0.4,
+                  turnover_budget=0.3, out_dir=str(tmp_path), run_id="tw")
+    err = capsys.readouterr().err
+    assert "turnover" in err and "不生效" in err

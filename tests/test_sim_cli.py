@@ -98,7 +98,11 @@ def test_cmd_sim_run_forwards_filtered_run_dirs_without_explicit_cost_model(
         d = portfolio_root / name
         d.mkdir()
         (d / "weights.parquet").touch()
+        (d / "manifest.json").touch()  # 完整产物目录
     (portfolio_root / "no_weights").mkdir()  # 无 weights.parquet -> 应被过滤掉
+    half = portfolio_root / "half_baked"  # 有 weights 无 manifest（半成品）-> 应被过滤掉
+    half.mkdir()
+    (half / "weights.parquet").touch()
 
     daily_df = pl.DataFrame({"trade_date": ["20230101"], "ts_code": ["000001.SZ"]})
     calls: dict = {}

@@ -31,7 +31,9 @@ _MIN = 3  # rolling 最小样本
 
 
 def _safe_div(a: pl.Expr, b: pl.Expr) -> pl.Expr:
-    return pl.when(b.abs() > 1e-12).then(a / b).otherwise(None)
+    # is_finite() 显式排除 NaN 分母：polars 中 NaN.abs() > 1e-12 判 True，只查 abs 会让
+    # NaN 分母穿透守卫、输出 a/NaN=NaN。
+    return pl.when(b.is_finite() & (b.abs() > 1e-12)).then(a / b).otherwise(None)
 
 
 @dataclass(frozen=True)
@@ -66,8 +68,14 @@ def _ts_corr(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
     va = (a * a).rolling_mean(w, min_samples=_MIN).over("ts_code") - ma * ma  # type: ignore[arg-type]
     vb = (b * b).rolling_mean(w, min_samples=_MIN).over("ts_code") - mb * mb  # type: ignore[arg-type]
     cov = mab - ma * mb
-    denom = (va * vb).sqrt()
-    return pl.when(denom > 1e-12).then((cov / denom).clip(-1.0, 1.0)).otherwise(None)
+    # clip(0) 吸收近常数窗口 E[x²]−E[x]² 的浮点微负（否则 va*vb<0 → sqrt=NaN，而
+    # NaN>1e-12 判 True 会让守卫放行、输出 NaN）；再叠 is_finite 双保险。
+    denom = (va.clip(0.0, None) * vb.clip(0.0, None)).sqrt()
+    return (
+        pl.when(denom.is_finite() & (denom > 1e-12))
+        .then((cov / denom).clip(-1.0, 1.0))
+        .otherwise(None)
+    )
 
 
 def _ts_cov(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
@@ -85,9 +93,12 @@ OPERATORS: dict[str, OperatorSpec] = {
     "ts_min":  _ts("ts_min",  lambda x, w: x.rolling_min(w, min_samples=_MIN).over("ts_code")),
     "ts_max":  _ts("ts_max",  lambda x, w: x.rolling_max(w, min_samples=_MIN).over("ts_code")),
     # polars 1.41.2 原生 rolling_rank，标记 unstable(升级 polars 时需重验语义)。
-    # method="average" 并列取均值排名；/w 归一化到 (0,1]。
-    "ts_rank": _ts("ts_rank", lambda x, w:
-        x.rolling_rank(w, method="average", min_samples=_MIN).over("ts_code") / w),
+    # method="average" 并列取均值排名；除以窗口内**实际非空样本数**归一化到 (0,1]——
+    # 除以固定 w 会让历史不足 w 天的股票(warm-up/次新)ts_rank 上限只有 count/w，被系统性压低。
+    "ts_rank": _ts("ts_rank", lambda x, w: _safe_div(
+        x.rolling_rank(w, method="average", min_samples=_MIN).over("ts_code"),
+        x.is_not_null().cast(pl.Int64).rolling_sum(w, min_samples=_MIN).over("ts_code"),
+    )),
     "delay":   _ts("delay",   lambda x, w: x.shift(w).over("ts_code")),
     "delta":   _ts("delta",   lambda x, w: (x - x.shift(w)).over("ts_code")),
     "pct_change": _ts("pct_change", lambda x, w:

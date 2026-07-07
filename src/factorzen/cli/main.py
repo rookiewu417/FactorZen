@@ -319,6 +319,11 @@ def _mine_search_crypto(args: argparse.Namespace) -> int:
         profile, symbols, args.start, args.end,
         n_trials=args.trials, top_k=args.top_k, seed=args.seed, method=args.method,
         freq=args.freq,
+        # 六个护栏/并行参数经 **session_kw 透传到 run_session，否则用户设的
+        # --dsr-alpha/--holdout-ratio/--workers 等被静默丢弃、按默认执行。
+        holdout_ratio=args.holdout_ratio, train_ratio=args.train_ratio,
+        decorr_threshold=args.decorr_threshold, min_n_train=args.min_n_train,
+        dsr_alpha=args.dsr_alpha, workers=args.workers,
     )
     sd = res["session_dir"]
     print(f"[mine] crypto 完成：{len(res['candidates'])} 个候选 / {len(symbols)} 标的 → {sd}")
@@ -508,6 +513,11 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     from factorzen.daily.factors.registry import get_factor
     from factorzen.discovery.scoring import ic_overfit_report
 
+    # factor 位置参数 nargs='?' 可缺省；缺省时给友好用法提示，而非 get_factor(None) 裸 KeyError
+    if not getattr(args, "factor", None):
+        print("[validate] 缺少因子名：用法 fz validate overfit <factor> --start ... --end ...",
+              file=sys.stderr)
+        return 2
     factor = get_factor(args.factor)()
     uni = None
     if getattr(args, "universe", None):
@@ -616,6 +626,8 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
         turnover_budget=args.turnover,
         bench_weights=bench_weights,
         signal_date=_signal_date,
+        out_dir=getattr(args, "out_dir", "workspace/portfolios"),
+        run_id=getattr(args, "run_id", None) or args.end,  # 默认按 end 日期分目录，多期不覆盖
     )
     print(f"[portfolio] status={res['status']} holdings={res['n_holdings']} → {res['run_dir']}")
     return 0
@@ -658,7 +670,10 @@ def _cmd_sim_run(args: argparse.Namespace) -> int:
 
     run_dirs = sorted(
         p for p in portfolio_root.iterdir()
-        if p.is_dir() and (p / "weights.parquet").exists()
+        # 同时要求 manifest.json：portfolio_build 先写 weights 再写 manifest，中途崩溃会
+        # 留下含 weights 无 manifest 的半成品目录，_load_weights_by_date 无条件读 manifest
+        # 会 FileNotFoundError 炸掉整批 sim。
+        if p.is_dir() and (p / "weights.parquet").exists() and (p / "manifest.json").exists()
     )
     if not run_dirs:
         print(f"[sim] no portfolio run dirs found under {portfolio_root}", file=sys.stderr)
@@ -1349,6 +1364,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="crypto universe size (default 50)")
     p_build.add_argument("--gross-limit", dest="gross_limit", type=float, default=1.0,
                          help="crypto 毛敞口上限 Σ|w| (default 1.0)")
+    p_build.add_argument("--run-id", dest="run_id", default=None,
+                         help="产物子目录名(默认=end 日期串)；多期构建须用不同 run_id 避免覆盖")
+    p_build.add_argument("--out-dir", dest="out_dir", default="workspace/portfolios",
+                         help="组合产物根目录(默认 workspace/portfolios)")
     _add_freq_arg(p_build)
     p_build.set_defaults(func=_cmd_portfolio_build)
 

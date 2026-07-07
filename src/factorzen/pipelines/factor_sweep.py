@@ -174,7 +174,9 @@ def pipeline_runner(
         argv = ["fz-sweep"]
         if config_path:
             argv += ["--config", config_path]
-        else:
+        # 即便有 --config 也追加 --factor：daily_single 显式 --factor 优先于 config merge，
+        # 否则同时给位置参数 factor 与 --config 时，位置参数被静默忽略、评估的是 config 里的因子。
+        if factor:
             argv += ["--factor", factor]
         argv += ["--start", start, "--end", end]
         if universe:

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import polars as pl
-
 from factorzen.agents.team_orchestrator import run_team_agent, write_team_manifest
 
 
@@ -59,13 +57,9 @@ def run_team_mine(
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params)
     run_dir = Path(out_dir) / rid
     run_dir.mkdir(parents=True, exist_ok=True)
-    # candidates.csv —— 兼容 fz mine leaderboard（M1 读取格式）
-    cand_df = (
-        pl.DataFrame(result.candidates)
-        if result.candidates
-        else pl.DataFrame({"expression": [], "holdout_ic": [], "dsr": []})
-    )
-    cand_df.write_csv(run_dir / "candidates.csv")
+    # candidates.csv —— 兼容 fz mine leaderboard/export-alpha（含 rank + passed 列）
+    from factorzen.discovery.export import agent_candidates_csv_df
+    agent_candidates_csv_df(result.candidates).write_csv(run_dir / "candidates.csv")
     if export and result.candidates:
         from factorzen.discovery.export import export_candidate
 

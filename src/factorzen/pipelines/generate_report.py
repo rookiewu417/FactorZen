@@ -125,6 +125,12 @@ def _run_backtest_strategies(
 ) -> tuple[BacktestResult, dict[str, BacktestResult]]:
     strategy_results: dict[str, BacktestResult] = {}
     specs = {spec.name: spec for spec in config.backtest.strategy_specs}
+    # PIT ST 涨跌停阈值（4.8% 而非 9.8%）：与 daily_single 一致构建 is_st_by_date 传入，
+    # 否则本路径把回测期内曾 ST 的股票按主板 9.8% 判涨跌停，与 fz factor run 双路径漂移。
+    from factorzen.core.universe import build_is_st_by_date
+    codes = daily["ts_code"].unique().to_list()
+    trade_dates_list = sorted(daily["trade_date"].unique().to_list())
+    is_st_by_date = build_is_st_by_date(codes, trade_dates_list)
     for strategy_name, strategy in build_backtest_strategies(config).items():
         spec = specs[strategy_name]
         result = run_strategy_backtest(
@@ -139,6 +145,7 @@ def _run_backtest_strategies(
             ),
             cost_model=build_cost_model(config, spec),
             factor_name=factor_name,
+            is_st_by_date=is_st_by_date,
         )
         result = trim_backtest_to_first_trade(result)
         strategy_results[strategy_name] = result
@@ -586,7 +593,11 @@ def _run(
             logger.info("Walk-forward 已关闭，跳过")
 
         # ── 11. 高级评价 ──
-        advanced_results = _run_advanced_evaluation(clean_df, ret_df, args.frequency)
+        # 传 start/end：否则 _run_advanced_evaluation 内 load_parquet("daily_basic") 无日期
+        # 过滤会把全部年份 daily_basic 拉进内存（与 reuse 路径行为不一致、大缓存下撑爆内存）。
+        advanced_results = _run_advanced_evaluation(
+            clean_df, ret_df, args.frequency, args.start, args.end
+        )
         pearson_ic_result, neutralized_ic_result, event_study_result = _build_report_deep_results(
             clean_df, ret_df, args
         )

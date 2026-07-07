@@ -10,6 +10,20 @@ from factorzen.discovery.expression import compile_expr, parse_expr
 from factorzen.discovery.factor import ExpressionFactor
 
 
+def agent_candidates_csv_df(candidates: list[dict]) -> pl.DataFrame:
+    """把 Agent/Team 候选 dict 列组装成 candidates.csv 帧，补 rank + passed 列。
+
+    否则 read_candidate_expression 因缺 rank 列报 'ValueError: 缺少 rank/expression 列'，
+    fz mine export-alpha 无法消费 M5/M6 session；且缺 passed 列使护栏过滤对这类 session
+    静默不生效。Agent 候选本就全过护栏，passed=True。
+    """
+    if not candidates:
+        return pl.DataFrame({"rank": [], "expression": [], "passed": [],
+                             "holdout_ic": [], "dsr": []})
+    return pl.DataFrame([{"rank": i + 1, "passed": True, **c}
+                         for i, c in enumerate(candidates)])
+
+
 def _class_name(name: str) -> str:
     return "".join(p.capitalize() for p in name.replace("-", "_").split("_"))
 

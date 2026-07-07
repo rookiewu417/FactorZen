@@ -301,3 +301,44 @@ def test_cmd_portfolio_build_without_industry_neutral_has_no_bench(tmp_path, mon
     assert captured_kwargs["turnover_budget"] is None
     assert captured_kwargs["risk_aversion"] == 1.0  # --lam 默认值
     assert captured_kwargs["w_max"] == 0.05  # --w-max 默认值
+
+
+def test_cmd_portfolio_build_forwards_run_id_and_out_dir(tmp_path, monkeypatch):
+    """--run-id/--out-dir 应透传给 run_portfolio，使多期 CLI 构建落不同目录（不覆盖）。"""
+    from types import SimpleNamespace
+
+    import polars as pl
+
+    from factorzen.cli import main as cli
+
+    stocks_df = pl.DataFrame({"ts_code": ["000001.SZ"], "industry": ["银行"]})
+    daily_df = pl.DataFrame({"ts_code": ["000001.SZ"], "trade_date": ["20230201"]})
+    rr = SimpleNamespace(factor_exposures=SimpleNamespace(codes=["000001.SZ"]),
+                         factor_names=["beta"])
+    calls: dict = {}
+    monkeypatch.setattr("factorzen.core.universe.get_universe", lambda d, n: stocks_df)
+    monkeypatch.setattr("factorzen.core.loader.fetch_daily", lambda s, e: daily_df)
+    monkeypatch.setattr("factorzen.core.loader.fetch_daily_basic", lambda s, e: daily_df)
+
+    class FakeRM:
+        def __init__(self, *a, **k):
+            pass
+
+        def build(self, *a, **k):
+            return rr
+
+    monkeypatch.setattr("factorzen.risk.model.RiskModel", FakeRM)
+    monkeypatch.setattr(
+        "factorzen.pipelines.portfolio_build.run_portfolio",
+        lambda alpha, rr_arg, **kw: (calls.update(kwargs=kw),
+                                     {"status": "optimal", "n_holdings": 1, "run_dir": "x"})[1],
+    )
+    alpha_file = tmp_path / "a.csv"
+    pl.DataFrame({"ts_code": ["000001.SZ"], "alpha": [0.5]}).write_csv(alpha_file)
+
+    rc = cli.main(["portfolio", "build", "--start", "20230101", "--end", "20230201",
+                   "--universe", "csi500", "--alpha-file", str(alpha_file),
+                   "--run-id", "reb_0201", "--out-dir", str(tmp_path / "po")])
+    assert rc == 0
+    assert calls["kwargs"]["run_id"] == "reb_0201"
+    assert calls["kwargs"]["out_dir"] == str(tmp_path / "po")

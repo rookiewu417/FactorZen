@@ -35,7 +35,8 @@ def _select_passed_expression(candidates: list[dict]) -> str:
     if not passed:
         raise RuntimeError(
             "research run: 挖掘未产出任何通过防过拟合护栏(passed=true)的因子。"
-            "可放宽 --dsr-alpha、加大 --trials，或先 fz mine search + fz mine leaderboard --all 排查候选质量。"
+            "可加大 --trials，或先用 fz mine search（其 --dsr-alpha/--holdout-ratio 可调护栏）"
+            "+ fz mine leaderboard --all 排查候选质量。"
         )
     return str(passed[0]["expression"])
 

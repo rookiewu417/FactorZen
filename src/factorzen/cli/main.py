@@ -508,6 +508,11 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     from factorzen.daily.factors.registry import get_factor
     from factorzen.discovery.scoring import ic_overfit_report
 
+    # factor 位置参数 nargs='?' 可缺省；缺省时给友好用法提示，而非 get_factor(None) 裸 KeyError
+    if not getattr(args, "factor", None):
+        print("[validate] 缺少因子名：用法 fz validate overfit <factor> --start ... --end ...",
+              file=sys.stderr)
+        return 2
     factor = get_factor(args.factor)()
     uni = None
     if getattr(args, "universe", None):
@@ -658,7 +663,10 @@ def _cmd_sim_run(args: argparse.Namespace) -> int:
 
     run_dirs = sorted(
         p for p in portfolio_root.iterdir()
-        if p.is_dir() and (p / "weights.parquet").exists()
+        # 同时要求 manifest.json：portfolio_build 先写 weights 再写 manifest，中途崩溃会
+        # 留下含 weights 无 manifest 的半成品目录，_load_weights_by_date 无条件读 manifest
+        # 会 FileNotFoundError 炸掉整批 sim。
+        if p.is_dir() and (p / "weights.parquet").exists() and (p / "manifest.json").exists()
     )
     if not run_dirs:
         print(f"[sim] no portfolio run dirs found under {portfolio_root}", file=sys.stderr)

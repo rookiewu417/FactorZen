@@ -72,7 +72,12 @@ def _load_weights_by_date(
     source_by_date: dict[date, str] = {}
     for rd in portfolio_run_dirs:
         rd_p = Path(rd)
-        manifest = json.loads((rd_p / "manifest.json").read_text())
+        mf_path = rd_p / "manifest.json"
+        if not mf_path.exists():
+            # 半成品目录（portfolio_build 写完 weights、未写 manifest 就崩）→ 跳过、不炸
+            _logger.warning("跳过 run_dir=%s：无 manifest.json（疑似半成品目录）", rd)
+            continue
+        manifest = json.loads(mf_path.read_text())
         sig = manifest.get("signal_date")
         if sig is None:
             _logger.warning(

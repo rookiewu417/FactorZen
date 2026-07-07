@@ -5,6 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+try:
+    import fcntl  # POSIX 文件锁（Linux 优先；Windows 无此模块时降级为无锁追加）
+except ImportError:  # pragma: no cover - 仅非 POSIX 平台
+    fcntl = None  # type: ignore[assignment]
+
 from factorzen.discovery.expression import parse_expr, to_expr_string
 
 
@@ -33,10 +38,21 @@ class ExperimentIndex:
         return records
 
     def append(self, records: list[dict]) -> None:
+        # team workers / 并行 session 会并发写同一 jsonl；无锁多次 write 会交错、
+        # 产出损坏行。整批组装成单个 payload + POSIX 独占锁一次写入，保证行原子、不交错。
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+        if not payload:
+            return
         with self.path.open("a") as f:
-            for r in records:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            if fcntl is not None:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write(payload)
+                f.flush()
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     def seen_expressions(self) -> set[str]:
         return {_normalize(r["expression"]) for r in self.load() if "expression" in r}

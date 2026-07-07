@@ -49,11 +49,19 @@ class Momentum1Min(IntradayFactor):
             前 5 根 bar 的 factor_value 为 null，已过滤。
         """
         lf = ctx.minute
+        # 按 (ts_code, 交易日) 分区做 shift：否则 shift(5).over("ts_code") 会让次日开盘首根
+        # bar 用前一日尾盘价算动量，把隔夜跳空（及跨日缺口）当成日内动量污染因子。
+        # 日期从 trade_time 前 10 位取，兼容 Datetime 与字符串两种 dtype。
         result = (
             lf.with_columns(
-                (pl.col("close") / pl.col("close").shift(5).over("ts_code") - 1.0).alias(
-                    "factor_value"
-                )
+                pl.col("trade_time").cast(pl.Utf8).str.slice(0, 10).alias("_mom_date")
+            )
+            .with_columns(
+                (
+                    pl.col("close")
+                    / pl.col("close").shift(5).over(["ts_code", "_mom_date"])
+                    - 1.0
+                ).alias("factor_value")
             )
             .select(["trade_time", "ts_code", "factor_value"])
             .filter(pl.col("factor_value").is_not_null())

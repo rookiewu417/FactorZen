@@ -106,6 +106,20 @@ def complexity(node: Node) -> int:
     return 1 + sum(complexity(c) for c in node.children)  # type: ignore[attr-defined, misc]
 
 
+def required_lookback(node: Node) -> int:
+    """表达式求值所需的最小历史 bar 数：沿最深时序路径累加各 ts 算子的 window。
+
+    如 ``ts_mean(delta(close, 5), 20)``：delta 需回看 5、其上 ts_mean 需再回看 20，
+    故首个有效值要 5+20=25 根历史。截面/算术算子不加窗口（window=None→0）。
+    导出因子据此设 lookback_days，避免硬编码 60 对大窗口/嵌套表达式欠预热（首段 NaN）。
+    """
+    if isinstance(node, (Feature, Constant)):
+        return 0
+    child_max = max((required_lookback(c) for c in node.children), default=0)  # type: ignore[attr-defined]
+    own = getattr(node, "window", None) or 0
+    return own + child_max
+
+
 def feature_names(node: Node) -> set[str]:
     if isinstance(node, Feature):
         return {node.name}

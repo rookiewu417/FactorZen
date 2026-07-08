@@ -146,6 +146,45 @@ def compile_expr(node: Node, leaf_map: dict[str, str] | None = None) -> pl.Expr:
     raise TypeError(f"无法编译节点: {node!r}")
 
 
+def evaluate_materialized(
+    node: Node, df: pl.DataFrame, leaf_map: dict[str, str] | None = None
+) -> pl.Series:
+    """逐节点求值：时序/截面（带 .over()）算子的结果先物化成列，算术算子保持内联。
+
+    修复 compile_expr 的嵌套 bug——单个嵌套 pl.Expr 里「截面 .over("trade_date") 套时序
+    .over("ts_code")」在 polars 下（分组键冲突）求值为全 null。这里保证任何 .over() 的输入都是
+    **已物化的列**（无 .over()），永不嵌套冲突。语义等价于「内层算子算完 → 外层算子作用于其结果」，
+    因此在旧嵌套求值本就正确的形状上逐值相等（见 test_parity_on_previously_working_shapes）。
+
+    只物化 ts/cs 类算子（.over() 所在处）、算术内联，是因为算术算子不含 .over()
+    （由 test_arith_operators_carry_no_over_invariant 守卫）。df 须已按 (ts_code, trade_date) 排序。
+    """
+    lm = LEAF_FEATURES if leaf_map is None else leaf_map
+    work = df
+    counter = [0]
+
+    def rec(n: Node) -> pl.Expr:
+        nonlocal work
+        if isinstance(n, Feature):
+            return pl.col(lm[n.name])
+        if isinstance(n, Constant):
+            return pl.lit(float(n.value))
+        if isinstance(n, OpNode):
+            spec = OPERATORS[n.op]
+            child_exprs = [rec(c) for c in n.children]
+            expr = spec.build(child_exprs, n.window)
+            if spec.category in ("ts", "cs"):
+                name = f"__mz{counter[0]}"
+                counter[0] += 1
+                work = work.with_columns(expr.alias(name))
+                return pl.col(name)
+            return expr
+        raise TypeError(f"无法求值节点: {n!r}")
+
+    final_expr = rec(node)
+    return work.with_columns(final_expr.alias("__f"))["__f"]
+
+
 def evaluate(node: Node, df: pl.DataFrame) -> pl.Series:
     """在已按 (ts_code, trade_date) 排序的 df 上求值，返回 factor 列。"""
-    return df.with_columns(compile_expr(node).alias("__f"))["__f"]
+    return evaluate_materialized(node, df)

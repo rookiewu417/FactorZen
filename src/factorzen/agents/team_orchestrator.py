@@ -63,6 +63,7 @@ def run_team_agent(
     index_path: str,
     top_k: int = 5,
     holdout_ratio: float = 0.2,
+    patience: int | None = None,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -78,8 +79,16 @@ def run_team_agent(
     rounds_log: list[dict] = []
     # 上一轮 Critic 反馈：{"kind", "hypothesis", "exprs", "reason"}
     pending: dict | None = None
+    no_improve = 0
+    last_cand_count = 0
 
-    for _ in range(n_rounds):
+    for round_i in range(n_rounds):
+        # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
+        if patience is not None and round_i > 0:
+            no_improve = 0 if len(state.candidates) > last_cand_count else no_improve + 1
+            if no_improve >= patience:
+                break
+        last_cand_count = len(state.candidates)
         rec = recall(index, k=5)                                   # ① Librarian
 
         # ②/③ Hypothesis + Coder（依据上一轮 Critic 反馈，跨轮）

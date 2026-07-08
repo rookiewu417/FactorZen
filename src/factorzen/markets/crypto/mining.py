@@ -86,7 +86,7 @@ def validate_crypto_expression(
 
     返回 ``{ic_mean, ir, dsr_p, ci_lo, ci_hi, n}``（复用市场无关 ic_overfit_report）。
     """
-    from factorzen.discovery.expression import compile_expr, parse_expr
+    from factorzen.discovery.expression import evaluate_materialized, parse_expr
     from factorzen.discovery.scoring import ic_overfit_report
 
     freq = freq or profile.base_freq
@@ -96,8 +96,9 @@ def validate_crypto_expression(
     daily = profile.factors.derived_columns(daily)
     leaf_map = profile.factors.leaf_features()
     node = parse_expr(expression, leaf_map)
-    factor_df = daily.sort(["ts_code", "trade_date"]).with_columns(
-        compile_expr(node, leaf_map).alias("factor_value")
+    sorted_daily = daily.sort(["ts_code", "trade_date"])
+    factor_df = sorted_daily.with_columns(
+        evaluate_materialized(node, sorted_daily, leaf_map).alias("factor_value")
     ).select(["trade_date", "ts_code", "factor_value"])
     return ic_overfit_report(factor_df, daily)
 

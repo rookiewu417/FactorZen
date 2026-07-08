@@ -8,7 +8,7 @@ import polars as pl
 
 from factorzen.daily.factors.base import DailyFactor
 from factorzen.discovery.derived import add_derived_columns
-from factorzen.discovery.expression import compile_expr, feature_names, parse_expr
+from factorzen.discovery.expression import evaluate_materialized, feature_names, parse_expr
 from factorzen.discovery.operators import BASIC_FEATURES
 
 _PRICE_COLS = ["open", "high", "low", "close", "open_adj", "high_adj",
@@ -57,7 +57,7 @@ class ExpressionFactor(DailyFactor):
         df = daily.sort(["ts_code", "trade_date"])
         # 派生列（与 mining_session.py 共用 add_derived_columns，消除双路径漂移）
         df = add_derived_columns(df)
-        df = df.with_columns(compile_expr(self.node).alias("factor_value"))
+        df = df.with_columns(evaluate_materialized(self.node, df).alias("factor_value"))
         start = datetime.strptime(ctx.start, "%Y%m%d").date()
         return (
             df.filter(pl.col("trade_date") >= start)

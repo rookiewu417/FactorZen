@@ -10,7 +10,11 @@ from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.nodes import node_guardrails
 from factorzen.agents.roles.coder import revise_expressions, write_expressions
 from factorzen.agents.roles.critic import critique
-from factorzen.agents.roles.hypothesis import propose_hypotheses
+from factorzen.agents.roles.hypothesis import (
+    format_structured,
+    propose_hypotheses,
+    propose_structured,
+)
 from factorzen.agents.roles.librarian import recall, record
 from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.core.experiment import get_git_sha
@@ -65,6 +69,7 @@ def run_team_agent(
     holdout_ratio: float = 0.2,
     patience: int | None = None,
     heal_rounds: int = 2,
+    structured: bool = False,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -101,10 +106,18 @@ def run_team_agent(
                 exprs = heal_expressions(exprs, hypothesis, llm_fn, max_rounds=heal_rounds)
         else:
             fb = pending["reason"] if pending and pending["kind"] == "revise_hypothesis" else ""
-            hyps = propose_hypotheses(
-                llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
-                feedback=fb, n=1,
-            )
+            if structured:
+                # RD-Agent 步1 结构化假设：direction/mechanism/expected_sign/falsification
+                shyps = propose_structured(
+                    llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+                    feedback=fb, n=1,
+                )
+                hyps = [format_structured(h) for h in shyps]
+            else:
+                hyps = propose_hypotheses(
+                    llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+                    feedback=fb, n=1,
+                )
             if not hyps:
                 state.iteration += 1
                 pending = None

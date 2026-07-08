@@ -17,6 +17,8 @@ def propose_hypotheses(
         "你是量化研究员，提出有经济直觉的选股方向（自然语言，不写公式）。"
         '只输出 JSON: {"hypotheses": ["方向1", "方向2"]}。'
     )
+    from factorzen.llm.prompt_fragments import ASHARE_CAVEATS
+    sys = sys + "\n" + ASHARE_CAVEATS
     user = f"提出 {n} 个新方向。"
     if feedback:
         user += f"\n上一轮反馈: {feedback}"

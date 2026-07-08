@@ -6,11 +6,13 @@ from factorzen.llm.generation import LLMFn, _extract_json
 
 
 def _syntax_prompt() -> str:
+    from factorzen.llm.prompt_fragments import ASHARE_CAVEATS
     return (
         "可用算子: " + ", ".join(OPERATORS.keys()) + "\n"
         "可用特征(叶子): " + ", ".join(LEAF_FEATURES.keys()) + "\n"
         "时序算子最后一个参数是整型窗口，如 ts_mean(close, 20)。\n"
         '只输出 JSON: {"expressions": ["...", "..."]}。'
+        "\n" + ASHARE_CAVEATS
     )
 
 

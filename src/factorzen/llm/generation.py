@@ -92,6 +92,8 @@ def build_agent_messages(
         "时序算子最后一个参数是整型窗口，如 ts_mean(close, 20)。\n"
         '只输出 JSON: {"hypothesis": "...", "expressions": ["...", "..."], "rationale": "..."}'
     )
+    from factorzen.llm.prompt_fragments import ASHARE_CAVEATS
+    system = system + "\n" + ASHARE_CAVEATS
     user = "提出一个新假设并给出 2-4 个候选表达式。"
     if feedback:
         user += f"\n上一轮反馈: {feedback}"

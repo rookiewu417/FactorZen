@@ -31,6 +31,9 @@ def _build_payload(
         payload["response_format"] = {"type": "json_object"}
     if config.thinking:
         payload["thinking"] = {"type": config.thinking}
+    if config.provider:
+        # 聚合网关（如 AIPing）的上游路由锁定：只允许指定上游，避免被路由到其它模型。
+        payload["provider"] = {"only": [config.provider]}
     return payload
 
 

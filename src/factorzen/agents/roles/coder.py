@@ -58,3 +58,25 @@ def revise_expressions(
         return []
     exprs = obj.get("expressions")
     return [str(e) for e in exprs] if isinstance(exprs, list) else []
+
+
+def revise_from_error(
+    hypothesis: str, failed_expr: str, error: str, llm_fn: LLMFn
+) -> list[str]:
+    """CoSTEER 轻量版：把无法解析的表达式的报错回灌 LLM 修正（DSL 层，无 exec 沙箱）。"""
+    user = (
+        f"方向: {hypothesis}\n以下因子表达式无法解析: {failed_expr}\n"
+        f"报错信息: {error}\n请修正为可解析的表达式（严格遵守语法与可用算子/叶子清单）。"
+    )
+    obj = _extract_json(
+        llm_fn(
+            [
+                {"role": "system", "content": _syntax_prompt()},
+                {"role": "user", "content": user},
+            ]
+        )
+    )
+    if not obj:
+        return []
+    exprs = obj.get("expressions")
+    return [str(e) for e in exprs] if isinstance(exprs, list) else []

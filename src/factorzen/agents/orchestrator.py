@@ -29,7 +29,8 @@ class AgentResult:
 
 def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int = 5,
                   holdout_ratio: float = 0.2, human_review: bool = False,
-                  patience: int | None = None) -> AgentResult:
+                  patience: int | None = None,
+                  heal_rounds: int = 2) -> AgentResult:
     rng = np.random.default_rng(seed)  # noqa: F841 预留给未来随机选择，保证可复现入口
     mining_df, holdout_df, _hstart = split_holdout(daily, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)        # Agent 只见 mining 段
@@ -45,7 +46,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             if no_improve >= patience:
                 break
         last_cand_count = len(state.candidates)
-        state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle, feedback=feedback)
+        state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle,
+                              feedback=feedback, heal_rounds=heal_rounds)
         state = node_evaluate(state, daily=mining_df, bundle=bundle)
         state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
                                 bundle=bundle, ledger=ledger, top_k=top_k)

@@ -30,14 +30,19 @@ class AgentContext:
 
 
 def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
-                  n_hypotheses: int = 1, feedback: str = "") -> AgentState:
+                  n_hypotheses: int = 1, feedback: str = "", heal_rounds: int = 0) -> AgentState:
     """生成假设+表达式 → 语义对齐自检 → 暂存待评估（compile/eval 在 node_evaluate）。"""
     ctx = AgentContext()
     msgs = build_agent_messages(ctx.op_names, ctx.leaf_names, feedback, state.negative_examples)
     proposals = generate_factor_proposal(msgs, llm_fn, n_hypotheses=n_hypotheses)
     pending: list[_PendingExpr] = []
     for p in proposals:
-        for expr in p.expressions:
+        # 自愈：把无法解析的表达式报错回灌 Coder 修正（heal_rounds>0 时启用，CoSTEER 轻量版）
+        exprs = p.expressions
+        if heal_rounds > 0:
+            from factorzen.agents.self_heal import heal_expressions
+            exprs = heal_expressions(p.expressions, p.hypothesis, llm_fn, max_rounds=heal_rounds)
+        for expr in exprs:
             try:
                 norm = to_expr_string(parse_expr(expr))
             except ValueError:

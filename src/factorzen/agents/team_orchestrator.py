@@ -64,6 +64,7 @@ def run_team_agent(
     top_k: int = 5,
     holdout_ratio: float = 0.2,
     patience: int | None = None,
+    heal_rounds: int = 2,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -95,6 +96,9 @@ def run_team_agent(
         if pending and pending["kind"] == "revise_expr":
             hypothesis = pending["hypothesis"]
             exprs = revise_expressions(hypothesis, pending["exprs"], pending["reason"], llm_fn)
+            if heal_rounds > 0:
+                from factorzen.agents.self_heal import heal_expressions
+                exprs = heal_expressions(exprs, hypothesis, llm_fn, max_rounds=heal_rounds)
         else:
             fb = pending["reason"] if pending and pending["kind"] == "revise_hypothesis" else ""
             hyps = propose_hypotheses(
@@ -107,6 +111,9 @@ def run_team_agent(
                 continue
             hypothesis = hyps[0]
             exprs = write_expressions(hypothesis, llm_fn, avoid=rec.known_invalid)
+            if heal_rounds > 0:
+                from factorzen.agents.self_heal import heal_expressions
+                exprs = heal_expressions(exprs, hypothesis, llm_fn, max_rounds=heal_rounds)
 
         # ④ Evaluator：评估（跨 session + session 内去重）
         # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）

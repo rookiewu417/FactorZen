@@ -18,7 +18,15 @@ def cache_key(
     model: str,
     prompt_version: str,
     snapshot: dict[str, Any],
+    provider: str | None = None,
+    max_tokens: int | None = None,
+    thinking: str | None = None,
 ) -> str:
+    """缓存键必须含**全部**影响输出的参数。
+
+    `provider`（聚合网关的上游锁定）、`max_tokens`、`thinking` 都从 FACTORZEN_LLM_* 加载
+    且都改变输出。漏掉它们 → 换 provider 但 model 名不变时，同键命中旧解读（缓存串味）。
+    """
     payload = {
         "factor_name": factor_name,
         "start": start,
@@ -26,6 +34,9 @@ def cache_key(
         "model": model,
         "prompt_version": prompt_version,
         "snapshot": snapshot,
+        "provider": provider,
+        "max_tokens": max_tokens,
+        "thinking": thinking,
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]

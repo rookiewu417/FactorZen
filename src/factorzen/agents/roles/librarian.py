@@ -61,8 +61,10 @@ def record(
 
     records = []
     for a in attempts:
-        if not a.compile_ok or a.ic_train is None:
-            continue
+        # 编译失败的表达式也要落盘：seen_expressions() 靠它跨 session 去重，
+        # 否则下个 session 会重新生成同一个语法坑，白烧 LLM 调用与自愈轮次。
+        # 它们的 ir_train=None，被 DeflationBasis.from_ir_pool 剔除，不污染 deflation 池；
+        # known_invalid() 也会排除它们（那里的语义是「能编译但无效」）。
         rec: dict = {
             "expression": a.expression,
             "hypothesis": a.hypothesis,
@@ -75,6 +77,8 @@ def record(
             "passed": a.passed_guardrails,          # 事实：过了定量护栏
             "verdict": a.critic_verdict,            # 决策：Critic 裁决（known_valid 会读它）
             "decorrelated": a.decorrelated,         # 决策：与已有候选高度相关，未入候选池
+            "compile_ok": a.compile_ok,             # 事实：表达式是否可解析
+            "error": a.error,
             "data_window": data_window,             # 族边界：(start,end,universe,market)
             "run_id": run_id,
         }

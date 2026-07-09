@@ -62,8 +62,17 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
 
     灵魂约束：此函数不碰 ledger，N 诚实记账由外层 node_guardrails 统一负责（每轮恰好一次）。
     """
-    fresh = [e for e in exprs if _normalize(e) not in mem_seen
-             and _normalize(e) not in state.seen_expressions]
+    # **批内也要去重**：heal_rounds=0 时 heal_expressions 的去重不生效，多个 task 很容易
+    # 翻译出同一表达式。重复评估会让 node_guardrails 把同一个 trial 记两次 → N over-count
+    # （方向偏严，但记账不诚实），并向 index 写重复行。
+    fresh: list[str] = []
+    batch_seen: set[str] = set()
+    for e in exprs:
+        norm = _normalize(e)
+        if norm in mem_seen or norm in state.seen_expressions or norm in batch_seen:
+            continue
+        batch_seen.add(norm)
+        fresh.append(e)
     results = evaluate_expressions(fresh, daily, bundle) if fresh else []
     for r in results:
         state.attempts.append(AttemptRecord(

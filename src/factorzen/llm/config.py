@@ -41,6 +41,9 @@ class LLMConfig:
     max_tokens: int = 700
     thinking: str | None = None
     provider: str | None = None
+    # 429/5xx/网络故障的有限重试。挖掘是多轮长循环，一次限流不该让整轮结果全损。
+    max_retries: int = 3
+    retry_backoff_seconds: float = 1.0
 
     @property
     def is_ready(self) -> bool:
@@ -75,6 +78,7 @@ def load_llm_config(*, enabled: bool, env_file: Path | None = _DEFAULT_ENV_FILE)
         }
     timeout_raw = _get_setting("FACTORZEN_LLM_TIMEOUT_SECONDS", file_values) or "30"
     max_tokens_raw = _get_setting("FACTORZEN_LLM_MAX_TOKENS", file_values) or "700"
+    max_retries_raw = _get_setting("FACTORZEN_LLM_MAX_RETRIES", file_values) or "3"
     try:
         timeout = float(timeout_raw)
     except ValueError:
@@ -83,6 +87,10 @@ def load_llm_config(*, enabled: bool, env_file: Path | None = _DEFAULT_ENV_FILE)
         max_tokens = int(max_tokens_raw)
     except ValueError:
         max_tokens = 700
+    try:
+        max_retries = max(0, int(max_retries_raw))
+    except ValueError:
+        max_retries = 3
     return LLMConfig(
         enabled=final_enabled,
         base_url=_get_setting("FACTORZEN_LLM_BASE_URL", file_values),
@@ -92,4 +100,5 @@ def load_llm_config(*, enabled: bool, env_file: Path | None = _DEFAULT_ENV_FILE)
         max_tokens=max_tokens,
         thinking=_get_setting("FACTORZEN_LLM_THINKING", file_values),
         provider=_get_setting("FACTORZEN_LLM_PROVIDER", file_values),
+        max_retries=max_retries,
     )

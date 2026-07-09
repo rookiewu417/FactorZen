@@ -14,12 +14,16 @@ from factorzen.validation.pbo import compute_pbo
 
 @dataclass(frozen=True)
 class DeflationBasis:
-    """DSR deflation 的基准：trial 池 IR 的经验方差 + 与之**同源**的 N。
+    """DSR deflation 的基准：trial 池 IR 的经验方差 + 与之**同源**的 N + 统计量的边数。
 
     R8：``n_trials`` 与 ``sharpe_variance`` 必须来自同一批 trial，否则 ``expected_max_sharpe``
     的 deflation 基准不自洽。因 ``expected_max_sharpe ∝ sqrt(sharpe_variance)``，而多样化
     trial 池的经验方差恒大于 ``deflated_sharpe`` 的 H0 默认值 ``1/n_obs``，漏传 sharpe_variance
     会让门槛系统性偏小、放行过拟合因子（漂移倍数 ``sqrt(var_emp × n_obs)``，实测 1.60x）。
+
+    ``two_sided`` 描述**选择规则**：按 ``|IR|`` 排序 / 接纳任一符号的路径填 True。它决定
+    ``effective_trials``，并让 `deflated_pvalue` 自行对统计量取绝对值——调用方一律传带符号 IR。
+    把两者绑在同一个字段上，是为了让「统计量 abs 了没有」与「基准 N 还是 2N」无法各说各话。
 
     M1(`mining_session`) 与 Agent(`agents/nodes`) 必须**共同调用**本类构造基准、经
     `deflated_pvalue` 求 p 值。有架构守卫测试禁止任一路径直接调 ``deflated_sharpe``。
@@ -27,9 +31,24 @@ class DeflationBasis:
 
     n_trials: int
     sharpe_variance: float
+    two_sided: bool = False
+
+    @property
+    def effective_trials(self) -> int:
+        """deflation 实际使用的试验数。``n_trials`` 保持诚实计数（manifest 写它）。
+
+        取绝对值 ⇒ 试验数翻倍。对称零分布下::
+
+            P(max_{i≤N}|Z_i| ≤ t) = [2Φ(t)−1]^N ≈ [Φ(t)²]^N = Φ(t)^{2N} = P(max_{j≤2N} Z_j ≤ t)
+
+        实测（400k 次重复）：拿 N 当 ``max|Z|`` 的基准会少算 0.20σ–0.41σ（N 越小越糟）；
+        改 2N 后残差 ≤0.02σ，与公式自身对 ``E[max Z]`` 的逼近误差同量级。
+        """
+        return 2 * self.n_trials if self.two_sided else self.n_trials
 
     @classmethod
-    def from_ir_pool(cls, ir_pool: Sequence[float | None]) -> DeflationBasis:
+    def from_ir_pool(cls, ir_pool: Sequence[float | None], *,
+                     two_sided: bool = False) -> DeflationBasis:
         """从「评估过且拿到有效 IR」的 trial 池构造。
 
         None（死表达式）与 nan/inf 一律剔除：它们会同时污染方差与计数——把 0.0 之类的
@@ -39,16 +58,22 @@ class DeflationBasis:
         arr = np.asarray([x for x in ir_pool if x is not None], dtype=float)
         arr = arr[np.isfinite(arr)]
         n = int(arr.size)
-        return cls(n_trials=n, sharpe_variance=float(arr.var()) if n > 1 else 1.0)
+        return cls(n_trials=n, sharpe_variance=float(arr.var()) if n > 1 else 1.0,
+                   two_sided=two_sided)
 
 
 def deflated_pvalue(sharpe: float, basis: DeflationBasis, n_obs: int) -> tuple[float, float]:
     """(dsr, pvalue)。两条挖掘路径的 DSR 唯一入口。
 
+    ``sharpe`` 一律传**带符号** IR；是否取绝对值由 ``basis.two_sided`` 决定——绝对值与
+    ``effective_trials`` 必须成对出现，故只在此处施加，调用方不得自行 ``abs()``
+    （有 ast 架构守卫）。
+
     ``n_obs`` 须是**该因子自己的有效 IC 天数**，不是 train 段日历交易日数——后者更大，
     会系统性放大显著性（``z ∝ sqrt(n_obs − 1)``）。
     """
-    return deflated_sharpe(sharpe, basis.n_trials, n_obs,
+    statistic = abs(sharpe) if basis.two_sided else sharpe
+    return deflated_sharpe(statistic, basis.effective_trials, n_obs,
                            sharpe_variance=basis.sharpe_variance)
 
 

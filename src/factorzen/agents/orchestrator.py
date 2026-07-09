@@ -60,10 +60,23 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
 
 
 def _summarize_feedback(state: AgentState) -> str:
+    """把上一轮结果压成喂给下一轮 prompt 的反馈。
+
+    「最佳」= 上一轮 |train_IC| 最大的**可评估** attempt。三个必须守住的点：
+    只看上一轮（`state.iteration - 1`，node_reflect 已把 iteration +1）——上一轮颗粒无收时
+    不许回退去报更早轮次的战绩；按 |IC| 取最佳——反向因子同样有效；排除 ic_train=None
+    的编译失败项——否则「上轮最佳 train_IC=None」会被原样喂给 LLM。
+    """
     if not state.attempts:
         return ""
-    last = state.attempts[-1]
-    return f"上轮最佳 train_IC={last.ic_train}; 已试 {len(state.seen_expressions)} 个表达式。"
+    n_seen = len(state.seen_expressions)
+    prev = state.iteration - 1
+    scored = [a for a in state.attempts if a.iteration == prev and a.ic_train is not None]
+    if not scored:
+        return f"上一轮无可评估表达式（编译或求值全部失败）。已试 {n_seen} 个表达式。"
+    best = max(scored, key=lambda a: abs(a.ic_train or 0.0))
+    return (f"上一轮最佳: {best.expression} train_IC={best.ic_train:.4f} "
+            f"(过护栏={best.passed_guardrails}); 已试 {n_seen} 个表达式。")
 
 
 def _human_gate(state: AgentState) -> None:

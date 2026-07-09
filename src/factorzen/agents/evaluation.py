@@ -118,7 +118,15 @@ def _factor_turnover(factor_df: pl.DataFrame, quantile: float = 0.2) -> float | 
 def evaluate_expressions(
     expr_strs: list[str], daily: pl.DataFrame, bundle
 ) -> list[dict]:
-    """批量评估表达式集。非法表达式（parse_expr 抛 ValueError）记 compile_ok=False。"""
+    """批量评估表达式集。非法表达式（parse_expr 抛 ValueError）记 compile_ok=False。
+
+    `n_train` = 该因子在 train 段的**有效 IC 天数**（不是日历交易日数），供 DSR 的 n_obs 用，
+    与 M1 的 `c["n_train"]` 同口径。
+
+    `n_train == 0`（求值后无任何有效截面）时记 ic/ir=None 而非 `quick_fitness` 返回的
+    sentinel `0.0`——否则这类死表达式会以「IC 恰好为 0」的身份混进护栏的 `passed` 集：
+    既膨胀多重检验的 N，又把 0.0 灌进 DSR 的 IR 池拉低经验方差，使 deflation 基准算在垃圾上。
+    """
     results: list[dict] = []
     for s in expr_strs:
         try:
@@ -126,16 +134,23 @@ def evaluate_expressions(
         except ValueError as exc:
             results.append({"expression": s, "node": None, "compile_ok": False,
                             "ic_train": None, "ir_train": None, "turnover": None,
-                            "error": str(exc)})
+                            "n_train": 0, "error": str(exc)})
             continue
         try:
             fdf = _node_to_factor_df(node, daily)
             fit = quick_fitness(fdf, bundle, segment="train")
+            n_train = int(fit["n"])
+            if n_train == 0:
+                results.append({
+                    "expression": to_expr_string(node), "node": node, "compile_ok": True,
+                    "ic_train": None, "ir_train": None, "turnover": None, "n_train": 0,
+                    "error": "求值后 train 段无有效截面（因子值全 null/NaN、分母恒零或窗口长于样本）"})
+                continue
             results.append({"expression": to_expr_string(node), "node": node, "compile_ok": True,
                             "ic_train": float(fit["ic_mean"]), "ir_train": float(fit["ir"]),
-                            "turnover": _factor_turnover(fdf), "error": None})
+                            "turnover": _factor_turnover(fdf), "n_train": n_train, "error": None})
         except Exception as exc:
             results.append({"expression": to_expr_string(node), "node": node, "compile_ok": True,
                             "ic_train": None, "ir_train": None, "turnover": None,
-                            "error": str(exc)})
+                            "n_train": 0, "error": str(exc)})
     return results

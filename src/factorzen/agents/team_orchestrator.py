@@ -65,7 +65,7 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
             iteration=state.iteration, hypothesis=hypothesis, expression=r["expression"],
             compile_ok=r["compile_ok"], ic_train=r["ic_train"], passed_guardrails=False,
             critic_verdict=None, error=r["error"], ir_train=r["ir_train"],
-            turnover=r.get("turnover")))
+            turnover=r.get("turnover"), n_train=r.get("n_train")))
         state.seen_expressions.add(r["expression"])
     return results
 

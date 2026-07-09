@@ -71,7 +71,7 @@ def node_evaluate(state: AgentState, *, daily, bundle) -> AgentState:
             iteration=state.iteration, hypothesis=p.hypothesis, expression=r["expression"],
             compile_ok=r["compile_ok"], ic_train=r["ic_train"], passed_guardrails=False,
             critic_verdict=None, error=r["error"], ir_train=r["ir_train"],
-            turnover=r.get("turnover")))
+            turnover=r.get("turnover"), n_train=r.get("n_train")))
         state.seen_expressions.add(r["expression"])
     state._pending = []  # type: ignore[attr-defined]
     return state
@@ -91,10 +91,17 @@ def node_guardrails(
 
     passed 判定委托 discovery.guardrails.guardrail_passed（DSR p 值口径），与 M1 统一，
     消除双路径漂移（旧 dsr>0.5 松约 10 倍，收紧到 pval<dsr_alpha）。池级 PBO 记入 state.pbo。
-    """
-    from datetime import datetime as _dt
 
-    import polars as pl
+    DSR 的三个入参都与 M1（mining_session.py:292-307）同口径，否则 deflation 基准不自洽：
+    - ``sharpe_variance`` = trial 池 signed IR 的**经验方差**，而非 deflated_sharpe 的 H0
+      默认 ``1/n_obs``。因 ``expected_max_sharpe ∝ sqrt(sharpe_variance)`` 而多样化 trial 池
+      的经验方差恒大于 ``1/n_obs``，用默认值会让 deflation 基准系统性偏小 → 放行 M1 拒绝的因子
+      （实测漂移 ``sqrt(var_emp × n_obs)`` 倍）。
+    - ``n_trials`` 与该方差**同源**（同一批 trial）：都取「评估过且拿到有效 IR」的 attempts。
+    - ``n_obs`` = 该因子自己的 train 段有效 IC 天数 ``a.n_train``，不是 train 段日历交易日数
+      （后者更大，会系统性放大显著性）。
+    """
+    import numpy as np
 
     from factorzen.agents.evaluation import _node_to_factor_df
     from factorzen.discovery.guardrails import guardrail_passed, pool_pbo
@@ -107,6 +114,12 @@ def node_guardrails(
     ledger.record(len(passed))
     passed.sort(key=lambda a: abs(a.ic_train or 0.0), reverse=True)
 
+    # DSR 的 N 与 sharpe_variance 同源：跨轮累积的「评估过且有有效 IR」的 signed IR 池。
+    # ledger.n_trials 是逐轮 len(passed) 之和，与本池等长（ic_train 与 ir_train 同时为 None）。
+    ir_pool = [a.ir_train for a in state.attempts
+               if a.compile_ok and a.ir_train is not None]
+    sharpe_var = float(np.var(np.asarray(ir_pool))) if len(ir_pool) > 1 else 1.0
+
     existing_exprs: set[str] = {c["expression"] for c in state.candidates}
 
     pool: dict = {}
@@ -116,9 +129,6 @@ def node_guardrails(
         except Exception:
             continue
 
-    cut = _dt.strptime(bundle.train_end, "%Y%m%d").date()
-    n_obs = max(daily.filter(pl.col("trade_date") <= cut)["trade_date"].n_unique(), 20)
-
     for a in passed[:top_k]:
         if a.expression in existing_exprs:
             continue
@@ -127,7 +137,8 @@ def node_guardrails(
             fdf_hold = _node_to_factor_df(node, holdout_df)
             ic_h, ir_h, (ci_lo, ci_hi) = holdout_ic(fdf_hold, holdout_df)
             sharpe = abs(a.ir_train) if a.ir_train is not None else abs(a.ic_train or 0.0)
-            dsr, pval = deflated_sharpe(sharpe, ledger.n_trials, n_obs=n_obs)
+            dsr, pval = deflated_sharpe(sharpe, ledger.n_trials, n_obs=a.n_train or 0,
+                                        sharpe_variance=sharpe_var)
             ic_tr = a.ic_train or 0.0
             if guardrail_passed(
                 ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,

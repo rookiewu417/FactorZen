@@ -16,7 +16,7 @@ class FakeLLM:
         return self._r.pop(0) if self._r else "{}"
 
 
-def _mock_daily(n_stocks=20, n_days=120, seed=1):
+def _mock_daily(n_stocks=40, n_days=120, seed=1):
     rng = np.random.default_rng(seed)
     days, d = [], dt.date(2022, 1, 3)
     while len(days) < n_days:

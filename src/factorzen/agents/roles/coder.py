@@ -63,10 +63,15 @@ def revise_expressions(
 def revise_from_error(
     hypothesis: str, failed_expr: str, error: str, llm_fn: LLMFn
 ) -> list[str]:
-    """CoSTEER 轻量版：把无法解析的表达式的报错回灌 LLM 修正（DSL 层，无 exec 沙箱）。"""
+    """CoSTEER 轻量版：把诊断信息回灌 LLM 修正（DSL 层，无 exec 沙箱）。
+
+    诊断来源有两类：解析报错（语法/未知算子叶子），以及求值期诊断（抛异常、因子值几乎全
+    null/NaN）。故措辞不限定为「无法解析」。
+    """
     user = (
-        f"方向: {hypothesis}\n以下因子表达式无法解析: {failed_expr}\n"
-        f"报错信息: {error}\n请修正为可解析的表达式（严格遵守语法与可用算子/叶子清单）。"
+        f"方向: {hypothesis}\n以下因子表达式存在问题: {failed_expr}\n"
+        f"诊断信息: {error}\n"
+        f"请修正为既可解析、又能产出有效因子值的表达式（严格遵守语法与可用算子/叶子清单）。"
     )
     obj = _extract_json(
         llm_fn(

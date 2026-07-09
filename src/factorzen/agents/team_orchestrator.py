@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from factorzen.agents.evaluation import evaluate_expressions
+from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.nodes import node_guardrails
 from factorzen.agents.roles.coder import (
@@ -94,6 +94,8 @@ def run_team_agent(
     ledger = TrialLedger()
     state = AgentState(seed=seed)
     index = ExperimentIndex(index_path)
+    # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销
+    health = make_health_check(mining_df) if heal_rounds > 0 else None
     rounds_log: list[dict] = []
     # 上一轮 Critic 反馈：{"kind", "hypothesis", "exprs", "reason"}
     pending: dict | None = None
@@ -148,7 +150,8 @@ def run_team_agent(
                 exprs = write_expressions(hypothesis, llm_fn, avoid=rec.known_invalid)
         if heal_rounds > 0:
             from factorzen.agents.self_heal import heal_expressions
-            exprs = heal_expressions(exprs, hypothesis, llm_fn, max_rounds=heal_rounds)
+            exprs = heal_expressions(exprs, hypothesis, llm_fn,
+                                     max_rounds=heal_rounds, health_check=health)
 
         # ④ Evaluator：评估（跨 session + session 内去重）
         # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）

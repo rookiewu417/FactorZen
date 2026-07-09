@@ -46,8 +46,47 @@ def test_heal_dedup_and_mixed():
         parse_expr(h)
 
 
-def test_node_generate_heal_rounds_param():
-    import inspect
+def test_node_generate_heal_rounds_zero_disables_healing():
+    """heal_rounds=0 → 关闭自愈：非法表达式原样进入 pending，不触发 revise LLM 调用。
+
+    原测试是 `assert "heal_rounds" in inspect.signature(node_generate).parameters`——
+    形参存在不等于调用方传、也不等于它起作用，对接线缺口零判别力。改为观察 LLM 调用次数
+    与 pending 内容这两个真实行为。（heal_rounds>0 的行为见 test_agent_health_check.py）
+    """
+    import datetime as dt
+
+    import numpy as np
+    import polars as pl
 
     from factorzen.agents.nodes import node_generate
-    assert "heal_rounds" in inspect.signature(node_generate).parameters
+    from factorzen.agents.state import AgentState
+    from factorzen.discovery.scoring import DataBundle
+
+    rng = np.random.default_rng(1)
+    days, d = [], dt.date(2022, 1, 3)
+    while len(days) < 90:
+        if d.weekday() < 5:
+            days.append(d)
+        d += dt.timedelta(days=1)
+    rows = []
+    for c in [f"{i:06d}.SZ" for i in range(6)]:
+        px = 10.0
+        for dd in days:
+            px *= 1 + rng.standard_normal() * 0.02
+            rows.append({"trade_date": dd, "ts_code": c, "close": px, "open": px * 0.99,
+                         "high": px * 1.01, "low": px * 0.98, "vol": 1e6, "amount": 1e7})
+    daily = pl.DataFrame(rows)
+
+    calls: list[list] = []
+    seq = [json.dumps({"hypothesis": "h", "expressions": ["bad("], "rationale": "r"}),
+           json.dumps({"consistent": True, "reason": "ok"})]
+
+    def fn(msgs):
+        calls.append(msgs)
+        return seq[min(len(calls) - 1, len(seq) - 1)]
+
+    state = node_generate(AgentState(seed=1), fn, daily=daily,
+                          bundle=DataBundle.build(daily), heal_rounds=0)
+
+    assert len(calls) == 2, f"应只有 proposal + semantic_check 两次调用，实得 {len(calls)}"
+    assert [p.expression for p in state._pending] == ["bad("]

@@ -44,6 +44,43 @@ def _node_to_factor_df(node, daily: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5):
+    """建一个「表达式 → 诊断信息 | None」的检查器，供自愈循环回灌 LLM。
+
+    对齐 CoSTEER 的评估器：它在沙箱里真正执行代码，把 **Traceback 和 NaN 比例** 交回给模型修正。
+    本项目是 DSL，无 exec 沙箱，故在求值层取同样两类信号：求值抛的异常、以及因子值的
+    null/NaN 占比。`div(close, sub(close, close))` 这类 parse 通过却全 null 的「静默失明」
+    表达式（PR #61 嵌套 .over() bug 同型），旧循环只查 parse，一次修正机会都不给。
+
+    返回 None 表示健康。daily 只在建检查器时预处理一次（`add_derived_columns` 较重）。
+    """
+    df = _preprocess_daily(daily)
+
+    def check(expr: str) -> str | None:
+        try:
+            node = parse_expr(expr)
+        except ValueError as exc:
+            return f"解析失败: {exc}"
+        try:
+            series = eval_node(node, df)
+        except Exception as exc:
+            return f"求值失败: {type(exc).__name__}: {exc}"
+        n = series.len()
+        if n == 0:
+            return "求值结果为空序列，无任何因子值"
+        # polars: null 与 NaN 是两回事；is_nan() 遇 null 返回 null，须 fill_null(False)
+        n_null = int(series.is_null().sum())
+        n_nan = int(series.is_nan().fill_null(False).sum()) if series.dtype.is_float() else 0
+        ratio = (n_null + n_nan) / n
+        if ratio > max_null_ratio:
+            return (f"因子值 {ratio:.1%} 为 null/NaN（上限 {max_null_ratio:.0%}），"
+                    f"几乎没有有效截面信号；常见成因：分母恒零、窗口长于样本、"
+                    f"截面算子套时序算子导致分组键冲突")
+        return None
+
+    return check
+
+
 def _factor_turnover(factor_df: pl.DataFrame, quantile: float = 0.2) -> float | None:
     """纯多头 top-quantile 组合的单边换手率 ∈ [0,1]（交易成本代理，多目标评估用）。
 

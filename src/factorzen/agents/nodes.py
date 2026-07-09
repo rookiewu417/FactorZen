@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from factorzen.agents.evaluation import evaluate_expressions
+from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.memory import negative_recall
 from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.discovery.expression import parse_expr, to_expr_string
@@ -36,12 +36,16 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
     msgs = build_agent_messages(ctx.op_names, ctx.leaf_names, feedback, state.negative_examples)
     proposals = generate_factor_proposal(msgs, llm_fn, n_hypotheses=n_hypotheses)
     pending: list[_PendingExpr] = []
+    # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销
+    health = make_health_check(daily) if heal_rounds > 0 else None
     for p in proposals:
-        # 自愈：把无法解析的表达式报错回灌 Coder 修正（heal_rounds>0 时启用，CoSTEER 轻量版）
+        # 自愈：把解析报错**与求值诊断**（异常/因子值近乎全 null）回灌 Coder 修正
+        # （heal_rounds>0 时启用，CoSTEER 轻量版）
         exprs = p.expressions
         if heal_rounds > 0:
             from factorzen.agents.self_heal import heal_expressions
-            exprs = heal_expressions(p.expressions, p.hypothesis, llm_fn, max_rounds=heal_rounds)
+            exprs = heal_expressions(p.expressions, p.hypothesis, llm_fn,
+                                     max_rounds=heal_rounds, health_check=health)
         for expr in exprs:
             try:
                 norm = to_expr_string(parse_expr(expr))

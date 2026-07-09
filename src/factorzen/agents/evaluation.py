@@ -33,15 +33,26 @@ def _preprocess_daily(daily: pl.DataFrame) -> pl.DataFrame:
     return add_derived_columns(df)
 
 
-def _node_to_factor_df(node, daily: pl.DataFrame) -> pl.DataFrame:
-    """用公开 evaluate(node, df) 算因子值，组装成 [trade_date, ts_code, factor_value]。"""
+def _node_to_factor_df(node, daily: pl.DataFrame, eval_start=None) -> pl.DataFrame:
+    """用公开 evaluate(node, df) 算因子值，组装成 [trade_date, ts_code, factor_value]。
+
+    `eval_start`：**先在整帧上求值、再裁剪到 >= eval_start**（扩窗预热）。
+    holdout 段求值必须这样做——否则滚动算子在 holdout 边界只有截断窗口，发出的是偏差值。
+    传入的帧须包含 eval_start 之前的历史作为预热前缀。
+
+    PIT 安全：时序算子的滚动窗口只向过去看，holdout 首日用到的是 mining 末尾的数据（≤t）；
+    截面算子逐日独立。求值后裁剪保证不保留 eval_start 之前的任何行。
+    """
     df = _preprocess_daily(daily)
     series = eval_node(node, df)
-    return (
+    out = (
         df.select(["trade_date", "ts_code"])
         .with_columns(series.alias("factor_value"))
         .filter(pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
     )
+    if eval_start is not None:
+        out = out.filter(pl.col("trade_date") >= eval_start)
+    return out
 
 
 def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5):

@@ -77,7 +77,7 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
 
 def _run_one_round(
     state, llm_fn, *, index, ledger, rounds_log, mining_df, holdout_df, bundle,
-    pending, seed, top_k, heal_rounds, structured, health, data_window,
+    pending, seed, top_k, heal_rounds, structured, health, data_window, warmup_daily,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -137,6 +137,7 @@ def _run_one_round(
     node_guardrails(
         state, daily=mining_df, holdout_df=holdout_df,
         bundle=bundle, ledger=ledger, top_k=top_k,
+        warmup_daily=warmup_daily,   # holdout 扩窗预热用完整帧
     )
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
 
@@ -280,7 +281,7 @@ def run_team_agent(
                 mining_df=mining_df, holdout_df=holdout_df, bundle=bundle,
                 pending=pending, seed=seed, top_k=top_k,
                 heal_rounds=heal_rounds, structured=structured, health=health,
-                data_window=data_window,
+                data_window=data_window, warmup_daily=daily,
             )
         except LLMClientError as exc:
             llm_failures += 1

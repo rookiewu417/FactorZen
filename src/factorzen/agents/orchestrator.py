@@ -72,7 +72,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                                   feedback=feedback, heal_rounds=heal_rounds)
             state = node_evaluate(state, daily=mining_df, bundle=bundle)
             state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
-                                    bundle=bundle, ledger=ledger, top_k=top_k)
+                                    bundle=bundle, ledger=ledger, top_k=top_k,
+                                    warmup_daily=daily)   # holdout 扩窗预热用完整帧
             state = node_critic(state, llm_fn)
         except LLMClientError as exc:
             llm_failures += 1

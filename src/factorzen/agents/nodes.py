@@ -86,8 +86,14 @@ def node_guardrails(
     ledger,
     top_k: int = 5,
     dsr_alpha: float = 0.05,
+    warmup_daily=None,
 ) -> AgentState:
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
+
+    ``warmup_daily``：含 mining + holdout 的**完整帧**。holdout 段的因子值在它上面求值、
+    再裁剪到 ``>= holdout_start``（扩窗预热）。否则滚动算子在 holdout 边界只有截断窗口，
+    发出的偏差值直接进 holdout_ic/CI，扭曲护栏验收。PIT 安全：mining 段整体早于 holdout，
+    时序算子只向过去看。缺省 None → 退回旧行为（仅供不便传完整帧的调用方，会有边界偏差）。
 
     passed 判定委托 discovery.guardrails.guardrail_passed（DSR p 值口径），与 M1 统一，
     消除双路径漂移（旧 dsr>0.5 松约 10 倍，收紧到 pval<dsr_alpha）。池级 PBO 记入 state.pbo。
@@ -122,12 +128,22 @@ def node_guardrails(
     # （ic_train 与 ir_train 同时为 None）。
     basis = DeflationBasis.from_ir_pool([a.ir_train for a in state.attempts if a.compile_ok])
 
+    # holdout 段扩窗预热：在完整帧上求值、裁剪到 >= holdout_start。
+    # 只喂 holdout_df 会让滚动算子在边界用截断窗口，发出偏差值。
+    if warmup_daily is not None:
+        _hold_frame, _hold_start = warmup_daily, holdout_df["trade_date"].min()
+    else:
+        _hold_frame, _hold_start = holdout_df, None
+
+    def _holdout_values(node):
+        return _node_to_factor_df(node, _hold_frame, eval_start=_hold_start)
+
     existing_exprs: set[str] = {c["expression"] for c in state.candidates}
 
     pool: dict = {}
     for i, c in enumerate(state.candidates):
         try:
-            pool[f"prev_{i}"] = _node_to_factor_df(parse_expr(c["expression"]), holdout_df)
+            pool[f"prev_{i}"] = _holdout_values(parse_expr(c["expression"]))
         except Exception:
             continue
 
@@ -136,7 +152,7 @@ def node_guardrails(
             continue
         try:
             node = parse_expr(a.expression)
-            fdf_hold = _node_to_factor_df(node, holdout_df)
+            fdf_hold = _holdout_values(node)
             ic_h, ir_h, (ci_lo, ci_hi) = holdout_ic(fdf_hold, holdout_df)
             sharpe = abs(a.ir_train) if a.ir_train is not None else abs(a.ic_train or 0.0)
             dsr, pval = deflated_pvalue(sharpe, basis, a.n_train or 0)

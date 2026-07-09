@@ -157,6 +157,10 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
 
     # ── OOS holdout 永久隔离：挖掘只见 mining 段 ──
     mining_df, holdout_df, holdout_start = split_holdout(daily, holdout_ratio=holdout_ratio)
+    # 完整帧留作 holdout 段的扩窗预热前缀（滚动算子在 holdout 边界需要 mining 末尾的历史）。
+    # PIT 安全：mining 整体早于 holdout，时序算子只向过去看；求值后裁剪到 >= holdout_start。
+    warmup_daily = daily
+    holdout_eval_start = holdout_start.strftime("%Y%m%d")
     daily = mining_df  # 后续挖掘全部只用 mining 段（DataBundle/搜索/去相关）
     bundle = DataBundle.build(daily, train_ratio=train_ratio)
 
@@ -300,7 +304,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     pbo = _pool_pbo(scored, daily, bundle, eval_start, leaf_map)  # 候选池日度 IC 矩阵 → PBO
     for c in top:
         node = parse_expr(c["expression"], leaf_map)
-        fdf_hold = _factor_values(node, holdout_df, leaf_map=leaf_map)
+        fdf_hold = _factor_values(node, warmup_daily, holdout_eval_start, leaf_map)
         if fdf_hold.height >= 20:
             h_ic, _h_ir, (ci_lo, _ci_hi) = holdout_ic(fdf_hold, holdout_df)
         else:

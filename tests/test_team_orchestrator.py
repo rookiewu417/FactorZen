@@ -111,7 +111,7 @@ def test_critic_drop_removes_candidate(tmp_path: Path):
 
     drop_expr = "ts_mean(close, 5)"
 
-    def fake_guardrails(state, *, daily, holdout_df, bundle, ledger, top_k=5):
+    def fake_guardrails(state, *, daily, holdout_df, bundle, ledger, top_k=5, warmup_daily=None):
         """注入候选并计 N，模拟本轮过了护栏（含真实 node_guardrails 会做的状态写入）。"""
         ledger.record(1)  # N 诚实：记 1 个试验
         # 忠实复刻 node_guardrails 第140行的副作用：候选过护栏时标记对应 AttemptRecord

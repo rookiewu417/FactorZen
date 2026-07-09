@@ -111,8 +111,13 @@ class ExperimentIndex:
 
         注意判据是 `not passed` 这个**事实**——被去相关剔除、或被 Critic 否决的因子
         `passed` 仍为 True，它们不是「无效因子」，不该混进负例污染 LLM 的认知。
+
+        排除**编译失败**的记录：它们 `ic_train=None` → 排序键 0.0 → 会占满 top-k，
+        把有信息的「能编译但 IC 低」负例全挤出去。语法坑的价值在 `seen_expressions()`
+        的跨 session 去重，不在负例库。
         """
-        recs = [r for r in self._scoped(data_window) if not r.get("passed", False)]
+        recs = [r for r in self._scoped(data_window)
+                if not r.get("passed", False) and r.get("compile_ok", True)]
         recs.sort(key=lambda r: abs(r.get("ic_train") or 0.0))  # 最没用的优先
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]
 

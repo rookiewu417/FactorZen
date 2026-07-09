@@ -1,7 +1,7 @@
 """Agent 闭环的函数式节点：node(State) -> State。"""
 from __future__ import annotations
 
-import json
+import logging
 from dataclasses import dataclass, field
 
 from factorzen.agents.evaluation import evaluate_expressions, make_health_check
@@ -11,10 +11,13 @@ from factorzen.discovery.expression import parse_expr, to_expr_string
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 from factorzen.llm.generation import (
     LLMFn,
+    _extract_json,
     build_agent_messages,
     generate_factor_proposal,
     semantic_check,
 )
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -144,7 +147,10 @@ def node_guardrails(
     for i, c in enumerate(state.candidates):
         try:
             pool[f"prev_{i}"] = _holdout_values(parse_expr(c["expression"]))
-        except Exception:
+        except Exception as exc:
+            # 去相关池少一个成员 → 后续候选的 max_corr 偏低 → 可能放进重复因子。不是无害的。
+            _LOG.warning("已有候选 %s 的 holdout 求值失败，未计入去相关池: %s",
+                         c["expression"], exc)
             continue
 
     for a in passed[:top_k]:
@@ -182,7 +188,10 @@ def node_guardrails(
                     "dsr": dsr,
                     "dsr_pvalue": pval,
                 })
-        except Exception:
+        except Exception as exc:
+            # 静默 continue 会让「这个候选炸了」与「这个候选没过护栏」不可区分。
+            _LOG.warning("候选 %s 的护栏计算失败，已跳过: %s: %s",
+                         a.expression, type(exc).__name__, exc)
             continue
 
     try:
@@ -190,7 +199,8 @@ def node_guardrails(
             _node_to_factor_df(parse_expr(c["expression"]), daily) for c in state.candidates
         ]
         state.pbo = pool_pbo(cand_fdfs, bundle.fwd_returns)
-    except Exception:
+    except Exception as exc:
+        _LOG.warning("池级 PBO 计算失败，记为 nan: %s: %s", type(exc).__name__, exc)
         state.pbo = float("nan")
     return state
 
@@ -211,10 +221,13 @@ def node_critic(state: AgentState, llm_fn: LLMFn) -> AgentState:
                 f"train_IC:{a.ic_train} ICIR:{a.ir_train} "
                 f"换手率(单边,成本代理):{a.turnover} 过护栏:{a.passed_guardrails}")},
         ]
+        # 与 roles/critic.py 同用容错解析：request_chat 显式关掉 json_object 模式且不剥
+        # markdown 围栏，裸 json.loads 遇 ```json 围栏必抛，会被下面的 except 静默降级为 keep。
         try:
-            obj = json.loads(llm_fn(msgs))
-            a.critic_verdict = str(obj.get("verdict", "keep"))
-        except Exception:
+            obj = _extract_json(llm_fn(msgs))
+            a.critic_verdict = str(obj.get("verdict", "keep")) if obj else "keep"
+        except Exception as exc:
+            _LOG.warning("Critic 裁决解析失败，保守判 keep（不误杀）: %s", exc)
             a.critic_verdict = "keep"
     return state
 

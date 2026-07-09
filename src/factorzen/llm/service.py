@@ -69,6 +69,10 @@ def generate_llm_explanation(
         model=config.model or "",
         prompt_version=PROMPT_VERSION,
         snapshot=snapshot,
+        # 这三个也改变输出：换 provider 但 model 名不变时，漏掉它们会命中旧解读（缓存串味）
+        provider=config.provider,
+        max_tokens=config.max_tokens,
+        thinking=config.thinking,
     )
     cache_path = cache_dir / f"{key}_llm_explanation.json"
     if not refresh:

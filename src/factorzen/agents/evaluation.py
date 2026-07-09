@@ -3,12 +3,16 @@
 全部用 discovery 的公开接口，不重构 run_session（零回归）。"""
 from __future__ import annotations
 
+import logging
+
 import polars as pl
 
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import evaluate as eval_node
 from factorzen.discovery.expression import parse_expr, to_expr_string
 from factorzen.discovery.scoring import quick_fitness
+
+_LOG = logging.getLogger(__name__)
 
 _PRICE_COLS = ("close", "open", "high", "low", "vol", "amount",
                "close_adj", "open_adj", "high_adj", "low_adj")
@@ -161,6 +165,7 @@ def evaluate_expressions(
                             "ic_train": float(fit["ic_mean"]), "ir_train": float(fit["ir"]),
                             "turnover": _factor_turnover(fdf), "n_train": n_train, "error": None})
         except Exception as exc:
+            _LOG.warning("表达式 %s 求值失败: %s: %s", s, type(exc).__name__, exc)
             results.append({"expression": to_expr_string(node), "node": node, "compile_ok": True,
                             "ic_train": None, "ir_train": None, "turnover": None,
                             "n_train": 0, "error": str(exc)})

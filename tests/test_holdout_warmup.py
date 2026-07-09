@@ -26,13 +26,17 @@ mining 末尾的数据——那是 ≤t 的信息。截面算子（`rank`/`zscor
 """
 from __future__ import annotations
 
+import ast
 import datetime as dt
+from pathlib import Path
 
 import numpy as np
 import polars as pl
 import pytest
 
 from factorzen.validation.holdout import split_holdout
+
+_SRC = Path(__file__).resolve().parents[1] / "src" / "factorzen"
 
 
 def _daily(n_stocks: int = 40, n_days: int = 260, seed: int = 5) -> pl.DataFrame:
@@ -190,6 +194,36 @@ def test_m1_run_session_warms_up_holdout(tmp_path, monkeypatch):
 
     holdout_calls = [c for c in seen if c["eval_start"] is not None]
     assert holdout_calls, "holdout 求值必须带 eval_start（扩窗预热后裁剪）"
+
+
+# ── 架构守卫：默认值不许成为「静默不修」的藏身处 ──────────────────────────────
+
+
+def test_every_production_caller_passes_warmup_daily():
+    """`warmup_daily=None` 缺省会**回退到不预热的旧行为**。
+
+    这是个陷阱：将来新增的调用方只要不传它，就静默地带着 holdout 边界偏差跑，而 CI 全绿。
+    （本仓库的头号缺陷模式：修一处漏一处。）此处静态断言 src 下每个 `node_guardrails(...)`
+    调用都显式传了 `warmup_daily`。
+
+    保留缺省值而非改成必填，是因为单测常以「daily == holdout_df」的合成帧直接调用它；
+    但生产代码没有这个借口。
+    """
+    offenders: list[str] = []
+    for path in _SRC.rglob("*.py"):
+        if path.name == "nodes.py":          # 定义处
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id == "node_guardrails"
+                    and not any(kw.arg == "warmup_daily" for kw in n.keywords)):
+                offenders.append(f"{path.relative_to(_SRC).as_posix()}:{n.lineno}")
+
+    assert not offenders, (
+        "这些 node_guardrails 调用漏传 warmup_daily，将静默退回「holdout 不预热」的旧行为："
+        f"{offenders}"
+    )
 
 
 # ── 两条路径口径一致 ────────────────────────────────────────────────────────

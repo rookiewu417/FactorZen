@@ -11,7 +11,7 @@ import polars as pl
 
 from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.derived import add_derived_columns
-from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
+from factorzen.discovery.expression import evaluate_materialized, parse_expr, to_expr_string
 from factorzen.discovery.guardrails import guardrail_passed
 from factorzen.discovery.operators import LEAF_FEATURES
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
@@ -22,8 +22,9 @@ from factorzen.validation.pbo import compute_pbo
 
 
 def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) -> pl.DataFrame:
-    df = daily.sort(["ts_code", "trade_date"]).with_columns(
-        compile_expr(node, leaf_map).alias("factor_value"))
+    df = daily.sort(["ts_code", "trade_date"])
+    df = df.with_columns(
+        evaluate_materialized(node, df, leaf_map).alias("factor_value"))
     out = df.select(["trade_date", "ts_code", "factor_value"]).filter(
         pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
     if eval_start is not None:

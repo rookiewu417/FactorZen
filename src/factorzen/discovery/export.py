@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 
 from factorzen.discovery.expression import (
-    compile_expr,
+    evaluate_materialized,
     parse_expr,
     required_lookback,
 )
@@ -129,8 +129,9 @@ def alpha_cross_section_from_daily(
     """
     target = datetime.strptime(date, "%Y%m%d").date()
     node = parse_expr(expression, leaf_map)
-    fdf = daily.sort(["ts_code", "trade_date"]).with_columns(
-        compile_expr(node, leaf_map).alias("factor_value")
+    sorted_daily = daily.sort(["ts_code", "trade_date"])
+    fdf = sorted_daily.with_columns(
+        evaluate_materialized(node, sorted_daily, leaf_map).alias("factor_value")
     )
     return (
         fdf.filter(pl.col("trade_date") == target)

@@ -101,12 +101,14 @@ def node_guardrails(
     - ``n_obs`` = 该因子自己的 train 段有效 IC 天数 ``a.n_train``，不是 train 段日历交易日数
       （后者更大，会系统性放大显著性）。
     """
-    import numpy as np
-
     from factorzen.agents.evaluation import _node_to_factor_df
-    from factorzen.discovery.guardrails import guardrail_passed, pool_pbo
+    from factorzen.discovery.guardrails import (
+        DeflationBasis,
+        deflated_pvalue,
+        guardrail_passed,
+        pool_pbo,
+    )
     from factorzen.discovery.scoring import max_correlation
-    from factorzen.validation.deflated_sharpe import deflated_sharpe
     from factorzen.validation.holdout import holdout_ic
 
     passed = [a for a in state.attempts
@@ -115,10 +117,10 @@ def node_guardrails(
     passed.sort(key=lambda a: abs(a.ic_train or 0.0), reverse=True)
 
     # DSR 的 N 与 sharpe_variance 同源：跨轮累积的「评估过且有有效 IR」的 signed IR 池。
-    # ledger.n_trials 是逐轮 len(passed) 之和，与本池等长（ic_train 与 ir_train 同时为 None）。
-    ir_pool = [a.ir_train for a in state.attempts
-               if a.compile_ok and a.ir_train is not None]
-    sharpe_var = float(np.var(np.asarray(ir_pool))) if len(ir_pool) > 1 else 1.0
+    # 与 M1 共用 DeflationBasis 这一份配方（架构守卫测试禁止绕过它直接调 deflated_sharpe）。
+    # ledger.n_trials 是逐轮 len(passed) 之和，与 basis.n_trials 等长
+    # （ic_train 与 ir_train 同时为 None）。
+    basis = DeflationBasis.from_ir_pool([a.ir_train for a in state.attempts if a.compile_ok])
 
     existing_exprs: set[str] = {c["expression"] for c in state.candidates}
 
@@ -137,8 +139,7 @@ def node_guardrails(
             fdf_hold = _node_to_factor_df(node, holdout_df)
             ic_h, ir_h, (ci_lo, ci_hi) = holdout_ic(fdf_hold, holdout_df)
             sharpe = abs(a.ir_train) if a.ir_train is not None else abs(a.ic_train or 0.0)
-            dsr, pval = deflated_sharpe(sharpe, ledger.n_trials, n_obs=a.n_train or 0,
-                                        sharpe_variance=sharpe_var)
+            dsr, pval = deflated_pvalue(sharpe, basis, a.n_train or 0)
             ic_tr = a.ic_train or 0.0
             if guardrail_passed(
                 ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,

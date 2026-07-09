@@ -77,14 +77,14 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
 
 def _run_one_round(
     state, llm_fn, *, index, ledger, rounds_log, mining_df, holdout_df, bundle,
-    pending, seed, top_k, heal_rounds, structured, health,
+    pending, seed, top_k, heal_rounds, structured, health, data_window,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
     `state` / `ledger` / `rounds_log` / `index` 为可变对象，就地更新；返回下一轮的 Critic 反馈。
     抽成独立函数是为了让主循环能整轮 `try/except LLMClientError` 而不必把 120 行内联进 try 块。
     """
-    rec = recall(index, k=5)                                   # ① Librarian
+    rec = recall(index, k=5, data_window=data_window)          # ① Librarian（按窗口分族）
     tasks: list[dict] = []
 
     # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
@@ -202,6 +202,7 @@ def _run_one_round(
         round_attempts,
         run_id=f"team_{seed}",
         candidates=new_cands,
+        data_window=data_window,
     )
     state.iteration += 1
     return next_pending
@@ -221,6 +222,7 @@ def run_team_agent(
     structured: bool = False,
     on_round_end: Callable[[TeamResult], None] | None = None,
     llm_failure_patience: int = 3,
+    data_window: dict | None = None,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -237,6 +239,22 @@ def run_team_agent(
     """
     mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)
+    # ── 记录在案的假设：多重检验的 N **不跨 session 累积** ──────────────────────
+    # ledger 每 session 从 0 起。而 Librarian 把历史已试表达式喂给 LLM 让它避开，于是后续
+    # session 在同一搜索空间的剩余部分继续搜索——累计试了 120 次，DSR 却按本 session 的 N 判。
+    #
+    # 这是一个**假设**，不是已验证的结论：「跨 session 的 N 应该是多少」是建模立场
+    # （对比 P0——M1 真实的 dsr_pvalue 可反解校验，那才是事实）。当前它 latent：
+    # run_team_mine 只有 `fz mine team` 一个调用者，ops daily / research run 都不跑 team 挖掘。
+    #
+    # 若将来出现无人值守的 team 挖掘循环（多个 session 堆在同一 index_path 上），须改为：
+    # 从 index 重建**同一 data_window** 的历史 IR 池，与本 session 池合并后交给
+    # DeflationBasis.from_ir_pool —— N 与 sharpe_variance 天然同源（R8）。
+    # 前提字段（ir_train / n_train / data_window）已由 Librarian 落盘。
+    #
+    # 另有一条更根本、且 N 累积管不到的问题：**holdout 跨 session 复用**。每个 session 都拿
+    # 同一段 holdout 验收候选，跑 10 个 session 它就被看了 10 遍，不再是 OOS 而是第二个训练集。
+    # 那是 OOS 污染，修法是预算/轮换而非累积 N。单列待评估。
     ledger = TrialLedger()
     state = AgentState(seed=seed)
     index = ExperimentIndex(index_path)
@@ -262,6 +280,7 @@ def run_team_agent(
                 mining_df=mining_df, holdout_df=holdout_df, bundle=bundle,
                 pending=pending, seed=seed, top_k=top_k,
                 heal_rounds=heal_rounds, structured=structured, health=health,
+                data_window=data_window,
             )
         except LLMClientError as exc:
             llm_failures += 1

@@ -79,6 +79,7 @@ def run_team_mine(
         patience=patience,
         heal_rounds=heal_rounds,
         on_round_end=_checkpoint,
+        data_window=data_window,
     )
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

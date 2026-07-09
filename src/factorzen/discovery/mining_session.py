@@ -1,6 +1,7 @@
 # src/factorzen/discovery/mining_session.py
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import logging
@@ -210,6 +211,8 @@ def _pool_pbo(scored: list, daily: pl.DataFrame, bundle, eval_start=None, leaf_m
             series.append(ser["ic"].fill_null(0.0).to_numpy())
         except Exception:
             continue
+        finally:
+            gc.collect()  # 见 run_session 内存看护注释：逐候选回收大帧，防 30 次重算堆积
     if len(series) < 2:
         return float("nan")
     import numpy as _np
@@ -307,12 +310,24 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     # sharpe_variance 同源计算（见下方护栏验收处 F6）。
     eval_ir: dict[str, float] = {}
 
+    # 内存看护：polars 帧是 Rust/Arrow 后端，Python 只见一个小指针，大帧不计入 CPython
+    # 循环 GC 的分配阈值 → 表达式求值异常路径产生的循环引用(traceback↔frame↔大帧局部)几乎
+    # 不触发循环 GC，大帧堆积泄漏，帧越大(大 universe/长窗口)越快 OOM。每 N 次评估手动
+    # gc.collect() 打破循环、把内存压回常量级（实测 csi800×9y 从无界涨 21GB → 稳定 ~1GB）。
+    _gc_ctr = [0]
+
+    def _maybe_gc(every: int = 15) -> None:
+        _gc_ctr[0] += 1
+        if _gc_ctr[0] % every == 0:
+            gc.collect()
+
     # ── 按 method 选择候选节点列表 ─────────────────────────────────────
     if method == "genetic":
         from factorzen.discovery.search.genetic import GeneticSearcher
         gs = GeneticSearcher(rng, max_depth=3, leaves=leaves)
 
         def _score_one(node):
+            _maybe_gc()
             try:
                 if _underwarmed(node, daily, eval_start, leaf_map):
                     return -9.9   # 预热不足：与 agent 门一致，不评估、不进 eval_ir（不计入 N）
@@ -377,6 +392,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     n_errors = 0
     last_err: Exception | None = None
     for node in candidate_nodes:
+        _maybe_gc()
         expr = to_expr_string(node)
         if expr in seen:
             continue
@@ -459,6 +475,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     for cand in scored:
         if len(selected) >= top_k:
             break
+        _maybe_gc()
         try:
             fdf = _factor_values(parse_expr(cand["expression"], leaf_map), daily, eval_start, leaf_map)
         except Exception:
@@ -504,6 +521,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             holdout_df.sort(["ts_code", "trade_date"]), price_col=_pc,
         )
     for c in top:
+        _maybe_gc()
         node = parse_expr(c["expression"], leaf_map)
         fdf_hold = _factor_values(node, warmup_daily, holdout_eval_start, leaf_map)
         hres = holdout_ic_result(fdf_hold, holdout_df)

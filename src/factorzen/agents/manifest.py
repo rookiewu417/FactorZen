@@ -54,6 +54,11 @@ def write_session_manifest(
     state = result.state
     manifest = {
         "run_id": run_id, "seed": state.seed, "n_trials": result.n_trials,
+        # deflation 基准的尺度。与 n_trials 一起，才够复算出候选的 dsr_pvalue
+        # （`expected_max_sharpe ∝ sqrt(sharpe_variance)`）。partial 快照写 null——
+        # 那时还没有最终 basis。`deflation_two_sided` 说明 effective_trials = 2×n_trials。
+        "sharpe_variance": json_safe_float(getattr(result, "sharpe_variance", float("nan"))),
+        "deflation_two_sided": True,
         "iterations": state.iteration, "params": params,
         "partial": partial,
         "pbo": json_safe_float(state.pbo),

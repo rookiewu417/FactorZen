@@ -9,7 +9,7 @@ from pathlib import Path
 from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.manifest import dump_manifest, json_safe_float
-from factorzen.agents.nodes import node_guardrails
+from factorzen.agents.nodes import node_finalize_guardrails, node_guardrails
 from factorzen.agents.roles.coder import (
     decompose_tasks,
     revise_expressions,
@@ -40,6 +40,9 @@ class TeamResult:
     candidates: list[dict]
     n_trials: int
     rounds_log: list[dict] = field(default_factory=list)
+    # deflation 基准的尺度；缺了它光凭 n_trials 复算不出 dsr_pvalue。
+    # 默认 nan：中途的 on_round_end 检查点尚无最终 basis，写 null 比写假值诚实。
+    sharpe_variance: float = float("nan")
 
 
 def _normalize(expr: str) -> str:
@@ -308,11 +311,27 @@ def run_team_agent(
             on_round_end(TeamResult(state=state, candidates=state.candidates,
                                     n_trials=ledger.n_trials, rounds_log=rounds_log))
 
+    # 收尾复核：早轮候选此前按「截至当轮」的 N 定 p，门槛偏松。用最终 basis 统一重判。
+    before = {c["expression"] for c in state.candidates}
+    basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle)
+    demoted = before - {c["expression"] for c in state.candidates}
+    if demoted:
+        # Librarian 逐轮写 index 时 `passed=True` 已经落盘。补写更正记录——
+        # `ExperimentIndex._last_wins` 保证同表达式后写覆盖，否则被否掉的因子
+        # 仍会以「已验证有效」喂给后续 session。
+        record(
+            index,
+            [a for a in state.attempts if a.expression in demoted],
+            run_id=f"team_{seed}",
+            data_window=data_window,
+        )
+
     return TeamResult(
         state=state,
         candidates=state.candidates,
         n_trials=ledger.n_trials,
         rounds_log=rounds_log,
+        sharpe_variance=basis.sharpe_variance,
     )
 
 
@@ -329,6 +348,11 @@ def write_team_manifest(
         "run_id": run_id,
         "seed": result.state.seed,
         "n_trials": result.n_trials,
+        # deflation 基准的尺度。与 n_trials 一起，才够复算出候选的 dsr_pvalue
+        # （`expected_max_sharpe ∝ sqrt(sharpe_variance)`）。partial 快照写 null——
+        # 那时还没有最终 basis。`deflation_two_sided` 说明 effective_trials = 2×n_trials。
+        "sharpe_variance": json_safe_float(result.sharpe_variance),
+        "deflation_two_sided": True,
         "iterations": result.state.iteration,
         "params": params,
         "partial": partial,

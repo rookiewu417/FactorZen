@@ -16,7 +16,7 @@ from factorzen.agents.evaluation import _factor_turnover, evaluate_expressions
 from factorzen.discovery.scoring import DataBundle
 
 
-def _mock_daily(n_stocks=20, n_days=120, seed=1):
+def _mock_daily(n_stocks=40, n_days=120, seed=1):
     rng = np.random.default_rng(seed)
     days, d = [], dt.date(2022, 1, 3)
     while len(days) < n_days:
@@ -45,7 +45,7 @@ def _factor_df(values: dict) -> pl.DataFrame:
 def test_turnover_constant_ranking_is_zero():
     """每天排序完全一致（因子值=股票固定特征）→ top-k 持仓不变 → 换手率 ≈ 0。"""
     days = [dt.date(2022, 1, 3) + dt.timedelta(days=i) for i in range(10)]
-    codes = [f"{i:06d}.SZ" for i in range(20)]
+    codes = [f"{i:06d}.SZ" for i in range(40)]
     values = {(d, c): float(idx) for d in days for idx, c in enumerate(codes)}
     to = _factor_turnover(_factor_df(values), quantile=0.2)
     assert to is not None
@@ -56,7 +56,7 @@ def test_turnover_random_reshuffle_is_high():
     """每天完全随机重排 → top-k 频繁换血 → 换手率显著 > 0。"""
     rng = np.random.default_rng(7)
     days = [dt.date(2022, 1, 3) + dt.timedelta(days=i) for i in range(30)]
-    codes = [f"{i:06d}.SZ" for i in range(20)]
+    codes = [f"{i:06d}.SZ" for i in range(40)]
     values = {(d, c): float(rng.standard_normal()) for d in days for c in codes}
     to = _factor_turnover(_factor_df(values), quantile=0.2)
     assert to is not None
@@ -66,7 +66,7 @@ def test_turnover_random_reshuffle_is_high():
 def test_turnover_single_day_is_none():
     """单个交易日无法算相邻变化 → None。"""
     day = dt.date(2022, 1, 3)
-    codes = [f"{i:06d}.SZ" for i in range(20)]
+    codes = [f"{i:06d}.SZ" for i in range(40)]
     values = {(day, c): float(i) for i, c in enumerate(codes)}
     assert _factor_turnover(_factor_df(values), quantile=0.2) is None
 

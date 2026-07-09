@@ -111,7 +111,7 @@ def test_node_guardrails_n_accounting_and_holdout_isolation():
         if d.weekday() < 5:
             days.append(d)
         d += dt.timedelta(days=1)
-    codes = [f"{i:06d}.SZ" for i in range(20)]
+    codes = [f"{i:06d}.SZ" for i in range(40)]
     rows = []
     for c in codes:
         px = 10.0
@@ -280,7 +280,10 @@ def test_node_guardrails_admits_bidirectional_negative_ic():
 
     s = AgentState(seed=1)
     # 注入：强负 train IC + 负 ir_train（做空因子）；holdout 同向为负 → OOS 一致
-    s.attempts.append(AttemptRecord(0, "h", "amount", True, -0.06, False, None, None, -2.5))
+    # n_train = 该因子 train 段有效 IC 天数（DSR 的 n_obs）；单元素 IR 池 → sharpe_var 退化为 1.0
+    s.attempts.append(
+        AttemptRecord(0, "h", "amount", True, -0.06, False, None, None, -2.5, n_train=100)
+    )
     ledger = TrialLedger()
     node_guardrails(s, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
                     ledger=ledger, top_k=5, dsr_alpha=0.05)
@@ -344,7 +347,7 @@ def test_node_guardrails_n_honest_accounting():
         if d.weekday() < 5:
             days.append(d)
         d += dt.timedelta(days=1)
-    codes = [f"{i:06d}.SZ" for i in range(20)]
+    codes = [f"{i:06d}.SZ" for i in range(40)]
     rows = []
     for c in codes:
         px = 10.0

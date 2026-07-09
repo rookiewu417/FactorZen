@@ -16,6 +16,9 @@ class AttemptRecord:
     error: str | None
     ir_train: float | None = None
     turnover: float | None = None
+    # 该因子在 train 段的有效 IC 天数（DSR 的 n_obs，对齐 M1 的 c["n_train"]）；
+    # 不是 train 段日历交易日数——后者更大，会系统性放大显著性。
+    n_train: int | None = None
 
 
 @dataclass

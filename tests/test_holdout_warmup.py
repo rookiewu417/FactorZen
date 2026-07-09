@@ -226,6 +226,70 @@ def test_every_production_caller_passes_warmup_daily():
     )
 
 
+def _spy_guardrails(seen: dict):
+    def fake(state, *, daily, holdout_df, bundle, ledger, top_k=5, dsr_alpha=0.05,
+             warmup_daily=None):
+        seen["warmup"] = None if warmup_daily is None else warmup_daily.height
+        seen["mining"] = daily.height
+        seen["holdout"] = holdout_df.height
+        return state
+    return fake
+
+
+def _fake_llm():
+    import json as _json
+    st = {"round": -1}
+
+    def fn(messages):
+        system = messages[0]["content"]
+        if "consistent" in system:
+            return _json.dumps({"consistent": True, "reason": "ok"})
+        if "verdict" in system:
+            return _json.dumps({"verdict": "keep", "reason": "ok"})
+        if '"expressions"' in system and '"hypothesis"' not in system:
+            return _json.dumps({"expressions": ["ts_mean(close,5)"]})
+        if '"hypotheses"' in system:
+            return _json.dumps({"hypotheses": ["动量"]})
+        st["round"] += 1
+        return _json.dumps({"hypothesis": "h", "expressions": [f"ts_mean(close,{5 + st['round']})"],
+                            "rationale": "r"})
+    return fn
+
+
+def test_single_agent_orchestrator_passes_the_full_frame_not_the_mining_slice(monkeypatch):
+    """`warmup_daily` 必须是**完整帧**（mining + holdout），不是 mining 切片。
+
+    ast 守卫只验参数**存在**。若传成 `mining_df`，holdout 求值会把它裁剪到
+    `>= holdout_start` —— 结果为空 —— 候选**静默归零**，而没有任何东西抓得到。
+    这是双路径登记簿点名的那类隐患，值得一个直接断言。
+    """
+    import factorzen.agents.orchestrator as orch
+    from factorzen.agents.orchestrator import run_llm_agent
+
+    seen: dict = {}
+    monkeypatch.setattr(orch, "node_guardrails", _spy_guardrails(seen))
+    run_llm_agent(_daily(), _fake_llm(), n_rounds=1, seed=1, heal_rounds=0)
+
+    assert seen["warmup"] == seen["mining"] + seen["holdout"], (
+        f"warmup_daily 应是完整帧（{seen['mining']}+{seen['holdout']} 行），"
+        f"实得 {seen['warmup']} 行"
+    )
+
+
+def test_team_orchestrator_passes_the_full_frame_not_the_mining_slice(tmp_path, monkeypatch):
+    import factorzen.agents.team_orchestrator as team
+    from factorzen.agents.team_orchestrator import run_team_agent
+
+    seen: dict = {}
+    monkeypatch.setattr(team, "node_guardrails", _spy_guardrails(seen))
+    run_team_agent(_daily(), _fake_llm(), n_rounds=1, seed=1,
+                   index_path=str(tmp_path / "i.jsonl"), heal_rounds=0)
+
+    assert seen["warmup"] == seen["mining"] + seen["holdout"], (
+        f"warmup_daily 应是完整帧，实得 {seen['warmup']} 行"
+    )
+
+
 # ── 两条路径口径一致 ────────────────────────────────────────────────────────
 
 

@@ -77,7 +77,8 @@ def _mk_daily(n_days=260, n_stocks=30, seed=7):
     return pl.DataFrame(rows)
 
 
-def test_node_guardrails_records_pbo():
+def _run_guardrails_with(n_candidates: int):
+    """跑 node_guardrails，用 stub 让指定数量的候选过护栏，返回 state。"""
     from factorzen.agents.nodes import node_guardrails
     from factorzen.agents.state import AgentState, AttemptRecord
     from factorzen.discovery.scoring import DataBundle
@@ -88,10 +89,45 @@ def test_node_guardrails_records_pbo():
     mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=0.3)
     bundle = DataBundle.build(mining_df)
     state = AgentState(seed=1)
-    state.attempts.append(AttemptRecord(
-        iteration=0, hypothesis="h", expression="ts_mean(close, 5)", compile_ok=True,
-        ic_train=0.05, passed_guardrails=False, critic_verdict=None, error=None, ir_train=1.2))
-    node_guardrails(state, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
-                    ledger=TrialLedger(), top_k=5)
-    assert hasattr(state, "pbo")
-    assert state.pbo is None or isinstance(state.pbo, float)
+    # 用互不相关的表达式，避免被去相关剔除（corr>0.7）
+    exprs = ["ts_mean(close, 5)", "rank(neg(vol))", "ts_std(close, 10)"][:n_candidates]
+    for e in exprs:
+        state.attempts.append(AttemptRecord(
+            iteration=0, hypothesis="h", expression=e, compile_ok=True,
+            ic_train=0.05, passed_guardrails=False, critic_verdict=None, error=None,
+            ir_train=1.2, n_train=100))
+
+    import factorzen.discovery.guardrails as gmod
+    import factorzen.validation.holdout as hmod
+    orig_hic, orig_pass = hmod.holdout_ic, gmod.guardrail_passed
+    hmod.holdout_ic = lambda _f, _h: (0.05, 0.5, (0.01, 0.09))
+    gmod.guardrail_passed = lambda **_kw: True
+    try:
+        node_guardrails(state, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
+                        ledger=TrialLedger(), top_k=5, warmup_daily=daily)
+    finally:
+        hmod.holdout_ic, gmod.guardrail_passed = orig_hic, orig_pass
+    return state
+
+
+def test_node_guardrails_pbo_is_a_probability_when_pool_is_big_enough():
+    """PBO 是「过拟合概率」，必须落在 [0, 1]。
+
+    旧断言 `state.pbo is None or isinstance(state.pbo, float)` 是**恒真**的——nan 也是 float，
+    且单候选时 `pool_pbo` 本就返回 nan，所以它连「PBO 是不是概率」都没验证。
+    """
+    state = _run_guardrails_with(n_candidates=3)
+
+    assert len(state.candidates) >= 2, "需要 ≥2 个候选，PBO(CSCV) 才有定义"
+    assert state.pbo == state.pbo, "候选足够时 PBO 不该是 nan"
+    assert 0.0 <= state.pbo <= 1.0, f"PBO 是概率，必须 ∈ [0,1]，实得 {state.pbo}"
+
+
+def test_node_guardrails_pbo_is_nan_when_pool_too_small():
+    """候选 < 2 时 CSCV 无从切分 → nan（而非 0.0 之类会被误读为「无过拟合」的值）。"""
+    import math
+
+    state = _run_guardrails_with(n_candidates=1)
+
+    assert len(state.candidates) == 1
+    assert math.isnan(state.pbo), f"单候选时 PBO 应为 nan，实得 {state.pbo}"

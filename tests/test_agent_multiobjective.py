@@ -85,7 +85,10 @@ def test_evaluate_expressions_has_turnover_field():
     for r in out:
         assert "turnover" in r, "结果必须含 turnover 字段"
     ok = next(r for r in out if r["compile_ok"])
-    assert ok["turnover"] is None or isinstance(ok["turnover"], float)
+    # 旧断言 `is None or isinstance(float)` 恒真（None 与任意 float 全覆盖）。
+    # turnover 是单边换手率，语义上必落在 [0, 1]：0=从不换仓，1=每日全部换掉。
+    assert ok["turnover"] is not None, "可评估的表达式应算得出换手率"
+    assert 0.0 <= ok["turnover"] <= 1.0, f"单边换手率必须 ∈ [0,1]，实得 {ok['turnover']}"
     bad = next(r for r in out if not r["compile_ok"])
     assert bad["turnover"] is None
 
@@ -120,8 +123,9 @@ def test_node_evaluate_records_turnover():
     node_evaluate(state, daily=daily, bundle=bundle)
     assert len(state.attempts) == 1
     a = state.attempts[0]
-    assert hasattr(a, "turnover")
-    assert a.turnover is None or isinstance(a.turnover, float)
+    # 同上：恒真断言换成语义断言。ts_mean(close,5) 是平滑价格，换手率应显著低于「每日重排」。
+    assert a.turnover is not None
+    assert 0.0 <= a.turnover <= 1.0, f"单边换手率必须 ∈ [0,1]，实得 {a.turnover}"
 
 
 def test_team_records_turnover(tmp_path):

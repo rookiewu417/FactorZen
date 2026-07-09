@@ -381,6 +381,23 @@ def _cmd_research_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _positive_patience(raw: str) -> int:
+    """`--patience` 必须 >= 1。
+
+    早停判据是 `no_improve >= patience`；patience=0 时它在第 2 轮开头恒成立——**即使刚产出
+    新候选**——于是静默变成「只跑 1 轮」，无视 `--iterations`。而 help 文案说的是
+    「连续 N 轮无新候选则早停」，用户传 0 期望「不早停/更激进」，得到的却相反。
+    不早停请省略该参数（默认 None）。
+    """
+    n = int(raw)
+    if n < 1:
+        raise argparse.ArgumentTypeError(
+            f"patience 必须 >= 1（实得 {n}）；0/负数会让循环在第 2 轮无条件早停。"
+            "不早停请省略 --patience。"
+        )
+    return n
+
+
 def _data_window(args: argparse.Namespace) -> dict:
     """挖掘产物的数据窗口指纹，落进 manifest 的 params（铁律#3：可复现）。"""
     return {
@@ -1290,8 +1307,8 @@ def build_parser() -> argparse.ArgumentParser:
     m_agent.add_argument("--top-k", dest="top_k", type=int, default=5)
     m_agent.add_argument("--seed", type=int, default=42)
     m_agent.add_argument("--human-review", action="store_true", dest="human_review")
-    m_agent.add_argument("--patience", type=int, default=None,
-                         help="连续 N 轮无新候选则早停（默认不早停，跑满 --iterations）")
+    m_agent.add_argument("--patience", type=_positive_patience, default=None,
+                         help="连续 N 轮无新候选则早停（N>=1；默认不早停，跑满 --iterations）")
     m_agent.add_argument("--heal-rounds", dest="heal_rounds", type=int, default=2,
                          help="表达式解析失败时回灌 LLM 修正的最大轮数（0=关闭）")
     m_agent.set_defaults(func=_cmd_mine_agent)
@@ -1307,8 +1324,8 @@ def build_parser() -> argparse.ArgumentParser:
                         default="workspace/mine_team/experiment_index.jsonl")
     m_team.add_argument("--structured", action="store_true",
                         help="结构化假设(机制/预期符号/证伪判据) + 任务分解后逐任务翻译")
-    m_team.add_argument("--patience", type=int, default=None,
-                        help="连续 N 轮无新候选则早停（默认不早停，跑满 --iterations）")
+    m_team.add_argument("--patience", type=_positive_patience, default=None,
+                        help="连续 N 轮无新候选则早停（N>=1；默认不早停，跑满 --iterations）")
     m_team.add_argument("--heal-rounds", dest="heal_rounds", type=int, default=2,
                         help="表达式解析失败时回灌 LLM 修正的最大轮数（0=关闭）")
     m_team.set_defaults(func=_cmd_mine_team)

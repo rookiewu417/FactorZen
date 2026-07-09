@@ -14,6 +14,7 @@ import json
 import numpy as np
 import polars as pl
 
+from factorzen.agents.state import AttemptRecord
 from factorzen.agents.team_orchestrator import run_team_agent
 
 
@@ -86,15 +87,25 @@ def _fn_valid():
 
 
 def _stub_guardrails(*, yields_candidate: bool):
-    """替身护栏：`yields_candidate=True` 时每轮新增一个候选。"""
+    """替身护栏：`yields_candidate=True` 时每轮新增一个候选。
+
+    候选形状必须与真实 `node_guardrails` 一致——`n_train` / `ic_ci_low` / `ic_ci_high`
+    是收尾复核（`node_finalize_guardrails`）重算 DSR 所必需的。少写字段会让替身造出
+    生产中不存在的形状，测试就跑在幻觉上了。
+    """
     def fake(state, *, daily, holdout_df, bundle, ledger, top_k=5, dsr_alpha=0.05,
              warmup_daily=None):
         ledger.record(1)
         if yields_candidate:
+            state.attempts.append(AttemptRecord(
+                iteration=state.iteration, hypothesis="h", expression=f"e{state.iteration}",
+                compile_ok=True, ic_train=0.05, passed_guardrails=True, critic_verdict=None,
+                error=None, ir_train=0.4, turnover=0.3, n_train=300))
             state.candidates.append({"expression": f"e{state.iteration}", "hypothesis": "h",
                                      "ic_train": 0.05, "ir_train": 0.4, "turnover": 0.3,
                                      "holdout_ic": 0.04, "holdout_ir": 0.3,
-                                     "dsr": 0.9, "dsr_pvalue": 0.01})
+                                     "dsr": 0.9, "dsr_pvalue": 0.01,
+                                     "n_train": 300, "ic_ci_low": 0.01, "ic_ci_high": 0.07})
         return state
     return fake
 

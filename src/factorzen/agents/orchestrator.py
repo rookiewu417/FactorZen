@@ -11,6 +11,7 @@ import numpy as np
 from factorzen.agents.nodes import (
     node_critic,
     node_evaluate,
+    node_finalize_guardrails,
     node_generate,
     node_guardrails,
     node_reflect,
@@ -30,6 +31,10 @@ class AgentResult:
     state: AgentState
     candidates: list[dict]
     n_trials: int
+    # deflation 基准的尺度。缺了它，光凭 n_trials 复算不出候选的 dsr_pvalue
+    # （`expected_max_sharpe ∝ sqrt(sharpe_variance)`）——manifest 就无法自证。
+    # 默认 nan：中途的 `on_round_end` 检查点尚无最终 basis，写 null 比写一个假值诚实。
+    sharpe_variance: float = float("nan")
 
 
 def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int = 5,
@@ -95,7 +100,10 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
         if on_round_end is not None:
             on_round_end(AgentResult(state=state, candidates=state.candidates,
                                      n_trials=ledger.n_trials))
-    return AgentResult(state=state, candidates=state.candidates, n_trials=ledger.n_trials)
+    # 收尾复核：早轮候选此前按「截至当轮」的 N 定 p，门槛偏松。用最终 basis 统一重判。
+    basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle)
+    return AgentResult(state=state, candidates=state.candidates, n_trials=ledger.n_trials,
+                       sharpe_variance=basis.sharpe_variance)
 
 
 def _summarize_feedback(state: AgentState) -> str:

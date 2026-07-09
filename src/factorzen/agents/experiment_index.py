@@ -76,16 +76,41 @@ class ExperimentIndex:
                 if fcntl is not None:
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
+    @staticmethod
+    def _last_wins(recs: list[dict]) -> list[dict]:
+        """同一（归一化）表达式只保留**最新**那条记录。
+
+        index 是 append-only 的**事件日志**，一个表达式的当前状态 = 它最后一次被记录的状态。
+        Librarian 每轮写入时 `passed` 取当轮护栏结论，而收尾复核（`node_finalize_guardrails`）
+        会用最终 N 把早轮候选降级并补写更正记录。不做后写覆盖的话，旧的 `passed=True`
+        与新的 `passed=False` 会同时命中 `known_valid`/`known_invalid`，前者继续把已被
+        否掉的因子当「已验证有效」喂给后续 session。
+
+        无 `expression` 字段的记录原样保留（不参与去重）。
+        """
+        latest: dict[str, dict] = {}
+        passthrough: list[dict] = []
+        for r in recs:
+            expr = r.get("expression")
+            if expr is None:
+                passthrough.append(r)
+            else:
+                latest[_normalize(expr)] = r
+        return passthrough + list(latest.values())
+
     def _scoped(self, data_window: dict | None) -> list[dict]:
-        """按数据窗口过滤记录。`data_window=None` → 不过滤（向后兼容）。
+        """按数据窗口过滤记录 + 同表达式后写覆盖。`data_window=None` → 不过滤（向后兼容）。
 
         无 `data_window` 字段的老记录不知道来自哪个窗口，过滤时**保守排除**并告警一次
         ——静默丢弃历史会让 LLM 的负例/正例库莫名其妙地变空。
+
+        覆盖发生在**窗口过滤之后**：族边界优先于时间顺序，另一个窗口上的结论不该
+        覆盖本窗口（同一表达式在不同数据窗口上本就可能一个有效一个无效）。
         """
         key = window_key(data_window)
         recs = self.load()
         if key is None:
-            return recs
+            return self._last_wins(recs)
         global _warned_legacy_records
         kept, legacy = [], 0
         for r in recs:
@@ -100,7 +125,7 @@ class ExperimentIndex:
                 "experiment_index 有 %d 条记录缺 data_window 字段（早于按窗口分族的版本），"
                 "按窗口查询时已保守排除。它们仍可通过不带 data_window 的查询看到。", legacy
             )
-        return kept
+        return self._last_wins(kept)
 
     def seen_expressions(self, *, data_window: dict | None = None) -> set[str]:
         return {_normalize(r["expression"]) for r in self._scoped(data_window)

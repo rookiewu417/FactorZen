@@ -194,6 +194,11 @@ def node_guardrails(
                     "holdout_ir": ir_h,
                     "dsr": dsr,
                     "dsr_pvalue": pval,
+                    # 收尾复核与「拿 manifest 复算 p」都需要这三个：
+                    # n_obs 是因子自己的有效 IC 天数，CI 两端喂 guardrail_passed 的方向门槛。
+                    "n_train": a.n_train,
+                    "ic_ci_low": ci_lo,
+                    "ic_ci_high": ci_hi,
                 })
         except Exception as exc:
             # 静默 continue 会让「这个候选炸了」与「这个候选没过护栏」不可区分。
@@ -210,6 +215,72 @@ def node_guardrails(
         _LOG.warning("池级 PBO 计算失败，记为 nan: %s: %s", type(exc).__name__, exc)
         state.pbo = float("nan")
     return state
+
+
+def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = 0.05,
+                             daily=None, bundle=None):
+    """收尾：用**最终** basis 统一重算候选的 DSR，据此复核 `passed`。返回该 basis。
+
+    `node_guardrails` 每轮调用，其 basis 只覆盖「截至当轮」的 N。于是 round 0 的候选按
+    N@轮=3 定 p、round 5 的候选按 N=18 定 p —— **门槛取决于候选碰巧在第几轮被找到**。
+    但候选集是从整个 session 的 N 次试验里选出来的，多重检验记账必须覆盖整个搜索。
+    实测 `team_51_6r` 的 round-0 候选记录 p=0.0011，按最终 N=18 复算是 p=0.0212（差 19 倍），
+    且 manifest 报 n_trials=18 —— 拿 manifest 复算不出产物里的 p。
+
+    只重算 DSR：`holdout_ic` / CI / `ic_train` 都与 N 无关。**不逐轮重跑护栏**——那会让
+    N 三角和 over-count（见 discovery 的多轮累积计数陷阱）。
+
+    已知取舍：被降级的候选此前可能以 `corr>0.7` 压制过其它因子，那些因子仍留在
+    `decorrelated=True`，此处不复活。复活需重跑去相关，会引入新的 N 记账问题；
+    且方向保守（候选只减不增）。
+
+    `daily`/`bundle` 给出时重算池级 PBO——候选集变了，旧 PBO 描述的是另一个池。
+    """
+    from factorzen.agents.evaluation import _node_to_factor_df
+    from factorzen.discovery.guardrails import (
+        DeflationBasis,
+        deflated_pvalue,
+        guardrail_passed,
+        pool_pbo,
+    )
+
+    basis = DeflationBasis.from_ir_pool(
+        [a.ir_train for a in state.attempts if a.compile_ok], two_sided=True
+    )
+    if not state.candidates:
+        return basis
+
+    by_expr = {a.expression: a for a in state.attempts}
+    survivors: list[dict] = []
+    for c in state.candidates:
+        dsr, pval = deflated_pvalue(c["ir_train"] or 0.0, basis, c["n_train"] or 0)
+        c["dsr"], c["dsr_pvalue"] = dsr, pval
+        if guardrail_passed(
+            ic_train=c["ic_train"], holdout_ic=c["holdout_ic"], dsr_pvalue=pval,
+            ci_low=c["ic_ci_low"], ci_high=c["ic_ci_high"], dsr_alpha=dsr_alpha,
+        ):
+            survivors.append(c)
+        elif (a := by_expr.get(c["expression"])) is not None:
+            # 事实被更完整的 N 修正：它并没有过定量护栏。不同步的话 Librarian
+            # 会把它当「已验证有效」写进长期记忆。
+            a.passed_guardrails = False
+
+    n_dropped = len(state.candidates) - len(survivors)
+    if n_dropped:
+        _LOG.info("收尾复核：%d 个候选在最终 N=%d（双边 ⇒ %d）下不再显著，已剔除",
+                  n_dropped, basis.n_trials, basis.effective_trials)
+    state.candidates = survivors
+
+    if n_dropped and daily is not None and bundle is not None:
+        try:
+            cand_fdfs = [
+                _node_to_factor_df(parse_expr(c["expression"]), daily) for c in state.candidates
+            ]
+            state.pbo = pool_pbo(cand_fdfs, bundle.fwd_returns)
+        except Exception as exc:
+            _LOG.warning("收尾 PBO 重算失败，记为 nan: %s: %s", type(exc).__name__, exc)
+            state.pbo = float("nan")
+    return basis
 
 
 def node_critic(state: AgentState, llm_fn: LLMFn) -> AgentState:

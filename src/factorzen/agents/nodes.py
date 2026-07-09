@@ -129,7 +129,12 @@ def node_guardrails(
     # 与 M1 共用 DeflationBasis 这一份配方（架构守卫测试禁止绕过它直接调 deflated_sharpe）。
     # ledger.n_trials 是逐轮 len(passed) 之和，与 basis.n_trials 等长
     # （ic_train 与 ir_train 同时为 None）。
-    basis = DeflationBasis.from_ir_pool([a.ir_train for a in state.attempts if a.compile_ok])
+    # two_sided=True：本路径按 |ic_train| 排序（上面第 126 行）且 `guardrail_passed` 经
+    # `ci_high < 0` 分支接纳负 IC 反转因子 ⇒ 统计量是 max|IR|，deflation 基准须按 2N 算。
+    # （M1 的 fitness 用**带符号** tstat 降序，是单边搜索，反转因子以 neg(x) 形式出现，故用 N。）
+    basis = DeflationBasis.from_ir_pool(
+        [a.ir_train for a in state.attempts if a.compile_ok], two_sided=True
+    )
 
     # holdout 段扩窗预热：在完整帧上求值、裁剪到 >= holdout_start。
     # 只喂 holdout_df 会让滚动算子在边界用截断窗口，发出偏差值。
@@ -160,7 +165,9 @@ def node_guardrails(
             node = parse_expr(a.expression)
             fdf_hold = _holdout_values(node)
             ic_h, ir_h, (ci_lo, ci_hi) = holdout_ic(fdf_hold, holdout_df)
-            sharpe = abs(a.ir_train) if a.ir_train is not None else abs(a.ic_train or 0.0)
+            # 传**带符号** IR：取绝对值由 basis.two_sided 在 deflated_pvalue 内部完成，
+            # 与 effective_trials=2N 成对生效。调用方自己 abs 会让两者脱钩（PR #71 前的 bug）。
+            sharpe = a.ir_train if a.ir_train is not None else (a.ic_train or 0.0)
             dsr, pval = deflated_pvalue(sharpe, basis, a.n_train or 0)
             ic_tr = a.ic_train or 0.0
             if guardrail_passed(

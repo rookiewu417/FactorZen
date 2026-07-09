@@ -7,10 +7,11 @@
 而多样化 trial 池的经验方差恒大于 `1/n_obs`，Agent 的 deflation 基准系统性偏小 → 放行
 M1 会拒绝的因子。真实 run `agent_43_3r` 的 2 个 passed 候选按 M1 口径均不合格（2/2 翻转）。
 
-本文件的 parity 断言只覆盖**正 IR** 因子——这正是 P0 被验证的区间，且正 IR 时
-`abs(ir) == ir`，与「M1 传带符号 IR / Agent 传 abs(ir)」这条独立的符号分歧正交。
-符号轴是另一个议题（M1 的带符号 IR 使 `guardrail_passed` 的反向因子分支成为死代码），
-不在本文件范围。
+本文件守的是 **sharpe_variance 轴**（deflation 基准的尺度）。**符号轴**（统计量取不取
+绝对值、基准用 N 还是 2N）是正交的另一议题，已在 `tests/test_dsr_sidedness.py` 中解决：
+两条路径的选择规则不同（M1 按带符号 tstat 降序 = 单边；Agent 按 |ic| 排序 = 双边），
+故 Agent 用 `two_sided=True`、基准 2N。所以两路的 p 值**本就不该逐位相同**——
+相同的是它们共用的那份配方（`DeflationBasis` + `deflated_pvalue`）。
 
 本文件的「M1 侧」是在测试体内手写复现的 deflation 配方，只覆盖 Agent 一侧的行为。
 **结构性的跨路径保证不在这里**——见 `tests/test_deflation_recipe_parity.py`：
@@ -28,6 +29,7 @@ import pytest
 from factorzen.agents.evaluation import evaluate_expressions
 from factorzen.agents.nodes import node_guardrails
 from factorzen.agents.state import AgentState, AttemptRecord
+from factorzen.discovery.guardrails import DeflationBasis, deflated_pvalue
 from factorzen.discovery.scoring import DataBundle
 from factorzen.validation.deflated_sharpe import deflated_sharpe
 from factorzen.validation.multiple_testing import TrialLedger
@@ -109,14 +111,14 @@ def _stub_holdout(monkeypatch):
     monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
 
 
-def test_node_guardrails_dsr_pvalue_matches_m1_recipe(_stub_holdout):
-    """核心 decision-parity：Agent 算出的 dsr_pvalue 必须等于 M1 配方逐位算出的值。
+def test_node_guardrails_dsr_pvalue_uses_pool_variance_not_h0_default(_stub_holdout):
+    """核心断言：Agent 的 deflation 尺度必须是**池经验方差**，不是 `1/n_obs` 默认值。
 
-    M1 配方（mining_session.py:292-307）：
+    共享配方（`DeflationBasis` + `deflated_pvalue`）：
         ir_pool   = 全体评估过的唯一表达式的 signed train IR
-        N         = len(ir_pool)
+        N         = len(ir_pool)          （Agent 双边 ⇒ effective_trials = 2N）
         sharpe_var= ir_pool.var()
-        pval      = deflated_sharpe(sharpe, N, n_train, sharpe_variance=sharpe_var)[1]
+        pval      = deflated_pvalue(signed_ir, basis, n_train)[1]
     """
     daily = _mk_daily()
     mining_df, holdout_df = daily, daily
@@ -135,13 +137,17 @@ def test_node_guardrails_dsr_pvalue_matches_m1_recipe(_stub_holdout):
     assert state.candidates, "被测因子 IR=0.45 应过护栏（否则测试失去判别力）"
 
     top = max(state.candidates, key=lambda c: abs(c["ir_train"]))
-    expected_var = float(np.var(np.array(ir_pool)))
-    _, expected_p = deflated_sharpe(abs(0.45), len(ir_pool), n_train,
-                                    sharpe_variance=expected_var)
-
+    _, expected_p = deflated_pvalue(
+        0.45, DeflationBasis.from_ir_pool(ir_pool, two_sided=True), n_train
+    )
     assert top["dsr_pvalue"] == pytest.approx(expected_p, abs=1e-9), (
-        f"Agent 的 dsr_pvalue={top['dsr_pvalue']} 与 M1 配方 {expected_p} 不符 —— "
-        f"sharpe_variance 漂移（Agent 若回落 1/n_obs 会得到显著更小的 p）"
+        f"Agent 的 dsr_pvalue={top['dsr_pvalue']} 与共享配方 {expected_p} 不符"
+    )
+
+    # 判别力：若 sharpe_variance 漂移回 H0 默认 1/n_obs，p 会显著更小（这正是 P0 的形态）。
+    _, p_h0_default = deflated_sharpe(abs(0.45), 2 * len(ir_pool), n_train)
+    assert p_h0_default < expected_p / 10, (
+        "测试数据须让两种 sharpe_variance 口径的 p 拉开量级差，否则本断言无判别力"
     )
 
 

@@ -1,7 +1,6 @@
 """多角色团队编排：Librarian→Hypothesis→Coder→Evaluator→Critic 流水线 + 否决回路。"""
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -9,6 +8,7 @@ from pathlib import Path
 
 from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.experiment_index import ExperimentIndex
+from factorzen.agents.manifest import dump_manifest, json_safe_float
 from factorzen.agents.nodes import node_guardrails
 from factorzen.agents.roles.coder import (
     decompose_tasks,
@@ -303,7 +303,7 @@ def write_team_manifest(
         "iterations": result.state.iteration,
         "params": params,
         "partial": partial,
-        "pbo": result.state.pbo,
+        "pbo": json_safe_float(result.state.pbo),
         "roles": ["hypothesis", "coder", "evaluator", "critic", "librarian"],
         "rounds_log": result.rounds_log,
         "attempts": [a.__dict__ for a in result.state.attempts],
@@ -311,5 +311,5 @@ def write_team_manifest(
         "git_sha": get_git_sha(),
     }
     path = run_dir / "manifest.json"
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+    dump_manifest(manifest, path)
     return path

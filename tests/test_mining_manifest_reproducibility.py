@@ -133,6 +133,48 @@ def test_exported_dir_is_cleared_before_write():
         assert not (stale / "agent_t_99.py").exists(), "exported/ 写前应清理陈旧因子"
 
 
+def test_manifest_is_strict_json_even_when_pbo_is_nan():
+    """`pool_pbo` 在候选<2 时返回 nan；`json.dumps` 会写出裸 `NaN`，那不是合法 JSON。
+
+    Python 的 json.loads 宽容地接受它，但标准解析器（其它语言、jq、前端）会直接失败。
+    manifest 是跨工具消费的产物，必须是严格合法的 JSON。
+    """
+    import tempfile
+
+    def _strict(c):
+        raise ValueError(f"非法 JSON 常量: {c}")
+
+    with tempfile.TemporaryDirectory() as td:
+        # 1 轮 → 候选必 <2 → state.pbo 为 nan
+        run_agent_mine(_mock_daily(), n_rounds=1, seed=42, out_dir=td, llm_fn=_llm(),
+                       run_id="t", export=False)
+        raw = (Path(td) / "t" / "manifest.json").read_text()
+
+    assert "NaN" not in raw, "manifest 不得含裸 NaN（非法 JSON）"
+    m = json.loads(raw, parse_constant=_strict)      # 严格模式：遇 NaN/Infinity 即抛
+    assert m["pbo"] is None, "nan 应序列化为 null"
+
+
+def test_dump_manifest_sanitizes_nan_nested_in_tree(tmp_path):
+    """nan 不只出现在顶层 pbo：attempts[].ir_train、candidates[].dsr 都可能是 nan。"""
+    from factorzen.agents.manifest import dump_manifest
+
+    path = tmp_path / "m.json"
+    dump_manifest({
+        "pbo": float("nan"),
+        "attempts": [{"ir_train": float("nan"), "ic_train": 0.03}],
+        "candidates": [{"dsr": float("inf"), "holdout_ic": -0.05}],
+    }, path)
+
+    raw = path.read_text()
+    assert "NaN" not in raw and "Infinity" not in raw
+    m = json.loads(raw, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+    assert m["attempts"][0]["ir_train"] is None
+    assert m["attempts"][0]["ic_train"] == 0.03      # 正常值不受影响
+    assert m["candidates"][0]["dsr"] is None
+    assert m["candidates"][0]["holdout_ic"] == -0.05
+
+
 # ── CLI 接线（能力实现了不算，用户得能触达）─────────────────────────────────
 
 

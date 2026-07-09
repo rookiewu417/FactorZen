@@ -36,10 +36,15 @@ def record(
     *,
     candidates: list[dict] | None = None,
 ) -> None:
-    """把本 run 所有 AttemptRecord 写入 experiment_index（passed = passed_guardrails）。
+    """把本 run 所有 AttemptRecord 写入 experiment_index。
 
-    candidates: 可选。含 holdout_ic 的候选列表，用于归一化匹配后回填 holdout_ic 到记录。
-    若有匹配，known_valid 排序即可按 holdout_ic 降序正常工作。
+    落盘的是**事实**：`passed`（过了定量护栏）、`verdict`（Critic 裁决）、
+    `decorrelated`（因与已有候选高度相关而未入候选池）。
+    「可否借鉴」这个**决策**不在此计算，由 `ExperimentIndex.known_valid()` 综合三者推出
+    ——一处判定，避免同一语义散落在写入侧的多个分支里互相矛盾。
+
+    candidates: 可选。含 holdout_ic 的候选列表，用于归一化匹配后回填 holdout_ic 到记录，
+    供 known_valid 按 |holdout_ic| 排序。
     """
     # 构建 holdout_ic 查找字典（归一化匹配，Important 2）
     hic_map: dict[str, float] = {}
@@ -56,8 +61,9 @@ def record(
             "expression": a.expression,
             "hypothesis": a.hypothesis,
             "ic_train": a.ic_train,
-            "passed": a.passed_guardrails,
-            "verdict": a.critic_verdict,
+            "passed": a.passed_guardrails,          # 事实：过了定量护栏
+            "verdict": a.critic_verdict,            # 决策：Critic 裁决（known_valid 会读它）
+            "decorrelated": a.decorrelated,         # 决策：与已有候选高度相关，未入候选池
             "run_id": run_id,
         }
         # 回填 holdout_ic（归一化匹配）

@@ -145,10 +145,14 @@ def node_guardrails(
                 ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,
                 ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
             ):
+                # 事实先落定：过了定量护栏。去相关剔除是随后的**决策**，不得改写它——
+                # 否则该因子会以 passed=False 落进 known_invalid，被当作「已验证无效」
+                # 喂给 LLM（它其实过了全部定量护栏，只是与已有候选重复）。
+                a.passed_guardrails = True
                 corr = max_correlation(fdf_hold, pool)
                 if corr > 0.7:
+                    a.decorrelated = True
                     continue
-                a.passed_guardrails = True
                 pool[a.expression] = fdf_hold
                 existing_exprs.add(a.expression)
                 state.candidates.append({

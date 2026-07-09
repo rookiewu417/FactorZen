@@ -19,6 +19,10 @@ class AttemptRecord:
     # 该因子在 train 段的有效 IC 天数（DSR 的 n_obs，对齐 M1 的 c["n_train"]）；
     # 不是 train 段日历交易日数——后者更大，会系统性放大显著性。
     n_train: int | None = None
+    # 过了护栏但与已有候选高度相关，故未入候选池。这是**决策**，与 passed_guardrails
+    # 这个**事实**分开记：把它标成 passed=False 会让它落进 known_invalid 被当作
+    # 「已验证无效」喂给 LLM——语义污染。
+    decorrelated: bool = False
 
 
 @dataclass

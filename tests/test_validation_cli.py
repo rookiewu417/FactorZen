@@ -106,7 +106,7 @@ def _install_fake_overfit_pipeline(monkeypatch):
         calls["bootstrap"].append(list(ic_vals))
         return (-0.01, 0.09)
 
-    def fake_deflated_sharpe(ir, *, n_trials, n_obs):
+    def fake_deflated_sharpe(ir, n_trials, n_obs, skew=0.0, kurt=3.0, sharpe_variance=None):
         calls["deflated_sharpe"].append({"ir": ir, "n_trials": n_trials, "n_obs": n_obs})
         return (2.5, 0.012)
 
@@ -126,8 +126,12 @@ def _install_fake_overfit_pipeline(monkeypatch):
     monkeypatch.setattr(
         "factorzen.validation.bootstrap.block_bootstrap_ic_ci", fake_block_bootstrap_ic_ci
     )
+    # ic_overfit_report 经 guardrails.deflated_pvalue 调用 deflated_sharpe（两条挖掘路径的
+    # DSR 唯一入口，见 test_deflation_recipe_parity 的架构守卫）。guardrails 顶层已绑定该名字，
+    # 故须 patch guardrails 命名空间——patch 源模块对已绑定名字无效（此前碰巧生效只因
+    # guardrails 尚未被导入，依赖导入时序，脆弱）。
     monkeypatch.setattr(
-        "factorzen.validation.deflated_sharpe.deflated_sharpe", fake_deflated_sharpe
+        "factorzen.discovery.guardrails.deflated_sharpe", fake_deflated_sharpe
     )
     return calls
 

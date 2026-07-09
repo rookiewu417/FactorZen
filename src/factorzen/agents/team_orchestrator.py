@@ -151,12 +151,15 @@ def _run_one_round(
     }
     verdict = critique(cand, llm_fn)
 
-    # Important 2: 回填 critic_verdict 到本轮代表 attempt
+    # 回填 critic_verdict 到本轮**全部**新增候选对应的 attempt，而不只是 Critic 直接点评的
+    # 代表候选：裁决针对的是本轮的假设方向，而 new_cands 同源于一个 hypothesis。
+    # 这也是 known_valid() 判定所依赖的字段——只回填代表的话，drop 时其余候选 verdict=None，
+    # 会漏进「已验证有效」。（早先靠重置 passed_guardrails 实现连坐，见 drop 分支的说明。）
     round_expr = cand.get("expression", "")
+    round_exprs = {c["expression"] for c in new_cands} or {round_expr}
     for a in state.attempts:
-        if a.iteration == state.iteration and a.expression == round_expr:
+        if a.iteration == state.iteration and a.expression in round_exprs:
             a.critic_verdict = verdict.verdict
-            break
 
     rounds_log.append({
         "round": state.iteration,
@@ -170,17 +173,14 @@ def _run_one_round(
     # verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
     if verdict.verdict == "drop":
         del state.candidates[n_before:]                    # Important 1: 移除本轮新增候选
-        # Bug fix（否决回路名存实亡）：node_guardrails 把通过定量护栏的 AttemptRecord
-        # .passed_guardrails 置 True 后，全仓库没有其它地方重置回 False。候选被 Critic
-        # drop 时必须同步重置，否则 Librarian 落盘会写出 passed=True + verdict=drop 的
-        # 自相矛盾记录，被 ExperimentIndex.known_valid() 当作"已验证有效"喂给后续轮次/
-        # session 的假设生成，否决回路被绕过。
-        # 按 new_cands（本轮新增候选快照）整体重置，而非只重置 Critic 直接点评的代表候选
-        # cand——同一轮内若有多个候选因 drop 被一并删除，状态也要一并清理，不留连坐残留。
-        dropped_exprs = {c["expression"] for c in new_cands}
-        for a in state.attempts:
-            if a.iteration == state.iteration and a.expression in dropped_exprs:
-                a.passed_guardrails = False
+        # 否决回路（原 commit 1e0bda4）：drop 的候选不得被 known_valid() 当作「已验证有效」
+        # 喂给后续轮次/session 的假设生成。
+        #
+        # 早先的实现是把 AttemptRecord.passed_guardrails 重置为 False——那是**用事实字段
+        # 编码复用决策**：该因子确实过了全部定量护栏，标成 passed=False 会让它落进
+        # known_invalid 被当作「已验证无效」，同样是污染，只是方向相反。
+        # 现在 passed_guardrails 是不可变的事实，否决由 known_valid() 读 verdict 完成
+        # （见 ExperimentIndex._VETOED_VERDICTS）。语义不变，契约自洽。
         new_cands = []          # 不再回填 holdout_ic 等"已验证"字段（Librarian 写入用）
         next_pending = None
     elif verdict.verdict == "revise_expr":

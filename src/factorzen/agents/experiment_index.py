@@ -1,8 +1,15 @@
 # src/factorzen/agents/experiment_index.py
-"""跨 session 长期记忆：experiment_index.jsonl 读写 + 归一化查重 + 已知有效/无效。"""
+"""跨 session 长期记忆：experiment_index.jsonl 读写 + 归一化查重 + 已知有效/无效。
+
+**按数据窗口分族**：一个窗口上「已验证有效」的因子，换个窗口未必成立。若 `recall()` 从整个
+index 无差别召回，即便统计上按窗口分族，LLM 也已经在拿跨窗口的提示——信息流的族必须与
+统计族对齐。族边界 = `(start, end, universe, market)`：PIT 数据对固定窗口不可变
+（`get_universe(end, ...)` 取期末快照），同元组 = 同数据 = 同族。
+"""
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 try:
@@ -12,9 +19,13 @@ except ImportError:  # pragma: no cover - 仅非 POSIX 平台
 
 from factorzen.discovery.expression import parse_expr, to_expr_string
 
+_LOG = logging.getLogger(__name__)
+
 # Critic 否决了「方向」的裁决 → 该因子不再作为「可借鉴的已验证有效方向」喂给后续假设生成。
 # revise_expr 不在此列：方向对、只是表达式需改，思路仍值得借鉴。
 _VETOED_VERDICTS = frozenset({"drop", "revise_hypothesis"})
+
+_warned_legacy_records = False
 
 
 def _normalize(expr: str) -> str:
@@ -22,6 +33,13 @@ def _normalize(expr: str) -> str:
         return to_expr_string(parse_expr(expr))
     except ValueError:
         return expr
+
+
+def window_key(window: dict | None) -> str | None:
+    """数据窗口指纹。None 表示「不限定窗口」。"""
+    if not window:
+        return None
+    return "|".join(str(window.get(k)) for k in ("start", "end", "universe", "market"))
 
 
 class ExperimentIndex:
@@ -58,20 +76,47 @@ class ExperimentIndex:
                 if fcntl is not None:
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
-    def seen_expressions(self) -> set[str]:
-        return {_normalize(r["expression"]) for r in self.load() if "expression" in r}
+    def _scoped(self, data_window: dict | None) -> list[dict]:
+        """按数据窗口过滤记录。`data_window=None` → 不过滤（向后兼容）。
 
-    def known_invalid(self, k: int = 5) -> list[str]:
+        无 `data_window` 字段的老记录不知道来自哪个窗口，过滤时**保守排除**并告警一次
+        ——静默丢弃历史会让 LLM 的负例/正例库莫名其妙地变空。
+        """
+        key = window_key(data_window)
+        recs = self.load()
+        if key is None:
+            return recs
+        global _warned_legacy_records
+        kept, legacy = [], 0
+        for r in recs:
+            rk = window_key(r.get("data_window"))
+            if rk is None:
+                legacy += 1
+            elif rk == key:
+                kept.append(r)
+        if legacy and not _warned_legacy_records:
+            _warned_legacy_records = True
+            _LOG.warning(
+                "experiment_index 有 %d 条记录缺 data_window 字段（早于按窗口分族的版本），"
+                "按窗口查询时已保守排除。它们仍可通过不带 data_window 的查询看到。", legacy
+            )
+        return kept
+
+    def seen_expressions(self, *, data_window: dict | None = None) -> set[str]:
+        return {_normalize(r["expression"]) for r in self._scoped(data_window)
+                if "expression" in r}
+
+    def known_invalid(self, k: int = 5, *, data_window: dict | None = None) -> list[str]:
         """「已验证无效」= 没过定量护栏。按 |IC| 升序（最没用的优先）喂给 LLM 作负例。
 
         注意判据是 `not passed` 这个**事实**——被去相关剔除、或被 Critic 否决的因子
         `passed` 仍为 True，它们不是「无效因子」，不该混进负例污染 LLM 的认知。
         """
-        recs = [r for r in self.load() if not r.get("passed", False)]
+        recs = [r for r in self._scoped(data_window) if not r.get("passed", False)]
         recs.sort(key=lambda r: abs(r.get("ic_train") or 0.0))  # 最没用的优先
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]
 
-    def known_valid(self, k: int = 5) -> list[str]:
+    def known_valid(self, k: int = 5, *, data_window: dict | None = None) -> list[str]:
         """「可供借鉴」是一个**决策**，由事实（passed）与两类否决共同推出，此处集中判定。
 
         - `passed`：过了定量护栏（不可变事实，见 `AttemptRecord.passed_guardrails`）
@@ -84,7 +129,7 @@ class ExperimentIndex:
         反转因子挤到末尾、被 top-k 截断，系统性把 LLM 的借鉴方向偏离反转因子族。
         """
         recs = [
-            r for r in self.load()
+            r for r in self._scoped(data_window)
             if r.get("passed", False)
             and r.get("verdict") not in _VETOED_VERDICTS
             and not r.get("decorrelated", False)

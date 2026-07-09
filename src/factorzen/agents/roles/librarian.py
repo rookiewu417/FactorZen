@@ -21,11 +21,16 @@ class Recall:
     known_valid: list[str]
 
 
-def recall(index, *, k: int = 5) -> Recall:
+def recall(index, *, k: int = 5, data_window: dict | None = None) -> Recall:
+    """召回本数据窗口内的历史。
+
+    `data_window=None` → 不限定窗口（向后兼容）。限定时，跨窗口的历史不会被喂给 LLM：
+    一个窗口上「已验证有效」的因子，换个窗口未必成立。
+    """
     return Recall(
-        seen=index.seen_expressions(),
-        known_invalid=index.known_invalid(k=k),
-        known_valid=index.known_valid(k=k),
+        seen=index.seen_expressions(data_window=data_window),
+        known_invalid=index.known_invalid(k=k, data_window=data_window),
+        known_valid=index.known_valid(k=k, data_window=data_window),
     )
 
 
@@ -35,6 +40,7 @@ def record(
     run_id: str,
     *,
     candidates: list[dict] | None = None,
+    data_window: dict | None = None,
 ) -> None:
     """把本 run 所有 AttemptRecord 写入 experiment_index。
 
@@ -61,9 +67,15 @@ def record(
             "expression": a.expression,
             "hypothesis": a.hypothesis,
             "ic_train": a.ic_train,
+            # DSR 的 deflation 池要的是 **IR**，不是 IC。没有 ir_train / n_train，
+            # 将来永远无法从 index 重建历史 IR 池去做跨 session 的多重检验 N 累积。
+            # 记录它们不承诺任何统计立场，只是保住那个可能性（见 F2 的设计讨论）。
+            "ir_train": a.ir_train,
+            "n_train": a.n_train,
             "passed": a.passed_guardrails,          # 事实：过了定量护栏
             "verdict": a.critic_verdict,            # 决策：Critic 裁决（known_valid 会读它）
             "decorrelated": a.decorrelated,         # 决策：与已有候选高度相关，未入候选池
+            "data_window": data_window,             # 族边界：(start,end,universe,market)
             "run_id": run_id,
         }
         # 回填 holdout_ic（归一化匹配）

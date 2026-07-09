@@ -85,18 +85,48 @@ def test_mining_paths_never_call_deflated_sharpe_directly(rel):
     """两条挖掘路径必须经 `deflated_pvalue`。直接调 `deflated_sharpe` 就能自选
     `sharpe_variance`/`n_trials`，口径会再次漂移——那正是 P0 的成因。
 
-    这是本文件的**核心守卫**：它让「两路共享配方」成为 CI 可强制的结构性约束，
-    而不是一句注释里的君子协定。
+    抓两种形式：`deflated_sharpe(...)`（Name）与 `ds.deflated_sharpe(...)`（Attribute）。
     """
     tree = ast.parse((_SRC / rel).read_text(encoding="utf-8"))
     direct = [
         n for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-        and n.func.id == "deflated_sharpe"
+        if isinstance(n, ast.Call)
+        and (
+            (isinstance(n.func, ast.Name) and n.func.id == "deflated_sharpe")
+            or (isinstance(n.func, ast.Attribute) and n.func.attr == "deflated_sharpe")
+        )
     ]
     assert not direct, (
         f"{rel} 直接调用了 deflated_sharpe（第 {[n.lineno for n in direct]} 行），"
         f"绕过共享的 deflated_pvalue → 两路 deflation 口径会再次漂移"
+    )
+
+
+def test_deflated_sharpe_is_imported_only_by_guardrails():
+    """把守卫从「绊线」升级成「墙」：`deflated_sharpe` 只许 `guardrails.py` 导入。
+
+    仅禁止调用形式挡不住 `import factorzen.validation.deflated_sharpe as ds` 之后的花式引用。
+    源头收口——拿不到这个符号，就没法绕过 `deflated_pvalue` 自选 deflation 参数。
+    （`validation/` 内部与测试不受限；本断言只约束 src/factorzen 下的生产代码。）
+    """
+    offenders: list[str] = []
+    for path in _SRC.rglob("*.py"):
+        rel = path.relative_to(_SRC).as_posix()
+        if rel.startswith("validation/") or rel == "discovery/guardrails.py":
+            continue
+        # utf-8-sig：仓库里有文件带 BOM，ast.parse 遇 U+FEFF 会抛 SyntaxError
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.ImportFrom) and n.module
+                    and "deflated_sharpe" in n.module
+                    and any(a.name == "deflated_sharpe" for a in n.names)):
+                offenders.append(f"{rel}:{n.lineno}")          # from ... import deflated_sharpe
+            elif isinstance(n, ast.Import) and any("deflated_sharpe" in a.name for a in n.names):
+                offenders.append(f"{rel}:{n.lineno}")          # import ...deflated_sharpe [as ds]
+
+    assert not offenders, (
+        "只有 discovery/guardrails.py 可以导入 deflated_sharpe（其余须经 deflated_pvalue）；"
+        f"违规：{offenders}"
     )
 
 

@@ -114,8 +114,8 @@ def ic_overfit_report(
     ``factor_df``: ``[trade_date, ts_code, factor_value]``；``daily`` 用于算前向收益。
     A 股 ``fz validate overfit`` 与 crypto 单表达式验证共用此路径（避免双实现）。
     """
+    from factorzen.discovery.guardrails import DeflationBasis, deflated_pvalue
     from factorzen.validation.bootstrap import block_bootstrap_ic_ci
-    from factorzen.validation.deflated_sharpe import deflated_sharpe
 
     bundle = DataBundle.build(daily, train_ratio=train_ratio)
     clean = cross_sectional_zscore(factor_df, col="factor_value").rename(
@@ -127,6 +127,9 @@ def ic_overfit_report(
     )
     ic_vals = ic_res.ic_series["ic"].drop_nulls().drop_nans().to_numpy()
     lo, hi = block_bootstrap_ic_ci(ic_vals)
-    _dsr, p = deflated_sharpe(ic_res.ir, n_trials=1, n_obs=len(ic_vals))  # 单因子 N=1
+    # 单因子验证：语义上不存在 trial 池，N=1 → expected_max_sharpe 返回 0（无 deflation）。
+    # 仍走共享入口，使 deflated_sharpe 的导入收口在 guardrails.py 一处（架构守卫测试强制）。
+    _dsr, p = deflated_pvalue(ic_res.ir, DeflationBasis(n_trials=1, sharpe_variance=1.0),
+                              len(ic_vals))
     return {"ic_mean": float(ic_res.ic_mean), "ir": float(ic_res.ir),
             "dsr_p": float(p), "ci_lo": float(lo), "ci_hi": float(hi), "n": len(ic_vals)}

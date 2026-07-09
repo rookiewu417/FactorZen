@@ -41,17 +41,6 @@ def run_team_mine(
     dict with keys: run_dir, n_candidates, n_trials, candidates
     """
     fn = llm_fn or _default_llm_fn()
-    result = run_team_agent(
-        daily, fn,
-        n_rounds=n_rounds,
-        seed=seed,
-        index_path=index_path,
-        top_k=top_k,
-        holdout_ratio=holdout_ratio,
-        structured=structured,
-        patience=patience,
-        heal_rounds=heal_rounds,
-    )
     rid = run_id or f"team_{seed}_{n_rounds}r"
     params = {
         "n_rounds": n_rounds,
@@ -63,7 +52,25 @@ def run_team_mine(
         "patience": patience,
         "heal_rounds": heal_rounds,
     }
-    write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params)
+
+    def _checkpoint(partial_result) -> None:
+        """每轮末增量落盘：进程若在下一轮崩溃，已找到的候选不至于全损。"""
+        write_team_manifest(partial_result, out_dir=out_dir, run_id=rid,
+                            params=params, partial=True)
+
+    result = run_team_agent(
+        daily, fn,
+        n_rounds=n_rounds,
+        seed=seed,
+        index_path=index_path,
+        top_k=top_k,
+        holdout_ratio=holdout_ratio,
+        structured=structured,
+        patience=patience,
+        heal_rounds=heal_rounds,
+        on_round_end=_checkpoint,
+    )
+    write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid
     run_dir.mkdir(parents=True, exist_ok=True)
     # candidates.csv —— 兼容 fz mine leaderboard/export-alpha（含 rank + passed 列）

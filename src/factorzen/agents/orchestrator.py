@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import contextlib
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -15,9 +17,12 @@ from factorzen.agents.nodes import (
 )
 from factorzen.agents.state import AgentState
 from factorzen.discovery.scoring import DataBundle
+from factorzen.llm.client import LLMClientError
 from factorzen.llm.generation import LLMFn
 from factorzen.validation.holdout import split_holdout
 from factorzen.validation.multiple_testing import TrialLedger
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -30,7 +35,22 @@ class AgentResult:
 def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int = 5,
                   holdout_ratio: float = 0.2, human_review: bool = False,
                   patience: int | None = None,
-                  heal_rounds: int = 2) -> AgentResult:
+                  heal_rounds: int = 2,
+                  on_round_end: Callable[[AgentResult], None] | None = None,
+                  llm_failure_patience: int = 3) -> AgentResult:
+    """跑 n_rounds 轮 Agent 挖掘闭环。
+
+    ``on_round_end``：每个**成功**轮次结束时以当前累积结果回调，供调用方增量落盘。
+    没有它，进程在第 N 轮崩溃会让前 N-1 轮的候选全部丢失（manifest 只在返回后才写）。
+
+    ``llm_failure_patience``：连续多少轮 LLM 不可用即提前终止。单轮的 ``LLMClientError``
+    （client 层重试已耗尽，或 422 这类不可重试错误）只跳过该轮，不崩整个 session；
+    但 LLM 持续不可用时空转跑满 n_rounds 毫无意义。计数器在成功轮重置，
+    否则零散抖动会被累计成「持续不可用」。
+
+    只吞 ``LLMClientError``。其余异常（代码 bug、磁盘满）照常冒泡——静默吞掉它们
+    会把真实缺陷伪装成「LLM 抖动」。
+    """
     rng = np.random.default_rng(seed)  # noqa: F841 预留给未来随机选择，保证可复现入口
     mining_df, holdout_df, _hstart = split_holdout(daily, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)        # Agent 只见 mining 段
@@ -39,6 +59,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     feedback = ""
     no_improve = 0
     last_cand_count = 0
+    llm_failures = 0
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
         if patience is not None and round_i > 0:
@@ -46,16 +67,33 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             if no_improve >= patience:
                 break
         last_cand_count = len(state.candidates)
-        state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle,
-                              feedback=feedback, heal_rounds=heal_rounds)
-        state = node_evaluate(state, daily=mining_df, bundle=bundle)
-        state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
-                                bundle=bundle, ledger=ledger, top_k=top_k)
-        state = node_critic(state, llm_fn)
+        try:
+            state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle,
+                                  feedback=feedback, heal_rounds=heal_rounds)
+            state = node_evaluate(state, daily=mining_df, bundle=bundle)
+            state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
+                                    bundle=bundle, ledger=ledger, top_k=top_k)
+            state = node_critic(state, llm_fn)
+        except LLMClientError as exc:
+            llm_failures += 1
+            # 丢弃本轮未评估的暂存表达式；node_reflect 未执行，故此处补推进 iteration
+            state._pending = []  # type: ignore[attr-defined]
+            state.iteration += 1
+            _LOG.warning("第 %d 轮 LLM 不可用（连续第 %d 次），跳过本轮: %s",
+                         round_i, llm_failures, exc)
+            if llm_failures >= llm_failure_patience:
+                _LOG.error("连续 %d 轮 LLM 不可用，提前终止挖掘（已产出 %d 个候选）",
+                           llm_failures, len(state.candidates))
+                break
+            continue
+        llm_failures = 0
         if human_review:
             _human_gate(state)  # 打印候选 + 等输入（非交互/CI 跳过）
         state = node_reflect(state)
         feedback = _summarize_feedback(state)
+        if on_round_end is not None:
+            on_round_end(AgentResult(state=state, candidates=state.candidates,
+                                     n_trials=ledger.n_trials))
     return AgentResult(state=state, candidates=state.candidates, n_trials=ledger.n_trials)
 
 

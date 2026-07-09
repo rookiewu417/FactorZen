@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,9 +26,12 @@ from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.expression import parse_expr, to_expr_string
 from factorzen.discovery.scoring import DataBundle
+from factorzen.llm.client import LLMClientError
 from factorzen.llm.generation import LLMFn
 from factorzen.validation.holdout import split_holdout
 from factorzen.validation.multiple_testing import TrialLedger
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,6 +75,138 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
     return results
 
 
+def _run_one_round(
+    state, llm_fn, *, index, ledger, rounds_log, mining_df, holdout_df, bundle,
+    pending, seed, top_k, heal_rounds, structured, health,
+) -> dict | None:
+    """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
+
+    `state` / `ledger` / `rounds_log` / `index` 为可变对象，就地更新；返回下一轮的 Critic 反馈。
+    抽成独立函数是为了让主循环能整轮 `try/except LLMClientError` 而不必把 120 行内联进 try 块。
+    """
+    rec = recall(index, k=5)                                   # ① Librarian
+    tasks: list[dict] = []
+
+    # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
+    if pending and pending["kind"] == "revise_expr":
+        hypothesis = pending["hypothesis"]
+        exprs = revise_expressions(hypothesis, pending["exprs"], pending["reason"], llm_fn)
+    else:
+        fb = pending["reason"] if pending and pending["kind"] == "revise_hypothesis" else ""
+        if structured:
+            # RD-Agent 步1 结构化假设：direction/mechanism/expected_sign/falsification
+            shyps = propose_structured(
+                llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+                feedback=fb, n=1,
+            )
+            hyps = [format_structured(h) for h in shyps]
+        else:
+            hyps = propose_hypotheses(
+                llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+                feedback=fb, n=1,
+            )
+        if not hyps:
+            state.iteration += 1
+            return None
+        hypothesis = hyps[0]
+        if structured:
+            # RD-Agent 步2 任务分解：假设 → 因子任务清单，逐任务独立翻译。
+            # 拆两步是为了让每次 LLM 调用只专注一件事（合并则假设过细或规格过粗）。
+            tasks = decompose_tasks(hypothesis, llm_fn)
+        if tasks:
+            exprs = []
+            for t in tasks:
+                exprs.extend(
+                    write_expressions(_task_text(t), llm_fn, avoid=rec.known_invalid)
+                )
+        else:
+            # 未启用分解、或 LLM 分解失败（空 tasks）→ 降级为整条假设直译，不空转
+            exprs = write_expressions(hypothesis, llm_fn, avoid=rec.known_invalid)
+    if heal_rounds > 0:
+        from factorzen.agents.self_heal import heal_expressions
+        exprs = heal_expressions(exprs, hypothesis, llm_fn,
+                                 max_rounds=heal_rounds, health_check=health)
+
+    # ④ Evaluator：评估（跨 session + session 内去重）
+    # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）
+    results = _evaluate_and_record(
+        state, exprs, hypothesis,
+        daily=mining_df, bundle=bundle, mem_seen=rec.seen,
+    )
+    n_before = len(state.candidates)                       # Important 1: 护栏前快照
+    node_guardrails(
+        state, daily=mining_df, holdout_df=holdout_df,
+        bundle=bundle, ledger=ledger, top_k=top_k,
+    )
+    new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
+
+    # ⑤ Critic：看本轮候选（guardrails 已跑，含 dsr/holdout）
+    # Minor 2: 取本轮新增候选；无则构造 stub（不误杀，不取旧候选）
+    cand = new_cands[-1] if new_cands else {
+        "expression": results[-1]["expression"] if results else (exprs[0] if exprs else ""),
+        "hypothesis": hypothesis,
+        "ic_train": results[-1]["ic_train"] if results else None,
+        "ir_train": results[-1]["ir_train"] if results else None,
+        "turnover": results[-1].get("turnover") if results else None,
+    }
+    verdict = critique(cand, llm_fn)
+
+    # Important 2: 回填 critic_verdict 到本轮代表 attempt
+    round_expr = cand.get("expression", "")
+    for a in state.attempts:
+        if a.iteration == state.iteration and a.expression == round_expr:
+            a.critic_verdict = verdict.verdict
+            break
+
+    rounds_log.append({
+        "round": state.iteration,
+        "hypothesis": hypothesis,
+        "tasks": tasks,                       # 步2 产物，实验溯源用（非 structured 轮为 []）
+        "expressions": [r["expression"] for r in results],
+        "verdict": verdict.verdict,
+        "reason": verdict.reason,
+    })
+
+    # verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
+    if verdict.verdict == "drop":
+        del state.candidates[n_before:]                    # Important 1: 移除本轮新增候选
+        # Bug fix（否决回路名存实亡）：node_guardrails 把通过定量护栏的 AttemptRecord
+        # .passed_guardrails 置 True 后，全仓库没有其它地方重置回 False。候选被 Critic
+        # drop 时必须同步重置，否则 Librarian 落盘会写出 passed=True + verdict=drop 的
+        # 自相矛盾记录，被 ExperimentIndex.known_valid() 当作"已验证有效"喂给后续轮次/
+        # session 的假设生成，否决回路被绕过。
+        # 按 new_cands（本轮新增候选快照）整体重置，而非只重置 Critic 直接点评的代表候选
+        # cand——同一轮内若有多个候选因 drop 被一并删除，状态也要一并清理，不留连坐残留。
+        dropped_exprs = {c["expression"] for c in new_cands}
+        for a in state.attempts:
+            if a.iteration == state.iteration and a.expression in dropped_exprs:
+                a.passed_guardrails = False
+        new_cands = []          # 不再回填 holdout_ic 等"已验证"字段（Librarian 写入用）
+        next_pending = None
+    elif verdict.verdict == "revise_expr":
+        next_pending = {
+            "kind": "revise_expr",
+            "hypothesis": hypothesis,
+            "exprs": exprs,
+            "reason": verdict.reason,
+        }
+    elif verdict.verdict == "revise_hypothesis":
+        next_pending = {"kind": "revise_hypothesis", "reason": verdict.reason}
+    else:
+        next_pending = None
+
+    # ⑥ Librarian：本轮 attempts 写 experiment_index（含 holdout_ic 回填）
+    round_attempts = [a for a in state.attempts if a.iteration == state.iteration]
+    record(
+        index,
+        round_attempts,
+        run_id=f"team_{seed}",
+        candidates=new_cands,
+    )
+    state.iteration += 1
+    return next_pending
+
+
 def run_team_agent(
     daily,
     llm_fn: LLMFn,
@@ -82,12 +219,21 @@ def run_team_agent(
     patience: int | None = None,
     heal_rounds: int = 2,
     structured: bool = False,
+    on_round_end: Callable[[TeamResult], None] | None = None,
+    llm_failure_patience: int = 3,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
     N 诚实：node_guardrails 每轮恰好调用一次（记本轮 N），不在同轮内多次调用（避免三角和）。
     holdout 隔离：mining_df 供角色/记忆，holdout_df 只进 node_guardrails。
     跨轮 feedback：Critic verdict=revise_expr → 下轮 Coder.revise；revise_hypothesis → 下轮 Hypothesis（带 feedback）。
+
+    ``on_round_end``：每个**成功**轮次结束时回调，供调用方增量落盘——否则进程在第 N 轮崩溃
+    会让前 N-1 轮的候选全部丢失（manifest 只在返回后才写）。
+
+    ``llm_failure_patience``：连续多少轮 LLM 不可用即提前终止。单轮的 ``LLMClientError``
+    （client 层重试已耗尽，或 422 这类不可重试错误）只跳过该轮；计数器在成功轮重置，
+    否则零散抖动会被累计成「持续不可用」。只吞 ``LLMClientError``，其余异常照常冒泡。
     """
     mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)
@@ -101,6 +247,7 @@ def run_team_agent(
     pending: dict | None = None
     no_improve = 0
     last_cand_count = 0
+    llm_failures = 0
 
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
@@ -109,127 +256,28 @@ def run_team_agent(
             if no_improve >= patience:
                 break
         last_cand_count = len(state.candidates)
-        rec = recall(index, k=5)                                   # ① Librarian
-        tasks: list[dict] = []
-
-        # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
-        if pending and pending["kind"] == "revise_expr":
-            hypothesis = pending["hypothesis"]
-            exprs = revise_expressions(hypothesis, pending["exprs"], pending["reason"], llm_fn)
-        else:
-            fb = pending["reason"] if pending and pending["kind"] == "revise_hypothesis" else ""
-            if structured:
-                # RD-Agent 步1 结构化假设：direction/mechanism/expected_sign/falsification
-                shyps = propose_structured(
-                    llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
-                    feedback=fb, n=1,
-                )
-                hyps = [format_structured(h) for h in shyps]
-            else:
-                hyps = propose_hypotheses(
-                    llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
-                    feedback=fb, n=1,
-                )
-            if not hyps:
-                state.iteration += 1
-                pending = None
-                continue
-            hypothesis = hyps[0]
-            if structured:
-                # RD-Agent 步2 任务分解：假设 → 因子任务清单，逐任务独立翻译。
-                # 拆两步是为了让每次 LLM 调用只专注一件事（合并则假设过细或规格过粗）。
-                tasks = decompose_tasks(hypothesis, llm_fn)
-            if tasks:
-                exprs = []
-                for t in tasks:
-                    exprs.extend(
-                        write_expressions(_task_text(t), llm_fn, avoid=rec.known_invalid)
-                    )
-            else:
-                # 未启用分解、或 LLM 分解失败（空 tasks）→ 降级为整条假设直译，不空转
-                exprs = write_expressions(hypothesis, llm_fn, avoid=rec.known_invalid)
-        if heal_rounds > 0:
-            from factorzen.agents.self_heal import heal_expressions
-            exprs = heal_expressions(exprs, hypothesis, llm_fn,
-                                     max_rounds=heal_rounds, health_check=health)
-
-        # ④ Evaluator：评估（跨 session + session 内去重）
-        # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）
-        results = _evaluate_and_record(
-            state, exprs, hypothesis,
-            daily=mining_df, bundle=bundle, mem_seen=rec.seen,
-        )
-        n_before = len(state.candidates)                       # Important 1: 护栏前快照
-        node_guardrails(
-            state, daily=mining_df, holdout_df=holdout_df,
-            bundle=bundle, ledger=ledger, top_k=top_k,
-        )
-        new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
-
-        # ⑤ Critic：看本轮候选（guardrails 已跑，含 dsr/holdout）
-        # Minor 2: 取本轮新增候选；无则构造 stub（不误杀，不取旧候选）
-        cand = new_cands[-1] if new_cands else {
-            "expression": results[-1]["expression"] if results else (exprs[0] if exprs else ""),
-            "hypothesis": hypothesis,
-            "ic_train": results[-1]["ic_train"] if results else None,
-            "ir_train": results[-1]["ir_train"] if results else None,
-            "turnover": results[-1].get("turnover") if results else None,
-        }
-        verdict = critique(cand, llm_fn)
-
-        # Important 2: 回填 critic_verdict 到本轮代表 attempt
-        round_expr = cand.get("expression", "")
-        for a in state.attempts:
-            if a.iteration == state.iteration and a.expression == round_expr:
-                a.critic_verdict = verdict.verdict
+        try:
+            pending = _run_one_round(
+                state, llm_fn, index=index, ledger=ledger, rounds_log=rounds_log,
+                mining_df=mining_df, holdout_df=holdout_df, bundle=bundle,
+                pending=pending, seed=seed, top_k=top_k,
+                heal_rounds=heal_rounds, structured=structured, health=health,
+            )
+        except LLMClientError as exc:
+            llm_failures += 1
+            state.iteration += 1   # 角色流水线未跑完，此处补推进以保持轮次语义一致
+            pending = None
+            _LOG.warning("第 %d 轮 LLM 不可用（连续第 %d 次），跳过本轮: %s",
+                         round_i, llm_failures, exc)
+            if llm_failures >= llm_failure_patience:
+                _LOG.error("连续 %d 轮 LLM 不可用，提前终止挖掘（已产出 %d 个候选）",
+                           llm_failures, len(state.candidates))
                 break
-
-        rounds_log.append({
-            "round": state.iteration,
-            "hypothesis": hypothesis,
-            "tasks": tasks,                       # 步2 产物，实验溯源用（非 structured 轮为 []）
-            "expressions": [r["expression"] for r in results],
-            "verdict": verdict.verdict,
-            "reason": verdict.reason,
-        })
-
-        # verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
-        if verdict.verdict == "drop":
-            del state.candidates[n_before:]                    # Important 1: 移除本轮新增候选
-            # Bug fix（否决回路名存实亡）：node_guardrails 把通过定量护栏的 AttemptRecord
-            # .passed_guardrails 置 True 后，全仓库没有其它地方重置回 False。候选被 Critic
-            # drop 时必须同步重置，否则 Librarian 落盘会写出 passed=True + verdict=drop 的
-            # 自相矛盾记录，被 ExperimentIndex.known_valid() 当作"已验证有效"喂给后续轮次/
-            # session 的假设生成，否决回路被绕过。
-            # 按 new_cands（本轮新增候选快照）整体重置，而非只重置 Critic 直接点评的代表候选
-            # cand——同一轮内若有多个候选因 drop 被一并删除，状态也要一并清理，不留连坐残留。
-            dropped_exprs = {c["expression"] for c in new_cands}
-            for a in state.attempts:
-                if a.iteration == state.iteration and a.expression in dropped_exprs:
-                    a.passed_guardrails = False
-            new_cands = []          # 不再回填 holdout_ic 等"已验证"字段（Librarian 写入用）
-            pending = None
-        elif verdict.verdict == "revise_expr":
-            pending = {
-                "kind": "revise_expr",
-                "hypothesis": hypothesis,
-                "exprs": exprs,
-                "reason": verdict.reason,
-            }
-        elif verdict.verdict == "revise_hypothesis":
-            pending = {"kind": "revise_hypothesis", "reason": verdict.reason}
-        else:
-            pending = None
-
-        # ⑥ Librarian：本轮 attempts 写 experiment_index（含 holdout_ic 回填）
-        round_attempts = [a for a in state.attempts if a.iteration == state.iteration]
-        record(
-            index,
-            round_attempts,
-            run_id=f"team_{seed}",
-            candidates=new_cands,
-        )
-        state.iteration += 1
+            continue
+        llm_failures = 0
+        if on_round_end is not None:
+            on_round_end(TeamResult(state=state, candidates=state.candidates,
+                                    n_trials=ledger.n_trials, rounds_log=rounds_log))
 
     return TeamResult(
         state=state,
@@ -240,8 +288,12 @@ def run_team_agent(
 
 
 def write_team_manifest(
-    result: TeamResult, *, out_dir: str, run_id: str, params: dict
+    result: TeamResult, *, out_dir: str, run_id: str, params: dict, partial: bool = False
 ) -> Path:
+    """落 team manifest。
+
+    ``partial=True`` 表示轮末的增量快照——挖掘尚未跑完，进程若在此后崩溃，留在磁盘上的就是它。
+    """
     run_dir = Path(out_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -250,6 +302,8 @@ def write_team_manifest(
         "n_trials": result.n_trials,
         "iterations": result.state.iteration,
         "params": params,
+        "partial": partial,
+        "pbo": result.state.pbo,
         "roles": ["hypothesis", "coder", "evaluator", "critic", "librarian"],
         "rounds_log": result.rounds_log,
         "attempts": [a.__dict__ for a in result.state.attempts],

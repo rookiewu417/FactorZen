@@ -24,13 +24,20 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = "workspace
                    export: bool = True, patience: int | None = None,
                    heal_rounds: int = 2) -> dict:
     fn = llm_fn or _default_llm_fn()
-    result = run_llm_agent(daily, fn, n_rounds=n_rounds, seed=seed, top_k=top_k,
-                           holdout_ratio=holdout_ratio, human_review=human_review,
-                           patience=patience, heal_rounds=heal_rounds)
     rid = run_id or f"agent_{seed}_{n_rounds}r"
     params = {"n_rounds": n_rounds, "seed": seed, "top_k": top_k, "holdout_ratio": holdout_ratio,
               "patience": patience, "heal_rounds": heal_rounds}
-    write_session_manifest(result, out_dir=out_dir, run_id=rid, params=params)
+
+    def _checkpoint(partial_result) -> None:
+        """每轮末增量落盘：进程若在下一轮崩溃，已找到的候选不至于全损。"""
+        write_session_manifest(partial_result, out_dir=out_dir, run_id=rid,
+                               params=params, partial=True)
+
+    result = run_llm_agent(daily, fn, n_rounds=n_rounds, seed=seed, top_k=top_k,
+                           holdout_ratio=holdout_ratio, human_review=human_review,
+                           patience=patience, heal_rounds=heal_rounds,
+                           on_round_end=_checkpoint)
+    write_session_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid
     # candidates.csv —— 兼容 fz mine leaderboard/export-alpha（含 rank + passed 列）
     run_dir.mkdir(parents=True, exist_ok=True)

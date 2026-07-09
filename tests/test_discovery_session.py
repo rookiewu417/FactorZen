@@ -173,19 +173,23 @@ def test_dsr_n_trials_same_source_as_sharpe_variance(tmp_path, monkeypatch):
     """R8：DSR 的 n_trials 必须与 sharpe_variance 同源（都来自存活集 scored），
     而非取被 height/n_train/退化/去重跳过者膨胀的 seen/eval_cache 计数。"""
     import factorzen.discovery.mining_session as ms
-    captured: list[int] = []
-    real = ms.deflated_sharpe
+    captured: list = []
+    real = ms.deflated_pvalue
 
-    def spy(sharpe, n_trials, n_obs, **kw):
-        captured.append(n_trials)
-        return real(sharpe, n_trials, n_obs, **kw)
+    def spy(sharpe, basis, n_obs):
+        captured.append(basis)
+        return real(sharpe, basis, n_obs)
 
-    monkeypatch.setattr(ms, "deflated_sharpe", spy)
+    monkeypatch.setattr(ms, "deflated_pvalue", spy)
     res = ms.run_session(_daily(n_stocks=40, n_days=150), n_trials=40, top_k=5, seed=42,
                          method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
-    assert captured, "deflated_sharpe 应至少被调用一次"
-    assert len(set(captured)) == 1                      # 所有候选共用同一 N
-    assert captured[0] == res["n_scored"]               # N == 存活集大小（与 sharpe_var 同源）
+    assert captured, "deflated_pvalue 应至少被调用一次"
+    # 抽出 DeflationBasis 后「同源」成了结构性保证：一个对象同时携带 n_trials 与
+    # sharpe_variance，由 from_ir_pool 一次算出，不可能各取各的池。
+    assert len({id(b) for b in captured}) == 1          # 所有候选共用同一个 basis 对象
+    basis = captured[0]
+    assert basis.n_trials == res["n_scored"]            # N == 存活集大小
+    assert basis.sharpe_variance == res["sharpe_variance"]
     assert res["n_scored"] >= len(res["candidates"])    # 存活集 ⊇ top-K
     assert res["n_scored"] > 0
 
@@ -205,9 +209,9 @@ def test_deflated_sharpe_train_n_vs_mining_window_n_flips_significance():
 
 
 def test_session_dsr_uses_candidate_own_train_n(tmp_path, monkeypatch):
-    """集成测试：run_session 内对每个候选调用 deflated_sharpe() 时，传入的样本数
+    """集成测试：run_session 内对每个候选调用 deflated_pvalue() 时，传入的样本数
     必须是该候选自己在 train 段的真实样本数(c["n_train"])，而不是退化为所有候选共用
-    的全局 mining 段交易日数。用 monkeypatch 拦截 deflated_sharpe 的调用参数核对。"""
+    的全局 mining 段交易日数。用 monkeypatch 拦截 deflated_pvalue 的调用参数核对。"""
     import factorzen.discovery.mining_session as ms_mod
     from factorzen.validation.holdout import split_holdout
 
@@ -218,18 +222,18 @@ def test_session_dsr_uses_candidate_own_train_n(tmp_path, monkeypatch):
     legacy_n_obs_mining = mining_df["trade_date"].n_unique()
 
     calls: list[int] = []
-    real_dsr = ms_mod.deflated_sharpe
+    real_dsr = ms_mod.deflated_pvalue
 
-    def _spy_deflated_sharpe(sharpe, n_trials, n_obs, **kwargs):
+    def _spy_deflated_pvalue(sharpe, basis, n_obs):
         calls.append(n_obs)
-        return real_dsr(sharpe, n_trials, n_obs, **kwargs)
+        return real_dsr(sharpe, basis, n_obs)
 
-    monkeypatch.setattr(ms_mod, "deflated_sharpe", _spy_deflated_sharpe)
+    monkeypatch.setattr(ms_mod, "deflated_pvalue", _spy_deflated_pvalue)
 
     res = ms_mod.run_session(daily, n_trials=30, top_k=5, seed=42,
                              method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
 
-    assert calls, "deflated_sharpe 应至少被调用一次"
+    assert calls, "deflated_pvalue 应至少被调用一次"
     assert len(calls) == len(res["candidates"])
     for n_obs_used, c in zip(calls, res["candidates"], strict=True):
         assert "n_train" in c
@@ -256,9 +260,9 @@ def test_random_dsr_n_still_equals_scored(tmp_path, monkeypatch):
     """回归：random 路径 N 仍等于存活集大小（与 sharpe_variance 同源，R8 不变）。"""
     import factorzen.discovery.mining_session as ms
     captured: list[int] = []
-    real = ms.deflated_sharpe
-    monkeypatch.setattr(ms, "deflated_sharpe",
-                        lambda s, n, o, **k: (captured.append(n), real(s, n, o, **k))[1])
+    real = ms.deflated_pvalue
+    monkeypatch.setattr(ms, "deflated_pvalue",
+                        lambda s, b, o: (captured.append(b.n_trials), real(s, b, o))[1])
     res = ms.run_session(_daily(n_stocks=40, n_days=150), n_trials=40, top_k=5, seed=42,
                          method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
     assert captured and len(set(captured)) == 1

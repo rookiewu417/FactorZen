@@ -12,11 +12,14 @@ import polars as pl
 from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import evaluate_materialized, parse_expr, to_expr_string
-from factorzen.discovery.guardrails import guardrail_passed
+from factorzen.discovery.guardrails import (
+    DeflationBasis,
+    deflated_pvalue,
+    guardrail_passed,
+)
 from factorzen.discovery.operators import LEAF_FEATURES
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
 from factorzen.discovery.search.random_search import RandomSearcher
-from factorzen.validation.deflated_sharpe import deflated_sharpe
 from factorzen.validation.holdout import holdout_ic, split_holdout
 from factorzen.validation.pbo import compute_pbo
 
@@ -286,13 +289,14 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     # 跨代 eval_ir——因为 elitism 使最终代最优即全程 argmax，选择实际发生在整个搜索空间上，而非
     # 仅最终代存活集 len(scored)≈pop_size；只数最终代会系统性低估 N、放松 DSR（passed 偏松，危险方向）。
     if method == "genetic" and eval_ir:
-        ir_pool = np.array(list(eval_ir.values()))
+        ir_pool = list(eval_ir.values())
     else:
-        ir_pool = np.array([c["ir_train"] for c in scored]) if scored else np.array([0.0])
+        ir_pool = [c["ir_train"] for c in scored] if scored else []
+    # N 与 sharpe_variance 同源，且与 Agent 路径共用同一份配方（架构守卫测试禁止绕过）
+    basis = DeflationBasis.from_ir_pool(ir_pool)
     ledger = TrialLedger()
-    ledger.record(int(ir_pool.size))
+    ledger.record(basis.n_trials)
     n_evaluated = ledger.n_trials
-    sharpe_var = float(ir_pool.var()) if ir_pool.size > 1 else 1.0
     pbo = _pool_pbo(scored, daily, bundle, eval_start, leaf_map)  # 候选池日度 IC 矩阵 → PBO
     for c in top:
         node = parse_expr(c["expression"], leaf_map)
@@ -304,7 +308,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         # DSR 显著性检验须用该候选自己在 train 段的真实样本数(n_train)，
         # 不能用 mining 全段交易日数——后者比 train 段大约 1/train_ratio 倍，
         # 会系统性放大显著性（让候选看起来比实际更显著，危险方向）。
-        _dsr, p = deflated_sharpe(c["ir_train"], n_evaluated, c["n_train"], sharpe_variance=sharpe_var)
+        _dsr, p = deflated_pvalue(c["ir_train"], basis, c["n_train"])
         c["n_trials"] = n_evaluated
         c["pbo"] = round(pbo, 4) if pbo == pbo else float("nan")
         c["holdout_ic"] = round(float(h_ic), 4) if h_ic == h_ic else float("nan")
@@ -321,6 +325,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     pl.DataFrame(rows).write_csv(session_dir / "candidates.csv") if rows else \
         (session_dir / "candidates.csv").write_text("rank,n_trials," + ",".join(_cols) + "\n")
     manifest = {"seed": seed, "method": method, "n_trials": n_evaluated, "cli_n_trials": n_trials,
+                # deflation 门槛由 (n_trials, sharpe_variance) 共同决定，属可复现必要信息
+                "sharpe_variance": basis.sharpe_variance,
                 "top_k": top_k, "train_end": bundle.train_end, "holdout_start": str(holdout_start),
                 "git_sha": get_git_sha(), "duration_seconds": round(time.perf_counter() - t0, 3),
                 "candidates": top,
@@ -331,5 +337,6 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     for i, c in enumerate(top):
         export_candidate(c["expression"], f"mined_{seed}_{i+1}", str(exported_dir))
     return {"candidates": top, "n_trials": n_evaluated, "n_scored": len(scored),
+            "sharpe_variance": basis.sharpe_variance,
             "session_dir": str(session_dir),
             "holdout_start": str(holdout_start), "mining_end": str(daily["trade_date"].max())}

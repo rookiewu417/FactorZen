@@ -388,7 +388,8 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
     # 与搜索路径共用数据准备：复权价 + daily_basic（否则 agent 用未复权价冒充复权、缺叶子）
     daily = prepare_mining_daily(args.start, args.end, args.universe)
     res = run_agent_mine(daily, n_rounds=args.iterations, seed=args.seed,
-                         top_k=args.top_k, human_review=args.human_review)
+                         top_k=args.top_k, human_review=args.human_review,
+                         patience=args.patience, heal_rounds=args.heal_rounds)
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -400,7 +401,9 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     # 与搜索路径共用数据准备：复权价 + daily_basic（消除双路径漂移）
     daily = prepare_mining_daily(args.start, args.end, args.universe)
     res = run_team_mine(daily, n_rounds=args.iterations, seed=args.seed,
-                        top_k=args.top_k, index_path=args.index_path)
+                        top_k=args.top_k, index_path=args.index_path,
+                        structured=args.structured, patience=args.patience,
+                        heal_rounds=args.heal_rounds)
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -1270,6 +1273,10 @@ def build_parser() -> argparse.ArgumentParser:
     m_agent.add_argument("--top-k", dest="top_k", type=int, default=5)
     m_agent.add_argument("--seed", type=int, default=42)
     m_agent.add_argument("--human-review", action="store_true", dest="human_review")
+    m_agent.add_argument("--patience", type=int, default=None,
+                         help="连续 N 轮无新候选则早停（默认不早停，跑满 --iterations）")
+    m_agent.add_argument("--heal-rounds", dest="heal_rounds", type=int, default=2,
+                         help="表达式解析失败时回灌 LLM 修正的最大轮数（0=关闭）")
     m_agent.set_defaults(func=_cmd_mine_agent)
 
     m_team = mine_sub.add_parser("team", help="Multi-agent team factor mining")
@@ -1281,6 +1288,12 @@ def build_parser() -> argparse.ArgumentParser:
     m_team.add_argument("--seed", type=int, default=42)
     m_team.add_argument("--index-path", dest="index_path",
                         default="workspace/mine_team/experiment_index.jsonl")
+    m_team.add_argument("--structured", action="store_true",
+                        help="结构化假设(机制/预期符号/证伪判据) + 任务分解后逐任务翻译")
+    m_team.add_argument("--patience", type=int, default=None,
+                        help="连续 N 轮无新候选则早停（默认不早停，跑满 --iterations）")
+    m_team.add_argument("--heal-rounds", dest="heal_rounds", type=int, default=2,
+                        help="表达式解析失败时回灌 LLM 修正的最大轮数（0=关闭）")
     m_team.set_defaults(func=_cmd_mine_team)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）

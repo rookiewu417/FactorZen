@@ -132,9 +132,9 @@ def test_manifest_survives_mid_loop_crash(tmp_path):
     llm = _smart_llm(fail_rounds=frozenset({2}), exc=RuntimeError)
     with pytest.raises(RuntimeError):
         run_agent_mine(_mock_daily(), n_rounds=3, seed=1, out_dir=str(tmp_path),
-                       llm_fn=llm, export=False)
+                       llm_fn=llm, export=False, run_id="crash")
 
-    mf = tmp_path / "agent_1_3r" / "manifest.json"
+    mf = tmp_path / "crash" / "manifest.json"
     assert mf.exists(), "崩溃前应已增量落盘，而非全损"
     m = json.loads(mf.read_text())
     assert m["partial"] is True, "中途崩溃留下的 manifest 必须自标 partial"
@@ -146,9 +146,9 @@ def test_completed_run_marks_manifest_not_partial(tmp_path):
     from factorzen.pipelines.factor_mine_agent import run_agent_mine
 
     run_agent_mine(_mock_daily(), n_rounds=2, seed=1, out_dir=str(tmp_path),
-                   llm_fn=_smart_llm(), export=False)
+                   llm_fn=_smart_llm(), export=False, run_id="done")
 
-    m = json.loads((tmp_path / "agent_1_2r" / "manifest.json").read_text())
+    m = json.loads((tmp_path / "done" / "manifest.json").read_text())
     assert m["partial"] is False, "正常跑完的 manifest 不应标 partial"
     assert m["iterations"] == 2
 
@@ -204,8 +204,9 @@ def test_team_manifest_survives_mid_loop_crash(tmp_path):
     llm = _team_llm(fail_rounds=frozenset({2}), exc=RuntimeError)
     with pytest.raises(RuntimeError):
         run_team_mine(_mock_daily(), n_rounds=3, seed=1, out_dir=str(tmp_path / "out"),
-                      index_path=str(tmp_path / "idx.jsonl"), llm_fn=llm, export=False)
+                      index_path=str(tmp_path / "idx.jsonl"), llm_fn=llm, export=False,
+                      run_id="team_crash")
 
-    m = json.loads((tmp_path / "out" / "team_1_3r" / "manifest.json").read_text())
+    m = json.loads((tmp_path / "out" / "team_crash" / "manifest.json").read_text())
     assert m["partial"] is True
     assert m["iterations"] == 2, "崩溃在第 3 轮 → 落盘的是前 2 轮"

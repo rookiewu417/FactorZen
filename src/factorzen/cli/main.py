@@ -381,6 +381,21 @@ def _cmd_research_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _data_window(args: argparse.Namespace) -> dict:
+    """挖掘产物的数据窗口指纹，落进 manifest 的 params（铁律#3：可复现）。"""
+    return {
+        "start": args.start,
+        "end": args.end,
+        "universe": args.universe,
+        "market": getattr(args, "market", "ashare"),
+    }
+
+
+def _command_line(args: argparse.Namespace) -> str:
+    """触发本次运行的命令行（由 main() 从实际 argv 组装，非 sys.argv）。"""
+    return getattr(args, "command_line", "")
+
+
 def _cmd_mine_agent(args: argparse.Namespace) -> int:
     from factorzen.pipelines.factor_mine import prepare_mining_daily
     from factorzen.pipelines.factor_mine_agent import run_agent_mine
@@ -389,7 +404,8 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
     daily = prepare_mining_daily(args.start, args.end, args.universe)
     res = run_agent_mine(daily, n_rounds=args.iterations, seed=args.seed,
                          top_k=args.top_k, human_review=args.human_review,
-                         patience=args.patience, heal_rounds=args.heal_rounds)
+                         patience=args.patience, heal_rounds=args.heal_rounds,
+                         data_window=_data_window(args), command=_command_line(args))
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -403,7 +419,8 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     res = run_team_mine(daily, n_rounds=args.iterations, seed=args.seed,
                         top_k=args.top_k, index_path=args.index_path,
                         structured=args.structured, patience=args.patience,
-                        heal_rounds=args.heal_rounds)
+                        heal_rounds=args.heal_rounds,
+                        data_window=_data_window(args), command=_command_line(args))
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -1500,7 +1517,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    effective = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(effective)
+    # 落 manifest 用（铁律#3）。记「实际传入的 argv」而非 sys.argv——main() 被程序化调用时
+    # （如 research run 编排器）sys.argv 是外层进程的命令行，会记错。
+    args.command_line = "fz " + " ".join(effective)
     return int(args.func(args))
 
 

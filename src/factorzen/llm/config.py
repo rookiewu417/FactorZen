@@ -40,6 +40,7 @@ class LLMConfig:
     temperature: float = 0.2
     max_tokens: int = 700
     thinking: str | None = None
+    provider: str | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -90,4 +91,5 @@ def load_llm_config(*, enabled: bool, env_file: Path | None = _DEFAULT_ENV_FILE)
         timeout_seconds=timeout,
         max_tokens=max_tokens,
         thinking=_get_setting("FACTORZEN_LLM_THINKING", file_values),
+        provider=_get_setting("FACTORZEN_LLM_PROVIDER", file_values),
     )

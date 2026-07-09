@@ -30,6 +30,9 @@ def run_team_mine(
     holdout_ratio: float = 0.2,
     run_id: str | None = None,
     export: bool = True,
+    structured: bool = False,
+    patience: int | None = None,
+    heal_rounds: int = 2,
 ) -> dict:
     """跑多 Agent 团队挖掘，落 team manifest + candidates.csv + 导出候选。
 
@@ -45,6 +48,9 @@ def run_team_mine(
         index_path=index_path,
         top_k=top_k,
         holdout_ratio=holdout_ratio,
+        structured=structured,
+        patience=patience,
+        heal_rounds=heal_rounds,
     )
     rid = run_id or f"team_{seed}_{n_rounds}r"
     params = {
@@ -53,6 +59,9 @@ def run_team_mine(
         "top_k": top_k,
         "holdout_ratio": holdout_ratio,
         "index_path": index_path,
+        "structured": structured,
+        "patience": patience,
+        "heal_rounds": heal_rounds,
     }
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params)
     run_dir = Path(out_dir) / rid

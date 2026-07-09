@@ -45,7 +45,7 @@ def test_cmd_mine_team_forwards_args_to_run_team_mine(monkeypatch, capsys) -> No
 
     run_calls: list[dict[str, object]] = []
 
-    def fake_run_team_mine(daily, *, n_rounds, seed, top_k, index_path):
+    def fake_run_team_mine(daily, *, n_rounds, seed, top_k, index_path, **_):
         run_calls.append(
             {
                 "daily": daily,
@@ -117,7 +117,7 @@ def test_cmd_mine_team_passes_universe_to_prepare(monkeypatch) -> None:
 
     captured: dict[str, object] = {}
 
-    def fake_run_team_mine(daily, *, n_rounds, seed, top_k, index_path):
+    def fake_run_team_mine(daily, *, n_rounds, seed, top_k, index_path, **_):
         captured["daily"] = daily
         return {"n_candidates": 0, "n_trials": 0, "run_dir": "workspace/mine_team/x"}
 

@@ -6,11 +6,13 @@ from factorzen.llm.generation import LLMFn, _extract_json
 
 
 def _syntax_prompt() -> str:
+    from factorzen.llm.prompt_fragments import ASHARE_CAVEATS
     return (
         "可用算子: " + ", ".join(OPERATORS.keys()) + "\n"
         "可用特征(叶子): " + ", ".join(LEAF_FEATURES.keys()) + "\n"
         "时序算子最后一个参数是整型窗口，如 ts_mean(close, 20)。\n"
         '只输出 JSON: {"expressions": ["...", "..."]}。'
+        "\n" + ASHARE_CAVEATS
     )
 
 
@@ -56,3 +58,55 @@ def revise_expressions(
         return []
     exprs = obj.get("expressions")
     return [str(e) for e in exprs] if isinstance(exprs, list) else []
+
+
+def revise_from_error(
+    hypothesis: str, failed_expr: str, error: str, llm_fn: LLMFn
+) -> list[str]:
+    """CoSTEER 轻量版：把诊断信息回灌 LLM 修正（DSL 层，无 exec 沙箱）。
+
+    诊断来源有两类：解析报错（语法/未知算子叶子），以及求值期诊断（抛异常、因子值几乎全
+    null/NaN）。故措辞不限定为「无法解析」。
+    """
+    user = (
+        f"方向: {hypothesis}\n以下因子表达式存在问题: {failed_expr}\n"
+        f"诊断信息: {error}\n"
+        f"请修正为既可解析、又能产出有效因子值的表达式（严格遵守语法与可用算子/叶子清单）。"
+    )
+    obj = _extract_json(
+        llm_fn(
+            [
+                {"role": "system", "content": _syntax_prompt()},
+                {"role": "user", "content": user},
+            ]
+        )
+    )
+    if not obj:
+        return []
+    exprs = obj.get("expressions")
+    return [str(e) for e in exprs] if isinstance(exprs, list) else []
+
+
+def decompose_tasks(hypothesis: str, llm_fn: LLMFn) -> list[dict]:
+    """RD-Agent 步2 任务分解：把假设拆成带 rationale 的因子任务清单（name/description/rationale）。"""
+    sys = (
+        "把选股假设分解为 1-3 个可实现的因子任务。每个任务含 name(因子名)、"
+        "description(一句话描述)、rationale(为何这样构造)。只输出 JSON: "
+        '{"tasks":[{"name":"...","description":"...","rationale":"..."}]}。'
+    )
+    obj = _extract_json(
+        llm_fn([
+            {"role": "system", "content": sys},
+            {"role": "user", "content": f"假设: {hypothesis}"},
+        ])
+    )
+    if not obj:
+        return []
+    tasks = obj.get("tasks")
+    if not isinstance(tasks, list):
+        return []
+    return [
+        {"name": str(t.get("name", "")), "description": str(t.get("description", "")),
+         "rationale": str(t.get("rationale", ""))}
+        for t in tasks if isinstance(t, dict)
+    ]

@@ -5,12 +5,20 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from factorzen.agents.evaluation import evaluate_expressions
+from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.nodes import node_guardrails
-from factorzen.agents.roles.coder import revise_expressions, write_expressions
+from factorzen.agents.roles.coder import (
+    decompose_tasks,
+    revise_expressions,
+    write_expressions,
+)
 from factorzen.agents.roles.critic import critique
-from factorzen.agents.roles.hypothesis import propose_hypotheses
+from factorzen.agents.roles.hypothesis import (
+    format_structured,
+    propose_hypotheses,
+    propose_structured,
+)
 from factorzen.agents.roles.librarian import recall, record
 from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.core.experiment import get_git_sha
@@ -36,6 +44,14 @@ def _normalize(expr: str) -> str:
         return expr
 
 
+def _task_text(task: dict) -> str:
+    """把分解出的因子任务渲染成供 Coder 翻译的方向文本（名称 + 描述 + 构造理由）。"""
+    parts = [task.get("name", ""), task.get("description", "")]
+    if task.get("rationale"):
+        parts.append(f"构造理由: {task['rationale']}")
+    return "；".join(p for p in parts if p)
+
+
 def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
     """评估一批表达式（跳过 mem_seen 去重），写 AttemptRecord，返回本批新评估的结果列表。
 
@@ -48,7 +64,8 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
         state.attempts.append(AttemptRecord(
             iteration=state.iteration, hypothesis=hypothesis, expression=r["expression"],
             compile_ok=r["compile_ok"], ic_train=r["ic_train"], passed_guardrails=False,
-            critic_verdict=None, error=r["error"], ir_train=r["ir_train"]))
+            critic_verdict=None, error=r["error"], ir_train=r["ir_train"],
+            turnover=r.get("turnover")))
         state.seen_expressions.add(r["expression"])
     return results
 
@@ -62,6 +79,9 @@ def run_team_agent(
     index_path: str,
     top_k: int = 5,
     holdout_ratio: float = 0.2,
+    patience: int | None = None,
+    heal_rounds: int = 2,
+    structured: bool = False,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -74,29 +94,64 @@ def run_team_agent(
     ledger = TrialLedger()
     state = AgentState(seed=seed)
     index = ExperimentIndex(index_path)
+    # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销
+    health = make_health_check(mining_df) if heal_rounds > 0 else None
     rounds_log: list[dict] = []
     # 上一轮 Critic 反馈：{"kind", "hypothesis", "exprs", "reason"}
     pending: dict | None = None
+    no_improve = 0
+    last_cand_count = 0
 
-    for _ in range(n_rounds):
+    for round_i in range(n_rounds):
+        # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
+        if patience is not None and round_i > 0:
+            no_improve = 0 if len(state.candidates) > last_cand_count else no_improve + 1
+            if no_improve >= patience:
+                break
+        last_cand_count = len(state.candidates)
         rec = recall(index, k=5)                                   # ① Librarian
+        tasks: list[dict] = []
 
-        # ②/③ Hypothesis + Coder（依据上一轮 Critic 反馈，跨轮）
+        # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
         if pending and pending["kind"] == "revise_expr":
             hypothesis = pending["hypothesis"]
             exprs = revise_expressions(hypothesis, pending["exprs"], pending["reason"], llm_fn)
         else:
             fb = pending["reason"] if pending and pending["kind"] == "revise_hypothesis" else ""
-            hyps = propose_hypotheses(
-                llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
-                feedback=fb, n=1,
-            )
+            if structured:
+                # RD-Agent 步1 结构化假设：direction/mechanism/expected_sign/falsification
+                shyps = propose_structured(
+                    llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+                    feedback=fb, n=1,
+                )
+                hyps = [format_structured(h) for h in shyps]
+            else:
+                hyps = propose_hypotheses(
+                    llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+                    feedback=fb, n=1,
+                )
             if not hyps:
                 state.iteration += 1
                 pending = None
                 continue
             hypothesis = hyps[0]
-            exprs = write_expressions(hypothesis, llm_fn, avoid=rec.known_invalid)
+            if structured:
+                # RD-Agent 步2 任务分解：假设 → 因子任务清单，逐任务独立翻译。
+                # 拆两步是为了让每次 LLM 调用只专注一件事（合并则假设过细或规格过粗）。
+                tasks = decompose_tasks(hypothesis, llm_fn)
+            if tasks:
+                exprs = []
+                for t in tasks:
+                    exprs.extend(
+                        write_expressions(_task_text(t), llm_fn, avoid=rec.known_invalid)
+                    )
+            else:
+                # 未启用分解、或 LLM 分解失败（空 tasks）→ 降级为整条假设直译，不空转
+                exprs = write_expressions(hypothesis, llm_fn, avoid=rec.known_invalid)
+        if heal_rounds > 0:
+            from factorzen.agents.self_heal import heal_expressions
+            exprs = heal_expressions(exprs, hypothesis, llm_fn,
+                                     max_rounds=heal_rounds, health_check=health)
 
         # ④ Evaluator：评估（跨 session + session 内去重）
         # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）
@@ -117,6 +172,8 @@ def run_team_agent(
             "expression": results[-1]["expression"] if results else (exprs[0] if exprs else ""),
             "hypothesis": hypothesis,
             "ic_train": results[-1]["ic_train"] if results else None,
+            "ir_train": results[-1]["ir_train"] if results else None,
+            "turnover": results[-1].get("turnover") if results else None,
         }
         verdict = critique(cand, llm_fn)
 
@@ -130,6 +187,7 @@ def run_team_agent(
         rounds_log.append({
             "round": state.iteration,
             "hypothesis": hypothesis,
+            "tasks": tasks,                       # 步2 产物，实验溯源用（非 structured 轮为 []）
             "expressions": [r["expression"] for r in results],
             "verdict": verdict.verdict,
             "reason": verdict.reason,

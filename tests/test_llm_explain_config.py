@@ -80,3 +80,23 @@ def test_config_reads_optional_thinking_mode(tmp_path, monkeypatch):
     config = load_llm_config(enabled=True, env_file=env_file)
 
     assert config.thinking == "disabled"
+
+
+def test_config_reads_optional_provider_pin(tmp_path, monkeypatch):
+    monkeypatch.delenv("FACTORZEN_LLM_PROVIDER", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "FACTORZEN_LLM_BASE_URL=https://aiping.cn/api/v1",
+                "FACTORZEN_LLM_API_KEY=secret",
+                "FACTORZEN_LLM_MODEL=DeepSeek-V4-Pro",
+                "FACTORZEN_LLM_PROVIDER=DeepSeek",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_llm_config(enabled=True, env_file=env_file)
+
+    assert config.provider == "DeepSeek"

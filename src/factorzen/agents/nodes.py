@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from factorzen.agents.evaluation import evaluate_expressions
+from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.memory import negative_recall
 from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.discovery.expression import parse_expr, to_expr_string
@@ -30,24 +30,32 @@ class AgentContext:
 
 
 def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
-                  n_hypotheses: int = 1, feedback: str = "") -> AgentState:
+                  n_hypotheses: int = 1, feedback: str = "", heal_rounds: int = 0) -> AgentState:
     """生成假设+表达式 → 语义对齐自检 → 暂存待评估（compile/eval 在 node_evaluate）。"""
     ctx = AgentContext()
     msgs = build_agent_messages(ctx.op_names, ctx.leaf_names, feedback, state.negative_examples)
     proposals = generate_factor_proposal(msgs, llm_fn, n_hypotheses=n_hypotheses)
     pending: list[_PendingExpr] = []
+    # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销
+    health = make_health_check(daily) if heal_rounds > 0 else None
     for p in proposals:
-        for expr in p.expressions:
-            # 归一化后去重（与 node_evaluate 中 seen_expressions 一致）
+        # 自愈：把解析报错**与求值诊断**（异常/因子值近乎全 null）回灌 Coder 修正
+        # （heal_rounds>0 时启用，CoSTEER 轻量版）
+        exprs = p.expressions
+        if heal_rounds > 0:
+            from factorzen.agents.self_heal import heal_expressions
+            exprs = heal_expressions(p.expressions, p.hypothesis, llm_fn,
+                                     max_rounds=heal_rounds, health_check=health)
+        for expr in exprs:
             try:
                 norm = to_expr_string(parse_expr(expr))
             except ValueError:
-                norm = expr  # 非法保持原始（evaluate 记 compile_ok=False）
+                norm = expr
             if norm in state.seen_expressions:
                 continue
             ok, _reason = semantic_check(p.hypothesis, expr, llm_fn)
             if ok:
-                pending.append(_PendingExpr(p.hypothesis, norm))  # 暂存归一化形式
+                pending.append(_PendingExpr(p.hypothesis, norm))
     state.__dict__.setdefault("_pending", [])
     state._pending = pending  # type: ignore[attr-defined]
     return state
@@ -62,7 +70,8 @@ def node_evaluate(state: AgentState, *, daily, bundle) -> AgentState:
         state.attempts.append(AttemptRecord(
             iteration=state.iteration, hypothesis=p.hypothesis, expression=r["expression"],
             compile_ok=r["compile_ok"], ic_train=r["ic_train"], passed_guardrails=False,
-            critic_verdict=None, error=r["error"], ir_train=r["ir_train"]))
+            critic_verdict=None, error=r["error"], ir_train=r["ir_train"],
+            turnover=r.get("turnover")))
         state.seen_expressions.add(r["expression"])
     state._pending = []  # type: ignore[attr-defined]
     return state
@@ -76,35 +85,30 @@ def node_guardrails(
     bundle,
     ledger,
     top_k: int = 5,
-    dsr_threshold: float = 0.5,
+    dsr_alpha: float = 0.05,
 ) -> AgentState:
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
 
-    灵魂约束：
-    - ledger.record(N)：诚实记账**本轮**（state.iteration）编译成功且有 IC 的表达式数。
-    - holdout_df 只在此节点接触，生成/反思全程不见（隔离）。
-    - family-aware 去冗余：新候选与已入选 candidates 截面相关 > 0.7 则跳过（跨轮）。
+    passed 判定委托 discovery.guardrails.guardrail_passed（DSR p 值口径），与 M1 统一，
+    消除双路径漂移（旧 dsr>0.5 松约 10 倍，收紧到 pval<dsr_alpha）。池级 PBO 记入 state.pbo。
     """
-    import math
     from datetime import datetime as _dt
 
     import polars as pl
 
     from factorzen.agents.evaluation import _node_to_factor_df
+    from factorzen.discovery.guardrails import guardrail_passed, pool_pbo
     from factorzen.discovery.scoring import max_correlation
     from factorzen.validation.deflated_sharpe import deflated_sharpe
     from factorzen.validation.holdout import holdout_ic
 
-    # Fix 1: 只取本轮 attempts（iteration == state.iteration，node_reflect 尚未推进）
     passed = [a for a in state.attempts
               if a.iteration == state.iteration and a.compile_ok and a.ic_train is not None]
-    ledger.record(len(passed))  # N 诚实：只记本轮新评估数，消除三角和 over-count
+    ledger.record(len(passed))
     passed.sort(key=lambda a: abs(a.ic_train or 0.0), reverse=True)
 
-    # Minor 2：跨 iteration 去重——已入选的表达式不重复入选
     existing_exprs: set[str] = {c["expression"] for c in state.candidates}
 
-    # Fix 2: family-aware pool：从已入选 candidates 预建跨轮相关基线
     pool: dict = {}
     for i, c in enumerate(state.candidates):
         try:
@@ -112,58 +116,50 @@ def node_guardrails(
         except Exception:
             continue
 
-    # Fix 3: n_obs 使用 train 段交易日数（与 ir_train 同源，避免高估 ~1.4x）
     cut = _dt.strptime(bundle.train_end, "%Y%m%d").date()
     n_obs = max(daily.filter(pl.col("trade_date") <= cut)["trade_date"].n_unique(), 20)
 
     for a in passed[:top_k]:
-        # Minor 2：跨 iteration 去重
         if a.expression in existing_exprs:
             continue
         try:
             node = parse_expr(a.expression)
             fdf_hold = _node_to_factor_df(node, holdout_df)
             ic_h, ir_h, (ci_lo, ci_hi) = holdout_ic(fdf_hold, holdout_df)
-            # #128 双向一致：top_k 按 abs(ic_train) 排序（承认做空/负 IC 因子），DSR 的
-            # Sharpe 代理也须用 abs(ir_train)——否则强负 IC 因子 signed ir<0 → DSR≈0，
-            # 占了 top_k 名额却被系统性误杀，与 abs 排序自相矛盾。回退仍用 abs(ic_train)。
             sharpe = abs(a.ir_train) if a.ir_train is not None else abs(a.ic_train or 0.0)
-            dsr, pval = deflated_sharpe(
-                sharpe,
-                ledger.n_trials,
-                n_obs=n_obs,
-            )
-            # #135 OOS 护栏不能「只算不判」：仅查 NaN 时，holdout IC 反号/近零的过拟合候选照样
-            # 入选，隔离形同虚设。对齐 M1 _guard_passed 的 CI 方向门槛（双向泛化）——holdout IC
-            # 95% bootstrap CI 须在 train 方向上整体离 0：train 正 → ci 下界>0；train 负 → ci 上界<0。
+            dsr, pval = deflated_sharpe(sharpe, ledger.n_trials, n_obs=n_obs)
             ic_tr = a.ic_train or 0.0
-            oos_ok = (
-                not math.isnan(ic_h)
-                and not math.isnan(ci_lo)
-                and not math.isnan(ci_hi)
-                and (ci_lo > 0 if ic_tr > 0 else ci_hi < 0)
-            )
-            if oos_ok and dsr > dsr_threshold:
-                # family-aware 去冗余：新候选与已入选 candidates 截面相关 > 0.7 则跳过
+            if guardrail_passed(
+                ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,
+                ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
+            ):
                 corr = max_correlation(fdf_hold, pool)
                 if corr > 0.7:
                     continue
                 a.passed_guardrails = True
                 pool[a.expression] = fdf_hold
                 existing_exprs.add(a.expression)
-                state.candidates.append(
-                    {
-                        "expression": a.expression,
-                        "hypothesis": a.hypothesis,
-                        "ic_train": a.ic_train,
-                        "holdout_ic": ic_h,
-                        "holdout_ir": ir_h,
-                        "dsr": dsr,
-                        "dsr_pvalue": pval,
-                    }
-                )
+                state.candidates.append({
+                    "expression": a.expression,
+                    "hypothesis": a.hypothesis,
+                    "ic_train": a.ic_train,
+                    "ir_train": a.ir_train,
+                    "turnover": a.turnover,
+                    "holdout_ic": ic_h,
+                    "holdout_ir": ir_h,
+                    "dsr": dsr,
+                    "dsr_pvalue": pval,
+                })
         except Exception:
             continue
+
+    try:
+        cand_fdfs = [
+            _node_to_factor_df(parse_expr(c["expression"]), daily) for c in state.candidates
+        ]
+        state.pbo = pool_pbo(cand_fdfs, bundle.fwd_returns)
+    except Exception:
+        state.pbo = float("nan")
     return state
 
 
@@ -173,20 +169,15 @@ def node_critic(state: AgentState, llm_fn: LLMFn) -> AgentState:
         if a.critic_verdict is not None:
             continue
         msgs = [
-            {
-                "role": "system",
-                "content": (
-                    "你是风控审计员，判断因子是否过拟合/经济直觉是否成立，"
-                    '只输出 JSON: {"verdict":"keep"|"drop"|"mutate","reason":"..."}'
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"假设:{a.hypothesis} 表达式:{a.expression} "
-                    f"train_IC:{a.ic_train} 过护栏:{a.passed_guardrails}"
-                ),
-            },
+            {"role": "system", "content": (
+                "你是风控审计员，判断因子是否过拟合/经济直觉是否成立。"
+                "注意：换手率高意味着交易成本侵蚀，train_IC 高但换手率高的因子未必可实现"
+                "超额收益（成本双杀）；结合 ICIR（信息比率，越高越稳定）综合判断。"
+                '只输出 JSON: {"verdict":"keep"|"drop"|"mutate","reason":"..."}')},
+            {"role": "user", "content": (
+                f"假设:{a.hypothesis} 表达式:{a.expression} "
+                f"train_IC:{a.ic_train} ICIR:{a.ir_train} "
+                f"换手率(单边,成本代理):{a.turnover} 过护栏:{a.passed_guardrails}")},
         ]
         try:
             obj = json.loads(llm_fn(msgs))

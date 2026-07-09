@@ -60,7 +60,7 @@ def test_cmd_mine_agent_forwards_args_to_run_agent_mine(monkeypatch, capsys):
 
     run_calls: list[dict[str, object]] = []
 
-    def fake_run_agent_mine(daily, *, n_rounds, seed, top_k, human_review):
+    def fake_run_agent_mine(daily, *, n_rounds, seed, top_k, human_review, **_):
         run_calls.append(
             {
                 "daily": daily,
@@ -132,7 +132,7 @@ def test_cmd_mine_agent_passes_universe_to_prepare(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def fake_run_agent_mine(daily, *, n_rounds, seed, top_k, human_review):
+    def fake_run_agent_mine(daily, *, n_rounds, seed, top_k, human_review, **_):
         captured["daily"] = daily
         return {"n_candidates": 0, "n_trials": 0, "run_dir": "workspace/mine_agent/x"}
 

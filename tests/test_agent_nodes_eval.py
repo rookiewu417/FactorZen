@@ -212,10 +212,10 @@ def test_node_guardrails_family_aware_dedup():
         )
 
     ledger = TrialLedger()
-    # dsr_threshold=0.0 绕过 DSR 门槛，专注测试 family-aware 去冗余逻辑
+    # dsr_alpha=1.0 绕过 DSR 门槛(pval<1.0 恒真)，专注测试 family-aware 去冗余逻辑
     s = node_guardrails(
         s, daily=mining_df, holdout_df=holdout_df, bundle=bundle, ledger=ledger,
-        top_k=5, dsr_threshold=0.0,
+        top_k=5, dsr_alpha=1.0,
     )
 
     # 两个高度相关候选只能入选 <= 1 个（family-aware 过滤同族冗余）
@@ -283,7 +283,7 @@ def test_node_guardrails_admits_bidirectional_negative_ic():
     s.attempts.append(AttemptRecord(0, "h", "amount", True, -0.06, False, None, None, -2.5))
     ledger = TrialLedger()
     node_guardrails(s, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
-                    ledger=ledger, top_k=5, dsr_threshold=0.5)
+                    ledger=ledger, top_k=5, dsr_alpha=0.05)
 
     assert len(s.candidates) == 1, (
         f"强负 IC 做空因子应过关(abs(ir) 喂 DSR + holdout 同向负一致)，实得 "
@@ -312,7 +312,7 @@ def test_node_guardrails_rejects_holdout_sign_flip():
     s.attempts.append(AttemptRecord(0, "h", "amount", True, 0.06, False, None, None, 2.5))
     ledger = TrialLedger()
     node_guardrails(s, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
-                    ledger=ledger, top_k=5, dsr_threshold=0.5)
+                    ledger=ledger, top_k=5, dsr_alpha=0.05)
 
     assert len(s.candidates) == 0, (
         f"train 正、holdout 反号的过拟合因子应被 OOS 护栏拒，实得 {len(s.candidates)} "

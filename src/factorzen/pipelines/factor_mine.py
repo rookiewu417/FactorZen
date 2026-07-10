@@ -8,17 +8,23 @@ from factorzen.discovery.mining_session import run_session
 
 
 def prepare_mining_daily(start: str, end: str, universe: str | None = None,
-                         lookback_days: int = 60) -> pl.DataFrame:
+                         lookback_days: int | None = None) -> pl.DataFrame:
     """构建 A 股挖掘/评估用日线帧：**复权价**(FactorDataContext 的 close_adj) + join
     daily_basic(激活 total_mv/pb/pe_ttm 等 BASIC_FEATURES 叶子)。
 
     搜索路径(run_mine)与 Agent 挖掘路径(fz mine agent/team)共用本函数，消除双路径漂移——
     否则 agent 路径用 loader.fetch_daily 的未复权 close 冒充复权价(除权日假收益)、且缺
     daily_basic/派生叶子，LLM 被广告的叶子过半在评估帧不存在。
+
+    ``lookback_days``：预热前缀交易日数。``None``（默认）取 `search_space_max_lookback()`
+    —— 覆盖搜索空间最大回看，否则长窗口/深嵌套因子在 `eval_start` 处欠预热被预热门误拒。
     """
     from factorzen.core.universe import get_universe
     from factorzen.daily.data.context import FactorDataContext
+    from factorzen.discovery.search.random_search import search_space_max_lookback
 
+    if lookback_days is None:
+        lookback_days = search_space_max_lookback()
     uni = None
     if universe:
         uni = get_universe(end, universe)["ts_code"].to_list()

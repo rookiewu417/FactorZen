@@ -8,10 +8,20 @@ from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 _LEAVES = list(LEAF_FEATURES.keys())
 _OPS = list(OPERATORS.keys())
 _WINDOWS = [3, 5, 10, 20, 60]
+_DEFAULT_MAX_DEPTH = 3  # 随机/遗传搜索的默认树深；search_space_max_lookback 据此推预热
+
+
+def search_space_max_lookback() -> int:
+    """搜索空间内表达式的最大 required_lookback（交易日）：最深路径全取最大窗口。
+
+    = max(_WINDOWS) × _DEFAULT_MAX_DEPTH。`prepare_mining_daily` 的预热前缀据此设，
+    保证搜索空间内任意表达式都不会因预热门（warmup_bars < required_lookback）被误拒。
+    """
+    return max(_WINDOWS) * _DEFAULT_MAX_DEPTH
 
 
 def random_expression(
-    rng: np.random.Generator, max_depth: int = 3, leaves: list[str] | None = None
+    rng: np.random.Generator, max_depth: int = _DEFAULT_MAX_DEPTH, leaves: list[str] | None = None
 ) -> Node:
     """按算子类型签名递归生成合法 AST。叶子为特征或（少量）常数。
 
@@ -32,7 +42,7 @@ def random_expression(
 
 class RandomSearcher:
     def __init__(
-        self, rng: np.random.Generator, max_depth: int = 3, leaves: list[str] | None = None
+        self, rng: np.random.Generator, max_depth: int = _DEFAULT_MAX_DEPTH, leaves: list[str] | None = None
     ) -> None:
         self.rng = rng
         self.max_depth = max_depth

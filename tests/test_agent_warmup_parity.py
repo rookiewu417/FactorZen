@@ -120,3 +120,55 @@ def test_warmup_bars_excludes_nan_not_just_null():
     assert warm["dv_ttm"].is_nan().all()
 
     assert warmup_bars(parse_expr("dv_ttm"), prepped, cutoff) == 0
+
+
+def _bundle_for(sample: pl.DataFrame):
+    from factorzen.discovery.scoring import DataBundle
+    return DataBundle.build(sample)
+
+
+def test_train_ic_dates_exclude_warmup_segment():
+    """train 段 IC 只能算在 [eval_start, eval_end] 内——预热段绝不进 IC 序列。
+
+    ground-truth：train 段有效 IC 天数 <= 该区间的日历交易日数；
+    若漏裁预热段，n_train 会超过这个上界。
+    """
+    from factorzen.agents.evaluation import evaluate_expressions
+
+    full = _synthetic_daily(n_days=120)                     # 含预热段的完整帧
+    eval_start = dt.date(2020, 2, 1)
+    sample = full.filter(pl.col("trade_date") >= eval_start)
+    bundle = _bundle_for(sample)
+    train_end = dt.datetime.strptime(bundle.train_end, "%Y%m%d").date()
+
+    res = evaluate_expressions(["ts_mean(close, 5)"], full, bundle,
+                               eval_start=eval_start, eval_end=train_end)[0]
+
+    assert res["compile_ok"] is True
+    n_cal = sample.filter(
+        (pl.col("trade_date") >= eval_start) & (pl.col("trade_date") <= train_end)
+    )["trade_date"].n_unique()
+    assert 0 < res["n_train"] <= n_cal
+
+
+def test_insufficient_warmup_expression_is_rejected_not_silently_noisy():
+    """预热不足的表达式必须出声拒绝（ic/ir=None），而不是发窗口不满的噪声值。
+
+    反例保护：operators._MIN = 3 意味着 250 日窗口只要 3 个观测就出值，
+    静默通过时它会带着噪声 IC 进入 DSR 的 IR 池。
+    """
+    from factorzen.agents.evaluation import evaluate_expressions
+
+    full = _synthetic_daily(n_days=120)
+    eval_start = dt.date(2020, 2, 1)          # 预热段仅 31 个交易日
+    sample = full.filter(pl.col("trade_date") >= eval_start)
+    bundle = _bundle_for(sample)
+    train_end = dt.datetime.strptime(bundle.train_end, "%Y%m%d").date()
+
+    res = evaluate_expressions(["ts_mean(close, 250)"], full, bundle,
+                               eval_start=eval_start, eval_end=train_end)[0]
+
+    assert res["compile_ok"] is True
+    assert res["ic_train"] is None and res["ir_train"] is None
+    assert res["n_train"] == 0
+    assert "预热不足" in res["error"]

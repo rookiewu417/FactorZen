@@ -419,10 +419,13 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
 
     # 与搜索路径共用数据准备：复权价 + daily_basic（否则 agent 用未复权价冒充复权、缺叶子）
     daily = prepare_mining_daily(args.start, args.end, args.universe)
+    # eval_start = 挖掘窗口 start（预热前缀边界），与 M1 `run_mine(eval_start=start)` 同口径：
+    # 缺了它 prepare_mining_daily 的预热前缀会被 split_holdout 当训练数据。
     res = run_agent_mine(daily, n_rounds=args.iterations, seed=args.seed,
                          top_k=args.top_k, human_review=args.human_review,
                          patience=args.patience, heal_rounds=args.heal_rounds,
-                         data_window=_data_window(args), command=_command_line(args))
+                         data_window=_data_window(args), command=_command_line(args),
+                         eval_start=args.start)
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -433,11 +436,13 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
 
     # 与搜索路径共用数据准备：复权价 + daily_basic（消除双路径漂移）
     daily = prepare_mining_daily(args.start, args.end, args.universe)
+    # eval_start = 挖掘窗口 start（预热前缀边界），同 M1/agent 口径，见 _cmd_mine_agent。
     res = run_team_mine(daily, n_rounds=args.iterations, seed=args.seed,
                         top_k=args.top_k, index_path=args.index_path,
                         structured=args.structured, patience=args.patience,
                         heal_rounds=args.heal_rounds,
-                        data_window=_data_window(args), command=_command_line(args))
+                        data_window=_data_window(args), command=_command_line(args),
+                        eval_start=args.start)
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 

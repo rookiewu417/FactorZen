@@ -48,18 +48,24 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = "workspace
                    human_review: bool = False, run_id: str | None = None,
                    export: bool = True, patience: int | None = None,
                    heal_rounds: int = 2,
-                   data_window: dict | None = None, command: str | None = None) -> dict:
+                   data_window: dict | None = None, command: str | None = None,
+                   eval_start: str | None = None) -> dict:
     """跑单 Agent 挖掘闭环，每轮增量落 manifest，收尾导出候选。
 
     ``data_window``：``{start, end, universe, market}``。落进 manifest 的 params，
     否则事后无从得知这批因子挖自哪段数据、哪个票池（铁律#3）。
     ``command``：触发本次运行的命令行。
+
+    ``eval_start``：``"YYYYMMDD"``，训练段的干净起点。``daily`` 由 `prepare_mining_daily`
+    带 ``lookback_days`` 预热前缀，须把该前缀的边界（= 挖掘窗口 ``start``）透传给
+    `run_llm_agent`，否则预热段随 `split_holdout` 进 train IC（与 M1 `run_session(eval_start=)`
+    同口径）。``None``（默认）退化为旧行为，对现有调用方零回归。
     """
     fn = llm_fn or _default_llm_fn()
     rid = run_id or f"agent_{seed}_{n_rounds}r_{_timestamp()}"
     params = {
         "n_rounds": n_rounds, "seed": seed, "top_k": top_k, "holdout_ratio": holdout_ratio,
-        "patience": patience, "heal_rounds": heal_rounds,
+        "patience": patience, "heal_rounds": heal_rounds, "eval_start": eval_start,
         **(data_window or {}),
         "command": command,
         "llm": _llm_meta(llm_fn),
@@ -72,7 +78,7 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = "workspace
 
     result = run_llm_agent(daily, fn, n_rounds=n_rounds, seed=seed, top_k=top_k,
                            holdout_ratio=holdout_ratio, human_review=human_review,
-                           patience=patience, heal_rounds=heal_rounds,
+                           patience=patience, heal_rounds=heal_rounds, eval_start=eval_start,
                            on_round_end=_checkpoint)
     write_session_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

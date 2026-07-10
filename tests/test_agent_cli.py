@@ -115,6 +115,37 @@ def test_cmd_mine_agent_forwards_args_to_run_agent_mine(monkeypatch, capsys):
     )
 
 
+def test_cmd_mine_agent_forwards_eval_start(monkeypatch):
+    """`fz mine agent` 必须把挖掘窗口 --start 作为 eval_start 透传给 run_agent_mine。
+
+    `prepare_mining_daily(start, ...)` 带 lookback 预热前缀；缺了 eval_start，该前缀会被
+    `split_holdout` 当训练数据，warmup-parity 修复对生产 `fz mine agent` 完全失效。
+    """
+    import polars as pl
+
+    from factorzen.cli import main as cli
+
+    fake_daily = pl.DataFrame({"ts_code": ["000001.SZ"]})
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine.prepare_mining_daily",
+        lambda start, end, universe=None: fake_daily,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_agent_mine(daily, *, n_rounds, seed, top_k, human_review,
+                            eval_start=None, **_):
+        captured["eval_start"] = eval_start
+        return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
+
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine_agent.run_agent_mine", fake_run_agent_mine
+    )
+
+    rc = cli.main(["mine", "agent", "--start", "20220101", "--end", "20231231"])
+    assert rc == 0
+    assert captured["eval_start"] == "20220101"
+
+
 def test_cmd_mine_agent_passes_universe_to_prepare(monkeypatch):
     """`fz mine agent --universe` 应把 universe 透传给 prepare_mining_daily（其内部经
     FactorDataContext 按 universe 过滤 + 提供复权价/daily_basic）。"""

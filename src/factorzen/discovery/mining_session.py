@@ -181,6 +181,14 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 if fdf.height < 50:
                     return -9.9
                 sc = score_candidate(fdf, node, bundle, pool={})
+                # 与 random 路径同一道门（见下方 `if sc["n_train"] < min_n_train: continue`）。
+                # `quick_fitness` 对「求值后无任何有效截面」的表达式返回 sentinel ic=ir=0.0
+                # （不是 nan），`DeflationBasis.from_ir_pool` 剔不掉有限值 0.0。放进 eval_ir 会
+                # 同时膨胀 N 并压低经验方差，而 `expected_max_sharpe ∝ sqrt(var)` 使后者占优
+                # → deflation 门槛系统性偏低（实测真实 csi300 genetic run：3.7% 死表达式 → sr0 -1.4%）。
+                # n_train=0 的表达式没有可比较的 IR，永远不可能是 max，本就不该计入多重检验的 N。
+                if sc["n_train"] < min_n_train:
+                    return -9.9
                 # 记录该表达式的 train IR，供 DSR 的 N 与 sharpe_var 同源（跨代全体评估）
                 eval_ir[to_expr_string(node)] = float(sc["ir_train"])
                 return sc["fitness"]

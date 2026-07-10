@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Literal, TypedDict
@@ -17,8 +18,36 @@ import statsmodels.api as sm
 
 from factorzen.core.validation import require_columns
 
+_LOG = logging.getLogger(__name__)
+
 # 最少截面样本数（低于此值的交易日跳过）
 _MIN_CROSS_SAMPLES = 30
+
+# 「每一天都被丢光」只警告一次：挖掘会对上千个表达式各调一次，逐次告警会淹没日志。
+_warned_thin_cross_section = False
+
+
+def _warn_if_every_day_dropped(per_date: pl.DataFrame, kept: int, min_samples: int) -> None:
+    """有有效交易日、却一天都没留下 ⇒ IC 序列为空 ⇒ 下游拿到 sentinel 0.0。
+
+    这与「因子确实没有预测力」不可区分，必须出声。典型触发：crypto
+    ``--universe-size`` 设得比 ``min_samples`` 还小（默认 top_n=50 是安全的）。
+
+    只在**整天丢光**时告警：部分丢弃（早期上市股少）是正常的，警告会变噪音。
+    数据本就为空（因子全 null）走的是上游的 early return，不到这里——那是另一种病，
+    报「截面不足」会把排查方向带偏。
+    """
+    global _warned_thin_cross_section
+    if kept > 0 or per_date.height == 0 or _warned_thin_cross_section:
+        return
+    _warned_thin_cross_section = True
+    # `Series.max()` 的静态类型是含 date/bytes 的联合类型，int() 收窄不掉；用 %s 打印即可。
+    _LOG.warning(
+        "全部 %d 个交易日的截面股票数都不足 %d 只（最大 %s 只），IC 序列为空。"
+        "下游会拿到 ic_mean=0.0 这个哨兵值，与「因子无预测力」不可区分。"
+        "若在挖掘 crypto，请检查 --universe-size 是否小于 %d。",
+        per_date.height, min_samples, per_date["_n"].max(), min_samples,
+    )
 
 
 def compute_fwd_returns(
@@ -156,18 +185,14 @@ def _rank_ic_by_date(
     )
 
     # group_by 日期，计算排名 Pearson 相关（= Spearman），过滤样本不足的日期
-    ic_df = (
-        ranked.group_by("trade_date")
-        .agg(
-            [
-                pl.corr("_factor_rank", "_ret_rank").alias("ic"),
-                pl.len().alias("_n"),
-            ]
-        )
-        .filter(pl.col("_n") >= min_samples)
-        .drop("_n")
-        .sort("trade_date")
+    per_date = ranked.group_by("trade_date").agg(
+        [
+            pl.corr("_factor_rank", "_ret_rank").alias("ic"),
+            pl.len().alias("_n"),
+        ]
     )
+    ic_df = per_date.filter(pl.col("_n") >= min_samples).drop("_n").sort("trade_date")
+    _warn_if_every_day_dropped(per_date, ic_df.height, min_samples)
     return ic_df
 
 
@@ -214,18 +239,15 @@ def _pearson_ic_by_date(
             {"trade_date": pl.Date, "ic": pl.Float64}
         )
 
-    return (
-        valid_df.group_by("trade_date")
-        .agg(
-            [
-                pl.corr(factor_col, ret_col, method="pearson").alias("ic"),
-                pl.len().alias("_n"),
-            ]
-        )
-        .filter(pl.col("_n") >= min_samples)
-        .drop("_n")
-        .sort("trade_date")
+    per_date = valid_df.group_by("trade_date").agg(
+        [
+            pl.corr(factor_col, ret_col, method="pearson").alias("ic"),
+            pl.len().alias("_n"),
+        ]
     )
+    ic_df = per_date.filter(pl.col("_n") >= min_samples).drop("_n").sort("trade_date")
+    _warn_if_every_day_dropped(per_date, ic_df.height, min_samples)
+    return ic_df
 
 
 def _build_ic_stats(ic_series: pl.DataFrame) -> IcStats:

@@ -37,26 +37,39 @@ def _preprocess_daily(daily: pl.DataFrame) -> pl.DataFrame:
     return add_derived_columns(df)
 
 
-def _node_to_factor_df(node, daily: pl.DataFrame, eval_start=None) -> pl.DataFrame:
-    """用公开 evaluate(node, df) 算因子值，组装成 [trade_date, ts_code, factor_value]。
+def _factor_df_from_prepped(node, prepped: pl.DataFrame,
+                            eval_start=None, eval_end=None) -> pl.DataFrame:
+    """在**已 `_preprocess_daily` 过**的帧上求值，裁剪到 [eval_start, eval_end]。
 
-    `eval_start`：**先在整帧上求值、再裁剪到 >= eval_start**（扩窗预热）。
-    holdout 段求值必须这样做——否则滚动算子在 holdout 边界只有截断窗口，发出的是偏差值。
-    传入的帧须包含 eval_start 之前的历史作为预热前缀。
-
-    PIT 安全：时序算子的滚动窗口只向过去看，holdout 首日用到的是 mining 末尾的数据（≤t）；
-    截面算子逐日独立。求值后裁剪保证不保留 eval_start 之前的任何行。
+    调用方若要对同一帧评估多个表达式，先 `_preprocess_daily` 一次再走这里，
+    避免每个表达式重复 `add_derived_columns`（较重）。
     """
-    df = _preprocess_daily(daily)
-    series = eval_node(node, df)
+    series = eval_node(node, prepped)
     out = (
-        df.select(["trade_date", "ts_code"])
+        prepped.select(["trade_date", "ts_code"])
         .with_columns(series.alias("factor_value"))
         .filter(pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
     )
     if eval_start is not None:
         out = out.filter(pl.col("trade_date") >= eval_start)
+    if eval_end is not None:
+        out = out.filter(pl.col("trade_date") <= eval_end)
     return out
+
+
+def _node_to_factor_df(node, daily: pl.DataFrame,
+                       eval_start=None, eval_end=None) -> pl.DataFrame:
+    """用公开 evaluate(node, df) 算因子值，组装成 [trade_date, ts_code, factor_value]。
+
+    `eval_start` / `eval_end`：**先在整帧上求值、再裁剪到 [eval_start, eval_end]**（扩窗预热）。
+    train 段与 holdout 段都必须这样做——只喂本段会让滚动算子在段首用截断窗口，
+    发出偏差值（`operators._MIN = 3`，窗口不满**不产生 NaN**，产生噪声值）。
+    train 段漏裁会让预热段进 IC 序列，系统性拖低 train IC，制造「holdout 优于 train」的假象。
+
+    PIT 安全：时序算子的滚动窗口只向过去看，段首日用到的是前一段末尾的数据（≤t）；
+    截面算子逐日独立。求值后裁剪保证不保留段外任何行。
+    """
+    return _factor_df_from_prepped(node, _preprocess_daily(daily), eval_start, eval_end)
 
 
 def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5):

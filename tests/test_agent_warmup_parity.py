@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 
 import polars as pl
+import pytest
 
 from factorzen.agents.evaluation import _node_to_factor_df
 from factorzen.discovery.expression import parse_expr
@@ -132,20 +133,29 @@ def test_train_ic_dates_exclude_warmup_segment():
 
     ground-truth：train 段有效 IC 天数 <= 该区间的日历交易日数；
     若漏裁预热段，n_train 会超过这个上界。
+
+    bundle 必须建在**含预热段的完整帧**上，与生产真实拓扑一致
+    （`orchestrator.py`：`mining_df, holdout_df, _ = split_holdout(daily, ...)`；
+    `bundle = DataBundle.build(mining_df)`——`mining_df` 不会被再裁到 eval_start，
+    预热段仍在 `bundle.fwd_returns` 里）。若改用 `DataBundle.build(sample)`
+    （sample 已按 eval_start 裁过），`bundle.fwd_returns` 本身就没有预热段日期，
+    `quick_fitness` 里 `compute_rank_ic` 与之 join 时会隐式丢光预热行——不论
+    `evaluate_expressions` 内部有没有裁剪，n_train 都被钉在同一个数，断言两边
+    都过，零判别力（已用 bug-injection 探针验证，见 task-1.3-report.md）。
     """
     from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.discovery.scoring import DataBundle
 
     full = _synthetic_daily(n_days=120)                     # 含预热段的完整帧
     eval_start = dt.date(2020, 2, 1)
-    sample = full.filter(pl.col("trade_date") >= eval_start)
-    bundle = _bundle_for(sample)
+    bundle = DataBundle.build(full)                          # 生产真实拓扑：预热段仍在 bundle 里
     train_end = dt.datetime.strptime(bundle.train_end, "%Y%m%d").date()
 
     res = evaluate_expressions(["ts_mean(close, 5)"], full, bundle,
                                eval_start=eval_start, eval_end=train_end)[0]
 
     assert res["compile_ok"] is True
-    n_cal = sample.filter(
+    n_cal = full.filter(
         (pl.col("trade_date") >= eval_start) & (pl.col("trade_date") <= train_end)
     )["trade_date"].n_unique()
     assert 0 < res["n_train"] <= n_cal
@@ -172,3 +182,13 @@ def test_insufficient_warmup_expression_is_rejected_not_silently_noisy():
     assert res["ic_train"] is None and res["ir_train"] is None
     assert res["n_train"] == 0
     assert "预热不足" in res["error"]
+
+
+def test_eval_end_without_eval_start_raises():
+    """eval_end 单传（无 eval_start）会静默跳过下界裁剪与预热门——必须早失败，而不是悄悄放行。"""
+    from factorzen.agents.evaluation import evaluate_expressions
+
+    full = _synthetic_daily(n_days=120)
+    with pytest.raises(ValueError, match="eval_start"):
+        evaluate_expressions(["ts_mean(close, 5)"], full, _bundle_for(full),
+                             eval_start=None, eval_end=dt.date(2020, 3, 1))

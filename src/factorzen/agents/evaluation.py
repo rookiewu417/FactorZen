@@ -206,6 +206,13 @@ def evaluate_expressions(
     """
     from factorzen.discovery.expression import required_lookback
 
+    if eval_end is not None and eval_start is None:
+        raise ValueError(
+            "eval_end 不能脱离 eval_start 单独传入：下界裁剪与预热门（`warmup_bars`）"
+            "都只在 eval_start is not None 时触发，单传 eval_end 会静默重新引入"
+            "预热噪声进 train IC 序列的 bug——两者必须同传或都不传。"
+        )
+
     prepped = _preprocess_daily(daily)           # 整帧只预处理一次（add_derived_columns 较重）
     results: list[dict] = []
     for s in expr_strs:

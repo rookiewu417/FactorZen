@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import polars as pl
+
 from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.manifest import dump_manifest, json_safe_float
@@ -60,10 +62,33 @@ def _task_text(task: dict) -> str:
     return "；".join(p for p in parts if p)
 
 
-def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
+def _to_date(s: str):
+    """'YYYYMMDD' → datetime.date。"""
+    import datetime as _dt
+    return _dt.datetime.strptime(s, "%Y%m%d").date()
+
+
+def _prepare_segments(daily: pl.DataFrame, *, eval_start: str | None, holdout_ratio: float):
+    """先裁到 [eval_start, end] 再切 holdout——预热段只作求值前缀，不进任何评估段。
+
+    `split_holdout` 按整帧交易日切，若帧含预热段，mining_df 起点就是帧起点，
+    预热段随 `DataBundle` 的 train 段进 IC 序列。`eval_start=None` 时退化为旧行为。
+    """
+    sample = daily if eval_start is None else daily.filter(pl.col("trade_date") >= _to_date(eval_start))
+    return split_holdout(sample, holdout_ratio=holdout_ratio)
+
+
+def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
+                         eval_start=None, eval_end=None):
     """评估一批表达式（跳过 mem_seen 去重），写 AttemptRecord，返回本批新评估的结果列表。
 
     灵魂约束：此函数不碰 ledger，N 诚实记账由外层 node_guardrails 统一负责（每轮恰好一次）。
+
+    ``eval_start``/``eval_end``：会话级 train 段边界（date，或 None）。**None-gating**：
+    为 None 时原样转发 None 给 `evaluate_expressions`（等价裸调用，零回归）；非 None 时
+    调用方须传 ``daily`` 为含预热前缀的完整帧——裁剪与预热门在 `evaluate_expressions`
+    内部完成。调用方负责按会话级 `eval_start` 是否为 None 选择正确的 `daily`
+    （mining_df 还是 warmup_daily），本函数只透传，不做二次判断。
     """
     # **批内也要去重**：heal_rounds=0 时 heal_expressions 的去重不生效，多个 task 很容易
     # 翻译出同一表达式。重复评估会让 node_guardrails 把同一个 trial 记两次 → N over-count
@@ -76,7 +101,10 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
             continue
         batch_seen.add(norm)
         fresh.append(e)
-    results = evaluate_expressions(fresh, daily, bundle) if fresh else []
+    results = (
+        evaluate_expressions(fresh, daily, bundle, eval_start=eval_start, eval_end=eval_end)
+        if fresh else []
+    )
     for r in results:
         state.attempts.append(AttemptRecord(
             iteration=state.iteration, hypothesis=hypothesis, expression=r["expression"],
@@ -90,11 +118,19 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen):
 def _run_one_round(
     state, llm_fn, *, index, ledger, rounds_log, mining_df, holdout_df, bundle,
     pending, seed, top_k, heal_rounds, structured, health, data_window, warmup_daily,
+    eval_start=None,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
     `state` / `ledger` / `rounds_log` / `index` 为可变对象，就地更新；返回下一轮的 Critic 反馈。
     抽成独立函数是为了让主循环能整轮 `try/except LLMClientError` 而不必把 120 行内联进 try 块。
+
+    ``eval_start``：会话级 train 段起点（date，或 None，由 `run_team_agent` 解析一次后逐轮传入）。
+    **None-gating**：为 None 时 train 段求值走裸 `evaluate_expressions(exprs, mining_df, bundle)`
+    （旧调用者零回归）；非 None 时改在 ``warmup_daily``（完整帧）上求值、裁剪到
+    ``[eval_start, mining_df 终点]``——`mining_df` 此时已被 `_prepare_segments` 提前裁到
+    `eval_start`，不能直接把 `mining_df["trade_date"].min()` 当判据（`eval_start=None`
+    时它就是帧起点，会让预热门把可用预热样本数误判成 0，见 task-1.4 CORRECTION）。
     """
     rec = recall(index, k=5, data_window=data_window)          # ① Librarian（按窗口分族）
     tasks: list[dict] = []
@@ -141,15 +177,25 @@ def _run_one_round(
 
     # ④ Evaluator：评估（跨 session + session 内去重）
     # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）
+    #
+    # None-gating（非 None 才切到 warmup_daily + 段边界，None 时裸调用 mining_df，
+    # 零回归）：gate 在会话级 eval_start 本身，不能用 mining_df.min() 判断——
+    # eval_start=None 时 mining_df 就是帧起点，误用会让预热门把整段判成 0 可用预热。
+    if eval_start is not None:
+        ev_daily, ev_end = warmup_daily, mining_df["trade_date"].max()
+    else:
+        ev_daily, ev_end = mining_df, None
     results = _evaluate_and_record(
         state, exprs, hypothesis,
-        daily=mining_df, bundle=bundle, mem_seen=rec.seen,
+        daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
+        eval_start=eval_start, eval_end=ev_end,
     )
     n_before = len(state.candidates)                       # Important 1: 护栏前快照
     node_guardrails(
         state, daily=mining_df, holdout_df=holdout_df,
         bundle=bundle, ledger=ledger, top_k=top_k,
         warmup_daily=warmup_daily,   # holdout 扩窗预热用完整帧
+        eval_start=eval_start,       # 池级 PBO 的 None-gating：None 时裸求值，零回归
     )
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
 
@@ -236,6 +282,7 @@ def run_team_agent(
     on_round_end: Callable[[TeamResult], None] | None = None,
     llm_failure_patience: int = 3,
     data_window: dict | None = None,
+    eval_start: str | None = None,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -249,9 +296,16 @@ def run_team_agent(
     ``llm_failure_patience``：连续多少轮 LLM 不可用即提前终止。单轮的 ``LLMClientError``
     （client 层重试已耗尽，或 422 这类不可重试错误）只跳过该轮；计数器在成功轮重置，
     否则零散抖动会被累计成「持续不可用」。只吞 ``LLMClientError``，其余异常照常冒泡。
+
+    ``eval_start``：``"YYYYMMDD"``，训练段的干净起点（预热段的边界）。``daily`` 先按它裁
+    （`_prepare_segments`）再 split holdout，`mining_df`/`holdout_df`/`bundle` 全部建在
+    干净样本上；完整的 ``daily`` 只作为求值时的预热前缀。``None``（默认）时退化为旧行为
+    （`split_holdout` 直接切整帧），对现有调用方零回归。
     """
-    mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=holdout_ratio)
+    mining_df, holdout_df, _ = _prepare_segments(
+        daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)
+    _eval_start_date = _to_date(eval_start) if eval_start is not None else None
     # ── 记录在案的假设：多重检验的 N **不跨 session 累积** ──────────────────────
     # ledger 每 session 从 0 起。而 Librarian 把历史已试表达式喂给 LLM 让它避开，于是后续
     # session 在同一搜索空间的剩余部分继续搜索——累计试了 120 次，DSR 却按本 session 的 N 判。
@@ -294,6 +348,7 @@ def run_team_agent(
                 pending=pending, seed=seed, top_k=top_k,
                 heal_rounds=heal_rounds, structured=structured, health=health,
                 data_window=data_window, warmup_daily=daily,
+                eval_start=_eval_start_date,
             )
         except LLMClientError as exc:
             llm_failures += 1

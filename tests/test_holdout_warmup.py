@@ -228,7 +228,7 @@ def test_every_production_caller_passes_warmup_daily():
 
 def _spy_guardrails(seen: dict):
     def fake(state, *, daily, holdout_df, bundle, ledger, top_k=5, dsr_alpha=0.05,
-             warmup_daily=None):
+             warmup_daily=None, eval_start=None):
         seen["warmup"] = None if warmup_daily is None else warmup_daily.height
         seen["mining"] = daily.height
         seen["holdout"] = holdout_df.height

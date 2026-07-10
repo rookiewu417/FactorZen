@@ -16,13 +16,24 @@ def _synthetic_daily(n_days: int = 120, n_codes: int = 40, start=dt.date(2020, 1
     rows = []
     for d_i, d in enumerate(dates):
         for c_i in range(n_codes):
+            close = 10.0 + d_i * 0.1 + c_i
+            open_ = 10.0 + d_i * 0.1 + c_i
+            high = 11.0 + d_i * 0.1 + c_i
+            low = 9.0 + d_i * 0.1 + c_i
             rows.append({
                 "trade_date": d,
                 "ts_code": f"{c_i:06d}.SZ",
-                "close": 10.0 + d_i * 0.1 + c_i,
-                "open": 10.0 + d_i * 0.1 + c_i,
-                "high": 11.0 + d_i * 0.1 + c_i,
-                "low": 9.0 + d_i * 0.1 + c_i,
+                "close": close,
+                "open": open_,
+                "high": high,
+                "low": low,
+                # M1 的 `_factor_values` 不像 agent 路径的 `_preprocess_daily` 那样在缺失时
+                # 自动补 *_adj（见 LEAF_FEATURES: "close"→"close_adj"）——直接调用它（跨路径
+                # 一致性测试）必须显式提供，否则 `evaluate_materialized` 找不到列。
+                "close_adj": close,
+                "open_adj": open_,
+                "high_adj": high,
+                "low_adj": low,
                 "vol": 1000.0 + c_i,
                 "amount": 5000.0 + c_i,
             })
@@ -192,3 +203,93 @@ def test_eval_end_without_eval_start_raises():
     with pytest.raises(ValueError, match="eval_start"):
         evaluate_expressions(["ts_mean(close, 5)"], full, _bundle_for(full),
                              eval_start=None, eval_end=dt.date(2020, 3, 1))
+
+
+# ── Task 1.4: orchestrator 先裁样本再 split（train/holdout/PBO 三处口径统一）─────
+
+
+def test_split_happens_after_clipping_to_eval_start():
+    """mining_df / holdout_df / bundle 必须建立在 [eval_start, end] 上，预热段只做求值前缀。"""
+    from factorzen.agents.team_orchestrator import _prepare_segments
+
+    full = _synthetic_daily(n_days=120)
+    mining_df, holdout_df, holdout_start = _prepare_segments(
+        full, eval_start="20200201", holdout_ratio=0.2)
+
+    assert mining_df["trade_date"].min() == dt.date(2020, 2, 1)
+    assert holdout_df["trade_date"].min() == holdout_start
+    assert mining_df["trade_date"].max() < holdout_start
+
+
+def test_m1_and_agent_paths_agree_on_train_ic_days():
+    """跨路径一致性：M1 的 run_session(eval_start=) 与 agent 的 evaluate_expressions(eval_start=)
+    对同一表达式、同一帧，train 段有效 IC 天数必须相等。"""
+    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.agents.team_orchestrator import _prepare_segments
+    from factorzen.discovery.mining_session import _factor_values
+    from factorzen.discovery.scoring import DataBundle, quick_fitness
+
+    full = _synthetic_daily(n_days=120)
+    eval_start_s, eval_start = "20200201", dt.date(2020, 2, 1)
+    mining_df, _, _ = _prepare_segments(full, eval_start=eval_start_s, holdout_ratio=0.2)
+    bundle = DataBundle.build(mining_df)
+    train_end = dt.datetime.strptime(bundle.train_end, "%Y%m%d").date()
+
+    expr = "ts_mean(close, 5)"
+    agent_n = evaluate_expressions([expr], full, bundle,
+                                   eval_start=eval_start, eval_end=train_end)[0]["n_train"]
+    # `_factor_values`（M1 路径）的 eval_start 是 "YYYYMMDD" 字符串（`_cut_literal` 契约，
+    # 与 `run_session` 一致），不是 date——与 agent 路径 `evaluate_expressions` 的 date 契约不同。
+    m1_fdf = _factor_values(parse_expr(expr), full, eval_start=eval_start_s)
+    m1_n = int(quick_fitness(m1_fdf, bundle, segment="train")["n"])
+
+    assert agent_n == m1_n
+
+
+def _scripted_team_fixed_expr(expr: str):
+    """Hypothesis→Coder→Critic(keep) 固定表达式的一轮脚本，循环复用（同 test_team_orchestrator.py）。"""
+    import json as _json
+
+    hyp = _json.dumps({"hypotheses": ["动量"]})
+    code = _json.dumps({"expressions": [expr]})
+    crit = _json.dumps({"verdict": "keep", "reason": "ok"})
+    seq = [hyp, code, crit] * 10
+    i = {"k": 0}
+
+    def fn(messages):
+        v = seq[i["k"] % len(seq)]
+        i["k"] += 1
+        return v
+
+    return fn
+
+
+def test_eval_start_none_still_evaluates_rolling_expressions(tmp_path):
+    """session eval_start=None（旧调用者）时，滚动表达式必须照常求值，
+    绝不能因空预热前缀被误判『预热不足』而拒绝——这是把无条件传 mining_df.min()
+    误当 eval_start 会踩的回归（实测：ts_mean(close,20) 会变成 ic=None）。
+
+    走真实 run_team_agent 端到端 orchestrator wiring（不传 eval_start，等价旧调用方
+    `fz mine team` 升级前的行为），而不是手工拼装『已经正确』的 None 参数——后者绕过了
+    `_run_one_round` 内部的 None-gating 分支逻辑本身，对该分支写错没有判别力。
+    若实现把 `eval_start=mining_df["trade_date"].min()` 无条件传给
+    `evaluate_expressions`（不管 session 级 eval_start 是否为 None），预热门会把
+    `mining_df` 起点当成裁剪下界，warmup_bars 在其之前找不到任何交易日 → 0 根可用预热，
+    `ts_mean(close, 20)` 需要 20 根历史会被判『预热不足』拒绝，ic_train 变 None——
+    这里的断言就会失败。
+    """
+    from factorzen.agents.team_orchestrator import run_team_agent
+
+    full = _synthetic_daily(n_days=120)
+    expr = "ts_mean(close, 20)"
+    result = run_team_agent(
+        full, _scripted_team_fixed_expr(expr), n_rounds=1, seed=1,
+        index_path=str(tmp_path / "idx.jsonl"), heal_rounds=0,
+    )
+
+    rolling = [a for a in result.state.attempts if a.expression == expr]
+    assert rolling, f"{expr} 应至少被评估一次；实际 attempts={[a.expression for a in result.state.attempts]}"
+    assert rolling[0].ic_train is not None, (
+        f"eval_start=None 时 {expr} 被判『预热不足』或求值失败: error={rolling[0].error}"
+    )
+    assert rolling[0].n_train is not None and rolling[0].n_train > 0

@@ -267,3 +267,55 @@ def test_random_dsr_n_still_equals_scored(tmp_path, monkeypatch):
                          method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
     assert captured and len(set(captured)) == 1
     assert captured[0] == res["n_scored"]
+
+
+def test_run_session_and_agent_agree_reject_underwarmed(monkeypatch, tmp_path):
+    """双路径一致：预热不足的表达式在 M1(run_session) 与 agent(evaluate_expressions) 都被拒。
+
+    消除双路径漂移——M1 此前对超预热表达式不拒绝，让首段截断窗口噪声进 train IC。
+    两侧共用 warmup_bars vs required_lookback 判据（双路径登记簿：新增第二路径必加一致性测试）。
+
+    M1 端（端到端，n_scored 判别）：注入 rank(close)(rl=0) 与 ts_mean(close,20)(rl=20)，
+    短预热帧（eval_start 前仅 3 交易日）下后者被门拒 → n_scored 比足预热（前 30 交易日）少 1。
+    agent 端：同表达式、同短预热，evaluate_expressions 记 ic_train=None + 预热不足。
+    """
+    import datetime as _dt
+
+    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.discovery.expression import parse_expr
+    from factorzen.discovery.mining_session import run_session
+    from factorzen.discovery.scoring import DataBundle
+    from factorzen.validation.holdout import split_holdout
+
+    daily = _daily(n_days=120)
+    dates = sorted(set(daily["trade_date"].to_list()))
+    short_s = dates[3].strftime("%Y%m%d")   # 前 3 交易日预热 → ts_mean(,20) 欠预热
+    full_s = dates[30].strftime("%Y%m%d")   # 前 30 交易日预热 → 两者都评估
+
+    both = [parse_expr("ts_mean(close, 20)"), parse_expr("rank(close)")]
+    cnt = {"i": 0}
+
+    def _fixed(*a, **k):
+        node = both[cnt["i"] % 2]
+        cnt["i"] += 1
+        return node
+
+    monkeypatch.setattr(
+        "factorzen.discovery.search.random_search.random_expression", _fixed)
+
+    def _n_scored(eval_start_s):
+        cnt["i"] = 0
+        return run_session(daily, n_trials=4, top_k=5, seed=1, method="random",
+                           eval_start=eval_start_s, out_dir=str(tmp_path / eval_start_s))["n_scored"]
+
+    n_short = _n_scored(short_s)
+    n_full = _n_scored(full_s)
+    assert n_full == n_short + 1, f"M1 门应恰拒 1 个超预热表达式: short={n_short} full={n_full}"
+
+    # agent 端一致：同表达式、同短预热帧 → 也被拒
+    mining_df, _, _ = split_holdout(daily.sort(["ts_code", "trade_date"]), holdout_ratio=0.2)
+    bundle = DataBundle.build(mining_df)
+    train_end = _dt.datetime.strptime(bundle.train_end, "%Y%m%d").date()
+    ares = evaluate_expressions(["ts_mean(close, 20)"], daily, bundle,
+                                eval_start=dates[3], eval_end=train_end)[0]
+    assert ares["ic_train"] is None and "预热不足" in (ares["error"] or "")

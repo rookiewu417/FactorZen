@@ -9,7 +9,7 @@ import polars as pl
 
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import evaluate as eval_node
-from factorzen.discovery.expression import parse_expr, to_expr_string
+from factorzen.discovery.expression import parse_expr, to_expr_string, warmup_bars
 from factorzen.discovery.scoring import quick_fitness
 
 _LOG = logging.getLogger(__name__)
@@ -75,41 +75,6 @@ def _node_to_factor_df(node, daily: pl.DataFrame,
     截面算子逐日独立。求值后裁剪保证不保留段外任何行。
     """
     return _factor_df_from_prepped(node, _preprocess_daily(daily), eval_start, eval_end)
-
-
-def warmup_bars(node, prepped: pl.DataFrame, eval_start) -> int:
-    """表达式各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**的最小值 = 真实可用预热 bar 数。
-
-    不能按预热段交易日数算：daily_basic 缺 2019 时 dv_ttm 在预热段全 null，
-    帧里有 57 个交易日，该叶子的可用预热却是 0。取各叶子最小值——
-    任一叶子欠预热，整个表达式的首段就是噪声。
-
-    non-null 不够：polars 里 NaN 不是 null，`is_not_null()` 对 NaN 单元格返回 True。
-    NaN 预热单元格不是可用历史（如 `ret_1d = close_adj / close_adj.shift(1) - 1.0`
-    在分母为 0 时产出 NaN 而非 null），必须一并剔除，否则会把噪声段误报为已预热。
-    `is_not_nan()`/`is_nan()` 只对浮点列合法，整数/字符串列会报错，故按 schema 分流。
-
-    `prepped` 须是 `_preprocess_daily` 的产物（派生列 ret_1d/amplitude 等已物化）。
-    """
-    from factorzen.discovery.expression import feature_names
-    from factorzen.discovery.operators import LEAF_FEATURES
-
-    warm = prepped.filter(pl.col("trade_date") < eval_start)
-    if warm.is_empty():
-        return 0
-    leaves = feature_names(node)
-    if not leaves:  # 纯常数表达式，无需预热
-        return warm["trade_date"].n_unique()
-    bars = []
-    for leaf in leaves:
-        col = LEAF_FEATURES.get(leaf, leaf)
-        if col not in warm.columns:
-            return 0
-        valid = pl.col(col).is_not_null()
-        if warm.schema[col].is_float():
-            valid = valid & pl.col(col).is_not_nan()
-        bars.append(warm.filter(valid)["trade_date"].n_unique())
-    return min(bars)
 
 
 def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5):

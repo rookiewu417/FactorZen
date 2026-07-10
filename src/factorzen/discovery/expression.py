@@ -131,6 +131,46 @@ def feature_names(node: Node) -> set[str]:
     return out
 
 
+def warmup_bars(node, prepped: pl.DataFrame, eval_start,
+                leaf_map: dict[str, str] | None = None) -> int:
+    """表达式各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**的最小值 = 真实可用预热 bar 数。
+
+    M1 搜索路径（`mining_session`）与 agent 路径（`agents/evaluation`）共用本判定，
+    两侧的预热门（`required_lookback` 对照）据此对齐，消除双路径漂移。
+
+    不能按预热段交易日数算：daily_basic 缺 2019 时 dv_ttm 在预热段全 null，
+    帧里有 57 个交易日，该叶子的可用预热却是 0。取各叶子最小值——
+    任一叶子欠预热，整个表达式的首段就是噪声。
+
+    non-null 不够：polars 里 NaN 不是 null，`is_not_null()` 对 NaN 单元格返回 True。
+    NaN 预热单元格不是可用历史（如 `ret_1d = close_adj / close_adj.shift(1) - 1.0`
+    在分母为 0 时产出 NaN 而非 null），必须一并剔除，否则会把噪声段误报为已预热。
+    `is_not_nan()`/`is_nan()` 只对浮点列合法，整数/字符串列会报错，故按 schema 分流。
+
+    ``leaf_map``：叶子名→列名映射（默认 A 股 `LEAF_FEATURES`）；crypto 等市场传各自映射，
+    否则会用错列名判预热。``prepped`` 须是派生列（ret_1d/amplitude 等）已物化的帧。
+    ``eval_start`` 须是与 ``prepped`` 的 trade_date dtype 匹配的字面量（调用方用
+    `_cut_literal` 转换 "YYYYMMDD"，或直接传 date）。
+    """
+    lm = LEAF_FEATURES if leaf_map is None else leaf_map
+    warm = prepped.filter(pl.col("trade_date") < eval_start)
+    if warm.is_empty():
+        return 0
+    leaves = feature_names(node)
+    if not leaves:  # 纯常数表达式，无需预热
+        return warm["trade_date"].n_unique()
+    bars = []
+    for leaf in leaves:
+        col = lm.get(leaf, leaf)
+        if col not in warm.columns:
+            return 0
+        valid = pl.col(col).is_not_null()
+        if warm.schema[col].is_float():
+            valid = valid & pl.col(col).is_not_nan()
+        bars.append(warm.filter(valid)["trade_date"].n_unique())
+    return min(bars)
+
+
 def compile_expr(node: Node, leaf_map: dict[str, str] | None = None) -> pl.Expr:
     """把 AST 编译成 polars 表达式。``leaf_map`` 为叶子名→列名映射
     (默认 A 股 LEAF_FEATURES)，传入其他市场映射即可编译该市场表达式。"""

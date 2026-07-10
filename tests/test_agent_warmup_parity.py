@@ -139,6 +139,26 @@ def _bundle_for(sample: pl.DataFrame):
     return DataBundle.build(sample)
 
 
+def test_warmup_bars_importable_from_discovery_and_respects_leaf_map():
+    """warmup_bars 属 discovery 共享层（M1 与 agent 双路径共用），且用传入的 leaf_map
+    映射叶子→列，不硬用 LEAF_FEATURES——crypto profile 的 leaf_map 才能正确判预热。"""
+    from factorzen.discovery.expression import warmup_bars
+
+    daily = _synthetic_daily(n_days=100)
+    cutoff = dt.date(2020, 2, 1)
+    # close_adj 预热段全 null、vol 全非空 —— 让默认映射与 leaf_map 覆盖产生不同结果
+    prepped = daily.with_columns(   # close 叶子只用 close_adj/vol，无需派生列
+        pl.when(pl.col("trade_date") >= cutoff).then(pl.col("close")).otherwise(None).alias("close_adj")
+    )
+    node = parse_expr("close")
+    n_before = daily.filter(pl.col("trade_date") < cutoff)["trade_date"].n_unique()
+
+    # 默认 LEAF_FEATURES：close→close_adj（预热段全 null）→ 0
+    assert warmup_bars(node, prepped, cutoff) == 0
+    # 传 leaf_map 覆盖：close→vol（预热段全非空）→ n_before
+    assert warmup_bars(node, prepped, cutoff, leaf_map={"close": "vol"}) == n_before
+
+
 def test_train_ic_dates_exclude_warmup_segment():
     """train 段 IC 只能算在 [eval_start, eval_end] 内——预热段绝不进 IC 序列。
 

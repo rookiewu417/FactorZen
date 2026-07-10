@@ -3,6 +3,7 @@ import json
 
 import numpy as np
 import polars as pl
+import pytest
 
 from factorzen.agents.nodes import node_evaluate, node_generate
 from factorzen.agents.state import AgentState
@@ -52,6 +53,26 @@ def test_node_generate_then_evaluate_populates_attempts():
     assert all(a.ic_train is not None for a in state.attempts)
     # 验证归一化形式（带空格）在 seen_expressions 中
     assert "ts_mean(close, 5)" in state.seen_expressions
+
+
+def test_node_evaluate_raises_when_eval_start_set_without_warmup_daily():
+    """eval_start 已设但漏传 warmup_daily → 必须出声，而不是静默裸求值。
+
+    静默退回 `evaluate_expressions(exprs, daily, bundle)` 会在已裁到 eval_start 的
+    daily 上求值：预热裁剪与预热门（`warmup_bars`）双双失效，段首滚动算子用截断窗口
+    出噪声值（`operators._MIN = 3` 不产 NaN）灌回 train IC——正是本任务要根除的 bug。
+    """
+    daily = _mock_daily()
+    bundle = DataBundle.build(daily)
+    raw = json.dumps({"hypothesis": "动量", "expressions": ["ts_mean(close,5)"], "rationale": "r"})
+    sem = json.dumps({"consistent": True, "reason": "ok"})
+    llm = FakeLLM([raw, sem])
+    state = AgentState(seed=1)
+    state = node_generate(state, llm, daily=daily, bundle=bundle)
+
+    with pytest.raises(ValueError, match="warmup_daily"):
+        node_evaluate(state, daily=daily, bundle=bundle,
+                      eval_start=dt.date(2022, 2, 1), warmup_daily=None)
 
 
 def test_node_generate_rejects_illegal_and_records_error():

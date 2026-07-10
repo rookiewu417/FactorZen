@@ -74,12 +74,22 @@ def node_evaluate(state: AgentState, *, daily, bundle,
     裁剪到 ``[eval_start, eval_end]``——门槛只挂在 `eval_start` 本身是否为 None，
     不能用 `daily`/`mining_df` 的起点判断（`eval_start=None` 时二者的起点相同，
     误用会让 `evaluate_expressions` 的预热门把可用预热样本数误判成 0）。
+
+    ``eval_start`` 非 None 却漏传 ``warmup_daily`` 时**出声**（ValueError），不静默退回裸
+    求值：那样会在已裁到 eval_start 的 ``daily`` 上求值，预热裁剪与预热门双双失效，段首
+    截断窗口噪声（`operators._MIN = 3` 不产 NaN）灌回 train IC——与 `evaluate_expressions`
+    里「eval_end 不能脱离 eval_start 单传」同一条异常契约（陷阱#7）。
     """
     pending = getattr(state, "_pending", [])
     exprs = [p.expression for p in pending]
     if not exprs:
         results = []
-    elif eval_start is not None and warmup_daily is not None:
+    elif eval_start is not None:
+        if warmup_daily is None:
+            raise ValueError(
+                "eval_start 非 None 时必须提供 warmup_daily（含预热前缀的完整帧）："
+                "否则会在已裁到 eval_start 的 daily 上裸求值，预热裁剪与预热门（warmup_bars）"
+                "双双失效，静默把段首截断窗口噪声灌回 train IC。")
         results = evaluate_expressions(exprs, warmup_daily, bundle,
                                        eval_start=eval_start, eval_end=eval_end)
     else:

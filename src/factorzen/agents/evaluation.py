@@ -72,6 +72,33 @@ def _node_to_factor_df(node, daily: pl.DataFrame,
     return _factor_df_from_prepped(node, _preprocess_daily(daily), eval_start, eval_end)
 
 
+def warmup_bars(node, prepped: pl.DataFrame, eval_start) -> int:
+    """表达式各叶子在 `eval_start` 之前的**非空交易日数**的最小值 = 真实可用预热 bar 数。
+
+    不能按预热段交易日数算：daily_basic 缺 2019 时 dv_ttm 在预热段全 null，
+    帧里有 57 个交易日，该叶子的可用预热却是 0。取各叶子最小值——
+    任一叶子欠预热，整个表达式的首段就是噪声。
+
+    `prepped` 须是 `_preprocess_daily` 的产物（派生列 ret_1d/amplitude 等已物化）。
+    """
+    from factorzen.discovery.expression import feature_names
+    from factorzen.discovery.operators import LEAF_FEATURES
+
+    warm = prepped.filter(pl.col("trade_date") < eval_start)
+    if warm.is_empty():
+        return 0
+    leaves = feature_names(node)
+    if not leaves:  # 纯常数表达式，无需预热
+        return warm["trade_date"].n_unique()
+    bars = []
+    for leaf in leaves:
+        col = LEAF_FEATURES.get(leaf, leaf)
+        if col not in warm.columns:
+            return 0
+        bars.append(warm.filter(pl.col(col).is_not_null())["trade_date"].n_unique())
+    return min(bars)
+
+
 def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5):
     """建一个「表达式 → 诊断信息 | None」的检查器，供自愈循环回灌 LLM。
 

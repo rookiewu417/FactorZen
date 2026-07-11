@@ -18,6 +18,7 @@ from factorzen.discovery.expression import (
     warmup_shortfall,
 )
 from factorzen.discovery.guardrails import (
+    DEFAULT_DSR_ALPHA,
     DeflationBasis,
     deflated_pvalue,
     guardrail_passed,
@@ -72,10 +73,11 @@ def _oos_adjusted_fitness(train_fitness: float, train_tstat: float, valid_tstat:
     return train_fitness
 
 
-def _guard_passed(c: dict, dsr_alpha: float = 0.05) -> bool:
-    """防过拟合护栏软标记：DSR 显著(p<dsr_alpha) & holdout IC 与 train 同号 & holdout IC 95%CI 下界>0。
+def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA) -> bool:
+    """防过拟合护栏软标记：DSR 显著(p<dsr_alpha, 默认 0.10) & holdout IC 与 train 点估计同号。
 
-    任一指标缺失/NaN → 判否(保守)。护栏历史上「只算不判」——四个指标算出来只写进 CSV，
+    2026-07「松一档」：默认 alpha 0.05→0.10，且移除 holdout CI 单边门（见 guardrail_reasons）。
+    任一必需指标缺失/NaN → 判否(保守)。护栏历史上「只算不判」——指标算出来只写进 CSV，
     候选入选只看 fitness 排序，过拟合垃圾照样导出。这里把它变成可被 leaderboard/export-alpha
     默认过滤的软标记(留 --all 逃生口)，不删候选、不破坏产物契约。
     """
@@ -153,7 +155,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 method: str = "random", train_ratio: float = 0.7,
                 holdout_ratio: float = 0.2,
                 decorr_threshold: float = 0.7, min_n_train: int = 5,
-                dsr_alpha: float = 0.05,
+                dsr_alpha: float = DEFAULT_DSR_ALPHA,
                 eval_start: str | None = None,
                 out_dir: str = "workspace/mining_sessions",
                 profile=None, workers: int = 1) -> dict:

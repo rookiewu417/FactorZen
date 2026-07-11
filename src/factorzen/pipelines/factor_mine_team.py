@@ -6,7 +6,13 @@ import shutil
 from pathlib import Path
 
 from factorzen.agents.team_orchestrator import run_team_agent, write_team_manifest
-from factorzen.pipelines.factor_mine_agent import _llm_meta, _timestamp
+from factorzen.pipelines.factor_mine_agent import (
+    _llm_meta,
+    _print_final_stats,
+    _print_round_progress,
+    _print_startup,
+    _timestamp,
+)
 
 
 def _default_llm_fn():
@@ -53,7 +59,7 @@ def run_team_mine(
     dict with keys: run_dir, n_candidates, n_trials, candidates
     """
     fn = llm_fn or _default_llm_fn()
-    rid = run_id or f"team_{seed}_{n_rounds}r_{_timestamp()}"
+    rid = run_id or f"{_timestamp()}_team_{seed}_{n_rounds}r"
     params = {
         "n_rounds": n_rounds,
         "seed": seed,
@@ -70,10 +76,12 @@ def run_team_mine(
     }
 
     def _checkpoint(partial_result) -> None:
-        """每轮末增量落盘：进程若在下一轮崩溃，已找到的候选不至于全损。"""
+        """每轮末增量落盘 + 打印进度：进程若在下一轮崩溃，已找到的候选不至于全损。"""
         write_team_manifest(partial_result, out_dir=out_dir, run_id=rid,
                             params=params, partial=True)
+        _print_round_progress(partial_result, label="mine-team")
 
+    _print_startup(daily, params, label="mine-team", rid=rid)
     result = run_team_agent(
         daily, fn,
         n_rounds=n_rounds,
@@ -106,6 +114,7 @@ def run_team_mine(
             exp_dir.mkdir(parents=True, exist_ok=True)
             for i, c in enumerate(result.candidates):
                 export_candidate(c["expression"], f"team_{rid}_{i}", str(exp_dir))
+    _print_final_stats(result, str(run_dir), label="mine-team")
     return {
         "run_dir": str(run_dir),
         "n_candidates": len(result.candidates),

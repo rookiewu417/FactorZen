@@ -23,6 +23,8 @@ class AttemptRecord:
     # 这个**事实**分开记：把它标成 passed=False 会让它落进 known_invalid 被当作
     # 「已验证无效」喂给 LLM——语义污染。
     decorrelated: bool = False
+    # 未过护栏/未入候选池的原因（人类可读，供进度与收尾"近失表"展示）。None=通过或未评估。
+    reject_reason: str | None = None
 
 
 @dataclass

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from factorzen.agents.nodes import (
+    _print_rejections,
     node_critic,
     node_evaluate,
     node_finalize_guardrails,
@@ -24,6 +25,11 @@ from factorzen.llm.generation import LLMFn
 from factorzen.validation.multiple_testing import TrialLedger
 
 _LOG = logging.getLogger(__name__)
+
+
+def _step(msg: str) -> None:
+    """过程提示 → stdout。挖掘由 CLI 触发，用户要看实时进度；不走 logging 免被默认级别吞掉。"""
+    print(f"[mine-agent] {msg}", flush=True)
 
 
 @dataclass
@@ -66,6 +72,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     mining_df, holdout_df, _hstart = _prepare_segments(
         daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)        # Agent 只见 mining 段
+    _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
+          f"holdout {holdout_df['trade_date'].n_unique()} 天")
     _eval_start_date = _to_date(eval_start) if eval_start is not None else None
     _eval_end_date = mining_df["trade_date"].max() if eval_start is not None else None
     ledger = TrialLedger()
@@ -79,11 +87,15 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
         if patience is not None and round_i > 0:
             no_improve = 0 if len(state.candidates) > last_cand_count else no_improve + 1
             if no_improve >= patience:
+                _step(f"连续 {patience} 轮无新候选 → 提前早停（已跑 {round_i} 轮）")
                 break
         last_cand_count = len(state.candidates)
+        _step(f"── 第 {round_i + 1}/{n_rounds} 轮 " + "─" * 40)
         try:
+            _step("  ① 生成假设 + 表达式")
             state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle,
                                   feedback=feedback, heal_rounds=heal_rounds)
+            _step(f"  ② 评估 {len(getattr(state, '_pending', []))} 个候选表达式")
             # None-gating：eval_start=None（旧调用方默认）时 daily/eval_start/eval_end
             # 的组合与之前逐字节相同的裸调用；非 None 时在完整帧 daily 上求值，裁剪到
             # [eval_start, eval_end]（mining_df 此时已被 _prepare_segments 提前裁到
@@ -91,19 +103,25 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             state = node_evaluate(state, daily=mining_df, bundle=bundle,
                                   eval_start=_eval_start_date, eval_end=_eval_end_date,
                                   warmup_daily=daily)
+            _step("  ③ 防过拟合护栏（DSR / holdout / CI / 去相关）")
             state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
                                     bundle=bundle, ledger=ledger, top_k=top_k,
                                     warmup_daily=daily,   # holdout 扩窗预热用完整帧
                                     eval_start=_eval_start_date)  # 池级 PBO 的 None-gating
+            _print_rejections("mine-agent", state)
+            _step("  ④ Critic 审计")
             state = node_critic(state, llm_fn)
         except LLMClientError as exc:
             llm_failures += 1
             # 丢弃本轮未评估的暂存表达式；node_reflect 未执行，故此处补推进 iteration
             state._pending = []  # type: ignore[attr-defined]
             state.iteration += 1
+            _step(f"  ⚠ LLM 不可用（连续第 {llm_failures} 次），跳过本轮")
             _LOG.warning("第 %d 轮 LLM 不可用（连续第 %d 次），跳过本轮: %s",
                          round_i, llm_failures, exc)
             if llm_failures >= llm_failure_patience:
+                _step(f"  ✖ 连续 {llm_failures} 轮 LLM 不可用 → 提前终止"
+                      f"（已产出 {len(state.candidates)} 个候选）")
                 _LOG.error("连续 %d 轮 LLM 不可用，提前终止挖掘（已产出 %d 个候选）",
                            llm_failures, len(state.candidates))
                 break
@@ -117,6 +135,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             on_round_end(AgentResult(state=state, candidates=state.candidates,
                                      n_trials=ledger.n_trials))
     # 收尾复核：早轮候选此前按「截至当轮」的 N 定 p，门槛偏松。用最终 basis 统一重判。
+    _step("收尾复核：以最终 N 统一重判候选 DSR")
     basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle)
     return AgentResult(state=state, candidates=state.candidates, n_trials=ledger.n_trials,
                        sharpe_variance=basis.sharpe_variance)

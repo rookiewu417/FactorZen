@@ -11,7 +11,7 @@ import polars as pl
 from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.manifest import dump_manifest, json_safe_float
-from factorzen.agents.nodes import node_finalize_guardrails, node_guardrails
+from factorzen.agents.nodes import _print_rejections, node_finalize_guardrails, node_guardrails
 from factorzen.agents.roles.coder import (
     decompose_tasks,
     revise_expressions,
@@ -34,6 +34,11 @@ from factorzen.validation.holdout import split_holdout
 from factorzen.validation.multiple_testing import TrialLedger
 
 _LOG = logging.getLogger(__name__)
+
+
+def _step(msg: str) -> None:
+    """过程提示 → stdout。挖掘由 CLI 触发，用户要看实时进度；不走 logging 免被默认级别吞掉。"""
+    print(f"[mine-team] {msg}", flush=True)
 
 
 @dataclass
@@ -132,14 +137,17 @@ def _run_one_round(
     `eval_start`，不能直接把 `mining_df["trade_date"].min()` 当判据（`eval_start=None`
     时它就是帧起点，会让预热门把可用预热样本数误判成 0，见 task-1.4 CORRECTION）。
     """
+    _step("  ① Librarian 检索历史经验（known valid/invalid）")
     rec = recall(index, k=5, data_window=data_window)          # ① Librarian（按窗口分族）
     tasks: list[dict] = []
 
     # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
     if pending and pending["kind"] == "revise_expr":
+        _step("  ②→③ Coder 依 Critic 反馈修订表达式")
         hypothesis = pending["hypothesis"]
         exprs = revise_expressions(hypothesis, pending["exprs"], pending["reason"], llm_fn)
     else:
+        _step("  ② Hypothesis 提假设" + ("（结构化：机制/预期符号/证伪）" if structured else ""))
         fb = pending["reason"] if pending and pending["kind"] == "revise_hypothesis" else ""
         if structured:
             # RD-Agent 步1 结构化假设：direction/mechanism/expected_sign/falsification
@@ -154,6 +162,7 @@ def _run_one_round(
                 feedback=fb, n=1,
             )
         if not hyps:
+            _step("  · Hypothesis 未产出假设，跳过本轮")
             state.iteration += 1
             return None
         hypothesis = hyps[0]
@@ -161,6 +170,7 @@ def _run_one_round(
             # RD-Agent 步2 任务分解：假设 → 因子任务清单，逐任务独立翻译。
             # 拆两步是为了让每次 LLM 调用只专注一件事（合并则假设过细或规格过粗）。
             tasks = decompose_tasks(hypothesis, llm_fn)
+        _step("  ③ Coder 翻译表达式" + (f"（{len(tasks)} 个子任务）" if tasks else ""))
         if tasks:
             exprs = []
             for t in tasks:
@@ -185,18 +195,21 @@ def _run_one_round(
         ev_daily, ev_end = warmup_daily, mining_df["trade_date"].max()
     else:
         ev_daily, ev_end = mining_df, None
+    _step(f"  ④ Evaluator 评估 {len(exprs)} 个表达式")
     results = _evaluate_and_record(
         state, exprs, hypothesis,
         daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
         eval_start=eval_start, eval_end=ev_end,
     )
     n_before = len(state.candidates)                       # Important 1: 护栏前快照
+    _step("  ⑤ 防过拟合护栏（DSR / holdout / CI / 去相关）")
     node_guardrails(
         state, daily=mining_df, holdout_df=holdout_df,
         bundle=bundle, ledger=ledger, top_k=top_k,
         warmup_daily=warmup_daily,   # holdout 扩窗预热用完整帧
         eval_start=eval_start,       # 池级 PBO 的 None-gating：None 时裸求值，零回归
     )
+    _print_rejections("mine-team", state)
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
 
     # ⑤ Critic：看本轮候选（guardrails 已跑，含 dsr/holdout）
@@ -208,6 +221,7 @@ def _run_one_round(
         "ir_train": results[-1]["ir_train"] if results else None,
         "turnover": results[-1].get("turnover") if results else None,
     }
+    _step("  ⑥ Critic 裁决")
     verdict = critique(cand, llm_fn)
 
     # 回填 critic_verdict 到本轮**全部**新增候选对应的 attempt，而不只是 Critic 直接点评的
@@ -305,6 +319,8 @@ def run_team_agent(
     mining_df, holdout_df, _ = _prepare_segments(
         daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)
+    _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
+          f"holdout {holdout_df['trade_date'].n_unique()} 天")
     _eval_start_date = _to_date(eval_start) if eval_start is not None else None
     # ── 记录在案的假设：多重检验的 N **不跨 session 累积** ──────────────────────
     # ledger 每 session 从 0 起。而 Librarian 把历史已试表达式喂给 LLM 让它避开，于是后续
@@ -339,8 +355,10 @@ def run_team_agent(
         if patience is not None and round_i > 0:
             no_improve = 0 if len(state.candidates) > last_cand_count else no_improve + 1
             if no_improve >= patience:
+                _step(f"连续 {patience} 轮无新候选 → 提前早停（已跑 {round_i} 轮）")
                 break
         last_cand_count = len(state.candidates)
+        _step(f"── 第 {round_i + 1}/{n_rounds} 轮 " + "─" * 40)
         try:
             pending = _run_one_round(
                 state, llm_fn, index=index, ledger=ledger, rounds_log=rounds_log,
@@ -354,9 +372,12 @@ def run_team_agent(
             llm_failures += 1
             state.iteration += 1   # 角色流水线未跑完，此处补推进以保持轮次语义一致
             pending = None
+            _step(f"  ⚠ LLM 不可用（连续第 {llm_failures} 次），跳过本轮")
             _LOG.warning("第 %d 轮 LLM 不可用（连续第 %d 次），跳过本轮: %s",
                          round_i, llm_failures, exc)
             if llm_failures >= llm_failure_patience:
+                _step(f"  ✖ 连续 {llm_failures} 轮 LLM 不可用 → 提前终止"
+                      f"（已产出 {len(state.candidates)} 个候选）")
                 _LOG.error("连续 %d 轮 LLM 不可用，提前终止挖掘（已产出 %d 个候选）",
                            llm_failures, len(state.candidates))
                 break
@@ -367,6 +388,7 @@ def run_team_agent(
                                     n_trials=ledger.n_trials, rounds_log=rounds_log))
 
     # 收尾复核：早轮候选此前按「截至当轮」的 N 定 p，门槛偏松。用最终 basis 统一重判。
+    _step("收尾复核：以最终 N 统一重判候选 DSR")
     before = {c["expression"] for c in state.candidates}
     basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle)
     demoted = before - {c["expression"] for c in state.candidates}

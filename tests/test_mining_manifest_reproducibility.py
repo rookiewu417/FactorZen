@@ -116,7 +116,7 @@ def test_default_run_id_carries_timestamp():
                              llm_fn=_llm(), export=False)
         name = Path(res["run_dir"]).name
 
-    assert re.fullmatch(r"agent_42_1r_\d{8}_\d{6}", name), f"run_id 应带时间戳，实得 {name}"
+    assert re.fullmatch(r"\d{8}_\d{6}_agent_42_1r", name), f"run_id 应带时间戳，实得 {name}"
 
 
 def test_exported_dir_is_cleared_before_write():

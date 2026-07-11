@@ -67,7 +67,8 @@ def test_warmup_bars_counts_nonnull_history_per_leaf():
     保留作为 min-vs-max-across-leaves 回归的判别项：与 dv_ttm（预热恒 0）组合，
     只有正确取 `min()` 才会得到 0；若误用 `max()`，会被 open 的满预热天数掩盖。
     """
-    from factorzen.agents.evaluation import _preprocess_daily, warmup_bars
+    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.expression import warmup_bars
 
     daily = _synthetic_daily(n_days=100)
     cutoff = dt.date(2020, 2, 1)
@@ -94,7 +95,8 @@ def test_warmup_bars_counts_nonnull_history_per_leaf():
 
 def test_warmup_bars_absent_column_and_constant_expr():
     """两个当前只靠代码自证、无断言守护的边界情形。"""
-    from factorzen.agents.evaluation import _preprocess_daily, warmup_bars
+    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.expression import warmup_bars
 
     daily = _synthetic_daily(n_days=100)
     cutoff = dt.date(2020, 2, 1)
@@ -114,7 +116,8 @@ def test_warmup_bars_excludes_nan_not_just_null():
 
     直接构造 NaN（不经 derived.py 的除法），使断言独立于 ret_1d 缺零分母守卫的行为。
     """
-    from factorzen.agents.evaluation import _preprocess_daily, warmup_bars
+    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.expression import warmup_bars
 
     daily = _synthetic_daily(n_days=100)
     cutoff = dt.date(2020, 2, 1)
@@ -264,6 +267,105 @@ def test_m1_and_agent_paths_agree_on_train_ic_days():
     m1_n = int(quick_fitness(m1_fdf, bundle, segment="train")["n"])
 
     assert agent_n == m1_n
+
+
+# ── 假拒绝修复:逐叶 path-lookback,浅派生叶不得拖垮深 raw 路 ──────────────────
+#
+# smoke 照出:门用『全叶最小 warmup』对比『最深路径 max lookback』——跨叶错配。
+# `mul(ts_zscore(delta(div(close,pe_ttm),60),120), ts_sum(ret_1d,20))` 的深路
+# (close/pe_ttm, need=180)明明有 ≥180 根预热,却被只需 20 的派生叶 ret_1d(少 1
+# 根 warmup,=179)拖成 min=179 < 180 → 假拒。正确判定必须逐叶:每个叶子只需填满
+# 它上方的窗口。下面用可控合成帧复刻该拓扑(deep need == close 可用预热,ret_1d 少 1)。
+
+
+def test_leaf_lookbacks_are_per_leaf_not_global_max():
+    """leaf_lookbacks:每个叶子沿『根→该叶』路径的窗口累加,各叶分别给出。
+
+    与 required_lookback(只给最深路径全局最大)不同:ret_1d 只在 ts_sum(...,20) 下,
+    need=20,不因 close 那条 180 深路被抬高。ground-truth 手算。
+    """
+    from factorzen.discovery.expression import leaf_lookbacks
+
+    node = parse_expr("mul(ts_mean(close, 20), ts_sum(ret_1d, 5))")
+    assert leaf_lookbacks(node) == {"close": 20, "ret_1d": 5}
+
+    deep = parse_expr("mul(ts_zscore(delta(div(close, pe_ttm), 60), 120), ts_sum(ret_1d, 20))")
+    assert leaf_lookbacks(deep) == {"close": 180, "pe_ttm": 180, "ret_1d": 20}
+
+    # 同叶多次出现取最大:close 一处 need=25、一处 need=3 → 25
+    both = parse_expr("add(ts_mean(delta(close, 5), 20), ts_mean(close, 3))")
+    assert leaf_lookbacks(both)["close"] == 25
+
+
+def test_warmup_shortfall_not_dragged_by_shallow_derived_leaf():
+    """核心复现:深 raw 叶路(close, need=20, 恰好有 20 根预热)不该被浅派生叶
+    (ret_1d, need=5 但只有 19 根 warmup)拖成假拒绝。
+
+    前提用真实数值钉死『旧 min-vs-max 会假拒』的拓扑,再断言新逐叶门放行。
+    """
+    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.expression import (
+        required_lookback,
+        warmup_bars,
+        warmup_shortfall,
+    )
+
+    prepped = _preprocess_daily(_synthetic_daily(n_days=100))
+    cutoff = dt.date(2020, 1, 21)                     # 前 20 个交易日作预热
+    node = parse_expr("mul(ts_mean(close, 20), ts_sum(ret_1d, 5))")
+
+    # 前提:旧口径 min(close=20, ret_1d=19)=19 < required=20 → 旧门会假拒
+    assert warmup_bars(node, prepped, cutoff) == 19
+    assert required_lookback(node) == 20
+    # 且 close 单叶其实够(20≥20)——所以这是假拒绝,不是真欠预热
+    assert warmup_bars(parse_expr("ts_mean(close, 20)"), prepped, cutoff) == 20
+
+    # 新逐叶门:close 20≥20、ret_1d 19≥5 → 无欠预热 → None
+    assert warmup_shortfall(node, prepped, cutoff) is None
+
+
+def test_warmup_shortfall_flags_genuinely_underwarmed_leaf():
+    """反向守卫(防修过头):某叶真的够不着自身 need 时必须报欠预热,返回最欠的叶。"""
+    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.expression import warmup_shortfall
+
+    prepped = _preprocess_daily(_synthetic_daily(n_days=100))
+    cutoff = dt.date(2020, 1, 11)                     # 只有 10 个预热交易日
+    sf = warmup_shortfall(parse_expr("ts_mean(close, 20)"), prepped, cutoff)
+    assert sf is not None
+    leaf, need, have = sf
+    assert leaf == "close" and need == 20 and have == 10
+
+
+def test_m1_underwarmed_false_for_mixed_depth_expr():
+    """M1 路径(mining_session._underwarmed):mixed 表达式不再假拒,真欠仍拒。"""
+    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.mining_session import _underwarmed
+
+    prepped = _preprocess_daily(_synthetic_daily(n_days=100))
+    mixed = parse_expr("mul(ts_mean(close, 20), ts_sum(ret_1d, 5))")
+    # eval_start 是 "YYYYMMDD" 字符串(_cut_literal 契约,与 run_session 一致)
+    assert _underwarmed(mixed, prepped, "20200121") is False
+    assert _underwarmed(parse_expr("ts_mean(close, 20)"), prepped, "20200111") is True
+
+
+def test_agent_evaluate_no_false_warmup_rejection_for_mixed_expr():
+    """agent 路径(evaluate_expressions):mixed 表达式不得被判『预热不足』。
+
+    与 M1 用同一道共享门(warmup_shortfall),两条路对同一 mixed 拓扑判定一致。
+    """
+    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.discovery.scoring import DataBundle
+
+    full = _synthetic_daily(n_days=120)
+    eval_start = dt.date(2020, 1, 21)                 # 20 个预热交易日,恰卡 close need=20
+    bundle = DataBundle.build(full)
+    train_end = dt.datetime.strptime(bundle.train_end, "%Y%m%d").date()
+
+    res = evaluate_expressions(["mul(ts_mean(close, 20), ts_sum(ret_1d, 5))"],
+                               full, bundle, eval_start=eval_start, eval_end=train_end)[0]
+    assert res["compile_ok"] is True
+    assert "预热不足" not in (res.get("error") or ""), res
 
 
 def _scripted_team_fixed_expr(expr: str):

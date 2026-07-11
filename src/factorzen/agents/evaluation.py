@@ -9,7 +9,7 @@ import polars as pl
 
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import evaluate as eval_node
-from factorzen.discovery.expression import parse_expr, to_expr_string, warmup_bars
+from factorzen.discovery.expression import parse_expr, to_expr_string, warmup_shortfall
 from factorzen.discovery.scoring import quick_fitness
 
 _LOG = logging.getLogger(__name__)
@@ -169,8 +169,6 @@ def evaluate_expressions(
     **预热不足的表达式同样记 None**：窗口不满时 `operators._MIN = 3` 让它照常出值（噪声而非 NaN），
     静默放行等于把噪声 IC 灌进 DSR 池。
     """
-    from factorzen.discovery.expression import required_lookback
-
     if eval_end is not None and eval_start is None:
         raise ValueError(
             "eval_end 不能脱离 eval_start 单独传入：下界裁剪与预热门（`warmup_bars`）"
@@ -190,13 +188,13 @@ def evaluate_expressions(
             continue
 
         if eval_start is not None:
-            need = required_lookback(node)
-            have = warmup_bars(node, prepped, eval_start)
-            if have < need:
+            sf = warmup_shortfall(node, prepped, eval_start)
+            if sf is not None:
+                leaf, need, have = sf
                 results.append({
                     "expression": to_expr_string(node), "node": node, "compile_ok": True,
                     "ic_train": None, "ir_train": None, "turnover": None, "n_train": 0,
-                    "error": f"预热不足: 需要 {need} 根历史，可用 {have} 根"})
+                    "error": f"预热不足: 叶 {leaf} 需要 {need} 根历史，可用 {have} 根"})
                 continue
 
         try:

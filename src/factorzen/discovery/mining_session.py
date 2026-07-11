@@ -14,9 +14,8 @@ from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import (
     evaluate_materialized,
     parse_expr,
-    required_lookback,
     to_expr_string,
-    warmup_bars,
+    warmup_shortfall,
 )
 from factorzen.discovery.guardrails import (
     DeflationBasis,
@@ -43,25 +42,22 @@ def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) ->
 
 
 def _underwarmed(node, daily: pl.DataFrame, eval_start, leaf_map=None) -> bool:
-    """预热不足判定：``required_lookback > 可用预热 bar 数`` → True（该表达式该拒）。
+    """预热不足判定：某叶子 ``可用预热 < 自身 path-lookback`` → True（该表达式该拒）。
 
-    与 agent `evaluate_expressions` 同一道门（`warmup_bars` vs `required_lookback`），
-    消除双路径漂移：M1 此前对超预热表达式不拒绝，让段首截断窗口噪声（`operators._MIN = 3`
+    与 agent `evaluate_expressions` 同一道共享门（`warmup_shortfall`）：逐叶对照
+    `leaf_lookbacks`，避免『浅派生叶拖垮深 raw 叶路』的假拒绝，两条路判定天然一致，
+    消除双路径漂移。M1 此前对超预热表达式不拒绝，让段首截断窗口噪声（`operators._MIN = 3`
     窗口不满照常出值）进 train IC。被拒的表达式在 random 循环 `continue`、genetic
     `_score_one` 提前 `return`，都在写 scored/eval_ir 之前，故不计入 DSR 的 N（与 agent 一致）。
 
     ``eval_start=None``（旧调用方）→ 不判（False），零回归。``daily`` 须派生列已物化
-    （`run_session` 在 `add_derived_columns` 后调用）。``leaf_map`` 透传给 `warmup_bars`
+    （`run_session` 在 `add_derived_columns` 后调用）。``leaf_map`` 透传给 `warmup_shortfall`
     以支持 crypto 等非 A 股叶子映射。
     """
     if eval_start is None:
         return False
-    need = required_lookback(node)
-    if need == 0:                       # 纯截面/常数表达式无需预热
-        return False
     from factorzen.discovery.scoring import _cut_literal
-    have = warmup_bars(node, daily, _cut_literal(daily, eval_start), leaf_map)
-    return have < need
+    return warmup_shortfall(node, daily, _cut_literal(daily, eval_start), leaf_map) is not None
 
 
 def _oos_adjusted_fitness(train_fitness: float, train_tstat: float, valid_tstat: float) -> float:

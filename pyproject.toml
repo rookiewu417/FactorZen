@@ -39,6 +39,8 @@ dependencies = [
     "pyqlib>=0.9.7",
     "protobuf<5",
     "setuptools>=69,<81",
+    "openai>=1.30",
+    "socksio>=1.0.0",
 ]
 
 [project.optional-dependencies]

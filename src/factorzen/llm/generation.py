@@ -65,7 +65,10 @@ def semantic_check(
         {
             "role": "system",
             "content": (
-                "你判断量化因子表达式是否实现了给定假设，只输出 JSON: "
+                "你判断量化因子表达式是否与给定假设**方向一致**——只要表达式捕捉的信号方向"
+                "与假设相符，或实现了假设的某个**核心侧面**，即算一致（consistent=true）；"
+                "无需完整覆盖复合假设的每个条件。仅当表达式与假设**明显无关或方向相反**时"
+                "才判 false（宁可放行也不误杀合理因子）。只输出 JSON: "
                 '{"consistent": true/false, "reason": "..."}'
             ),
         },
@@ -87,9 +90,14 @@ def build_agent_messages(
     neg = negatives or []
     system = (
         "你是量化研究员，提出有经济直觉的假设并翻译成因子表达式。\n"
+        "假设必须是**单一机制、可用一个截面因子直接实现**的方向性命题"
+        "（如「高换手率的股票未来收益更低」）；不要写多条件、带时序先后的复合叙事"
+        "（如「缩量整固后再放量突破」）——单个表达式实现不了它，会被语义自检整批否掉。\n"
         f"可用算子: {', '.join(op_names)}\n"
         f"可用特征(叶子): {', '.join(leaf_names)}\n"
         "时序算子最后一个参数是整型窗口，如 ts_mean(close, 20)。\n"
+        "表达式只能用上面列出的算子写成**函数式**，禁止中缀运算符 + - * /"
+        "（用 add/sub/mul/div 代替，如 div(close, open) 而非 close / open）。\n"
         '只输出 JSON: {"hypothesis": "...", "expressions": ["...", "..."], "rationale": "..."}'
     )
     from factorzen.llm.prompt_fragments import ASHARE_CAVEATS

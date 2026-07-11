@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from factorzen.discovery.guardrails import DEFAULT_DSR_ALPHA
 from factorzen.discovery.mining_session import run_session
 
 _TRADING_YEAR = 252
@@ -50,7 +51,7 @@ def run_mine(*, start: str, end: str, universe: str | None = None,
              n_trials: int = 200, top_k: int = 10, seed: int = 42,
              method: str = "random", holdout_ratio: float = 0.2,
              train_ratio: float = 0.7, decorr_threshold: float = 0.7,
-             min_n_train: int = 5, dsr_alpha: float = 0.05,
+             min_n_train: int = 5, dsr_alpha: float = DEFAULT_DSR_ALPHA,
              workers: int = 1) -> dict:
     daily = prepare_mining_daily(start, end, universe)
     return run_session(daily, n_trials=n_trials, top_k=top_k, seed=seed, method=method,

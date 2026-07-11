@@ -26,9 +26,11 @@ def test_guardrail_passed_rejects_sign_mismatch():
                             ci_low=0.01, ci_high=0.08) is False
 
 
-def test_guardrail_passed_rejects_ci_crosses_zero():
+def test_guardrail_passed_ci_crosses_zero_now_allowed():
+    """2026-07 松一档：移除 holdout CI 单边门。CI 跨零不再单独否决——
+    holdout 方向仅由点估计同号把关（DSR 显著 + holdout 与 train 同号即过）。"""
     assert guardrail_passed(ic_train=0.05, holdout_ic=0.04, dsr_pvalue=0.01,
-                            ci_low=-0.01, ci_high=0.08) is False
+                            ci_low=-0.01, ci_high=0.08) is True
 
 
 def test_guardrail_passed_negative_ic_bidirectional():

@@ -92,12 +92,16 @@ def test_guard_passed_respects_dsr_alpha():
 
 
 def test_guard_passed_criteria():
-    """R1：护栏软标记 = DSR<0.05 & holdout 与 train 同号 & holdout CI 下界>0；任一 NaN→不过。"""
+    """护栏软标记（2026-07 松一档）= DSR<0.10 & holdout 与 train 点估计同号；必需量 NaN→不过。
+
+    松一档移除了 holdout CI 单边门（CI 下界≤0 不再否决），DSR 阈值 0.05→0.10。
+    """
     from factorzen.discovery.mining_session import _guard_passed
     ok = {"dsr_pvalue": 0.01, "holdout_ic": 0.05, "ic_ci_low": 0.02, "ic_train": 0.06}
     assert _guard_passed(ok) is True
-    assert _guard_passed({**ok, "dsr_pvalue": 0.2}) is False          # DSR 不显著
-    assert _guard_passed({**ok, "ic_ci_low": -0.01}) is False         # holdout CI 下界≤0
+    assert _guard_passed({**ok, "dsr_pvalue": 0.2}) is False          # DSR 不显著(≥0.10)
+    assert _guard_passed({**ok, "dsr_pvalue": 0.08}) is True          # 松一档：0.08<0.10 现在过
+    assert _guard_passed({**ok, "ic_ci_low": -0.01}) is True          # CI 下界≤0 不再否决
     assert _guard_passed({**ok, "holdout_ic": -0.05}) is False        # 与 train 反号
     assert _guard_passed({**ok, "holdout_ic": float("nan")}) is False  # NaN 保守判否
     assert _guard_passed({"dsr_pvalue": 0.01}) is False               # 缺字段保守判否
@@ -112,9 +116,9 @@ def test_session_writes_passed_flag(tmp_path: Path):
                       method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
     for c in res["candidates"]:
         assert isinstance(c["passed"], bool)
-        if c["passed"]:  # 标记为过的候选，独立复核确满足三条件
-            assert c["dsr_pvalue"] < 0.05
-            assert c["ic_ci_low"] > 0
+        if c["passed"]:  # 标记为过的候选，独立复核确满足松一档口径
+            assert c["dsr_pvalue"] < 0.10                              # DSR 显著(松一档 0.10)
+            assert (c["holdout_ic"] > 0) == (c["ic_train"] > 0)        # holdout 点估计同号
     df = pl.read_csv(Path(res["session_dir"]) / "candidates.csv")
     assert "passed" in df.columns
 

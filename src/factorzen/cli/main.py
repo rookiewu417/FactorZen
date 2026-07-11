@@ -1107,6 +1107,8 @@ def _cmd_ops_status(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from factorzen.discovery.guardrails import DEFAULT_DSR_ALPHA  # 护栏阈值单一真源，防漂移
+
     parser = argparse.ArgumentParser(prog="fz", description="FactorZen research CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1273,8 +1275,8 @@ def build_parser() -> argparse.ArgumentParser:
                           help="top-K 贪心去相关的 |corr| 门槛，≥该值视为近重复剔除（默认 0.7）")
     m_search.add_argument("--min-n-train", dest="min_n_train", type=int, default=5,
                           help="候选 train 段最少有效 IC 天数，不足则丢弃（默认 5）")
-    m_search.add_argument("--dsr-alpha", dest="dsr_alpha", type=float, default=0.05,
-                          help="护栏 passed 标记的 DSR 显著性阈值（默认 0.05）")
+    m_search.add_argument("--dsr-alpha", dest="dsr_alpha", type=float, default=DEFAULT_DSR_ALPHA,
+                          help="护栏 passed 标记的 DSR 显著性阈值（默认 0.10，2026-07 松一档）")
     _add_freq_arg(m_search)
     m_search.set_defaults(func=_cmd_mine_search)
 

@@ -11,6 +11,10 @@ import polars as pl
 from factorzen.validation.deflated_sharpe import deflated_sharpe
 from factorzen.validation.pbo import compute_pbo
 
+# 护栏 DSR 显著性水平的**单一真源**——M1 与 M5/M6 一律引用它，防默认值漂移。
+# 2026-07「松一档」：0.05 → 0.10（放宽多重检验后的显著性门槛）。改这一处即全局生效。
+DEFAULT_DSR_ALPHA = 0.10
+
 
 @dataclass(frozen=True)
 class DeflationBasis:
@@ -77,30 +81,55 @@ def deflated_pvalue(sharpe: float, basis: DeflationBasis, n_obs: int) -> tuple[f
                            sharpe_variance=basis.sharpe_variance)
 
 
+def guardrail_reasons(
+    *,
+    ic_train: float | None,
+    holdout_ic: float | None,
+    dsr_pvalue: float | None,
+    ci_low: float | None = None,
+    ci_high: float | None = None,
+    dsr_alpha: float = DEFAULT_DSR_ALPHA,
+) -> list[str]:
+    """返回**未通过**的护栏门（空列表 = 全过）。`guardrail_passed` 委托本函数（无失败即通过），
+    两者共用同一套门，杜绝「判定 / 解释」双路径漂移（陷阱#2）。
+
+    门（2026-07「松一档」口径）：DSR 显著(pval<dsr_alpha，默认 0.10) + holdout 与 train
+    **点估计同号**。必需量 ic_train/holdout_ic/dsr_pvalue 任一 None/NaN → 判缺失。
+
+    历史（收紧口径）曾额外要求 holdout 95%CI 单边不跨零。实测该门在短 holdout 上对**真**因子
+    误杀率高（97 天 holdout、真 IC=0.03 时 ~12–15%），且**从不独立生效**（大样本诊断里
+    22/22 未过因子的 CI 门总与 DSR 同时亮红，0 个是仅被 CI 冤枉）。松一档移除它，holdout
+    方向仅由点估计同号把关。``ci_low``/``ci_high`` 仍接收（供报告与向后兼容），不再参与判定。
+    """
+    required = {"ic_train": ic_train, "holdout_ic": holdout_ic, "dsr_pvalue": dsr_pvalue}
+    missing = [k for k, v in required.items() if v is None or v != v]  # v != v 即 NaN
+    if missing:
+        return [f"缺失/NaN: {', '.join(missing)}"]
+    reasons: list[str] = []
+    if not (dsr_pvalue < dsr_alpha):  # type: ignore[operator]
+        reasons.append(f"DSR 不显著(p={dsr_pvalue:.4f}≥{dsr_alpha})")
+    if (holdout_ic > 0) != (ic_train > 0):  # type: ignore[operator]
+        reasons.append(f"holdout 反号(train={ic_train:.4f}/holdout={holdout_ic:.4f})")
+    return reasons
+
+
 def guardrail_passed(
     *,
     ic_train: float | None,
     holdout_ic: float | None,
     dsr_pvalue: float | None,
-    ci_low: float | None,
+    ci_low: float | None = None,
     ci_high: float | None = None,
-    dsr_alpha: float = 0.05,
+    dsr_alpha: float = DEFAULT_DSR_ALPHA,
 ) -> bool:
-    """DSR 显著(pval<dsr_alpha) + holdout 同号 + holdout CI 方向门槛。任一 None/NaN → False。"""
-    required = [ic_train, holdout_ic, dsr_pvalue, ci_low]
-    if any(v is None for v in required):
-        return False
-    if any(v != v for v in required):
-        return False
-    same_sign = (holdout_ic > 0) == (ic_train > 0)  # type: ignore[operator]
-    dsr_sig = dsr_pvalue < dsr_alpha  # type: ignore[operator]
-    if ic_train > 0:  # type: ignore[operator]
-        ci_ok = ci_low > 0  # type: ignore[operator]
-    elif ci_high is not None:
-        ci_ok = ci_high < 0
-    else:
-        ci_ok = ci_low > 0  # type: ignore[operator]
-    return bool(dsr_sig and same_sign and ci_ok)
+    """DSR 显著(pval<dsr_alpha，默认 0.10) + holdout 点估计同号。必需量 None/NaN → False。
+
+    委托 `guardrail_reasons`（无失败原因即通过），保证「过/不过」与「为什么不过」同源。
+    2026-07「松一档」：默认 alpha 0.05→0.10，且移除 holdout CI 单边门（详见 guardrail_reasons）。
+    """
+    return not guardrail_reasons(
+        ic_train=ic_train, holdout_ic=holdout_ic, dsr_pvalue=dsr_pvalue,
+        ci_low=ci_low, ci_high=ci_high, dsr_alpha=dsr_alpha)
 
 
 def pool_pbo(

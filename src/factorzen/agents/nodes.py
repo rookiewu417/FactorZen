@@ -8,6 +8,7 @@ from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.memory import negative_recall
 from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.discovery.expression import parse_expr, to_expr_string
+from factorzen.discovery.guardrails import DEFAULT_DSR_ALPHA
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 from factorzen.llm.generation import (
     LLMFn,
@@ -24,6 +25,17 @@ _LOG = logging.getLogger(__name__)
 class _PendingExpr:
     hypothesis: str
     expression: str
+
+
+def _print_rejections(label: str, state: AgentState) -> None:
+    """打印本轮被护栏拒（含去相关剔除）的候选 + 原因，供挖掘过程实时展示「为什么没过护栏」。
+
+    ``reject_reason`` 由 `node_guardrails` 记；只取**本轮**（`iteration == state.iteration`）
+    的 attempt，避免把往轮已展示过的重复打印。挖掘由 CLI 触发，故用 print 直出终端。
+    """
+    for a in state.attempts:
+        if a.iteration == state.iteration and a.reject_reason:
+            print(f"[{label}]     ✗ {a.expression} → {a.reject_reason}", flush=True)
 
 
 @dataclass
@@ -113,7 +125,7 @@ def node_guardrails(
     bundle,
     ledger,
     top_k: int = 5,
-    dsr_alpha: float = 0.05,
+    dsr_alpha: float = DEFAULT_DSR_ALPHA,
     warmup_daily=None,
     eval_start=None,
 ) -> AgentState:
@@ -146,7 +158,7 @@ def node_guardrails(
     from factorzen.discovery.guardrails import (
         DeflationBasis,
         deflated_pvalue,
-        guardrail_passed,
+        guardrail_reasons,
         pool_pbo,
     )
     from factorzen.discovery.scoring import max_correlation
@@ -202,10 +214,11 @@ def node_guardrails(
             sharpe = a.ir_train if a.ir_train is not None else (a.ic_train or 0.0)
             dsr, pval = deflated_pvalue(sharpe, basis, a.n_train or 0)
             ic_tr = a.ic_train or 0.0
-            if guardrail_passed(
+            reasons = guardrail_reasons(
                 ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,
                 ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
-            ):
+            )
+            if not reasons:
                 # 事实先落定：过了定量护栏。去相关剔除是随后的**决策**，不得改写它——
                 # 否则该因子会以 passed=False 落进 known_invalid，被当作「已验证无效」
                 # 喂给 LLM（它其实过了全部定量护栏，只是与已有候选重复）。
@@ -213,6 +226,7 @@ def node_guardrails(
                 corr = max_correlation(fdf_hold, pool)
                 if corr > 0.7:
                     a.decorrelated = True
+                    a.reject_reason = f"与已有候选高度相关(corr={corr:.2f}>0.7)"
                     continue
                 pool[a.expression] = fdf_hold
                 existing_exprs.add(a.expression)
@@ -232,8 +246,12 @@ def node_guardrails(
                     "ic_ci_low": ci_lo,
                     "ic_ci_high": ci_hi,
                 })
+            else:
+                # 记下未过原因，供进度与收尾"近失表"展示（为什么没进候选池）。
+                a.reject_reason = "；".join(reasons)
         except Exception as exc:
             # 静默 continue 会让「这个候选炸了」与「这个候选没过护栏」不可区分。
+            a.reject_reason = f"护栏计算异常({type(exc).__name__})"
             _LOG.warning("候选 %s 的护栏计算失败，已跳过: %s: %s",
                          a.expression, type(exc).__name__, exc)
             continue
@@ -258,7 +276,7 @@ def node_guardrails(
     return state
 
 
-def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = 0.05,
+def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DSR_ALPHA,
                              daily=None, bundle=None):
     """收尾：用**最终** basis 统一重算候选的 DSR，据此复核 `passed`。返回该 basis。
 
@@ -281,7 +299,7 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = 0.05,
     from factorzen.discovery.guardrails import (
         DeflationBasis,
         deflated_pvalue,
-        guardrail_passed,
+        guardrail_reasons,
         pool_pbo,
     )
 
@@ -296,15 +314,17 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = 0.05,
     for c in state.candidates:
         dsr, pval = deflated_pvalue(c["ir_train"] or 0.0, basis, c["n_train"] or 0)
         c["dsr"], c["dsr_pvalue"] = dsr, pval
-        if guardrail_passed(
+        reasons = guardrail_reasons(
             ic_train=c["ic_train"], holdout_ic=c["holdout_ic"], dsr_pvalue=pval,
             ci_low=c["ic_ci_low"], ci_high=c["ic_ci_high"], dsr_alpha=dsr_alpha,
-        ):
+        )
+        if not reasons:
             survivors.append(c)
         elif (a := by_expr.get(c["expression"])) is not None:
             # 事实被更完整的 N 修正：它并没有过定量护栏。不同步的话 Librarian
             # 会把它当「已验证有效」写进长期记忆。
             a.passed_guardrails = False
+            a.reject_reason = "收尾复核(最终N)：" + "；".join(reasons)
 
     n_dropped = len(state.candidates) - len(survivors)
     if n_dropped:

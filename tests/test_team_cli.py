@@ -39,7 +39,7 @@ def test_cmd_mine_team_forwards_args_to_run_team_mine(monkeypatch, capsys) -> No
 
     prep_calls: list[tuple] = []
 
-    def fake_prepare(start, end, universe=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None):
         prep_calls.append((start, end, universe))
         return fake_daily
 
@@ -114,7 +114,7 @@ def test_cmd_mine_team_forwards_eval_start(monkeypatch) -> None:
     fake_daily = pl.DataFrame({"ts_code": ["600000.SH"]})
     monkeypatch.setattr(
         "factorzen.pipelines.factor_mine.prepare_mining_daily",
-        lambda start, end, universe=None: fake_daily,
+        lambda start, end, universe=None, lookback_days=None: fake_daily,
     )
     captured: dict[str, object] = {}
 
@@ -135,6 +135,38 @@ def test_cmd_mine_team_forwards_eval_start(monkeypatch) -> None:
     assert captured["eval_start"] == "20220101"
 
 
+def test_cmd_mine_team_provisions_longer_warmup_prefix_for_llm(monkeypatch) -> None:
+    """`fz mine team` 必须给 prepare_mining_daily 传更长的预热前缀 lookback_days。
+
+    与 agent 单路径同理：structured LLM 爱提 250/252 日长窗因子（required_lookback 270-315），
+    用 search_space_max_lookback（=180）会把它们（正确地）判欠预热、永远评估不到。
+    """
+    import polars as pl
+
+    from factorzen.cli import main as cli
+    from factorzen.discovery.search.random_search import search_space_max_lookback
+    from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
+
+    fake_daily = pl.DataFrame({"ts_code": ["600000.SH"]})
+    captured: dict[str, object] = {}
+
+    def fake_prepare(start, end, universe=None, lookback_days=None):
+        captured["lookback_days"] = lookback_days
+        return fake_daily
+
+    monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine_team.run_team_mine",
+        lambda daily, **kw: {"n_candidates": 0, "n_trials": 0, "run_dir": "x"},
+    )
+
+    rc = cli.main(["mine", "team", "--start", "20220101", "--end", "20231231",
+                   "--index-path", "workspace/mine_team/custom_index.jsonl"])
+    assert rc == 0
+    assert captured["lookback_days"] == AGENT_WARMUP_LOOKBACK
+    assert search_space_max_lookback() < AGENT_WARMUP_LOOKBACK
+
+
 def test_cmd_mine_team_passes_universe_to_prepare(monkeypatch) -> None:
     """`fz mine team --universe` 应把 universe 透传给 prepare_mining_daily。"""
     import polars as pl
@@ -145,7 +177,7 @@ def test_cmd_mine_team_passes_universe_to_prepare(monkeypatch) -> None:
 
     prep_calls: list[tuple] = []
 
-    def fake_prepare(start, end, universe=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None):
         prep_calls.append((start, end, universe))
         return fake_daily
 

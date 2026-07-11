@@ -414,11 +414,13 @@ def _command_line(args: argparse.Namespace) -> str:
 
 
 def _cmd_mine_agent(args: argparse.Namespace) -> int:
-    from factorzen.pipelines.factor_mine import prepare_mining_daily
+    from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK, prepare_mining_daily
     from factorzen.pipelines.factor_mine_agent import run_agent_mine
 
-    # 与搜索路径共用数据准备：复权价 + daily_basic（否则 agent 用未复权价冒充复权、缺叶子）
-    daily = prepare_mining_daily(args.start, args.end, args.universe)
+    # 与搜索路径共用数据准备：复权价 + daily_basic（否则 agent 用未复权价冒充复权、缺叶子）。
+    # 预热前缀用 agent 专用的加长值：LLM 窗口无搜索空间上界，250/252 日长窗因子用 180 会被误判欠预热。
+    daily = prepare_mining_daily(args.start, args.end, args.universe,
+                                 lookback_days=AGENT_WARMUP_LOOKBACK)
     # eval_start = 挖掘窗口 start（预热前缀边界），与 M1 `run_mine(eval_start=start)` 同口径：
     # 缺了它 prepare_mining_daily 的预热前缀会被 split_holdout 当训练数据。
     res = run_agent_mine(daily, n_rounds=args.iterations, seed=args.seed,
@@ -431,11 +433,13 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
 
 
 def _cmd_mine_team(args: argparse.Namespace) -> int:
-    from factorzen.pipelines.factor_mine import prepare_mining_daily
+    from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK, prepare_mining_daily
     from factorzen.pipelines.factor_mine_team import run_team_mine
 
-    # 与搜索路径共用数据准备：复权价 + daily_basic（消除双路径漂移）
-    daily = prepare_mining_daily(args.start, args.end, args.universe)
+    # 与搜索路径共用数据准备：复权价 + daily_basic（消除双路径漂移）。
+    # 预热前缀用 agent 专用的加长值，同 _cmd_mine_agent：structured LLM 爱提长窗因子。
+    daily = prepare_mining_daily(args.start, args.end, args.universe,
+                                 lookback_days=AGENT_WARMUP_LOOKBACK)
     # eval_start = 挖掘窗口 start（预热前缀边界），同 M1/agent 口径，见 _cmd_mine_agent。
     res = run_team_mine(daily, n_rounds=args.iterations, seed=args.seed,
                         top_k=args.top_k, index_path=args.index_path,

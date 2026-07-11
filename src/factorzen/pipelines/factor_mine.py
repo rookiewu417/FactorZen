@@ -6,6 +6,15 @@ import polars as pl
 
 from factorzen.discovery.mining_session import run_session
 
+_TRADING_YEAR = 252
+# agent/team（LLM）路的预热前缀交易日数。LLM 窗口无搜索空间上界，实测 structured 爱提
+# 250/252 日长窗因子（nested → required_lookback 可达 ~500）。取两个嵌套交易年（2×252=504）
+# 作前缀，覆盖『年度统计量的 z-score/变化率』这类合理长窗因子，免得被预热门（正确地）判欠
+# 预热、永远评估不到。比 search_space_max_lookback（180，只覆盖随机搜索 windows≤60）大，
+# 是 agent 路专用；M1 `run_mine` 仍用默认 180（其搜索空间上界）。更深的嵌套长窗仍会被
+# （正确地）判欠预热——这是数据供给的诚实上界，不是 bug。
+AGENT_WARMUP_LOOKBACK = 2 * _TRADING_YEAR  # 504 交易日 ≈ 两年
+
 
 def prepare_mining_daily(start: str, end: str, universe: str | None = None,
                          lookback_days: int | None = None) -> pl.DataFrame:

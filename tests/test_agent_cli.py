@@ -54,7 +54,7 @@ def test_cmd_mine_agent_forwards_args_to_run_agent_mine(monkeypatch, capsys):
 
     prep_calls: list[tuple] = []
 
-    def fake_prepare(start, end, universe=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None):
         prep_calls.append((start, end, universe))
         return fake_daily
 
@@ -128,7 +128,7 @@ def test_cmd_mine_agent_forwards_eval_start(monkeypatch):
     fake_daily = pl.DataFrame({"ts_code": ["000001.SZ"]})
     monkeypatch.setattr(
         "factorzen.pipelines.factor_mine.prepare_mining_daily",
-        lambda start, end, universe=None: fake_daily,
+        lambda start, end, universe=None, lookback_days=None: fake_daily,
     )
     captured: dict[str, object] = {}
 
@@ -146,6 +146,38 @@ def test_cmd_mine_agent_forwards_eval_start(monkeypatch):
     assert captured["eval_start"] == "20220101"
 
 
+def test_cmd_mine_agent_provisions_longer_warmup_prefix_for_llm(monkeypatch):
+    """`fz mine agent` 必须给 prepare_mining_daily 传更长的预热前缀 lookback_days。
+
+    LLM 窗口无搜索空间上界（实测 structured 爱提 250/252 日长窗因子，required_lookback
+    270-315），用 search_space_max_lookback（=180，只覆盖随机搜索 windows≤60）会把这些
+    因子（正确地）判欠预热、永远评估不到。故 agent 路前缀须 = AGENT_WARMUP_LOOKBACK(>180)。
+    """
+    import polars as pl
+
+    from factorzen.cli import main as cli
+    from factorzen.discovery.search.random_search import search_space_max_lookback
+    from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
+
+    fake_daily = pl.DataFrame({"ts_code": ["000001.SZ"]})
+    captured: dict[str, object] = {}
+
+    def fake_prepare(start, end, universe=None, lookback_days=None):
+        captured["lookback_days"] = lookback_days
+        return fake_daily
+
+    monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine_agent.run_agent_mine",
+        lambda daily, **kw: {"n_candidates": 0, "n_trials": 0, "run_dir": "x"},
+    )
+
+    rc = cli.main(["mine", "agent", "--start", "20220101", "--end", "20231231"])
+    assert rc == 0
+    assert captured["lookback_days"] == AGENT_WARMUP_LOOKBACK
+    assert search_space_max_lookback() < AGENT_WARMUP_LOOKBACK
+
+
 def test_cmd_mine_agent_passes_universe_to_prepare(monkeypatch):
     """`fz mine agent --universe` 应把 universe 透传给 prepare_mining_daily（其内部经
     FactorDataContext 按 universe 过滤 + 提供复权价/daily_basic）。"""
@@ -157,7 +189,7 @@ def test_cmd_mine_agent_passes_universe_to_prepare(monkeypatch):
 
     prep_calls: list[tuple] = []
 
-    def fake_prepare(start, end, universe=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None):
         prep_calls.append((start, end, universe))
         return fake_daily
 

@@ -1,4 +1,4 @@
-"""Configuration for optional OpenAI-compatible LLM factor explanations."""
+"""Configuration for the OpenAI SDK backed AIPing LLM client."""
 
 from __future__ import annotations
 
@@ -41,9 +41,8 @@ class LLMConfig:
     max_tokens: int = 700
     thinking: str | None = None
     provider: str | None = None
-    # 429/5xx/网络故障的有限重试。挖掘是多轮长循环，一次限流不该让整轮结果全损。
+    # 交给 OpenAI SDK 的有限重试次数；挖掘是多轮长循环，一次限流不该让整轮结果全损。
     max_retries: int = 3
-    retry_backoff_seconds: float = 1.0
 
     @property
     def is_ready(self) -> bool:
@@ -57,6 +56,29 @@ class LLMConfig:
         if base.endswith("/chat/completions"):
             return base
         return f"{base}/chat/completions"
+
+    @property
+    def sdk_base_url(self) -> str:
+        """Return the API root expected by ``OpenAI(base_url=...)``.
+
+        Older FactorZen configs were also allowed to contain the full
+        ``/chat/completions`` endpoint.  Keep accepting those configs while the
+        SDK itself appends the resource path.
+        """
+        if not self.base_url:
+            return ""
+        base = self.base_url.rstrip("/")
+        suffix = "/chat/completions"
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+        return base
+
+    @property
+    def thinking_enabled(self) -> bool:
+        """Translate the legacy string toggle to AIPing's boolean option."""
+        if not self.thinking:
+            return False
+        return self.thinking.strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
 def load_llm_config(*, enabled: bool, env_file: Path | None = _DEFAULT_ENV_FILE) -> LLMConfig:

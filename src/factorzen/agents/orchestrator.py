@@ -17,10 +17,10 @@ from factorzen.agents.nodes import (
     node_reflect,
 )
 from factorzen.agents.state import AgentState
+from factorzen.agents.team_orchestrator import _prepare_segments, _to_date
 from factorzen.discovery.scoring import DataBundle
 from factorzen.llm.client import LLMClientError
 from factorzen.llm.generation import LLMFn
-from factorzen.validation.holdout import split_holdout
 from factorzen.validation.multiple_testing import TrialLedger
 
 _LOG = logging.getLogger(__name__)
@@ -42,7 +42,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                   patience: int | None = None,
                   heal_rounds: int = 2,
                   on_round_end: Callable[[AgentResult], None] | None = None,
-                  llm_failure_patience: int = 3) -> AgentResult:
+                  llm_failure_patience: int = 3,
+                  eval_start: str | None = None) -> AgentResult:
     """跑 n_rounds 轮 Agent 挖掘闭环。
 
     ``on_round_end``：每个**成功**轮次结束时以当前累积结果回调，供调用方增量落盘。
@@ -55,10 +56,18 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
 
     只吞 ``LLMClientError``。其余异常（代码 bug、磁盘满）照常冒泡——静默吞掉它们
     会把真实缺陷伪装成「LLM 抖动」。
+
+    ``eval_start``：``"YYYYMMDD"``，训练段的干净起点（预热段的边界）。``daily`` 先按它裁
+    （`_prepare_segments`，与 team 路径共用）再 split holdout，`mining_df`/`holdout_df`/
+    `bundle` 全部建在干净样本上；完整的 ``daily`` 只作为求值时的预热前缀。``None``
+    （默认）时退化为旧行为，对现有调用方零回归。
     """
     rng = np.random.default_rng(seed)  # noqa: F841 预留给未来随机选择，保证可复现入口
-    mining_df, holdout_df, _hstart = split_holdout(daily, holdout_ratio=holdout_ratio)
+    mining_df, holdout_df, _hstart = _prepare_segments(
+        daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)        # Agent 只见 mining 段
+    _eval_start_date = _to_date(eval_start) if eval_start is not None else None
+    _eval_end_date = mining_df["trade_date"].max() if eval_start is not None else None
     ledger = TrialLedger()
     state = AgentState(seed=seed)
     feedback = ""
@@ -75,10 +84,17 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
         try:
             state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle,
                                   feedback=feedback, heal_rounds=heal_rounds)
-            state = node_evaluate(state, daily=mining_df, bundle=bundle)
+            # None-gating：eval_start=None（旧调用方默认）时 daily/eval_start/eval_end
+            # 的组合与之前逐字节相同的裸调用；非 None 时在完整帧 daily 上求值，裁剪到
+            # [eval_start, eval_end]（mining_df 此时已被 _prepare_segments 提前裁到
+            # eval_start，不能拿它的起点当判据——见 task-1.4 CORRECTION）。
+            state = node_evaluate(state, daily=mining_df, bundle=bundle,
+                                  eval_start=_eval_start_date, eval_end=_eval_end_date,
+                                  warmup_daily=daily)
             state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
                                     bundle=bundle, ledger=ledger, top_k=top_k,
-                                    warmup_daily=daily)   # holdout 扩窗预热用完整帧
+                                    warmup_daily=daily,   # holdout 扩窗预热用完整帧
+                                    eval_start=_eval_start_date)  # 池级 PBO 的 None-gating
             state = node_critic(state, llm_fn)
         except LLMClientError as exc:
             llm_failures += 1

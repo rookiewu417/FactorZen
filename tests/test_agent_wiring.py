@@ -83,7 +83,8 @@ def test_cmd_mine_agent_forwards_patience_and_heal_rounds(monkeypatch):
 
     captured: dict = {}
 
-    def fake_prepare(start, end, universe=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None):
+        captured["prepare_lookback"] = lookback_days
         return pl.DataFrame({"ts_code": ["000001.SZ"]})
 
     def fake_run_agent_mine(daily, **kw):
@@ -96,9 +97,11 @@ def test_cmd_mine_agent_forwards_patience_and_heal_rounds(monkeypatch):
 
     rc = cli.main(["mine", "agent", "--start", "20220101", "--end", "20231231",
                    "--patience", "3", "--heal-rounds", "1"])
+    from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
     assert rc == 0
     assert captured["patience"] == 3
     assert captured["heal_rounds"] == 1
+    assert captured["prepare_lookback"] == AGENT_WARMUP_LOOKBACK
 
 
 def test_cmd_mine_team_forwards_structured_patience_heal_rounds(monkeypatch):
@@ -106,7 +109,8 @@ def test_cmd_mine_team_forwards_structured_patience_heal_rounds(monkeypatch):
 
     captured: dict = {}
 
-    def fake_prepare(start, end, universe=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None):
+        captured["prepare_lookback"] = lookback_days
         return pl.DataFrame({"ts_code": ["000001.SZ"]})
 
     def fake_run_team_mine(daily, **kw):

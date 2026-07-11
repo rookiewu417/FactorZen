@@ -58,3 +58,32 @@ def test_run_mine_joins_daily_basic_into_frame(monkeypatch):
     assert "total_mv" in cols and "pb" in cols, (
         f"run_mine 传给 run_session 的帧应含 daily_basic 基本面列（否则 BASIC_FEATURES 死叶子），实得 {cols}"
     )
+
+
+def test_prepare_mining_daily_default_warmup_covers_search_space(monkeypatch):
+    """默认预热前缀 = search_space_max_lookback()（覆盖搜索空间最大回看），不再是会误拒
+    长窗口/深嵌套因子的旧默认 60。FactorDataContext 收到的 lookback_days 即证据。"""
+    import factorzen.daily.data.context as ctx_mod
+    import factorzen.pipelines.factor_mine as fm
+    from factorzen.discovery.search.random_search import search_space_max_lookback
+
+    captured: dict = {}
+    empty = pl.DataFrame({"trade_date": [], "ts_code": []})
+
+    class _FakeCtx:
+        def __init__(self, **kw):
+            captured["lookback_days"] = kw.get("lookback_days")
+
+        @property
+        def daily(self):
+            return empty.lazy()
+
+        @property
+        def daily_basic(self):
+            return empty.lazy()
+
+    monkeypatch.setattr(ctx_mod, "FactorDataContext", _FakeCtx)
+
+    fm.prepare_mining_daily("20240101", "20240201")
+
+    assert captured["lookback_days"] == search_space_max_lookback()

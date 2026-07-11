@@ -153,7 +153,7 @@ def test_team_writes_correction_to_index_after_demotion(tmp_path, monkeypatch):
         return pl.DataFrame(rows)
 
     def fake_guardrails(state, *, daily, holdout_df, bundle, ledger, top_k=5,
-                        dsr_alpha=0.05, warmup_daily=None):
+                        dsr_alpha=0.05, warmup_daily=None, eval_start=None):
         """每轮产一个「当轮 N 下过关」的候选（passed=True 会被 Librarian 落盘）。"""
         ledger.record(1)
         state.attempts.append(AttemptRecord(

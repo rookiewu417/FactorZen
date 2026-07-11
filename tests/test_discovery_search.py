@@ -79,3 +79,18 @@ def test_genetic_terminates_under_complexity_pressure():
     gs = GeneticSearcher(rng, max_depth=3)
     best = gs.evolve(lambda node: float(complexity(node)), pop_size=15, generations=6)
     assert len(best) == 15  # 种群规模维持，未因死循环卡住
+
+
+def test_search_space_max_lookback_tracks_constants():
+    """预热前缀按搜索空间派生：= max(_WINDOWS) × _DEFAULT_MAX_DEPTH，随常量联动而非硬编码。
+
+    最深路径全取最大窗口 → required_lookback 上界。prepare_mining_daily 据此设预热，
+    保证搜索空间内任意表达式都不会因预热门被误拒。
+    """
+    from factorzen.discovery.search.random_search import (
+        _DEFAULT_MAX_DEPTH,
+        _WINDOWS,
+        search_space_max_lookback,
+    )
+
+    assert search_space_max_lookback() == max(_WINDOWS) * _DEFAULT_MAX_DEPTH

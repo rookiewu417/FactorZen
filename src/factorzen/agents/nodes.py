@@ -64,11 +64,36 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
     return state
 
 
-def node_evaluate(state: AgentState, *, daily, bundle) -> AgentState:
-    """对暂存表达式批量评估，写 AttemptRecord + 更新 seen。"""
+def node_evaluate(state: AgentState, *, daily, bundle,
+                  eval_start=None, eval_end=None, warmup_daily=None) -> AgentState:
+    """对暂存表达式批量评估，写 AttemptRecord + 更新 seen。
+
+    ``eval_start``/``eval_end``：会话级 train 段边界（date，或 None）。**None-gating**：
+    为 None（旧调用方默认）时走裸 `evaluate_expressions(exprs, daily, bundle)`，与之前
+    逐字节相同、零回归；非 None 时改在 ``warmup_daily``（含预热前缀的完整帧）上求值，
+    裁剪到 ``[eval_start, eval_end]``——门槛只挂在 `eval_start` 本身是否为 None，
+    不能用 `daily`/`mining_df` 的起点判断（`eval_start=None` 时二者的起点相同，
+    误用会让 `evaluate_expressions` 的预热门把可用预热样本数误判成 0）。
+
+    ``eval_start`` 非 None 却漏传 ``warmup_daily`` 时**出声**（ValueError），不静默退回裸
+    求值：那样会在已裁到 eval_start 的 ``daily`` 上求值，预热裁剪与预热门双双失效，段首
+    截断窗口噪声（`operators._MIN = 3` 不产 NaN）灌回 train IC——与 `evaluate_expressions`
+    里「eval_end 不能脱离 eval_start 单传」同一条异常契约（陷阱#7）。
+    """
     pending = getattr(state, "_pending", [])
     exprs = [p.expression for p in pending]
-    results = evaluate_expressions(exprs, daily, bundle) if exprs else []
+    if not exprs:
+        results = []
+    elif eval_start is not None:
+        if warmup_daily is None:
+            raise ValueError(
+                "eval_start 非 None 时必须提供 warmup_daily（含预热前缀的完整帧）："
+                "否则会在已裁到 eval_start 的 daily 上裸求值，预热裁剪与预热门（warmup_bars）"
+                "双双失效，静默把段首截断窗口噪声灌回 train IC。")
+        results = evaluate_expressions(exprs, warmup_daily, bundle,
+                                       eval_start=eval_start, eval_end=eval_end)
+    else:
+        results = evaluate_expressions(exprs, daily, bundle)
     for p, r in zip(pending, results, strict=True):
         state.attempts.append(AttemptRecord(
             iteration=state.iteration, hypothesis=p.hypothesis, expression=r["expression"],
@@ -90,6 +115,7 @@ def node_guardrails(
     top_k: int = 5,
     dsr_alpha: float = 0.05,
     warmup_daily=None,
+    eval_start=None,
 ) -> AgentState:
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
 
@@ -97,6 +123,12 @@ def node_guardrails(
     再裁剪到 ``>= holdout_start``（扩窗预热）。否则滚动算子在 holdout 边界只有截断窗口，
     发出的偏差值直接进 holdout_ic/CI，扭曲护栏验收。PIT 安全：mining 段整体早于 holdout，
     时序算子只向过去看。缺省 None → 退回旧行为（仅供不便传完整帧的调用方，会有边界偏差）。
+
+    ``eval_start``：会话级 train 段起点（date，或 None）。**只**用于池级 PBO 的 None-gating——
+    为 None（旧调用方默认）时 PBO 池走裸 `_node_to_factor_df(node, daily)`（零回归）；
+    非 None 时改在 ``warmup_daily`` 上求值、裁剪到 ``[eval_start, daily 的 train 段终点]``，
+    与 `evaluate_expressions` 的扩窗预热同一理由。`_node_to_factor_df` 本身没有预热门
+    （不会拒绝任何表达式），只是求值窗口的选择——不会引入本任务要修的『预热不足被拒』问题。
 
     passed 判定委托 discovery.guardrails.guardrail_passed（DSR p 值口径），与 M1 统一，
     消除双路径漂移（旧 dsr>0.5 松约 10 倍，收紧到 pval<dsr_alpha）。池级 PBO 记入 state.pbo。
@@ -207,9 +239,18 @@ def node_guardrails(
             continue
 
     try:
-        cand_fdfs = [
-            _node_to_factor_df(parse_expr(c["expression"]), daily) for c in state.candidates
-        ]
+        # None-gating：eval_start 是 None（旧调用方默认）时裸求值，与之前逐字节相同；
+        # 非 None 时在完整帧上求值、裁剪到 [eval_start, daily 的 train 段终点]。
+        if eval_start is not None and warmup_daily is not None:
+            cand_fdfs = [
+                _node_to_factor_df(parse_expr(c["expression"]), warmup_daily,
+                                   eval_start=eval_start, eval_end=daily["trade_date"].max())
+                for c in state.candidates
+            ]
+        else:
+            cand_fdfs = [
+                _node_to_factor_df(parse_expr(c["expression"]), daily) for c in state.candidates
+            ]
         state.pbo = pool_pbo(cand_fdfs, bundle.fwd_returns)
     except Exception as exc:
         _LOG.warning("池级 PBO 计算失败，记为 nan: %s: %s", type(exc).__name__, exc)

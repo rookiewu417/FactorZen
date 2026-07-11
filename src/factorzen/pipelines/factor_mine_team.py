@@ -37,11 +37,16 @@ def run_team_mine(
     heal_rounds: int = 2,
     data_window: dict | None = None,
     command: str | None = None,
+    eval_start: str | None = None,
 ) -> dict:
     """跑多 Agent 团队挖掘，每轮增量落 manifest，收尾写 candidates.csv + 导出候选。
 
     ``data_window``：``{start, end, universe, market}``；``command``：触发本次运行的命令行。
     二者落进 manifest 的 params，否则事后无从复现（铁律#3）。
+
+    ``eval_start``：``"YYYYMMDD"``，训练段的干净起点。``daily`` 由 `prepare_mining_daily`
+    带预热前缀，须把该前缀边界（= 挖掘窗口 ``start``）透传给 `run_team_agent`，否则预热段
+    随 `split_holdout` 进 train IC。``None``（默认）退化为旧行为，对现有调用方零回归。
 
     Returns
     -------
@@ -58,6 +63,7 @@ def run_team_mine(
         "structured": structured,
         "patience": patience,
         "heal_rounds": heal_rounds,
+        "eval_start": eval_start,
         **(data_window or {}),
         "command": command,
         "llm": _llm_meta(llm_fn),
@@ -80,6 +86,7 @@ def run_team_mine(
         heal_rounds=heal_rounds,
         on_round_end=_checkpoint,
         data_window=data_window,
+        eval_start=eval_start,
     )
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

@@ -9,7 +9,7 @@ import polars as pl
 
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import evaluate as eval_node
-from factorzen.discovery.expression import parse_expr, to_expr_string
+from factorzen.discovery.expression import parse_expr, to_expr_string, warmup_shortfall
 from factorzen.discovery.scoring import quick_fitness
 
 _LOG = logging.getLogger(__name__)
@@ -37,26 +37,44 @@ def _preprocess_daily(daily: pl.DataFrame) -> pl.DataFrame:
     return add_derived_columns(df)
 
 
-def _node_to_factor_df(node, daily: pl.DataFrame, eval_start=None) -> pl.DataFrame:
-    """用公开 evaluate(node, df) 算因子值，组装成 [trade_date, ts_code, factor_value]。
+def _factor_df_from_prepped(node, prepped: pl.DataFrame,
+                            eval_start=None, eval_end=None) -> pl.DataFrame:
+    """在**已 `_preprocess_daily` 过**的帧上求值，裁剪到 [eval_start, eval_end]。
 
-    `eval_start`：**先在整帧上求值、再裁剪到 >= eval_start**（扩窗预热）。
-    holdout 段求值必须这样做——否则滚动算子在 holdout 边界只有截断窗口，发出的是偏差值。
-    传入的帧须包含 eval_start 之前的历史作为预热前缀。
+    调用方若要对同一帧评估多个表达式，先 `_preprocess_daily` 一次再走这里，
+    避免每个表达式重复 `add_derived_columns`（较重）。
 
-    PIT 安全：时序算子的滚动窗口只向过去看，holdout 首日用到的是 mining 末尾的数据（≤t）；
-    截面算子逐日独立。求值后裁剪保证不保留 eval_start 之前的任何行。
+    先在整帧（含预热段）上求值、再裁剪，而不是只喂 [eval_start, eval_end] 段：
+    滚动算子在段首用截断窗口时，`operators._MIN = 3` 让窗口不满照常出**噪声值**
+    而非 NaN——只喂本段会把这段噪声当作真实首段信号留在结果里。求值后裁剪保证
+    结果只含扩窗预热后的干净值，且不泄漏 eval_start 之前任何未来不可得的信息（PIT）。
     """
-    df = _preprocess_daily(daily)
-    series = eval_node(node, df)
+    series = eval_node(node, prepped)
     out = (
-        df.select(["trade_date", "ts_code"])
+        prepped.select(["trade_date", "ts_code"])
         .with_columns(series.alias("factor_value"))
         .filter(pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
     )
     if eval_start is not None:
         out = out.filter(pl.col("trade_date") >= eval_start)
+    if eval_end is not None:
+        out = out.filter(pl.col("trade_date") <= eval_end)
     return out
+
+
+def _node_to_factor_df(node, daily: pl.DataFrame,
+                       eval_start=None, eval_end=None) -> pl.DataFrame:
+    """用公开 evaluate(node, df) 算因子值，组装成 [trade_date, ts_code, factor_value]。
+
+    `eval_start` / `eval_end`：**先在整帧上求值、再裁剪到 [eval_start, eval_end]**（扩窗预热）。
+    train 段与 holdout 段都必须这样做——只喂本段会让滚动算子在段首用截断窗口，
+    发出偏差值（`operators._MIN = 3`，窗口不满**不产生 NaN**，产生噪声值）。
+    train 段漏裁会让预热段进 IC 序列，系统性拖低 train IC，制造「holdout 优于 train」的假象。
+
+    PIT 安全：时序算子的滚动窗口只向过去看，段首日用到的是前一段末尾的数据（≤t）；
+    截面算子逐日独立。求值后裁剪保证不保留段外任何行。
+    """
+    return _factor_df_from_prepped(node, _preprocess_daily(daily), eval_start, eval_end)
 
 
 def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5):
@@ -131,9 +149,16 @@ def _factor_turnover(factor_df: pl.DataFrame, quantile: float = 0.2) -> float | 
 
 
 def evaluate_expressions(
-    expr_strs: list[str], daily: pl.DataFrame, bundle
+    expr_strs: list[str], daily: pl.DataFrame, bundle,
+    *, eval_start=None, eval_end=None,
 ) -> list[dict]:
     """批量评估表达式集。非法表达式（parse_expr 抛 ValueError）记 compile_ok=False。
+
+    `daily` 是**含预热段的完整帧**；`eval_start`/`eval_end` 是 train 段边界。
+    求值在整帧上做、再裁剪到该区间——与 holdout 段同一条路径（`nodes.py` 的
+    `_holdout_values`），也与 M1 的 `run_session(eval_start=start)` 同口径。
+    漏裁 train 段会让预热噪声进 IC 序列、系统性拖低 train IC，把
+    「holdout 优于 train」伪造成「无过拟合」的证据。
 
     `n_train` = 该因子在 train 段的**有效 IC 天数**（不是日历交易日数），供 DSR 的 n_obs 用，
     与 M1 的 `c["n_train"]` 同口径。
@@ -141,7 +166,17 @@ def evaluate_expressions(
     `n_train == 0`（求值后无任何有效截面）时记 ic/ir=None 而非 `quick_fitness` 返回的
     sentinel `0.0`——否则这类死表达式会以「IC 恰好为 0」的身份混进护栏的 `passed` 集：
     既膨胀多重检验的 N，又把 0.0 灌进 DSR 的 IR 池拉低经验方差，使 deflation 基准算在垃圾上。
+    **预热不足的表达式同样记 None**：窗口不满时 `operators._MIN = 3` 让它照常出值（噪声而非 NaN），
+    静默放行等于把噪声 IC 灌进 DSR 池。
     """
+    if eval_end is not None and eval_start is None:
+        raise ValueError(
+            "eval_end 不能脱离 eval_start 单独传入：下界裁剪与预热门（`warmup_bars`）"
+            "都只在 eval_start is not None 时触发，单传 eval_end 会静默重新引入"
+            "预热噪声进 train IC 序列的 bug——两者必须同传或都不传。"
+        )
+
+    prepped = _preprocess_daily(daily)           # 整帧只预处理一次（add_derived_columns 较重）
     results: list[dict] = []
     for s in expr_strs:
         try:
@@ -151,8 +186,19 @@ def evaluate_expressions(
                             "ic_train": None, "ir_train": None, "turnover": None,
                             "n_train": 0, "error": str(exc)})
             continue
+
+        if eval_start is not None:
+            sf = warmup_shortfall(node, prepped, eval_start)
+            if sf is not None:
+                leaf, need, have = sf
+                results.append({
+                    "expression": to_expr_string(node), "node": node, "compile_ok": True,
+                    "ic_train": None, "ir_train": None, "turnover": None, "n_train": 0,
+                    "error": f"预热不足: 叶 {leaf} 需要 {need} 根历史，可用 {have} 根"})
+                continue
+
         try:
-            fdf = _node_to_factor_df(node, daily)
+            fdf = _factor_df_from_prepped(node, prepped, eval_start, eval_end)
             fit = quick_fitness(fdf, bundle, segment="train")
             n_train = int(fit["n"])
             if n_train == 0:

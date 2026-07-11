@@ -120,6 +120,32 @@ def required_lookback(node: Node) -> int:
     return own + child_max
 
 
+def leaf_lookbacks(node: Node) -> dict[str, int]:
+    """每个叶子沿『根→该叶』路径累加的窗口数（同叶多次出现取最大）。
+
+    与 `required_lookback`（只给最深路径的全局最大）互补：叶子只需填满它**上方**的
+    窗口，不受别处更深路径拖累。据此逐叶判预热，避免『浅派生叶（如 `ts_sum(ret_1d, 20)`
+    的 ret_1d，need=20）拖垮深 raw 叶路（如 `ts_zscore(delta(close,60),120)` 的 close，
+    need=180）』的假拒绝。非常数表达式满足 ``max(leaf_lookbacks(node).values()) ==
+    required_lookback(node)``（同为最深路径）。
+    """
+    out: dict[str, int] = {}
+
+    def walk(n: Node, acc: int) -> None:
+        if isinstance(n, Feature):
+            if acc > out.get(n.name, -1):
+                out[n.name] = acc
+            return
+        if isinstance(n, Constant):
+            return
+        own = getattr(n, "window", None) or 0
+        for c in n.children:  # type: ignore[attr-defined]
+            walk(c, acc + own)
+
+    walk(node, 0)
+    return out
+
+
 def feature_names(node: Node) -> set[str]:
     if isinstance(node, Feature):
         return {node.name}
@@ -129,6 +155,88 @@ def feature_names(node: Node) -> set[str]:
     for c in node.children:  # type: ignore[attr-defined]
         out |= feature_names(c)
     return out
+
+
+def warmup_bars(node, prepped: pl.DataFrame, eval_start,
+                leaf_map: dict[str, str] | None = None) -> int:
+    """表达式各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**的最小值 = 真实可用预热 bar 数。
+
+    M1 搜索路径（`mining_session`）与 agent 路径（`agents/evaluation`）共用本判定，
+    两侧的预热门（`required_lookback` 对照）据此对齐，消除双路径漂移。
+
+    不能按预热段交易日数算：daily_basic 缺 2019 时 dv_ttm 在预热段全 null，
+    帧里有 57 个交易日，该叶子的可用预热却是 0。取各叶子最小值——
+    任一叶子欠预热，整个表达式的首段就是噪声。
+
+    non-null 不够：polars 里 NaN 不是 null，`is_not_null()` 对 NaN 单元格返回 True。
+    NaN 预热单元格不是可用历史（如 `ret_1d = close_adj / close_adj.shift(1) - 1.0`
+    在分母为 0 时产出 NaN 而非 null），必须一并剔除，否则会把噪声段误报为已预热。
+    `is_not_nan()`/`is_nan()` 只对浮点列合法，整数/字符串列会报错，故按 schema 分流。
+
+    ``leaf_map``：叶子名→列名映射（默认 A 股 `LEAF_FEATURES`）；crypto 等市场传各自映射，
+    否则会用错列名判预热。``prepped`` 须是派生列（ret_1d/amplitude 等）已物化的帧。
+    ``eval_start`` 须是与 ``prepped`` 的 trade_date dtype 匹配的字面量（调用方用
+    `_cut_literal` 转换 "YYYYMMDD"，或直接传 date）。
+    """
+    warm = prepped.filter(pl.col("trade_date") < eval_start)
+    if warm.is_empty():
+        return 0
+    leaves = feature_names(node)
+    if not leaves:  # 纯常数表达式，无需预热
+        return warm["trade_date"].n_unique()
+    return min(warmup_bars_by_leaf(node, prepped, eval_start, leaf_map).values())
+
+
+def warmup_bars_by_leaf(node, prepped: pl.DataFrame, eval_start,
+                        leaf_map: dict[str, str] | None = None) -> dict[str, int]:
+    """各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**（逐叶，不取最小）。
+
+    `warmup_bars` 取本函数各值的最小；预热门 `warmup_shortfall` 逐叶对照
+    `leaf_lookbacks`——避免浅叶把深叶路拖成假拒绝。列缺失（如未拉 daily_basic）记 0。
+    non-null 不够：polars 里 NaN 不是 null，NaN 预热单元格不是可用历史，须一并剔除
+    （`ret_1d` 分母为 0 时产 NaN 而非 null）；`is_not_nan()` 只对浮点列合法，按 schema 分流。
+    """
+    lm = LEAF_FEATURES if leaf_map is None else leaf_map
+    warm = prepped.filter(pl.col("trade_date") < eval_start)
+    out: dict[str, int] = {}
+    for leaf in feature_names(node):
+        col = lm.get(leaf, leaf)
+        if warm.is_empty() or col not in warm.columns:
+            out[leaf] = 0
+            continue
+        valid = pl.col(col).is_not_null()
+        if warm.schema[col].is_float():
+            valid = valid & pl.col(col).is_not_nan()
+        out[leaf] = warm.filter(valid)["trade_date"].n_unique()
+    return out
+
+
+def warmup_shortfall(node, prepped: pl.DataFrame, eval_start,
+                     leaf_map: dict[str, str] | None = None) -> tuple[str, int, int] | None:
+    """逐叶预热门：返回缺口最大的 ``(leaf, need, have)``；预热充分返回 None。
+
+    对每个叶子 L：``need_L = leaf_lookbacks(node)[L]``（根→L 路径窗口累加），
+    ``have_L = warmup_bars_by_leaf(...)[L]``（L 在 eval_start 前的可用预热 bar 数）。
+    仅当某叶 ``have_L < need_L`` 才算欠预热，取缺口（need-have）最大的一条用于报错。
+
+    这样只需 20 根的浅派生叶（`ret_1d`, have=19）不会拖垮需要且满足 180 的深 raw 叶路
+    （`close`），消除『全叶最小 warmup vs 最深路径 max lookback』跨叶错配的假拒绝。
+    M1（`mining_session._underwarmed`）与 agent（`evaluate_expressions`）共用本门，
+    两条路判定天然一致，消除双路径漂移。``eval_start`` 契约同 `warmup_bars`。
+    """
+    needs = {leaf: n for leaf, n in leaf_lookbacks(node).items() if n > 0}
+    if not needs:                        # 纯常数/纯截面表达式，无需预热
+        return None
+    have_by_leaf = warmup_bars_by_leaf(node, prepped, eval_start, leaf_map)
+    worst: tuple[str, int, int] | None = None
+    worst_gap = 0
+    for leaf, need in needs.items():
+        have = have_by_leaf.get(leaf, 0)
+        gap = need - have
+        if gap > worst_gap:
+            worst_gap = gap
+            worst = (leaf, need, have)
+    return worst
 
 
 def compile_expr(node: Node, leaf_map: dict[str, str] | None = None) -> pl.Expr:

@@ -8,7 +8,7 @@ from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.memory import negative_recall
 from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.discovery.expression import parse_expr, to_expr_string
-from factorzen.discovery.guardrails import DEFAULT_DSR_ALPHA
+from factorzen.discovery.guardrails import DEFAULT_DSR_ALPHA, DEFAULT_GATE
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 from factorzen.llm.generation import (
     LLMFn,
@@ -40,19 +40,52 @@ def _print_rejections(label: str, state: AgentState) -> None:
 
 @dataclass
 class AgentContext:
+    """生成侧的市场上下文：算子集（市场无关）+ 叶子集/映射 + 市场名。
+
+    默认构造 = A 股（op=全算子、leaf=`LEAF_FEATURES`、market="ashare"、leaf_map=None → 求值走
+    A 股默认列映射）。crypto 等经 `from_profile` 构造。
+    """
     op_names: list[str] = field(default_factory=lambda: list(OPERATORS.keys()))
     leaf_names: list[str] = field(default_factory=lambda: list(LEAF_FEATURES.keys()))
+    market: str = "ashare"
+    leaf_map: dict[str, str] | None = None
+
+    @classmethod
+    def from_profile(cls, profile) -> AgentContext:
+        """从 MarketProfile 构造。``profile=None`` → A 股默认（零回归）。
+
+        op_names 恒取全算子（算子市场无关）；leaf_names/leaf_map 取
+        `profile.factors.leaf_features()`；market 取 `profile.name`。
+        """
+        if profile is None:
+            return cls()
+        lm = profile.factors.leaf_features()
+        return cls(op_names=list(OPERATORS.keys()), leaf_names=list(lm.keys()),
+                   market=profile.name, leaf_map=lm)
 
 
 def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
-                  n_hypotheses: int = 1, feedback: str = "", heal_rounds: int = 0) -> AgentState:
-    """生成假设+表达式 → 语义对齐自检 → 暂存待评估（compile/eval 在 node_evaluate）。"""
-    ctx = AgentContext()
-    msgs = build_agent_messages(ctx.op_names, ctx.leaf_names, feedback, state.negative_examples)
+                  n_hypotheses: int = 1, feedback: str = "", heal_rounds: int = 0,
+                  leaf_budgets: dict[str, int] | None = None, profile=None) -> AgentState:
+    """生成假设+表达式 → 语义对齐自检 → 暂存待评估（compile/eval 在 node_evaluate）。
+
+    ``leaf_budgets``：短历史叶子的可用预热预算，透传给 `build_agent_messages` 提示 LLM
+    别对短叶写超预热长窗口（默认 None → prompt 零回归）。
+
+    ``profile``：市场 profile（默认 None → A 股，零回归）。经 `AgentContext.from_profile`
+    得叶子集/映射/市场名，透传给 prompt（market/leaf_names）、health_check、自愈、规范化
+    （parse_expr 的 leaf_map）——crypto 表达式方能解析、且 `norm` 与 `evaluate_expressions`
+    产出的规范 `seen_expressions` 对齐（否则 dedup 失配致 N over-count）。
+    """
+    ctx = AgentContext.from_profile(profile)
+    msgs = build_agent_messages(ctx.op_names, ctx.leaf_names, feedback,
+                                state.negative_examples, leaf_budgets=leaf_budgets,
+                                market=ctx.market)
     proposals = generate_factor_proposal(msgs, llm_fn, n_hypotheses=n_hypotheses)
     pending: list[_PendingExpr] = []
     # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销
-    health = make_health_check(daily) if heal_rounds > 0 else None
+    health = make_health_check(daily, profile=profile, leaf_map=ctx.leaf_map) \
+        if heal_rounds > 0 else None
     for p in proposals:
         # 自愈：把解析报错**与求值诊断**（异常/因子值近乎全 null）回灌 Coder 修正
         # （heal_rounds>0 时启用，CoSTEER 轻量版）
@@ -60,10 +93,12 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
         if heal_rounds > 0:
             from factorzen.agents.self_heal import heal_expressions
             exprs = heal_expressions(p.expressions, p.hypothesis, llm_fn,
-                                     max_rounds=heal_rounds, health_check=health)
+                                     max_rounds=heal_rounds, health_check=health,
+                                     leaf_map=ctx.leaf_map, market=ctx.market,
+                                     leaf_names=ctx.leaf_names)
         for expr in exprs:
             try:
-                norm = to_expr_string(parse_expr(expr))
+                norm = to_expr_string(parse_expr(expr, ctx.leaf_map))
             except ValueError:
                 norm = expr
             if norm in state.seen_expressions:
@@ -77,7 +112,7 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
 
 
 def node_evaluate(state: AgentState, *, daily, bundle,
-                  eval_start=None, eval_end=None, warmup_daily=None) -> AgentState:
+                  eval_start=None, eval_end=None, warmup_daily=None, profile=None) -> AgentState:
     """对暂存表达式批量评估，写 AttemptRecord + 更新 seen。
 
     ``eval_start``/``eval_end``：会话级 train 段边界（date，或 None）。**None-gating**：
@@ -103,9 +138,9 @@ def node_evaluate(state: AgentState, *, daily, bundle,
                 "否则会在已裁到 eval_start 的 daily 上裸求值，预热裁剪与预热门（warmup_bars）"
                 "双双失效，静默把段首截断窗口噪声灌回 train IC。")
         results = evaluate_expressions(exprs, warmup_daily, bundle,
-                                       eval_start=eval_start, eval_end=eval_end)
+                                       eval_start=eval_start, eval_end=eval_end, profile=profile)
     else:
-        results = evaluate_expressions(exprs, daily, bundle)
+        results = evaluate_expressions(exprs, daily, bundle, profile=profile)
     for p, r in zip(pending, results, strict=True):
         state.attempts.append(AttemptRecord(
             iteration=state.iteration, hypothesis=p.hypothesis, expression=r["expression"],
@@ -126,10 +161,16 @@ def node_guardrails(
     ledger,
     top_k: int = 5,
     dsr_alpha: float = DEFAULT_DSR_ALPHA,
+    gate: str = DEFAULT_GATE,
     warmup_daily=None,
     eval_start=None,
+    profile=None,
 ) -> AgentState:
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
+
+    ``profile``：市场 profile（默认 None → A 股，零回归）。透传到 holdout/PBO 段的预处理
+    （`profile.factors.derived_columns`）与全部 `parse_expr`/求值的 leaf_map——护栏统计口径
+    （DSR/holdout/PBO/去相关）本身市场无关，只有「用哪套派生列/叶子映射求因子值」随市场变。
 
     ``warmup_daily``：含 mining + holdout 的**完整帧**。holdout 段的因子值在它上面求值、
     再裁剪到 ``>= holdout_start``（扩窗预热）。否则滚动算子在 holdout 边界只有截断窗口，
@@ -142,8 +183,9 @@ def node_guardrails(
     与 `evaluate_expressions` 的扩窗预热同一理由。`_node_to_factor_df` 本身没有预热门
     （不会拒绝任何表达式），只是求值窗口的选择——不会引入本任务要修的『预热不足被拒』问题。
 
-    passed 判定委托 discovery.guardrails.guardrail_passed（DSR p 值口径），与 M1 统一，
-    消除双路径漂移（旧 dsr>0.5 松约 10 倍，收紧到 pval<dsr_alpha）。池级 PBO 记入 state.pbo。
+    入池判定委托 discovery.guardrails.acceptance_reasons（``gate`` 口径，默认 "library"：真+有
+    信号，不含 DSR；"strict" 才用 DSR），与 M1 `_guard_passed` 统一，消除双路径漂移。DSR 仍算出来
+    存进候选供组合层/报告用（只是 library 口径下不当门）。池级 PBO 记入 state.pbo。
 
     DSR 的三个入参都与 M1（mining_session.py:292-307）同口径，否则 deflation 基准不自洽：
     - ``sharpe_variance`` = trial 池 signed IR 的**经验方差**，而非 deflated_sharpe 的 H0
@@ -154,16 +196,19 @@ def node_guardrails(
     - ``n_obs`` = 该因子自己的 train 段有效 IC 天数 ``a.n_train``，不是 train 段日历交易日数
       （后者更大，会系统性放大显著性）。
     """
-    from factorzen.agents.evaluation import _node_to_factor_df
+    from tqdm import tqdm
+
+    from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.discovery.guardrails import (
         DeflationBasis,
+        acceptance_reasons,
         deflated_pvalue,
-        guardrail_reasons,
         pool_pbo,
     )
     from factorzen.discovery.scoring import max_correlation
     from factorzen.validation.holdout import holdout_ic
 
+    leaf_map = profile.factors.leaf_features() if profile is not None else None
     passed = [a for a in state.attempts
               if a.iteration == state.iteration and a.compile_ok and a.ic_train is not None]
     ledger.record(len(passed))
@@ -186,27 +231,32 @@ def node_guardrails(
         _hold_frame, _hold_start = warmup_daily, holdout_df["trade_date"].min()
     else:
         _hold_frame, _hold_start = holdout_df, None
+    # 整帧预处理（add_derived_columns + 排序，较重）只做一次，循环内每个表达式复用
+    # `_factor_df_from_prepped`——否则 all_a×多年帧上逐表达式重跑预处理，护栏这步会慢到像卡死。
+    _prepped_hold = _preprocess_daily(_hold_frame, profile)
 
     def _holdout_values(node):
-        return _node_to_factor_df(node, _hold_frame, eval_start=_hold_start)
+        return _factor_df_from_prepped(node, _prepped_hold, eval_start=_hold_start,
+                                       leaf_map=leaf_map)
 
     existing_exprs: set[str] = {c["expression"] for c in state.candidates}
 
     pool: dict = {}
-    for i, c in enumerate(state.candidates):
+    for i, c in enumerate(tqdm(state.candidates, desc="  ⑤ 护栏·去相关池",
+                               leave=False, unit="因子")):
         try:
-            pool[f"prev_{i}"] = _holdout_values(parse_expr(c["expression"]))
+            pool[f"prev_{i}"] = _holdout_values(parse_expr(c["expression"], leaf_map))
         except Exception as exc:
             # 去相关池少一个成员 → 后续候选的 max_corr 偏低 → 可能放进重复因子。不是无害的。
             _LOG.warning("已有候选 %s 的 holdout 求值失败，未计入去相关池: %s",
                          c["expression"], exc)
             continue
 
-    for a in passed[:top_k]:
+    for a in tqdm(passed[:top_k], desc="  ⑤ 护栏·候选验收", leave=False, unit="因子"):
         if a.expression in existing_exprs:
             continue
         try:
-            node = parse_expr(a.expression)
+            node = parse_expr(a.expression, leaf_map)
             fdf_hold = _holdout_values(node)
             ic_h, ir_h, (ci_lo, ci_hi) = holdout_ic(fdf_hold, holdout_df)
             # 传**带符号** IR：取绝对值由 basis.two_sided 在 deflated_pvalue 内部完成，
@@ -214,8 +264,9 @@ def node_guardrails(
             sharpe = a.ir_train if a.ir_train is not None else (a.ic_train or 0.0)
             dsr, pval = deflated_pvalue(sharpe, basis, a.n_train or 0)
             ic_tr = a.ic_train or 0.0
-            reasons = guardrail_reasons(
-                ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,
+            # 因子库口径(默认)按「真+有信号」入池；DSR 仍算出来存进候选供组合层/报告用。
+            reasons = acceptance_reasons(
+                gate=gate, ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,
                 ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
             )
             if not reasons:
@@ -259,15 +310,23 @@ def node_guardrails(
     try:
         # None-gating：eval_start 是 None（旧调用方默认）时裸求值，与之前逐字节相同；
         # 非 None 时在完整帧上求值、裁剪到 [eval_start, daily 的 train 段终点]。
+        _pbo_bar = tqdm(state.candidates, desc="  ⑤ 护栏·池级PBO", leave=False, unit="因子")
         if eval_start is not None and warmup_daily is not None:
+            # warmup_daily is _hold_frame（此分支下 _hold_frame 恒为 warmup_daily）→ 复用预处理帧。
+            _pbo_prepped = _prepped_hold if warmup_daily is _hold_frame else _preprocess_daily(
+                warmup_daily, profile)
+            _pbo_end = daily["trade_date"].max()
             cand_fdfs = [
-                _node_to_factor_df(parse_expr(c["expression"]), warmup_daily,
-                                   eval_start=eval_start, eval_end=daily["trade_date"].max())
-                for c in state.candidates
+                _factor_df_from_prepped(parse_expr(c["expression"], leaf_map), _pbo_prepped,
+                                        eval_start=eval_start, eval_end=_pbo_end, leaf_map=leaf_map)
+                for c in _pbo_bar
             ]
         else:
+            _pbo_prepped = _prepped_hold if daily is _hold_frame else _preprocess_daily(daily, profile)
             cand_fdfs = [
-                _node_to_factor_df(parse_expr(c["expression"]), daily) for c in state.candidates
+                _factor_df_from_prepped(parse_expr(c["expression"], leaf_map), _pbo_prepped,
+                                        leaf_map=leaf_map)
+                for c in _pbo_bar
             ]
         state.pbo = pool_pbo(cand_fdfs, bundle.fwd_returns)
     except Exception as exc:
@@ -277,8 +336,11 @@ def node_guardrails(
 
 
 def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DSR_ALPHA,
-                             daily=None, bundle=None):
-    """收尾：用**最终** basis 统一重算候选的 DSR，据此复核 `passed`。返回该 basis。
+                             gate: str = DEFAULT_GATE, daily=None, bundle=None, profile=None):
+    """收尾：用**最终** basis 统一重算候选的 DSR，据此复核入池。返回该 basis。
+
+    ``gate="library"``（默认）下入池判据 N-**无关**（真+有信号，不含 DSR），故收尾只重算 DSR
+    供报告/组合层用、不因 N 剔除候选；``gate="strict"`` 下才按最终 N 重判 DSR、剔除不再显著者。
 
     `node_guardrails` 每轮调用，其 basis 只覆盖「截至当轮」的 N。于是 round 0 的候选按
     N@轮=3 定 p、round 5 的候选按 N=18 定 p —— **门槛取决于候选碰巧在第几轮被找到**。
@@ -295,11 +357,11 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
 
     `daily`/`bundle` 给出时重算池级 PBO——候选集变了，旧 PBO 描述的是另一个池。
     """
-    from factorzen.agents.evaluation import _node_to_factor_df
+    from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.discovery.guardrails import (
         DeflationBasis,
+        acceptance_reasons,
         deflated_pvalue,
-        guardrail_reasons,
         pool_pbo,
     )
 
@@ -314,8 +376,8 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
     for c in state.candidates:
         dsr, pval = deflated_pvalue(c["ir_train"] or 0.0, basis, c["n_train"] or 0)
         c["dsr"], c["dsr_pvalue"] = dsr, pval
-        reasons = guardrail_reasons(
-            ic_train=c["ic_train"], holdout_ic=c["holdout_ic"], dsr_pvalue=pval,
+        reasons = acceptance_reasons(
+            gate=gate, ic_train=c["ic_train"], holdout_ic=c["holdout_ic"], dsr_pvalue=pval,
             ci_low=c["ic_ci_low"], ci_high=c["ic_ci_high"], dsr_alpha=dsr_alpha,
         )
         if not reasons:
@@ -334,8 +396,12 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
 
     if n_dropped and daily is not None and bundle is not None:
         try:
+            leaf_map = profile.factors.leaf_features() if profile is not None else None
+            _prepped = _preprocess_daily(daily, profile)  # 预处理一次，逐候选复用（同 node_guardrails）
             cand_fdfs = [
-                _node_to_factor_df(parse_expr(c["expression"]), daily) for c in state.candidates
+                _factor_df_from_prepped(parse_expr(c["expression"], leaf_map), _prepped,
+                                        leaf_map=leaf_map)
+                for c in state.candidates
             ]
             state.pbo = pool_pbo(cand_fdfs, bundle.fwd_returns)
         except Exception as exc:

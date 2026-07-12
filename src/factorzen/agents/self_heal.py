@@ -33,6 +33,9 @@ def heal_expressions(
     *,
     max_rounds: int = 3,
     health_check: HealthCheck | None = None,
+    leaf_map: dict[str, str] | None = None,
+    market: str = "ashare",
+    leaf_names: list[str] | None = None,
 ) -> list[str]:
     """返回 exprs 中可解析（且通过 health_check）的归一化表达式；病态者回灌 LLM 修正。
 
@@ -40,6 +43,11 @@ def heal_expressions(
     （零回归：既有调用方行为不变）。健康表达式**不触发** LLM 调用（零额外成本）。
     修正产物再次校验，仍失败则继续下一轮，直到 max_rounds 耗尽后丢弃。
     去重保证同一表达式只保留一次，也避免对同一病态表达式反复求医。
+
+    ``leaf_map`` / ``market`` / ``leaf_names``：市场上下文（默认 None/ashare → A 股，零回归）。
+    crypto 必须传 ``leaf_map``，否则合法 crypto 叶子被 `parse_expr` 判为解析失败，健康的
+    crypto 表达式被误当病态送修（浪费 LLM 调用 + 可能被改坏）；``market``/``leaf_names``
+    透传给 `revise_from_error` 使修正 prompt 用对市场的约束与叶子清单。
     """
     healed: list[str] = []
     seen: set[str] = set()
@@ -49,7 +57,7 @@ def heal_expressions(
         failures: list[tuple[str, str]] = []
         for e in pending:
             try:
-                norm = to_expr_string(parse_expr(e))
+                norm = to_expr_string(parse_expr(e, leaf_map))
             except ValueError as exc:
                 if e not in tried:
                     tried.add(e)
@@ -68,5 +76,6 @@ def heal_expressions(
             break
         pending = []
         for bad_expr, err in failures:
-            pending.extend(revise_from_error(hypothesis, bad_expr, err, llm_fn))
+            pending.extend(revise_from_error(hypothesis, bad_expr, err, llm_fn,
+                                             market=market, leaf_names=leaf_names))
     return healed

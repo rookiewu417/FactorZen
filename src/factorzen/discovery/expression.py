@@ -187,19 +187,23 @@ def warmup_bars(node, prepped: pl.DataFrame, eval_start,
     return min(warmup_bars_by_leaf(node, prepped, eval_start, leaf_map).values())
 
 
-def warmup_bars_by_leaf(node, prepped: pl.DataFrame, eval_start,
+def leaf_warmup_budgets(prepped: pl.DataFrame, eval_start, leaves,
                         leaf_map: dict[str, str] | None = None) -> dict[str, int]:
-    """各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**（逐叶，不取最小）。
+    """每个叶子在 `eval_start` 之前的**可用预热 bar 数**（非空且非 NaN 交易日数）。
 
-    `warmup_bars` 取本函数各值的最小；预热门 `warmup_shortfall` 逐叶对照
-    `leaf_lookbacks`——避免浅叶把深叶路拖成假拒绝。列缺失（如未拉 daily_basic）记 0。
-    non-null 不够：polars 里 NaN 不是 null，NaN 预热单元格不是可用历史，须一并剔除
-    （`ret_1d` 分母为 0 时产 NaN 而非 null）；`is_not_nan()` 只对浮点列合法，按 schema 分流。
+    这是 `warmup_bars_by_leaf` 的按叶名版本，也是它的**唯一实现来源**——生成侧要给 LLM
+    报「叶子历史预算」，报的数必须与预热门 `warmup_shortfall` 判 have 的数逐值相等，否则
+    prompt 承诺的预算与预热判定漂移就是继续骗 LLM。二者共用本函数即保证一致（B4.1）。
+
+    ``leaves``：要查预算的叶子名可迭代对象（列表/集合）。语义同 `warmup_bars_by_leaf`：
+    列缺失（如未拉 daily_basic）记 0；non-null 不够——polars 里 NaN 不是 null，NaN 预热
+    单元格不是可用历史（`ret_1d` 分母为 0 时产 NaN 而非 null），须一并剔除；
+    `is_not_nan()` 只对浮点列合法，按 schema 分流。
     """
     lm = LEAF_FEATURES if leaf_map is None else leaf_map
     warm = prepped.filter(pl.col("trade_date") < eval_start)
     out: dict[str, int] = {}
-    for leaf in feature_names(node):
+    for leaf in leaves:
         col = lm.get(leaf, leaf)
         if warm.is_empty() or col not in warm.columns:
             out[leaf] = 0
@@ -209,6 +213,17 @@ def warmup_bars_by_leaf(node, prepped: pl.DataFrame, eval_start,
             valid = valid & pl.col(col).is_not_nan()
         out[leaf] = warm.filter(valid)["trade_date"].n_unique()
     return out
+
+
+def warmup_bars_by_leaf(node, prepped: pl.DataFrame, eval_start,
+                        leaf_map: dict[str, str] | None = None) -> dict[str, int]:
+    """各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**（逐叶，不取最小）。
+
+    `warmup_bars` 取本函数各值的最小；预热门 `warmup_shortfall` 逐叶对照
+    `leaf_lookbacks`——避免浅叶把深叶路拖成假拒绝。列缺失（如未拉 daily_basic）记 0。
+    实现委托 `leaf_warmup_budgets`（唯一实现来源），保证生成侧报的预算与预热判定同源。
+    """
+    return leaf_warmup_budgets(prepped, eval_start, feature_names(node), leaf_map)
 
 
 def warmup_shortfall(node, prepped: pl.DataFrame, eval_start,

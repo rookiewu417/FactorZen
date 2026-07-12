@@ -172,7 +172,7 @@ def test_agent_rejects_factor_that_m1_rejects_regression(_stub_holdout):
     assert p_default < 0.05 < p_empirical, "测试数据须落在两口径的分歧区"
 
     node_guardrails(state, daily=daily, holdout_df=daily, bundle=bundle,
-                    ledger=TrialLedger(), top_k=5)
+                    ledger=TrialLedger(), top_k=5, gate="strict")  # DSR 拒绝是 strict 专属
 
     top_attempt = max(state.attempts, key=lambda a: abs(a.ir_train or 0.0))
     assert top_attempt.passed_guardrails is False, (
@@ -209,7 +209,7 @@ def test_node_guardrails_uses_factor_n_train_not_calendar_days(_stub_holdout):
     state = AgentState(seed=1)
     _seed_attempts(state, ir_pool, n_train)
     node_guardrails(state, daily=daily, holdout_df=daily, bundle=bundle,
-                    ledger=TrialLedger(), top_k=5)
+                    ledger=TrialLedger(), top_k=5, gate="strict")  # DSR 拒绝是 strict 专属
 
     top_attempt = max(state.attempts, key=lambda a: abs(a.ir_train or 0.0))
     assert top_attempt.passed_guardrails is False, (

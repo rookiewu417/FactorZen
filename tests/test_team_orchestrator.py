@@ -76,6 +76,61 @@ def test_run_team_revise_loop_counts_n(tmp_path: Path):
     assert any("ts_mean(close, 20)" in r["expressions"] for r in res.rounds_log)  # 轮2 是改写产物
 
 
+def test_hypotheses_per_round_evaluates_all(tmp_path: Path):
+    """任务 D：hypotheses_per_round=2 → propose 收到 n=2、两个假设的表达式都被评估，
+    且每个 attempt 的 hypothesis 归属正确（护栏/Critic 仍每轮一次）。"""
+    hyp = json.dumps({"hypotheses": ["动量因子", "反转因子"]})
+    keep = json.dumps({"verdict": "keep", "reason": "ok"})
+    seen_propose: list[str] = []
+
+    def fn(messages):
+        text = "\n".join(m["content"] for m in messages)
+        if "风控审计员" in text:            # critic
+            return keep
+        if "翻译成" in text:               # write_expressions（按假设分流）
+            if "动量因子" in text:
+                return json.dumps({"expressions": ["ts_mean(close,5)"]})
+            if "反转因子" in text:
+                return json.dumps({"expressions": ["ts_std(close,10)"]})
+            return json.dumps({"expressions": ["rank(vol)"]})
+        seen_propose.append(text)          # propose_hypotheses
+        return hyp
+
+    daily = _mock_daily()
+    res = run_team_agent(daily, fn, n_rounds=1, seed=1, heal_rounds=0,
+                         index_path=str(tmp_path / "e.jsonl"), hypotheses_per_round=2)
+
+    assert any("提出 2 个新方向" in t for t in seen_propose), "propose 应收到 n=2"
+    exprs = {a.expression for a in res.state.attempts}
+    assert "ts_mean(close, 5)" in exprs and "ts_std(close, 10)" in exprs, \
+        f"两个假设的表达式都应被评估: {exprs}"
+    by_expr = {a.expression: a.hypothesis for a in res.state.attempts}
+    assert by_expr["ts_mean(close, 5)"] == "动量因子"
+    assert by_expr["ts_std(close, 10)"] == "反转因子"
+    # rounds_log 记两个假设（"；" 连接）
+    assert "动量因子" in res.rounds_log[0]["hypothesis"]
+    assert "反转因子" in res.rounds_log[0]["hypothesis"]
+
+
+def test_hypotheses_per_round_default_is_single(tmp_path: Path):
+    """默认 hypotheses_per_round=1 → propose 收到 n=1（零回归）。"""
+    seen: list[str] = []
+
+    def fn(messages):
+        text = "\n".join(m["content"] for m in messages)
+        seen.append(text)
+        if "风控审计员" in text:
+            return json.dumps({"verdict": "keep", "reason": "ok"})
+        if "翻译成" in text:
+            return json.dumps({"expressions": ["ts_mean(close,5)"]})
+        return json.dumps({"hypotheses": ["动量"]})
+
+    run_team_agent(_mock_daily(), fn, n_rounds=1, seed=1, heal_rounds=0,
+                   index_path=str(tmp_path / "e.jsonl"))
+    assert any("提出 1 个新方向" in t for t in seen), "默认应 n=1"
+    assert not any("提出 2 个新方向" in t for t in seen)
+
+
 def test_cross_session_dedup(tmp_path: Path):
     """共享 experiment_index：第二次 run 重复表达式被跳过（seen 去重）。"""
     daily = _mock_daily()
@@ -112,7 +167,7 @@ def test_critic_drop_removes_candidate(tmp_path: Path):
     drop_expr = "ts_mean(close, 5)"
 
     def fake_guardrails(state, *, daily, holdout_df, bundle, ledger, top_k=5, warmup_daily=None,
-                        eval_start=None):
+                        eval_start=None, profile=None):
         """注入候选并计 N，模拟本轮过了护栏（含真实 node_guardrails 会做的状态写入）。"""
         ledger.record(1)  # N 诚实：记 1 个试验
         # 忠实复刻 node_guardrails 第140行的副作用：候选过护栏时标记对应 AttemptRecord

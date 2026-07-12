@@ -68,8 +68,10 @@ def _print_startup(daily, params: dict, *, label: str, rid: str) -> None:
     extra = f" ｜ structured={params['structured']}" if "structured" in params else ""
     print(f"\n{'═' * 72}")
     print(f"[{label}] 挖掘启动 ▸ {rid}")
+    # universe 缺省的兜底随市场变：A 股=全A；其它市场=Top-N 快照（别把 crypto 标成"全A"）。
+    _uni_default = "全A" if params.get("market", "ashare") == "ashare" else "Top-N 快照"
     print(f"[{label}] 窗口 {params.get('start', '?')}~{params.get('end', '?')}"
-          f" ｜ universe={params.get('universe') or '全A'}"
+          f" ｜ universe={params.get('universe') or _uni_default}"
           f" ｜ market={params.get('market', 'ashare')}")
     print(f"[{label}] 载入 {n_rows} 行 / {n_stocks} 只票 / {n_days} 交易日（含预热前缀）")
     print(f"[{label}] 轮数={params.get('n_rounds')} ｜ top_k={params.get('top_k')}"
@@ -155,12 +157,15 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = "workspace
                    export: bool = True, patience: int | None = None,
                    heal_rounds: int = 2,
                    data_window: dict | None = None, command: str | None = None,
-                   eval_start: str | None = None) -> dict:
+                   eval_start: str | None = None, profile=None) -> dict:
     """跑单 Agent 挖掘闭环，每轮增量落 manifest，收尾导出候选。
 
     ``data_window``：``{start, end, universe, market}``。落进 manifest 的 params，
     否则事后无从得知这批因子挖自哪段数据、哪个票池（铁律#3）。
     ``command``：触发本次运行的命令行。
+
+    ``profile``：市场 profile（默认 None → A 股，零回归）。crypto 等传各自 profile，透传到
+    `run_llm_agent`；数据装配（含预热前缀的 crypto daily）由调用方（CLI）负责。
 
     ``eval_start``：``"YYYYMMDD"``，训练段的干净起点。``daily`` 由 `prepare_mining_daily`
     带 ``lookback_days`` 预热前缀，须把该前缀的边界（= 挖掘窗口 ``start``）透传给
@@ -187,7 +192,7 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = "workspace
     result = run_llm_agent(daily, fn, n_rounds=n_rounds, seed=seed, top_k=top_k,
                            holdout_ratio=holdout_ratio, human_review=human_review,
                            patience=patience, heal_rounds=heal_rounds, eval_start=eval_start,
-                           on_round_end=_checkpoint)
+                           on_round_end=_checkpoint, profile=profile)
     write_session_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid
     # candidates.csv —— 兼容 fz mine leaderboard/export-alpha（含 rank + passed 列）

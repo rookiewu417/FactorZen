@@ -49,15 +49,19 @@ def test_guardrail_negative_ic_without_ci_high_falls_back_to_ci_low():
 
 
 def test_cross_path_parity_m1_delegates_to_shared():
+    """M1 的 _guard_passed 委托共享入口 acceptance_reasons，逐样本无漂移：
+    strict 口径 == guardrail_passed(DSR)，library 口径(默认) == not library_reasons。"""
+    from factorzen.discovery.guardrails import library_reasons
     from factorzen.discovery.mining_session import _guard_passed
     rng = np.random.default_rng(0)
     for _ in range(200):
         c = {"ic_train": float(rng.normal(0, 0.05)), "holdout_ic": float(rng.normal(0, 0.05)),
              "dsr_pvalue": float(rng.uniform(0, 1)), "ic_ci_low": float(rng.normal(0, 0.03))}
-        m1 = _guard_passed(c, dsr_alpha=0.05)
-        shared = guardrail_passed(ic_train=c["ic_train"], holdout_ic=c["holdout_ic"],
+        strict = guardrail_passed(ic_train=c["ic_train"], holdout_ic=c["holdout_ic"],
                                   dsr_pvalue=c["dsr_pvalue"], ci_low=c["ic_ci_low"], dsr_alpha=0.05)
-        assert m1 == shared, f"drift: {c} -> m1={m1} shared={shared}"
+        assert _guard_passed(c, dsr_alpha=0.05, gate="strict") == strict
+        library = not library_reasons(ic_train=c["ic_train"], holdout_ic=c["holdout_ic"])
+        assert _guard_passed(c) == library, f"library drift: {c}"
 
 
 def _mk_daily(n_days=260, n_stocks=30, seed=7):

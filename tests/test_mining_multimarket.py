@@ -375,3 +375,64 @@ def _mock_ashare_daily() -> pl.DataFrame:
                          "close": 10.0 + d, "open": 10.0, "high": 11.0, "low": 9.0,
                          "vol": 1e5, "amount": 1e6})
     return pl.DataFrame(rows)
+
+
+# ── Phase 3 US CLI 接线：--market us 装配后复权帧 + 透传 profile（价量族，无 A 股叶子泄漏） ──
+class _USProfileStub:
+    name = "us"
+
+    def __init__(self):
+        from factorzen.markets.us.factors import USFactorSet
+        self.factors = USFactorSet()
+
+
+def _us_daily(n_syms: int = 35, n_days: int = 40) -> pl.DataFrame:
+    import datetime as dt
+    base = dt.date(2024, 1, 1)
+    rows = []
+    for s in range(n_syms):
+        for d in range(n_days):
+            rows.append({"ts_code": f"US{s:03d}", "trade_date": base + dt.timedelta(days=d),
+                         "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.0 + d,
+                         "vol": 1e5, "amount": 1e6})
+    return pl.DataFrame(rows)
+
+
+def test_cmd_mine_team_us_assembles_and_threads_profile(monkeypatch):
+    from factorzen.cli import main as cli
+    cap: dict = {}
+    fake_profile = _USProfileStub()
+    fake_profile.base_freq = "daily"
+    fake_profile.provider = object()
+
+    class _U:
+        def snapshot(self, d):
+            return ["AAPL", "MSFT"]
+    fake_profile.universe = _U()
+    monkeypatch.setattr("factorzen.markets.us.profile.build_us_profile", lambda **_k: fake_profile)
+
+    def fake_build(provider, symbols, start, end, freq="daily"):
+        cap["build"] = dict(symbols=symbols, start=start, end=end, freq=freq)
+        return _us_daily()
+    monkeypatch.setattr("factorzen.markets.us.mining.build_us_daily", fake_build)
+
+    def fake_team_mine(daily, **kw):
+        cap.update(kw)
+        return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
+    monkeypatch.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
+
+    rc = cli._cmd_mine_team(_team_args(market="us", symbols=None))
+    assert rc == 0
+    assert cap["profile"] is fake_profile          # profile 透传（非 None）
+    assert cap["eval_start"] == "20240301"          # eval_start=挖掘窗口 start（预热边界）
+    assert cap["build"]["symbols"] == ["AAPL", "MSFT"]  # 缺 --symbols → universe 静态快照
+    assert cap["build"]["start"] < "20240301"       # 预热前缀：早于挖掘窗口 start
+    assert cap["data_window"]["market"] == "us"     # manifest 如实记录 us
+
+
+def test_us_leaf_map_has_no_ashare_leaves():
+    # us 叶子仅价量族，A 股专有叶子（north_ratio/roe/net_mf_amount）零泄漏
+    from factorzen.markets.us.factors import USFactorSet
+    leaves = set(USFactorSet().leaf_features())
+    assert {"north_ratio", "roe", "net_mf_amount", "funding_rate", "oi"}.isdisjoint(leaves)
+    assert {"close", "vwap", "log_vol", "ret_1d", "amount"}.issubset(leaves)

@@ -30,10 +30,21 @@ _FUTURES_SIGNAL_FAMILIES = (
     "品种截面窄(~40-70)，信号须在截面上稳健、勿被单品种主导。"
 )
 
+# 美股信号族：MVP 只有价量族（无市值/基本面/资金流叶子），主打价量 + 后复权跨拆股连续。
+_US_SIGNAL_FAMILIES = (
+    "可用信号族：量价（价格/成交量/vwap/收益，已后复权跨拆股连续）、"
+    "**动量/反转**（大盘股截面动量、超跌反弹）、"
+    "**量价背离**（价升量缩/放量滞涨）、"
+    "**波动/振幅**（高低价区间、已复权 vwap 偏离）。"
+    "S&P500 大型股池信息效率高、纯量价最拥挤——优先经济直觉清晰、换手可控、截面稳健的方向；"
+    "**只有价量族叶子（无市值/基本面/资金流）**，勿臆造不存在的估值/财务方向。"
+)
+
 _SIGNAL_FAMILIES_BY_MARKET: dict[str, str] = {
     "ashare": _SIGNAL_FAMILIES,
     "crypto": _CRYPTO_SIGNAL_FAMILIES,
     "futures": _FUTURES_SIGNAL_FAMILIES,
+    "us": _US_SIGNAL_FAMILIES,
 }
 
 

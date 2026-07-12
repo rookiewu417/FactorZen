@@ -34,3 +34,4 @@ __all__ = [
 from factorzen.markets.ashare import profile as _ashare_profile  # noqa: F401
 from factorzen.markets.crypto import profile as _crypto_profile  # noqa: F401
 from factorzen.markets.futures import profile as _futures_profile  # noqa: F401
+from factorzen.markets.us import profile as _us_profile  # noqa: F401

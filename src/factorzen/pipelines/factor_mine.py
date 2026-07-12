@@ -17,6 +17,33 @@ _TRADING_YEAR = 252
 AGENT_WARMUP_LOOKBACK = 2 * _TRADING_YEAR  # 504 交易日 ≈ 两年
 
 
+def _universe_asof_fallback(universe: str, end: str, *, max_months: int = 36) -> list[str]:
+    """命名 universe 在 ``end`` 无成分快照时，按月回退找最近有成分的日期（as-of）。
+
+    修 OOM 主因：指数成分数据未回补到 ``end`` 时 `get_universe(end, name)` 返回空 →
+    空池被 `FactorDataContext` 当「不过滤」→ 装配全市场（数千股，15x 数据膨胀 → OOM）。
+    回退到最近有成分的快照（成分随时间缓慢漂移，用近端快照评估历史窗口足够）；回退 ``max_months``
+    月仍空则**报错**（绝不静默退化成全市场，那会 OOM 且改变评估口径）。
+    """
+    import datetime as _dt
+    import logging as _logging
+
+    from factorzen.core.universe import get_universe as _gu
+
+    probe = _dt.datetime.strptime(end, "%Y%m%d").date()
+    for _ in range(max_months):
+        probe = probe - _dt.timedelta(days=30)
+        cand = _gu(probe.strftime("%Y%m%d"), universe)["ts_code"].to_list()
+        if cand:
+            _logging.getLogger(__name__).warning(
+                "universe %s 在 %s 无成分快照，as-of 回退到 %s（%d 只）——"
+                "指数成分数据可能未回补到该日期。", universe, end, probe.strftime("%Y%m%d"), len(cand))
+            return cand
+    raise ValueError(
+        f"universe={universe!r} 在 {end} 及此前 {max_months} 个月均无成分快照；"
+        f"请回补指数成分数据，或改用 --universe all_a / 显式 --start --end。")
+
+
 def prepare_mining_daily(start: str, end: str, universe: str | None = None,
                          lookback_days: int | None = None) -> pl.DataFrame:
     """构建 A 股挖掘/评估用日线帧：**复权价**(FactorDataContext 的 close_adj) + join
@@ -38,6 +65,8 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
     uni = None
     if universe:
         uni = get_universe(end, universe)["ts_code"].to_list()
+        if not uni and universe != "all_a":
+            uni = _universe_asof_fallback(universe, end)
     ctx = FactorDataContext(start=start, end=end, required_data=["daily", "daily_basic"],
                             lookback_days=lookback_days, universe=uni)
     daily = ctx.daily.collect()
@@ -58,9 +87,12 @@ def run_mine(*, start: str, end: str, universe: str | None = None,
              method: str = "random", holdout_ratio: float = 0.2,
              train_ratio: float = 0.7, decorr_threshold: float = 0.7,
              min_n_train: int = 5, dsr_alpha: float = DEFAULT_DSR_ALPHA,
-             workers: int = 1) -> dict:
+             workers: int = 1, update_library: bool = True) -> dict:
     daily = prepare_mining_daily(start, end, universe)
+    # 收尾自动 upsert 因子库（--no-library 关）；库根由 run_session 从 out_dir 推导
+    # （workspace/mining_sessions → workspace/factor_library）。universe 落进记录溯源。
     return run_session(daily, n_trials=n_trials, top_k=top_k, seed=seed, method=method,
                        holdout_ratio=holdout_ratio, train_ratio=train_ratio,
                        decorr_threshold=decorr_threshold, min_n_train=min_n_train,
-                       dsr_alpha=dsr_alpha, eval_start=start, workers=workers)
+                       dsr_alpha=dsr_alpha, eval_start=start, workers=workers,
+                       update_library=update_library, library_universe=universe)

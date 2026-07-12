@@ -363,14 +363,39 @@ def _mine_search_futures(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mine_search_us(args: argparse.Namespace) -> int:
+    """美股挖掘（M1，Yahoo chart 后复权日线）：静态 S&P500 快照 → run_us_mining。"""
+    from factorzen.markets.us.mining import run_us_mining
+    from factorzen.markets.us.profile import build_us_profile
+
+    profile = build_us_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.end)
+    if not symbols:
+        print("[mine] us universe 为空（检查 sp500 快照）", file=sys.stderr)
+        return 1
+    res = run_us_mining(
+        profile, symbols, args.start, args.end,
+        n_trials=args.trials, top_k=args.top_k, seed=args.seed, method=args.method,
+        holdout_ratio=args.holdout_ratio, train_ratio=args.train_ratio,
+        decorr_threshold=args.decorr_threshold, min_n_train=args.min_n_train,
+        dsr_alpha=args.dsr_alpha, workers=args.workers,
+        update_library=not getattr(args, "no_library", False),
+    )
+    sd = res["session_dir"]
+    print(f"[mine] us 完成：{len(res['candidates'])} 个候选 / {len(symbols)} 标的 → {sd}")
+    return 0
+
+
 def _cmd_mine_search(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") not in ("crypto",) and getattr(args, "freq", "daily") != "daily":
-        print("[mine] --freq 仅 crypto 支持;ashare/futures 只有 daily", file=sys.stderr)
+        print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
     if getattr(args, "market", "ashare") == "crypto":
         return _mine_search_crypto(args)
     if getattr(args, "market", "ashare") == "futures":
         return _mine_search_futures(args)
+    if getattr(args, "market", "ashare") == "us":
+        return _mine_search_us(args)
     from factorzen.pipelines.factor_mine import run_mine
 
     res = run_mine(
@@ -387,6 +412,7 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         min_n_train=args.min_n_train,
         dsr_alpha=args.dsr_alpha,
         workers=args.workers,
+        update_library=not getattr(args, "no_library", False),
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
@@ -496,6 +522,24 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
                         - _dt.timedelta(days=int(AGENT_WARMUP_LOOKBACK * 1.55))).strftime("%Y%m%d")
         daily = build_futures_daily(profile.provider, symbols, warmup_start, args.end)
         return (None if daily.is_empty() else daily), profile
+    if market == "us":
+        import datetime as _dt
+
+        from factorzen.markets.us.mining import build_us_daily
+        from factorzen.markets.us.profile import build_us_profile
+
+        profile = build_us_profile(top_n=getattr(args, "top_n", 50))
+        if getattr(args, "symbols", None):
+            symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        else:
+            symbols = profile.universe.snapshot(args.end)
+        if not symbols:
+            return None, profile
+        # 预热前缀：AGENT_WARMUP_LOOKBACK 交易日 → 自然日近似（252 交易日/年，×1.5 覆盖周末/假日）。
+        warmup_start = (_dt.datetime.strptime(args.start, "%Y%m%d").date()
+                        - _dt.timedelta(days=int(AGENT_WARMUP_LOOKBACK * 1.5))).strftime("%Y%m%d")
+        daily = build_us_daily(profile.provider, symbols, warmup_start, args.end)
+        return (None if daily.is_empty() else daily), profile
     # A 股：预热前缀用 agent 专用加长值（LLM 窗口无搜索空间上界，长窗因子用 180 会被误判欠预热）。
     daily = prepare_mining_daily(args.start, args.end, args.universe,
                                  lookback_days=AGENT_WARMUP_LOOKBACK)
@@ -504,7 +548,7 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
 
 def _cmd_mine_agent(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
-        print("[mine] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
     from factorzen.pipelines.factor_mine_agent import run_agent_mine
 
@@ -525,7 +569,7 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
 
 def _cmd_mine_team(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
-        print("[mine] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
+        print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
     from factorzen.pipelines.factor_mine_team import run_team_mine
 
@@ -542,8 +586,97 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
                         heal_rounds=args.heal_rounds,
                         hypotheses_per_round=args.hypotheses_per_round,
                         data_window=_data_window(args), command=_command_line(args),
-                        eval_start=args.start, profile=profile)
+                        eval_start=args.start, profile=profile,
+                        update_library=not getattr(args, "no_library", False))
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
+    return 0
+
+
+def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
+    from datetime import date
+
+    from factorzen.core.experiment import get_git_sha
+    from factorzen.discovery import factor_library as fl
+    from factorzen.discovery.backtest_window import default_window
+
+    market = args.market
+    # 窗口：显式 --start/--end 覆盖，否则默认窗口（最近约 6 年滚动到数据最新端）
+    if args.start and args.end:
+        start, end = args.start, args.end
+    else:
+        try:
+            start, end = default_window(market)
+        except ValueError as exc:
+            print(f"[factor-library] {exc}", file=sys.stderr)
+            return 1
+    # 装配数据（复用挖掘装配 `_prepare_agent_mining_data`，含预热前缀）：窗口写回 args
+    args.start, args.end = start, end
+    daily, profile = _prepare_agent_mining_data(args)
+    if daily is None:
+        print("[factor-library] 挖掘帧为空（检查 --symbols / 数据湖覆盖 / 缓存回补）",
+              file=sys.stderr)
+        return 1
+    leaf_map = profile.factors.leaf_features() if profile is not None else None
+    sources = fl.collect_source_expressions(market)
+    if not sources:
+        print(f"[factor-library] 提示：未从历史产物收集到 {market} 候选（将产出空库文件）")
+    evaluate, compact_materialize = fl.build_library_evaluator(
+        daily, holdout_ratio=args.holdout_ratio, eval_start=start, leaf_map=leaf_map,
+        profile=profile)
+    res = fl.rebuild(market, sources=sources, eval_window=(start, end), universe=args.universe,
+                     horizon=args.horizon, evaluate=evaluate,
+                     compact_materialize=compact_materialize,
+                     git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
+                     leaf_map=leaf_map, decorr_threshold=args.decorr_threshold)
+    print(f"[factor-library] {market} rebuild：新增 {res.added} / 更新 {res.updated} / "
+          f"标记 correlated {res.correlated} / 跳过 {res.skipped}（窗口 {start}–{end}）")
+    print(f"[factor-library] → workspace/factor_library/{market}.jsonl + {market}.md")
+    return 0
+
+
+def _cmd_factor_library_list(args: argparse.Namespace) -> int:
+    from factorzen.discovery import factor_library as fl
+
+    lib = sorted(fl.load_library(args.market), key=fl._sort_key)
+    if not lib:
+        print(f"[factor-library] {args.market} 库为空")
+        return 0
+    print(f"[factor-library] {args.market}: {len(lib)} 个因子（holdout_ic 降序）")
+    for i, r in enumerate(lib, 1):
+        print(f"  {i:>3}. holdout_ic={fl._fmt(r.holdout_ic)} ic_train={fl._fmt(r.ic_train)} "
+              f"[{r.status}] {r.expression}")
+    return 0
+
+
+def _cmd_factor_library_show(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+
+    from factorzen.discovery import factor_library as fl
+
+    lib = sorted(fl.load_library(args.market), key=fl._sort_key)
+    rec = None
+    if args.expression:
+        norm = fl._normalize(args.expression)
+        rec = next((r for r in lib if r.expression in (norm, args.expression)), None)
+    elif args.rank is not None:
+        if 1 <= args.rank <= len(lib):
+            rec = lib[args.rank - 1]
+    else:
+        print("[factor-library] 需指定 --expression 或 --rank", file=sys.stderr)
+        return 2
+    if rec is None:
+        print(f"[factor-library] 未找到该因子（market={args.market}）", file=sys.stderr)
+        return 1
+    for k, v in asdict(rec).items():
+        print(f"  {k}: {v}")
+    return 0
+
+
+def _cmd_factor_library_render(args: argparse.Namespace) -> int:
+    from factorzen.discovery import factor_library as fl
+
+    fl.render_markdown(args.market)
+    print(f"[factor-library] 已重生 workspace/factor_library/{args.market}.md")
     return 0
 
 
@@ -615,14 +748,37 @@ def _mine_export_alpha_futures(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mine_export_alpha_us(args: argparse.Namespace) -> int:
+    """us export-alpha（Yahoo 后复权）：读候选表达式 → 当日截面 α → parquet。"""
+    from datetime import datetime, timedelta
+    from pathlib import Path
+
+    from factorzen.discovery.export import read_candidate_expression
+    from factorzen.markets.us.mining import export_us_alpha
+    from factorzen.markets.us.profile import build_us_profile
+
+    expr = read_candidate_expression(args.session, args.rank, require_passed=not args.all)
+    profile = build_us_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.date)
+    start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime("%Y%m%d")
+    cross = export_us_alpha(profile, expr, symbols, start, args.date, date=args.date)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    cross.write_parquet(args.out)
+    print(f"[mine] export-alpha(us): rank={args.rank} expr={expr!r} date={args.date} "
+          f"→ {args.out} ({cross.height} 个标的)")
+    return 0
+
+
 def _cmd_mine_export_alpha(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
-        print("[mine] --freq 仅 crypto 支持;ashare/futures 只有 daily", file=sys.stderr)
+        print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
     if getattr(args, "market", "ashare") == "crypto":
         return _mine_export_alpha_crypto(args)
     if getattr(args, "market", "ashare") == "futures":
         return _mine_export_alpha_futures(args)
+    if getattr(args, "market", "ashare") == "us":
+        return _mine_export_alpha_us(args)
     from factorzen.core.universe import get_universe
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.discovery.export import (
@@ -687,14 +843,35 @@ def _validate_overfit_futures(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validate_overfit_us(args: argparse.Namespace) -> int:
+    """us 单表达式防过拟合验证（Yahoo 后复权）。"""
+    if not getattr(args, "expression", None):
+        print("[validate] us 需 --expression \"<表达式>\"", file=sys.stderr)
+        return 1
+    from factorzen.markets.us.mining import validate_us_expression
+    from factorzen.markets.us.profile import build_us_profile
+
+    profile = build_us_profile(top_n=args.top_n)
+    symbols = profile.universe.snapshot(args.end)
+    rep = validate_us_expression(profile, args.expression, symbols, args.start, args.end)
+    print(
+        f"[validate] {args.expression}: IC={rep['ic_mean']:.4f} IR={rep['ir']:.4f} "
+        f"DSR_p={rep['dsr_p']:.4f} IC_95%CI=[{rep['ci_lo']:.4f},{rep['ci_hi']:.4f}]"
+    )
+    print("[validate] 注：单因子 N=1（无多重检验扣减）；PBO 仅适用候选池，此处略。")
+    return 0
+
+
 def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
-        print("[validate] --freq 仅 crypto 支持;ashare/futures 只有 daily", file=sys.stderr)
+        print("[validate] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
     if getattr(args, "market", "ashare") == "crypto":
         return _validate_overfit_crypto(args)
     if getattr(args, "market", "ashare") == "futures":
         return _validate_overfit_futures(args)
+    if getattr(args, "market", "ashare") == "us":
+        return _validate_overfit_us(args)
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.daily.factors.registry import get_factor
     from factorzen.discovery.scoring import ic_overfit_report
@@ -1418,11 +1595,11 @@ def build_parser() -> argparse.ArgumentParser:
     m_search.add_argument("--start", required=True, help="Start date YYYYMMDD")
     m_search.add_argument("--end", required=True, help="End date YYYYMMDD")
     m_search.add_argument("--universe", default=None, help="Universe name (e.g. csi500)")
-    m_search.add_argument("--market", choices=["ashare", "crypto", "futures"], default="ashare",
+    m_search.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
                           help="Market profile (default ashare; crypto=USDT-M perps; "
-                               "futures=国内商品期货主力连续)")
+                               "futures=国内商品期货主力连续; us=S&P500 Yahoo 后复权)")
     m_search.add_argument("--top-n", dest="top_n", type=int, default=50,
-                          help="crypto/futures universe size (Top-N by turnover; default 50)")
+                          help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)")
     m_search.add_argument("--method", choices=["random", "genetic"], default="random")
     m_search.add_argument("--trials", type=int, default=200)
     m_search.add_argument("--top-k", dest="top_k", type=int, default=10)
@@ -1439,6 +1616,8 @@ def build_parser() -> argparse.ArgumentParser:
                           help="候选 train 段最少有效 IC 天数，不足则丢弃（默认 5）")
     m_search.add_argument("--dsr-alpha", dest="dsr_alpha", type=float, default=DEFAULT_DSR_ALPHA,
                           help="护栏 passed 标记的 DSR 显著性阈值（默认 0.10，2026-07 松一档）")
+    m_search.add_argument("--no-library", dest="no_library", action="store_true",
+                          help="关闭收尾自动 upsert 因子库（默认开，passed 候选进 workspace/factor_library）")
     _add_freq_arg(m_search)
     m_search.set_defaults(func=_cmd_mine_search)
 
@@ -1458,10 +1637,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Candidate rank in candidates.csv (1-based, default 1)")
     m_exp.add_argument("--date", required=True, help="Cross-section date YYYYMMDD")
     m_exp.add_argument("--universe", default="all_a", help="Universe name (default all_a)")
-    m_exp.add_argument("--market", choices=["ashare", "crypto", "futures"], default="ashare",
-                       help="Market profile (default ashare; crypto=USDT-M perps; futures=商品期货)")
+    m_exp.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+                       help="Market profile (default ashare; crypto=USDT-M perps; futures=商品期货; us=S&P500)")
     m_exp.add_argument("--top-n", dest="top_n", type=int, default=50,
-                       help="crypto/futures universe size (Top-N by turnover; default 50)")
+                       help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)")
     m_exp.add_argument("--lookback", type=int, default=60,
                        help="Trade-day lookback for time-series operators (default 60)")
     m_exp.add_argument("--out", required=True,
@@ -1476,13 +1655,13 @@ def build_parser() -> argparse.ArgumentParser:
     m_agent.add_argument("--start", required=True)
     m_agent.add_argument("--end", required=True)
     m_agent.add_argument("--universe", default=None)
-    m_agent.add_argument("--market", choices=["ashare", "crypto", "futures"], default="ashare",
+    m_agent.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
                          help="Market profile (default ashare; crypto=USDT-M perps via Vision lake; "
-                              "futures=国内商品期货主力连续 via Tushare)")
+                              "futures=国内商品期货主力连续 via Tushare; us=S&P500 via Yahoo chart)")
     m_agent.add_argument("--symbols", default=None,
-                         help="crypto/futures only: 逗号分隔 symbols；缺省=universe Top-N 快照")
+                         help="crypto/futures/us only: 逗号分隔 symbols；缺省=universe Top-N 快照")
     m_agent.add_argument("--top-n", dest="top_n", type=int, default=50,
-                         help="crypto/futures universe size (Top-N by turnover; default 50)")
+                         help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)")
     m_agent.add_argument("--iterations", type=int, default=5)
     m_agent.add_argument("--top-k", dest="top_k", type=int, default=5)
     m_agent.add_argument("--seed", type=int, default=42)
@@ -1498,13 +1677,13 @@ def build_parser() -> argparse.ArgumentParser:
     m_team.add_argument("--start", required=True)
     m_team.add_argument("--end", required=True)
     m_team.add_argument("--universe", default=None)
-    m_team.add_argument("--market", choices=["ashare", "crypto", "futures"], default="ashare",
+    m_team.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
                         help="Market profile (default ashare; crypto=USDT-M perps via Vision lake; "
-                             "futures=国内商品期货主力连续 via Tushare)")
+                             "futures=国内商品期货主力连续 via Tushare; us=S&P500 via Yahoo chart)")
     m_team.add_argument("--symbols", default=None,
-                        help="crypto/futures only: 逗号分隔 symbols；缺省=universe Top-N 快照")
+                        help="crypto/futures/us only: 逗号分隔 symbols；缺省=universe Top-N 快照")
     m_team.add_argument("--top-n", dest="top_n", type=int, default=50,
-                        help="crypto/futures universe size (Top-N by turnover; default 50)")
+                        help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)")
     m_team.add_argument("--iterations", type=int, default=5)
     m_team.add_argument("--top-k", dest="top_k", type=int, default=5)
     m_team.add_argument("--seed", type=int, default=42)
@@ -1519,8 +1698,46 @@ def build_parser() -> argparse.ArgumentParser:
     m_team.add_argument("--hypotheses-per-round", dest="hypotheses_per_round",
                         type=int, default=1,
                         help="每轮提多少个假设（默认1；>1 提升单轮产能，护栏/Critic 仍每轮一次）")
+    m_team.add_argument("--no-library", dest="no_library", action="store_true",
+                        help="关闭收尾自动 upsert 因子库（默认开，最终候选进 workspace/factor_library）")
     _add_freq_arg(m_team)
     m_team.set_defaults(func=_cmd_mine_team)
+
+    # ── fz factor-library ──（分市场因子登记簿：rebuild / list / show / render）
+    fl = sub.add_parser("factor-library",
+                        help="因子库登记簿（分市场·全信息·自动维护）：rebuild/list/show/render")
+    fl_sub = fl.add_subparsers(dest="factor_library_command", required=True)
+
+    fl_rb = fl_sub.add_parser("rebuild",
+                              help="从历史产物在统一默认窗口重算并重建某市场的因子库")
+    fl_rb.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
+    fl_rb.add_argument("--start", default=None, help="覆盖默认窗口起点 YYYYMMDD（缺省=最近6年滚动）")
+    fl_rb.add_argument("--end", default=None, help="覆盖默认窗口终点 YYYYMMDD（缺省=数据最新端）")
+    fl_rb.add_argument("--universe", default=None, help="A股 universe 名（如 csi300）")
+    fl_rb.add_argument("--horizon", type=int, default=1, help="前向收益持有期（默认1）")
+    fl_rb.add_argument("--top-n", dest="top_n", type=int, default=50,
+                       help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)")
+    fl_rb.add_argument("--symbols", default=None,
+                       help="crypto/futures/us only: 逗号分隔 symbols；缺省=universe Top-N 快照")
+    fl_rb.add_argument("--decorr-threshold", dest="decorr_threshold", type=float, default=0.7,
+                       help="去相关 |corr| 门槛，超此仍收录但标 correlated（默认0.7）")
+    fl_rb.add_argument("--holdout-ratio", dest="holdout_ratio", type=float, default=0.2)
+    _add_freq_arg(fl_rb)
+    fl_rb.set_defaults(func=_cmd_factor_library_rebuild)
+
+    fl_ls = fl_sub.add_parser("list", help="列出库内因子（rank/expression/holdout_ic/status）")
+    fl_ls.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
+    fl_ls.set_defaults(func=_cmd_factor_library_list)
+
+    fl_sh = fl_sub.add_parser("show", help="单因子全字段")
+    fl_sh.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
+    fl_sh.add_argument("--expression", default=None, help="按表达式（规范形）查")
+    fl_sh.add_argument("--rank", type=int, default=None, help="按库内排名查（1-based，holdout_ic 降序）")
+    fl_sh.set_defaults(func=_cmd_factor_library_show)
+
+    fl_rd = fl_sub.add_parser("render", help="重生 {market}.md（不重算）")
+    fl_rd.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
+    fl_rd.set_defaults(func=_cmd_factor_library_render)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     # ── fz research ──（端到端编排：mine → 头部 passed 因子 → 循环 build → sim → report）
@@ -1558,12 +1775,12 @@ def build_parser() -> argparse.ArgumentParser:
     vo.add_argument("--start", required=True)
     vo.add_argument("--end", required=True)
     vo.add_argument("--universe", default=None)
-    vo.add_argument("--market", choices=["ashare", "crypto", "futures"], default="ashare",
-                    help="Market profile (default ashare; crypto/futures 需 --expression)")
+    vo.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+                    help="Market profile (default ashare; crypto/futures/us 需 --expression)")
     vo.add_argument("--expression", default=None,
-                    help="Factor expression to validate (required for --market crypto/futures)")
+                    help="Factor expression to validate (required for --market crypto/futures/us)")
     vo.add_argument("--top-n", dest="top_n", type=int, default=50,
-                    help="crypto/futures universe size (default 50)")
+                    help="crypto/futures/us universe size (default 50)")
     _add_freq_arg(vo)
     vo.set_defaults(func=_cmd_validate_overfit)
 

@@ -364,6 +364,9 @@ def run_team_agent(
     eval_start: str | None = None,
     hypotheses_per_round: int = 1,
     profile=None,
+    update_library: bool = True,
+    library_root: str | None = None,
+    horizon: int = 1,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -490,6 +493,16 @@ def run_team_agent(
             data_window=data_window,
         )
 
+    # ── 自动维护因子库（M5/M6 收尾 upsert）──────────────────────────────────────
+    # 与 M1(run_session) 双路径登记簿配对：收尾把最终 passed 候选 upsert 进库（gate 复用
+    # acceptance_reasons(gate="library")）。库根默认从 index_path 推导（测试的 tmp index 天然
+    # 隔离）；市场从 profile.name/data_window 取。整块 try/except 兜底，不拖垮挖掘产出。
+    if update_library:
+        _library_upsert_team(
+            state.candidates, seed=seed, mining_df=mining_df, ctx=ctx, profile=profile,
+            data_window=data_window, eval_start=eval_start, index_path=index_path,
+            library_root=library_root, top_k=top_k, horizon=horizon)
+
     return TeamResult(
         state=state,
         candidates=state.candidates,
@@ -497,6 +510,36 @@ def run_team_agent(
         rounds_log=rounds_log,
         sharpe_variance=basis.sharpe_variance,
     )
+
+
+def _library_upsert_team(candidates, *, seed, mining_df, ctx, profile, data_window,
+                         eval_start, index_path, library_root, top_k, horizon) -> None:
+    """M5/M6 收尾把最终 passed 候选 upsert 进因子库。全 try/except 兜底，A股零回归底线。"""
+    from datetime import date
+
+    try:
+        if not candidates:
+            return
+        from factorzen.agents.evaluation import _preprocess_daily
+        from factorzen.discovery import factor_library as _fl
+        market = getattr(profile, "name", None) or (
+            (data_window or {}).get("market")) or "ashare"
+        root = library_root or str(Path(index_path).parent / "factor_library")
+        dw = data_window or {}
+        _start = dw.get("start") or eval_start or mining_df["trade_date"].min().strftime("%Y%m%d")
+        _end = dw.get("end") or mining_df["trade_date"].max().strftime("%Y%m%d")
+        leaf_map = ctx.leaf_map
+        prepped = _preprocess_daily(mining_df, profile).sort(["ts_code", "trade_date"])
+        # 去相关用紧凑矩阵物化器（内存有界，见 factor_library.make_compact_materializer）。
+        compact = _fl.make_compact_materializer(prepped, leaf_map)
+
+        _fl.upsert(
+            market, candidates, eval_window=(_start, _end), universe=dw.get("universe"),
+            horizon=horizon, run_id=f"team_{seed}", session_dir=None,
+            git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
+            compact_materialize=compact, leaf_map=leaf_map, root=root)
+    except Exception as exc:  # 库写入失败不许影响挖掘产出（A股零回归底线）
+        _LOG.warning("因子库 upsert 失败（不影响挖掘产出）: %s: %s", type(exc).__name__, exc)
 
 
 def write_team_manifest(

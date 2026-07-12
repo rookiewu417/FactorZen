@@ -9,6 +9,15 @@ import polars as pl
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 
 
+class LookaheadWindowError(ValueError):
+    """时序算子窗口 <1（负=前视/未来函数、零=无意义）。
+
+    ``ValueError`` 子类：所有 ``except ValueError`` 的外部输入解析点（LLM/配置/历史产物）
+    仍原样接住（异常契约统一，CLAUDE.md 陷阱#7），同时可被特判以区分「前视」与「未知叶子」等
+    其它解析失败（见 `is_lookahead_expr`）。铁律#1「PIT 无未来函数」的 parse 层根治。
+    """
+
+
 class Node:
     pass
 
@@ -93,11 +102,34 @@ def parse_expr(s: str, leaves: dict[str, str] | set[str] | None = None) -> Node:
             window = int(raw_args[-1])
         except ValueError as e:
             raise ValueError(f"{op} 的窗口参数非整数: {raw_args[-1]!r}") from e
+        # 铁律#1 根治：所有 has_window 算子的窗口都是**回看期**，须 ≥1。负窗口 = 前视
+        # （delay(x,-1)=明日值、delta/pct_change(x,-w)=用未来）；零窗口无意义（rolling(0)/
+        # shift(0)）。随机/遗传搜索 _WINDOWS 全正，负/零窗口只可能来自 LLM/历史产物——一律拒。
+        if window < 1:
+            raise LookaheadWindowError(
+                f"{op} 的窗口必须 ≥1（回看期），得到 {window}：负窗口=前视/未来函数"
+                f"（违反 PIT 无未来函数铁律），零窗口无意义")
         raw_args = raw_args[:-1]
     children = [parse_expr(a, valid_leaves) for a in raw_args]
     if len(children) != spec.arity:
         raise ValueError(f"{op} 期望 {spec.arity} 个子节点，得到 {len(children)}")
     return OpNode(op, children, window)
+
+
+def is_lookahead_expr(s: str, leaves: dict[str, str] | set[str] | None = None) -> bool:
+    """表达式是否含前视窗口（时序算子窗口 <1）。**只认前视**，不把其它解析失败误判成前视。
+
+    用于把历史产物里的前视因子从「喂回 LLM 的正/负例」中剔除（否则引导 LLM 继续生成前视）。
+    ``LookaheadWindowError`` → True；其它 ``ValueError``（未知叶子=别市场表达式、语法错）→ False
+    （保持既有 raw 语义，不误伤干净的跨市场表达式）；正常解析 → False。
+    """
+    try:
+        parse_expr(s, leaves)
+    except LookaheadWindowError:
+        return True
+    except ValueError:
+        return False
+    return False
 
 
 def complexity(node: Node) -> int:

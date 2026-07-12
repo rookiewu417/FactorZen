@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.roles.librarian import record
+from factorzen.discovery.expression import is_lookahead_expr
 
 
 def _idx(tmp_path) -> ExperimentIndex:
@@ -115,6 +116,22 @@ def test_revise_expr_candidate_stays_reusable(tmp_path):
     idx = _idx(tmp_path)
     idx.append([_rec("right_dir", passed=True, verdict="revise_expr", holdout_ic=0.07)])
     assert "right_dir" in idx.known_valid(k=5)
+
+
+def test_lookahead_factor_never_fed_back_to_llm(tmp_path):
+    """P0：前视因子（负窗口）即便历史误记 passed，也绝不进 known_valid/known_invalid 喂回 LLM
+    ——否则引导 LLM 继续生成前视。parse 层根治新生成，这里堵历史产物回灌口子。干净同伴不受影响。"""
+    idx = _idx(tmp_path)
+    idx.append([
+        _rec("ts_sum(delay(ret_1d, -1), 60)", passed=True, holdout_ic=0.09),   # 前视，原库 #1
+        _rec("neg(ret_1d)", passed=True, holdout_ic=0.04),                      # 干净，应保留
+        _rec("delta(close, -5)", passed=False, ic_train=0.02),                  # 前视且未过护栏
+    ])
+    valid = idx.known_valid(k=5)
+    invalid = idx.known_invalid(k=5)
+    assert not any(is_lookahead_expr(e) for e in valid), f"known_valid 混入前视: {valid}"
+    assert not any(is_lookahead_expr(e) for e in invalid), f"known_invalid 混入前视: {invalid}"
+    assert "neg(ret_1d)" in valid, "干净因子仍应可借鉴"
 
 
 def test_legacy_records_without_new_fields_still_readable(tmp_path):

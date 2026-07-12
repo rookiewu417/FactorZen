@@ -17,7 +17,7 @@ try:
 except ImportError:  # pragma: no cover - 仅非 POSIX 平台
     fcntl = None  # type: ignore[assignment]
 
-from factorzen.discovery.expression import parse_expr, to_expr_string
+from factorzen.discovery.expression import is_lookahead_expr, parse_expr, to_expr_string
 
 _LOG = logging.getLogger(__name__)
 
@@ -142,7 +142,8 @@ class ExperimentIndex:
         的跨 session 去重，不在负例库。
         """
         recs = [r for r in self._scoped(data_window)
-                if not r.get("passed", False) and r.get("compile_ok", True)]
+                if not r.get("passed", False) and r.get("compile_ok", True)
+                and not is_lookahead_expr(r.get("expression") or "")]
         recs.sort(key=lambda r: abs(r.get("ic_train") or 0.0))  # 最没用的优先
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]
 
@@ -163,6 +164,9 @@ class ExperimentIndex:
             if r.get("passed", False)
             and r.get("verdict") not in _VETOED_VERDICTS
             and not r.get("decorrelated", False)
+            # 前视因子（负窗口，历史误记 passed）绝不当「已验证有效」喂回 LLM——否则引导它
+            # 继续生成前视。parse 层已根治新生成，此处堵历史产物回灌的口子。
+            and not is_lookahead_expr(r.get("expression") or "")
         ]
         recs.sort(key=lambda r: abs(r.get("holdout_ic") or 0.0), reverse=True)
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]

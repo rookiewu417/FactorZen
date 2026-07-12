@@ -55,3 +55,179 @@ def run_factor_combination(
         run_id=run_id,
         command=command,
     )
+
+
+def _load_session_candidates(session_dirs: list[str], *, passed_only: bool) -> list[dict]:
+    """合并多 session 的 candidates.csv → 规范形去重（跨 run 同表达式只留一条，保 |holdout_ic|
+    高者）→ 按 |holdout_ic| 降序返回 [{expression(规范形), holdout_ic}]。
+
+    规范形 = ``to_expr_string(parse_expr(expr))``：抹平空格/等价书写差异，避免同一因子跨 run
+    重复入组合、把有效 breadth 稀释成假象（IR≈IC·√breadth 里 breadth 必须正交）。
+    """
+    from pathlib import Path
+
+    from factorzen.discovery.expression import parse_expr, to_expr_string
+
+    best: dict[str, dict] = {}
+    for sd in session_dirs:
+        cand_csv = Path(sd) / "candidates.csv"
+        if not cand_csv.exists():
+            raise FileNotFoundError(f"找不到 {cand_csv}（需要挖掘 session 的因子库）")
+        df = pl.read_csv(cand_csv)
+        if passed_only and "passed" in df.columns:
+            df = df.filter(pl.col("passed").cast(pl.Utf8).str.to_lowercase() == "true")
+        has_ic = "holdout_ic" in df.columns
+        for row in df.iter_rows(named=True):
+            raw = row["expression"]
+            try:
+                canon = to_expr_string(parse_expr(str(raw)))
+            except ValueError:
+                canon = str(raw)              # 无法解析的原样保留（下游物化会再 try）
+            ic = row.get("holdout_ic") if has_ic else None
+            try:
+                ic_val = float(ic) if ic is not None and str(ic) != "" else 0.0
+            except (TypeError, ValueError):
+                ic_val = 0.0
+            prev = best.get(canon)
+            if prev is None or abs(ic_val) > abs(prev["holdout_ic"]):
+                best[canon] = {"expression": canon, "holdout_ic": ic_val}
+    # |holdout_ic| 降序（贪心去相关按此序纳入：先纳信号强者，剔与之高相关的弱者）
+    return sorted(best.values(), key=lambda r: -abs(r["holdout_ic"]))
+
+
+def _greedy_decorrelate(
+    materialized: list[tuple[str, pl.DataFrame]], threshold: float
+) -> tuple[list[tuple[str, pl.DataFrame]], list[dict]]:
+    """按传入顺序（|holdout_ic| 降序）贪心纳入：与已纳入池 `max_correlation` > threshold 者剔除。
+
+    复用 `discovery/scoring.max_correlation`（逐对语义）——不另写相关性算法。``threshold=1.0``
+    时 ``> 1.0`` 恒 False → 关闭去相关（逃生口）。被剔者记 ``{expression, corr_with, corr}``：
+    ``corr_with`` 为池中与其最相关的因子表达式（对每个已纳入因子单独调 max_correlation 取 argmax，
+    仍复用同一函数，不新写相关性）。
+    """
+    from factorzen.discovery.scoring import max_correlation
+
+    kept: list[tuple[str, pl.DataFrame]] = []
+    dropped: list[dict] = []
+    for expr, fdf in materialized:
+        pool = {e: d for e, d in kept}
+        mc = max_correlation(fdf, pool)
+        if kept and mc > threshold:
+            # argmax 伙伴：逐个已纳入因子单算相关（复用 max_correlation 的单元素池语义）
+            partner, best = None, -1.0
+            for e, d in kept:
+                c = max_correlation(fdf, {e: d})
+                if c > best:
+                    best, partner = c, e
+            dropped.append({"expression": expr, "corr_with": partner, "corr": float(mc)})
+            continue
+        kept.append((expr, fdf))
+    return kept, dropped
+
+
+def combine_from_session(
+    *,
+    session_dir: str | None = None,
+    session_dirs: list[str] | None = None,
+    start: str,
+    end: str,
+    universe: str | None = None,
+    horizon: int = 5,
+    passed_only: bool = True,
+    top_n: int | None = None,
+    decorr_threshold: float = 0.7,
+    out_dir: str = "workspace/combinations",
+    train_days: int = 120,
+    test_days: int = 20,
+    purge_days: int = 5,
+    embargo_days: int = 0,
+    methods: list[str] | None = None,
+    seed: int = 0,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """挖掘产的**因子库** → 组合层验收的端到端接线。
+
+    从挖掘 session 的 ``candidates.csv`` 取表达式(默认只取 ``passed=True`` 的库因子)，在
+    ``[start, end]`` × ``universe`` 上逐因子物化因子值 + `horizon` 日前向收益面板，喂给
+    `run_factor_combination`(四方法 + PurgedWalkForwardCV OOS)。这是「不再专注单明星、
+    构造因子库 → 组合」的最后一环:显著性/过拟合的把关在这里(组合级 OOS)，而非单因子 DSR。
+
+    ``session_dirs``：多 session（``nargs="+"``），各 session 的 candidates.csv 合并 + 规范形去重
+    （跨 run 同表达式只留一条）。``session_dir``：单 session 的向后兼容别名。
+    ``decorr_threshold``：物化后、喂组合前按 ``|holdout_ic|`` 降序**贪心去相关**（复用
+    `max_correlation`）：与已纳入因子相关性 > 阈值者剔除并记入返回的 ``dropped_correlated``；
+    ``1.0`` 关闭（逃生口）。跨 run 合并时 `ts_rank(turnover_rate,20)`/`(...,21)` 这类近亲会重复
+    入组合、塌缩有效 breadth，故合并层必须去相关（agent 路径的池内去相关只管单 run）。
+
+    因子在含预热前缀的完整帧上求值、裁剪到 ``>= start``(扩窗预热，同挖掘路径)。
+    库因子 < 2 个、可物化 < 2 个、或去相关后 < 2 个 → 报错(组合至少需两个)。
+    """
+    import tempfile
+    from datetime import datetime
+    from pathlib import Path
+
+    from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
+    from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
+    from factorzen.discovery.expression import parse_expr
+    from factorzen.pipelines.factor_mine import prepare_mining_daily
+
+    dirs = list(session_dirs) if session_dirs else ([session_dir] if session_dir else [])
+    if not dirs:
+        raise ValueError("需要至少一个 session（session_dirs 或 session_dir）。")
+
+    rows = _load_session_candidates(dirs, passed_only=passed_only)
+    if top_n:
+        rows = rows[:top_n]
+    if len(rows) < 2:
+        raise ValueError(
+            f"因子库不足 2 个（得 {len(rows)}），无法组合；放宽 passed_only 或多挖一些因子。")
+
+    daily = prepare_mining_daily(start, end, universe)
+    prepped = _preprocess_daily(daily)  # 预处理一次，逐因子复用
+    start_date = datetime.strptime(start, "%Y%m%d").date()
+
+    # 物化到内存（去相关需因子面板算相关性），再对存活者落 parquet 喂组合。
+    materialized: list[tuple[str, pl.DataFrame]] = []
+    for row in rows:
+        e = row["expression"]
+        try:
+            fdf = _factor_df_from_prepped(parse_expr(e), prepped, eval_start=start_date)
+        except Exception:
+            continue
+        materialized.append((e, fdf.select(["trade_date", "ts_code", "factor_value"])))
+    if len(materialized) < 2:
+        raise ValueError(f"可物化的库因子不足 2 个（得 {len(materialized)}）。")
+
+    kept, dropped = _greedy_decorrelate(materialized, decorr_threshold)
+    if len(kept) < 2:
+        raise ValueError(
+            f"去相关后库因子不足 2 个（得 {len(kept)}，剔除 {len(dropped)} 个高相关近亲）；"
+            f"放宽 decorr_threshold 或多挖正交因子。")
+
+    work = Path(tempfile.mkdtemp(prefix="combine_mat_"))
+    factor_files: list[str] = []
+    for i, (_e, fdf) in enumerate(kept):
+        p = work / f"factor_{i}.parquet"
+        fdf.write_parquet(p)
+        factor_files.append(str(p))
+
+    price_col = "close_adj" if "close_adj" in daily.columns else "close"
+    fwd = compute_fwd_returns(daily.sort(["ts_code", "trade_date"]), horizons=[horizon],
+                              price_col=price_col)
+    ret = (
+        fwd.filter(pl.col("trade_date") >= start_date)
+        .select(["trade_date", "ts_code", pl.col(f"fwd_ret_{horizon}d").alias("ret")])
+        .filter(pl.col("ret").is_not_null())
+    )
+    ret_file = work / "ret.parquet"
+    ret.write_parquet(ret_file)
+
+    res = run_factor_combination(
+        factor_files=factor_files, ret_file=str(ret_file),
+        train_days=train_days, test_days=test_days, purge_days=purge_days,
+        embargo_days=embargo_days, methods=methods, seed=seed,
+        out_dir=out_dir, run_id=run_id, command=["combine", "from-session"],
+    )
+    res["factors_used"] = [e for e, _ in kept]
+    res["dropped_correlated"] = dropped
+    return res

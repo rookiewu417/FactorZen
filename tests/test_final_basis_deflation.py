@@ -97,7 +97,7 @@ def test_early_round_candidate_is_rejudged_against_final_n():
         "否则本测试没有判别力"
     )
 
-    node_finalize_guardrails(state)
+    node_finalize_guardrails(state, gate="strict")  # N 惩罚是 strict 专属机制
 
     assert state.candidates == [], f"最终 N 下 p={p_final:.4f} ≥ 0.05，候选应被剔除"
 
@@ -135,7 +135,7 @@ def test_demoted_candidate_syncs_the_attempt_fact():
     state = _state_with_pool(0.172, pool)
     cand_expr = state.candidates[0]["expression"]
 
-    node_finalize_guardrails(state)
+    node_finalize_guardrails(state, gate="strict")  # N 惩罚是 strict 专属机制
 
     a = next(a for a in state.attempts if a.expression == cand_expr)
     assert a.passed_guardrails is False, "被最终 N 否掉的候选，其 passed_guardrails 必须回落"
@@ -404,7 +404,8 @@ def test_pbo_is_recomputed_after_demotion(caplog):
     daily = _mk_daily()
 
     with caplog.at_level(logging.WARNING, logger="factorzen.agents.nodes"):
-        node_finalize_guardrails(state, daily=daily, bundle=DataBundle.build(daily))
+        node_finalize_guardrails(state, gate="strict",  # N 惩罚是 strict 专属机制
+                                 daily=daily, bundle=DataBundle.build(daily))
 
     assert len(state.candidates) == 2, (
         f"前提：应剔除 1 个、留下 2 个（实得 {len(state.candidates)}）"

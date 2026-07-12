@@ -55,3 +55,70 @@ def pit_align(
         return pl.DataFrame()
 
     return pl.concat(results, how="vertical")
+
+
+# 挖掘/物化路径共用的基本面叶子——单一真源在 operators.FUNDAMENTAL_FEATURES，此处只排序取用
+# （防「注册的叶子」与「attach 的列」漂移）。fina_indicator 字段名即叶子名。
+def _fundamental_cols() -> list[str]:
+    from factorzen.discovery.operators import FUNDAMENTAL_FEATURES
+    return sorted(FUNDAMENTAL_FEATURES)
+
+
+def attach_fundamentals(
+    daily: pl.DataFrame,
+    fina_df: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """把**按公告日 PIT 对齐**的基本面(roe/assets_yoy)join 进日线帧，作为叶子列。
+
+    对 ``daily`` 里每个交易日 t，取 ``ann_date <= t`` 中 end_date 最大的那份财报（复用
+    `pit_align`，与月频内置因子同一套 PIT 语义，绝不漂移）。t 之后才公告的报告**不会**泄漏
+    到 t（铁律#1 无未来函数，见 test_fundamentals_pit）。
+
+    ``fina_df``：财务帧（列 ts_code/end_date/ann_date + 指标），``None`` 时从 finance
+    parquet 读取（优先 ``finance_fina_indicator``——当前 fetch_finance 写此分区、含全套质量/成长
+    字段；回落旧 ``finance`` 分区——只有 roe/assets_yoy）。缺数据 / 读取失败 → **原样返回
+    daily**（离线/CI 不崩），缺的基本面列补 null（表达式引用到时得到 null 而非 KeyError）。
+
+    挖掘(`prepare_mining_daily`)与物化(`ExpressionFactor.compute`)两条路都调它，保证
+    同一因子在挖掘与回测里逐值一致。
+    """
+    cols = _fundamental_cols()
+    if daily.is_empty() or "trade_date" not in daily.columns:
+        return daily
+    if fina_df is None:
+        fina_df = _load_fina(cols)
+    if fina_df is None or fina_df.is_empty():
+        return _ensure_fundamental_cols(daily)
+
+    snapshot_dates = daily["trade_date"].unique().sort().to_list()
+    pit = pit_align(fina_df, snapshot_dates)
+    if pit.is_empty():
+        return _ensure_fundamental_cols(daily)
+
+    have = [c for c in cols if c in pit.columns]
+    pit = pit.select(["snapshot_date", "ts_code", *have]).rename({"snapshot_date": "trade_date"})
+    return _ensure_fundamental_cols(daily.join(pit, on=["trade_date", "ts_code"], how="left"))
+
+
+def _load_fina(cols: list[str]) -> pl.DataFrame | None:
+    """从 finance parquet 读财务帧：优先 finance_fina_indicator(全字段)，回落 finance(旧, roe/assets_yoy)。"""
+    from factorzen.core.storage import scan_parquet
+    for part in ("finance_fina_indicator", "finance"):
+        try:
+            lf = scan_parquet(part).filter(pl.col("end_date").is_not_null())
+            names = lf.collect_schema().names()
+            have = [c for c in cols if c in names]
+            if not have:
+                continue
+            return lf.select(["ts_code", "end_date", "ann_date", *have]).collect()
+        except Exception:
+            continue
+    return None
+
+
+def _ensure_fundamental_cols(daily: pl.DataFrame) -> pl.DataFrame:
+    """补齐缺失的基本面列为 null——表达式引用到未成功 attach 的叶子时得到 null 而非崩溃。"""
+    missing = [c for c in _fundamental_cols() if c not in daily.columns]
+    if missing:
+        daily = daily.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+    return daily

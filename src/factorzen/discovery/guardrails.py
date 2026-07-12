@@ -15,6 +15,14 @@ from factorzen.validation.pbo import compute_pbo
 # 2026-07「松一档」：0.05 → 0.10（放宽多重检验后的显著性门槛）。改这一处即全局生效。
 DEFAULT_DSR_ALPHA = 0.10
 
+# 因子**库**入池的 |train_IC| 下限——低于此视为纯噪声（非「弱但真」）。改这一处即全局生效。
+DEFAULT_IC_FLOOR = 0.015
+
+# 入池判据的两种口径：
+#   "library"（默认，因子库化）：真(holdout 同号) + 有信号(|IC|≥floor)，不含 DSR 单星显著性。
+#   "strict"（单明星）：DSR 显著 + holdout 同号（历史口径，供需要单因子独立显著时选用）。
+DEFAULT_GATE = "library"
+
 
 @dataclass(frozen=True)
 class DeflationBasis:
@@ -130,6 +138,60 @@ def guardrail_passed(
     return not guardrail_reasons(
         ic_train=ic_train, holdout_ic=holdout_ic, dsr_pvalue=dsr_pvalue,
         ci_low=ci_low, ci_high=ci_high, dsr_alpha=dsr_alpha)
+
+
+def library_reasons(
+    *,
+    ic_train: float | None,
+    holdout_ic: float | None,
+    ic_floor: float = DEFAULT_IC_FLOOR,
+) -> list[str]:
+    """因子**库**入池判据（2026-07 因子库化）：真（holdout 与 train 点估计同号，OOS 不崩）
+    + 有信号（``|train_IC| >= ic_floor``）。返回未通过的判据（空 = 入池）。
+
+    **不含 DSR 单星显著性**——多因子组合的 alpha 来自很多「弱但真」信号叠加
+    （基本法则 ``IR ≈ IC × √breadth``），要求每个单因子独立显著 = 要求每块积木自己是栋楼。
+    显著性/过拟合的把关挪到**组合层**（`fz combine run` 的 PurgedWalkForwardCV OOS）。
+    去相关（多样性）由 `max_correlation` 另判，不在此。
+
+    挡的只有两类：**假**（holdout 反号 = 过拟合）与**纯噪声**（|IC| 太弱）；放行「弱但真」。
+    必需量 None/NaN → 判缺失（保守不入池）。
+    """
+    required = {"ic_train": ic_train, "holdout_ic": holdout_ic}
+    missing = [k for k, v in required.items() if v is None or v != v]
+    if missing:
+        return [f"缺失/NaN: {', '.join(missing)}"]
+    reasons: list[str] = []
+    if abs(ic_train) < ic_floor:  # type: ignore[arg-type]
+        reasons.append(f"train_IC 太弱(|{ic_train:.4f}|<{ic_floor})")
+    if (holdout_ic > 0) != (ic_train > 0):  # type: ignore[operator]
+        reasons.append(f"holdout 反号(train={ic_train:.4f}/holdout={holdout_ic:.4f})")
+    return reasons
+
+
+def acceptance_reasons(
+    *,
+    gate: str = DEFAULT_GATE,
+    ic_train: float | None,
+    holdout_ic: float | None,
+    dsr_pvalue: float | None = None,
+    ci_low: float | None = None,
+    ci_high: float | None = None,
+    dsr_alpha: float = DEFAULT_DSR_ALPHA,
+    ic_floor: float = DEFAULT_IC_FLOOR,
+) -> list[str]:
+    """按 ``gate`` 口径返回未通过的入池判据（空=入池）。两条挖掘路径的**统一入口**，防漂移。
+
+    ``gate="library"``（默认，因子库化）→ `library_reasons`（真+有信号，DSR 挪到组合层）；
+    ``gate="strict"``（单明星）→ `guardrail_reasons`（DSR 显著+holdout 同号）。
+    """
+    if gate == "strict":
+        return guardrail_reasons(
+            ic_train=ic_train, holdout_ic=holdout_ic, dsr_pvalue=dsr_pvalue,
+            ci_low=ci_low, ci_high=ci_high, dsr_alpha=dsr_alpha)
+    if gate != "library":
+        raise ValueError(f"未知 gate={gate!r}，应为 'library' 或 'strict'")
+    return library_reasons(ic_train=ic_train, holdout_ic=holdout_ic, ic_floor=ic_floor)
 
 
 def pool_pbo(

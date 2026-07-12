@@ -19,9 +19,10 @@ from factorzen.discovery.expression import (
 )
 from factorzen.discovery.guardrails import (
     DEFAULT_DSR_ALPHA,
+    DEFAULT_GATE,
     DeflationBasis,
+    acceptance_reasons,
     deflated_pvalue,
-    guardrail_passed,
 )
 from factorzen.discovery.operators import LEAF_FEATURES
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
@@ -73,15 +74,18 @@ def _oos_adjusted_fitness(train_fitness: float, train_tstat: float, valid_tstat:
     return train_fitness
 
 
-def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA) -> bool:
-    """防过拟合护栏软标记：DSR 显著(p<dsr_alpha, 默认 0.10) & holdout IC 与 train 点估计同号。
+def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
+                  gate: str = DEFAULT_GATE) -> bool:
+    """护栏软标记(passed)：``gate`` 口径下入池即 True。
 
-    2026-07「松一档」：默认 alpha 0.05→0.10，且移除 holdout CI 单边门（见 guardrail_reasons）。
-    任一必需指标缺失/NaN → 判否(保守)。护栏历史上「只算不判」——指标算出来只写进 CSV，
-    候选入选只看 fitness 排序，过拟合垃圾照样导出。这里把它变成可被 leaderboard/export-alpha
+    2026-07「因子库化」：默认 ``gate="library"`` —— 真(holdout 与 train 同号) + 有信号
+    (|train_IC|≥floor)，**不含 DSR 单星显著性**（显著性挪到组合层 `fz combine run`）。
+    ``gate="strict"`` 回到 DSR 显著+同号（松一档 alpha 0.10）。
+    任一必需指标缺失/NaN → 判否(保守)。护栏把「只算不判」变成可被 leaderboard/export-alpha
     默认过滤的软标记(留 --all 逃生口)，不删候选、不破坏产物契约。
     """
-    return guardrail_passed(
+    return not acceptance_reasons(
+        gate=gate,
         ic_train=c.get("ic_train"),
         holdout_ic=c.get("holdout_ic"),
         dsr_pvalue=c.get("dsr_pvalue"),

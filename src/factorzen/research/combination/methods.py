@@ -4,12 +4,18 @@
 应用只吃「因子 + 权重」产出合成因子。三种公开方法(equal_weight/ic_weighted/max_ir)
 是「估权 + 应用」的薄包装;OOS 协议(oos.combine_oos)则逐折用 train 估权、test 应用。
 所有方法在截面 z-score 化后的因子值上操作,输入需含 trade_date, ts_code, factor_value。
+
+性能:IC 序列按日独立(RankIC 截面),可全样本算一次再按 train 日期切片;
+截面 z-score 同样按日独立,可全样本标准化一次再切片。OOS 热路径走预计算缓存。
 """
 
 from __future__ import annotations
 
 import numpy as np
 import polars as pl
+
+# IC 缓存: {factor_name: (dates_sorted list[str], ic ndarray)}
+IcCache = dict[str, tuple[list[str], np.ndarray]]
 
 
 def _zscore_factor(df: pl.DataFrame, col: str = "factor_value") -> pl.DataFrame:
@@ -31,36 +37,122 @@ def _zscore_factor(df: pl.DataFrame, col: str = "factor_value") -> pl.DataFrame:
     )
 
 
+def _rank_ic_numpy(fv: np.ndarray, rv: np.ndarray) -> float | None:
+    """单日 RankIC: Pearson(rank(f), rank(r)), 与历史 argsort 口径一致。"""
+    if fv.size < 10:
+        return None
+    if float(np.std(fv)) < 1e-12 or float(np.std(rv)) < 1e-12:
+        return None
+    fv_rank = fv.argsort().argsort().astype(float)
+    rv_rank = rv.argsort().argsort().astype(float)
+    ic = float(np.corrcoef(fv_rank, rv_rank)[0, 1])
+    return ic if np.isfinite(ic) else None
+
+
+def _compute_ic_dated(
+    factor_df: pl.DataFrame,
+    ret_df: pl.DataFrame,
+) -> tuple[list[str], np.ndarray]:
+    """计算因子 vs 前向收益的截面 IC 序列,返回 (dates_sorted, ics)。
+
+    RankIC 按日独立,全样本一次计算后可按 train 日期切片,数值与逐段重算一致。
+    实现:一次 join + 按日排序后纯 numpy 扫组,避免 polars group_by 逐日物化。
+    """
+    merged = (
+        factor_df.select(["trade_date", "ts_code", "factor_value"])
+        .rename({"factor_value": "_fv"})
+        .with_columns(pl.col("trade_date").cast(pl.Utf8))
+        .join(
+            ret_df.select(["trade_date", "ts_code", "ret"])
+            .rename({"ret": "_ret"})
+            .with_columns(pl.col("trade_date").cast(pl.Utf8)),
+            on=["trade_date", "ts_code"],
+            how="inner",
+        )
+        .drop_nulls(subset=["_fv", "_ret"])
+    )
+    if merged.height == 0:
+        return [], np.array([], dtype=float)
+
+    # 按日期稳定排序,再扫连续组
+    merged = merged.sort("trade_date")
+    dates_arr = merged["trade_date"].to_numpy()
+    fv_all = merged["_fv"].to_numpy().astype(float, copy=False)
+    rv_all = merged["_ret"].to_numpy().astype(float, copy=False)
+
+    ic_dates: list[str] = []
+    ic_vals: list[float] = []
+    n = len(dates_arr)
+    i = 0
+    while i < n:
+        j = i + 1
+        d = dates_arr[i]
+        while j < n and dates_arr[j] == d:
+            j += 1
+        ic = _rank_ic_numpy(fv_all[i:j], rv_all[i:j])
+        if ic is not None:
+            ic_dates.append(str(d))
+            ic_vals.append(ic)
+        i = j
+    return ic_dates, np.asarray(ic_vals, dtype=float)
+
+
 def _compute_ic_series(
     factor_df: pl.DataFrame,
     ret_df: pl.DataFrame,
     factor_name: str,
 ) -> np.ndarray:
     """计算因子 vs 前向收益的截面 IC 序列（Pearson(rank(f), rank(r))）。"""
-    merged = factor_df.rename({"factor_value": "_fv"}).join(
-        ret_df.rename({"ret": "_ret"}), on=["trade_date", "ts_code"], how="inner"
+    _ = factor_name  # 保留签名兼容调用方
+    _, ics = _compute_ic_dated(factor_df, ret_df)
+    return ics
+
+
+def build_ic_cache(
+    factor_dfs: dict[str, pl.DataFrame],
+    ret_df: pl.DataFrame,
+) -> IcCache:
+    """全样本一次算各因子 IC 序列(按日),供 OOS 多方法/多折复用。"""
+    rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
+    return {
+        name: _compute_ic_dated(
+            df.with_columns(pl.col("trade_date").cast(pl.Utf8)), rdf
+        )
+        for name, df in factor_dfs.items()
+    }
+
+
+def _slice_ic_to_train(
+    dates: list[str], ics: np.ndarray, train_dates: set[str]
+) -> np.ndarray:
+    """从全样本 IC 中按 train 日期集合切片(保时序)。"""
+    if not dates:
+        return np.array([], dtype=float)
+    return np.asarray(
+        [ic for d, ic in zip(dates, ics, strict=True) if d in train_dates],
+        dtype=float,
     )
-    ic_rows: list[tuple[object, float]] = []
-    for date_key, group in merged.group_by("trade_date"):
-        g = group.drop_nulls(subset=["_fv", "_ret"])
-        if len(g) < 10:
-            continue
-        fv = g["_fv"].to_numpy().astype(float)
-        rv = g["_ret"].to_numpy().astype(float)
-        if np.std(fv) < 1e-12 or np.std(rv) < 1e-12:
-            continue
-        fv_rank = fv.argsort().argsort().astype(float)
-        rv_rank = rv.argsort().argsort().astype(float)
-        ic = float(np.corrcoef(fv_rank, rv_rank)[0, 1])
-        if np.isfinite(ic):
-            ic_rows.append((date_key[0], ic))
-    # 按交易日排序:ic_window 取「最近」窗口依赖时序,而 group_by 迭代顺序不保证
-    ic_rows.sort(key=lambda x: x[0])  # type: ignore[return-value,arg-type]
-    return np.array([ic for _, ic in ic_rows])
+
+
+def pre_zscore_factors(
+    factor_dfs: dict[str, pl.DataFrame],
+) -> dict[str, pl.DataFrame]:
+    """各因子全样本截面 z-score(按日独立,可再按 fold 切片)。"""
+    out: dict[str, pl.DataFrame] = {}
+    for name, df in factor_dfs.items():
+        z = _zscore_factor(
+            df.select(["trade_date", "ts_code", "factor_value"]).with_columns(
+                pl.col("trade_date").cast(pl.Utf8)
+            )
+        )
+        out[name] = z
+    return out
 
 
 def _zscore_and_merge(
     factor_dfs: dict[str, pl.DataFrame],
+    *,
+    already_zscored: bool = False,
 ) -> tuple[pl.DataFrame, list[str]]:
     """各因子截面 z-score 后 **outer join** 成宽表(列名 `_f_<name>`),缺失补 0。
 
@@ -72,7 +164,8 @@ def _zscore_and_merge(
         raise ValueError("factor_dfs 不能为空")
     normed = []
     for name, df in factor_dfs.items():
-        z = _zscore_factor(df.select(["trade_date", "ts_code", "factor_value"]))
+        base = df.select(["trade_date", "ts_code", "factor_value"])
+        z = base if already_zscored else _zscore_factor(base)
         normed.append(z.rename({"factor_value": f"_f_{name}"}))
     merged = normed[0]
     for z in normed[1:]:
@@ -83,18 +176,22 @@ def _zscore_and_merge(
 
 
 def apply_weights(
-    factor_dfs: dict[str, pl.DataFrame], weights: dict[str, float]
+    factor_dfs: dict[str, pl.DataFrame],
+    weights: dict[str, float],
+    *,
+    already_zscored: bool = False,
 ) -> pl.DataFrame:
-    """按给定权重加权合成(先各因子截面 z-score)。
+    """按给定权重加权合成(默认先各因子截面 z-score)。
 
     Args:
         factor_dfs: {factor_name: DataFrame(trade_date, ts_code, factor_value)}
         weights: {factor_name: weight}
+        already_zscored: True 时跳过 z-score(输入已是截面标准化后的值)
 
     Returns:
         DataFrame(trade_date, ts_code, factor_value) — 加权合成因子
     """
-    merged, names = _zscore_and_merge(factor_dfs)
+    merged, names = _zscore_and_merge(factor_dfs, already_zscored=already_zscored)
     exprs = [pl.col(f"_f_{n}") * weights[n] for n in names]
     expr: pl.Expr = exprs[0]
     for e in exprs[1:]:
@@ -116,15 +213,26 @@ def estimate_ic_weights(
     factor_dfs: dict[str, pl.DataFrame],
     ret_df: pl.DataFrame,
     ic_window: int = 60,
+    *,
+    ic_cache: IcCache | None = None,
+    train_dates: set[str] | None = None,
 ) -> dict[str, float]:
     """IC 加权:权重 = max(0, IC_mean) 归一化;全非正则退化等权。
 
     Args:
         ic_window: 计算 IC 的最近窗口天数(-1 表示全历史)。
+        ic_cache: 可选全样本 IC 缓存;与 train_dates 联用时按 train 切片,避免重算。
+        train_dates: 训练集日期集合(与 ic_cache 联用)。
     """
     weights: dict[str, float] = {}
     for name, df in factor_dfs.items():
-        ic_series = _compute_ic_series(df, ret_df, name)
+        if ic_cache is not None and name in ic_cache and train_dates is not None:
+            dates, ics = ic_cache[name]
+            ic_series = _slice_ic_to_train(dates, ics, train_dates)
+        elif ic_cache is not None and name in ic_cache and train_dates is None:
+            ic_series = ic_cache[name][1]
+        else:
+            ic_series = _compute_ic_series(df, ret_df, name)
         if len(ic_series) == 0:
             weights[name] = 0.0
         else:
@@ -140,6 +248,9 @@ def estimate_max_ir_weights(
     factor_dfs: dict[str, pl.DataFrame],
     ret_df: pl.DataFrame,
     lookback: int = 120,
+    *,
+    ic_cache: IcCache | None = None,
+    train_dates: set[str] | None = None,
 ) -> dict[str, float] | None:
     """最大化 IR 闭式解 w = Σ⁻¹μ(Ledoit-Wolf 收缩)。数据不足返回 None(调用方退化等权)。"""
     names = list(factor_dfs.keys())
@@ -147,7 +258,13 @@ def estimate_max_ir_weights(
     ic_series_map: dict[str, np.ndarray] = {}
     min_len: int | None = None
     for name, df in factor_dfs.items():
-        ic = _compute_ic_series(df, ret_df, name)
+        if ic_cache is not None and name in ic_cache and train_dates is not None:
+            dates, ics = ic_cache[name]
+            ic = _slice_ic_to_train(dates, ics, train_dates)
+        elif ic_cache is not None and name in ic_cache and train_dates is None:
+            ic = ic_cache[name][1]
+        else:
+            ic = _compute_ic_series(df, ret_df, name)
         ic_series_map[name] = ic
         if min_len is None or len(ic) < min_len:
             min_len = len(ic)

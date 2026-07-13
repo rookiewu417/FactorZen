@@ -16,8 +16,13 @@ import polars as pl
 from factorzen.core.experiment import build_manifest_base, get_git_sha
 from factorzen.research.combination.cv import PurgedWalkForwardCV
 from factorzen.research.combination.importance import explain
+from factorzen.research.combination.methods import (
+    IcCache,
+    build_ic_cache,
+    pre_zscore_factors,
+)
 from factorzen.research.combination.models import LGBMCombiner, build_panel, combine_lgbm
-from factorzen.research.combination.oos import combine_oos
+from factorzen.research.combination.oos import combine_oos, drop_degenerate_factors
 
 _LINEAR = {"equal_weight", "ic_weighted", "max_ir"}
 _DEFAULT_METHODS = ["equal_weight", "ic_weighted", "max_ir", "lgbm"]
@@ -86,9 +91,15 @@ def _combine(
     ret_df: pl.DataFrame,
     cv: PurgedWalkForwardCV,
     seed: int,
+    *,
+    ic_cache: IcCache | None = None,
+    z_factor_dfs: dict[str, pl.DataFrame] | None = None,
 ) -> pl.DataFrame:
     if method in _LINEAR:
-        return combine_oos(factor_dfs, ret_df, cv, method=method)
+        return combine_oos(
+            factor_dfs, ret_df, cv, method=method,
+            ic_cache=ic_cache, z_factor_dfs=z_factor_dfs,
+        )
     if method == "lgbm":
         return combine_lgbm(factor_dfs, ret_df, cv, seed=seed)
     raise ValueError(f"未知 method: {method}")
@@ -111,10 +122,24 @@ def run_combination_experiment(
     run_dir = Path(out_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # 跨方法共享预计算:IC 序列与截面 z-score 按日独立,全样本一次、各线性方法复用
+    # (combine_oos 内部会对 None 按需自建,此处 hoist 只省重复,不改数值)。
+    linear = [m for m in methods if m in _LINEAR]
+    ic_cache = (
+        build_ic_cache(drop_degenerate_factors(factor_dfs), ret_df)
+        if any(m in ("ic_weighted", "max_ir") for m in linear) else None
+    )
+    z_factor_dfs = (
+        pre_zscore_factors(drop_degenerate_factors(factor_dfs)) if linear else None
+    )
+
     rows: list[dict[str, Any]] = []
     importance_df: pl.DataFrame | None = None
     for method in methods:
-        combined = _combine(method, factor_dfs, ret_df, cv, seed)
+        combined = _combine(
+            method, factor_dfs, ret_df, cv, seed,
+            ic_cache=ic_cache, z_factor_dfs=z_factor_dfs,
+        )
         combined.write_parquet(run_dir / f"combined_{method}.parquet")
         metrics = _evaluate_oos(combined, ret_df)
         rows.append({"method": method, **metrics})

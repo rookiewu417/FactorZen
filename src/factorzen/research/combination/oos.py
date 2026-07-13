@@ -3,6 +3,9 @@
 for_each_fold 是 combine_oos(线性权重)与 combine_lgbm(树模型)共用的逐折骨架:
 逐折 filter train/test → 对每折调 fold_fn → 拼接加 fold_id。估权/训练只用 train,
 应用/预测只用 test 因子(不碰收益),配合 CV 的 purge/embargo 防泄漏。
+
+性能:combine_oos 对 ic_weighted/max_ir 全样本预计算 IC 序列,按 train 日期切片估权;
+截面 z-score 全样本一次,test 切片直接加权。数值与逐折重算一致(按日独立)。
 """
 from __future__ import annotations
 
@@ -13,10 +16,13 @@ import polars as pl
 
 from factorzen.research.combination.cv import PurgedWalkForwardCV
 from factorzen.research.combination.methods import (
+    IcCache,
     apply_weights,
+    build_ic_cache,
     estimate_equal_weights,
     estimate_ic_weights,
     estimate_max_ir_weights,
+    pre_zscore_factors,
 )
 
 # fold_fn(all_factor_dfs, train_factor_dfs, train_ret, test_factor_dfs) -> df(trade_date,ts_code,factor_value)
@@ -70,7 +76,13 @@ def for_each_fold(
         for n, df in factor_dfs.items()
     }
     rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
-    all_dates = sorted({d for df in fdfs.values() for d in df["trade_date"].to_list()})
+    # 并集日期(覆盖异质);用 polars unique 避免 Python 层 to_list 全量扫
+    all_dates = (
+        pl.concat([df.select("trade_date") for df in fdfs.values()])
+        .unique()
+        .sort("trade_date")["trade_date"]
+        .to_list()
+    )
 
     parts: list[pl.DataFrame] = []
     for fid, (train_dates, test_dates) in enumerate(cv.split(all_dates)):
@@ -95,13 +107,28 @@ def _estimate_fold(
     train_factor_dfs: dict[str, pl.DataFrame],
     train_ret: pl.DataFrame,
     kwargs: dict[str, Any],
+    *,
+    ic_cache: IcCache | None = None,
+    train_dates: set[str] | None = None,
 ) -> dict[str, float]:
     if method == "equal_weight":
         return estimate_equal_weights(all_factor_dfs)
     if method == "ic_weighted":
-        return estimate_ic_weights(train_factor_dfs, train_ret, **kwargs)
+        return estimate_ic_weights(
+            train_factor_dfs,
+            train_ret,
+            ic_cache=ic_cache,
+            train_dates=train_dates,
+            **{k: v for k, v in kwargs.items() if k in ("ic_window",)},
+        )
     if method == "max_ir":
-        w = estimate_max_ir_weights(train_factor_dfs, train_ret, **kwargs)
+        w = estimate_max_ir_weights(
+            train_factor_dfs,
+            train_ret,
+            ic_cache=ic_cache,
+            train_dates=train_dates,
+            **{k: v for k, v in kwargs.items() if k in ("lookback",)},
+        )
         return w if w is not None else estimate_equal_weights(all_factor_dfs)
     raise ValueError(f"未知 method: {method}(支持 equal_weight/ic_weighted/max_ir)")
 
@@ -111,15 +138,50 @@ def combine_oos(
     ret_df: pl.DataFrame,
     cv: PurgedWalkForwardCV,
     method: str,
+    *,
+    ic_cache: IcCache | None = None,
+    z_factor_dfs: dict[str, pl.DataFrame] | None = None,
     **method_kwargs: Any,
 ) -> pl.DataFrame:
-    """线性权重滚动 OOS 组合(equal_weight/ic_weighted/max_ir)。"""
+    """线性权重滚动 OOS 组合(equal_weight/ic_weighted/max_ir)。
+
+    Args:
+        ic_cache: 可选跨方法共享的全样本 IC 缓存;None 时本函数内按需构建。
+        z_factor_dfs: 可选预 z-score 因子面板;None 时本函数内构建。
+        method_kwargs: 传给估权的额外参数(ic_window / lookback)。
+    """
     factor_dfs = drop_degenerate_factors(factor_dfs)
     if not factor_dfs:
         raise ValueError("去除全缺因子后无有效因子,无法组合")
 
+    # 预计算:z-score 与 IC 全样本一次(按日独立 → 与逐折重算数值等价)
+    zdfs = z_factor_dfs if z_factor_dfs is not None else pre_zscore_factors(factor_dfs)
+    # 只保留仍存活的因子键
+    zdfs = {n: zdfs[n] for n in factor_dfs if n in zdfs}
+    cache = ic_cache
+    if method in ("ic_weighted", "max_ir") and cache is None:
+        cache = build_ic_cache(factor_dfs, ret_df)
+
     def _fold(all_f, train_f, train_r, test_f):
-        weights = _estimate_fold(method, all_f, train_f, train_r, method_kwargs)
-        return apply_weights(test_f, weights)
+        train_dates = set(train_r["trade_date"].cast(pl.Utf8).to_list())
+        weights = _estimate_fold(
+            method,
+            all_f,
+            train_f,
+            train_r,
+            method_kwargs,
+            ic_cache=cache,
+            train_dates=train_dates,
+        )
+        # test 切片走预 z-score 面板,跳过重复截面标准化
+        test_dates = (
+            next(iter(test_f.values()))["trade_date"].cast(pl.Utf8).unique().to_list()
+            if test_f
+            else []
+        )
+        test_z = {
+            n: zdfs[n].filter(pl.col("trade_date").is_in(test_dates)) for n in factor_dfs
+        }
+        return apply_weights(test_z, weights, already_zscored=True)
 
     return for_each_fold(factor_dfs, ret_df, cv, _fold)

@@ -3,6 +3,9 @@
 把「各因子截面值 → 预测下期收益排序」交给梯度提升树学习(捕捉非线性/交互),
 标签用截面 rank 归一(稳健、对齐 RankIC 目标)。滚动训练走 oos.for_each_fold:
 train 折 fit、test 折 predict,与线性方法共用同一防泄漏骨架。
+
+性能:全样本 factor panel 只 outer-join 一次,逐折按日期切片(join 与日期无关,
+切片 ≡ 对子集 rebuild)。LGBM 保持 deterministic + num_threads=1 + 固定 seed。
 """
 from __future__ import annotations
 
@@ -38,8 +41,10 @@ def _factor_panel(factor_dfs: dict[str, pl.DataFrame]) -> pl.DataFrame:
     """
     merged: pl.DataFrame | None = None
     for name, df in factor_dfs.items():
-        d = df.select(["trade_date", "ts_code", "factor_value"]).rename(
-            {"factor_value": name}
+        d = (
+            df.select(["trade_date", "ts_code", "factor_value"])
+            .with_columns(pl.col("trade_date").cast(pl.Utf8))
+            .rename({"factor_value": name})
         )
         merged = (
             d
@@ -55,11 +60,17 @@ def build_panel(
 ) -> pl.DataFrame:
     """因子宽表 join 前向收益(标签)。保留特征缺失行交给 LGBM 原生 NaN 处理,
     仅要求标签存在;完整行占比过低时告警(覆盖异质提示)。"""
-    panel = _factor_panel(factor_dfs).join(
-        ret_df.select(["trade_date", "ts_code", "ret"]),
-        on=["trade_date", "ts_code"],
-        how="inner",
-    ).filter(pl.col("ret").is_not_null())
+    panel = (
+        _factor_panel(factor_dfs)
+        .join(
+            ret_df.select(["trade_date", "ts_code", "ret"]).with_columns(
+                pl.col("trade_date").cast(pl.Utf8)
+            ),
+            on=["trade_date", "ts_code"],
+            how="inner",
+        )
+        .filter(pl.col("ret").is_not_null())
+    )
     names = [c for c in panel.columns if c not in ("trade_date", "ts_code", "ret")]
     if panel.height > 0 and names:
         complete = panel.drop_nulls(subset=names).height
@@ -142,6 +153,7 @@ def combine_lgbm(
     """LightGBM 滚动 OOS 组合:train 折 fit(rank 标签)、test 折 predict。
 
     先剔除退化因子(空/全缺),再逐折外连接容缺;某折面板为空则跳过(不崩)。
+    全样本 factor panel / labeled panel 只构建一次,逐折按日期切片。
     """
     if not factor_dfs:
         raise ValueError("factor_dfs 不能为空")
@@ -153,10 +165,20 @@ def combine_lgbm(
         schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8, "factor_value": pl.Float64}
     )
 
+    # 全样本一次 join;逐折 filter 等价于对子集 rebuild(outer join 与日期无关)
+    full_feat = _factor_panel(factor_dfs)
+    full_panel = build_panel(factor_dfs, ret_df)
+
     def _fold(all_f, train_f, train_r, test_f):
-        train_panel = build_panel(train_f, train_r)
+        train_dates = train_r["trade_date"].cast(pl.Utf8).unique().to_list()
+        test_dates = (
+            next(iter(test_f.values()))["trade_date"].cast(pl.Utf8).unique().to_list()
+            if test_f
+            else []
+        )
+        train_panel = full_panel.filter(pl.col("trade_date").is_in(train_dates))
         # 特征全缺的 test 行无任何信号,丢弃;其余按 NaN 交给 LGBM
-        test_panel = _factor_panel(test_f).filter(
+        test_panel = full_feat.filter(pl.col("trade_date").is_in(test_dates)).filter(
             ~pl.all_horizontal([pl.col(n).is_null() for n in names])
         )
         if train_panel.height == 0 or test_panel.height == 0:

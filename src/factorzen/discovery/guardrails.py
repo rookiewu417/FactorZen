@@ -29,6 +29,8 @@ DEFAULT_GATE = "library"
 
 # reject_category：coverage 失败不得进 known_invalid 负例回灌（非方向性证据）。
 REJECT_CATEGORY_HOLDOUT_COVERAGE = "holdout_coverage"
+# 与库内 active 因子高相关：IC 未必低，是「重复方向」非「无效」——不得混进 known_invalid。
+REJECT_CATEGORY_LIBRARY_CORRELATED = "library_correlated"
 
 
 def _holdout_direction_reasons(

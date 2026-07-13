@@ -128,7 +128,7 @@ def test_m5_patience_early_stops(monkeypatch):
     from factorzen.agents.orchestrator import run_llm_agent
 
     monkeypatch.setattr(orch, "node_guardrails", _stub_guardrails(yields_candidate=False))
-    res = run_llm_agent(_mock_daily(n_stocks=40), _fn_m5(), n_rounds=8, seed=1, patience=2)
+    res = run_llm_agent(_mock_daily(n_stocks=40), _fn_m5(), n_rounds=8, seed=1, patience=2, library_orthogonal=False)
 
     assert res.state.iteration == 2, f"连续 2 轮无新候选应早停，实得 {res.state.iteration}"
 
@@ -138,7 +138,7 @@ def test_m5_patience_resets_when_a_new_candidate_appears(monkeypatch):
     from factorzen.agents.orchestrator import run_llm_agent
 
     monkeypatch.setattr(orch, "node_guardrails", _stub_guardrails(yields_candidate=True))
-    res = run_llm_agent(_mock_daily(n_stocks=40), _fn_m5(), n_rounds=5, seed=1, patience=2)
+    res = run_llm_agent(_mock_daily(n_stocks=40), _fn_m5(), n_rounds=5, seed=1, patience=2, library_orthogonal=False)
 
     assert res.state.iteration == 5, "每轮都有新候选，patience 不该触发"
 

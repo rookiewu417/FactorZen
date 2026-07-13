@@ -157,7 +157,8 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = "workspace
                    export: bool = True, patience: int | None = None,
                    heal_rounds: int = 2,
                    data_window: dict | None = None, command: str | None = None,
-                   eval_start: str | None = None, profile=None) -> dict:
+                   eval_start: str | None = None, profile=None,
+                   library_orthogonal: bool = True) -> dict:
     """跑单 Agent 挖掘闭环，每轮增量落 manifest，收尾导出候选。
 
     ``data_window``：``{start, end, universe, market}``。落进 manifest 的 params，
@@ -192,7 +193,9 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = "workspace
     result = run_llm_agent(daily, fn, n_rounds=n_rounds, seed=seed, top_k=top_k,
                            holdout_ratio=holdout_ratio, human_review=human_review,
                            patience=patience, heal_rounds=heal_rounds, eval_start=eval_start,
-                           on_round_end=_checkpoint, profile=profile)
+                           on_round_end=_checkpoint, profile=profile,
+                           library_orthogonal=library_orthogonal,
+                           library_root=str(Path(out_dir).parent / "factor_library"))
     write_session_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid
     # candidates.csv —— 兼容 fz mine leaderboard/export-alpha（含 rank + passed 列）

@@ -136,6 +136,7 @@ def _run_one_round(
     state, llm_fn, *, index, ledger, rounds_log, mining_df, holdout_df, bundle,
     pending, seed, top_k, heal_rounds, structured, health, data_window, warmup_daily,
     eval_start=None, leaf_budgets=None, hypotheses_per_round=1, profile=None, ctx=None,
+    lib_pool=None, library_covered=None,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -155,11 +156,13 @@ def _run_one_round(
     """
     if ctx is None:
         ctx = AgentContext()
-    _step("  ① Librarian 检索历史经验（known valid/invalid + leaf_guidance）")
+    _step("  ① Librarian 检索历史经验（known valid/invalid + leaf_guidance + library）")
     # 每轮重算 leaf_stats：本 session 刚写入的失败也会进入后续轮次的挖穿/未探索。
     # leaf_names=ctx.leaf_names（leaf_health 摘除后的存活叶），死叶不进任一侧。
+    # library_covered 在 session 开始预构建，逐轮复用（库文件本 session 不改）。
     rec = recall(
         index, k=5, data_window=data_window, leaf_names=list(ctx.leaf_names),
+        library_covered=library_covered,
     )
     tasks: list[dict] = []
 
@@ -183,14 +186,14 @@ def _run_one_round(
             shyps = propose_structured(
                 llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
                 feedback=fb, n=hypotheses_per_round, market=ctx.market,
-                leaf_guidance=rec.leaf_guidance,
+                leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
             )
             hyps = [format_structured(h) for h in shyps]
         else:
             hyps = propose_hypotheses(
                 llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
                 feedback=fb, n=hypotheses_per_round, market=ctx.market,
-                leaf_guidance=rec.leaf_guidance,
+                leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
             )
         if not hyps:
             _step("  · Hypothesis 未产出假设，跳过本轮")
@@ -267,13 +270,14 @@ def _run_one_round(
     hypothesis = hyps[-1] if hyps else ""
     exprs = hyp_batches[-1][1] if hyp_batches else []
     n_before = len(state.candidates)                       # Important 1: 护栏前快照
-    _step("  ⑤ 防过拟合护栏（DSR / holdout / CI / 去相关）")
+    _step("  ⑤ 防过拟合护栏（DSR / holdout / CI / 去相关 / 库级正交）")
     node_guardrails(
         state, daily=mining_df, holdout_df=holdout_df,
         bundle=bundle, ledger=ledger, top_k=top_k,
         warmup_daily=warmup_daily,   # holdout 扩窗预热用完整帧
         eval_start=eval_start,       # 池级 PBO 的 None-gating：None 时裸求值，零回归
         profile=profile,             # crypto 派生列 + 叶子映射；None 零回归
+        lib_pool=lib_pool,           # 库级正交（与 holdout 同帧；None/空 → 零回归）
     )
     _print_rejections("mine-team", state)
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
@@ -385,6 +389,7 @@ def run_team_agent(
     update_library: bool = True,
     library_root: str | None = None,
     horizon: int = 1,
+    library_orthogonal: bool = True,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -473,6 +478,36 @@ def run_team_agent(
     last_cand_count = 0
     llm_failures = 0
 
+    # 库级正交：session 开始物化一次（与 node_guardrails session 去相关同帧 = holdout 段）。
+    # 空库/关开关 → lib_pool={}、library_covered=None，行为与旧完全一致。
+    lib_pool: dict = {}
+    library_covered: list[str] | None = None
+    market = getattr(profile, "name", None) or (
+        (data_window or {}).get("market")) or "ashare"
+    lib_root = library_root or str(Path(index_path).parent / "factor_library")
+    if library_orthogonal:
+        try:
+            from factorzen.agents.evaluation import _preprocess_daily
+            from factorzen.discovery.factor_library import (
+                build_library_pool,
+                library_covered_expressions,
+            )
+            # holdout 扩窗预热：在完整帧上求值、裁到 holdout 起点（与 node_guardrails 同口径）
+            _prepped = _preprocess_daily(daily, profile)
+            _hold_start = holdout_df["trade_date"].min()
+            lib_pool = build_library_pool(
+                market, _prepped, ctx.leaf_map, root=lib_root, eval_start=_hold_start,
+            )
+            covered = library_covered_expressions(market, k=10, root=lib_root)
+            library_covered = covered or None
+            state.library_pool_size = len(lib_pool)
+            if lib_pool:
+                _step(f"库级正交 ▸ 物化 {len(lib_pool)} 个 active 库因子（root={lib_root}）")
+        except Exception as exc:
+            _LOG.warning("库池物化失败，本 session 跳过库级正交: %s: %s",
+                         type(exc).__name__, exc)
+            lib_pool, library_covered = {}, None
+
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
         if patience is not None and round_i > 0:
@@ -491,6 +526,7 @@ def run_team_agent(
                 data_window=data_window, warmup_daily=daily,
                 eval_start=_eval_start_date, leaf_budgets=leaf_budgets,
                 hypotheses_per_round=hypotheses_per_round, profile=profile, ctx=ctx,
+                lib_pool=lib_pool, library_covered=library_covered,
             )
         except LLMClientError as exc:
             llm_failures += 1
@@ -604,6 +640,9 @@ def write_team_manifest(
         "attempts": [a.__dict__ for a in result.state.attempts],
         "candidates": result.candidates,
         "excluded_leaves": getattr(result, "excluded_leaves", {}) or {},
+        "library_pool_size": getattr(result.state, "library_pool_size", 0),
+        "n_library_correlated_rejects": getattr(
+            result.state, "n_library_correlated_rejects", 0),
         "git_sha": get_git_sha(),
     }
     path = run_dir / "manifest.json"

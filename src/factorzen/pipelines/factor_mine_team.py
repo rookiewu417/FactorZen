@@ -47,6 +47,7 @@ def run_team_mine(
     hypotheses_per_round: int = 1,
     profile=None,
     update_library: bool = True,
+    library_orthogonal: bool = True,
 ) -> dict:
     """跑多 Agent 团队挖掘，每轮增量落 manifest，收尾写 candidates.csv + 导出候选。
 
@@ -108,6 +109,7 @@ def run_team_mine(
         # 库根固定到 workspace/factor_library（out_dir=workspace/mine_team 的同级），
         # 不用 run_team_agent 从 index_path 推导的默认（那会落到 mine_team/factor_library）。
         library_root=str(Path(out_dir).parent / "factor_library"),
+        library_orthogonal=library_orthogonal,
     )
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

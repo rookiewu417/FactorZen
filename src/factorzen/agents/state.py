@@ -40,6 +40,9 @@ class AgentState:
     seen_expressions: set[str] = field(default_factory=set)
     negative_examples: list[str] = field(default_factory=list)
     pbo: float | None = None
+    # 库级正交：session 开始物化的库池大小 + 因 library_correlated 被拒的累计数（manifest 用）
+    library_pool_size: int = 0
+    n_library_correlated_rejects: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -50,4 +53,6 @@ class AgentState:
             "seen_expressions": sorted(self.seen_expressions),
             "negative_examples": self.negative_examples,
             "pbo": self.pbo,
+            "library_pool_size": self.library_pool_size,
+            "n_library_correlated_rejects": self.n_library_correlated_rejects,
         }

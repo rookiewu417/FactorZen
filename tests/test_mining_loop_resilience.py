@@ -74,7 +74,7 @@ def _smart_llm(*, fail_rounds: frozenset[int] = frozenset(),
 def test_agent_loop_survives_llm_error_and_continues():
     """某轮 LLM 不可用 → 跳过该轮继续，而非冒泡崩掉整个 session。"""
     llm = _smart_llm(fail_rounds=frozenset({0}))
-    res = run_llm_agent(_mock_daily(), llm, n_rounds=3, seed=42)
+    res = run_llm_agent(_mock_daily(), llm, n_rounds=3, seed=42, library_orthogonal=False)
 
     assert res.state.iteration == 3, "失败轮应跳过而非崩溃，循环跑满"
     assert len(res.state.attempts) >= 1, "轮 1/2 应正常产出 attempts"
@@ -83,7 +83,7 @@ def test_agent_loop_survives_llm_error_and_continues():
 def test_agent_loop_aborts_after_consecutive_llm_failures():
     """LLM 持续不可用时提前终止，不空转跑满 n_rounds。"""
     llm = _smart_llm(fail_rounds=frozenset(range(20)))
-    res = run_llm_agent(_mock_daily(), llm, n_rounds=10, seed=42, llm_failure_patience=2)
+    res = run_llm_agent(_mock_daily(), llm, n_rounds=10, seed=42, llm_failure_patience=2, library_orthogonal=False)
 
     assert res.state.iteration == 2, f"连续 2 轮失败即终止，实得 {res.state.iteration}"
     assert not res.state.attempts
@@ -92,7 +92,7 @@ def test_agent_loop_aborts_after_consecutive_llm_failures():
 def test_consecutive_failure_counter_resets_on_success():
     """失败计数器必须在成功轮重置——否则零散的抖动会被累计成「持续不可用」。"""
     llm = _smart_llm(fail_rounds=frozenset({0, 2}))   # 轮 0、2 失败；轮 1、3 成功
-    res = run_llm_agent(_mock_daily(), llm, n_rounds=4, seed=42, llm_failure_patience=2)
+    res = run_llm_agent(_mock_daily(), llm, n_rounds=4, seed=42, llm_failure_patience=2, library_orthogonal=False)
 
     assert res.state.iteration == 4, "两次孤立失败不该触发 patience=2 的提前终止"
 
@@ -101,7 +101,7 @@ def test_non_llm_exception_still_propagates():
     """只吞 LLMClientError。别的异常（代码 bug、磁盘满）必须冒泡，不许静默吞掉。"""
     llm = _smart_llm(fail_rounds=frozenset({0}), exc=RuntimeError)
     with pytest.raises(RuntimeError):
-        run_llm_agent(_mock_daily(), llm, n_rounds=3, seed=42)
+        run_llm_agent(_mock_daily(), llm, n_rounds=3, seed=42, library_orthogonal=False)
 
 
 # ── 增量落盘 ────────────────────────────────────────────────────────────────

@@ -66,6 +66,10 @@ def quick_fitness(factor_df: pl.DataFrame, bundle: DataBundle,
     return {"ic_mean": res.ic_mean, "ir": res.ir, "tstat": res.ic_tstat, "n": res.n_periods}
 
 
+# 去相关 |corr| 门槛的单一真源——session 池去相关、库级正交、upsert 默认共用。
+DEFAULT_DECORR_THRESHOLD = 0.7
+
+
 def max_correlation(factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame]) -> float:
     """factor_df 与 pool 中每个因子的截面相关性绝对值的最大值。pool 为空时返回 0。
 
@@ -75,20 +79,48 @@ def max_correlation(factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame]) -> f
     池因子退化就 continue 丢整条截面 → count=0 → 所有真实高相关一起被抹成 0.0，
     数学等价簇因此逃过 0.7 去重门槛。不动 compute_factor_correlation（daily 报告仍用其语义）。
     """
+    return max_correlation_detail(factor_df, pool)[0]
+
+
+def max_correlation_detail(
+    factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame],
+) -> tuple[float, str | None]:
+    """同 ``max_correlation``，额外返回最相近的 pool key（表达式）。pool 空 → (0.0, None)。"""
     if not pool:
-        return 0.0
+        return 0.0, None
     cand = (factor_df.rename({"factor_value": "factor_clean"})
             if "factor_value" in factor_df.columns else factor_df)
     best = 0.0
+    nearest: str | None = None
     for name, df in pool.items():
         other = df.rename({"factor_value": "factor_clean"}) if "factor_value" in df.columns else df
         res = compute_factor_correlation({"__fz_cand__": cand, name: other}, factor_col="factor_clean")
         if len(res.factor_names) < 2:
             continue
         c = abs(float(res.corr_matrix[0][1]))  # [cand, other] 按插入序，[0][1]=候选对该因子
-        if c == c:  # 排除 NaN
-            best = max(best, c)
-    return best
+        if c == c and c >= best:  # 排除 NaN；并列取后出现者亦可
+            best, nearest = c, name
+    return best, nearest
+
+
+def library_orthogonal_check(
+    factor_df: pl.DataFrame,
+    lib_pool: dict[str, pl.DataFrame] | None,
+    *,
+    threshold: float = DEFAULT_DECORR_THRESHOLD,
+) -> tuple[bool, float, str | None]:
+    """库级正交门：与库池 max|corr| < threshold 则通过。
+
+    返回 ``(ok, max_corr_library, nearest_expr)``。
+    ``lib_pool`` 空/None → 恒通过、corr=0（零回归）。
+    M1 与 team/agent 双路径必须调本函数，禁止各自内联阈值判断（架构守卫锁死）。
+    """
+    if not lib_pool:
+        return True, 0.0, None
+    mc, nearest = max_correlation_detail(factor_df, lib_pool)
+    if mc >= threshold:
+        return False, mc, nearest
+    return True, mc, nearest
 
 
 def score_candidate(factor_df: pl.DataFrame, node: Node, bundle: DataBundle,

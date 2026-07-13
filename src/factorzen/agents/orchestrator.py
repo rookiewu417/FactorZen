@@ -49,7 +49,9 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                   heal_rounds: int = 2,
                   on_round_end: Callable[[AgentResult], None] | None = None,
                   llm_failure_patience: int = 3,
-                  eval_start: str | None = None, profile=None) -> AgentResult:
+                  eval_start: str | None = None, profile=None,
+                  library_orthogonal: bool = True,
+                  library_root: str | None = None) -> AgentResult:
     """跑 n_rounds 轮 Agent 挖掘闭环。
 
     ``on_round_end``：每个**成功**轮次结束时以当前累积结果回调，供调用方增量落盘。
@@ -112,6 +114,36 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     no_improve = 0
     last_cand_count = 0
     llm_failures = 0
+
+    # 库级正交：session 开始物化一次（与 node_guardrails 同帧 = holdout）。空库 → 零回归。
+    lib_pool: dict = {}
+    library_covered: list[str] | None = None
+    if library_orthogonal:
+        try:
+
+            from factorzen.agents.evaluation import _preprocess_daily
+            from factorzen.discovery.factor_library import (
+                DEFAULT_ROOT,
+                build_library_pool,
+                library_covered_expressions,
+            )
+            market = getattr(profile, "name", None) or "ashare"
+            lib_root = library_root or DEFAULT_ROOT
+            _prepped = _preprocess_daily(daily, profile)
+            _hold_start = holdout_df["trade_date"].min()
+            lib_pool = build_library_pool(
+                market, _prepped, ctx.leaf_map, root=lib_root, eval_start=_hold_start,
+            )
+            covered = library_covered_expressions(market, k=10, root=lib_root)
+            library_covered = covered or None
+            state.library_pool_size = len(lib_pool)
+            if lib_pool:
+                _step(f"库级正交 ▸ 物化 {len(lib_pool)} 个 active 库因子")
+        except Exception as exc:
+            _LOG.warning("库池物化失败，本 session 跳过库级正交: %s: %s",
+                         type(exc).__name__, exc)
+            lib_pool, library_covered = {}, None
+
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
         if patience is not None and round_i > 0:
@@ -128,7 +160,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle,
                                   feedback=feedback, heal_rounds=heal_rounds,
                                   leaf_budgets=leaf_budgets, profile=profile,
-                                  ctx=ctx)
+                                  library_covered=library_covered, ctx=ctx)
             _step(f"  ② 评估 {len(getattr(state, '_pending', []))} 个候选表达式")
             # None-gating：eval_start=None（旧调用方默认）时 daily/eval_start/eval_end
             # 的组合与之前逐字节相同的裸调用；非 None 时在完整帧 daily 上求值，裁剪到
@@ -137,12 +169,12 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             state = node_evaluate(state, daily=mining_df, bundle=bundle,
                                   eval_start=_eval_start_date, eval_end=_eval_end_date,
                                   warmup_daily=daily, profile=profile)
-            _step("  ③ 防过拟合护栏（DSR / holdout / CI / 去相关）")
+            _step("  ③ 防过拟合护栏（DSR / holdout / CI / 去相关 / 库级正交）")
             state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
                                     bundle=bundle, ledger=ledger, top_k=top_k,
                                     warmup_daily=daily,   # holdout 扩窗预热用完整帧
                                     eval_start=_eval_start_date,  # 池级 PBO 的 None-gating
-                                    profile=profile)
+                                    profile=profile, lib_pool=lib_pool)
             _print_rejections("mine-agent", state)
             _step("  ④ Critic 审计")
             state = node_critic(state, llm_fn)

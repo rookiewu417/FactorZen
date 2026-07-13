@@ -31,7 +31,14 @@ from factorzen.discovery.leaf_health import (
     log_excluded_leaves,
 )
 from factorzen.discovery.operators import LEAF_FEATURES
-from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
+from factorzen.discovery.scoring import (
+    DEFAULT_DECORR_THRESHOLD,
+    DataBundle,
+    library_orthogonal_check,
+    max_correlation,
+    quick_fitness,
+    score_candidate,
+)
 from factorzen.discovery.search.random_search import RandomSearcher
 from factorzen.validation.holdout import holdout_ic_result, split_holdout
 from factorzen.validation.pbo import compute_pbo
@@ -198,13 +205,14 @@ def _library_upsert_session(top, *, seed, method, session_dir, warmup_daily, min
 def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 method: str = "random", train_ratio: float = 0.7,
                 holdout_ratio: float = 0.2,
-                decorr_threshold: float = 0.7, min_n_train: int = 5,
+                decorr_threshold: float = DEFAULT_DECORR_THRESHOLD, min_n_train: int = 5,
                 dsr_alpha: float = DEFAULT_DSR_ALPHA,
                 eval_start: str | None = None,
                 out_dir: str = "workspace/mining_sessions",
                 profile=None, workers: int = 1,
                 update_library: bool = True, library_root: str | None = None,
-                library_universe: str | None = None, horizon: int = 1) -> dict:
+                library_universe: str | None = None, horizon: int = 1,
+                library_orthogonal: bool = True) -> dict:
     t0 = time.perf_counter()
     rng = np.random.default_rng(seed)
     daily = daily.sort(["ts_code", "trade_date"])
@@ -365,9 +373,27 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         ) from last_err
 
     scored.sort(key=lambda d: d["fitness"], reverse=True)
-    # 贪心去相关选 top-K：每个入选候选记录与「已选池」的真实 max_corr，过滤近重复
+
+    # 库池：session 开始物化一次（mining 段帧，与下方 session 去相关同帧同口径）。
+    # 空库/关开关 → {}，行为与旧完全一致。
+    lib_pool: dict[str, pl.DataFrame] = {}
+    lib_root = library_root or str(Path(out_dir).parent / "factor_library")
+    if library_orthogonal:
+        try:
+            from factorzen.discovery.factor_library import build_library_pool
+            market = getattr(profile, "name", None) or "ashare"
+            lib_pool = build_library_pool(market, daily, leaf_map, root=lib_root)
+        except Exception as exc:
+            _LOG.warning("build_library_pool 失败，本 session 跳过库级正交: %s: %s",
+                         type(exc).__name__, exc)
+            lib_pool = {}
+
+    # 贪心去相关选 top-K：先库过滤（共享 library_orthogonal_check），再与已选池去相关。
+    # 理由：库过滤是「与历史已收录方向正交」的硬门；session 去相关是本轮互异。
+    # 共用同一相关函数与阈值，双路径与 team 一致。
     selected: list[dict] = []
     selected_pool: dict[str, pl.DataFrame] = {}  # expression -> factor_df
+    n_library_correlated_rejects = 0
     for cand in scored:
         if len(selected) >= top_k:
             break
@@ -375,9 +401,17 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             fdf = _factor_values(parse_expr(cand["expression"], leaf_map), daily, eval_start, leaf_map)
         except Exception:
             continue
+        ok_lib, mc_lib, _nearest = library_orthogonal_check(
+            fdf, lib_pool, threshold=decorr_threshold,
+        )
+        if not ok_lib:
+            n_library_correlated_rejects += 1
+            continue
         mc = max_correlation(fdf, selected_pool)
         if mc < decorr_threshold:
             cand = {**cand, "max_corr": round(float(mc), 4)}
+            if lib_pool:
+                cand["max_corr_library"] = round(float(mc_lib), 4)
             selected.append(cand)
             selected_pool[cand["expression"]] = fdf
     top = selected
@@ -432,6 +466,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 "git_sha": get_git_sha(), "duration_seconds": round(time.perf_counter() - t0, 3),
                 "candidates": top,
                 "excluded_leaves": excluded_leaves,
+                "library_pool_size": len(lib_pool),
+                "n_library_correlated_rejects": n_library_correlated_rejects,
                 "reproduce_note": "导出因子在 exported/；复现需复制到 workspace/factors/daily/ 后 fz factor run <name> --set preprocessing.neutralize=false（IC parity）"}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     from factorzen.discovery.export import export_candidate

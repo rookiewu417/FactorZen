@@ -68,6 +68,7 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
                   n_hypotheses: int = 1, feedback: str = "", heal_rounds: int = 0,
                   leaf_budgets: dict[str, int] | None = None, profile=None,
                   leaf_guidance: dict[str, list[str]] | None = None,
+                  library_covered: list[str] | None = None,
                   ctx: AgentContext | None = None) -> AgentState:
     """生成假设+表达式 → 语义对齐自检 → 暂存待评估（compile/eval 在 node_evaluate）。
 
@@ -76,6 +77,9 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
 
     ``leaf_guidance``：Librarian 叶子级挖穿/未探索，与 team Hypothesis 共用
     ``format_leaf_guidance`` 注入（默认 None → 不注入）。
+
+    ``library_covered``：库内 active 高 IC 表达式，与 team Hypothesis 共用
+    ``format_library_covered`` 注入（默认 None → 不注入）。
 
     ``ctx``：调用方已构造的市场上下文（含 leaf_health 摘除后的存活叶）。默认 None 时
     从 ``profile`` 重建（旧调用方零回归）。**注意**：``run_llm_agent`` 开局摘叶后须
@@ -90,7 +94,8 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
         ctx = AgentContext.from_profile(profile)
     msgs = build_agent_messages(ctx.op_names, ctx.leaf_names, feedback,
                                 state.negative_examples, leaf_budgets=leaf_budgets,
-                                market=ctx.market, leaf_guidance=leaf_guidance)
+                                market=ctx.market, leaf_guidance=leaf_guidance,
+                                library_covered=library_covered)
     proposals = generate_factor_proposal(msgs, llm_fn, n_hypotheses=n_hypotheses)
     pending: list[_PendingExpr] = []
     # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销
@@ -175,6 +180,7 @@ def node_guardrails(
     warmup_daily=None,
     eval_start=None,
     profile=None,
+    lib_pool: dict | None = None,
 ) -> AgentState:
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
 
@@ -197,6 +203,11 @@ def node_guardrails(
     信号，不含 DSR；"strict" 才用 DSR），与 M1 `_guard_passed` 统一，消除双路径漂移。DSR 仍算出来
     存进候选供组合层/报告用（只是 library 口径下不当门）。池级 PBO 记入 state.pbo。
 
+    ``lib_pool``：库内 active 因子在**与 session 去相关同帧**上的物化面板
+    （``build_library_pool`` 产出）。过定量护栏后、进 candidates 前与之算
+    ``library_orthogonal_check``；高相关 → 不入池、``reject_category=library_correlated``。
+    None/空 → 跳过（零回归）。只对 top-K 过护栏候选算（本循环已是 ``passed[:top_k]``）。
+
     DSR 的三个入参都与 M1（mining_session.py:292-307）同口径，否则 deflation 基准不自洽：
     - ``sharpe_variance`` = trial 池 signed IR 的**经验方差**，而非 deflated_sharpe 的 H0
       默认 ``1/n_obs``。因 ``expected_max_sharpe ∝ sqrt(sharpe_variance)`` 而多样化 trial 池
@@ -210,13 +221,14 @@ def node_guardrails(
 
     from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.discovery.guardrails import (
+        REJECT_CATEGORY_LIBRARY_CORRELATED,
         DeflationBasis,
         acceptance_reasons,
         classify_reject_category,
         deflated_pvalue,
         pool_pbo,
     )
-    from factorzen.discovery.scoring import max_correlation
+    from factorzen.discovery.scoring import library_orthogonal_check, max_correlation
     from factorzen.validation.holdout import holdout_ic_result
 
     leaf_map = profile.factors.leaf_features() if profile is not None else None
@@ -289,6 +301,19 @@ def node_guardrails(
                 # 否则该因子会以 passed=False 落进 known_invalid，被当作「已验证无效」
                 # 喂给 LLM（它其实过了全部定量护栏，只是与已有候选重复）。
                 a.passed_guardrails = True
+                # 库级正交（与 session 去相关同帧 = holdout 段因子值；共享 library_orthogonal_check）
+                ok_lib, mc_lib, nearest = library_orthogonal_check(fdf_hold, lib_pool)
+                if not ok_lib:
+                    a.decorrelated = True
+                    a.reject_category = REJECT_CATEGORY_LIBRARY_CORRELATED
+                    nearest_s = (nearest or "")[:60]
+                    a.reject_reason = (
+                        f"与库内因子高相关(corr={mc_lib:.2f}, 最相近={nearest_s})"
+                    )
+                    state.n_library_correlated_rejects = (
+                        getattr(state, "n_library_correlated_rejects", 0) + 1
+                    )
+                    continue
                 corr = max_correlation(fdf_hold, pool)
                 if corr > 0.7:
                     a.decorrelated = True
@@ -296,7 +321,7 @@ def node_guardrails(
                     continue
                 pool[a.expression] = fdf_hold
                 existing_exprs.add(a.expression)
-                state.candidates.append({
+                cand_row = {
                     "expression": a.expression,
                     "hypothesis": a.hypothesis,
                     "ic_train": a.ic_train,
@@ -312,7 +337,10 @@ def node_guardrails(
                     "n_holdout_days": n_h,
                     "ic_ci_low": ci_lo,
                     "ic_ci_high": ci_hi,
-                })
+                }
+                if lib_pool:
+                    cand_row["max_corr_library"] = round(float(mc_lib), 4)
+                state.candidates.append(cand_row)
             else:
                 # 记下未过原因，供进度与收尾"近失表"展示（为什么没进候选池）。
                 a.reject_reason = "；".join(reasons)

@@ -1,4 +1,4 @@
-"""OpenAI SDK client for AIPing-compatible streaming Chat Completions."""
+"""OpenAI SDK client for AIPing / OpenAI-compatible streaming Chat Completions."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from factorzen.llm.schema import LLMExplanation, parse_llm_explanation
 _LOG = logging.getLogger(__name__)
 
 _warned_provider_unpinned = False
+_warned_openai_provider_ignored = False
 
 
 class LLMClientError(RuntimeError):
@@ -47,8 +48,25 @@ def _build_payload(
     *,
     include_response_format: bool = True,
 ) -> dict[str, Any]:
-    """Build keyword arguments for ``chat.completions.create``."""
-    payload: dict[str, Any] = {
+    """Build keyword arguments for ``chat.completions.create``.
+
+    ``flavor="aiping"`` keeps the historical AIPing payload (provider pin +
+    enable_thinking).  ``flavor="openai"`` targets GPT-5.x / o-series gateways:
+    ``max_completion_tokens`` instead of ``max_tokens``, no temperature, no
+    AIPing ``extra_body``.
+    """
+    if config.flavor == "openai":
+        payload: dict[str, Any] = {
+            "model": config.model,
+            "messages": messages,
+            "max_completion_tokens": config.max_tokens,
+            "stream": True,
+        }
+        if include_response_format:
+            payload["response_format"] = {"type": "json_object"}
+        return payload
+
+    payload = {
         "model": config.model,
         "messages": messages,
         "temperature": config.temperature,
@@ -65,8 +83,20 @@ def _build_payload(
 
 
 def _warn_if_provider_unpinned(config: LLMConfig) -> None:
-    """Warn once when ``provider.only`` is empty and routing is unrestricted."""
-    global _warned_provider_unpinned
+    """Warn once when ``provider.only`` is empty and routing is unrestricted.
+
+    OpenAI-compatible gateways have no AIPing provider pin; if a provider is
+    still configured under ``flavor=openai``, log that it is ignored.
+    """
+    global _warned_provider_unpinned, _warned_openai_provider_ignored
+    if config.flavor == "openai":
+        if config.provider and not _warned_openai_provider_ignored:
+            _warned_openai_provider_ignored = True
+            _LOG.warning(
+                "openai flavor 忽略 provider=%s（OpenAI 兼容网关无 AIPing provider 路由）",
+                config.provider,
+            )
+        return
     if not config.provider and not _warned_provider_unpinned:
         _warned_provider_unpinned = True
         _LOG.warning(
@@ -96,7 +126,13 @@ def _extra_field(obj: Any, name: str) -> Any:
 
 
 def _validate_gateway_chunk(config: LLMConfig, chunk: Any) -> None:
-    """Reject a streamed chunk that proves the provider pin was violated."""
+    """Reject a streamed chunk that proves the provider pin was violated.
+
+    Only meaningful for AIPing (``flavor=aiping``).  OpenAI-compatible gateways
+    do not emit ``provider`` / ``is_fallback`` extension fields.
+    """
+    if config.flavor == "openai":
+        return
     if not config.provider:
         return
     actual = _extra_field(chunk, "provider")
@@ -119,6 +155,48 @@ def _error_body(exc: APIStatusError) -> str:
         return str(body)[:200]
 
 
+def _mentions_response_format(exc: APIStatusError) -> bool:
+    """True when the 400 body suggests ``response_format`` is unsupported."""
+    text = _error_body(exc).lower()
+    if "response_format" in text:
+        return True
+    # Some gateways only say "unsupported" / "not supported" about the format.
+    return "unsupported" in text and "format" in text
+
+
+def _consume_stream(config: LLMConfig, stream: Any) -> str:
+    """Concatenate assistant ``delta.content`` from a streaming response."""
+    parts: list[str] = []
+    for chunk in stream:
+        _validate_gateway_chunk(config, chunk)
+        choices = getattr(chunk, "choices", None)
+        if not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        content = getattr(delta, "content", None) if delta is not None else None
+        if isinstance(content, str):
+            parts.append(content)
+    content = "".join(parts)
+    if not content:
+        raise LLMClientError("LLM 流式响应缺少 choices[0].delta.content")
+    return content
+
+
+def _create_stream(
+    config: LLMConfig,
+    messages: list[dict[str, str]],
+    *,
+    include_response_format: bool,
+) -> Any:
+    return _openai_client(config).chat.completions.create(
+        **_build_payload(
+            config,
+            messages,
+            include_response_format=include_response_format,
+        )
+    )
+
+
 def _stream_content(
     config: LLMConfig,
     messages: list[dict[str, str]],
@@ -130,37 +208,48 @@ def _stream_content(
     AIPing may expose ``delta.reasoning_content``.  FactorZen deliberately does
     not mix it into the returned string because Agent callers expect the final
     ``content`` to be parseable JSON.
+
+    For ``flavor=openai`` only: if the first request fails with HTTP 400 and the
+    body mentions ``response_format`` / unsupported format, retry once without
+    ``response_format``.  AIPing behaviour is unchanged.
     """
     _warn_if_provider_unpinned(config)
     try:
-        stream = _openai_client(config).chat.completions.create(
-            **_build_payload(
-                config,
-                messages,
-                include_response_format=include_response_format,
-            )
+        stream = _create_stream(
+            config, messages, include_response_format=include_response_format
         )
-        parts: list[str] = []
-        for chunk in stream:
-            _validate_gateway_chunk(config, chunk)
-            choices = getattr(chunk, "choices", None)
-            if not choices:
-                continue
-            delta = getattr(choices[0], "delta", None)
-            content = getattr(delta, "content", None) if delta is not None else None
-            if isinstance(content, str):
-                parts.append(content)
+        return _consume_stream(config, stream)
     except LLMClientError:
         raise
     except APIStatusError as exc:
+        can_retry = (
+            config.flavor == "openai"
+            and include_response_format
+            and exc.status_code == 400
+            and _mentions_response_format(exc)
+        )
+        if can_retry:
+            _LOG.warning(
+                "openai flavor: response_format 被上游拒绝 (HTTP 400)，"
+                "去掉 response_format 重试一次"
+            )
+            try:
+                stream = _create_stream(
+                    config, messages, include_response_format=False
+                )
+                return _consume_stream(config, stream)
+            except LLMClientError:
+                raise
+            except APIStatusError:
+                # 重试也失败 → 抛原错（首次 400），便于对照上游语义
+                raise LLMClientError(f"HTTP {exc.status_code}: {_error_body(exc)}") from exc
+            except APIError as retry_api_err:
+                raise LLMClientError(
+                    f"HTTP {exc.status_code}: {_error_body(exc)}"
+                ) from retry_api_err
         raise LLMClientError(f"HTTP {exc.status_code}: {_error_body(exc)}") from exc
     except APIError as exc:
         raise LLMClientError(f"LLM SDK 请求失败: {type(exc).__name__}: {exc}") from exc
-
-    content = "".join(parts)
-    if not content:
-        raise LLMClientError("LLM 流式响应缺少 choices[0].delta.content")
-    return content
 
 
 def request_llm_explanation(
@@ -179,7 +268,7 @@ def request_llm_explanation(
 
 
 def request_chat(config: LLMConfig, messages: list[dict[str, str]]) -> str:
-    """Return concatenated content from an AIPing streaming chat completion."""
+    """Return concatenated content from a streaming chat completion."""
     if not config.is_ready:
         raise LLMClientError("LLM config is not ready")
     return _stream_content(config, messages, include_response_format=False)

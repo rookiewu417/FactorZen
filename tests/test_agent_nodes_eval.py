@@ -229,7 +229,7 @@ def test_node_guardrails_family_aware_dedup():
 # ---------------------------------------------------------------------------
 
 
-def _controlled_daily(holdout_sign: float, n_stocks: int = 30, n_days: int = 180,
+def _controlled_daily(holdout_sign: float, n_stocks: int = 30, n_days: int = 400,
                       eps: float = 0.001):
     """构造 holdout 段 IC(amount) 符号确定的数据（供 OOS 护栏/双向 DSR 测试）。
 
@@ -237,6 +237,9 @@ def _controlled_daily(holdout_sign: float, n_stocks: int = 30, n_days: int = 180
     → 因子 `amount` 与 holdout 段前向收益完全（反）单调 → holdout rank IC ≡ holdout_sign，
     bootstrap CI = (holdout_sign, holdout_sign)（离 0）。mining 段收益固定正序（不影响注入的
     train IC/IR——node_guardrails 只读 AttemptRecord 的注入值，不重算 train IC）。
+
+    n_days 默认 400：holdout_ratio=0.2 时 holdout 约 80 个交易日，满足
+    DEFAULT_HOLDOUT_MIN_DAYS=60 的覆盖门（旧默认 180 只有 ~36 日，会被覆盖门误杀）。
     """
     import datetime as dt
 

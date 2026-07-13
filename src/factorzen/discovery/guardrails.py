@@ -18,10 +18,40 @@ DEFAULT_DSR_ALPHA = 0.10
 # 因子**库**入池的 |train_IC| 下限——低于此视为纯噪声（非「弱但真」）。改这一处即全局生效。
 DEFAULT_IC_FLOOR = 0.015
 
+# holdout 有效 IC 天数下限。低于此视为「覆盖不足」而非「反号/无预测力」——
+# 空/稀疏 holdout 的 ic_mean 哨兵 0.0 曾被同号门误杀（train>0）或假过关（train<0）。
+DEFAULT_HOLDOUT_MIN_DAYS = 60
+
 # 入池判据的两种口径：
 #   "library"（默认，因子库化）：真(holdout 同号) + 有信号(|IC|≥floor)，不含 DSR 单星显著性。
 #   "strict"（单明星）：DSR 显著 + holdout 同号（历史口径，供需要单因子独立显著时选用）。
 DEFAULT_GATE = "library"
+
+# reject_category：coverage 失败不得进 known_invalid 负例回灌（非方向性证据）。
+REJECT_CATEGORY_HOLDOUT_COVERAGE = "holdout_coverage"
+
+
+def _holdout_direction_reasons(
+    ic_train: float, holdout_ic: float,
+) -> list[str]:
+    """覆盖充足后的方向门：严格同号（sign 积 > 0）；holdout 精确 0 →「无信号」非「反号」。"""
+    if holdout_ic == 0.0:
+        return [f"holdout无信号(train={ic_train:.4f}/holdout={holdout_ic:.4f})"]
+    # sign(h)*sign(t) > 0 ⇔ 双方同为正或同为负（0 已在上支处理）
+    if (holdout_ic > 0) == (ic_train > 0) and ic_train != 0.0:
+        return []
+    return [f"holdout 反号(train={ic_train:.4f}/holdout={holdout_ic:.4f})"]
+
+
+def _coverage_reason(
+    holdout_n_days: int | None, holdout_min_days: int,
+) -> str | None:
+    """n_days 已知且不足 → 覆盖不足文案；None（旧调用方未传）→ 跳过，零回归。"""
+    if holdout_n_days is None:
+        return None
+    if holdout_n_days < holdout_min_days:
+        return f"holdout覆盖不足(days={holdout_n_days}/需{holdout_min_days})"
+    return None
 
 
 @dataclass(frozen=True)
@@ -97,27 +127,39 @@ def guardrail_reasons(
     ci_low: float | None = None,
     ci_high: float | None = None,
     dsr_alpha: float = DEFAULT_DSR_ALPHA,
+    holdout_n_days: int | None = None,
+    holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
 ) -> list[str]:
     """返回**未通过**的护栏门（空列表 = 全过）。`guardrail_passed` 委托本函数（无失败即通过），
     两者共用同一套门，杜绝「判定 / 解释」双路径漂移（陷阱#2）。
 
-    门（2026-07「松一档」口径）：DSR 显著(pval<dsr_alpha，默认 0.10) + holdout 与 train
-    **点估计同号**。必需量 ic_train/holdout_ic/dsr_pvalue 任一 None/NaN → 判缺失。
+    门（2026-07「松一档」+ 覆盖守卫）：DSR 显著(pval<dsr_alpha，默认 0.10) + holdout 覆盖充足
+    + holdout 与 train **严格同号**。必需量 ic_train/holdout_ic/dsr_pvalue 任一 None/NaN → 判缺失。
+    覆盖不足优先于同号门（不叫反号）；holdout 精确 0 →「无信号」。
 
-    历史（收紧口径）曾额外要求 holdout 95%CI 单边不跨零。实测该门在短 holdout 上对**真**因子
-    误杀率高（97 天 holdout、真 IC=0.03 时 ~12–15%），且**从不独立生效**（大样本诊断里
-    22/22 未过因子的 CI 门总与 DSR 同时亮红，0 个是仅被 CI 冤枉）。松一档移除它，holdout
-    方向仅由点估计同号把关。``ci_low``/``ci_high`` 仍接收（供报告与向后兼容），不再参与判定。
+    ``ci_low``/``ci_high`` 仍接收（供报告与向后兼容），不再参与判定。
+    ``holdout_n_days=None``（旧调用方）跳过覆盖门，零回归。
     """
+    # 覆盖不足时 holdout_ic 常为 nan（空因子帧）——覆盖门优先，不把缺数伪装成「缺失/NaN」。
+    cov = _coverage_reason(holdout_n_days, holdout_min_days)
+    if cov is not None:
+        reasons: list[str] = []
+        if dsr_pvalue is None or dsr_pvalue != dsr_pvalue:
+            reasons.append("缺失/NaN: dsr_pvalue")
+        elif not (dsr_pvalue < dsr_alpha):
+            reasons.append(f"DSR 不显著(p={dsr_pvalue:.4f}≥{dsr_alpha})")
+        if ic_train is None or ic_train != ic_train:
+            reasons.append("缺失/NaN: ic_train")
+        reasons.append(cov)
+        return reasons
     required = {"ic_train": ic_train, "holdout_ic": holdout_ic, "dsr_pvalue": dsr_pvalue}
     missing = [k for k, v in required.items() if v is None or v != v]  # v != v 即 NaN
     if missing:
         return [f"缺失/NaN: {', '.join(missing)}"]
-    reasons: list[str] = []
+    reasons = []
     if not (dsr_pvalue < dsr_alpha):  # type: ignore[operator]
         reasons.append(f"DSR 不显著(p={dsr_pvalue:.4f}≥{dsr_alpha})")
-    if (holdout_ic > 0) != (ic_train > 0):  # type: ignore[operator]
-        reasons.append(f"holdout 反号(train={ic_train:.4f}/holdout={holdout_ic:.4f})")
+    reasons.extend(_holdout_direction_reasons(ic_train, holdout_ic))  # type: ignore[arg-type]
     return reasons
 
 
@@ -129,15 +171,17 @@ def guardrail_passed(
     ci_low: float | None = None,
     ci_high: float | None = None,
     dsr_alpha: float = DEFAULT_DSR_ALPHA,
+    holdout_n_days: int | None = None,
+    holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
 ) -> bool:
-    """DSR 显著(pval<dsr_alpha，默认 0.10) + holdout 点估计同号。必需量 None/NaN → False。
+    """DSR 显著(pval<dsr_alpha，默认 0.10) + holdout 覆盖 + 点估计同号。必需量 None/NaN → False。
 
     委托 `guardrail_reasons`（无失败原因即通过），保证「过/不过」与「为什么不过」同源。
-    2026-07「松一档」：默认 alpha 0.05→0.10，且移除 holdout CI 单边门（详见 guardrail_reasons）。
     """
     return not guardrail_reasons(
         ic_train=ic_train, holdout_ic=holdout_ic, dsr_pvalue=dsr_pvalue,
-        ci_low=ci_low, ci_high=ci_high, dsr_alpha=dsr_alpha)
+        ci_low=ci_low, ci_high=ci_high, dsr_alpha=dsr_alpha,
+        holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days)
 
 
 def library_reasons(
@@ -145,28 +189,46 @@ def library_reasons(
     ic_train: float | None,
     holdout_ic: float | None,
     ic_floor: float = DEFAULT_IC_FLOOR,
+    holdout_n_days: int | None = None,
+    holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
 ) -> list[str]:
-    """因子**库**入池判据（2026-07 因子库化）：真（holdout 与 train 点估计同号，OOS 不崩）
-    + 有信号（``|train_IC| >= ic_floor``）。返回未通过的判据（空 = 入池）。
+    """因子**库**入池判据（2026-07 因子库化 + 覆盖守卫）：
+    覆盖充足 + 真（holdout 与 train 严格同号）+ 有信号（``|train_IC| >= ic_floor``）。
 
-    **不含 DSR 单星显著性**——多因子组合的 alpha 来自很多「弱但真」信号叠加
-    （基本法则 ``IR ≈ IC × √breadth``），要求每个单因子独立显著 = 要求每块积木自己是栋楼。
-    显著性/过拟合的把关挪到**组合层**（`fz combine run` 的 PurgedWalkForwardCV OOS）。
-    去相关（多样性）由 `max_correlation` 另判，不在此。
+    **不含 DSR 单星显著性**——显著性挪到组合层。去相关由 `max_correlation` 另判。
 
-    挡的只有两类：**假**（holdout 反号 = 过拟合）与**纯噪声**（|IC| 太弱）；放行「弱但真」。
+    挡三类：**覆盖不足**（缺数据，非方向证据）、**假**（真反号）、**纯噪声**（|IC| 太弱）。
+    覆盖不足优先报告、不与「反号」并用；holdout 精确 0 →「无信号」。
+    ``holdout_n_days=None`` 跳过覆盖门（旧调用方零回归）。
     必需量 None/NaN → 判缺失（保守不入池）。
     """
+    # 覆盖不足优先：空 holdout 常伴随 holdout_ic=nan，不得落到「缺失/NaN」或「反号」。
+    cov = _coverage_reason(holdout_n_days, holdout_min_days)
+    if cov is not None:
+        reasons = []
+        if ic_train is None or ic_train != ic_train:
+            return ["缺失/NaN: ic_train", cov]
+        if abs(ic_train) < ic_floor:
+            reasons.append(f"train_IC 太弱(|{ic_train:.4f}|<{ic_floor})")
+        reasons.append(cov)
+        return reasons
     required = {"ic_train": ic_train, "holdout_ic": holdout_ic}
     missing = [k for k, v in required.items() if v is None or v != v]
     if missing:
         return [f"缺失/NaN: {', '.join(missing)}"]
-    reasons: list[str] = []
+    reasons = []
     if abs(ic_train) < ic_floor:  # type: ignore[arg-type]
         reasons.append(f"train_IC 太弱(|{ic_train:.4f}|<{ic_floor})")
-    if (holdout_ic > 0) != (ic_train > 0):  # type: ignore[operator]
-        reasons.append(f"holdout 反号(train={ic_train:.4f}/holdout={holdout_ic:.4f})")
+    reasons.extend(_holdout_direction_reasons(ic_train, holdout_ic))  # type: ignore[arg-type]
     return reasons
+
+
+def classify_reject_category(reasons: list[str]) -> str | None:
+    """从护栏 reason 列表提取死因类别（供 experiment_index 过滤）。无匹配 → None。"""
+    for r in reasons:
+        if "覆盖不足" in r:
+            return REJECT_CATEGORY_HOLDOUT_COVERAGE
+    return None
 
 
 def acceptance_reasons(
@@ -179,6 +241,8 @@ def acceptance_reasons(
     ci_high: float | None = None,
     dsr_alpha: float = DEFAULT_DSR_ALPHA,
     ic_floor: float = DEFAULT_IC_FLOOR,
+    holdout_n_days: int | None = None,
+    holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
 ) -> list[str]:
     """按 ``gate`` 口径返回未通过的入池判据（空=入池）。两条挖掘路径的**统一入口**，防漂移。
 
@@ -188,10 +252,13 @@ def acceptance_reasons(
     if gate == "strict":
         return guardrail_reasons(
             ic_train=ic_train, holdout_ic=holdout_ic, dsr_pvalue=dsr_pvalue,
-            ci_low=ci_low, ci_high=ci_high, dsr_alpha=dsr_alpha)
+            ci_low=ci_low, ci_high=ci_high, dsr_alpha=dsr_alpha,
+            holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days)
     if gate != "library":
         raise ValueError(f"未知 gate={gate!r}，应为 'library' 或 'strict'")
-    return library_reasons(ic_train=ic_train, holdout_ic=holdout_ic, ic_floor=ic_floor)
+    return library_reasons(
+        ic_train=ic_train, holdout_ic=holdout_ic, ic_floor=ic_floor,
+        holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days)
 
 
 def pool_pbo(

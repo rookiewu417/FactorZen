@@ -79,6 +79,9 @@ def record(
             "decorrelated": a.decorrelated,         # 决策：与已有候选高度相关，未入候选池
             "compile_ok": a.compile_ok,             # 事实：表达式是否可解析
             "error": a.error,
+            "reject_reason": a.reject_reason,       # 护栏/去相关死因文案
+            "reject_category": a.reject_category,   # 如 holdout_coverage → known_invalid 过滤
+            "n_holdout_days": a.n_holdout_days,
             "data_window": data_window,             # 族边界：(start,end,universe,market)
             "run_id": run_id,
         }

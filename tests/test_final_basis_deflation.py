@@ -188,10 +188,10 @@ def test_real_node_guardrails_records_ci_and_n_train(monkeypatch):
     """字段得由真实 `node_guardrails` 写入，不能只在 finalize 里补。"""
     from factorzen.agents.nodes import node_guardrails
     from factorzen.discovery.scoring import DataBundle
+    from factorzen.validation.holdout import HoldoutICResult
     from factorzen.validation.multiple_testing import TrialLedger
-
-    monkeypatch.setattr("factorzen.validation.holdout.holdout_ic",
-                        lambda fdf, hdf: (0.05, 0.5, (0.01, 0.09)))
+    monkeypatch.setattr("factorzen.validation.holdout.holdout_ic_result",
+                        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
     monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
 
     daily = _mk_daily()
@@ -316,9 +316,9 @@ def _fake_llm():
 def test_run_llm_agent_actually_finalizes(monkeypatch):
     """单 Agent 编排器返回的每个候选，其 p 必须由**最终** basis 算出，且 basis 已落进 result。"""
     from factorzen.agents.orchestrator import run_llm_agent
-
-    monkeypatch.setattr("factorzen.validation.holdout.holdout_ic",
-                        lambda fdf, hdf: (0.05, 0.5, (0.01, 0.09)))
+    from factorzen.validation.holdout import HoldoutICResult
+    monkeypatch.setattr("factorzen.validation.holdout.holdout_ic_result",
+                        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
     monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
 
     res = run_llm_agent(_mk_signal_daily(), _fake_llm(), n_rounds=3, seed=1,
@@ -342,9 +342,9 @@ def test_run_team_agent_actually_finalizes(tmp_path, monkeypatch):
     import json
 
     from factorzen.agents.team_orchestrator import run_team_agent
-
-    monkeypatch.setattr("factorzen.validation.holdout.holdout_ic",
-                        lambda fdf, hdf: (0.05, 0.5, (0.01, 0.09)))
+    from factorzen.validation.holdout import HoldoutICResult
+    monkeypatch.setattr("factorzen.validation.holdout.holdout_ic_result",
+                        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
     monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
 
     st = {"k": -1}

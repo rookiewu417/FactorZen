@@ -105,14 +105,17 @@ def _run_guardrails_with(n_candidates: int):
 
     import factorzen.discovery.guardrails as gmod
     import factorzen.validation.holdout as hmod
-    orig_hic, orig_pass = hmod.holdout_ic, gmod.guardrail_passed
-    hmod.holdout_ic = lambda _f, _h: (0.05, 0.5, (0.01, 0.09))
-    gmod.guardrail_passed = lambda **_kw: True
+    from factorzen.validation.holdout import HoldoutICResult
+    orig_hic, orig_pass = hmod.holdout_ic_result, gmod.acceptance_reasons
+    # 覆盖充足 + 同号；acceptance_reasons 恒空 → 全过（与旧 mock guardrail_passed 等价）
+    hmod.holdout_ic_result = lambda _f, _h: HoldoutICResult(
+        0.05, 0.5, (0.01, 0.09), n_days=100)
+    gmod.acceptance_reasons = lambda **_kw: []
     try:
         node_guardrails(state, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
                         ledger=TrialLedger(), top_k=5, warmup_daily=daily)
     finally:
-        hmod.holdout_ic, gmod.guardrail_passed = orig_hic, orig_pass
+        hmod.holdout_ic_result, gmod.acceptance_reasons = orig_hic, orig_pass
     return state
 
 

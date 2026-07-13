@@ -202,11 +202,12 @@ def node_guardrails(
     from factorzen.discovery.guardrails import (
         DeflationBasis,
         acceptance_reasons,
+        classify_reject_category,
         deflated_pvalue,
         pool_pbo,
     )
     from factorzen.discovery.scoring import max_correlation
-    from factorzen.validation.holdout import holdout_ic
+    from factorzen.validation.holdout import holdout_ic_result
 
     leaf_map = profile.factors.leaf_features() if profile is not None else None
     passed = [a for a in state.attempts
@@ -258,16 +259,20 @@ def node_guardrails(
         try:
             node = parse_expr(a.expression, leaf_map)
             fdf_hold = _holdout_values(node)
-            ic_h, ir_h, (ci_lo, ci_hi) = holdout_ic(fdf_hold, holdout_df)
+            hres = holdout_ic_result(fdf_hold, holdout_df)
+            ic_h, ir_h, (ci_lo, ci_hi), n_h = hres.ic_mean, hres.ir, hres.ci, hres.n_days
+            a.n_holdout_days = n_h
             # 传**带符号** IR：取绝对值由 basis.two_sided 在 deflated_pvalue 内部完成，
             # 与 effective_trials=2N 成对生效。调用方自己 abs 会让两者脱钩（PR #71 前的 bug）。
             sharpe = a.ir_train if a.ir_train is not None else (a.ic_train or 0.0)
             dsr, pval = deflated_pvalue(sharpe, basis, a.n_train or 0)
             ic_tr = a.ic_train or 0.0
             # 因子库口径(默认)按「真+有信号」入池；DSR 仍算出来存进候选供组合层/报告用。
+            # holdout_n_days 贯通覆盖守卫（与 M1 mining_session 共用 acceptance_reasons）。
             reasons = acceptance_reasons(
                 gate=gate, ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,
                 ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
+                holdout_n_days=n_h,
             )
             if not reasons:
                 # 事实先落定：过了定量护栏。去相关剔除是随后的**决策**，不得改写它——
@@ -294,12 +299,14 @@ def node_guardrails(
                     # 收尾复核与「拿 manifest 复算 p」都需要这三个：
                     # n_obs 是因子自己的有效 IC 天数，CI 两端喂 guardrail_passed 的方向门槛。
                     "n_train": a.n_train,
+                    "n_holdout_days": n_h,
                     "ic_ci_low": ci_lo,
                     "ic_ci_high": ci_hi,
                 })
             else:
                 # 记下未过原因，供进度与收尾"近失表"展示（为什么没进候选池）。
                 a.reject_reason = "；".join(reasons)
+                a.reject_category = classify_reject_category(reasons)
         except Exception as exc:
             # 静默 continue 会让「这个候选炸了」与「这个候选没过护栏」不可区分。
             a.reject_reason = f"护栏计算异常({type(exc).__name__})"
@@ -379,14 +386,17 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
         reasons = acceptance_reasons(
             gate=gate, ic_train=c["ic_train"], holdout_ic=c["holdout_ic"], dsr_pvalue=pval,
             ci_low=c["ic_ci_low"], ci_high=c["ic_ci_high"], dsr_alpha=dsr_alpha,
+            holdout_n_days=c.get("n_holdout_days"),
         )
         if not reasons:
             survivors.append(c)
         elif (a := by_expr.get(c["expression"])) is not None:
             # 事实被更完整的 N 修正：它并没有过定量护栏。不同步的话 Librarian
             # 会把它当「已验证有效」写进长期记忆。
+            from factorzen.discovery.guardrails import classify_reject_category
             a.passed_guardrails = False
             a.reject_reason = "收尾复核(最终N)：" + "；".join(reasons)
+            a.reject_category = classify_reject_category(reasons)
 
     n_dropped = len(state.candidates) - len(survivors)
     if n_dropped:

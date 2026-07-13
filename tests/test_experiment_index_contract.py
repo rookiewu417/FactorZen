@@ -188,13 +188,15 @@ def test_node_guardrails_marks_passed_before_decorrelation_cut(tmp_path):
             critic_verdict=None, error=None, ir_train=ir, turnover=0.3, n_train=305))
 
     import factorzen.validation.holdout as hmod
-    orig = hmod.holdout_ic
-    hmod.holdout_ic = lambda fdf, hdf: (0.05, 0.5, (0.01, 0.09))
+    from factorzen.validation.holdout import HoldoutICResult
+    orig = hmod.holdout_ic_result
+    hmod.holdout_ic_result = lambda fdf, hdf: HoldoutICResult(
+        0.05, 0.5, (0.01, 0.09), n_days=100)
     try:
         node_guardrails(state, daily=daily, holdout_df=daily, bundle=bundle,
                         ledger=TrialLedger(), top_k=5)
     finally:
-        hmod.holdout_ic = orig
+        hmod.holdout_ic_result = orig
 
     passed_facts = [a.passed_guardrails for a in state.attempts]
     assert all(passed_facts), (

@@ -155,8 +155,12 @@ def _run_one_round(
     """
     if ctx is None:
         ctx = AgentContext()
-    _step("  ① Librarian 检索历史经验（known valid/invalid）")
-    rec = recall(index, k=5, data_window=data_window)          # ① Librarian（按窗口分族）
+    _step("  ① Librarian 检索历史经验（known valid/invalid + leaf_guidance）")
+    # 每轮重算 leaf_stats：本 session 刚写入的失败也会进入后续轮次的挖穿/未探索。
+    # leaf_names=ctx.leaf_names（leaf_health 摘除后的存活叶），死叶不进任一侧。
+    rec = recall(
+        index, k=5, data_window=data_window, leaf_names=list(ctx.leaf_names),
+    )
     tasks: list[dict] = []
 
     # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
@@ -179,12 +183,14 @@ def _run_one_round(
             shyps = propose_structured(
                 llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
                 feedback=fb, n=hypotheses_per_round, market=ctx.market,
+                leaf_guidance=rec.leaf_guidance,
             )
             hyps = [format_structured(h) for h in shyps]
         else:
             hyps = propose_hypotheses(
                 llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
                 feedback=fb, n=hypotheses_per_round, market=ctx.market,
+                leaf_guidance=rec.leaf_guidance,
             )
         if not hyps:
             _step("  · Hypothesis 未产出假设，跳过本轮")
@@ -294,6 +300,15 @@ def _run_one_round(
         if a.iteration == state.iteration and a.expression in round_exprs:
             a.critic_verdict = verdict.verdict
 
+    # leaf_guidance 摘要：可复现审计（挖穿/未探索列表；None 时不落假值）
+    _lg = rec.leaf_guidance
+    _lg_summary = (
+        {
+            "exhausted": list(_lg.get("exhausted") or []),
+            "unexplored": list(_lg.get("unexplored") or []),
+        }
+        if _lg is not None else None
+    )
     rounds_log.append({
         "round": state.iteration,
         # 多假设时记全部（"；" 连接）；单假设时即该假设字符串（零回归）。
@@ -304,6 +319,7 @@ def _run_one_round(
         "expressions": [r["expression"] for r in results],
         "verdict": verdict.verdict,
         "reason": verdict.reason,
+        "leaf_guidance": _lg_summary,
     })
 
     # verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）

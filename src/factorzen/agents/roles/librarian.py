@@ -6,6 +6,11 @@ from dataclasses import dataclass
 
 from factorzen.discovery.expression import parse_expr, to_expr_string
 
+# 叶子级指导阈值：方向尝试（排除 coverage 失败）≥ 此值且 0 过关 → 挖穿区。
+EXHAUSTED_MIN_TRIES = 15
+# 本 session 存活叶子中，历史唯一表达式数 ≤ 此值 → 未探索区（优先考虑）。
+UNEXPLORED_MAX_TRIES = 2
+
 
 def _normalize(expr: str) -> str:
     try:
@@ -16,21 +21,101 @@ def _normalize(expr: str) -> str:
 
 @dataclass
 class Recall:
+    """Librarian 检索结果（亦称 LibrarianBriefing）。
+
+    ``leaf_guidance``：叶子级挖穿/未探索指导；``leaf_names`` 未传入时为 None（零回归）。
+    """
     seen: set[str]
     known_invalid: list[str]
     known_valid: list[str]
+    leaf_guidance: dict[str, list[str]] | None = None
 
 
-def recall(index, *, k: int = 5, data_window: dict | None = None) -> Recall:
+# 向后兼容别名（任务文档称 LibrarianBriefing）
+LibrarianBriefing = Recall
+
+
+def build_leaf_guidance(
+    stats: dict[str, dict],
+    leaf_names: list[str],
+    *,
+    exhausted_min: int | None = None,
+    unexplored_max: int | None = None,
+) -> dict[str, list[str]]:
+    """从 leaf_stats 构建挖穿/未探索列表（只含 ``leaf_names`` 中的存活叶子）。
+
+    - 挖穿区：``n_exprs - n_coverage_fail >= exhausted_min`` 且 ``n_passed == 0``
+      （coverage 失败不算方向尝试）
+    - 未探索区：``n_exprs <= unexplored_max``
+
+    阈值默认读模块常量（调用时解析，便于测试 monkeypatch）。
+    """
+    if exhausted_min is None:
+        exhausted_min = EXHAUSTED_MIN_TRIES
+    if unexplored_max is None:
+        unexplored_max = UNEXPLORED_MAX_TRIES
+    exhausted: list[str] = []
+    unexplored: list[str] = []
+    for name in leaf_names:
+        st = stats.get(name) or {
+            "n_exprs": 0, "n_passed": 0, "best_abs_ic": 0.0, "n_coverage_fail": 0,
+        }
+        n_exprs = int(st.get("n_exprs") or 0)
+        n_passed = int(st.get("n_passed") or 0)
+        n_cov = int(st.get("n_coverage_fail") or 0)
+        best = float(st.get("best_abs_ic") or 0.0)
+        direction_tries = n_exprs - n_cov
+        if direction_tries >= exhausted_min and n_passed == 0:
+            exhausted.append(
+                f"{name}(试 {direction_tries} 次 {n_passed} 过关, best|IC|={best:.3f})"
+            )
+        if n_exprs <= unexplored_max:
+            unexplored.append(name)
+    return {"exhausted": exhausted, "unexplored": unexplored}
+
+
+def format_leaf_guidance(leaf_guidance: dict[str, list[str]] | None) -> str:
+    """把 leaf_guidance 渲染成 Hypothesis / M5 prompt 共用的注入文案。
+
+    空/None → 空串（零回归：不改 prompt 形状）。双路径（team hypothesis 与
+    ``build_agent_messages``）必须调本函数，避免文案漂移。
+    """
+    if not leaf_guidance:
+        return ""
+    parts: list[str] = []
+    exhausted = leaf_guidance.get("exhausted") or []
+    unexplored = leaf_guidance.get("unexplored") or []
+    if exhausted:
+        parts.append("已挖穿(避开,除非机制全新): " + "；".join(exhausted))
+    if unexplored:
+        parts.append("未探索(优先考虑): " + "、".join(unexplored))
+    return "\n".join(parts)
+
+
+def recall(
+    index,
+    *,
+    k: int = 5,
+    data_window: dict | None = None,
+    leaf_names: list[str] | None = None,
+) -> Recall:
     """召回本数据窗口内的历史。
 
     `data_window=None` → 不限定窗口（向后兼容）。限定时，跨窗口的历史不会被喂给 LLM：
     一个窗口上「已验证有效」的因子，换个窗口未必成立。
+
+    ``leaf_names``：本 session **存活**叶子（leaf_health 摘除后）。传入时重算
+    ``leaf_stats`` 并生成 ``leaf_guidance``；死叶不出现在挖穿/未探索任一侧。
     """
+    leaf_guidance = None
+    if leaf_names is not None:
+        stats = index.leaf_stats(leaf_names, data_window=data_window)
+        leaf_guidance = build_leaf_guidance(stats, list(leaf_names))
     return Recall(
         seen=index.seen_expressions(data_window=data_window),
         known_invalid=index.known_invalid(k=k, data_window=data_window),
         known_valid=index.known_valid(k=k, data_window=data_window),
+        leaf_guidance=leaf_guidance,
     )
 
 

@@ -123,9 +123,12 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
         _step(f"── 第 {round_i + 1}/{n_rounds} 轮 " + "─" * 40)
         try:
             _step("  ① 生成假设 + 表达式")
+            # leaf_guidance=None：M5 无跨 session index；注入函数与 team 共用，
+            # 有 guidance 时由调用方/扩展接线传入。ctx 透传以尊重开局摘死叶。
             state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle,
                                   feedback=feedback, heal_rounds=heal_rounds,
-                                  leaf_budgets=leaf_budgets, profile=profile)
+                                  leaf_budgets=leaf_budgets, profile=profile,
+                                  ctx=ctx)
             _step(f"  ② 评估 {len(getattr(state, '_pending', []))} 个候选表达式")
             # None-gating：eval_start=None（旧调用方默认）时 daily/eval_start/eval_end
             # 的组合与之前逐字节相同的裸调用；非 None 时在完整帧 daily 上求值，裁剪到

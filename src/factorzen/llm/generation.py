@@ -5,6 +5,8 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from factorzen.agents.roles.librarian import format_leaf_guidance  # 双路径共用再导出
+
 LLMFn = Callable[[list[dict[str, str]]], str]
 
 
@@ -138,14 +140,14 @@ def format_leaf_budget_hint(leaf_budgets: dict[str, int] | None) -> str:
 
 
 # 叶子族语义指引（市场特有：A 股财报/资金流，crypto 衍生品特有信号）。单点维护防漂移。
-# ashare 文案与旧内联块**逐字节一致**（零回归，golden 测试钉死）；未登记市场 → 空串
+# ashare：中性列举可用族，具体优先/避开由动态 leaf_guidance（Librarian）引导；未登记市场 → 空串
 # （不广告不存在的叶子——能力层↔接线层漂移教训）。
 _LEAF_GUIDANCE: dict[str, str] = {
     "ashare": (
         "其中 roe/roa/grossprofit_margin/netprofit_margin/debt_to_assets(质量) 与 "
         "or_yoy/netprofit_yoy/assets_yoy(成长) 是**财报基本面**(已按公告日 PIT 对齐，无未来函数)；"
-        "net_mf_amount(主力资金净流入) 与 north_ratio(北向持股占比) 是**资金流/北向**——"
-        "三类都与量价正交，优先用它们构造价值/质量/成长/资金面假设，别只盯量价波动。\n"
+        "net_mf_amount(主力资金净流入) 等是**资金流**叶子（以当前可用叶子为准）——"
+        "与量价正交的族可作多族组合，避开拥挤方向，别只盯量价波动。\n"
     ),
     "crypto": (
         "其中 funding_rate(资金费率,多头付正=拥挤度/情绪)、open_interest(未平仓量,趋势确认/背离)、"
@@ -173,14 +175,18 @@ def build_agent_messages(
     negatives: list[str] | None = None,
     leaf_budgets: dict[str, int] | None = None,
     market: str = "ashare",
+    leaf_guidance: dict[str, list[str]] | None = None,
 ) -> list[dict[str, str]]:
     """构造生成 prompt：算子/特征清单 + 上轮反馈 + Negative RAG 负例 + 短历史叶子预热预算。
 
-    ``leaf_budgets``：``{短历史叶子名: 可用预热 bar 数}``（默认 None → prompt 与改前逐字节相同，
-    零回归）。非空时追加一句预热预算提示，引导 LLM 别对短历史叶子写超预热的长窗口。
+    ``leaf_budgets``：``{短历史叶子名: 可用预热 bar 数}``（默认 None → 不追加预算提示）。
+    非空时追加一句预热预算提示，引导 LLM 别对短历史叶子写超预热的长窗口。
 
-    ``market``：叶子族指引与市场约束按市场注入（默认 ashare，逐字节零回归）；未登记市场
+    ``market``：叶子族指引与市场约束按市场注入（默认 ashare）；未登记市场
     只列算子/叶子 + 通用约束，不广告不存在的叶子族。
+
+    ``leaf_guidance``：Librarian 叶子级挖穿/未探索（与 team Hypothesis 共用
+    ``format_leaf_guidance``）；None → 不注入。
     """
     neg = negatives or []
     system = (
@@ -206,4 +212,7 @@ def build_agent_messages(
         user += f"\n上一轮反馈: {feedback}"
     if neg:
         user += "\n避免以下已探索过/低效的模式:\n" + "\n".join(f"- {n}" for n in neg)
+    lg = format_leaf_guidance(leaf_guidance)
+    if lg:
+        user += "\n" + lg
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

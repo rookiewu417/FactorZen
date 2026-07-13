@@ -66,21 +66,31 @@ class AgentContext:
 
 def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
                   n_hypotheses: int = 1, feedback: str = "", heal_rounds: int = 0,
-                  leaf_budgets: dict[str, int] | None = None, profile=None) -> AgentState:
+                  leaf_budgets: dict[str, int] | None = None, profile=None,
+                  leaf_guidance: dict[str, list[str]] | None = None,
+                  ctx: AgentContext | None = None) -> AgentState:
     """生成假设+表达式 → 语义对齐自检 → 暂存待评估（compile/eval 在 node_evaluate）。
 
     ``leaf_budgets``：短历史叶子的可用预热预算，透传给 `build_agent_messages` 提示 LLM
     别对短叶写超预热长窗口（默认 None → prompt 零回归）。
+
+    ``leaf_guidance``：Librarian 叶子级挖穿/未探索，与 team Hypothesis 共用
+    ``format_leaf_guidance`` 注入（默认 None → 不注入）。
+
+    ``ctx``：调用方已构造的市场上下文（含 leaf_health 摘除后的存活叶）。默认 None 时
+    从 ``profile`` 重建（旧调用方零回归）。**注意**：``run_llm_agent`` 开局摘叶后须
+    传入同一 ``ctx``，否则 prompt 仍广告死叶。
 
     ``profile``：市场 profile（默认 None → A 股，零回归）。经 `AgentContext.from_profile`
     得叶子集/映射/市场名，透传给 prompt（market/leaf_names）、health_check、自愈、规范化
     （parse_expr 的 leaf_map）——crypto 表达式方能解析、且 `norm` 与 `evaluate_expressions`
     产出的规范 `seen_expressions` 对齐（否则 dedup 失配致 N over-count）。
     """
-    ctx = AgentContext.from_profile(profile)
+    if ctx is None:
+        ctx = AgentContext.from_profile(profile)
     msgs = build_agent_messages(ctx.op_names, ctx.leaf_names, feedback,
                                 state.negative_examples, leaf_budgets=leaf_budgets,
-                                market=ctx.market)
+                                market=ctx.market, leaf_guidance=leaf_guidance)
     proposals = generate_factor_proposal(msgs, llm_fn, n_hypotheses=n_hypotheses)
     pending: list[_PendingExpr] = []
     # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销

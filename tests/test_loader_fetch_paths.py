@@ -26,6 +26,7 @@ from factorzen.core.loader import (
     fetch_finance,
     fetch_index_daily,
     fetch_index_member_all,
+    fetch_margin_detail,
     fetch_stock_basic,
     fetch_trade_cal,
 )
@@ -735,3 +736,95 @@ def test_fetch_index_member_all_no_token_returns_none_fast(tmp_path: Path):
         result = fetch_index_member_all()
 
     assert result is None
+
+
+# ══════════════════════════════════════════════════════════
+# fetch_margin_detail：按 trade_date 分页 / 落分区 / 幂等增量
+# ══════════════════════════════════════════════════════════
+
+
+def _pd_margin(trade_date: str = "20220104", code: str = "000001.SZ") -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "trade_date": [trade_date],
+            "ts_code": [code],
+            "rzye": [1e9],
+            "rqye": [1e6],
+            "rzmre": [1e8],
+            "rqyl": [100.0],
+            "rzche": [1e7],
+            "rqchl": [10.0],
+            "rqmcl": [5.0],
+            "rzrqye": [1.001e9],
+        }
+    )
+
+
+def test_fetch_margin_detail_market_mode_by_trade_date():
+    """全市场：按缺失交易日逐日 trade_date 拉取并 save_parquet(margin_detail)。"""
+    mock_pro = MagicMock()
+    mock_pro.margin_detail.return_value = _pd_margin()
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "get_trade_dates",
+                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+        patch.object(loader_module, "save_parquet") as save,
+        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+    ):
+        fetch_margin_detail("20220101", "20220131")
+    assert mock_pro.margin_detail.call_count == 2
+    for c in mock_pro.margin_detail.call_args_list:
+        assert "trade_date" in c.kwargs
+    save.assert_called_once()
+    assert save.call_args.kwargs.get("data_type") == "margin_detail"
+
+
+def test_fetch_margin_detail_incremental_skips_cached_dates():
+    """幂等增量：已缓存交易日不重拉。"""
+    mock_pro = MagicMock()
+    mock_pro.margin_detail.return_value = _pd_margin(trade_date="20220105")
+    cached = pl.DataFrame({"trade_date": [date(2022, 1, 4)], "ts_code": ["000001.SZ"]})
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "get_trade_dates",
+                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+        patch.object(loader_module, "save_parquet"),
+        patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
+    ):
+        fetch_margin_detail("20220101", "20220131")
+    assert mock_pro.margin_detail.call_count == 1
+    assert mock_pro.margin_detail.call_args.kwargs.get("trade_date") == "20220105"
+
+
+def test_fetch_margin_detail_fully_cached_no_fetch():
+    mock_pro = MagicMock()
+    cached = pl.DataFrame({
+        "trade_date": [date(2022, 1, 4), date(2022, 1, 5)],
+        "ts_code": ["000001.SZ", "000001.SZ"],
+    })
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "get_trade_dates",
+                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+        patch.object(loader_module, "save_parquet") as save,
+        patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
+    ):
+        fetch_margin_detail("20220101", "20220131")
+    mock_pro.margin_detail.assert_not_called()
+    save.assert_not_called()
+
+
+def test_fetch_margin_detail_subset_no_cache_write():
+    mock_pro = MagicMock()
+    mock_pro.margin_detail.return_value = _pd_margin(code="000001.SZ")
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "save_parquet") as save,
+    ):
+        result = fetch_margin_detail("20220101", "20220131", ts_codes=["000001.SZ"])
+    save.assert_not_called()
+    assert result.height == 1 and result["ts_code"][0] == "000001.SZ"

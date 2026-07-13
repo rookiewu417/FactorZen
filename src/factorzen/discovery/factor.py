@@ -9,7 +9,12 @@ import polars as pl
 from factorzen.daily.factors.base import DailyFactor
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import evaluate_materialized, feature_names, parse_expr
-from factorzen.discovery.operators import BASIC_FEATURES, FLOW_FEATURES, FUNDAMENTAL_FEATURES
+from factorzen.discovery.operators import (
+    BASIC_FEATURES,
+    FLOW_FEATURES,
+    FUNDAMENTAL_FEATURES,
+    MARGIN_FEATURES,
+)
 
 _PRICE_COLS = ["open", "high", "low", "close", "open_adj", "high_adj",
                "low_adj", "close_adj", "vol", "amount"]
@@ -57,8 +62,14 @@ class ExpressionFactor(DailyFactor):
         if self._feats & FUNDAMENTAL_FEATURES:
             from factorzen.daily.data.pit import attach_fundamentals
             daily = attach_fundamentals(daily)
-        # 仅在引用资金流/北向叶子时 attach（日频 join，与挖掘路径共用 attach_flows，防漂移）
+        # 仅在引用资金流/北向/两融叶子时 attach（日频 join，与挖掘路径共用 attach_flows，防漂移）
         if self._feats & FLOW_FEATURES:
+            # margin_ratio 需 circ_mv（万元）；prepare_mining 已 join daily_basic，
+            # 物化路径若未因 BASIC 叶子 join 过，在此补 join，避免比值全 null（双路径）。
+            if (self._feats & MARGIN_FEATURES) and "circ_mv" not in daily.columns:
+                basic = ctx.daily_basic.collect()
+                if not basic.is_empty():
+                    daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
             from factorzen.daily.data.flows import attach_flows
             daily = attach_flows(daily)
         # 排序必须在依赖行序的派生列（shift/over）之前完成，否则 ret_1d 等会用到

@@ -263,3 +263,22 @@ def test_data_fetch_daily_and_daily_basic(monkeypatch):
         ("daily", "20250101", "20250131"),
         ("daily-basic", "20250101", "20250131"),
     ]
+
+
+def test_data_fetch_margin_detail(monkeypatch):
+    from factorzen.cli import main as cli
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_fetch_margin(start: str, end: str):
+        calls.append((start, end))
+        return [1, 2, 3]
+
+    monkeypatch.setattr("factorzen.core.loader.fetch_margin_detail", fake_fetch_margin)
+    assert (
+        cli.main(
+            ["data", "fetch", "margin_detail", "--start", "20240101", "--end", "20240131"]
+        )
+        == 0
+    )
+    assert calls == [("20240101", "20240131")]

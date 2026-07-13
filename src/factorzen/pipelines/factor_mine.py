@@ -73,8 +73,9 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
     basic = ctx.daily_basic.collect()
     if not basic.is_empty():
         daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
-    # 基本面叶子（roe/margin/yoy，按公告日 PIT 对齐）+ 资金流/北向（日频）——均与量价正交。
-    # 物化路径 ExpressionFactor.compute 同样 attach（共用同一函数，防双路径漂移）。
+    # 基本面叶子（roe/margin/yoy，按公告日 PIT 对齐）+ 资金流/北向/两融（日频）——均与量价正交。
+    # 两融 T+1 披露 lag 在 attach_flows 内置。物化路径 ExpressionFactor.compute 同样 attach
+    # （共用同一函数，防双路径漂移，陷阱#2）。
     from factorzen.daily.data.flows import attach_flows
     from factorzen.daily.data.pit import attach_fundamentals
     daily = attach_fundamentals(daily)

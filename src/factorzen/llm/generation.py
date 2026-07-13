@@ -5,7 +5,10 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from factorzen.agents.roles.librarian import format_leaf_guidance  # 双路径共用再导出
+from factorzen.agents.roles.librarian import (  # 双路径共用再导出
+    format_leaf_guidance,
+    format_library_covered,
+)
 
 LLMFn = Callable[[list[dict[str, str]]], str]
 
@@ -176,6 +179,7 @@ def build_agent_messages(
     leaf_budgets: dict[str, int] | None = None,
     market: str = "ashare",
     leaf_guidance: dict[str, list[str]] | None = None,
+    library_covered: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """构造生成 prompt：算子/特征清单 + 上轮反馈 + Negative RAG 负例 + 短历史叶子预热预算。
 
@@ -187,6 +191,9 @@ def build_agent_messages(
 
     ``leaf_guidance``：Librarian 叶子级挖穿/未探索（与 team Hypothesis 共用
     ``format_leaf_guidance``）；None → 不注入。
+
+    ``library_covered``：库内 active 高 IC 表达式（与 team Hypothesis 共用
+    ``format_library_covered``）；None → 不注入。
     """
     neg = negatives or []
     system = (
@@ -215,4 +222,7 @@ def build_agent_messages(
     lg = format_leaf_guidance(leaf_guidance)
     if lg:
         user += "\n" + lg
+    lc = format_library_covered(library_covered)
+    if lc:
+        user += "\n" + lc
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

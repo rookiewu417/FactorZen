@@ -24,15 +24,27 @@ class Recall:
     """Librarian 检索结果（亦称 LibrarianBriefing）。
 
     ``leaf_guidance``：叶子级挖穿/未探索指导；``leaf_names`` 未传入时为 None（零回归）。
+    ``library_covered``：库内 active 高 |IC| 表达式（供 Hypothesis 追求正交）；None → 不注入。
     """
     seen: set[str]
     known_invalid: list[str]
     known_valid: list[str]
     leaf_guidance: dict[str, list[str]] | None = None
+    library_covered: list[str] | None = None
 
 
 # 向后兼容别名（任务文档称 LibrarianBriefing）
 LibrarianBriefing = Recall
+
+
+def format_library_covered(library_covered: list[str] | None) -> str:
+    """把库内已覆盖方向渲染成 Hypothesis / M5 prompt 共用注入文案。
+
+    空/None → 空串（零回归：不改 prompt 形状）。双路径必须调本函数，避免文案漂移。
+    """
+    if not library_covered:
+        return ""
+    return "库内已有(追求与其正交,换方向): " + "；".join(library_covered)
 
 
 def build_leaf_guidance(
@@ -98,6 +110,7 @@ def recall(
     k: int = 5,
     data_window: dict | None = None,
     leaf_names: list[str] | None = None,
+    library_covered: list[str] | None = None,
 ) -> Recall:
     """召回本数据窗口内的历史。
 
@@ -106,6 +119,8 @@ def recall(
 
     ``leaf_names``：本 session **存活**叶子（leaf_health 摘除后）。传入时重算
     ``leaf_stats`` 并生成 ``leaf_guidance``；死叶不出现在挖穿/未探索任一侧。
+
+    ``library_covered``：库内 active 高 IC 表达式列表（预构建）；None → 不注入（零回归）。
     """
     leaf_guidance = None
     if leaf_names is not None:
@@ -116,6 +131,7 @@ def recall(
         known_invalid=index.known_invalid(k=k, data_window=data_window),
         known_valid=index.known_valid(k=k, data_window=data_window),
         leaf_guidance=leaf_guidance,
+        library_covered=library_covered,
     )
 
 

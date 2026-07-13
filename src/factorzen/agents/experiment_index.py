@@ -144,8 +144,14 @@ class ExperimentIndex:
 
         排除 **holdout 覆盖失败**（``reject_category=holdout_coverage``）：那是缺数据，
         不是方向性证据，回灌会把 LLM 推向「北向思路无效」的错误结论。
+
+        排除 **库内高相关**（``reject_category=library_correlated``）：IC 未必低，是「重复
+        方向」非「无效」；混进负例会误导「这方向没信号」。
         """
-        from factorzen.discovery.guardrails import REJECT_CATEGORY_HOLDOUT_COVERAGE
+        from factorzen.discovery.guardrails import (
+            REJECT_CATEGORY_HOLDOUT_COVERAGE,
+            REJECT_CATEGORY_LIBRARY_CORRELATED,
+        )
 
         def _is_coverage_fail(r: dict) -> bool:
             if r.get("reject_category") == REJECT_CATEGORY_HOLDOUT_COVERAGE:
@@ -153,10 +159,14 @@ class ExperimentIndex:
             rr = r.get("reject_reason") or ""
             return "覆盖不足" in rr
 
+        def _is_library_corr(r: dict) -> bool:
+            return r.get("reject_category") == REJECT_CATEGORY_LIBRARY_CORRELATED
+
         recs = [r for r in self._scoped(data_window)
                 if not r.get("passed", False) and r.get("compile_ok", True)
                 and not is_lookahead_expr(r.get("expression") or "")
-                and not _is_coverage_fail(r)]
+                and not _is_coverage_fail(r)
+                and not _is_library_corr(r)]
         recs.sort(key=lambda r: abs(r.get("ic_train") or 0.0))  # 最没用的优先
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]
 

@@ -44,7 +44,7 @@ def _scripted_llm():
 
 def test_run_llm_agent_closes_loop():
     daily = _mock_daily()
-    res = run_llm_agent(daily, _scripted_llm(), n_rounds=3, seed=42)
+    res = run_llm_agent(daily, _scripted_llm(), n_rounds=3, seed=42, library_orthogonal=False)
     assert res.state.iteration == 3
     assert res.n_trials >= 1            # N 累加了
     assert len(res.state.attempts) >= 1
@@ -52,8 +52,8 @@ def test_run_llm_agent_closes_loop():
 
 def test_run_llm_agent_reproducible():
     daily = _mock_daily()
-    r1 = run_llm_agent(daily, _scripted_llm(), n_rounds=2, seed=7)
-    r2 = run_llm_agent(daily, _scripted_llm(), n_rounds=2, seed=7)
+    r1 = run_llm_agent(daily, _scripted_llm(), n_rounds=2, seed=7, library_orthogonal=False)
+    r2 = run_llm_agent(daily, _scripted_llm(), n_rounds=2, seed=7, library_orthogonal=False)
     # 同 seed + 同 scripted LLM → 尝试序列逐字节一致
     assert [a.expression for a in r1.state.attempts] == [a.expression for a in r2.state.attempts]
     assert r1.n_trials == r2.n_trials

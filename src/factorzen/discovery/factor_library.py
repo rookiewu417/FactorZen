@@ -197,6 +197,73 @@ def load_library(market: str, root: str = DEFAULT_ROOT) -> list[FactorRecord]:
     return out
 
 
+def library_covered_expressions(
+    market: str, *, k: int = 10, statuses: tuple[str, ...] = ("active",),
+    root: str = DEFAULT_ROOT,
+) -> list[str]:
+    """库内 status∈statuses 因子按 |ic_train| 降序取前 k 的表达式（供 LLM 提示）。
+
+    文件不存在/空 → []。不物化、不求值。
+    """
+    recs = [r for r in load_library(market, root=root) if r.status in statuses]
+    recs.sort(key=lambda r: (-abs(r.ic_train or 0.0), r.expression))
+    return [r.expression for r in recs[:k]]
+
+
+def build_library_pool(
+    market: str,
+    daily: pl.DataFrame,
+    leaf_map: dict[str, str] | None = None,
+    *,
+    statuses: tuple[str, ...] = ("active",),
+    root: str = DEFAULT_ROOT,
+    eval_start=None,
+) -> dict[str, pl.DataFrame]:
+    """把库内因子物化为 mining/评估帧上的因子值面板，供搜索期库级正交去相关。
+
+    - 取 status∈statuses 记录，按 |ic_train| 降序。
+    - 每条 expression 用 ``evaluate_materialized`` 在 ``daily`` 上算
+      ``[trade_date, ts_code, factor_value]``（与挖掘物化路径一致）。
+    - 非法/求值失败/全 null 的表达式跳过并计数——一条坏记录不许崩整个 pool。
+    - 库文件不存在/空 → {}。
+    - ``eval_start``：可选，求值后裁到该日起（team holdout 口径扩窗预热时传入 holdout 起点）。
+
+    调用方负责 ``daily`` 已与挖掘同 prep（派生列/停牌掩码等）；本函数不再二次预处理。
+    """
+    recs = [r for r in load_library(market, root=root) if r.status in statuses]
+    if not recs:
+        return {}
+    recs.sort(key=lambda r: (-abs(r.ic_train or 0.0), r.expression))
+
+    df = daily.sort(["ts_code", "trade_date"])
+    pool: dict[str, pl.DataFrame] = {}
+    n_skip = 0
+    for r in recs:
+        try:
+            node = parse_expr(r.expression, leaf_map)
+            series = evaluate_materialized(node, df, leaf_map)
+            panel = (
+                df.select(["trade_date", "ts_code"])
+                .with_columns(series.alias("factor_value"))
+                .filter(pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
+            )
+            if eval_start is not None:
+                panel = panel.filter(pl.col("trade_date") >= eval_start)
+            if panel.is_empty():
+                n_skip += 1
+                continue
+            pool[r.expression] = panel
+        except Exception as exc:
+            n_skip += 1
+            _LOG.debug("build_library_pool skip %r: %s: %s",
+                       r.expression, type(exc).__name__, exc)
+            continue
+    if n_skip:
+        _LOG.info("build_library_pool(%s): skipped %d / kept %d",
+                  market, n_skip, len(pool))
+    return pool
+
+
 def _save_library(market: str, records: list[FactorRecord], root: str = DEFAULT_ROOT) -> None:
     path = library_path(market, root)
     path.parent.mkdir(parents=True, exist_ok=True)

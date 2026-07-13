@@ -321,8 +321,10 @@ def test_run_llm_agent_actually_finalizes(monkeypatch):
                         lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
     monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
 
+    # library_orthogonal=False：本测试对象是 finalize 记账；开着会加载真实 workspace 库,
+    # 候选被库相关拒掉 → 测试结果依赖本地库内容（非封闭）。
     res = run_llm_agent(_mk_signal_daily(), _fake_llm(), n_rounds=3, seed=1,
-                        heal_rounds=0)
+                        heal_rounds=0, library_orthogonal=False)
 
     assert res.sharpe_variance == res.sharpe_variance, "sharpe_variance 未落进 AgentResult（nan）"
     assert res.candidates, "本测试需要至少一个候选，否则无判别力"

@@ -64,6 +64,8 @@ def write_session_manifest(
         "pbo": json_safe_float(state.pbo),
         "attempts": [a.__dict__ for a in state.attempts],
         "candidates": result.candidates,
+        "library_pool_size": getattr(state, "library_pool_size", 0),
+        "n_library_correlated_rejects": getattr(state, "n_library_correlated_rejects", 0),
         "git_sha": get_git_sha(),
     }
     path = run_dir / "manifest.json"

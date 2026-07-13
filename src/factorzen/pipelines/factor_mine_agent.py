@@ -36,6 +36,9 @@ def _llm_meta(llm_fn) -> dict:
         "max_tokens": c.max_tokens,
         "thinking": c.thinking or None,
         "max_retries": c.max_retries,
+        # 双 profile 审计：事后必须能还原用的是 AIPing 还是 openai 兼容网关
+        "flavor": c.flavor,
+        "profile": c.profile,
     }
 
 

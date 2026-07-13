@@ -96,7 +96,8 @@ def test_llm_meta_reads_model_and_provider_from_config(monkeypatch):
     from factorzen.pipelines import factor_mine_agent as mod
 
     fake = LLMConfig(enabled=True, base_url="https://x/v1", api_key="sk-SECRET-TOKEN-XYZ",
-                     model="DeepSeek-V4-Pro", provider="DeepSeek", temperature=0.2)
+                     model="DeepSeek-V4-Pro", provider="DeepSeek", temperature=0.2,
+                     flavor="aiping", profile=None)
     monkeypatch.setattr(mod, "load_llm_config", lambda **_kw: fake)
 
     meta = mod._llm_meta(None)
@@ -104,8 +105,34 @@ def test_llm_meta_reads_model_and_provider_from_config(monkeypatch):
     assert meta["model"] == "DeepSeek-V4-Pro"
     assert meta["provider"] == "DeepSeek"
     assert meta["temperature"] == 0.2
+    assert meta["flavor"] == "aiping"
+    assert meta["profile"] is None
     assert "api_key" not in meta, "凭据不得进 manifest"
     assert fake.api_key not in json.dumps(meta, ensure_ascii=False)
+
+
+def test_llm_meta_records_profile_and_flavor_for_openai_gateway(monkeypatch):
+    """第二 profile（sub2api/openai）必须进 manifest，事后才能复现上游。"""
+    from factorzen.llm.config import LLMConfig
+    from factorzen.pipelines import factor_mine_agent as mod
+
+    fake = LLMConfig(
+        enabled=True,
+        base_url="http://localhost:8080/v1",
+        api_key="sk-PLACEHOLDER",
+        model="gpt-5.4",
+        flavor="openai",
+        profile="sub2api",
+    )
+    monkeypatch.setattr(mod, "load_llm_config", lambda **_kw: fake)
+
+    meta = mod._llm_meta(None)
+
+    assert meta["model"] == "gpt-5.4"
+    assert meta["flavor"] == "openai"
+    assert meta["profile"] == "sub2api"
+    assert "api_key" not in meta
+    assert "sk-PLACEHOLDER" not in json.dumps(meta, ensure_ascii=False)
 
 
 def test_default_run_id_carries_timestamp():

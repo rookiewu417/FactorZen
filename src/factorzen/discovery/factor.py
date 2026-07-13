@@ -13,6 +13,7 @@ from factorzen.discovery.operators import (
     BASIC_FEATURES,
     FLOW_FEATURES,
     FUNDAMENTAL_FEATURES,
+    HOLDER_FEATURES,
     MARGIN_FEATURES,
 )
 
@@ -62,7 +63,11 @@ class ExpressionFactor(DailyFactor):
         if self._feats & FUNDAMENTAL_FEATURES:
             from factorzen.daily.data.pit import attach_fundamentals
             daily = attach_fundamentals(daily)
-        # 仅在引用资金流/北向/两融叶子时 attach（日频 join，与挖掘路径共用 attach_flows，防漂移）
+        # 股东户数（ann_date PIT，与 fina 同款 pit_align）
+        if self._feats & HOLDER_FEATURES:
+            from factorzen.daily.data.pit import attach_holders
+            daily = attach_holders(daily)
+        # 仅在引用资金流/北向/两融/龙虎榜叶子时 attach（日频 join，与挖掘路径共用 attach_flows，防漂移）
         if self._feats & FLOW_FEATURES:
             # margin_ratio 需 circ_mv（万元）；prepare_mining 已 join daily_basic，
             # 物化路径若未因 BASIC 叶子 join 过，在此补 join，避免比值全 null（双路径）。

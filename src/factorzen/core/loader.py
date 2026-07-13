@@ -583,6 +583,198 @@ def fetch_margin_detail(start: str, end: str, ts_codes: list[str] | None = None)
     return load_parquet("margin_detail", start=start, end=end).collect()
 
 
+# 股东户数——低频 PIT（按 ann_date 对齐在 attach 层）；接口要求 ts_code 逐股查询。
+# 返回 ts_code/ann_date/end_date/holder_num。落盘 data/raw/stk_holdernumber/，date_col=end_date。
+# holder_num_chg 在 attach 源数据整理阶段按期际算，不在此处落盘。
+STK_HOLDERNUMBER_COLS = ["ts_code", "ann_date", "end_date", "holder_num"]
+
+
+def fetch_stk_holdernumber(
+    start: str, end: str, ts_codes: list[str] | None = None,
+) -> pl.DataFrame:
+    """拉股东户数(stk_holdernumber)。按 ts_code 分批 + 按年分段缓存（幂等增量）。
+
+    Tushare 该接口需 ts_code+start_date/end_date；全市场时从 stock_basic 取清单。
+    分区键 end_date（与 finance 同款 year/month hive）。ann_date PIT 对齐在 attach_holders。
+    """
+    pro = init_tushare()
+    data_type = "stk_holdernumber"
+    start_dt = datetime.strptime(start, "%Y%m%d")
+    end_dt = datetime.strptime(end, "%Y%m%d")
+
+    if ts_codes is None:
+        stock_df = fetch_stock_basic()
+        ts_codes_all: list[str] = stock_df["ts_code"].to_list() if not stock_df.is_empty() else []
+    else:
+        ts_codes_all = list(ts_codes)
+
+    if not ts_codes_all:
+        logger.warning("[stk_holdernumber] 无股票清单，跳过")
+        try:
+            return load_parquet(data_type, start=start, end=end, date_col="end_date").collect()
+        except Exception:
+            return pl.DataFrame()
+
+    # 按年分段：年内存任意一个月分区即视为该年已缓存（与低频披露兼容的幂等启发式）
+    for year in range(start_dt.year, end_dt.year + 1):
+        y_start = max(datetime(year, 1, 1), start_dt)
+        y_end = min(datetime(year, 12, 31), end_dt)
+        if y_end < y_start:
+            continue
+        # 检查该年是否已有分区（任一季末月）
+        if any(partition_exists(data_type, year, m) for m in (3, 6, 9, 12)):
+            logger.info(f"[stk_holdernumber] {year} 已缓存，跳过")
+            continue
+
+        y_start_str = y_start.strftime("%Y%m%d")
+        y_end_str = y_end.strftime("%Y%m%d")
+        parts: list[pl.DataFrame] = []
+        # 按 ts_code 逐股拉（接口语义：ts_code+start/end；与 loader 按 code 模式一致）。
+        # 空结果常见（该年无披露）——不走 _retry，避免对空股连打 MAX_RETRIES。
+        for i, code in enumerate(ts_codes_all):
+            try:
+                _rate_limit()
+                df_pd = pro.stk_holdernumber(
+                    ts_code=code, start_date=y_start_str, end_date=y_end_str,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[stk_holdernumber] {code} ({i + 1}/{len(ts_codes_all)}) 失败: {e}"
+                )
+                continue
+            if df_pd is not None and not (hasattr(df_pd, "empty") and df_pd.empty):
+                parts.append(pl.from_pandas(df_pd))
+
+        if not parts:
+            logger.warning(f"[stk_holdernumber] {year} 无数据")
+            continue
+
+        str_cols = {"ts_code", "ann_date", "end_date"}
+        aligned = []
+        for p in parts:
+            casts = {
+                c: pl.Float64
+                for c in p.columns
+                if c not in str_cols and p[c].dtype != pl.Float64
+            }
+            aligned.append(
+                p.with_columns([pl.col(c).cast(pl.Float64, strict=False) for c in casts])
+            )
+        df = (
+            pl.concat(aligned)
+            .with_columns(_str_to_date(pl.col("end_date")))
+            .unique(subset=["ts_code", "end_date"], keep="first")
+            .sort(["ts_code", "end_date"])
+        )
+        df = df.select([c for c in STK_HOLDERNUMBER_COLS if c in df.columns])
+        save_parquet(df, data_type=data_type, date_col="end_date")
+        logger.info(f"[stk_holdernumber] {year} 已保存 ({len(df)} 行)")
+
+    try:
+        return load_parquet(data_type, start=start, end=end, date_col="end_date").collect()
+    except Exception:
+        return pl.DataFrame()
+
+
+# 龙虎榜——日频事件；t 日盘后披露，lag 在 attach 层完成。
+# 单位：net_amount 万元；amount 千元。落盘 data/raw/top_list/。
+# 极端行情可能全日无上榜 → 空日写 sentinel，不算失败、避免永久重拉。
+TOP_LIST_COLS = [
+    "ts_code", "trade_date", "name", "close", "pct_change", "turnover_rate",
+    "amount", "l_sell", "l_buy", "l_amount", "net_amount", "net_rate",
+    "amount_rate", "float_values", "reason",
+]
+_TOPLIST_EMPTY_CODE = "__EMPTY__"
+
+
+def fetch_top_list(start: str, end: str, ts_codes: list[str] | None = None) -> pl.DataFrame:
+    """拉每日龙虎榜(top_list)。按缺失交易日 market 级拉取 + 缓存。
+
+    空日（无上榜）不算失败：写入 ts_code=__EMPTY__ 的 sentinel 行标记该日已拉，
+    attach 层会过滤 sentinel。子集(ts_codes)模式过滤返回、不写共享缓存。
+    """
+    pro = init_tushare()
+    data_type = "top_list"
+
+    if ts_codes is not None:
+        # 子集：逐日拉全市场再过滤（top_list 接口按 trade_date，无 ts_code 批量语义）
+        missing = [d.strftime("%Y%m%d") for d in get_trade_dates(start, end)]
+        parts: list[pl.DataFrame] = []
+        for date_str in missing:
+            try:
+                _rate_limit()
+                df_pd = pro.top_list(trade_date=date_str)
+            except Exception as e:
+                logger.error(f"[top_list] {date_str} 拉取失败: {e}")
+                continue
+            if df_pd is not None and not df_pd.empty:
+                parts.append(pl.from_pandas(df_pd))
+        if not parts:
+            return pl.DataFrame()
+        merged = (
+            pl.concat(parts)
+            .with_columns(_str_to_date(pl.col("trade_date")))
+            .sort(["trade_date", "ts_code"])
+        )
+        merged = merged.select([c for c in TOP_LIST_COLS if c in merged.columns])
+        return merged.filter(pl.col("ts_code").is_in(ts_codes))
+
+    missing = _missing_trade_dates(data_type, start, end)
+    if not missing:
+        logger.info(f"[top_list] {start}~{end} 已完整缓存，跳过拉取")
+    else:
+        buf: list[pl.DataFrame] = []
+
+        def _flush() -> None:
+            if not buf:
+                return
+            merged = (
+                pl.concat(buf)
+                .with_columns(_str_to_date(pl.col("trade_date")))
+                .sort(["trade_date", "ts_code"])
+            )
+            merged = merged.select([c for c in TOP_LIST_COLS if c in merged.columns
+                                    or c == "ts_code"])
+            # 保证至少有 std 关键列
+            keep = [c for c in merged.columns if c in TOP_LIST_COLS or c == "ts_code"]
+            save_parquet(merged.select(keep), data_type=data_type)
+            buf.clear()
+
+        last_year: str | None = None
+        for date_str in missing:
+            year = date_str[:4]
+            if last_year is not None and year != last_year:
+                _flush()
+            last_year = year
+            try:
+                _rate_limit()
+                df_pd = pro.top_list(trade_date=date_str)
+            except Exception as e:
+                logger.error(f"[top_list] {date_str} 拉取失败: {e}")
+                continue
+            if df_pd is not None and not (hasattr(df_pd, "empty") and df_pd.empty):
+                buf.append(pl.from_pandas(df_pd))
+            else:
+                # 空日 sentinel：标记已拉，attach 过滤 __EMPTY__
+                logger.info(f"[top_list] {date_str} 无上榜（空日 sentinel）")
+                buf.append(pl.DataFrame({
+                    "trade_date": [date_str],
+                    "ts_code": [_TOPLIST_EMPTY_CODE],
+                    "net_amount": [None],
+                    "amount": [None],
+                }))
+        _flush()
+
+    try:
+        return (
+            load_parquet(data_type, start=start, end=end)
+            .filter(pl.col("ts_code") != _TOPLIST_EMPTY_CODE)
+            .collect()
+        )
+    except Exception:
+        return pl.DataFrame()
+
+
 def fetch_stock_basic(list_status: str = "L,D,P") -> pl.DataFrame:
     """拉取全量股票基本信息，缓存 7 天。
 

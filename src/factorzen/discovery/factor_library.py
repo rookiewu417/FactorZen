@@ -445,9 +445,12 @@ def upsert(
         raw = cand.get("expression")
         if not raw:
             continue
+        # holdout_n_days：覆盖门（P1）。upsert 是 M1/M5-M6 之外的第三条 gate 路径
+        # （rebuild 走它）——漏传会让稀薄 holdout（如北向季末残留）靠运气混进库。
         if acceptance_reasons(gate="library", ic_train=cand.get("ic_train"),
                               holdout_ic=cand.get("holdout_ic"),
-                              dsr_pvalue=cand.get("dsr_pvalue")):
+                              dsr_pvalue=cand.get("dsr_pvalue"),
+                              holdout_n_days=cand.get("n_holdout_days")):
             res.skipped += 1
             continue
         norm = _normalize(raw, leaf_map)
@@ -651,8 +654,7 @@ def build_library_evaluator(
     from factorzen.agents.evaluation import _preprocess_daily, evaluate_expressions
     from factorzen.discovery.guardrails import DeflationBasis, deflated_pvalue
     from factorzen.discovery.scoring import DataBundle
-    from factorzen.validation.holdout import holdout_ic as _holdout_ic
-    from factorzen.validation.holdout import split_holdout
+    from factorzen.validation.holdout import holdout_ic_result, split_holdout
 
     prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
     es_date = _dt.strptime(eval_start, "%Y%m%d").date() if eval_start else None
@@ -662,7 +664,11 @@ def build_library_evaluator(
     train_end = _dt.strptime(bundle.train_end, "%Y%m%d").date()
 
     def _holdout_ic_of(expr: str):
-        """单表达式的 holdout IC/CI：全帧求值→裁末段→算 IC。**瞬态面板，算完即弃**。"""
+        """单表达式的 holdout IC/CI/有效天数：全帧求值→裁末段→算 IC。**瞬态面板，算完即弃**。
+
+        n_days 是覆盖门燃料（guardrails DEFAULT_HOLDOUT_MIN_DAYS）：求值失败/稀薄 → 0，
+        由 upsert 的 acceptance_reasons 拒绝，不再让稀薄 holdout 靠点估计运气入库。
+        """
         try:
             node = parse_expr(expr, leaf_map)
             s = evaluate_materialized(node, prepped, leaf_map)
@@ -672,11 +678,11 @@ def build_library_evaluator(
                              & pl.col("factor_value").is_finite())
                      .filter(pl.col("trade_date") >= holdout_start))
         except Exception:
-            return float("nan"), float("nan"), float("nan")
+            return float("nan"), float("nan"), float("nan"), 0
         if panel.height < 20:
-            return float("nan"), float("nan"), float("nan")
-        h_ic, _hir, (ci_lo, ci_hi) = _holdout_ic(panel, holdout_df)
-        return h_ic, ci_lo, ci_hi
+            return float("nan"), float("nan"), float("nan"), 0
+        hres = holdout_ic_result(panel, holdout_df)
+        return hres.ic_mean, hres.ci[0], hres.ci[1], hres.n_days
 
     def evaluate(exprs: list[str]) -> list[dict]:
         exprs = list(exprs)
@@ -689,11 +695,12 @@ def build_library_evaluator(
             for r in results:
                 if r["ic_train"] is None:  # 编译失败/预热不足/死表达式 → 不入候选
                     continue
-                h_ic, ci_lo, ci_hi = _holdout_ic_of(r["expression"])
+                h_ic, ci_lo, ci_hi, n_hold = _holdout_ic_of(r["expression"])
                 rows.append({"expression": r["expression"], "ic_train": r["ic_train"],
                              "ir_train": r["ir_train"], "holdout_ic": h_ic,
                              "n_train": r["n_train"], "turnover": r.get("turnover"),
-                             "ic_ci_low": ci_lo, "ic_ci_high": ci_hi})
+                             "ic_ci_low": ci_lo, "ic_ci_high": ci_hi,
+                             "n_holdout_days": n_hold})
         # DSR（池 IR 经验方差 deflation，N=有效评估唯一表达式数），与挖掘同配方
         basis = DeflationBasis.from_ir_pool([x["ir_train"] for x in rows])
         for x in rows:

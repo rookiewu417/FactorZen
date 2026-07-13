@@ -122,3 +122,98 @@ def _ensure_fundamental_cols(daily: pl.DataFrame) -> pl.DataFrame:
     if missing:
         daily = daily.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
     return daily
+
+
+# ── 股东户数（低频 PIT，与 fina 同款 pit_align）──────────────────────────────
+
+
+def _holder_cols() -> list[str]:
+    from factorzen.discovery.operators import HOLDER_FEATURES
+    return sorted(HOLDER_FEATURES)
+
+
+def attach_holders(
+    daily: pl.DataFrame,
+    holder_df: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """把**按公告日 PIT 对齐**的股东户数 join 进日线帧。
+
+    对 ``daily`` 每个交易日 t，取 ``ann_date <= t`` 中 end_date 最大的一期（复用
+    `pit_align`，与 fina 同套 PIT 语义）。公告间隔内自然前向持有（PIT 结果，非 ffill）。
+
+    叶子：
+    - ``holder_num``：最新一期股东户数（户）
+    - ``holder_num_chg``：相邻两期环比 ``(本期-上期)/上期``——在源数据整理阶段按
+      (ts_code, end_date 升序) 算好，随本期 ann_date 生效。低频 PIT 上 ts_delta 会失真
+      （平台期多为 0、只在公告日跳变），故变化率必须期际算（与 fina *_yoy 同理）。
+
+    无数据股票 → null（诚实缺测）。``holder_df is None`` 时从 ``stk_holdernumber``
+    parquet 读；缺数据/失败 → 原样返回并补 null 列。
+    """
+    cols = _holder_cols()
+    if daily.is_empty() or "trade_date" not in daily.columns:
+        return daily
+    if holder_df is None:
+        holder_df = _load_holder()
+    if holder_df is None or holder_df.is_empty():
+        return _ensure_holder_cols(daily)
+
+    prepared = _prepare_holder_df(holder_df)
+    if prepared.is_empty():
+        return _ensure_holder_cols(daily)
+
+    snapshot_dates = daily["trade_date"].unique().sort().to_list()
+    pit = pit_align(prepared, snapshot_dates)
+    if pit.is_empty():
+        return _ensure_holder_cols(daily)
+
+    have = [c for c in cols if c in pit.columns]
+    pit = pit.select(["snapshot_date", "ts_code", *have]).rename({"snapshot_date": "trade_date"})
+    return _ensure_holder_cols(daily.join(pit, on=["trade_date", "ts_code"], how="left"))
+
+
+def _prepare_holder_df(holder_df: pl.DataFrame) -> pl.DataFrame:
+    """源数据整理：规范化日期 + 按 (ts_code, end_date 升序) 算 holder_num_chg。"""
+    df = holder_df
+    # end_date 可能是 String（注入）或 Date（parquet）
+    if "end_date" in df.columns and df["end_date"].dtype == pl.Utf8:
+        df = df.with_columns(pl.col("end_date").str.strptime(pl.Date, "%Y%m%d", strict=False))
+    if "ann_date" in df.columns and df["ann_date"].dtype == pl.Utf8:
+        df = df.with_columns(pl.col("ann_date").str.strptime(pl.Date, "%Y%m%d", strict=False))
+    if "holder_num" not in df.columns:
+        return pl.DataFrame()
+    # 期际环比：按 end_date 升序，(本期-上期)/上期；首期 null
+    df = (
+        df.filter(pl.col("end_date").is_not_null() & pl.col("holder_num").is_not_null())
+        .sort(["ts_code", "end_date"])
+        .with_columns(
+            pl.when(pl.col("holder_num").shift(1).over("ts_code").abs() > 1e-12)
+            .then(
+                (pl.col("holder_num") - pl.col("holder_num").shift(1).over("ts_code"))
+                / pl.col("holder_num").shift(1).over("ts_code")
+            )
+            .otherwise(None)
+            .alias("holder_num_chg")
+        )
+    )
+    return df
+
+
+def _load_holder() -> pl.DataFrame | None:
+    from factorzen.core.storage import scan_parquet
+    try:
+        lf = scan_parquet("stk_holdernumber").filter(pl.col("end_date").is_not_null())
+        names = lf.collect_schema().names()
+        need = ["ts_code", "end_date", "ann_date", "holder_num"]
+        if not all(c in names for c in need):
+            return None
+        return lf.select(need).collect()
+    except Exception:
+        return None
+
+
+def _ensure_holder_cols(daily: pl.DataFrame) -> pl.DataFrame:
+    missing = [c for c in _holder_cols() if c not in daily.columns]
+    if missing:
+        daily = daily.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+    return daily

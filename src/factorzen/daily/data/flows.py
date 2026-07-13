@@ -1,9 +1,12 @@
-"""日频信号（资金流 / 北向持股 / 两融）对齐。
+"""日频信号（资金流 / 北向持股 / 两融 / 龙虎榜）对齐。
 
 与基本面不同,资金流/北向本身就是**日频 point-in-time**,当日数据当日可得,无需
-PIT 季度对齐(pit_align)。两融例外：**T 日两融数据 T+1 早间披露**(交易所/券商惯例),
-t 日信号只能用 t-1 日两融——``attach_flows`` 在 join 前按 ts_code 组内交易日序
-``shift(1)`` 结构性完成 lag,不靠表达式作者记得写 delay。
+PIT 季度对齐(pit_align)。两融/龙虎榜例外（披露时点滞后）:
+- **两融**：T 日两融数据 T+1 早间披露 → lag(1)；非标的 join 得 null（不填 0）。
+- **龙虎榜**：t 日龙虎榜 t 日盘后（晚间）披露 → 保守 lag(1)；**未上榜=真实零事件**
+  （全市场事件筛选，未出现=确定没上榜）→ join 后 **fill 0**（与两融非标的=null 相反）。
+
+lag 均在 attach 层按 ts_code 组内交易日序 ``shift(1)`` 结构性完成,不靠表达式作者写 delay。
 
 挖掘(`prepare_mining_daily`)与物化(`ExpressionFactor.compute`)两条路都调
 `attach_flows`,保证同一因子逐值一致(陷阱#2)。
@@ -20,13 +23,15 @@ t 日信号只能用 t-1 日两融——``attach_flows`` 在 join 前按 ts_code
   仅融资融券标的有数据(全 A 约一半;CSI300 覆盖通常 >90%);非标的 join 得 null(不填 0)。
   单位:rzye/rzmre=**元**;circ_mv=**万元**→比前 ×1e4;amount=**千元**→比前 ×1e3。
   变化率/滚动交给算子库(ts_*),叶子保持原子性。
+- 龙虎榜叶子(``top_list_net_buy``/``top_list_flag``):全市场事件;未上榜 fill 0 → 覆盖≈100%。
+  单位:net_amount=**万元**→×1e4;amount=**千元**→×1e3;同日多原因 sum net_amount。
 """
 from __future__ import annotations
 
 import polars as pl
 
 # 叶子名 → (缓存分区, 源列名)。北向 ratio 重命名为 north_ratio,避免与通用名冲突。
-# 两融叶子由 _attach_margin 单独处理(需 lag + 比值换算),不进此表。
+# 两融/龙虎榜由专用 _attach_* 处理(需 lag/比值/fill0),不进此表。
 _FLOW_SOURCES: dict[str, tuple[str, str]] = {
     "net_mf_amount": ("moneyflow", "net_mf_amount"),  # 主力净流入额(万元)
     "north_ratio": ("hk_hold", "ratio"),              # 北向持股占比(%)
@@ -34,25 +39,29 @@ _FLOW_SOURCES: dict[str, tuple[str, str]] = {
 
 # 两融源列(margin_detail)。rzye/rzmre 单位元;rqyl 单位股。
 _MARGIN_SRC_COLS = ["rzye", "rzmre", "rqyl"]
-# circ_mv 万元→元; amount 千元→元(与 daily / daily_basic 口径一致)
+# 龙虎榜源列。net_amount 万元; amount 千元(Tushare top_list 口径)。
+_TOPLIST_SRC_COLS = ["net_amount", "amount"]
+# circ_mv 万元→元; amount 千元→元; top_list net_amount 万元→元
 _CIRC_MV_TO_YUAN = 1e4
 _AMOUNT_TO_YUAN = 1e3
+_NET_AMOUNT_TO_YUAN = 1e4  # top_list net_amount 万元
+_TOPLIST_EMPTY_CODE = "__EMPTY__"  # fetch 空日 sentinel，attach 过滤
 
 
 def attach_flows(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame] | None = None) -> pl.DataFrame:
-    """把资金流/北向/两融日频信号按 (trade_date, ts_code) join 进日线帧,作为叶子列。
+    """把资金流/北向/两融/龙虎榜日频信号按 (trade_date, ts_code) join 进日线帧,作为叶子列。
 
     缺数据 / 读取失败 → 原样返回,缺的叶子补 null(表达式引用到时得 null 而非 KeyError)。
     ``injected``:``{分区名: DataFrame}`` 供测试注入,绕过 parquet 读取。
-    两融在 join 前对源列做组内 lag(1)(披露 T+1)。
+    两融/龙虎榜在 join 前对源列做组内 lag(1)；龙虎榜 join 后 fill 0。
     """
-    from factorzen.discovery.operators import FLOW_FEATURES, MARGIN_FEATURES
+    from factorzen.discovery.operators import FLOW_FEATURES, MARGIN_FEATURES, TOPLIST_FEATURES
 
     if daily.is_empty() or "trade_date" not in daily.columns:
         return daily
     injected = injected or {}
-    # 仅处理非两融的 flow 源(两融走 _attach_margin)
-    plain = sorted(FLOW_FEATURES - MARGIN_FEATURES)
+    # 仅处理 plain flow 源(两融/龙虎榜走专用路径)
+    plain = sorted(FLOW_FEATURES - MARGIN_FEATURES - TOPLIST_FEATURES)
     by_part: dict[str, list[tuple[str, str]]] = {}
     for leaf in plain:
         part, col = _FLOW_SOURCES[leaf]
@@ -71,6 +80,7 @@ def attach_flows(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame] | Non
         daily = daily.join(sel, on=["trade_date", "ts_code"], how="left")
 
     daily = _attach_margin(daily, injected=injected)
+    daily = _attach_toplist(daily, injected=injected)
     return _ensure_flow_cols(daily)
 
 
@@ -135,6 +145,70 @@ def _attach_margin(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) ->
               .sort(["ts_code", "trade_date"])
               .with_columns([pl.col(c).shift(1).over("ts_code") for c in leaf_cols]))
     return daily.join(sel, on=["trade_date", "ts_code"], how="left")
+
+
+def _attach_toplist(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) -> pl.DataFrame:
+    """龙虎榜叶子:同日聚合 → 比值 → join daily → fill 0 → 整列 lag(1) → 再 fill 0。
+
+    披露时点:t 日龙虎榜 t 日盘后(晚间)披露 → t 日信号只能用 t-1 上榜信息。
+    未上榜 = 真实零事件(全市场事件筛选,未出现=确定没上榜)→ **fill 0**,非 null
+    (与两融「非标的=null」相反)。fill 0 后 ts_sum 等滚动算子语义正确,覆盖≈100%。
+
+    单位(Tushare top_list):net_amount=**万元**→×1e4 元;amount=**千元**→×1e3 元。
+    同日多条上榜原因:net_amount sum,amount first(同股同日成交额相同)。
+    """
+    df = injected.get("top_list")
+    if df is None:
+        df = _load_flow("top_list", _TOPLIST_SRC_COLS)
+    # 无源数据时仍补 0 列(全市场零事件语义),与两融「无数据→null」不同
+    leaf_cols = ["top_list_net_buy", "top_list_flag"]
+    if df is None or df.is_empty():
+        return daily.with_columns([pl.lit(0.0).alias(c) for c in leaf_cols
+                                   if c not in daily.columns])
+
+    # 过滤 fetch 空日 sentinel
+    if "ts_code" in df.columns:
+        df = df.filter(pl.col("ts_code") != _TOPLIST_EMPTY_CODE)
+    have = [c for c in _TOPLIST_SRC_COLS if c in df.columns]
+    if not have or "net_amount" not in have:
+        return daily.with_columns([pl.lit(0.0).alias(c) for c in leaf_cols
+                                   if c not in daily.columns])
+
+    df = _align_trade_date(df, daily)
+    # 同日多原因聚合
+    agg_exprs: list[pl.Expr] = [pl.col("net_amount").sum().alias("net_amount")]
+    if "amount" in have:
+        agg_exprs.append(pl.col("amount").first().alias("amount"))
+    sel = df.group_by(["ts_code", "trade_date"]).agg(agg_exprs)
+
+    # 比值: (net_amount 万元 × 1e4) / (amount 千元 × 1e3)；无 amount 则 net_buy=null→0
+    if "amount" in sel.columns:
+        sel = sel.with_columns(
+            pl.when(pl.col("amount").is_not_null() & (pl.col("amount").abs() > 1e-12))
+            .then(
+                (pl.col("net_amount") * _NET_AMOUNT_TO_YUAN)
+                / (pl.col("amount") * _AMOUNT_TO_YUAN)
+            )
+            .otherwise(None)
+            .alias("top_list_net_buy"),
+            pl.lit(1.0).alias("top_list_flag"),
+        )
+    else:
+        sel = sel.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("top_list_net_buy"),
+            pl.lit(1.0).alias("top_list_flag"),
+        )
+
+    sel = sel.select(["ts_code", "trade_date", *leaf_cols])
+    # 1) left-join 事件到日线 2) 未上榜 fill 0 3) 按交易日序 lag(1) 4) 首日 null 再 fill 0
+    daily = daily.join(sel, on=["trade_date", "ts_code"], how="left")
+    daily = daily.with_columns([pl.col(c).fill_null(0.0) for c in leaf_cols])
+    daily = (
+        daily.sort(["ts_code", "trade_date"])
+        .with_columns([pl.col(c).shift(1).over("ts_code") for c in leaf_cols])
+        .with_columns([pl.col(c).fill_null(0.0) for c in leaf_cols])
+    )
+    return daily
 
 
 def _load_flow(part: str, cols: list[str]) -> pl.DataFrame | None:

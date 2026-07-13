@@ -37,6 +37,13 @@ LEAF_FEATURES: dict[str, str] = {
     "margin_buy_ratio": "margin_buy_ratio",   # 融资买入额/成交额（杠杆资金参与度）
     "margin_balance": "margin_balance",       # 融资余额原值 rzye（元，已 lag）
     "short_balance": "short_balance",         # 融券余量原值 rqyl（股，已 lag）
+    # 股东户数（stk_holdernumber；按 ann_date PIT；holder_num_chg 源侧期际环比，非 ts_*）
+    "holder_num": "holder_num",               # 最新一期股东户数（户）
+    "holder_num_chg": "holder_num_chg",       # 相邻两期环比 (本期-上期)/上期；随 ann_date 生效
+    # 龙虎榜（top_list；t 日盘后披露 → attach lag(1)；未上榜=真实零事件 fill 0）
+    # net_amount 万元→×1e4、amount 千元→×1e3，比前统一到元；同日多原因先 sum net_amount
+    "top_list_net_buy": "top_list_net_buy",   # 昨日龙虎榜净买入额/成交额
+    "top_list_flag": "top_list_flag",         # 昨日是否上榜 0/1
 }
 BASIC_FEATURES: set[str] = {
     "total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm",
@@ -48,12 +55,20 @@ FUNDAMENTAL_FEATURES: set[str] = {
     "roe", "roa", "grossprofit_margin", "netprofit_margin", "debt_to_assets",
     "or_yoy", "netprofit_yoy", "assets_yoy",
 }
+# 股东户数叶子（stk_holdernumber + ann_date PIT）。用了它们的因子须先 attach_holders。
+HOLDER_FEATURES: set[str] = {
+    "holder_num", "holder_num_chg",
+}
 # 两融叶子（margin_detail + T+1 lag）。子集于 FLOW_FEATURES：物化路径经 attach_flows 门接入。
 MARGIN_FEATURES: set[str] = {
     "margin_ratio", "margin_buy_ratio", "margin_balance", "short_balance",
 }
-# 需资金流/北向/两融数据的日频叶子。用了它们的因子须先 attach_flows，否则回测/物化路径上全 null。
-FLOW_FEATURES: set[str] = {"net_mf_amount", "north_ratio"} | MARGIN_FEATURES
+# 龙虎榜叶子（top_list + lag(1) + fill 0）。子集于 FLOW_FEATURES。
+TOPLIST_FEATURES: set[str] = {
+    "top_list_net_buy", "top_list_flag",
+}
+# 需资金流/北向/两融/龙虎榜数据的日频叶子。用了它们的因子须先 attach_flows，否则回测/物化路径上全 null。
+FLOW_FEATURES: set[str] = {"net_mf_amount", "north_ratio"} | MARGIN_FEATURES | TOPLIST_FEATURES
 
 _MIN = 3  # rolling 最小样本
 

@@ -244,6 +244,12 @@ def _cmd_data_fetch(args: argparse.Namespace) -> int:
     elif args.data_type == "margin_detail":
         # 两融明细(margin_detail)，日频；T+1 披露 lag 在 attach 层完成
         frame = loader.fetch_margin_detail(args.start, args.end)
+    elif args.data_type == "stk_holdernumber":
+        # 股东户数，低频；ann_date PIT 对齐在 attach_holders
+        frame = loader.fetch_stk_holdernumber(args.start, args.end)
+    elif args.data_type == "top_list":
+        # 龙虎榜，日频事件；盘后披露 lag + 未上榜 fill 0 在 attach 层完成
+        frame = loader.fetch_top_list(args.start, args.end)
     else:
         frame = loader.fetch_daily_basic(args.start, args.end)
     rows = len(frame) if hasattr(frame, "__len__") else "unknown"
@@ -1574,7 +1580,8 @@ def build_parser() -> argparse.ArgumentParser:
     fetch = data_sub.add_parser("fetch", help="Fetch raw data into cache")
     fetch.add_argument(
         "data_type",
-        choices=["daily", "daily-basic", "fundamentals", "flows", "margin_detail"],
+        choices=["daily", "daily-basic", "fundamentals", "flows", "margin_detail",
+                 "stk_holdernumber", "top_list"],
     )
     fetch.add_argument("--start", required=True, help="Start date YYYYMMDD")
     fetch.add_argument("--end", required=True, help="End date YYYYMMDD")

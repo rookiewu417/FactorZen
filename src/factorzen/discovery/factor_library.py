@@ -54,11 +54,11 @@ def _avg_cs_corr_matrices(a: np.ndarray, b: np.ndarray) -> float:
     ok = cnt >= 30
     if not ok.any():
         return 0.0
-    aa = np.where(both, a, np.nan)
-    bb = np.where(both, b, np.nan)
-    with np.errstate(invalid="ignore"):
-        ma = np.nanmean(aa, axis=1, keepdims=True)
-        mb = np.nanmean(bb, axis=1, keepdims=True)
+    # sum/count 代替 nanmean：全空日 cnt=0 不触发 "Mean of empty slice"，ok 行语义不变
+    cnt_col = np.maximum(cnt, 1).astype(a.dtype, copy=False)[:, None]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ma = np.where(both, a, 0.0).sum(axis=1, keepdims=True) / cnt_col
+        mb = np.where(both, b, 0.0).sum(axis=1, keepdims=True) / cnt_col
         da = np.where(both, a - ma, 0.0)
         db = np.where(both, b - mb, 0.0)
         cov = (da * db).sum(axis=1)
@@ -316,14 +316,18 @@ def _record_from_candidate(
 
 
 def _panel_to_compact(panel: pl.DataFrame, date_idx: dict, stock_idx: dict,
-                      d_n: int, s_n: int) -> np.ndarray:
-    """把 [trade_date, ts_code, factor_value] 面板散射成固定网格的 float32 紧凑矩阵。"""
-    m = np.full((d_n, s_n), np.nan, dtype=np.float32)
+                      d_n: int, s_n: int, *, dtype=np.float32) -> np.ndarray:
+    """把 [trade_date, ts_code, factor_value] 面板散射成固定网格的紧凑矩阵。
+
+    默认 ``float32``（库 rebuild 内存有界）；组合层贪心去相关传 ``float64`` 以锁
+    与 ``max_correlation`` 的 corr 数值 parity（≤1e-9）。
+    """
+    m = np.full((d_n, s_n), np.nan, dtype=dtype)
     r = np.fromiter((date_idx.get(d, -1) for d in panel["trade_date"].to_list()),
                     dtype=np.int64, count=panel.height)
     c = np.fromiter((stock_idx.get(s, -1) for s in panel["ts_code"].to_list()),
                     dtype=np.int64, count=panel.height)
-    v = panel["factor_value"].to_numpy().astype(np.float32)
+    v = panel["factor_value"].to_numpy().astype(dtype, copy=False)
     keep = (r >= 0) & (c >= 0) & np.isfinite(v)
     m[r[keep], c[keep]] = v[keep]
     return m

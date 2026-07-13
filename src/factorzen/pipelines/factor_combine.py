@@ -95,15 +95,12 @@ def _load_session_candidates(session_dirs: list[str], *, passed_only: bool) -> l
     return sorted(best.values(), key=lambda r: -abs(r["holdout_ic"]))
 
 
-def _greedy_decorrelate(
+def _greedy_decorrelate_reference(
     materialized: list[tuple[str, pl.DataFrame]], threshold: float
 ) -> tuple[list[tuple[str, pl.DataFrame]], list[dict]]:
-    """按传入顺序（|holdout_ic| 降序）贪心纳入：与已纳入池 `max_correlation` > threshold 者剔除。
+    """旧版实现（``max_correlation`` 逐对 + 2x argmax 重算），仅 parity 测试引用。
 
-    复用 `discovery/scoring.max_correlation`（逐对语义）——不另写相关性算法。``threshold=1.0``
-    时 ``> 1.0`` 恒 False → 关闭去相关（逃生口）。被剔者记 ``{expression, corr_with, corr}``：
-    ``corr_with`` 为池中与其最相关的因子表达式（对每个已纳入因子单独调 max_correlation 取 argmax，
-    仍复用同一函数，不新写相关性）。
+    生产路径见 ``_greedy_decorrelate``（紧凑 float64 矩阵 + 一次算完 mc/partner）。
     """
     from factorzen.discovery.scoring import max_correlation
 
@@ -122,6 +119,74 @@ def _greedy_decorrelate(
             dropped.append({"expression": expr, "corr_with": partner, "corr": float(mc)})
             continue
         kept.append((expr, fdf))
+    return kept, dropped
+
+
+def _greedy_decorrelate(
+    materialized: list[tuple[str, pl.DataFrame]], threshold: float
+) -> tuple[list[tuple[str, pl.DataFrame]], list[dict]]:
+    """按传入顺序（|holdout_ic| 降序）贪心纳入：与已纳入池 max|corr| > threshold 者剔除。
+
+    加速：全部面板在**共享 date×stock 网格**（日期并集 × 股票并集）上一次转 float64
+    紧凑矩阵，循环内调 ``_avg_cs_corr_matrices``（与 ``max_correlation`` 语义一致，
+    见 ``test_compact_corr_parity_with_max_correlation``）。同一批逐对结果同时给出
+    ``mc`` 与 argmax ``corr_with``，消灭旧版 2x 重算。
+
+    **决策 parity 硬约束**：全日期（不截断）、float64、退化对 → 0.0；
+    ``threshold=1.0`` 时 ``> 1.0`` 恒 False → 逃生口。kept 中 fdf 仍是**原面板**
+    （下游写 parquet）；紧凑矩阵仅内部加速。
+    """
+    import numpy as np
+
+    from factorzen.discovery.factor_library import _avg_cs_corr_matrices, _panel_to_compact
+
+    if not materialized:
+        return [], []
+
+    # 共享网格：日期并集 × 股票并集（异质覆盖 → 缺位 NaN；全日期，不截断）
+    dates: set = set()
+    stocks: set = set()
+    for _e, fdf in materialized:
+        if fdf.height:
+            dates.update(fdf["trade_date"].to_list())
+            stocks.update(fdf["ts_code"].to_list())
+    date_idx = {d: i for i, d in enumerate(sorted(dates))}
+    stock_idx = {s: i for i, s in enumerate(sorted(stocks))}
+    d_n, s_n = len(date_idx), len(stock_idx)
+
+    mats: list[np.ndarray] = []
+    for _e, fdf in materialized:
+        if d_n == 0 or s_n == 0 or not fdf.height:
+            mats.append(np.full((max(d_n, 1), max(s_n, 1)), np.nan, dtype=np.float64))
+        else:
+            mats.append(_panel_to_compact(
+                fdf, date_idx, stock_idx, d_n, s_n, dtype=np.float64,
+            ))
+
+    kept: list[tuple[str, pl.DataFrame]] = []
+    kept_mats: list[np.ndarray] = []
+    kept_exprs: list[str] = []
+    dropped: list[dict] = []
+
+    for (expr, fdf), mat in zip(materialized, mats, strict=True):
+        if not kept:
+            kept.append((expr, fdf))
+            kept_mats.append(mat)
+            kept_exprs.append(expr)
+            continue
+        # 一次扫完：mc = max|corr|，partner = 严格 > 的首个 argmax（对齐 reference）
+        partner, best = None, -1.0
+        for e, km in zip(kept_exprs, kept_mats, strict=True):
+            c = abs(_avg_cs_corr_matrices(mat, km))
+            if c > best:
+                best, partner = c, e
+        mc = float(best) if best >= 0.0 else 0.0
+        if mc > threshold:
+            dropped.append({"expression": expr, "corr_with": partner, "corr": mc})
+            continue
+        kept.append((expr, fdf))
+        kept_mats.append(mat)
+        kept_exprs.append(expr)
     return kept, dropped
 
 

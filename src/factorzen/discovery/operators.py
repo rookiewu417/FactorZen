@@ -31,6 +31,12 @@ LEAF_FEATURES: dict[str, str] = {
     # 资金流/北向（日频 point-in-time，与量价/基本面均正交）
     "net_mf_amount": "net_mf_amount",  # 主力资金净流入额
     "north_ratio": "north_ratio",      # 北向持股占比
+    # 两融/杠杆情绪（margin_detail；T 日数据 T+1 早间披露 → attach 内置 lag(1)；
+    # rzye/rzmre 单位元；margin_ratio=rzye/(circ_mv×1e4)，margin_buy_ratio=rzmre/(amount×1e3)）
+    "margin_ratio": "margin_ratio",           # 融资余额/流通市值（杠杆拥挤度）
+    "margin_buy_ratio": "margin_buy_ratio",   # 融资买入额/成交额（杠杆资金参与度）
+    "margin_balance": "margin_balance",       # 融资余额原值 rzye（元，已 lag）
+    "short_balance": "short_balance",         # 融券余量原值 rqyl（股，已 lag）
 }
 BASIC_FEATURES: set[str] = {
     "total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm",
@@ -42,8 +48,12 @@ FUNDAMENTAL_FEATURES: set[str] = {
     "roe", "roa", "grossprofit_margin", "netprofit_margin", "debt_to_assets",
     "or_yoy", "netprofit_yoy", "assets_yoy",
 }
-# 需资金流/北向数据的日频叶子。用了它们的因子须先 attach_flows，否则回测/物化路径上全 null。
-FLOW_FEATURES: set[str] = {"net_mf_amount", "north_ratio"}
+# 两融叶子（margin_detail + T+1 lag）。子集于 FLOW_FEATURES：物化路径经 attach_flows 门接入。
+MARGIN_FEATURES: set[str] = {
+    "margin_ratio", "margin_buy_ratio", "margin_balance", "short_balance",
+}
+# 需资金流/北向/两融数据的日频叶子。用了它们的因子须先 attach_flows，否则回测/物化路径上全 null。
+FLOW_FEATURES: set[str] = {"net_mf_amount", "north_ratio"} | MARGIN_FEATURES
 
 _MIN = 3  # rolling 最小样本
 

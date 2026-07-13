@@ -560,6 +560,29 @@ def fetch_hk_hold(start: str, end: str, ts_codes: list[str] | None = None) -> pl
     return load_parquet("hk_hold", start=start, end=end).collect()
 
 
+# 两融明细（融资融券）——日频；T 日数据 T+1 早间披露，PIT lag 在 attach 层完成（非此处）。
+# 单位：rzye/rzmre 元；rqye 元；rqyl 股。落盘 data/raw/margin_detail/year=YYYY/*.parquet。
+MARGIN_DETAIL_COLS = ["ts_code", "trade_date", "rzye", "rqye", "rzmre", "rqyl",
+                      "rzche", "rqchl", "rqmcl", "rzrqye"]
+
+
+def fetch_margin_detail(start: str, end: str, ts_codes: list[str] | None = None) -> pl.DataFrame:
+    """拉每日个股两融明细(margin_detail：rzye 融资余额/rzmre 融资买入额/rqyl 融券余量等)。
+
+    日频，按缺失交易日市场级拉取 + 缓存（交易日历覆盖审计，与 moneyflow 同模式）。
+    子集(ts_codes)模式不写共享全市场缓存。
+    """
+    pro = init_tushare()
+    if ts_codes is not None:
+        return _fetch_subset_by_codes(pro.margin_detail, start, end, ts_codes,
+                                      data_type="margin_detail", std_cols=MARGIN_DETAIL_COLS)
+    missing = _missing_trade_dates("margin_detail", start, end)
+    if missing:
+        _fetch_market_by_missing_dates(pro.margin_detail, missing, data_type="margin_detail",
+                                       std_cols=MARGIN_DETAIL_COLS)
+    return load_parquet("margin_detail", start=start, end=end).collect()
+
+
 def fetch_stock_basic(list_status: str = "L,D,P") -> pl.DataFrame:
     """拉取全量股票基本信息，缓存 7 天。
 

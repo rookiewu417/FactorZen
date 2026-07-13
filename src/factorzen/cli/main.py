@@ -241,6 +241,9 @@ def _cmd_data_fetch(args: argparse.Namespace) -> int:
         hk = loader.fetch_hk_hold(args.start, args.end)
         print(f"moneyflow: {len(mf)} rows | hk_hold: {len(hk)} rows")
         return 0
+    elif args.data_type == "margin_detail":
+        # 两融明细(margin_detail)，日频；T+1 披露 lag 在 attach 层完成
+        frame = loader.fetch_margin_detail(args.start, args.end)
     else:
         frame = loader.fetch_daily_basic(args.start, args.end)
     rows = len(frame) if hasattr(frame, "__len__") else "unknown"
@@ -1569,7 +1572,10 @@ def build_parser() -> argparse.ArgumentParser:
     data = sub.add_parser("data", help="Data workflows")
     data_sub = data.add_subparsers(dest="data_command", required=True)
     fetch = data_sub.add_parser("fetch", help="Fetch raw data into cache")
-    fetch.add_argument("data_type", choices=["daily", "daily-basic", "fundamentals", "flows"])
+    fetch.add_argument(
+        "data_type",
+        choices=["daily", "daily-basic", "fundamentals", "flows", "margin_detail"],
+    )
     fetch.add_argument("--start", required=True, help="Start date YYYYMMDD")
     fetch.add_argument("--end", required=True, help="End date YYYYMMDD")
     fetch.set_defaults(func=_cmd_data_fetch)

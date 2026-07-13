@@ -149,7 +149,10 @@ _LEAF_GUIDANCE: dict[str, str] = {
     "ashare": (
         "其中 roe/roa/grossprofit_margin/netprofit_margin/debt_to_assets(质量) 与 "
         "or_yoy/netprofit_yoy/assets_yoy(成长) 是**财报基本面**(已按公告日 PIT 对齐，无未来函数)；"
-        "net_mf_amount(主力资金净流入) 等是**资金流**叶子（以当前可用叶子为准）——"
+        "net_mf_amount(主力资金净流入) 等是**资金流**叶子；"
+        "margin_ratio/margin_buy_ratio/margin_balance/short_balance 是**两融/杠杆情绪**叶子"
+        "（T 日两融 T+1 早间披露，attach 已内置 lag(1)；rzye/rzmre 单位元，"
+        "margin_ratio=rzye/(circ_mv×1e4)，margin_buy_ratio=rzmre/(amount×1e3)）——"
         "与量价正交的族可作多族组合，避开拥挤方向，别只盯量价波动。\n"
     ),
     "crypto": (

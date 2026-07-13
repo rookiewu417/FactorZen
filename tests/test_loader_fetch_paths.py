@@ -846,16 +846,16 @@ def _pd_holder(code: str = "000001.SZ", ann: str = "20220430", end: str = "20220
     )
 
 
-def test_fetch_stk_holdernumber_by_code_and_saves():
-    """按 ts_code 逐股拉 stk_holdernumber，落 stk_holdernumber 分区（date_col=end_date）。"""
+def test_fetch_stk_holdernumber_by_code_and_saves(tmp_path, monkeypatch):
+    """按 ts_code 逐股拉 stk_holdernumber，落盘并写 ann-year 窗口完成标记。"""
     from factorzen.core.loader import fetch_stk_holdernumber
 
+    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
     mock_pro = MagicMock()
     mock_pro.stk_holdernumber.return_value = _pd_holder()
     with (
         patch.object(loader_module, "init_tushare", return_value=mock_pro),
         patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "partition_exists", return_value=False),
         patch.object(loader_module, "save_parquet") as save,
         patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
         patch.object(loader_module, "fetch_stock_basic",
@@ -874,16 +874,29 @@ def test_fetch_stk_holdernumber_by_code_and_saves():
     saved = save.call_args.args[0]
     assert "holder_num" in saved.columns
     assert saved["end_date"].dtype == pl.Date
+    # 窗口完成标记已写
+    marker = tmp_path / "stk_holdernumber" / "_fetched_windows.json"
+    assert marker.exists()
+    import json
+    windows = json.loads(marker.read_text())
+    assert any(w.get("year") == 2022 for w in windows)
 
 
-def test_fetch_stk_holdernumber_cached_year_skips():
-    """幂等：年/季分区已存在则跳过。"""
+def test_fetch_stk_holdernumber_window_marker_skips(tmp_path, monkeypatch):
+    """幂等：ann-year 窗口完成标记存在则跳过（不再看 end_date 分区）。"""
+    import json
+
     from factorzen.core.loader import fetch_stk_holdernumber
 
+    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
+    marker_dir = tmp_path / "stk_holdernumber"
+    marker_dir.mkdir(parents=True)
+    (marker_dir / "_fetched_windows.json").write_text(
+        json.dumps([{"year": 2022, "n_stocks": 1, "ts": "2026-01-01T00:00:00"}])
+    )
     mock_pro = MagicMock()
     with (
         patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "partition_exists", return_value=True),
         patch.object(loader_module, "save_parquet") as save,
         patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
         patch.object(loader_module, "fetch_stock_basic",
@@ -892,6 +905,66 @@ def test_fetch_stk_holdernumber_cached_year_skips():
         fetch_stk_holdernumber("20220101", "20220331")
     mock_pro.stk_holdernumber.assert_not_called()
     save.assert_not_called()
+
+
+def test_fetch_stk_holdernumber_tmp_marker_not_complete(tmp_path, monkeypatch):
+    """标记写入原子性：仅 .tmp 存在不算完成，仍会抓取。"""
+    from factorzen.core.loader import fetch_stk_holdernumber
+
+    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
+    marker_dir = tmp_path / "stk_holdernumber"
+    marker_dir.mkdir(parents=True)
+    (marker_dir / "_fetched_windows.json.tmp").write_text("[]")
+    mock_pro = MagicMock()
+    mock_pro.stk_holdernumber.return_value = _pd_holder()
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "save_parquet") as save,
+        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        patch.object(loader_module, "fetch_stock_basic",
+                     return_value=pl.DataFrame({"ts_code": ["000001.SZ"]})),
+    ):
+        fetch_stk_holdernumber("20220101", "20220331")
+    mock_pro.stk_holdernumber.assert_called()
+    save.assert_called()
+    assert (marker_dir / "_fetched_windows.json").exists()
+
+
+def test_fetch_stk_holdernumber_rerun_window_idempotent_upsert(tmp_path, monkeypatch):
+    """无标记重跑同窗口：save 前 (ts_code,end_date) 与既有去重，结果无重复。"""
+    import factorzen.core.storage as storage_mod
+    from factorzen.core.loader import fetch_stk_holdernumber
+    from factorzen.core.storage import load_parquet, save_parquet
+
+    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
+    monkeypatch.setattr(storage_mod, "DATA_RAW", tmp_path)
+
+    # 预置既有分区行（同一 key）
+    existing = pl.DataFrame({
+        "ts_code": ["000001.SZ"],
+        "ann_date": ["20220430"],
+        "end_date": [date(2022, 3, 31)],
+        "holder_num": [40000.0],
+    })
+    save_parquet(existing, data_type="stk_holdernumber", date_col="end_date", base_dir=tmp_path)
+
+    mock_pro = MagicMock()
+    mock_pro.stk_holdernumber.return_value = _pd_holder()  # holder_num=50000
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "fetch_stock_basic",
+                     return_value=pl.DataFrame({"ts_code": ["000001.SZ"]})),
+    ):
+        fetch_stk_holdernumber("20220101", "20220331")
+
+    loaded = load_parquet(
+        "stk_holdernumber", start="20220101", end="20221231",
+        date_col="end_date", base_dir=tmp_path,
+    ).collect()
+    assert loaded.height == 1
+    assert loaded["holder_num"][0] == 50000.0  # keep last from re-fetch
 
 
 # ══════════════════════════════════════════════════════════
@@ -964,4 +1037,146 @@ def test_fetch_top_list_empty_day_not_failure():
         fetch_top_list("20220101", "20220131")
     # 空日应写入 sentinel / 标记，避免永久重拉
     assert save.called or mock_pro.top_list.call_count == 1
+
+
+def test_cast_top_list_schema_stabilizes_drift_and_sentinel(tmp_path):
+    """同列跨日推断类型漂移 + sentinel 行 → cast 后 save/load 往返无 SchemaError。"""
+    from factorzen.core.loader import (
+        _TOPLIST_EMPTY_CODE,
+        TOP_LIST_COLS,
+        TOP_LIST_SCHEMA,
+        _cast_top_list_schema,
+    )
+    from factorzen.core.storage import load_parquet, save_parquet
+
+    # 日1：全 null 数值/字符串列 → 推断为 Null
+    day_null = pl.DataFrame({
+        "trade_date": ["20240102"],
+        "ts_code": [_TOPLIST_EMPTY_CODE],
+        "name": [None],
+        "close": [None],
+        "pct_change": [None],
+        "turnover_rate": [None],
+        "amount": [None],
+        "l_sell": [None],
+        "l_buy": [None],
+        "l_amount": [None],
+        "net_amount": [None],
+        "net_rate": [None],
+        "amount_rate": [None],
+        "float_values": [None],
+        "reason": [None],
+    })
+    # 日2：真实行，String/Float64
+    day_real = pl.DataFrame({
+        "trade_date": ["20240103"],
+        "ts_code": ["000001.SZ"],
+        "name": ["平安银行"],
+        "close": [10.5],
+        "pct_change": [5.0],
+        "turnover_rate": [3.0],
+        "amount": [1e5],
+        "l_sell": [100.0],
+        "l_buy": [200.0],
+        "l_amount": [300.0],
+        "net_amount": [100.0],
+        "net_rate": [1.0],
+        "amount_rate": [2.0],
+        "float_values": [50.0],
+        "reason": ["涨幅偏离值达7%"],
+    })
+    # 未 cast 的 strict concat 会炸
+    try:
+        pl.concat([day_null, day_real])
+        uncast_ok = True
+    except pl.exceptions.SchemaError:
+        uncast_ok = False
+    assert not uncast_ok, "前置条件：未 cast 应 SchemaError"
+
+    casted = pl.concat([
+        _cast_top_list_schema(day_null),
+        _cast_top_list_schema(day_real),
+    ])
+    assert casted.schema == pl.Schema(TOP_LIST_SCHEMA) or all(
+        casted.schema[c] == TOP_LIST_SCHEMA[c] for c in TOP_LIST_COLS
+    )
+    assert casted["trade_date"].dtype == pl.Date
+
+    save_parquet(casted, data_type="top_list", base_dir=tmp_path)
+    # 跨分区 scan 往返
+    loaded = load_parquet("top_list", start="20240101", end="20240131", base_dir=tmp_path).collect()
+    assert loaded.height == 2
+    assert loaded["reason"].dtype == pl.String
+    assert loaded["net_amount"].dtype == pl.Float64
+
+
+def test_fetch_top_list_schema_error_rewrites_year(tmp_path, monkeypatch):
+    """混 schema 旧分区 load 触发 SchemaError → log 后重写该年（wipe + 重拉）。"""
+    from factorzen.core.loader import _TOPLIST_EMPTY_CODE, fetch_top_list
+
+    # 预置损坏 year=2024 分区（Null vs String 混）
+    ydir = tmp_path / "top_list" / "year=2024" / "month=01"
+    ydir.mkdir(parents=True)
+    pl.DataFrame({
+        "trade_date": [date(2024, 1, 2)],
+        "ts_code": [_TOPLIST_EMPTY_CODE],
+        "name": [None],
+        "close": [None],
+        "reason": [None],
+        "net_amount": [None],
+        "amount": [None],
+        "pct_change": [None],
+        "turnover_rate": [None],
+        "l_sell": [None],
+        "l_buy": [None],
+        "l_amount": [None],
+        "net_rate": [None],
+        "amount_rate": [None],
+        "float_values": [None],
+    }).write_parquet(ydir / "data.parquet")
+    ydir2 = tmp_path / "top_list" / "year=2024" / "month=02"
+    ydir2.mkdir(parents=True)
+    pl.DataFrame({
+        "trade_date": [date(2024, 2, 1)],
+        "ts_code": ["000001.SZ"],
+        "name": ["平安银行"],
+        "close": [10.0],
+        "reason": ["涨幅偏离"],
+        "net_amount": [100.0],
+        "amount": [1e5],
+        "pct_change": [1.0],
+        "turnover_rate": [1.0],
+        "l_sell": [1.0],
+        "l_buy": [1.0],
+        "l_amount": [1.0],
+        "net_rate": [1.0],
+        "amount_rate": [1.0],
+        "float_values": [1.0],
+    }).write_parquet(ydir2 / "data.parquet")
+
+    # 确认 scan 会 SchemaError
+    import pytest
+    with pytest.raises(pl.exceptions.SchemaError):
+        pl.scan_parquet(str(tmp_path / "top_list" / "**/*.parquet")).collect()
+
+    mock_pro = MagicMock()
+    mock_pro.top_list.return_value = _pd_top(trade_date="20240104")
+    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
+    # storage 也读 DATA_RAW
+    import factorzen.core.storage as storage_mod
+    monkeypatch.setattr(storage_mod, "DATA_RAW", tmp_path)
+
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "get_trade_dates",
+                     return_value=[date(2024, 1, 4)]),
+    ):
+        # 不应因旧分区 SchemaError 而崩溃；应 wipe 并重拉
+        fetch_top_list("20240101", "20240131")
+    assert mock_pro.top_list.call_count >= 1
+    # 重写后分区可扫描
+    reloaded = pl.scan_parquet(str(tmp_path / "top_list" / "**/*.parquet")).collect()
+    assert reloaded.height >= 1
+    assert reloaded["reason"].dtype == pl.String
 

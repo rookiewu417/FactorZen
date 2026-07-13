@@ -40,10 +40,10 @@ LEAF_FEATURES: dict[str, str] = {
     # 股东户数（stk_holdernumber；按 ann_date PIT；holder_num_chg 源侧期际环比，非 ts_*）
     "holder_num": "holder_num",               # 最新一期股东户数（户）
     "holder_num_chg": "holder_num_chg",       # 相邻两期环比 (本期-上期)/上期；随 ann_date 生效
-    # 龙虎榜（top_list；t 日盘后披露 → attach lag(1)；未上榜=真实零事件 fill 0）
+    # 龙虎榜（top_list；t 日盘后披露 → attach lag(1)；已知日未上榜 fill 0，未拉取日 null）
     # net_amount 万元→×1e4、amount 千元→×1e3，比前统一到元；同日多原因先 sum net_amount
     "top_list_net_buy": "top_list_net_buy",   # 昨日龙虎榜净买入额/成交额
-    "top_list_flag": "top_list_flag",         # 昨日是否上榜 0/1
+    "top_list_flag": "top_list_flag",         # 昨日是否上榜 0/1（未知日 null）
 }
 BASIC_FEATURES: set[str] = {
     "total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm",
@@ -63,7 +63,7 @@ HOLDER_FEATURES: set[str] = {
 MARGIN_FEATURES: set[str] = {
     "margin_ratio", "margin_buy_ratio", "margin_balance", "short_balance",
 }
-# 龙虎榜叶子（top_list + lag(1) + fill 0）。子集于 FLOW_FEATURES。
+# 龙虎榜叶子（top_list + lag(1) + 条件 fill 0：已知日未上榜=0，未拉取=null）。子集于 FLOW_FEATURES。
 TOPLIST_FEATURES: set[str] = {
     "top_list_net_buy", "top_list_flag",
 }

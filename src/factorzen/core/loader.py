@@ -11,7 +11,11 @@
 - pandas → polars 转换（拿到数据后立即转换）
 """
 
+import json
+import os
+import shutil
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -585,17 +589,62 @@ def fetch_margin_detail(start: str, end: str, ts_codes: list[str] | None = None)
 
 # 股东户数——低频 PIT（按 ann_date 对齐在 attach 层）；接口要求 ts_code 逐股查询。
 # 返回 ts_code/ann_date/end_date/holder_num。落盘 data/raw/stk_holdernumber/，date_col=end_date。
+# 幂等键 = ann-year 抓取窗口完成标记（_fetched_windows.json），非 end_date 分区存在。
 # holder_num_chg 在 attach 源数据整理阶段按期际算，不在此处落盘。
 STK_HOLDERNUMBER_COLS = ["ts_code", "ann_date", "end_date", "holder_num"]
+_HOLDER_WINDOWS_NAME = "_fetched_windows.json"
+
+
+def _holder_windows_path(base_dir: Path | None = None) -> Path:
+    base = DATA_RAW if base_dir is None else base_dir
+    return base / "stk_holdernumber" / _HOLDER_WINDOWS_NAME
+
+
+def _load_holder_fetched_windows(base_dir: Path | None = None) -> list[dict]:
+    path = _holder_windows_path(base_dir)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.warning(f"[stk_holdernumber] 读取窗口标记失败 {path}: {e}")
+        return []
+
+
+def _is_holder_window_fetched(year: int, base_dir: Path | None = None) -> bool:
+    """跳过判定 = 正式标记文件存在且含该 ann-year（.tmp 不算完成）。"""
+    return any(int(w.get("year", -1)) == year for w in _load_holder_fetched_windows(base_dir))
+
+
+def _mark_holder_window_fetched(
+    year: int, n_stocks: int, base_dir: Path | None = None,
+) -> None:
+    """原子写入窗口完成标记：写临时文件后 os.replace rename。"""
+    path = _holder_windows_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    windows = [w for w in _load_holder_fetched_windows(base_dir) if int(w.get("year", -1)) != year]
+    windows.append({
+        "year": year,
+        "n_stocks": n_stocks,
+        "ts": datetime.now().isoformat(timespec="seconds"),
+    })
+    windows.sort(key=lambda w: int(w.get("year", 0)))
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(windows, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def fetch_stk_holdernumber(
     start: str, end: str, ts_codes: list[str] | None = None,
 ) -> pl.DataFrame:
-    """拉股东户数(stk_holdernumber)。按 ts_code 分批 + 按年分段缓存（幂等增量）。
+    """拉股东户数(stk_holdernumber)。按 ts_code 分批 + 按 ann-year 窗口缓存。
 
     Tushare 该接口需 ts_code+start_date/end_date；全市场时从 stock_basic 取清单。
-    分区键 end_date（与 finance 同款 year/month hive）。ann_date PIT 对齐在 attach_holders。
+    抓取窗口按 **ann_date 年**（--start/--end 公告窗口）循环；分区仍按 end_date 落盘。
+    幂等：窗口完成后写 ``_fetched_windows.json``，标记存在才跳过——避免「前一窗口
+    写出的 end_date 分区」误触发跳年。中途死亡无标记 → 重跑该窗口；save 按
+    (ts_code, end_date) upsert 去重。ann_date PIT 对齐在 attach_holders。
     """
     pro = init_tushare()
     data_type = "stk_holdernumber"
@@ -615,23 +664,26 @@ def fetch_stk_holdernumber(
         except Exception:
             return pl.DataFrame()
 
-    # 按年分段：年内存任意一个月分区即视为该年已缓存（与低频披露兼容的幂等启发式）
+    n_codes = len(ts_codes_all)
     for year in range(start_dt.year, end_dt.year + 1):
         y_start = max(datetime(year, 1, 1), start_dt)
         y_end = min(datetime(year, 12, 31), end_dt)
         if y_end < y_start:
             continue
-        # 检查该年是否已有分区（任一季末月）
-        if any(partition_exists(data_type, year, m) for m in (3, 6, 9, 12)):
-            logger.info(f"[stk_holdernumber] {year} 已缓存，跳过")
+        if _is_holder_window_fetched(year):
+            logger.info(f"[stk_holdernumber] ann-year={year} 窗口已完成，跳过")
             continue
 
         y_start_str = y_start.strftime("%Y%m%d")
         y_end_str = y_end.strftime("%Y%m%d")
         parts: list[pl.DataFrame] = []
-        # 按 ts_code 逐股拉（接口语义：ts_code+start/end；与 loader 按 code 模式一致）。
+        # 按 ts_code 逐股拉（接口语义：ts_code+start/end）。
         # 空结果常见（该年无披露）——不走 _retry，避免对空股连打 MAX_RETRIES。
         for i, code in enumerate(ts_codes_all):
+            if (i + 1) % 500 == 0 or (i + 1) == n_codes:
+                logger.info(
+                    f"[stk_holdernumber] ann-year={year} 进度 {i + 1}/{n_codes}"
+                )
             try:
                 _rate_limit()
                 df_pd = pro.stk_holdernumber(
@@ -639,36 +691,42 @@ def fetch_stk_holdernumber(
                 )
             except Exception as e:
                 logger.warning(
-                    f"[stk_holdernumber] {code} ({i + 1}/{len(ts_codes_all)}) 失败: {e}"
+                    f"[stk_holdernumber] {code} ({i + 1}/{n_codes}) 失败: {e}"
                 )
                 continue
             if df_pd is not None and not (hasattr(df_pd, "empty") and df_pd.empty):
                 parts.append(pl.from_pandas(df_pd))
 
-        if not parts:
-            logger.warning(f"[stk_holdernumber] {year} 无数据")
-            continue
-
-        str_cols = {"ts_code", "ann_date", "end_date"}
-        aligned = []
-        for p in parts:
-            casts = {
-                c: pl.Float64
-                for c in p.columns
-                if c not in str_cols and p[c].dtype != pl.Float64
-            }
-            aligned.append(
-                p.with_columns([pl.col(c).cast(pl.Float64, strict=False) for c in casts])
+        if parts:
+            str_cols = {"ts_code", "ann_date", "end_date"}
+            aligned = []
+            for p in parts:
+                casts = {
+                    c: pl.Float64
+                    for c in p.columns
+                    if c not in str_cols and p[c].dtype != pl.Float64
+                }
+                aligned.append(
+                    p.with_columns(
+                        [pl.col(c).cast(pl.Float64, strict=False) for c in casts]
+                    )
+                )
+            df = (
+                pl.concat(aligned)
+                .with_columns(_str_to_date(pl.col("end_date")))
+                .unique(subset=["ts_code", "end_date"], keep="last")
+                .sort(["ts_code", "end_date"])
             )
-        df = (
-            pl.concat(aligned)
-            .with_columns(_str_to_date(pl.col("end_date")))
-            .unique(subset=["ts_code", "end_date"], keep="first")
-            .sort(["ts_code", "end_date"])
-        )
-        df = df.select([c for c in STK_HOLDERNUMBER_COLS if c in df.columns])
-        save_parquet(df, data_type=data_type, date_col="end_date")
-        logger.info(f"[stk_holdernumber] {year} 已保存 ({len(df)} 行)")
+            df = df.select([c for c in STK_HOLDERNUMBER_COLS if c in df.columns])
+            # save_parquet append 模式已按 (end_date, ts_code) unique keep=last upsert
+            save_parquet(df, data_type=data_type, date_col="end_date")
+            logger.info(f"[stk_holdernumber] ann-year={year} 已保存 ({len(df)} 行)")
+        else:
+            logger.warning(f"[stk_holdernumber] ann-year={year} 无数据（全股循环完成）")
+
+        # 全股循环完成（含无数据）才写标记；中途异常不会到此
+        _mark_holder_window_fetched(year, n_codes)
+        logger.info(f"[stk_holdernumber] ann-year={year} 窗口标记已写 (n_stocks={n_codes})")
 
     try:
         return load_parquet(data_type, start=start, end=end, date_col="end_date").collect()
@@ -679,19 +737,96 @@ def fetch_stk_holdernumber(
 # 龙虎榜——日频事件；t 日盘后披露，lag 在 attach 层完成。
 # 单位：net_amount 万元；amount 千元。落盘 data/raw/top_list/。
 # 极端行情可能全日无上榜 → 空日写 sentinel，不算失败、避免永久重拉。
+# 显式 schema：跨日/sentinel 推断类型漂移时 cast 稳定化，避免 SchemaError。
 TOP_LIST_COLS = [
     "ts_code", "trade_date", "name", "close", "pct_change", "turnover_rate",
     "amount", "l_sell", "l_buy", "l_amount", "net_amount", "net_rate",
     "amount_rate", "float_values", "reason",
 ]
+TOP_LIST_SCHEMA: dict[str, type[pl.DataType]] = {
+    "ts_code": pl.String,
+    "trade_date": pl.Date,
+    "name": pl.String,
+    "close": pl.Float64,
+    "pct_change": pl.Float64,
+    "turnover_rate": pl.Float64,
+    "amount": pl.Float64,
+    "l_sell": pl.Float64,
+    "l_buy": pl.Float64,
+    "l_amount": pl.Float64,
+    "net_amount": pl.Float64,
+    "net_rate": pl.Float64,
+    "amount_rate": pl.Float64,
+    "float_values": pl.Float64,
+    "reason": pl.String,
+}
 _TOPLIST_EMPTY_CODE = "__EMPTY__"
+
+
+def _cast_top_list_schema(df: pl.DataFrame) -> pl.DataFrame:
+    """将日帧 strict=False cast 到 TOP_LIST 目标 schema（含补齐缺失列）。
+
+    解决跨日推断漂移：全 null 日 → Null/Float64，有值日 → String；sentinel 与真实行
+    concat/scan 时 SchemaError。
+    """
+    if df.is_empty() and not df.columns:
+        return pl.DataFrame(schema=TOP_LIST_SCHEMA)
+
+    # trade_date 字符串 → Date（Tushare 返回 YYYYMMDD）
+    if "trade_date" in df.columns:
+        dtype = df["trade_date"].dtype
+        if dtype in (pl.Utf8, pl.String):
+            df = df.with_columns(_str_to_date(pl.col("trade_date")))
+        elif dtype != pl.Date:
+            df = df.with_columns(pl.col("trade_date").cast(pl.Date, strict=False))
+
+    exprs: list[pl.Expr] = []
+    for col, target_dtype in TOP_LIST_SCHEMA.items():
+        if col in df.columns:
+            exprs.append(pl.col(col).cast(target_dtype, strict=False).alias(col))
+        else:
+            exprs.append(pl.lit(None, dtype=target_dtype).alias(col))
+    return df.select(exprs)
+
+
+def _top_list_sentinel_row(date_str: str) -> pl.DataFrame:
+    """空日 sentinel：完整目标 schema，ts_code=__EMPTY__。"""
+    return _cast_top_list_schema(pl.DataFrame({
+        "trade_date": [date_str],
+        "ts_code": [_TOPLIST_EMPTY_CODE],
+    }))
+
+
+def _top_list_corrupt_years(start: str, end: str) -> set[int]:
+    """检测区间内因 SchemaError 无法读取的 top_list 年分区。"""
+    start_y = int(start[:4])
+    end_y = int(end[:4])
+    bad: set[int] = set()
+    for y in range(start_y, end_y + 1):
+        try:
+            load_parquet("top_list", start=f"{y}0101", end=f"{y}1231").collect()
+        except pl.exceptions.SchemaError as e:
+            logger.warning(f"[top_list] year={y} 分区 schema 损坏，将重写: {e}")
+            bad.add(y)
+        except Exception:
+            # 无数据 / 其他读错误不视为混 schema
+            pass
+    return bad
+
+
+def _wipe_top_list_year(year: int) -> None:
+    """清除损坏年分区目录，允许幂等重建。"""
+    ydir = Path(DATA_RAW) / "top_list" / f"year={year}"
+    if ydir.exists():
+        shutil.rmtree(ydir)
+        logger.warning(f"[top_list] 已清除损坏分区 year={year}，将重拉")
 
 
 def fetch_top_list(start: str, end: str, ts_codes: list[str] | None = None) -> pl.DataFrame:
     """拉每日龙虎榜(top_list)。按缺失交易日 market 级拉取 + 缓存。
 
-    空日（无上榜）不算失败：写入 ts_code=__EMPTY__ 的 sentinel 行标记该日已拉，
-    attach 层会过滤 sentinel。子集(ts_codes)模式过滤返回、不写共享缓存。
+    每日帧 concat/save 前 cast 到 TOP_LIST_SCHEMA。空日写 __EMPTY__ sentinel（同 schema）。
+    若既有年分区 SchemaError，log 后 wipe 并重写该年。子集模式过滤返回、不写共享缓存。
     """
     pro = init_tushare()
     data_type = "top_list"
@@ -708,16 +843,16 @@ def fetch_top_list(start: str, end: str, ts_codes: list[str] | None = None) -> p
                 logger.error(f"[top_list] {date_str} 拉取失败: {e}")
                 continue
             if df_pd is not None and not df_pd.empty:
-                parts.append(pl.from_pandas(df_pd))
+                parts.append(_cast_top_list_schema(pl.from_pandas(df_pd)))
         if not parts:
-            return pl.DataFrame()
-        merged = (
-            pl.concat(parts)
-            .with_columns(_str_to_date(pl.col("trade_date")))
-            .sort(["trade_date", "ts_code"])
-        )
-        merged = merged.select([c for c in TOP_LIST_COLS if c in merged.columns])
+            return pl.DataFrame(schema=TOP_LIST_SCHEMA)
+        merged = pl.concat(parts).sort(["trade_date", "ts_code"])
         return merged.filter(pl.col("ts_code").is_in(ts_codes))
+
+    # 修复态：混 schema 旧分区 → wipe 后强制重拉该年
+    corrupt = _top_list_corrupt_years(start, end)
+    for y in sorted(corrupt):
+        _wipe_top_list_year(y)
 
     missing = _missing_trade_dates(data_type, start, end)
     if not missing:
@@ -728,16 +863,8 @@ def fetch_top_list(start: str, end: str, ts_codes: list[str] | None = None) -> p
         def _flush() -> None:
             if not buf:
                 return
-            merged = (
-                pl.concat(buf)
-                .with_columns(_str_to_date(pl.col("trade_date")))
-                .sort(["trade_date", "ts_code"])
-            )
-            merged = merged.select([c for c in TOP_LIST_COLS if c in merged.columns
-                                    or c == "ts_code"])
-            # 保证至少有 std 关键列
-            keep = [c for c in merged.columns if c in TOP_LIST_COLS or c == "ts_code"]
-            save_parquet(merged.select(keep), data_type=data_type)
+            merged = pl.concat(buf).sort(["trade_date", "ts_code"])
+            save_parquet(merged, data_type=data_type)
             buf.clear()
 
         last_year: str | None = None
@@ -753,16 +880,11 @@ def fetch_top_list(start: str, end: str, ts_codes: list[str] | None = None) -> p
                 logger.error(f"[top_list] {date_str} 拉取失败: {e}")
                 continue
             if df_pd is not None and not (hasattr(df_pd, "empty") and df_pd.empty):
-                buf.append(pl.from_pandas(df_pd))
+                buf.append(_cast_top_list_schema(pl.from_pandas(df_pd)))
             else:
                 # 空日 sentinel：标记已拉，attach 过滤 __EMPTY__
                 logger.info(f"[top_list] {date_str} 无上榜（空日 sentinel）")
-                buf.append(pl.DataFrame({
-                    "trade_date": [date_str],
-                    "ts_code": [_TOPLIST_EMPTY_CODE],
-                    "net_amount": [None],
-                    "amount": [None],
-                }))
+                buf.append(_top_list_sentinel_row(date_str))
         _flush()
 
     try:
@@ -772,7 +894,7 @@ def fetch_top_list(start: str, end: str, ts_codes: list[str] | None = None) -> p
             .collect()
         )
     except Exception:
-        return pl.DataFrame()
+        return pl.DataFrame(schema=TOP_LIST_SCHEMA)
 
 
 def fetch_stock_basic(list_status: str = "L,D,P") -> pl.DataFrame:

@@ -125,7 +125,8 @@ def test_openai_flavor_payload_uses_max_completion_tokens_no_temperature_no_extr
         "model": "gpt-5.4",
         "messages": _MSGS,
         "max_completion_tokens": 900,
-        "stream": True,
+        # openai flavor 缺省非流式（本地网关 chunked 长响应不可靠;STREAM=true 可覆盖）
+        "stream": False,
         "response_format": {"type": "json_object"},
     }
     assert "max_tokens" not in payload
@@ -145,5 +146,5 @@ def test_openai_flavor_payload_omits_response_format_when_disabled():
     payload = _build_payload(config, _MSGS, include_response_format=False)
 
     assert "response_format" not in payload
-    assert payload["stream"] is True
+    assert payload["stream"] is False
     assert payload["max_completion_tokens"] == 700

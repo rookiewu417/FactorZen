@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 try:
@@ -182,3 +183,81 @@ class ExperimentIndex:
         ]
         recs.sort(key=lambda r: abs(r.get("holdout_ic") or 0.0), reverse=True)
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]
+
+    def leaf_stats(
+        self,
+        leaf_names: list[str],
+        data_window: dict | None = None,
+    ) -> dict[str, dict]:
+        """按叶子聚合历史尝试（词边界匹配，流式读文件）。
+
+        对每个 ``leaf`` 返回：
+        - ``n_exprs``：含该 leaf 的唯一表达式数（``compile_ok=False`` 不计）
+        - ``n_passed``：其中 ``passed=True`` 的数量
+        - ``best_abs_ic``：其中最大 ``|ic_train|``（None 记 0）
+        - ``n_coverage_fail``：``reject_category == holdout_coverage`` 的数量
+          （缺数据，不算方向失败；挖穿判定用 ``n_exprs - n_coverage_fail``）
+
+        统计口径与 ``known_invalid`` 一致：走窗口分族 + 同表达式后写覆盖。
+        匹配用 ``\\b<leaf>\\b``，避免 ``roe`` 误命中 ``grossprofit_margin`` 等子串。
+        """
+        from factorzen.discovery.guardrails import REJECT_CATEGORY_HOLDOUT_COVERAGE
+
+        empty = {
+            "n_exprs": 0,
+            "n_passed": 0,
+            "best_abs_ic": 0.0,
+            "n_coverage_fail": 0,
+        }
+        if not leaf_names:
+            return {}
+        # leaf 名都是合法标识符；escape 防意外元字符
+        patterns = {
+            name: re.compile(rf"\b{re.escape(name)}\b") for name in leaf_names
+        }
+        key = window_key(data_window)
+        # 流式：只保留同表达式最新记录（与 _last_wins 同语义），不全量 list 进内存。
+        latest: dict[str, dict] = {}
+        if self.path.exists():
+            with self.path.open() as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    expr = r.get("expression")
+                    if expr is None:
+                        continue
+                    if key is not None:
+                        rk = window_key(r.get("data_window"))
+                        if rk is None or rk != key:
+                            continue
+                    latest[_normalize(expr)] = r
+
+        out: dict[str, dict] = {name: dict(empty) for name in leaf_names}
+        for norm_expr, r in latest.items():
+            if not r.get("compile_ok", True):
+                continue
+            # 用原始 expression 匹配叶子（与落盘一致）；归一化串也可，叶名标识符不变。
+            text = r.get("expression") or norm_expr
+            is_cov = r.get("reject_category") == REJECT_CATEGORY_HOLDOUT_COVERAGE
+            if not is_cov:
+                rr = r.get("reject_reason") or ""
+                is_cov = "覆盖不足" in rr
+            passed = bool(r.get("passed", False))
+            abs_ic = abs(r.get("ic_train") or 0.0)
+            for name, pat in patterns.items():
+                if not pat.search(text):
+                    continue
+                st = out[name]
+                st["n_exprs"] += 1
+                if passed:
+                    st["n_passed"] += 1
+                if abs_ic > st["best_abs_ic"]:
+                    st["best_abs_ic"] = abs_ic
+                if is_cov:
+                    st["n_coverage_fail"] += 1
+        return out

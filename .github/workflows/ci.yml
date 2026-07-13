@@ -37,8 +37,7 @@ jobs:
       - name: Type check
         run: pixi run typecheck
 
-      - name: Test
-        run: pixi run test
-
-      - name: Coverage
+      # 单遍并行:coverage 任务即全量 pytest(-n auto + pytest-cov),测试失败即红。
+      # 旧流程 Test 与 Coverage 各跑一遍全量(3m49+4m56),合并后约省一半时长。
+      - name: Test + Coverage
         run: pixi run coverage

@@ -94,7 +94,7 @@ def _stub_guardrails(*, yields_candidate: bool):
     生产中不存在的形状，测试就跑在幻觉上了。
     """
     def fake(state, *, daily, holdout_df, bundle, ledger, top_k=5, dsr_alpha=0.05,
-             warmup_daily=None, eval_start=None):
+             warmup_daily=None, eval_start=None, **_kwargs):
         ledger.record(1)
         if yields_candidate:
             state.attempts.append(AttemptRecord(

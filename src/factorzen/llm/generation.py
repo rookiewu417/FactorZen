@@ -156,7 +156,7 @@ _LEAF_GUIDANCE: dict[str, str] = {
         "（T 日两融 T+1 早间披露，attach 已内置 lag(1)；rzye/rzmre 单位元，"
         "margin_ratio=rzye/(circ_mv×1e4)，margin_buy_ratio=rzmre/(amount×1e3)）；"
         "top_list_net_buy/top_list_flag 是**龙虎榜**叶子"
-        "（t 日榜单 t 日盘后披露，attach 已内置 lag(1)；未上榜=0；"
+        "（t 日榜单 t 日盘后披露，attach 已内置 lag(1)；已知日未上榜=0，未拉取=null；"
         "net_amount 万元、amount 千元，比前统一到元）——"
         "与量价正交的族可作多族组合，避开拥挤方向，别只盯量价波动。\n"
     ),

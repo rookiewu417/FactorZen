@@ -3,8 +3,9 @@
 与基本面不同,资金流/北向本身就是**日频 point-in-time**,当日数据当日可得,无需
 PIT 季度对齐(pit_align)。两融/龙虎榜例外（披露时点滞后）:
 - **两融**：T 日两融数据 T+1 早间披露 → lag(1)；非标的 join 得 null（不填 0）。
-- **龙虎榜**：t 日龙虎榜 t 日盘后（晚间）披露 → 保守 lag(1)；**未上榜=真实零事件**
-  （全市场事件筛选，未出现=确定没上榜）→ join 后 **fill 0**（与两融非标的=null 相反）。
+- **龙虎榜**：t 日龙虎榜 t 日盘后（晚间）披露 → 保守 lag(1)；**条件 fill 0**：
+  源表已知日（真实行 ∪ ``__EMPTY__`` sentinel）内未上榜 = 确定没上榜 → fill 0；
+  **未拉取日保持 null**（没拉数据 ≠ 没上榜）。全空源 → 全 null（覆盖审计诚实）。
 
 lag 均在 attach 层按 ts_code 组内交易日序 ``shift(1)`` 结构性完成,不靠表达式作者写 delay。
 
@@ -23,8 +24,9 @@ lag 均在 attach 层按 ts_code 组内交易日序 ``shift(1)`` 结构性完成
   仅融资融券标的有数据(全 A 约一半;CSI300 覆盖通常 >90%);非标的 join 得 null(不填 0)。
   单位:rzye/rzmre=**元**;circ_mv=**万元**→比前 ×1e4;amount=**千元**→比前 ×1e3。
   变化率/滚动交给算子库(ts_*),叶子保持原子性。
-- 龙虎榜叶子(``top_list_net_buy``/``top_list_flag``):全市场事件;未上榜 fill 0 → 覆盖≈100%。
-  单位:net_amount=**万元**→×1e4;amount=**千元**→×1e3;同日多原因 sum net_amount。
+- 龙虎榜叶子(``top_list_net_buy``/``top_list_flag``):全市场事件;已知日未上榜 fill 0,
+  未拉取日 null → leaf_health 对事件叶子恢复视力。单位:net_amount=**万元**→×1e4;
+  amount=**千元**→×1e3;同日多原因 sum net_amount。
 """
 from __future__ import annotations
 
@@ -53,7 +55,7 @@ def attach_flows(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame] | Non
 
     缺数据 / 读取失败 → 原样返回,缺的叶子补 null(表达式引用到时得 null 而非 KeyError)。
     ``injected``:``{分区名: DataFrame}`` 供测试注入,绕过 parquet 读取。
-    两融/龙虎榜在 join 前对源列做组内 lag(1)；龙虎榜 join 后 fill 0。
+    两融/龙虎榜在 join 前对源列做组内 lag(1)；龙虎榜对已知日条件 fill 0。
     """
     from factorzen.discovery.operators import FLOW_FEATURES, MARGIN_FEATURES, TOPLIST_FEATURES
 
@@ -148,40 +150,65 @@ def _attach_margin(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) ->
 
 
 def _attach_toplist(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) -> pl.DataFrame:
-    """龙虎榜叶子:同日聚合 → 比值 → join daily → fill 0 → 整列 lag(1) → 再 fill 0。
+    """龙虎榜叶子:同日聚合 → 比值 → join daily → **条件 fill 0** → 整列 lag(1)。
 
     披露时点:t 日龙虎榜 t 日盘后(晚间)披露 → t 日信号只能用 t-1 上榜信息。
-    未上榜 = 真实零事件(全市场事件筛选,未出现=确定没上榜)→ **fill 0**,非 null
-    (与两融「非标的=null」相反)。fill 0 后 ts_sum 等滚动算子语义正确,覆盖≈100%。
+
+    条件 fill 0（事件叶子诚实缺测）:
+    - 已知日集合 = 源表 distinct trade_date（真实行 ∪ ``__EMPTY__`` sentinel）
+    - ``trade_date ∈ 已知日`` 且 join 缺失 → fill 0（确定没上榜）
+    - ``trade_date ∉ 已知日`` → 保持 null（未拉取 ≠ 没上榜）
+    - 全空源 → 全 null（覆盖审计诚实；leaf_health 可见缺口）
+    与两融「非标的=null」不同:已知日内未上榜是真实零事件。
 
     单位(Tushare top_list):net_amount=**万元**→×1e4 元;amount=**千元**→×1e3 元。
     同日多条上榜原因:net_amount sum,amount first(同股同日成交额相同)。
     """
     df = injected.get("top_list")
     if df is None:
-        df = _load_flow("top_list", _TOPLIST_SRC_COLS)
-    # 无源数据时仍补 0 列(全市场零事件语义),与两融「无数据→null」不同
+        # 保留 sentinel 行以便构建已知日集合
+        df = _load_flow("top_list", _TOPLIST_SRC_COLS, keep_toplist_sentinel=True)
     leaf_cols = ["top_list_net_buy", "top_list_flag"]
     if df is None or df.is_empty():
-        return daily.with_columns([pl.lit(0.0).alias(c) for c in leaf_cols
-                                   if c not in daily.columns])
-
-    # 过滤 fetch 空日 sentinel
-    if "ts_code" in df.columns:
-        df = df.filter(pl.col("ts_code") != _TOPLIST_EMPTY_CODE)
-    have = [c for c in _TOPLIST_SRC_COLS if c in df.columns]
-    if not have or "net_amount" not in have:
-        return daily.with_columns([pl.lit(0.0).alias(c) for c in leaf_cols
-                                   if c not in daily.columns])
+        return daily.with_columns([
+            pl.lit(None, dtype=pl.Float64).alias(c)
+            for c in leaf_cols if c not in daily.columns
+        ])
 
     df = _align_trade_date(df, daily)
+    # 已知日 = 真实行 ∪ sentinel 空日（fetch 已拉标记）
+    known_dates = df.select("trade_date").unique()
+
+    # 过滤 sentinel 后再做事件聚合
+    real = (
+        df.filter(pl.col("ts_code") != _TOPLIST_EMPTY_CODE)
+        if "ts_code" in df.columns else df
+    )
+    have = [c for c in _TOPLIST_SRC_COLS if c in real.columns]
+    if not have or "net_amount" not in have:
+        # 无事件列但可能有 sentinel 已知日 → 已知日 fill 0，未知日 null
+        daily = daily.with_columns([
+            pl.lit(None, dtype=pl.Float64).alias(c)
+            for c in leaf_cols if c not in daily.columns
+        ])
+        known_set = known_dates["trade_date"].to_list()
+        is_known = pl.col("trade_date").is_in(known_set)
+        daily = daily.with_columns([
+            pl.when(is_known).then(0.0).otherwise(pl.col(c)).alias(c)
+            for c in leaf_cols
+        ])
+        return (
+            daily.sort(["ts_code", "trade_date"])
+            .with_columns([pl.col(c).shift(1).over("ts_code") for c in leaf_cols])
+        )
+
     # 同日多原因聚合
     agg_exprs: list[pl.Expr] = [pl.col("net_amount").sum().alias("net_amount")]
     if "amount" in have:
         agg_exprs.append(pl.col("amount").first().alias("amount"))
-    sel = df.group_by(["ts_code", "trade_date"]).agg(agg_exprs)
+    sel = real.group_by(["ts_code", "trade_date"]).agg(agg_exprs)
 
-    # 比值: (net_amount 万元 × 1e4) / (amount 千元 × 1e3)；无 amount 则 net_buy=null→0
+    # 比值: (net_amount 万元 × 1e4) / (amount 千元 × 1e3)
     if "amount" in sel.columns:
         sel = sel.with_columns(
             pl.when(pl.col("amount").is_not_null() & (pl.col("amount").abs() > 1e-12))
@@ -200,18 +227,30 @@ def _attach_toplist(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) -
         )
 
     sel = sel.select(["ts_code", "trade_date", *leaf_cols])
-    # 1) left-join 事件到日线 2) 未上榜 fill 0 3) 按交易日序 lag(1) 4) 首日 null 再 fill 0
+    # 1) left-join 事件 2) 已知日缺失 fill 0，未知日保持 null 3) lag(1)（首日/未知前值保持 null）
     daily = daily.join(sel, on=["trade_date", "ts_code"], how="left")
-    daily = daily.with_columns([pl.col(c).fill_null(0.0) for c in leaf_cols])
+    known_set = known_dates["trade_date"].to_list()
+    is_known = pl.col("trade_date").is_in(known_set)
+    daily = daily.with_columns([
+        pl.when(is_known & pl.col(c).is_null())
+        .then(0.0)
+        .otherwise(pl.col(c))
+        .alias(c)
+        for c in leaf_cols
+    ])
     daily = (
         daily.sort(["ts_code", "trade_date"])
         .with_columns([pl.col(c).shift(1).over("ts_code") for c in leaf_cols])
-        .with_columns([pl.col(c).fill_null(0.0) for c in leaf_cols])
     )
     return daily
 
 
-def _load_flow(part: str, cols: list[str]) -> pl.DataFrame | None:
+def _load_flow(
+    part: str,
+    cols: list[str],
+    *,
+    keep_toplist_sentinel: bool = False,
+) -> pl.DataFrame | None:
     from factorzen.core.storage import scan_parquet
     try:
         lf = scan_parquet(part)
@@ -219,7 +258,11 @@ def _load_flow(part: str, cols: list[str]) -> pl.DataFrame | None:
         have = [c for c in cols if c in names]
         if not have:
             return None
-        return lf.select(["ts_code", "trade_date", *have]).collect()
+        out = lf.select(["ts_code", "trade_date", *have]).collect()
+        # top_list：默认保留 sentinel 供已知日集合；其他分区无此开关
+        if part == "top_list" and not keep_toplist_sentinel and "ts_code" in out.columns:
+            out = out.filter(pl.col("ts_code") != _TOPLIST_EMPTY_CODE)
+        return out
     except Exception:
         return None
 

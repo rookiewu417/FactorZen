@@ -248,7 +248,7 @@ def _cmd_data_fetch(args: argparse.Namespace) -> int:
         # 股东户数，低频；ann_date PIT 对齐在 attach_holders
         frame = loader.fetch_stk_holdernumber(args.start, args.end)
     elif args.data_type == "top_list":
-        # 龙虎榜，日频事件；盘后披露 lag + 未上榜 fill 0 在 attach 层完成
+        # 龙虎榜，日频事件；盘后披露 lag + 已知日未上榜 fill 0（未拉取=null）在 attach 层完成
         frame = loader.fetch_top_list(args.start, args.end)
     else:
         frame = loader.fetch_daily_basic(args.start, args.end)

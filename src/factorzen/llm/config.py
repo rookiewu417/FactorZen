@@ -90,6 +90,18 @@ def _resolve_flavor(raw: str | None) -> str:
     return flavor
 
 
+def _resolve_stream(raw: str | None) -> bool | None:
+    """None → 按 flavor 缺省；显式值必须是明确布尔字面量（异常契约统一 ValueError）。"""
+    if raw is None or not raw.strip():
+        return None
+    lowered = raw.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"非法 FACTORZEN_LLM_STREAM={raw!r}；允许 true/false")
+
+
 @dataclass(frozen=True)
 class LLMConfig:
     enabled: bool
@@ -107,6 +119,10 @@ class LLMConfig:
     flavor: str = "aiping"
     # 当前选用的配置 profile 名（审计用；None = 平铺默认）
     profile: str | None = None
+    # 流式开关：None → 按 flavor 缺省（aiping=True 沿现状；openai=False——本地兼容网关
+    # 对 chunked 长响应不可靠，实测 cockpit 长流式中途断流 RemoteProtocolError）。
+    # 显式 FACTORZEN_LLM_STREAM / FACTORZEN_LLM_<PROFILE>_STREAM 可覆盖。
+    stream: bool | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -143,6 +159,13 @@ class LLMConfig:
         if not self.thinking:
             return False
         return self.thinking.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+    @property
+    def stream_enabled(self) -> bool:
+        """显式 stream 优先；None → flavor 缺省（aiping=True，openai=False）。"""
+        if self.stream is not None:
+            return self.stream
+        return self.flavor != "openai"
 
 
 def load_llm_config(
@@ -194,6 +217,7 @@ def load_llm_config(
         max_retries = 3
 
     flavor = _resolve_flavor(setting("FLAVOR"))
+    stream = _resolve_stream(setting("STREAM"))
 
     return LLMConfig(
         enabled=final_enabled,
@@ -207,4 +231,5 @@ def load_llm_config(
         max_retries=max_retries,
         flavor=flavor,
         profile=active_profile,
+        stream=stream,
     )

@@ -7,6 +7,7 @@ import logging
 from functools import lru_cache
 from typing import Any
 
+import httpx
 from openai import APIError, APIStatusError, OpenAI
 
 from factorzen.llm.config import LLMConfig
@@ -60,7 +61,9 @@ def _build_payload(
             "model": config.model,
             "messages": messages,
             "max_completion_tokens": config.max_tokens,
-            "stream": True,
+            # 缺省非流式：本地兼容网关对 chunked 长响应不可靠（实测 cockpit 长流式
+            # 中途断流 RemoteProtocolError）；FACTORZEN_LLM_*_STREAM=true 可覆盖。
+            "stream": config.stream_enabled,
         }
         if include_response_format:
             payload["response_format"] = {"type": "json_object"}
@@ -71,7 +74,7 @@ def _build_payload(
         "messages": messages,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
-        "stream": True,
+        "stream": config.stream_enabled,
         "extra_body": {
             "enable_thinking": config.thinking_enabled,
             "provider": _provider_options(config),
@@ -182,6 +185,23 @@ def _consume_stream(config: LLMConfig, stream: Any) -> str:
     return content
 
 
+def _extract_message_content(response: Any) -> str:
+    """非流式响应：取 ``choices[0].message.content``。"""
+    choices = getattr(response, "choices", None)
+    message = getattr(choices[0], "message", None) if choices else None
+    content = getattr(message, "content", None) if message is not None else None
+    if not isinstance(content, str) or not content:
+        raise LLMClientError("LLM 非流式响应缺少 choices[0].message.content")
+    return content
+
+
+def _extract_content(config: LLMConfig, result: Any) -> str:
+    """按流式开关消费 create() 的返回。"""
+    if config.stream_enabled:
+        return _consume_stream(config, result)
+    return _extract_message_content(result)
+
+
 def _create_stream(
     config: LLMConfig,
     messages: list[dict[str, str]],
@@ -218,9 +238,13 @@ def _stream_content(
         stream = _create_stream(
             config, messages, include_response_format=include_response_format
         )
-        return _consume_stream(config, stream)
+        return _extract_content(config, stream)
     except LLMClientError:
         raise
+    except httpx.HTTPError as exc:
+        # 传输层异常（断流/超时/连接重置）必须包成 LLMClientError——否则穿透
+        # 团队编排器的轮层容错杀死整个挖掘 session（cockpit 断流真实事故）。
+        raise LLMClientError(f"LLM 传输失败: {type(exc).__name__}: {exc}") from exc
     except APIStatusError as exc:
         can_retry = (
             config.flavor == "openai"
@@ -237,9 +261,13 @@ def _stream_content(
                 stream = _create_stream(
                     config, messages, include_response_format=False
                 )
-                return _consume_stream(config, stream)
+                return _extract_content(config, stream)
             except LLMClientError:
                 raise
+            except httpx.HTTPError as retry_exc:
+                raise LLMClientError(
+                    f"LLM 传输失败: {type(retry_exc).__name__}: {retry_exc}"
+                ) from retry_exc
             except APIStatusError:
                 # 重试也失败 → 抛原错（首次 400），便于对照上游语义
                 raise LLMClientError(f"HTTP {exc.status_code}: {_error_body(exc)}") from exc

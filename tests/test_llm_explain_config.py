@@ -256,3 +256,32 @@ def test_profile_flavor_from_env_file(tmp_path, monkeypatch):
     assert config.profile == "sub2api"
     assert config.flavor == "openai"
     assert config.model == "gpt-5.4"
+
+
+def test_stream_default_none_follows_flavor(monkeypatch):
+    """STREAM 未设 → None → stream_enabled 按 flavor 缺省（aiping=True/openai=False）。"""
+    for key in ("FACTORZEN_LLM_STREAM", "FACTORZEN_LLM_PROFILE"):
+        monkeypatch.delenv(key, raising=False)
+    config = load_llm_config(enabled=True, env_file=None)
+    assert config.stream is None
+    assert config.stream_enabled is True  # aiping 缺省
+    from dataclasses import replace
+    assert replace(config, flavor="openai").stream_enabled is False
+
+
+def test_stream_env_override_and_invalid_raises(tmp_path, monkeypatch):
+    for key in ("FACTORZEN_LLM_STREAM", "FACTORZEN_LLM_PROFILE"):
+        monkeypatch.delenv(key, raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "FACTORZEN_LLM_PROFILE=gw\n"
+        "FACTORZEN_LLM_GW_FLAVOR=openai\n"
+        "FACTORZEN_LLM_GW_STREAM=true\n"
+    )
+    config = load_llm_config(enabled=True, env_file=env_file)
+    assert config.stream is True and config.stream_enabled is True  # 显式覆盖 flavor 缺省
+
+    env_file.write_text("FACTORZEN_LLM_STREAM=maybe\n")
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="STREAM"):
+        load_llm_config(enabled=True, env_file=env_file)

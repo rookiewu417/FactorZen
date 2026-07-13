@@ -197,7 +197,7 @@ def test_openai_flavor_skips_provider_chunk_validation(monkeypatch):
         [_chunk("ok", provider="Whoever", is_fallback=True)],
     )
 
-    assert request_chat(_cfg(flavor="openai", provider="DeepSeek"), _MSGS) == "ok"
+    assert request_chat(_cfg(flavor="openai", provider="DeepSeek", stream=True), _MSGS) == "ok"
 
 
 def test_openai_flavor_warns_when_provider_configured(monkeypatch, caplog):
@@ -205,7 +205,7 @@ def test_openai_flavor_warns_when_provider_configured(monkeypatch, caplog):
     _install_fake(monkeypatch, [_chunk("ok")])
 
     with caplog.at_level(logging.WARNING, logger="factorzen.llm.client"):
-        assert request_chat(_cfg(flavor="openai", provider="DeepSeek"), _MSGS) == "ok"
+        assert request_chat(_cfg(flavor="openai", provider="DeepSeek", stream=True), _MSGS) == "ok"
 
     hits = [r for r in caplog.records if "openai flavor" in r.getMessage() and "provider" in r.getMessage()]
     assert len(hits) >= 1
@@ -214,7 +214,7 @@ def test_openai_flavor_warns_when_provider_configured(monkeypatch, caplog):
 def test_openai_flavor_payload_has_no_extra_body_on_wire(monkeypatch):
     sdk, _ = _install_fake(monkeypatch, [_chunk("ok")])
 
-    request_chat(_cfg(flavor="openai", provider=None, thinking="true"), _MSGS)
+    request_chat(_cfg(flavor="openai", provider=None, thinking="true", stream=True), _MSGS)
 
     call = sdk.completions.calls[0]
     assert "extra_body" not in call
@@ -283,7 +283,7 @@ def test_openai_response_format_400_retries_once_without_format(monkeypatch, cap
 
     with caplog.at_level(logging.WARNING, logger="factorzen.llm.client"):
         explanation = request_llm_explanation(
-            _cfg(flavor="openai", provider=None, model="gpt-5.4"),
+            _cfg(flavor="openai", provider=None, model="gpt-5.4", stream=True),
             _MSGS,
         )
 
@@ -304,7 +304,7 @@ def test_openai_response_format_400_retry_failure_raises_original(monkeypatch):
 
     with pytest.raises(LLMClientError, match="HTTP 400") as caught:
         request_llm_explanation(
-            _cfg(flavor="openai", provider=None, model="gpt-5.4"),
+            _cfg(flavor="openai", provider=None, model="gpt-5.4", stream=True),
             _MSGS,
         )
 
@@ -327,3 +327,73 @@ def test_aiping_response_format_400_does_not_retry(monkeypatch):
         request_llm_explanation(_cfg(flavor="aiping"), _MSGS)
 
     assert len(completions.calls) == 1
+
+
+# ── 传输层异常包装 + openai flavor 非流式（cockpit 断流事故回归）───────────────
+
+
+class _BrokenStream:
+    """迭代中途抛 httpx 传输异常（模拟网关长流式断流 incomplete chunked read）。"""
+
+    def __iter__(self):
+        yield _chunk("部分内容")
+        import httpx
+
+        raise httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body"
+        )
+
+
+def test_stream_transport_error_wrapped_as_llm_client_error(monkeypatch):
+    """流迭代期的 httpx 传输异常必须包成 LLMClientError。
+
+    真实事故：cockpit 网关长流式响应中途断流，RemoteProtocolError 穿透
+    团队编排器的轮层容错（except LLMClientError）直接杀死整个挖掘 session。
+    """
+    sdk, _ = _install_fake(monkeypatch, [])
+    monkeypatch.setattr(
+        sdk.chat.completions, "create",
+        lambda **kw: _BrokenStream(),
+    )
+    with pytest.raises(client_mod.LLMClientError, match="传输"):
+        client_mod.request_chat(_cfg(), [{"role": "user", "content": "hi"}])
+
+
+def _message_resp(content: str):
+    """非流式 chat.completion 响应形状。"""
+    msg = SimpleNamespace(content=content)
+    return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+
+def test_openai_flavor_defaults_to_non_streaming_and_reads_message(monkeypatch):
+    """openai flavor 缺省非流式（本地网关对 chunked 长响应不可靠）：
+    payload stream=False，内容从 choices[0].message.content 取。"""
+    sdk, _ = _install_fake(monkeypatch, [])
+    captured: list[dict] = []
+
+    def create(**kw):
+        captured.append(kw)
+        return _message_resp("好的")
+
+    monkeypatch.setattr(sdk.chat.completions, "create", create)
+    cfg = _cfg(flavor="openai", provider=None)
+    out = client_mod.request_chat(cfg, [{"role": "user", "content": "hi"}])
+    assert out == "好的"
+    assert captured[0]["stream"] is False
+
+
+def test_openai_flavor_explicit_stream_true_still_streams(monkeypatch):
+    """显式 stream=True 覆盖 flavor 缺省——openai flavor 仍可走流式。"""
+    sdk, _ = _install_fake(monkeypatch, [_chunk("流式ok")])
+    cfg = _cfg(flavor="openai", provider=None, stream=True)
+    out = client_mod.request_chat(cfg, [{"role": "user", "content": "hi"}])
+    assert out == "流式ok"
+    assert sdk.chat.completions.calls[0]["stream"] is True
+
+
+def test_empty_non_stream_content_raises(monkeypatch):
+    sdk, _ = _install_fake(monkeypatch, [])
+    monkeypatch.setattr(sdk.chat.completions, "create", lambda **kw: _message_resp(""))
+    cfg = _cfg(flavor="openai", provider=None)
+    with pytest.raises(client_mod.LLMClientError, match="content"):
+        client_mod.request_chat(cfg, [{"role": "user", "content": "hi"}])

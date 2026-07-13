@@ -21,11 +21,29 @@ LEAF_FEATURES: dict[str, str] = {
     "ps_ttm": "ps_ttm", "dv_ttm": "dv_ttm",
     "turnover_rate": "turnover_rate", "turnover_rate_f": "turnover_rate_f",
     "volume_ratio": "volume_ratio", "float_share": "float_share",
+    # 基本面（财报 fina_indicator，按公告日 PIT 对齐；与量价正交，供价值/质量/成长类因子）
+    # 质量：roe/roa/毛利率/净利率/资产负债率(杠杆)
+    "roe": "roe", "roa": "roa",
+    "grossprofit_margin": "grossprofit_margin", "netprofit_margin": "netprofit_margin",
+    "debt_to_assets": "debt_to_assets",
+    # 成长：营收同比/净利同比/资产同比
+    "or_yoy": "or_yoy", "netprofit_yoy": "netprofit_yoy", "assets_yoy": "assets_yoy",
+    # 资金流/北向（日频 point-in-time，与量价/基本面均正交）
+    "net_mf_amount": "net_mf_amount",  # 主力资金净流入额
+    "north_ratio": "north_ratio",      # 北向持股占比
 }
 BASIC_FEATURES: set[str] = {
     "total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm",
     "turnover_rate", "turnover_rate_f", "volume_ratio", "float_share",
 }
+# 需 finance 数据 + PIT 对齐的基本面叶子。用了这些叶子的因子须先 attach_fundamentals，
+# 否则回测/物化路径上它们全 null（双路径漂移，陷阱#2）。fina_indicator 字段名即叶子名。
+FUNDAMENTAL_FEATURES: set[str] = {
+    "roe", "roa", "grossprofit_margin", "netprofit_margin", "debt_to_assets",
+    "or_yoy", "netprofit_yoy", "assets_yoy",
+}
+# 需资金流/北向数据的日频叶子。用了它们的因子须先 attach_flows，否则回测/物化路径上全 null。
+FLOW_FEATURES: set[str] = {"net_mf_amount", "north_ratio"}
 
 _MIN = 3  # rolling 最小样本
 

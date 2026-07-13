@@ -44,11 +44,17 @@ def run_team_mine(
     data_window: dict | None = None,
     command: str | None = None,
     eval_start: str | None = None,
+    hypotheses_per_round: int = 1,
+    profile=None,
+    update_library: bool = True,
 ) -> dict:
     """跑多 Agent 团队挖掘，每轮增量落 manifest，收尾写 candidates.csv + 导出候选。
 
     ``data_window``：``{start, end, universe, market}``；``command``：触发本次运行的命令行。
     二者落进 manifest 的 params，否则事后无从复现（铁律#3）。
+
+    ``profile``：市场 profile（默认 None → A 股，零回归）。crypto 等传各自 profile，逐层透传到
+    `run_team_agent`——数据装配（含预热前缀的 crypto daily）由调用方（CLI）负责。
 
     ``eval_start``：``"YYYYMMDD"``，训练段的干净起点。``daily`` 由 `prepare_mining_daily`
     带预热前缀，须把该前缀边界（= 挖掘窗口 ``start``）透传给 `run_team_agent`，否则预热段
@@ -70,6 +76,7 @@ def run_team_mine(
         "patience": patience,
         "heal_rounds": heal_rounds,
         "eval_start": eval_start,
+        "hypotheses_per_round": hypotheses_per_round,
         **(data_window or {}),
         "command": command,
         "llm": _llm_meta(llm_fn),
@@ -95,6 +102,12 @@ def run_team_mine(
         on_round_end=_checkpoint,
         data_window=data_window,
         eval_start=eval_start,
+        hypotheses_per_round=hypotheses_per_round,
+        profile=profile,
+        update_library=update_library,
+        # 库根固定到 workspace/factor_library（out_dir=workspace/mine_team 的同级），
+        # 不用 run_team_agent 从 index_path 推导的默认（那会落到 mine_team/factor_library）。
+        library_root=str(Path(out_dir).parent / "factor_library"),
     )
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

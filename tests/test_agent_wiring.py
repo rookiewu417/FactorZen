@@ -207,7 +207,7 @@ def test_structured_decomposes_hypothesis_and_drives_coder_per_task(tmp_path, mo
         return [{"name": "mom5", "description": "5日动量", "rationale": "趋势延续"},
                 {"name": "mom20", "description": "20日动量", "rationale": "中期趋势"}]
 
-    def fake_write(hypothesis, llm_fn, *, avoid=None):
+    def fake_write(hypothesis, llm_fn, *, avoid=None, **_kw):
         write_calls.append(hypothesis)
         return [f"ts_mean(close,{5 * len(write_calls)})"]
 
@@ -241,7 +241,7 @@ def test_decompose_returning_empty_falls_back_to_whole_hypothesis(tmp_path, monk
 
     monkeypatch.setattr(to, "decompose_tasks", lambda h, f: [])
 
-    def fake_write(hypothesis, llm_fn, *, avoid=None):
+    def fake_write(hypothesis, llm_fn, *, avoid=None, **_kw):
         write_calls.append(hypothesis)
         return ["ts_mean(close,5)"]
 
@@ -296,7 +296,7 @@ def test_rounds_log_records_tasks_for_traceability(tmp_path, monkeypatch):
                         lambda h, f: [{"name": "mom5", "description": "5日动量",
                                        "rationale": "趋势"}])
     monkeypatch.setattr(to, "write_expressions",
-                        lambda h, f, *, avoid=None: ["ts_mean(close,5)"])
+                        lambda h, f, *, avoid=None, **_kw: ["ts_mean(close,5)"])
 
     seq = [json.dumps({"hypotheses": [{"direction": "动量", "mechanism": "m",
                                        "expected_sign": 1, "falsification": "f"}]}),

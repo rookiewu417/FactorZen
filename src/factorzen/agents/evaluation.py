@@ -8,8 +8,12 @@ import logging
 import polars as pl
 
 from factorzen.discovery.derived import add_derived_columns
-from factorzen.discovery.expression import evaluate as eval_node
-from factorzen.discovery.expression import parse_expr, to_expr_string, warmup_shortfall
+from factorzen.discovery.expression import (
+    evaluate_materialized,
+    parse_expr,
+    to_expr_string,
+    warmup_shortfall,
+)
 from factorzen.discovery.scoring import quick_fitness
 
 _LOG = logging.getLogger(__name__)
@@ -18,8 +22,16 @@ _PRICE_COLS = ("close", "open", "high", "low", "vol", "amount",
                "close_adj", "open_adj", "high_adj", "low_adj")
 
 
-def _preprocess_daily(daily: pl.DataFrame) -> pl.DataFrame:
-    """把评估帧准备成与 run_session/ExpressionFactor 同一套 prep（复权价 + 停牌掩码 + 全套派生列）。"""
+def _preprocess_daily(daily: pl.DataFrame, profile=None) -> pl.DataFrame:
+    """把评估帧准备成与 run_session/ExpressionFactor 同一套 prep（复权价 + 停牌掩码 + 全套派生列）。
+
+    ``profile``：市场 profile。``None``（默认）→ A 股 prep（复权价别名 + 停牌掩码 + pre_close +
+    `add_derived_columns`），逐字节零回归。非 None → 市场特有派生列
+    ``profile.factors.derived_columns``（与 M1 `run_session(profile=...)` 同口径：crypto 无复权、
+    无停牌掩码、无 pre_close，只按标的排序后追加 vwap/log_vol/ret_1d/taker_buy_ratio）。
+    """
+    if profile is not None:
+        return profile.factors.derived_columns(daily.sort(["ts_code", "trade_date"]))
     df = daily
     for base in ("close", "open", "high", "low"):
         adj = f"{base}_adj"
@@ -38,8 +50,11 @@ def _preprocess_daily(daily: pl.DataFrame) -> pl.DataFrame:
 
 
 def _factor_df_from_prepped(node, prepped: pl.DataFrame,
-                            eval_start=None, eval_end=None) -> pl.DataFrame:
+                            eval_start=None, eval_end=None, leaf_map=None) -> pl.DataFrame:
     """在**已 `_preprocess_daily` 过**的帧上求值，裁剪到 [eval_start, eval_end]。
+
+    ``leaf_map``：叶子名→列名映射（默认 None → A 股 `LEAF_FEATURES`）。crypto 等传各自映射，
+    使 funding_rate/open_interest 等叶子正确编译到对应列。
 
     调用方若要对同一帧评估多个表达式，先 `_preprocess_daily` 一次再走这里，
     避免每个表达式重复 `add_derived_columns`（较重）。
@@ -49,7 +64,7 @@ def _factor_df_from_prepped(node, prepped: pl.DataFrame,
     而非 NaN——只喂本段会把这段噪声当作真实首段信号留在结果里。求值后裁剪保证
     结果只含扩窗预热后的干净值，且不泄漏 eval_start 之前任何未来不可得的信息（PIT）。
     """
-    series = eval_node(node, prepped)
+    series = evaluate_materialized(node, prepped, leaf_map)
     out = (
         prepped.select(["trade_date", "ts_code"])
         .with_columns(series.alias("factor_value"))
@@ -63,7 +78,7 @@ def _factor_df_from_prepped(node, prepped: pl.DataFrame,
 
 
 def _node_to_factor_df(node, daily: pl.DataFrame,
-                       eval_start=None, eval_end=None) -> pl.DataFrame:
+                       eval_start=None, eval_end=None, profile=None, leaf_map=None) -> pl.DataFrame:
     """用公开 evaluate(node, df) 算因子值，组装成 [trade_date, ts_code, factor_value]。
 
     `eval_start` / `eval_end`：**先在整帧上求值、再裁剪到 [eval_start, eval_end]**（扩窗预热）。
@@ -73,12 +88,20 @@ def _node_to_factor_df(node, daily: pl.DataFrame,
 
     PIT 安全：时序算子的滚动窗口只向过去看，段首日用到的是前一段末尾的数据（≤t）；
     截面算子逐日独立。求值后裁剪保证不保留段外任何行。
+
+    ``profile`` / ``leaf_map``：市场 profile 与叶子映射（默认 None → A 股，零回归）。
     """
-    return _factor_df_from_prepped(node, _preprocess_daily(daily), eval_start, eval_end)
+    return _factor_df_from_prepped(
+        node, _preprocess_daily(daily, profile), eval_start, eval_end, leaf_map)
 
 
-def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5):
+def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5,
+                      profile=None, leaf_map=None):
     """建一个「表达式 → 诊断信息 | None」的检查器，供自愈循环回灌 LLM。
+
+    ``profile`` / ``leaf_map``：市场 profile 与叶子映射（默认 None → A 股，零回归）。crypto
+    必须传，否则 `parse_expr` 把合法 crypto 叶子（funding_rate 等）判为「解析失败」，让
+    健康的 crypto 表达式被自愈循环误当病态送修。
 
     对齐 CoSTEER 的评估器：它在沙箱里真正执行代码，把 **Traceback 和 NaN 比例** 交回给模型修正。
     本项目是 DSL，无 exec 沙箱，故在求值层取同样两类信号：求值抛的异常、以及因子值的
@@ -87,15 +110,15 @@ def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5):
 
     返回 None 表示健康。daily 只在建检查器时预处理一次（`add_derived_columns` 较重）。
     """
-    df = _preprocess_daily(daily)
+    df = _preprocess_daily(daily, profile)
 
     def check(expr: str) -> str | None:
         try:
-            node = parse_expr(expr)
+            node = parse_expr(expr, leaf_map)
         except ValueError as exc:
             return f"解析失败: {exc}"
         try:
-            series = eval_node(node, df)
+            series = evaluate_materialized(node, df, leaf_map)
         except Exception as exc:
             return f"求值失败: {type(exc).__name__}: {exc}"
         n = series.len()
@@ -150,9 +173,13 @@ def _factor_turnover(factor_df: pl.DataFrame, quantile: float = 0.2) -> float | 
 
 def evaluate_expressions(
     expr_strs: list[str], daily: pl.DataFrame, bundle,
-    *, eval_start=None, eval_end=None,
+    *, eval_start=None, eval_end=None, profile=None,
 ) -> list[dict]:
     """批量评估表达式集。非法表达式（parse_expr 抛 ValueError）记 compile_ok=False。
+
+    ``profile``：市场 profile（默认 None → A 股，逐字节零回归）。非 None 时预处理走
+    `profile.factors.derived_columns`、叶子集/映射取 `profile.factors.leaf_features()`，
+    透传到 `parse_expr`/`warmup_shortfall`/求值——crypto 表达式（funding_rate 等）方能解析与求值。
 
     `daily` 是**含预热段的完整帧**；`eval_start`/`eval_end` 是 train 段边界。
     求值在整帧上做、再裁剪到该区间——与 holdout 段同一条路径（`nodes.py` 的
@@ -176,11 +203,12 @@ def evaluate_expressions(
             "预热噪声进 train IC 序列的 bug——两者必须同传或都不传。"
         )
 
-    prepped = _preprocess_daily(daily)           # 整帧只预处理一次（add_derived_columns 较重）
+    prepped = _preprocess_daily(daily, profile)  # 整帧只预处理一次（add_derived_columns 较重）
+    leaf_map = profile.factors.leaf_features() if profile is not None else None
     results: list[dict] = []
     for s in expr_strs:
         try:
-            node = parse_expr(s)
+            node = parse_expr(s, leaf_map)
         except ValueError as exc:
             results.append({"expression": s, "node": None, "compile_ok": False,
                             "ic_train": None, "ir_train": None, "turnover": None,
@@ -188,7 +216,7 @@ def evaluate_expressions(
             continue
 
         if eval_start is not None:
-            sf = warmup_shortfall(node, prepped, eval_start)
+            sf = warmup_shortfall(node, prepped, eval_start, leaf_map)
             if sf is not None:
                 leaf, need, have = sf
                 results.append({
@@ -198,7 +226,7 @@ def evaluate_expressions(
                 continue
 
         try:
-            fdf = _factor_df_from_prepped(node, prepped, eval_start, eval_end)
+            fdf = _factor_df_from_prepped(node, prepped, eval_start, eval_end, leaf_map)
             fit = quick_fitness(fdf, bundle, segment="train")
             n_train = int(fit["n"])
             if n_train == 0:

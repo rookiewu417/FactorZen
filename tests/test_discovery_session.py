@@ -84,27 +84,28 @@ def test_run_session_respects_config_knobs(tmp_path):
 
 
 def test_guard_passed_respects_dsr_alpha():
-    """cfg：护栏 DSR 阈值可配——收紧 dsr_alpha 会让边界候选从 passed 变 not passed。"""
+    """cfg：strict 口径下 DSR 阈值可配——收紧 dsr_alpha 让边界候选从 passed 变 not passed。
+    （library 默认口径不含 DSR，dsr_alpha 不影响，故此测显式 gate="strict"。）"""
     from factorzen.discovery.mining_session import _guard_passed
     c = {"dsr_pvalue": 0.03, "holdout_ic": 0.05, "ic_ci_low": 0.02, "ic_train": 0.06}
-    assert _guard_passed(c, dsr_alpha=0.05) is True     # 0.03 < 0.05 → 过
-    assert _guard_passed(c, dsr_alpha=0.01) is False    # 0.03 ≥ 0.01 → 收紧后不过
+    assert _guard_passed(c, dsr_alpha=0.05, gate="strict") is True     # 0.03 < 0.05 → 过
+    assert _guard_passed(c, dsr_alpha=0.01, gate="strict") is False    # 0.03 ≥ 0.01 → 收紧后不过
 
 
 def test_guard_passed_criteria():
-    """护栏软标记（2026-07 松一档）= DSR<0.10 & holdout 与 train 点估计同号；必需量 NaN→不过。
-
-    松一档移除了 holdout CI 单边门（CI 下界≤0 不再否决），DSR 阈值 0.05→0.10。
+    """护栏软标记（2026-07 因子库化, 默认 library）= 真(holdout 与 train 同号) + 有信号
+    (|train_IC|≥0.015)；**不含 DSR**（显著性挪到组合层）。gate="strict" 回到 DSR 显著+同号。
     """
     from factorzen.discovery.mining_session import _guard_passed
     ok = {"dsr_pvalue": 0.01, "holdout_ic": 0.05, "ic_ci_low": 0.02, "ic_train": 0.06}
-    assert _guard_passed(ok) is True
-    assert _guard_passed({**ok, "dsr_pvalue": 0.2}) is False          # DSR 不显著(≥0.10)
-    assert _guard_passed({**ok, "dsr_pvalue": 0.08}) is True          # 松一档：0.08<0.10 现在过
-    assert _guard_passed({**ok, "ic_ci_low": -0.01}) is True          # CI 下界≤0 不再否决
-    assert _guard_passed({**ok, "holdout_ic": -0.05}) is False        # 与 train 反号
+    assert _guard_passed(ok) is True                                   # 真+有信号(0.06≥0.015)
+    assert _guard_passed({**ok, "ic_train": 0.006}) is False           # |IC| 太弱=纯噪声
+    assert _guard_passed({**ok, "holdout_ic": -0.05}) is False         # 反号=过拟合
     assert _guard_passed({**ok, "holdout_ic": float("nan")}) is False  # NaN 保守判否
-    assert _guard_passed({"dsr_pvalue": 0.01}) is False               # 缺字段保守判否
+    assert _guard_passed({"ic_train": 0.06}) is False                  # 缺 holdout 保守判否
+    assert _guard_passed({**ok, "dsr_pvalue": 0.9}) is True            # library 不看 DSR
+    # strict 口径仍按 DSR：0.2 ≥ 0.10 不过
+    assert _guard_passed({**ok, "dsr_pvalue": 0.2}, gate="strict") is False
 
 
 def test_session_writes_passed_flag(tmp_path: Path):
@@ -116,9 +117,9 @@ def test_session_writes_passed_flag(tmp_path: Path):
                       method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
     for c in res["candidates"]:
         assert isinstance(c["passed"], bool)
-        if c["passed"]:  # 标记为过的候选，独立复核确满足松一档口径
-            assert c["dsr_pvalue"] < 0.10                              # DSR 显著(松一档 0.10)
-            assert (c["holdout_ic"] > 0) == (c["ic_train"] > 0)        # holdout 点估计同号
+        if c["passed"]:  # 标记为过的候选，独立复核确满足因子库口径(真+有信号)
+            assert abs(c["ic_train"]) >= 0.015                         # 有信号(非纯噪声)
+            assert (c["holdout_ic"] > 0) == (c["ic_train"] > 0)        # holdout 同号(不崩)
     df = pl.read_csv(Path(res["session_dir"]) / "candidates.csv")
     assert "passed" in df.columns
 

@@ -92,11 +92,12 @@ def test_build_panel_inner_join_and_ret():
 
 
 @pytest.mark.filterwarnings("ignore:build_panel")
-def test_lgbm_rejects_all_null_factor():
+def test_lgbm_drops_all_null_factor_and_continues():
+    """一个因子全缺 → 丢弃它、用其余因子照常组合(健壮性:不因坏因子崩整个 run)。"""
     factor_dfs, ret_df, _ = _panel(n_days=80, n_stocks=30)
     factor_dfs["fa"] = factor_dfs["fa"].with_columns(
         pl.lit(None, dtype=pl.Float64).alias("factor_value")
     )
     cv = PurgedWalkForwardCV(train_days=40, test_days=20, purge_days=5)
-    with pytest.raises((ValueError, RuntimeError)):
-        combine_lgbm(factor_dfs, ret_df, cv, n_estimators=20)
+    out = combine_lgbm(factor_dfs, ret_df, cv, n_estimators=20)
+    assert out.height > 0  # fb 仍在 → 正常产出

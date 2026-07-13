@@ -78,7 +78,7 @@ def test_eval_error_is_diagnosed(monkeypatch):
     def boom(*_a, **_k):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(ev, "eval_node", boom)
+    monkeypatch.setattr(ev, "evaluate_materialized", boom)
     diag = check(_HEALTHY)
     assert diag is not None
     assert "求值失败" in diag and "RuntimeError" in diag and "boom" in diag

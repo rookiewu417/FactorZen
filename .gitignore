@@ -32,6 +32,7 @@ workspace/crypto_lake*/
 workspace/first_reversal/
 workspace/execution/
 workspace/ops/
+workspace/factor_library/
 
 # Python
 __pycache__/

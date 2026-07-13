@@ -9,7 +9,7 @@ import polars as pl
 from factorzen.daily.factors.base import DailyFactor
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import evaluate_materialized, feature_names, parse_expr
-from factorzen.discovery.operators import BASIC_FEATURES
+from factorzen.discovery.operators import BASIC_FEATURES, FLOW_FEATURES, FUNDAMENTAL_FEATURES
 
 _PRICE_COLS = ["open", "high", "low", "close", "open_adj", "high_adj",
                "low_adj", "close_adj", "vol", "amount"]
@@ -52,6 +52,15 @@ class ExpressionFactor(DailyFactor):
             basic = ctx.daily_basic.collect()
             if not basic.is_empty():
                 daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
+        # 仅在引用财报叶子(roe/assets_yoy)时 attach PIT 对齐的基本面——与挖掘路径
+        # prepare_mining_daily 共用 attach_fundamentals，保证同一因子两条路逐值一致（陷阱#2）。
+        if self._feats & FUNDAMENTAL_FEATURES:
+            from factorzen.daily.data.pit import attach_fundamentals
+            daily = attach_fundamentals(daily)
+        # 仅在引用资金流/北向叶子时 attach（日频 join，与挖掘路径共用 attach_flows，防漂移）
+        if self._feats & FLOW_FEATURES:
+            from factorzen.daily.data.flows import attach_flows
+            daily = attach_flows(daily)
         # 排序必须在依赖行序的派生列（shift/over）之前完成，否则 ret_1d 等会用到
         # 乱序的「上一行」当成「前一交易日」算出错误结果（与 mining_session.py 保持一致）
         df = daily.sort(["ts_code", "trade_date"])

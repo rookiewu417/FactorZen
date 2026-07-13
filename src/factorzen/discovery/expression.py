@@ -9,6 +9,15 @@ import polars as pl
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 
 
+class LookaheadWindowError(ValueError):
+    """时序算子窗口 <1（负=前视/未来函数、零=无意义）。
+
+    ``ValueError`` 子类：所有 ``except ValueError`` 的外部输入解析点（LLM/配置/历史产物）
+    仍原样接住（异常契约统一，CLAUDE.md 陷阱#7），同时可被特判以区分「前视」与「未知叶子」等
+    其它解析失败（见 `is_lookahead_expr`）。铁律#1「PIT 无未来函数」的 parse 层根治。
+    """
+
+
 class Node:
     pass
 
@@ -93,11 +102,34 @@ def parse_expr(s: str, leaves: dict[str, str] | set[str] | None = None) -> Node:
             window = int(raw_args[-1])
         except ValueError as e:
             raise ValueError(f"{op} 的窗口参数非整数: {raw_args[-1]!r}") from e
+        # 铁律#1 根治：所有 has_window 算子的窗口都是**回看期**，须 ≥1。负窗口 = 前视
+        # （delay(x,-1)=明日值、delta/pct_change(x,-w)=用未来）；零窗口无意义（rolling(0)/
+        # shift(0)）。随机/遗传搜索 _WINDOWS 全正，负/零窗口只可能来自 LLM/历史产物——一律拒。
+        if window < 1:
+            raise LookaheadWindowError(
+                f"{op} 的窗口必须 ≥1（回看期），得到 {window}：负窗口=前视/未来函数"
+                f"（违反 PIT 无未来函数铁律），零窗口无意义")
         raw_args = raw_args[:-1]
     children = [parse_expr(a, valid_leaves) for a in raw_args]
     if len(children) != spec.arity:
         raise ValueError(f"{op} 期望 {spec.arity} 个子节点，得到 {len(children)}")
     return OpNode(op, children, window)
+
+
+def is_lookahead_expr(s: str, leaves: dict[str, str] | set[str] | None = None) -> bool:
+    """表达式是否含前视窗口（时序算子窗口 <1）。**只认前视**，不把其它解析失败误判成前视。
+
+    用于把历史产物里的前视因子从「喂回 LLM 的正/负例」中剔除（否则引导 LLM 继续生成前视）。
+    ``LookaheadWindowError`` → True；其它 ``ValueError``（未知叶子=别市场表达式、语法错）→ False
+    （保持既有 raw 语义，不误伤干净的跨市场表达式）；正常解析 → False。
+    """
+    try:
+        parse_expr(s, leaves)
+    except LookaheadWindowError:
+        return True
+    except ValueError:
+        return False
+    return False
 
 
 def complexity(node: Node) -> int:
@@ -187,19 +219,23 @@ def warmup_bars(node, prepped: pl.DataFrame, eval_start,
     return min(warmup_bars_by_leaf(node, prepped, eval_start, leaf_map).values())
 
 
-def warmup_bars_by_leaf(node, prepped: pl.DataFrame, eval_start,
+def leaf_warmup_budgets(prepped: pl.DataFrame, eval_start, leaves,
                         leaf_map: dict[str, str] | None = None) -> dict[str, int]:
-    """各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**（逐叶，不取最小）。
+    """每个叶子在 `eval_start` 之前的**可用预热 bar 数**（非空且非 NaN 交易日数）。
 
-    `warmup_bars` 取本函数各值的最小；预热门 `warmup_shortfall` 逐叶对照
-    `leaf_lookbacks`——避免浅叶把深叶路拖成假拒绝。列缺失（如未拉 daily_basic）记 0。
-    non-null 不够：polars 里 NaN 不是 null，NaN 预热单元格不是可用历史，须一并剔除
-    （`ret_1d` 分母为 0 时产 NaN 而非 null）；`is_not_nan()` 只对浮点列合法，按 schema 分流。
+    这是 `warmup_bars_by_leaf` 的按叶名版本，也是它的**唯一实现来源**——生成侧要给 LLM
+    报「叶子历史预算」，报的数必须与预热门 `warmup_shortfall` 判 have 的数逐值相等，否则
+    prompt 承诺的预算与预热判定漂移就是继续骗 LLM。二者共用本函数即保证一致（B4.1）。
+
+    ``leaves``：要查预算的叶子名可迭代对象（列表/集合）。语义同 `warmup_bars_by_leaf`：
+    列缺失（如未拉 daily_basic）记 0；non-null 不够——polars 里 NaN 不是 null，NaN 预热
+    单元格不是可用历史（`ret_1d` 分母为 0 时产 NaN 而非 null），须一并剔除；
+    `is_not_nan()` 只对浮点列合法，按 schema 分流。
     """
     lm = LEAF_FEATURES if leaf_map is None else leaf_map
     warm = prepped.filter(pl.col("trade_date") < eval_start)
     out: dict[str, int] = {}
-    for leaf in feature_names(node):
+    for leaf in leaves:
         col = lm.get(leaf, leaf)
         if warm.is_empty() or col not in warm.columns:
             out[leaf] = 0
@@ -209,6 +245,17 @@ def warmup_bars_by_leaf(node, prepped: pl.DataFrame, eval_start,
             valid = valid & pl.col(col).is_not_nan()
         out[leaf] = warm.filter(valid)["trade_date"].n_unique()
     return out
+
+
+def warmup_bars_by_leaf(node, prepped: pl.DataFrame, eval_start,
+                        leaf_map: dict[str, str] | None = None) -> dict[str, int]:
+    """各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**（逐叶，不取最小）。
+
+    `warmup_bars` 取本函数各值的最小；预热门 `warmup_shortfall` 逐叶对照
+    `leaf_lookbacks`——避免浅叶把深叶路拖成假拒绝。列缺失（如未拉 daily_basic）记 0。
+    实现委托 `leaf_warmup_budgets`（唯一实现来源），保证生成侧报的预算与预热判定同源。
+    """
+    return leaf_warmup_budgets(prepped, eval_start, feature_names(node), leaf_map)
 
 
 def warmup_shortfall(node, prepped: pl.DataFrame, eval_start,

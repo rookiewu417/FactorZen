@@ -528,6 +528,38 @@ def fetch_finance(
     return load_parquet(data_type, start=start, end=end, date_col="end_date").collect()
 
 
+# 资金流(主力净流入)与北向持股——日频 point-in-time，无需 PIT 季度对齐，直接按交易日 join。
+MONEYFLOW_COLS = ["ts_code", "trade_date", "net_mf_amount", "net_mf_vol",
+                  "buy_elg_amount", "sell_elg_amount", "buy_lg_amount", "sell_lg_amount"]
+HK_HOLD_COLS = ["ts_code", "trade_date", "ratio", "vol"]
+
+
+def fetch_moneyflow(start: str, end: str, ts_codes: list[str] | None = None) -> pl.DataFrame:
+    """拉每日个股资金流(主力净流入 net_mf_amount 等)。日频，按缺失交易日市场级拉取 + 缓存。"""
+    pro = init_tushare()
+    if ts_codes is not None:
+        return _fetch_subset_by_codes(pro.moneyflow, start, end, ts_codes,
+                                      data_type="moneyflow", std_cols=MONEYFLOW_COLS)
+    missing = _missing_trade_dates("moneyflow", start, end)
+    if missing:
+        _fetch_market_by_missing_dates(pro.moneyflow, missing, data_type="moneyflow",
+                                       std_cols=MONEYFLOW_COLS)
+    return load_parquet("moneyflow", start=start, end=end).collect()
+
+
+def fetch_hk_hold(start: str, end: str, ts_codes: list[str] | None = None) -> pl.DataFrame:
+    """拉每日北向持股(沪深股通 hk_hold，ratio=持股占比%)。日频，按缺失交易日市场级拉取 + 缓存。"""
+    pro = init_tushare()
+    if ts_codes is not None:
+        return _fetch_subset_by_codes(pro.hk_hold, start, end, ts_codes,
+                                      data_type="hk_hold", std_cols=HK_HOLD_COLS)
+    missing = _missing_trade_dates("hk_hold", start, end)
+    if missing:
+        _fetch_market_by_missing_dates(pro.hk_hold, missing, data_type="hk_hold",
+                                       std_cols=HK_HOLD_COLS)
+    return load_parquet("hk_hold", start=start, end=end).collect()
+
+
 def fetch_stock_basic(list_status: str = "L,D,P") -> pl.DataFrame:
     """拉取全量股票基本信息，缓存 7 天。
 

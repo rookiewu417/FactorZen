@@ -32,6 +32,44 @@ def _extract_json(raw: str) -> dict | None:
     return None
 
 
+def _extract_json_list(raw: str) -> list | None:
+    """容错解析**顶层 JSON 数组**：`[...]` 或围栏包裹的数组；非数组/失败返回 None。
+
+    为什么需要它：模型（实测 DeepSeek）即使被指示输出 `{"hypotheses": [...]}`，也常直接
+    返回裸数组 `[{...}, {...}]`。`_extract_json` 只认 dict，其 `{...}` 子串回退会截出
+    「首元素开括号..末元素闭括号」的**非法两对象片段**，解析恒失败 → 整轮假设被静默丢弃
+    （crypto smoke 实测 4/6 轮空转）。调用方在 `_extract_json` 拿不到目标键时回退到本函数。
+    """
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, list) else None
+    except Exception:
+        pass
+    start, end = raw.find("["), raw.rfind("]")
+    if start >= 0 and end > start:
+        try:
+            obj = json.loads(raw[start : end + 1])
+            return obj if isinstance(obj, list) else None
+        except Exception:
+            return None
+    return None
+
+
+def extract_json_items(raw: str, key: str) -> list | None:
+    """从 LLM 响应中取「键为 *key* 的列表」，兼容两种真实出现的形状（单点维护，防漂移）：
+
+    1. 包装对象 ``{"<key>": [...]}``（prompt 要求的形状，优先）；
+    2. 裸顶层数组 ``[...]``（模型常见的「偷懒」形状，回退接受）。
+
+    解析失败或形状不符返回 None（调用方保持各自的降级语义）。
+    """
+    obj = _extract_json(raw)
+    if obj is not None:
+        items = obj.get(key)
+        return items if isinstance(items, list) else None
+    return _extract_json_list(raw)
+
+
 def generate_factor_proposal(
     messages: list[dict[str, str]],
     llm_fn: LLMFn,
@@ -80,13 +118,70 @@ def semantic_check(
     return bool(obj["consistent"]), str(obj.get("reason", ""))
 
 
+def format_leaf_budget_hint(leaf_budgets: dict[str, int] | None) -> str:
+    """把「短历史叶子的可用预热预算」渲染成一句 prompt 提示（两条生成路径共用，防漂移）。
+
+    ``leaf_budgets``：``{叶子名: 可用预热 bar 数}``，由调用方用 `leaf_warmup_budgets` 算出、
+    并只保留历史较短（< 预热前缀）的叶子后传入。空/None → 返回空串（零回归：无提示文案）。
+
+    单/团队两条生成路径（`build_agent_messages` 与 coder `_syntax_prompt`）都调本函数，
+    保证同一 budgets 产出逐字节相同的提示——双路径登记簿要求改一侧必改另一侧，共用即免漂移。
+    """
+    if not leaf_budgets:
+        return ""
+    caps = "、".join(f"{leaf} ≤ {bars} 根"
+                     for leaf, bars in sorted(leaf_budgets.items()))
+    return (
+        "以下叶子历史较短，表达式中含该叶子的**路径累计窗口**（嵌套时序算子的窗口之和）"
+        "不得超过其可用预热，否则会被直接拒绝评估、浪费一次尝试：" + caps + "。"
+    )
+
+
+# 叶子族语义指引（市场特有：A 股财报/资金流，crypto 衍生品特有信号）。单点维护防漂移。
+# ashare 文案与旧内联块**逐字节一致**（零回归，golden 测试钉死）；未登记市场 → 空串
+# （不广告不存在的叶子——能力层↔接线层漂移教训）。
+_LEAF_GUIDANCE: dict[str, str] = {
+    "ashare": (
+        "其中 roe/roa/grossprofit_margin/netprofit_margin/debt_to_assets(质量) 与 "
+        "or_yoy/netprofit_yoy/assets_yoy(成长) 是**财报基本面**(已按公告日 PIT 对齐，无未来函数)；"
+        "net_mf_amount(主力资金净流入) 与 north_ratio(北向持股占比) 是**资金流/北向**——"
+        "三类都与量价正交，优先用它们构造价值/质量/成长/资金面假设，别只盯量价波动。\n"
+    ),
+    "crypto": (
+        "其中 funding_rate(资金费率,多头付正=拥挤度/情绪)、open_interest(未平仓量,趋势确认/背离)、"
+        "taker_buy_ratio(主动买占比,订单流失衡) 是**衍生品特有信号**——"
+        "与裸量价正交，优先用它们构造资金费率/持仓量/订单流方向，别只盯价格动量。\n"
+    ),
+    "futures": (
+        "其中 oi(持仓量)、oi_chg(持仓变化率,展期日已置 null) 是**商品特有信号**(趋势确认/背离)；"
+        "close/open/high/low/vwap 为主力连续**后复权**价(ts_* 跨展期连续)、vol/amount/oi 为量列"
+        "(换主力天然跳变)——优先用持仓量/量价背离/期限结构等与裸量价正交的方向，别只盯价格动量。\n"
+    ),
+    "us": (
+        "其中 close/open/high/low/vwap 为**后复权**价(拆股/分红已调整,ret_1d 跨拆股连续,"
+        "vwap=后复权典型价 (high+low+close)/3)、amount=美元成交额(拆股不变量)、vol=原始股数(未复权)；"
+        "**仅价量族叶子(无市值/基本面/资金流)**——用量价背离/波动/振幅/反转等经济直觉清晰的方向,"
+        "大盘股截面稳健优先,勿臆造不存在的估值/财务字段。\n"
+    ),
+}
+
+
 def build_agent_messages(
     op_names: list[str],
     leaf_names: list[str],
     feedback: str = "",
     negatives: list[str] | None = None,
+    leaf_budgets: dict[str, int] | None = None,
+    market: str = "ashare",
 ) -> list[dict[str, str]]:
-    """构造生成 prompt：算子/特征清单 + 上轮反馈 + Negative RAG 负例。"""
+    """构造生成 prompt：算子/特征清单 + 上轮反馈 + Negative RAG 负例 + 短历史叶子预热预算。
+
+    ``leaf_budgets``：``{短历史叶子名: 可用预热 bar 数}``（默认 None → prompt 与改前逐字节相同，
+    零回归）。非空时追加一句预热预算提示，引导 LLM 别对短历史叶子写超预热的长窗口。
+
+    ``market``：叶子族指引与市场约束按市场注入（默认 ashare，逐字节零回归）；未登记市场
+    只列算子/叶子 + 通用约束，不广告不存在的叶子族。
+    """
     neg = negatives or []
     system = (
         "你是量化研究员，提出有经济直觉的假设并翻译成因子表达式。\n"
@@ -95,13 +190,17 @@ def build_agent_messages(
         "（如「缩量整固后再放量突破」）——单个表达式实现不了它，会被语义自检整批否掉。\n"
         f"可用算子: {', '.join(op_names)}\n"
         f"可用特征(叶子): {', '.join(leaf_names)}\n"
-        "时序算子最后一个参数是整型窗口，如 ts_mean(close, 20)。\n"
+        + _LEAF_GUIDANCE.get(market, "")
+        + "时序算子最后一个参数是整型窗口，如 ts_mean(close, 20)。\n"
         "表达式只能用上面列出的算子写成**函数式**，禁止中缀运算符 + - * /"
         "（用 add/sub/mul/div 代替，如 div(close, open) 而非 close / open）。\n"
         '只输出 JSON: {"hypothesis": "...", "expressions": ["...", "..."], "rationale": "..."}'
     )
-    from factorzen.llm.prompt_fragments import ASHARE_CAVEATS
-    system = system + "\n" + ASHARE_CAVEATS
+    from factorzen.llm.prompt_fragments import market_caveats
+    system = system + "\n" + market_caveats(market)
+    hint = format_leaf_budget_hint(leaf_budgets)
+    if hint:
+        system = system + "\n" + hint
     user = "提出一个新假设并给出 2-4 个候选表达式。"
     if feedback:
         user += f"\n上一轮反馈: {feedback}"

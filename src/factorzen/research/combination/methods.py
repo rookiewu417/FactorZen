@@ -62,7 +62,12 @@ def _compute_ic_series(
 def _zscore_and_merge(
     factor_dfs: dict[str, pl.DataFrame],
 ) -> tuple[pl.DataFrame, list[str]]:
-    """各因子截面 z-score 后 inner join 成宽表(列名 `_f_<name>`)。"""
+    """各因子截面 z-score 后 **outer join** 成宽表(列名 `_f_<name>`),缺失补 0。
+
+    因子库覆盖常异质(不同因子覆盖的股票/日期不同)。inner join 会把并集缩到交集、
+    甚至塌空;改外连接取并集,某股票缺某因子时该因子补 0(z-score 后 0=截面均值=中性),
+    等价于「缺失因子不表态」,不至于整行被丢或组合崩。
+    """
     if not factor_dfs:
         raise ValueError("factor_dfs 不能为空")
     normed = []
@@ -71,7 +76,9 @@ def _zscore_and_merge(
         normed.append(z.rename({"factor_value": f"_f_{name}"}))
     merged = normed[0]
     for z in normed[1:]:
-        merged = merged.join(z, on=["trade_date", "ts_code"], how="inner")
+        merged = merged.join(z, on=["trade_date", "ts_code"], how="full", coalesce=True)
+    fcols = [f"_f_{n}" for n in factor_dfs]
+    merged = merged.with_columns([pl.col(c).fill_null(0.0) for c in fcols])
     return merged, list(factor_dfs.keys())
 
 

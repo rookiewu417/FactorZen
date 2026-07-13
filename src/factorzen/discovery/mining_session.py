@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -19,15 +20,18 @@ from factorzen.discovery.expression import (
 )
 from factorzen.discovery.guardrails import (
     DEFAULT_DSR_ALPHA,
+    DEFAULT_GATE,
     DeflationBasis,
+    acceptance_reasons,
     deflated_pvalue,
-    guardrail_passed,
 )
 from factorzen.discovery.operators import LEAF_FEATURES
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
 from factorzen.discovery.search.random_search import RandomSearcher
 from factorzen.validation.holdout import holdout_ic, split_holdout
 from factorzen.validation.pbo import compute_pbo
+
+_LOG = logging.getLogger(__name__)
 
 
 def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) -> pl.DataFrame:
@@ -73,15 +77,18 @@ def _oos_adjusted_fitness(train_fitness: float, train_tstat: float, valid_tstat:
     return train_fitness
 
 
-def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA) -> bool:
-    """防过拟合护栏软标记：DSR 显著(p<dsr_alpha, 默认 0.10) & holdout IC 与 train 点估计同号。
+def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
+                  gate: str = DEFAULT_GATE) -> bool:
+    """护栏软标记(passed)：``gate`` 口径下入池即 True。
 
-    2026-07「松一档」：默认 alpha 0.05→0.10，且移除 holdout CI 单边门（见 guardrail_reasons）。
-    任一必需指标缺失/NaN → 判否(保守)。护栏历史上「只算不判」——指标算出来只写进 CSV，
-    候选入选只看 fitness 排序，过拟合垃圾照样导出。这里把它变成可被 leaderboard/export-alpha
+    2026-07「因子库化」：默认 ``gate="library"`` —— 真(holdout 与 train 同号) + 有信号
+    (|train_IC|≥floor)，**不含 DSR 单星显著性**（显著性挪到组合层 `fz combine run`）。
+    ``gate="strict"`` 回到 DSR 显著+同号（松一档 alpha 0.10）。
+    任一必需指标缺失/NaN → 判否(保守)。护栏把「只算不判」变成可被 leaderboard/export-alpha
     默认过滤的软标记(留 --all 逃生口)，不删候选、不破坏产物契约。
     """
-    return guardrail_passed(
+    return not acceptance_reasons(
+        gate=gate,
         ic_train=c.get("ic_train"),
         holdout_ic=c.get("holdout_ic"),
         dsr_pvalue=c.get("dsr_pvalue"),
@@ -151,6 +158,35 @@ def _pool_pbo(scored: list, daily: pl.DataFrame, bundle, eval_start=None, leaf_m
     return compute_pbo(_np.vstack(series), n_splits=10)
 
 
+def _library_upsert_session(top, *, seed, method, session_dir, warmup_daily, mining_daily,
+                            leaf_map, profile, eval_start, decorr_threshold, library_root,
+                            library_universe, horizon, out_dir) -> None:
+    """M1 收尾把 passed 候选 upsert 进因子库。全 try/except 兜底，不拖垮挖掘产出。"""
+    from datetime import date
+
+    try:
+        passed = [c for c in top if c.get("passed")]
+        if not passed:
+            return
+        from factorzen.discovery import factor_library as _fl
+        market = getattr(profile, "name", None) or "ashare"
+        root = library_root or str(Path(out_dir).parent / "factor_library")
+        _start = eval_start or warmup_daily["trade_date"].min().strftime("%Y%m%d")
+        _end = warmup_daily["trade_date"].max().strftime("%Y%m%d")
+        # 去相关用紧凑矩阵物化器（内存有界）：mining 段已含派生列，直接建网格。
+        compact = _fl.make_compact_materializer(
+            mining_daily.sort(["ts_code", "trade_date"]), leaf_map)
+
+        _fl.upsert(
+            market, passed, eval_window=(_start, _end), universe=library_universe,
+            horizon=horizon, run_id=session_dir.name, session_dir=str(session_dir),
+            git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
+            decorr_threshold=decorr_threshold, compact_materialize=compact,
+            leaf_map=leaf_map, root=root)
+    except Exception as exc:  # 库写入失败不许影响挖掘产出（A股零回归底线）
+        _LOG.warning("因子库 upsert 失败（不影响挖掘产出）: %s: %s", type(exc).__name__, exc)
+
+
 def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 method: str = "random", train_ratio: float = 0.7,
                 holdout_ratio: float = 0.2,
@@ -158,7 +194,9 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 dsr_alpha: float = DEFAULT_DSR_ALPHA,
                 eval_start: str | None = None,
                 out_dir: str = "workspace/mining_sessions",
-                profile=None, workers: int = 1) -> dict:
+                profile=None, workers: int = 1,
+                update_library: bool = True, library_root: str | None = None,
+                library_universe: str | None = None, horizon: int = 1) -> dict:
     t0 = time.perf_counter()
     rng = np.random.default_rng(seed)
     daily = daily.sort(["ts_code", "trade_date"])
@@ -378,6 +416,18 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     exported_dir = session_dir / "exported"
     for i, c in enumerate(top):
         export_candidate(c["expression"], f"mined_{seed}_{i+1}", str(exported_dir))
+
+    # ── 自动维护因子库（M1 收尾 upsert）─────────────────────────────────────────
+    # 只收 passed（library gate）者；市场从 profile.name 取（None→ashare）。库根默认由 out_dir
+    # 推导（workspace/mining_sessions → workspace/factor_library；测试的 tmp out_dir 天然隔离）。
+    # 整块 try/except 兜底：库写入是收尾副作用，绝不能拖垮挖掘产出（A股零回归底线）。
+    if update_library:
+        _library_upsert_session(
+            top, seed=seed, method=method, session_dir=session_dir, warmup_daily=warmup_daily,
+            mining_daily=daily, leaf_map=leaf_map, profile=profile, eval_start=eval_start,
+            decorr_threshold=decorr_threshold, library_root=library_root,
+            library_universe=library_universe, horizon=horizon, out_dir=out_dir)
+
     return {"candidates": top, "n_trials": n_evaluated, "n_scored": len(scored),
             "sharpe_variance": basis.sharpe_variance,
             "session_dir": str(session_dir),

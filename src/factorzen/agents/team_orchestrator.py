@@ -11,10 +11,16 @@ import polars as pl
 from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.manifest import dump_manifest, json_safe_float
-from factorzen.agents.nodes import _print_rejections, node_finalize_guardrails, node_guardrails
+from factorzen.agents.nodes import (
+    AgentContext,
+    _print_rejections,
+    node_finalize_guardrails,
+    node_guardrails,
+)
 from factorzen.agents.roles.coder import (
     decompose_tasks,
     revise_expressions,
+    revise_from_error,
     write_expressions,
 )
 from factorzen.agents.roles.critic import critique
@@ -52,9 +58,12 @@ class TeamResult:
     sharpe_variance: float = float("nan")
 
 
-def _normalize(expr: str) -> str:
+def _normalize(expr: str, leaf_map: dict[str, str] | None = None) -> str:
+    """规范化表达式串用于去重。``leaf_map``（默认 None → A 股）必须与 `evaluate_expressions`
+    产出 `seen_expressions` 时用的同一套映射一致——否则 crypto 表达式在这里 parse 失败退回
+    原串、与规范化的 `seen_expressions` 失配，同一 trial 被评估两次致 N over-count。"""
     try:
-        return to_expr_string(parse_expr(expr))
+        return to_expr_string(parse_expr(expr, leaf_map))
     except ValueError:
         return expr
 
@@ -84,7 +93,7 @@ def _prepare_segments(daily: pl.DataFrame, *, eval_start: str | None, holdout_ra
 
 
 def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
-                         eval_start=None, eval_end=None):
+                         eval_start=None, eval_end=None, profile=None, leaf_map=None):
     """评估一批表达式（跳过 mem_seen 去重），写 AttemptRecord，返回本批新评估的结果列表。
 
     灵魂约束：此函数不碰 ledger，N 诚实记账由外层 node_guardrails 统一负责（每轮恰好一次）。
@@ -101,13 +110,14 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
     fresh: list[str] = []
     batch_seen: set[str] = set()
     for e in exprs:
-        norm = _normalize(e)
+        norm = _normalize(e, leaf_map)
         if norm in mem_seen or norm in state.seen_expressions or norm in batch_seen:
             continue
         batch_seen.add(norm)
         fresh.append(e)
     results = (
-        evaluate_expressions(fresh, daily, bundle, eval_start=eval_start, eval_end=eval_end)
+        evaluate_expressions(fresh, daily, bundle, eval_start=eval_start, eval_end=eval_end,
+                             profile=profile)
         if fresh else []
     )
     for r in results:
@@ -123,9 +133,13 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
 def _run_one_round(
     state, llm_fn, *, index, ledger, rounds_log, mining_df, holdout_df, bundle,
     pending, seed, top_k, heal_rounds, structured, health, data_window, warmup_daily,
-    eval_start=None,
+    eval_start=None, leaf_budgets=None, hypotheses_per_round=1, profile=None, ctx=None,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
+
+    ``profile`` / ``ctx``：市场上下文（默认 None / A 股 `AgentContext()`，零回归）。``ctx``
+    的 market/leaf_names/leaf_map 透传给 Hypothesis/Coder prompt、自愈、去重与护栏；
+    ``profile`` 透传给评估/护栏的派生列与叶子映射。
 
     `state` / `ledger` / `rounds_log` / `index` 为可变对象，就地更新；返回下一轮的 Critic 反馈。
     抽成独立函数是为了让主循环能整轮 `try/except LLMClientError` 而不必把 120 行内联进 try 块。
@@ -137,57 +151,74 @@ def _run_one_round(
     `eval_start`，不能直接把 `mining_df["trade_date"].min()` 当判据（`eval_start=None`
     时它就是帧起点，会让预热门把可用预热样本数误判成 0，见 task-1.4 CORRECTION）。
     """
+    if ctx is None:
+        ctx = AgentContext()
     _step("  ① Librarian 检索历史经验（known valid/invalid）")
     rec = recall(index, k=5, data_window=data_window)          # ① Librarian（按窗口分族）
     tasks: list[dict] = []
 
     # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
+    # 产出 hyp_batches: [(假设, 表达式集)]。revise 分支单假设；fresh 分支可多假设（task D，
+    # hypotheses_per_round>1 时逐假设独立走分解→翻译，attempts 累积，护栏/Critic 仍每轮一次）。
     if pending and pending["kind"] == "revise_expr":
         _step("  ②→③ Coder 依 Critic 反馈修订表达式")
         hypothesis = pending["hypothesis"]
-        exprs = revise_expressions(hypothesis, pending["exprs"], pending["reason"], llm_fn)
+        hyps = [hypothesis]
+        hyp_batches = [(hypothesis, revise_expressions(
+            hypothesis, pending["exprs"], pending["reason"], llm_fn,
+            leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names))]
     else:
-        _step("  ② Hypothesis 提假设" + ("（结构化：机制/预期符号/证伪）" if structured else ""))
+        _step("  ② Hypothesis 提假设"
+              + (f"（×{hypotheses_per_round}）" if hypotheses_per_round > 1 else "")
+              + ("（结构化：机制/预期符号/证伪）" if structured else ""))
         fb = pending["reason"] if pending and pending["kind"] == "revise_hypothesis" else ""
         if structured:
             # RD-Agent 步1 结构化假设：direction/mechanism/expected_sign/falsification
             shyps = propose_structured(
                 llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
-                feedback=fb, n=1,
+                feedback=fb, n=hypotheses_per_round, market=ctx.market,
             )
             hyps = [format_structured(h) for h in shyps]
         else:
             hyps = propose_hypotheses(
                 llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
-                feedback=fb, n=1,
+                feedback=fb, n=hypotheses_per_round, market=ctx.market,
             )
         if not hyps:
             _step("  · Hypothesis 未产出假设，跳过本轮")
             state.iteration += 1
             return None
-        hypothesis = hyps[0]
-        if structured:
-            # RD-Agent 步2 任务分解：假设 → 因子任务清单，逐任务独立翻译。
-            # 拆两步是为了让每次 LLM 调用只专注一件事（合并则假设过细或规格过粗）。
-            tasks = decompose_tasks(hypothesis, llm_fn)
-        _step("  ③ Coder 翻译表达式" + (f"（{len(tasks)} 个子任务）" if tasks else ""))
-        if tasks:
-            exprs = []
-            for t in tasks:
-                exprs.extend(
-                    write_expressions(_task_text(t), llm_fn, avoid=rec.known_invalid)
-                )
-        else:
-            # 未启用分解、或 LLM 分解失败（空 tasks）→ 降级为整条假设直译，不空转
-            exprs = write_expressions(hypothesis, llm_fn, avoid=rec.known_invalid)
+        # 逐假设独立走「任务分解 → Coder 翻译」（步2 任务分解拆两步：每次 LLM 调用只专注
+        # 一件事，合并则假设过细或规格过粗）。所有假设的 tasks 汇入 rounds_log 供溯源。
+        hyp_batches = []
+        for h in hyps:
+            h_tasks = decompose_tasks(h, llm_fn) if structured else []
+            tasks.extend(h_tasks)
+            if h_tasks:
+                h_exprs: list[str] = []
+                for t in h_tasks:
+                    h_exprs.extend(write_expressions(
+                        _task_text(t), llm_fn, avoid=rec.known_invalid,
+                        leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names))
+            else:
+                # 未启用分解、或 LLM 分解失败（空 tasks）→ 降级为整条假设直译，不空转
+                h_exprs = write_expressions(h, llm_fn, avoid=rec.known_invalid,
+                                            leaf_budgets=leaf_budgets, market=ctx.market,
+                                            leaf_names=ctx.leaf_names)
+            hyp_batches.append((h, h_exprs))
+        _step(f"  ③ Coder 翻译表达式（{len(hyps)} 假设"
+              + (f" / {len(tasks)} 子任务" if tasks else "") + "）")
     if heal_rounds > 0:
         from factorzen.agents.self_heal import heal_expressions
-        exprs = heal_expressions(exprs, hypothesis, llm_fn,
-                                 max_rounds=heal_rounds, health_check=health)
+        hyp_batches = [
+            (h, heal_expressions(ex, h, llm_fn, max_rounds=heal_rounds, health_check=health,
+                                 leaf_map=ctx.leaf_map, market=ctx.market,
+                                 leaf_names=ctx.leaf_names))
+            for h, ex in hyp_batches
+        ]
 
-    # ④ Evaluator：评估（跨 session + session 内去重）
-    # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）
-    #
+    # ④ Evaluator：逐假设评估（跨 session + session 内去重）+ 预热错误回灌（只一轮，B3）
+    # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）。
     # None-gating（非 None 才切到 warmup_daily + 段边界，None 时裸调用 mining_df，
     # 零回归）：gate 在会话级 eval_start 本身，不能用 mining_df.min() 判断——
     # eval_start=None 时 mining_df 就是帧起点，误用会让预热门把整段判成 0 可用预热。
@@ -195,12 +226,38 @@ def _run_one_round(
         ev_daily, ev_end = warmup_daily, mining_df["trade_date"].max()
     else:
         ev_daily, ev_end = mining_df, None
-    _step(f"  ④ Evaluator 评估 {len(exprs)} 个表达式")
-    results = _evaluate_and_record(
-        state, exprs, hypothesis,
-        daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
-        eval_start=eval_start, eval_end=ev_end,
-    )
+    results: list[dict] = []
+    warm_budget = 6   # 每轮预热回灌上限 6 条（跨假设共享），控 LLM 成本
+    for h, h_exprs in hyp_batches:
+        _step(f"  ④ Evaluator 评估 {len(h_exprs)} 个表达式")
+        h_results = _evaluate_and_record(
+            state, h_exprs, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
+            eval_start=eval_start, eval_end=ev_end, profile=profile, leaf_map=ctx.leaf_map,
+        )
+        results += h_results
+        # B3 预热错误回灌：把「预热不足」诊断（连同 leaf_budgets）回灌 Coder 修正，修正版
+        # 并入本轮 results。**只回灌一轮**——修正版仍预热不足就认栽（error 落盘，下轮
+        # negative recall 自然规避）。仅在 eval_start 非 None（预热门生效）时触发。
+        # 回灌的 attempts 进 state.attempts → DeflationBasis.from_ir_pool / ledger 自动涵盖，
+        # 不额外手动记账（多轮累积计数陷阱）。
+        if eval_start is not None and warm_budget > 0:
+            warm_errs = [r for r in h_results
+                         if r["error"] and "预热不足" in r["error"]][:warm_budget]
+            warm_budget -= len(warm_errs)
+            refed: list[str] = []
+            for r in warm_errs:
+                refed.extend(revise_from_error(h, r["expression"], r["error"], llm_fn,
+                                               leaf_budgets=leaf_budgets, market=ctx.market,
+                                               leaf_names=ctx.leaf_names))
+            if refed:
+                _step(f"  ④+ 预热错误回灌 revise（{len(warm_errs)} 条 → {len(refed)} 修正）")
+                results += _evaluate_and_record(
+                    state, refed, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
+                    eval_start=eval_start, eval_end=ev_end, profile=profile, leaf_map=ctx.leaf_map,
+                )
+    # 代表假设/表达式：供 Critic stub 与 revise pending（多假设时取最后一个批次，同现状语义）
+    hypothesis = hyps[-1] if hyps else ""
+    exprs = hyp_batches[-1][1] if hyp_batches else []
     n_before = len(state.candidates)                       # Important 1: 护栏前快照
     _step("  ⑤ 防过拟合护栏（DSR / holdout / CI / 去相关）")
     node_guardrails(
@@ -208,6 +265,7 @@ def _run_one_round(
         bundle=bundle, ledger=ledger, top_k=top_k,
         warmup_daily=warmup_daily,   # holdout 扩窗预热用完整帧
         eval_start=eval_start,       # 池级 PBO 的 None-gating：None 时裸求值，零回归
+        profile=profile,             # crypto 派生列 + 叶子映射；None 零回归
     )
     _print_rejections("mine-team", state)
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
@@ -236,7 +294,10 @@ def _run_one_round(
 
     rounds_log.append({
         "round": state.iteration,
-        "hypothesis": hypothesis,
+        # 多假设时记全部（"；" 连接）；单假设时即该假设字符串（零回归）。
+        # rounds_log.hypothesis 只进 manifest 溯源，无下游按单字符串解析（per-attempt 归属
+        # 由 AttemptRecord.hypothesis 各自承载），故连接安全。
+        "hypothesis": "；".join(hyps),
         "tasks": tasks,                       # 步2 产物，实验溯源用（非 structured 轮为 []）
         "expressions": [r["expression"] for r in results],
         "verdict": verdict.verdict,
@@ -257,10 +318,14 @@ def _run_one_round(
         new_cands = []          # 不再回填 holdout_ic 等"已验证"字段（Librarian 写入用）
         next_pending = None
     elif verdict.verdict == "revise_expr":
+        # 定位代表候选所属假设 + 该假设的表达式集（多假设时归位到正确批次；
+        # 单假设时 cand_h == hypothesis、cand_exprs == exprs，零回归）。
+        cand_h = cand.get("hypothesis") or hypothesis
+        cand_exprs = next((ex for h, ex in reversed(hyp_batches) if h == cand_h), exprs)
         next_pending = {
             "kind": "revise_expr",
-            "hypothesis": hypothesis,
-            "exprs": exprs,
+            "hypothesis": cand_h,
+            "exprs": cand_exprs,
             "reason": verdict.reason,
         }
     elif verdict.verdict == "revise_hypothesis":
@@ -297,8 +362,16 @@ def run_team_agent(
     llm_failure_patience: int = 3,
     data_window: dict | None = None,
     eval_start: str | None = None,
+    hypotheses_per_round: int = 1,
+    profile=None,
+    update_library: bool = True,
+    library_root: str | None = None,
+    horizon: int = 1,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
+
+    ``profile``：市场 profile（默认 None → A 股，零回归）。经 `AgentContext.from_profile`
+    得叶子集/映射/市场名，逐层透传给 prompt/评估/护栏/预热预算。
 
     N 诚实：node_guardrails 每轮恰好调用一次（记本轮 N），不在同轮内多次调用（避免三角和）。
     holdout 隔离：mining_df 供角色/记忆，holdout_df 只进 node_guardrails。
@@ -321,7 +394,22 @@ def run_team_agent(
     bundle = DataBundle.build(mining_df)
     _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
+    # 市场上下文（profile=None → A 股默认）：叶子集/映射/市场名，供 budgets 与逐轮透传。
+    ctx = AgentContext.from_profile(profile)
     _eval_start_date = _to_date(eval_start) if eval_start is not None else None
+    # 叶子历史预算（只算一次，逐轮复用）：在含预热前缀的完整帧上算各叶子 eval_start 前的
+    # 可用预热，只保留短于预热前缀（AGENT_WARMUP_LOOKBACK）的叶子回灌 LLM——引导它别对
+    # 短历史叶（north_ratio 等）写超预热的长窗口而被预热门直接拒。须用 evaluate_expressions
+    # 内部同一套 _preprocess_daily 帧算，才能与预热门判 have 逐值一致（见 leaf_warmup_budgets）。
+    leaf_budgets: dict[str, int] | None = None
+    if _eval_start_date is not None:
+        from factorzen.agents.evaluation import _preprocess_daily
+        from factorzen.discovery.expression import leaf_warmup_budgets
+        from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
+        _all_budgets = leaf_warmup_budgets(
+            _preprocess_daily(daily, profile), _eval_start_date, ctx.leaf_names,
+            leaf_map=ctx.leaf_map)
+        leaf_budgets = {k: v for k, v in _all_budgets.items() if v < AGENT_WARMUP_LOOKBACK}
     # ── 记录在案的假设：多重检验的 N **不跨 session 累积** ──────────────────────
     # ledger 每 session 从 0 起。而 Librarian 把历史已试表达式喂给 LLM 让它避开，于是后续
     # session 在同一搜索空间的剩余部分继续搜索——累计试了 120 次，DSR 却按本 session 的 N 判。
@@ -342,7 +430,8 @@ def run_team_agent(
     state = AgentState(seed=seed)
     index = ExperimentIndex(index_path)
     # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销
-    health = make_health_check(mining_df) if heal_rounds > 0 else None
+    health = make_health_check(mining_df, profile=profile, leaf_map=ctx.leaf_map) \
+        if heal_rounds > 0 else None
     rounds_log: list[dict] = []
     # 上一轮 Critic 反馈：{"kind", "hypothesis", "exprs", "reason"}
     pending: dict | None = None
@@ -366,7 +455,8 @@ def run_team_agent(
                 pending=pending, seed=seed, top_k=top_k,
                 heal_rounds=heal_rounds, structured=structured, health=health,
                 data_window=data_window, warmup_daily=daily,
-                eval_start=_eval_start_date,
+                eval_start=_eval_start_date, leaf_budgets=leaf_budgets,
+                hypotheses_per_round=hypotheses_per_round, profile=profile, ctx=ctx,
             )
         except LLMClientError as exc:
             llm_failures += 1
@@ -390,7 +480,7 @@ def run_team_agent(
     # 收尾复核：早轮候选此前按「截至当轮」的 N 定 p，门槛偏松。用最终 basis 统一重判。
     _step("收尾复核：以最终 N 统一重判候选 DSR")
     before = {c["expression"] for c in state.candidates}
-    basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle)
+    basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle, profile=profile)
     demoted = before - {c["expression"] for c in state.candidates}
     if demoted:
         # Librarian 逐轮写 index 时 `passed=True` 已经落盘。补写更正记录——
@@ -403,6 +493,16 @@ def run_team_agent(
             data_window=data_window,
         )
 
+    # ── 自动维护因子库（M5/M6 收尾 upsert）──────────────────────────────────────
+    # 与 M1(run_session) 双路径登记簿配对：收尾把最终 passed 候选 upsert 进库（gate 复用
+    # acceptance_reasons(gate="library")）。库根默认从 index_path 推导（测试的 tmp index 天然
+    # 隔离）；市场从 profile.name/data_window 取。整块 try/except 兜底，不拖垮挖掘产出。
+    if update_library:
+        _library_upsert_team(
+            state.candidates, seed=seed, mining_df=mining_df, ctx=ctx, profile=profile,
+            data_window=data_window, eval_start=eval_start, index_path=index_path,
+            library_root=library_root, top_k=top_k, horizon=horizon)
+
     return TeamResult(
         state=state,
         candidates=state.candidates,
@@ -410,6 +510,36 @@ def run_team_agent(
         rounds_log=rounds_log,
         sharpe_variance=basis.sharpe_variance,
     )
+
+
+def _library_upsert_team(candidates, *, seed, mining_df, ctx, profile, data_window,
+                         eval_start, index_path, library_root, top_k, horizon) -> None:
+    """M5/M6 收尾把最终 passed 候选 upsert 进因子库。全 try/except 兜底，A股零回归底线。"""
+    from datetime import date
+
+    try:
+        if not candidates:
+            return
+        from factorzen.agents.evaluation import _preprocess_daily
+        from factorzen.discovery import factor_library as _fl
+        market = getattr(profile, "name", None) or (
+            (data_window or {}).get("market")) or "ashare"
+        root = library_root or str(Path(index_path).parent / "factor_library")
+        dw = data_window or {}
+        _start = dw.get("start") or eval_start or mining_df["trade_date"].min().strftime("%Y%m%d")
+        _end = dw.get("end") or mining_df["trade_date"].max().strftime("%Y%m%d")
+        leaf_map = ctx.leaf_map
+        prepped = _preprocess_daily(mining_df, profile).sort(["ts_code", "trade_date"])
+        # 去相关用紧凑矩阵物化器（内存有界，见 factor_library.make_compact_materializer）。
+        compact = _fl.make_compact_materializer(prepped, leaf_map)
+
+        _fl.upsert(
+            market, candidates, eval_window=(_start, _end), universe=dw.get("universe"),
+            horizon=horizon, run_id=f"team_{seed}", session_dir=None,
+            git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
+            compact_materialize=compact, leaf_map=leaf_map, root=root)
+    except Exception as exc:  # 库写入失败不许影响挖掘产出（A股零回归底线）
+        _LOG.warning("因子库 upsert 失败（不影响挖掘产出）: %s: %s", type(exc).__name__, exc)
 
 
 def write_team_manifest(

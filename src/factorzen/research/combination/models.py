@@ -13,17 +13,39 @@ import numpy as np
 import polars as pl
 
 from factorzen.research.combination.cv import PurgedWalkForwardCV
-from factorzen.research.combination.oos import for_each_fold
+from factorzen.research.combination.oos import drop_degenerate_factors, for_each_fold
+
+# 某折 train/test 面板为空时只告警一次(逐折刷屏无意义)。
+_warned_empty_fold = False
+
+
+def _warn_empty_fold_once() -> None:
+    global _warned_empty_fold
+    if _warned_empty_fold:
+        return
+    _warned_empty_fold = True
+    warnings.warn(
+        "combine_lgbm: 某折 train/test 面板为空,已跳过该折(因子在该窗口覆盖不足)",
+        stacklevel=3,
+    )
 
 
 def _factor_panel(factor_dfs: dict[str, pl.DataFrame]) -> pl.DataFrame:
-    """各因子 inner join 成宽表 [trade_date, ts_code, <name>...]。"""
+    """各因子 **outer join** 成宽表 [trade_date, ts_code, <name>...]。
+
+    覆盖异质时 inner join 会把并集缩到交集甚至塌空;改外连接取并集,缺失特征留空
+    (LGBM 原生把 null 当缺失处理,无需插补)。
+    """
     merged: pl.DataFrame | None = None
     for name, df in factor_dfs.items():
         d = df.select(["trade_date", "ts_code", "factor_value"]).rename(
             {"factor_value": name}
         )
-        merged = d if merged is None else merged.join(d, on=["trade_date", "ts_code"], how="inner")
+        merged = (
+            d
+            if merged is None
+            else merged.join(d, on=["trade_date", "ts_code"], how="full", coalesce=True)
+        )
     assert merged is not None  # factor_dfs 非空由调用方保证
     return merged
 
@@ -31,19 +53,22 @@ def _factor_panel(factor_dfs: dict[str, pl.DataFrame]) -> pl.DataFrame:
 def build_panel(
     factor_dfs: dict[str, pl.DataFrame], ret_df: pl.DataFrame
 ) -> pl.DataFrame:
-    """因子宽表 join 前向收益,丢弃缺值行;丢弃率 >30% 告警。"""
+    """因子宽表 join 前向收益(标签)。保留特征缺失行交给 LGBM 原生 NaN 处理,
+    仅要求标签存在;完整行占比过低时告警(覆盖异质提示)。"""
     panel = _factor_panel(factor_dfs).join(
         ret_df.select(["trade_date", "ts_code", "ret"]),
         on=["trade_date", "ts_code"],
         how="inner",
-    )
-    before = panel.height
-    panel = panel.drop_nulls()
-    if before > 0 and (before - panel.height) / before > 0.3:
-        warnings.warn(
-            f"build_panel 丢弃 {(before - panel.height) / before:.0%} 行(缺值),样本可能不足",
-            stacklevel=2,
-        )
+    ).filter(pl.col("ret").is_not_null())
+    names = [c for c in panel.columns if c not in ("trade_date", "ts_code", "ret")]
+    if panel.height > 0 and names:
+        complete = panel.drop_nulls(subset=names).height
+        if complete / panel.height < 0.7:
+            warnings.warn(
+                f"build_panel: 仅 {complete / panel.height:.0%} 行因子齐全,"
+                "其余按缺失喂入(因子覆盖异质)",
+                stacklevel=2,
+            )
     return panel
 
 
@@ -114,18 +139,31 @@ def combine_lgbm(
     cv: PurgedWalkForwardCV,
     **model_kwargs: Any,
 ) -> pl.DataFrame:
-    """LightGBM 滚动 OOS 组合:train 折 fit(rank 标签)、test 折 predict。"""
+    """LightGBM 滚动 OOS 组合:train 折 fit(rank 标签)、test 折 predict。
+
+    先剔除退化因子(空/全缺),再逐折外连接容缺;某折面板为空则跳过(不崩)。
+    """
     if not factor_dfs:
         raise ValueError("factor_dfs 不能为空")
+    factor_dfs = drop_degenerate_factors(factor_dfs)
+    if not factor_dfs:
+        raise ValueError("去除全缺因子后无有效因子,无法组合")
     names = list(factor_dfs.keys())
+    _empty = pl.DataFrame(
+        schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8, "factor_value": pl.Float64}
+    )
 
     def _fold(all_f, train_f, train_r, test_f):
         train_panel = build_panel(train_f, train_r)
-        if train_panel.height == 0:
-            raise ValueError("训练面板为空(因子全缺值或无对齐样本)")
+        # 特征全缺的 test 行无任何信号,丢弃;其余按 NaN 交给 LGBM
+        test_panel = _factor_panel(test_f).filter(
+            ~pl.all_horizontal([pl.col(n).is_null() for n in names])
+        )
+        if train_panel.height == 0 or test_panel.height == 0:
+            _warn_empty_fold_once()
+            return _empty
         model = LGBMCombiner(**model_kwargs)
         model.fit(train_panel.select(names), _rank_label(train_panel))
-        test_panel = _factor_panel(test_f).drop_nulls(subset=names)
         preds = model.predict(test_panel.select(names))
         return test_panel.select(["trade_date", "ts_code"]).with_columns(
             pl.Series("factor_value", preds)

@@ -38,6 +38,24 @@ _EMPTY_SCHEMA = {
 }
 
 
+def drop_degenerate_factors(
+    factor_dfs: dict[str, pl.DataFrame],
+) -> dict[str, pl.DataFrame]:
+    """剔除无法贡献信号的退化因子:0 行(物化为空)或 factor_value 全缺。
+
+    因子库常混入这类因子(如陈旧基本面经 ``ts_skew`` 退化成全 NaN 空帧)。留着它们会
+    在 inner join 时拖垮整个面板;组合器应丢弃后用其余因子继续,而非崩掉整个 OOS run。
+    """
+    kept: dict[str, pl.DataFrame] = {}
+    for name, df in factor_dfs.items():
+        if df.height == 0 or "factor_value" not in df.columns:
+            continue
+        if df["factor_value"].null_count() >= df.height:  # 全缺
+            continue
+        kept[name] = df
+    return kept
+
+
 def for_each_fold(
     factor_dfs: dict[str, pl.DataFrame],
     ret_df: pl.DataFrame,
@@ -96,6 +114,9 @@ def combine_oos(
     **method_kwargs: Any,
 ) -> pl.DataFrame:
     """线性权重滚动 OOS 组合(equal_weight/ic_weighted/max_ir)。"""
+    factor_dfs = drop_degenerate_factors(factor_dfs)
+    if not factor_dfs:
+        raise ValueError("去除全缺因子后无有效因子,无法组合")
 
     def _fold(all_f, train_f, train_r, test_f):
         weights = _estimate_fold(method, all_f, train_f, train_r, method_kwargs)

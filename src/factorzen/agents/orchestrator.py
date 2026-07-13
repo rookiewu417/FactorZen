@@ -49,7 +49,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                   heal_rounds: int = 2,
                   on_round_end: Callable[[AgentResult], None] | None = None,
                   llm_failure_patience: int = 3,
-                  eval_start: str | None = None) -> AgentResult:
+                  eval_start: str | None = None, profile=None) -> AgentResult:
     """跑 n_rounds 轮 Agent 挖掘闭环。
 
     ``on_round_end``：每个**成功**轮次结束时以当前累积结果回调，供调用方增量落盘。
@@ -76,6 +76,21 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
     _eval_start_date = _to_date(eval_start) if eval_start is not None else None
     _eval_end_date = mining_df["trade_date"].max() if eval_start is not None else None
+    # 叶子历史预算（算一次，逐轮复用）：在含预热前缀的完整帧上算，只留短于预热前缀
+    # （AGENT_WARMUP_LOOKBACK）的叶子回灌 LLM。须与预热门同一套 _preprocess_daily 帧算，
+    # 才能与 have 判定逐值一致（见 leaf_warmup_budgets）。eval_start=None → None，零回归。
+    # 市场上下文（profile=None → A 股默认）：叶子集/映射/市场名，供 budgets 与各 node 透传。
+    from factorzen.agents.nodes import AgentContext
+    ctx = AgentContext.from_profile(profile)
+    leaf_budgets: dict[str, int] | None = None
+    if _eval_start_date is not None:
+        from factorzen.agents.evaluation import _preprocess_daily
+        from factorzen.discovery.expression import leaf_warmup_budgets
+        from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
+        _all_budgets = leaf_warmup_budgets(
+            _preprocess_daily(daily, profile), _eval_start_date, ctx.leaf_names,
+            leaf_map=ctx.leaf_map)
+        leaf_budgets = {k: v for k, v in _all_budgets.items() if v < AGENT_WARMUP_LOOKBACK}
     ledger = TrialLedger()
     state = AgentState(seed=seed)
     feedback = ""
@@ -94,7 +109,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
         try:
             _step("  ① 生成假设 + 表达式")
             state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle,
-                                  feedback=feedback, heal_rounds=heal_rounds)
+                                  feedback=feedback, heal_rounds=heal_rounds,
+                                  leaf_budgets=leaf_budgets, profile=profile)
             _step(f"  ② 评估 {len(getattr(state, '_pending', []))} 个候选表达式")
             # None-gating：eval_start=None（旧调用方默认）时 daily/eval_start/eval_end
             # 的组合与之前逐字节相同的裸调用；非 None 时在完整帧 daily 上求值，裁剪到
@@ -102,12 +118,13 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             # eval_start，不能拿它的起点当判据——见 task-1.4 CORRECTION）。
             state = node_evaluate(state, daily=mining_df, bundle=bundle,
                                   eval_start=_eval_start_date, eval_end=_eval_end_date,
-                                  warmup_daily=daily)
+                                  warmup_daily=daily, profile=profile)
             _step("  ③ 防过拟合护栏（DSR / holdout / CI / 去相关）")
             state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
                                     bundle=bundle, ledger=ledger, top_k=top_k,
                                     warmup_daily=daily,   # holdout 扩窗预热用完整帧
-                                    eval_start=_eval_start_date)  # 池级 PBO 的 None-gating
+                                    eval_start=_eval_start_date,  # 池级 PBO 的 None-gating
+                                    profile=profile)
             _print_rejections("mine-agent", state)
             _step("  ④ Critic 审计")
             state = node_critic(state, llm_fn)
@@ -136,7 +153,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                                      n_trials=ledger.n_trials))
     # 收尾复核：早轮候选此前按「截至当轮」的 N 定 p，门槛偏松。用最终 basis 统一重判。
     _step("收尾复核：以最终 N 统一重判候选 DSR")
-    basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle)
+    basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle, profile=profile)
     return AgentResult(state=state, candidates=state.candidates, n_trials=ledger.n_trials,
                        sharpe_variance=basis.sharpe_variance)
 

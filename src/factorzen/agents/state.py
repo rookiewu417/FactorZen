@@ -29,6 +29,10 @@ class AttemptRecord:
     reject_category: str | None = None
     # holdout 段有效 IC 天数（覆盖守卫 / Critic 摘要）；None=未跑 holdout。
     n_holdout_days: int | None = None
+    # 残差目标双指标（objective=residual 时由 node_guardrails 填；裸 IC 仍在 ic_train/holdout）
+    residual_ic_train: float | None = None
+    residual_holdout_ic: float | None = None
+    n_residual_holdout_days: int | None = None
 
 
 @dataclass
@@ -43,6 +47,8 @@ class AgentState:
     # 库级正交：session 开始物化的库池大小 + 因 library_correlated 被拒的累计数（manifest 用）
     library_pool_size: int = 0
     n_library_correlated_rejects: int = 0
+    # 挖掘评估目标：raw | residual（库空时 residual 自动退化 raw，由 resolve_objective 写回）
+    objective: str = "residual"
 
     def to_dict(self) -> dict:
         return {
@@ -55,4 +61,5 @@ class AgentState:
             "pbo": self.pbo,
             "library_pool_size": self.library_pool_size,
             "n_library_correlated_rejects": self.n_library_correlated_rejects,
+            "objective": self.objective,
         }

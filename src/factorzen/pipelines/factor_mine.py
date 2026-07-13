@@ -88,14 +88,16 @@ def run_mine(*, start: str, end: str, universe: str | None = None,
              train_ratio: float = 0.7, decorr_threshold: float = 0.7,
              min_n_train: int = 5, dsr_alpha: float = DEFAULT_DSR_ALPHA,
              workers: int = 1, update_library: bool = True,
-             library_orthogonal: bool = True) -> dict:
+             library_orthogonal: bool = True,
+             objective: str = "residual") -> dict:
     daily = prepare_mining_daily(start, end, universe)
     # 收尾自动 upsert 因子库（--no-library 关）；库根由 run_session 从 out_dir 推导
     # （workspace/mining_sessions → workspace/factor_library）。universe 落进记录溯源。
     # library_orthogonal：搜索期避开库内已覆盖方向（--no-library-orthogonal 关）。
+    # objective：残差/裸 IC 挖掘目标（库空时 residual 自动退化 raw）。
     return run_session(daily, n_trials=n_trials, top_k=top_k, seed=seed, method=method,
                        holdout_ratio=holdout_ratio, train_ratio=train_ratio,
                        decorr_threshold=decorr_threshold, min_n_train=min_n_train,
                        dsr_alpha=dsr_alpha, eval_start=start, workers=workers,
                        update_library=update_library, library_universe=universe,
-                       library_orthogonal=library_orthogonal)
+                       library_orthogonal=library_orthogonal, objective=objective)

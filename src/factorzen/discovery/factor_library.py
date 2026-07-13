@@ -5,6 +5,10 @@
 + **统一默认窗口**（`backtest_window.default_window`）重算，把散落各处的合格因子收敛成一份
 可比、带全信息、按市场分文件、能自动增量维护的登记簿。
 
+**故意不用残差 IC 准入**：因子库是参照系；对参照系自身做「对库残差化」是循环定义。
+库 upsert/rebuild 维持裸 IC + 覆盖门。残差目标只用于挖掘评估（``discovery.residual`` /
+``node_guardrails`` / ``run_session``），测候选对库的真增量——本模块不接入 objective=residual。
+
 - 分市场分文件：``{root}/{market}.jsonl``（机器读写）+ ``{market}.md``（人类汇总）+ ``summary.md``。
 - 去相关 = **方案 A**：库内高相关因子仍收录但打 ``status="correlated"`` + ``correlated_with``，
   不替用户丢弃（看全貌，用户自己挑）。逐对相关走**紧凑 float32 矩阵**（内存有界，修真实 A股

@@ -51,7 +51,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                   llm_failure_patience: int = 3,
                   eval_start: str | None = None, profile=None,
                   library_orthogonal: bool = True,
-                  library_root: str | None = None) -> AgentResult:
+                  library_root: str | None = None,
+                  objective: str = "residual") -> AgentResult:
     """跑 n_rounds 轮 Agent 挖掘闭环。
 
     ``on_round_end``：每个**成功**轮次结束时以当前累积结果回调，供调用方增量落盘。
@@ -115,7 +116,9 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     last_cand_count = 0
     llm_failures = 0
 
-    # 库级正交：session 开始物化一次（与 node_guardrails 同帧 = holdout）。空库 → 零回归。
+    # 库级正交 + 残差面板：session 开始物化一次。
+    # 残差目标需要 train∪holdout 库因子 → 在完整 prepped 帧上物化（不再只裁 holdout）。
+    # 空库 → objective 自动退化 raw，零回归。
     lib_pool: dict = {}
     library_covered: list[str] | None = None
     if library_orthogonal:
@@ -130,9 +133,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             market = getattr(profile, "name", None) or "ashare"
             lib_root = library_root or DEFAULT_ROOT
             _prepped = _preprocess_daily(daily, profile)
-            _hold_start = holdout_df["trade_date"].min()
             lib_pool = build_library_pool(
-                market, _prepped, ctx.leaf_map, root=lib_root, eval_start=_hold_start,
+                market, _prepped, ctx.leaf_map, root=lib_root,
             )
             covered = library_covered_expressions(market, k=10, root=lib_root)
             library_covered = covered or None
@@ -143,6 +145,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             _LOG.warning("库池物化失败，本 session 跳过库级正交: %s: %s",
                          type(exc).__name__, exc)
             lib_pool, library_covered = {}, None
+    state.objective = objective  # type: ignore[attr-defined]
 
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
@@ -174,7 +177,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                                     bundle=bundle, ledger=ledger, top_k=top_k,
                                     warmup_daily=daily,   # holdout 扩窗预热用完整帧
                                     eval_start=_eval_start_date,  # 池级 PBO 的 None-gating
-                                    profile=profile, lib_pool=lib_pool)
+                                    profile=profile, lib_pool=lib_pool,
+                                    objective=objective)
             _print_rejections("mine-agent", state)
             _step("  ④ Critic 审计")
             state = node_critic(state, llm_fn)

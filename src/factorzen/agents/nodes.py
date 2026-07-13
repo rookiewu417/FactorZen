@@ -8,7 +8,11 @@ from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.memory import negative_recall
 from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.discovery.expression import parse_expr, to_expr_string
-from factorzen.discovery.guardrails import DEFAULT_DSR_ALPHA, DEFAULT_GATE
+from factorzen.discovery.guardrails import (
+    DEFAULT_DSR_ALPHA,
+    DEFAULT_GATE,
+    DEFAULT_RESIDUAL_IC_FLOOR,
+)
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 from factorzen.llm.generation import (
     LLMFn,
@@ -181,6 +185,7 @@ def node_guardrails(
     eval_start=None,
     profile=None,
     lib_pool: dict | None = None,
+    objective: str = "residual",
 ) -> AgentState:
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
 
@@ -208,6 +213,11 @@ def node_guardrails(
     ``library_orthogonal_check``；高相关 → 不入池、``reject_category=library_correlated``。
     None/空 → 跳过（零回归）。只对 top-K 过护栏候选算（本循环已是 ``passed[:top_k]``）。
 
+    ``objective``：``"residual"``（默认）在库非空时用对库残差 IC 做 library 门判定
+    （floor=``DEFAULT_RESIDUAL_IC_FLOOR``），裸 IC 仍落盘对照；库空自动退化为 ``"raw"``
+    （行为=现状）。``"raw"`` 强制裸 IC 门。corr>0.7 库重复门在 residual 下**保留**
+    （近共线 lstsq 残差≈噪声）。
+
     DSR 的三个入参都与 M1（mining_session.py:292-307）同口径，否则 deflation 基准不自洽：
     - ``sharpe_variance`` = trial 池 signed IR 的**经验方差**，而非 deflated_sharpe 的 H0
       默认 ``1/n_obs``。因 ``expected_max_sharpe ∝ sqrt(sharpe_variance)`` 而多样化 trial 池
@@ -227,6 +237,11 @@ def node_guardrails(
         classify_reject_category,
         deflated_pvalue,
         pool_pbo,
+    )
+    from factorzen.discovery.residual import (
+        build_library_panel,
+        compute_residual_ic,
+        resolve_objective,
     )
     from factorzen.discovery.scoring import library_orthogonal_check, max_correlation
     from factorzen.validation.holdout import holdout_ic_result
@@ -262,6 +277,18 @@ def node_guardrails(
         return _factor_df_from_prepped(node, _prepped_hold, eval_start=_hold_start,
                                        leaf_map=leaf_map)
 
+    # 残差目标：库面板 session 级物化一次（z-score+null→0）；空库 → objective 退化 raw。
+    lib_panel = build_library_panel(lib_pool)
+    eff_objective = resolve_objective(objective, lib_panel is not None)
+    state.objective = eff_objective
+    # train 段因子值求值帧（残差 train IC）；与 holdout 共用 prepped 若同帧
+    _prepped_train = (
+        _prepped_hold if daily is _hold_frame
+        else _preprocess_daily(daily, profile)
+    )
+    _train_fwd = bundle.fwd_returns
+    _hold_fwd = None  # lazy：残差 holdout 时再算
+
     existing_exprs: set[str] = {c["expression"] for c in state.candidates}
 
     pool: dict = {}
@@ -289,21 +316,16 @@ def node_guardrails(
             sharpe = a.ir_train if a.ir_train is not None else (a.ic_train or 0.0)
             dsr, pval = deflated_pvalue(sharpe, basis, a.n_train or 0)
             ic_tr = a.ic_train or 0.0
-            # 因子库口径(默认)按「真+有信号」入池；DSR 仍算出来存进候选供组合层/报告用。
-            # holdout_n_days 贯通覆盖守卫（与 M1 mining_session 共用 acceptance_reasons）。
-            reasons = acceptance_reasons(
-                gate=gate, ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,
-                ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
-                holdout_n_days=n_h,
-            )
-            if not reasons:
-                # 事实先落定：过了定量护栏。去相关剔除是随后的**决策**，不得改写它——
-                # 否则该因子会以 passed=False 落进 known_invalid，被当作「已验证无效」
-                # 喂给 LLM（它其实过了全部定量护栏，只是与已有候选重复）。
-                a.passed_guardrails = True
-                # 库级正交（与 session 去相关同帧 = holdout 段因子值；共享 library_orthogonal_check）
+
+            residual_ic_tr = residual_ic_h = None
+            n_residual_h = None
+            mc_lib, nearest = 0.0, None
+
+            if eff_objective == "residual" and lib_panel is not None:
+                # residual：库相关**先拦**（近共线残差≈噪声，残差 IC 无意义/n_days=0）。
                 ok_lib, mc_lib, nearest = library_orthogonal_check(fdf_hold, lib_pool)
                 if not ok_lib:
+                    a.passed_guardrails = True  # 方向重复非「无效」；known_invalid 排除
                     a.decorrelated = True
                     a.reject_category = REJECT_CATEGORY_LIBRARY_CORRELATED
                     nearest_s = (nearest or "")[:60]
@@ -314,6 +336,57 @@ def node_guardrails(
                         getattr(state, "n_library_correlated_rejects", 0) + 1
                     )
                     continue
+                # 残差双指标（train + holdout），只对 top-K 且已过库门
+                fdf_train = _factor_df_from_prepped(
+                    node, _prepped_train, leaf_map=leaf_map,
+                )
+                r_tr = compute_residual_ic(fdf_train, lib_panel, _train_fwd)
+                residual_ic_tr = r_tr.ic_mean
+                if _hold_fwd is None:
+                    from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
+                    _pc = ("close_adj" if "close_adj" in holdout_df.columns
+                           else "close")
+                    _hold_fwd = compute_fwd_returns(
+                        holdout_df.sort(["ts_code", "trade_date"]), price_col=_pc,
+                    )
+                r_h = compute_residual_ic(fdf_hold, lib_panel, _hold_fwd)
+                residual_ic_h = r_h.ic_mean
+                n_residual_h = r_h.n_days
+                a.residual_ic_train = residual_ic_tr  # type: ignore[attr-defined]
+                a.residual_holdout_ic = residual_ic_h  # type: ignore[attr-defined]
+                a.n_residual_holdout_days = n_residual_h  # type: ignore[attr-defined]
+                reasons = acceptance_reasons(
+                    gate=gate, ic_train=residual_ic_tr, holdout_ic=residual_ic_h,
+                    dsr_pvalue=pval, ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
+                    ic_floor=DEFAULT_RESIDUAL_IC_FLOOR,
+                    holdout_n_days=n_residual_h,
+                    reason_style="residual",
+                )
+            else:
+                # raw（或库空退化）：裸 IC 门，顺序与 P4 零回归一致
+                reasons = acceptance_reasons(
+                    gate=gate, ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,
+                    ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
+                    holdout_n_days=n_h,
+                )
+
+            if not reasons:
+                # 事实先落定：过了定量护栏。去相关/库相关是随后的**决策**。
+                a.passed_guardrails = True
+                # raw 模式：定量过关后再做库相关（P4 旧顺序，零回归）
+                if eff_objective != "residual":
+                    ok_lib, mc_lib, nearest = library_orthogonal_check(fdf_hold, lib_pool)
+                    if not ok_lib:
+                        a.decorrelated = True
+                        a.reject_category = REJECT_CATEGORY_LIBRARY_CORRELATED
+                        nearest_s = (nearest or "")[:60]
+                        a.reject_reason = (
+                            f"与库内因子高相关(corr={mc_lib:.2f}, 最相近={nearest_s})"
+                        )
+                        state.n_library_correlated_rejects = (
+                            getattr(state, "n_library_correlated_rejects", 0) + 1
+                        )
+                        continue
                 corr = max_correlation(fdf_hold, pool)
                 if corr > 0.7:
                     a.decorrelated = True
@@ -340,6 +413,10 @@ def node_guardrails(
                 }
                 if lib_pool:
                     cand_row["max_corr_library"] = round(float(mc_lib), 4)
+                if residual_ic_tr is not None:
+                    cand_row["residual_ic_train"] = residual_ic_tr
+                    cand_row["residual_holdout_ic"] = residual_ic_h
+                    cand_row["n_residual_holdout_days"] = n_residual_h
                 state.candidates.append(cand_row)
             else:
                 # 记下未过原因，供进度与收尾"近失表"展示（为什么没进候选池）。

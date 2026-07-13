@@ -21,6 +21,7 @@ from factorzen.discovery.expression import (
 from factorzen.discovery.guardrails import (
     DEFAULT_DSR_ALPHA,
     DEFAULT_GATE,
+    DEFAULT_RESIDUAL_IC_FLOOR,
     DeflationBasis,
     acceptance_reasons,
     deflated_pvalue,
@@ -31,6 +32,11 @@ from factorzen.discovery.leaf_health import (
     log_excluded_leaves,
 )
 from factorzen.discovery.operators import LEAF_FEATURES
+from factorzen.discovery.residual import (
+    build_library_panel,
+    compute_residual_ic,
+    resolve_objective,
+)
 from factorzen.discovery.scoring import (
     DEFAULT_DECORR_THRESHOLD,
     DataBundle,
@@ -90,7 +96,8 @@ def _oos_adjusted_fitness(train_fitness: float, train_tstat: float, valid_tstat:
 
 
 def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
-                  gate: str = DEFAULT_GATE) -> bool:
+                  gate: str = DEFAULT_GATE, *,
+                  objective: str = "raw") -> bool:
     """护栏软标记(passed)：``gate`` 口径下入池即 True。
 
     2026-07「因子库化」：默认 ``gate="library"`` —— 真(holdout 与 train 同号) + 有信号
@@ -99,7 +106,22 @@ def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
     任一必需指标缺失/NaN → 判否(保守)。护栏把「只算不判」变成可被 leaderboard/export-alpha
     默认过滤的软标记(留 --all 逃生口)，不删候选、不破坏产物契约。
     与 Agent `node_guardrails` **共用** `acceptance_reasons`（含 holdout_n_days 覆盖门）。
+
+    ``objective="residual"``：用残差指标 + ``DEFAULT_RESIDUAL_IC_FLOOR`` 判定；
+    裸 IC 字段仍在 ``c`` 里供报告。``"raw"``（默认本函数）喂裸 IC。
     """
+    if objective == "residual":
+        return not acceptance_reasons(
+            gate=gate,
+            ic_train=c.get("residual_ic_train"),
+            holdout_ic=c.get("residual_holdout_ic"),
+            dsr_pvalue=c.get("dsr_pvalue"),
+            ci_low=c.get("ic_ci_low"),
+            dsr_alpha=dsr_alpha,
+            ic_floor=DEFAULT_RESIDUAL_IC_FLOOR,
+            holdout_n_days=c.get("n_residual_holdout_days"),
+            reason_style="residual",
+        )
     return not acceptance_reasons(
         gate=gate,
         ic_train=c.get("ic_train"),
@@ -212,7 +234,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 profile=None, workers: int = 1,
                 update_library: bool = True, library_root: str | None = None,
                 library_universe: str | None = None, horizon: int = 1,
-                library_orthogonal: bool = True) -> dict:
+                library_orthogonal: bool = True,
+                objective: str = "residual") -> dict:
     t0 = time.perf_counter()
     rng = np.random.default_rng(seed)
     daily = daily.sort(["ts_code", "trade_date"])
@@ -374,23 +397,41 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
 
     scored.sort(key=lambda d: d["fitness"], reverse=True)
 
-    # 库池：session 开始物化一次（mining 段帧，与下方 session 去相关同帧同口径）。
+    # 库池：session 开始物化一次。
+    # 残差目标需要 train+holdout 两段库因子 → 在完整 warmup 帧上物化；
+    # 库相关门仍用 mining 段切片（selected 循环里用 mining fdf 对齐）。
     # 空库/关开关 → {}，行为与旧完全一致。
     lib_pool: dict[str, pl.DataFrame] = {}
+    lib_pool_mining: dict[str, pl.DataFrame] = {}
     lib_root = library_root or str(Path(out_dir).parent / "factor_library")
     if library_orthogonal:
         try:
             from factorzen.discovery.factor_library import build_library_pool
             market = getattr(profile, "name", None) or "ashare"
-            lib_pool = build_library_pool(market, daily, leaf_map, root=lib_root)
+            # 全窗（mining∪holdout）一次物化，残差 train/holdout 共用
+            lib_pool = build_library_pool(market, warmup_daily, leaf_map, root=lib_root)
+            # 库相关检查与 session 去相关同帧（mining）：按 mining 日期过滤
+            if lib_pool:
+                _mine_dates = set(daily["trade_date"].unique().to_list())
+                lib_pool_mining = {
+                    e: p.filter(pl.col("trade_date").is_in(list(_mine_dates)))
+                    for e, p in lib_pool.items()
+                }
+                lib_pool_mining = {e: p for e, p in lib_pool_mining.items() if not p.is_empty()}
+            else:
+                lib_pool_mining = {}
         except Exception as exc:
             _LOG.warning("build_library_pool 失败，本 session 跳过库级正交: %s: %s",
                          type(exc).__name__, exc)
-            lib_pool = {}
+            lib_pool, lib_pool_mining = {}, {}
+
+    lib_panel = build_library_panel(lib_pool)
+    eff_objective = resolve_objective(objective, lib_panel is not None)
 
     # 贪心去相关选 top-K：先库过滤（共享 library_orthogonal_check），再与已选池去相关。
     # 理由：库过滤是「与历史已收录方向正交」的硬门；session 去相关是本轮互异。
     # 共用同一相关函数与阈值，双路径与 team 一致。
+    # residual 模式**保留** corr>0.7 库门（近共线 lstsq 残差≈噪声）。
     selected: list[dict] = []
     selected_pool: dict[str, pl.DataFrame] = {}  # expression -> factor_df
     n_library_correlated_rejects = 0
@@ -402,7 +443,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         except Exception:
             continue
         ok_lib, mc_lib, _nearest = library_orthogonal_check(
-            fdf, lib_pool, threshold=decorr_threshold,
+            fdf, lib_pool_mining or lib_pool, threshold=decorr_threshold,
         )
         if not ok_lib:
             n_library_correlated_rejects += 1
@@ -433,6 +474,14 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     ledger.record(basis.n_trials)
     n_evaluated = ledger.n_trials
     pbo = _pool_pbo(scored, daily, bundle, eval_start, leaf_map)  # 候选池日度 IC 矩阵 → PBO
+    # holdout 前向收益（残差 holdout IC 复用，避免每候选重算）
+    _hold_fwd = None
+    if eff_objective == "residual" and lib_panel is not None:
+        from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
+        _pc = "close_adj" if "close_adj" in holdout_df.columns else "close"
+        _hold_fwd = compute_fwd_returns(
+            holdout_df.sort(["ts_code", "trade_date"]), price_col=_pc,
+        )
     for c in top:
         node = parse_expr(c["expression"], leaf_map)
         fdf_hold = _factor_values(node, warmup_daily, holdout_eval_start, leaf_map)
@@ -448,14 +497,26 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         c["n_holdout_days"] = int(n_h)
         c["dsr_pvalue"] = round(float(p), 4)
         c["ic_ci_low"] = round(float(ci_lo), 4) if ci_lo == ci_lo else float("nan")
+        # 残差双指标（只对 top-K；裸 IC 已在上方）。_hold_fwd 非 None 与前置块同条件，
+        # 显式收窄仅为 mypy。
+        if eff_objective == "residual" and lib_panel is not None and _hold_fwd is not None:
+            fdf_train = selected_pool.get(c["expression"])
+            if fdf_train is None:
+                fdf_train = _factor_values(node, daily, eval_start, leaf_map)
+            r_tr = compute_residual_ic(fdf_train, lib_panel, bundle.fwd_returns)
+            r_h = compute_residual_ic(fdf_hold, lib_panel, _hold_fwd)
+            c["residual_ic_train"] = float(r_tr.ic_mean) if r_tr.ic_mean == r_tr.ic_mean else float("nan")
+            c["residual_holdout_ic"] = float(r_h.ic_mean) if r_h.ic_mean == r_h.ic_mean else float("nan")
+            c["n_residual_holdout_days"] = int(r_h.n_days)
         # 护栏软标记：算完立刻判，供 leaderboard/export-alpha 默认过滤（--all 逃生口）
-        # 与 Agent 共用 acceptance_reasons（含 holdout_n_days 覆盖门）。
-        c["passed"] = _guard_passed(c, dsr_alpha)
+        # residual 模式喂残差指标；与 Agent 共用 acceptance_reasons。
+        c["passed"] = _guard_passed(c, dsr_alpha, objective=eff_objective)
 
     session_dir = Path(out_dir) / f"session_{seed}_{method}"
     session_dir.mkdir(parents=True, exist_ok=True)
     _cols = ["expression", "ic_train", "ir_train", "ic_valid", "ir_valid", "max_corr",
-             "complexity", "holdout_ic", "dsr_pvalue", "pbo", "ic_ci_low", "passed"]
+             "complexity", "holdout_ic", "dsr_pvalue", "pbo", "ic_ci_low", "passed",
+             "residual_ic_train", "residual_holdout_ic", "n_residual_holdout_days"]
     rows = [{"rank": i + 1, "n_trials": n_evaluated, **{k: c.get(k) for k in _cols}} for i, c in enumerate(top)]
     pl.DataFrame(rows).write_csv(session_dir / "candidates.csv") if rows else \
         (session_dir / "candidates.csv").write_text("rank,n_trials," + ",".join(_cols) + "\n")
@@ -468,6 +529,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 "excluded_leaves": excluded_leaves,
                 "library_pool_size": len(lib_pool),
                 "n_library_correlated_rejects": n_library_correlated_rejects,
+                "objective": eff_objective,
                 "reproduce_note": "导出因子在 exported/；复现需复制到 workspace/factors/daily/ 后 fz factor run <name> --set preprocessing.neutralize=false（IC parity）"}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     from factorzen.discovery.export import export_candidate

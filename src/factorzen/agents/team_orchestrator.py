@@ -136,7 +136,7 @@ def _run_one_round(
     state, llm_fn, *, index, ledger, rounds_log, mining_df, holdout_df, bundle,
     pending, seed, top_k, heal_rounds, structured, health, data_window, warmup_daily,
     eval_start=None, leaf_budgets=None, hypotheses_per_round=1, profile=None, ctx=None,
-    lib_pool=None, library_covered=None,
+    lib_pool=None, library_covered=None, objective: str = "residual",
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -277,7 +277,8 @@ def _run_one_round(
         warmup_daily=warmup_daily,   # holdout 扩窗预热用完整帧
         eval_start=eval_start,       # 池级 PBO 的 None-gating：None 时裸求值，零回归
         profile=profile,             # crypto 派生列 + 叶子映射；None 零回归
-        lib_pool=lib_pool,           # 库级正交（与 holdout 同帧；None/空 → 零回归）
+        lib_pool=lib_pool,           # 库级正交 + 残差面板（全窗物化；None/空 → 零回归）
+        objective=objective,
     )
     _print_rejections("mine-team", state)
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
@@ -390,6 +391,7 @@ def run_team_agent(
     library_root: str | None = None,
     horizon: int = 1,
     library_orthogonal: bool = True,
+    objective: str = "residual",
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -478,8 +480,9 @@ def run_team_agent(
     last_cand_count = 0
     llm_failures = 0
 
-    # 库级正交：session 开始物化一次（与 node_guardrails session 去相关同帧 = holdout 段）。
-    # 空库/关开关 → lib_pool={}、library_covered=None，行为与旧完全一致。
+    # 库级正交 + 残差面板：session 开始物化一次。
+    # 残差目标需要 train∪holdout → 在完整 prepped 帧上物化（不再只裁 holdout）。
+    # 空库/关开关 → lib_pool={}、library_covered=None，objective 退化 raw，行为与旧一致。
     lib_pool: dict = {}
     library_covered: list[str] | None = None
     market = getattr(profile, "name", None) or (
@@ -492,11 +495,9 @@ def run_team_agent(
                 build_library_pool,
                 library_covered_expressions,
             )
-            # holdout 扩窗预热：在完整帧上求值、裁到 holdout 起点（与 node_guardrails 同口径）
             _prepped = _preprocess_daily(daily, profile)
-            _hold_start = holdout_df["trade_date"].min()
             lib_pool = build_library_pool(
-                market, _prepped, ctx.leaf_map, root=lib_root, eval_start=_hold_start,
+                market, _prepped, ctx.leaf_map, root=lib_root,
             )
             covered = library_covered_expressions(market, k=10, root=lib_root)
             library_covered = covered or None
@@ -507,6 +508,7 @@ def run_team_agent(
             _LOG.warning("库池物化失败，本 session 跳过库级正交: %s: %s",
                          type(exc).__name__, exc)
             lib_pool, library_covered = {}, None
+    state.objective = objective  # type: ignore[attr-defined]
 
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
@@ -527,6 +529,7 @@ def run_team_agent(
                 eval_start=_eval_start_date, leaf_budgets=leaf_budgets,
                 hypotheses_per_round=hypotheses_per_round, profile=profile, ctx=ctx,
                 lib_pool=lib_pool, library_covered=library_covered,
+                objective=objective,
             )
         except LLMClientError as exc:
             llm_failures += 1
@@ -643,6 +646,7 @@ def write_team_manifest(
         "library_pool_size": getattr(result.state, "library_pool_size", 0),
         "n_library_correlated_rejects": getattr(
             result.state, "n_library_correlated_rejects", 0),
+        "objective": getattr(result.state, "objective", None),
         "git_sha": get_git_sha(),
     }
     path = run_dir / "manifest.json"

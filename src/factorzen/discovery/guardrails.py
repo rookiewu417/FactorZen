@@ -18,6 +18,11 @@ DEFAULT_DSR_ALPHA = 0.10
 # 因子**库**入池的 |train_IC| 下限——低于此视为纯噪声（非「弱但真」）。改这一处即全局生效。
 DEFAULT_IC_FLOOR = 0.015
 
+# 挖掘残差目标（对库正交后的残差 IC）的 |train residual IC| 下限。
+# 残差分量天然小于裸 IC（共享方向已被剔除），故低于 DEFAULT_IC_FLOOR。
+# **初值 0.010，待真实 team/search run 校准**——若放行过松/过紧，只改这一处。
+DEFAULT_RESIDUAL_IC_FLOOR = 0.010
+
 # holdout 有效 IC 天数下限。低于此视为「覆盖不足」而非「反号/无预测力」——
 # 空/稀疏 holdout 的 ic_mean 哨兵 0.0 曾被同号门误杀（train>0）或假过关（train<0）。
 DEFAULT_HOLDOUT_MIN_DAYS = 60
@@ -34,9 +39,18 @@ REJECT_CATEGORY_LIBRARY_CORRELATED = "library_correlated"
 
 
 def _holdout_direction_reasons(
-    ic_train: float, holdout_ic: float,
+    ic_train: float, holdout_ic: float, *, reason_style: str = "raw",
 ) -> list[str]:
-    """覆盖充足后的方向门：严格同号（sign 积 > 0）；holdout 精确 0 →「无信号」非「反号」。"""
+    """覆盖充足后的方向门：严格同号（sign 积 > 0）；holdout 精确 0 →「无信号」非「反号」。
+
+    ``reason_style="residual"`` 时文案加「残差」前缀，与裸 IC 死因区分。
+    """
+    if reason_style == "residual":
+        if holdout_ic == 0.0:
+            return [f"残差holdout无信号(train={ic_train:.4f}/holdout={holdout_ic:.4f})"]
+        if (holdout_ic > 0) == (ic_train > 0) and ic_train != 0.0:
+            return []
+        return [f"残差holdout反号(train={ic_train:.4f}/holdout={holdout_ic:.4f})"]
     if holdout_ic == 0.0:
         return [f"holdout无信号(train={ic_train:.4f}/holdout={holdout_ic:.4f})"]
     # sign(h)*sign(t) > 0 ⇔ 双方同为正或同为负（0 已在上支处理）
@@ -186,6 +200,12 @@ def guardrail_passed(
         holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days)
 
 
+def _ic_weak_reason(ic_train: float, ic_floor: float, *, reason_style: str = "raw") -> str:
+    if reason_style == "residual":
+        return f"残差IC太弱(|{ic_train:.4f}|<{ic_floor})"
+    return f"train_IC 太弱(|{ic_train:.4f}|<{ic_floor})"
+
+
 def library_reasons(
     *,
     ic_train: float | None,
@@ -193,6 +213,7 @@ def library_reasons(
     ic_floor: float = DEFAULT_IC_FLOOR,
     holdout_n_days: int | None = None,
     holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
+    reason_style: str = "raw",
 ) -> list[str]:
     """因子**库**入池判据（2026-07 因子库化 + 覆盖守卫）：
     覆盖充足 + 真（holdout 与 train 严格同号）+ 有信号（``|train_IC| >= ic_floor``）。
@@ -203,6 +224,10 @@ def library_reasons(
     覆盖不足优先报告、不与「反号」并用；holdout 精确 0 →「无信号」。
     ``holdout_n_days=None`` 跳过覆盖门（旧调用方零回归）。
     必需量 None/NaN → 判缺失（保守不入池）。
+
+    ``reason_style="residual"``：挖掘残差目标路径——死因文案写「残差IC太弱/残差holdout反号」，
+    调用方应传入残差指标 + ``DEFAULT_RESIDUAL_IC_FLOOR``。因子库 upsert/rebuild **不得**
+    用 residual 口径（库是参照系，对自身残差化是循环定义）。
     """
     # 覆盖不足优先：空 holdout 常伴随 holdout_ic=nan，不得落到「缺失/NaN」或「反号」。
     cov = _coverage_reason(holdout_n_days, holdout_min_days)
@@ -211,7 +236,7 @@ def library_reasons(
         if ic_train is None or ic_train != ic_train:
             return ["缺失/NaN: ic_train", cov]
         if abs(ic_train) < ic_floor:
-            reasons.append(f"train_IC 太弱(|{ic_train:.4f}|<{ic_floor})")
+            reasons.append(_ic_weak_reason(ic_train, ic_floor, reason_style=reason_style))
         reasons.append(cov)
         return reasons
     required = {"ic_train": ic_train, "holdout_ic": holdout_ic}
@@ -220,8 +245,9 @@ def library_reasons(
         return [f"缺失/NaN: {', '.join(missing)}"]
     reasons = []
     if abs(ic_train) < ic_floor:  # type: ignore[arg-type]
-        reasons.append(f"train_IC 太弱(|{ic_train:.4f}|<{ic_floor})")
-    reasons.extend(_holdout_direction_reasons(ic_train, holdout_ic))  # type: ignore[arg-type]
+        reasons.append(_ic_weak_reason(ic_train, ic_floor, reason_style=reason_style))  # type: ignore[arg-type]
+    reasons.extend(_holdout_direction_reasons(
+        ic_train, holdout_ic, reason_style=reason_style))  # type: ignore[arg-type]
     return reasons
 
 
@@ -245,11 +271,16 @@ def acceptance_reasons(
     ic_floor: float = DEFAULT_IC_FLOOR,
     holdout_n_days: int | None = None,
     holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
+    reason_style: str = "raw",
 ) -> list[str]:
     """按 ``gate`` 口径返回未通过的入池判据（空=入池）。两条挖掘路径的**统一入口**，防漂移。
 
     ``gate="library"``（默认，因子库化）→ `library_reasons`（真+有信号，DSR 挪到组合层）；
     ``gate="strict"``（单明星）→ `guardrail_reasons`（DSR 显著+holdout 同号）。
+
+    ``reason_style="residual"`` 只影响 library 门文案（残差IC太弱/残差holdout反号）；
+    调用方负责把残差指标填进 ic_train/holdout_ic 并把 ic_floor 设为
+    ``DEFAULT_RESIDUAL_IC_FLOOR``。
     """
     if gate == "strict":
         return guardrail_reasons(
@@ -260,7 +291,8 @@ def acceptance_reasons(
         raise ValueError(f"未知 gate={gate!r}，应为 'library' 或 'strict'")
     return library_reasons(
         ic_train=ic_train, holdout_ic=holdout_ic, ic_floor=ic_floor,
-        holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days)
+        holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days,
+        reason_style=reason_style)
 
 
 def pool_pbo(

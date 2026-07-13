@@ -336,6 +336,7 @@ def _mine_search_crypto(args: argparse.Namespace) -> int:
         decorr_threshold=args.decorr_threshold, min_n_train=args.min_n_train,
         dsr_alpha=args.dsr_alpha, workers=args.workers,
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
+        objective=getattr(args, "objective", "residual"),
     )
     sd = res["session_dir"]
     print(f"[mine] crypto 完成：{len(res['candidates'])} 个候选 / {len(symbols)} 标的 → {sd}")
@@ -359,6 +360,7 @@ def _mine_search_futures(args: argparse.Namespace) -> int:
         decorr_threshold=args.decorr_threshold, min_n_train=args.min_n_train,
         dsr_alpha=args.dsr_alpha, workers=args.workers,
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
+        objective=getattr(args, "objective", "residual"),
     )
     sd = res["session_dir"]
     print(f"[mine] futures 完成：{len(res['candidates'])} 个候选 / {len(symbols)} 品种 → {sd}")
@@ -383,6 +385,7 @@ def _mine_search_us(args: argparse.Namespace) -> int:
         dsr_alpha=args.dsr_alpha, workers=args.workers,
         update_library=not getattr(args, "no_library", False),
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
+        objective=getattr(args, "objective", "residual"),
     )
     sd = res["session_dir"]
     print(f"[mine] us 完成：{len(res['candidates'])} 个候选 / {len(symbols)} 标的 → {sd}")
@@ -417,6 +420,7 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         workers=args.workers,
         update_library=not getattr(args, "no_library", False),
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
+        objective=getattr(args, "objective", "residual"),
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
@@ -567,7 +571,8 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
                          patience=args.patience, heal_rounds=args.heal_rounds,
                          data_window=_data_window(args), command=_command_line(args),
                          eval_start=args.start, profile=profile,
-                         library_orthogonal=not getattr(args, "no_library_orthogonal", False))
+                         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
+                         objective=getattr(args, "objective", "residual"))
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -593,7 +598,8 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
                         data_window=_data_window(args), command=_command_line(args),
                         eval_start=args.start, profile=profile,
                         update_library=not getattr(args, "no_library", False),
-                        library_orthogonal=not getattr(args, "no_library_orthogonal", False))
+                        library_orthogonal=not getattr(args, "no_library_orthogonal", False),
+                        objective=getattr(args, "objective", "residual"))
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -1628,6 +1634,9 @@ def build_parser() -> argparse.ArgumentParser:
                           action="store_true",
                           help="关闭搜索期库级正交过滤（默认开：top-K 贪心去相关时避开库内 active 方向；"
                                "与 --no-library 无关，后者只关收尾 upsert）")
+    m_search.add_argument("--objective", choices=["raw", "residual"], default="residual",
+                          help="挖掘评估目标：residual=对库内 active 因子截面正交后的残差 IC "
+                               "（默认；库空自动退化为 raw）；raw=裸 Rank IC（旧口径）")
     _add_freq_arg(m_search)
     m_search.set_defaults(func=_cmd_mine_search)
 
@@ -1683,6 +1692,8 @@ def build_parser() -> argparse.ArgumentParser:
     m_agent.add_argument("--no-library-orthogonal", dest="no_library_orthogonal",
                          action="store_true",
                          help="关闭搜索期库级正交过滤（默认开：护栏阶段避开库内 active 方向）")
+    m_agent.add_argument("--objective", choices=["raw", "residual"], default="residual",
+                        help="挖掘评估目标：residual=对库残差 IC（默认；库空→raw）；raw=裸 IC")
     _add_freq_arg(m_agent)
     m_agent.set_defaults(func=_cmd_mine_agent)
 
@@ -1717,6 +1728,8 @@ def build_parser() -> argparse.ArgumentParser:
                         action="store_true",
                         help="关闭搜索期库级正交过滤（默认开：护栏阶段避开库内 active 方向；"
                              "与 --no-library 无关，后者只关收尾 upsert）")
+    m_team.add_argument("--objective", choices=["raw", "residual"], default="residual",
+                       help="挖掘评估目标：residual=对库残差 IC（默认；库空→raw）；raw=裸 IC")
     _add_freq_arg(m_team)
     m_team.set_defaults(func=_cmd_mine_team)
 

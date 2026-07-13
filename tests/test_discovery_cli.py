@@ -38,7 +38,7 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
     def fake_run_mine(*, start, end, universe, n_trials, top_k, seed, method, workers=1,
                       holdout_ratio=0.2, train_ratio=0.7, decorr_threshold=0.7,
                       min_n_train=5, dsr_alpha=0.05, update_library=True,
-                      library_orthogonal=True):
+                      library_orthogonal=True, objective="residual"):
         captured.update(
             start=start,
             end=end,
@@ -55,6 +55,7 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
             dsr_alpha=dsr_alpha,
             update_library=update_library,
             library_orthogonal=library_orthogonal,
+            objective=objective,
         )
         return {"session_dir": str(tmp_path / "session-1"), "candidates": [1, 2, 3]}
 
@@ -108,6 +109,7 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
         "dsr_alpha": 0.1,
         "update_library": True,          # 默认开（未传 --no-library）
         "library_orthogonal": True,      # 默认开（未传 --no-library-orthogonal）
+        "objective": "residual",         # 默认残差目标（未传 --objective）
     }
 
     sd = str(tmp_path / "session-1")

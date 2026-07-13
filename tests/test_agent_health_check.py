@@ -166,7 +166,8 @@ def test_team_agent_heals_all_null_expression_end_to_end(tmp_path):
     """M6 团队：Coder 写出全 null 表达式 → 求值诊断回灌 → 落库的是健康表达式。"""
     from factorzen.agents.team_orchestrator import run_team_agent
 
-    daily = _mock_daily(n_days=120, n_codes=10)
+    # n_codes≥30：叶子 holdout 覆盖门用 _MIN_CROSS_SAMPLES=30，截面太薄会被整批摘叶导致 0 评估。
+    daily = _mock_daily(n_days=200, n_codes=40)
     seq = [
         json.dumps({"hypotheses": ["动量"]}),           # propose_hypotheses
         json.dumps({"expressions": [_ALL_NULL]}),       # write_expressions

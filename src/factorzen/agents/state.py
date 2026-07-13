@@ -25,6 +25,10 @@ class AttemptRecord:
     decorrelated: bool = False
     # 未过护栏/未入候选池的原因（人类可读，供进度与收尾"近失表"展示）。None=通过或未评估。
     reject_reason: str | None = None
+    # 死因类别（如 holdout_coverage）；known_invalid 据此过滤非方向性失败。
+    reject_category: str | None = None
+    # holdout 段有效 IC 天数（覆盖守卫 / Critic 摘要）；None=未跑 holdout。
+    n_holdout_days: int | None = None
 
 
 @dataclass

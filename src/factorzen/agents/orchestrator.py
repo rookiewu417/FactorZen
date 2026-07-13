@@ -69,7 +69,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     （默认）时退化为旧行为，对现有调用方零回归。
     """
     rng = np.random.default_rng(seed)  # noqa: F841 预留给未来随机选择，保证可复现入口
-    mining_df, holdout_df, _hstart = _prepare_segments(
+    mining_df, holdout_df, holdout_start = _prepare_segments(
         daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)        # Agent 只见 mining 段
     _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
@@ -82,6 +82,21 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     # 市场上下文（profile=None → A 股默认）：叶子集/映射/市场名，供 budgets 与各 node 透传。
     from factorzen.agents.nodes import AgentContext
     ctx = AgentContext.from_profile(profile)
+    # 开局摘死叶（与 team / M1 同口径；prep 帧与求值一致，避免派生列误摘）
+    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.leaf_health import (
+        apply_leaf_exclusion,
+        filter_leaves_by_holdout_coverage,
+        log_excluded_leaves,
+    )
+    _kept, excluded_leaves = filter_leaves_by_holdout_coverage(
+        _preprocess_daily(daily, profile), list(ctx.leaf_names), holdout_start,
+        leaf_map=ctx.leaf_map,
+    )
+    log_excluded_leaves(excluded_leaves, prefix="mine-agent")
+    ctx.leaf_names, ctx.leaf_map = apply_leaf_exclusion(
+        list(ctx.leaf_names), ctx.leaf_map, excluded_leaves,
+    )
     leaf_budgets: dict[str, int] | None = None
     if _eval_start_date is not None:
         from factorzen.agents.evaluation import _preprocess_daily

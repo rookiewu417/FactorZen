@@ -69,18 +69,18 @@ def test_node_guardrails_logs_when_a_candidate_blows_up(caplog):
         ic_train=0.05, passed_guardrails=False, critic_verdict=None, error=None,
         ir_train=0.4, n_train=150))
 
-    orig = hmod.holdout_ic
+    orig = hmod.holdout_ic_result
 
     def boom(*_a, **_kw):
         raise RuntimeError("holdout 求值失败")
 
-    hmod.holdout_ic = boom
+    hmod.holdout_ic_result = boom
     try:
         with caplog.at_level(logging.WARNING, logger="factorzen.agents.nodes"):
             node_guardrails(state, daily=daily, holdout_df=daily, bundle=bundle,
                             ledger=TrialLedger(), top_k=5, warmup_daily=daily)
     finally:
-        hmod.holdout_ic = orig
+        hmod.holdout_ic_result = orig
 
     assert not state.candidates
     assert any("rank(close)" in r.getMessage() for r in caplog.records), \

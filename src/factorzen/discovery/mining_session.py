@@ -25,10 +25,15 @@ from factorzen.discovery.guardrails import (
     acceptance_reasons,
     deflated_pvalue,
 )
+from factorzen.discovery.leaf_health import (
+    apply_leaf_exclusion,
+    filter_leaves_by_holdout_coverage,
+    log_excluded_leaves,
+)
 from factorzen.discovery.operators import LEAF_FEATURES
 from factorzen.discovery.scoring import DataBundle, max_correlation, quick_fitness, score_candidate
 from factorzen.discovery.search.random_search import RandomSearcher
-from factorzen.validation.holdout import holdout_ic, split_holdout
+from factorzen.validation.holdout import holdout_ic_result, split_holdout
 from factorzen.validation.pbo import compute_pbo
 
 _LOG = logging.getLogger(__name__)
@@ -86,6 +91,7 @@ def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
     ``gate="strict"`` 回到 DSR 显著+同号（松一档 alpha 0.10）。
     任一必需指标缺失/NaN → 判否(保守)。护栏把「只算不判」变成可被 leaderboard/export-alpha
     默认过滤的软标记(留 --all 逃生口)，不删候选、不破坏产物契约。
+    与 Agent `node_guardrails` **共用** `acceptance_reasons`（含 holdout_n_days 覆盖门）。
     """
     return not acceptance_reasons(
         gate=gate,
@@ -94,6 +100,8 @@ def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
         dsr_pvalue=c.get("dsr_pvalue"),
         ci_low=c.get("ic_ci_low"),
         dsr_alpha=dsr_alpha,
+        holdout_n_days=c.get("n_holdout_days") if c.get("n_holdout_days") is not None
+        else c.get("holdout_n_days"),
     )
 
 
@@ -225,6 +233,19 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     # PIT 安全：mining 整体早于 holdout，时序算子只向过去看；求值后裁剪到 >= holdout_start。
     warmup_daily = daily
     holdout_eval_start = holdout_start.strftime("%Y%m%d")
+
+    # 开局摘死叶：holdout 有效截面覆盖不足的叶子移出本 session 搜索空间（不硬删 LEAF 定义）。
+    # 此时 daily 已 derived_columns；与 Agent 的 _preprocess_daily 同序（价列别名在 A 股分支已处理）。
+    _leaf_names = list(leaf_map.keys()) if leaves is None else list(leaves)
+    _kept, excluded_leaves = filter_leaves_by_holdout_coverage(
+        daily, _leaf_names, holdout_start, leaf_map=leaf_map,
+    )
+    log_excluded_leaves(excluded_leaves, prefix="mine-session")
+    leaves, _filtered_map = apply_leaf_exclusion(_leaf_names, leaf_map, excluded_leaves)
+    # leaf_map 可能被物化为子集；A 股默认 LEAF_FEATURES 常量本身不变。
+    # 本函数内 leaf_map 恒非 None（A 股默认已落 LEAF_FEATURES），仅收窄 Optional 类型。
+    leaf_map = _filtered_map if _filtered_map is not None else leaf_map
+
     daily = mining_df  # 后续挖掘全部只用 mining 段（DataBundle/搜索/去相关）
     bundle = DataBundle.build(daily, train_ratio=train_ratio)
 
@@ -381,10 +402,8 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     for c in top:
         node = parse_expr(c["expression"], leaf_map)
         fdf_hold = _factor_values(node, warmup_daily, holdout_eval_start, leaf_map)
-        if fdf_hold.height >= 20:
-            h_ic, _h_ir, (ci_lo, _ci_hi) = holdout_ic(fdf_hold, holdout_df)
-        else:
-            h_ic, ci_lo = float("nan"), float("nan")
+        hres = holdout_ic_result(fdf_hold, holdout_df)
+        h_ic, ci_lo, n_h = hres.ic_mean, hres.ci[0], hres.n_days
         # DSR 显著性检验须用该候选自己在 train 段的真实样本数(n_train)，
         # 不能用 mining 全段交易日数——后者比 train 段大约 1/train_ratio 倍，
         # 会系统性放大显著性（让候选看起来比实际更显著，危险方向）。
@@ -392,9 +411,11 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         c["n_trials"] = n_evaluated
         c["pbo"] = round(pbo, 4) if pbo == pbo else float("nan")
         c["holdout_ic"] = round(float(h_ic), 4) if h_ic == h_ic else float("nan")
+        c["n_holdout_days"] = int(n_h)
         c["dsr_pvalue"] = round(float(p), 4)
         c["ic_ci_low"] = round(float(ci_lo), 4) if ci_lo == ci_lo else float("nan")
         # 护栏软标记：算完立刻判，供 leaderboard/export-alpha 默认过滤（--all 逃生口）
+        # 与 Agent 共用 acceptance_reasons（含 holdout_n_days 覆盖门）。
         c["passed"] = _guard_passed(c, dsr_alpha)
 
     session_dir = Path(out_dir) / f"session_{seed}_{method}"
@@ -410,6 +431,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 "top_k": top_k, "train_end": bundle.train_end, "holdout_start": str(holdout_start),
                 "git_sha": get_git_sha(), "duration_seconds": round(time.perf_counter() - t0, 3),
                 "candidates": top,
+                "excluded_leaves": excluded_leaves,
                 "reproduce_note": "导出因子在 exported/；复现需复制到 workspace/factors/daily/ 后 fz factor run <name> --set preprocessing.neutralize=false（IC parity）"}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     from factorzen.discovery.export import export_candidate
@@ -431,4 +453,5 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     return {"candidates": top, "n_trials": n_evaluated, "n_scored": len(scored),
             "sharpe_variance": basis.sharpe_variance,
             "session_dir": str(session_dir),
-            "holdout_start": str(holdout_start), "mining_end": str(daily["trade_date"].max())}
+            "holdout_start": str(holdout_start), "mining_end": str(daily["trade_date"].max()),
+            "excluded_leaves": excluded_leaves}

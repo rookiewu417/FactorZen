@@ -30,8 +30,11 @@ def critique(candidate: dict, llm_fn: LLMFn) -> CriticVerdict:
         {"role": "user", "content": (
             f"表达式: {candidate.get('expression')}\n假设: {candidate.get('hypothesis')}\n"
             f"train_IC: {candidate.get('ic_train')}\nholdout_IC: {candidate.get('holdout_ic')}\n"
+            f"n_holdout_days(holdout 有效天数): {candidate.get('n_holdout_days')}\n"
             f"ICIR: {icir}\n换手率(单边,成本代理): {candidate.get('turnover')}\n"
-            f"DSR: {candidate.get('dsr')} (p={candidate.get('dsr_pvalue')})")},
+            f"DSR: {candidate.get('dsr')} (p={candidate.get('dsr_pvalue')})\n"
+            "提示: n_holdout_days 过低表示 holdout 缺数据（非方向错误）；"
+            "勿把覆盖不足误判为经济直觉失败。")},
     ]
     obj = _extract_json(llm_fn(msgs))
     if not obj or obj.get("verdict") not in _VALID_VERDICTS:

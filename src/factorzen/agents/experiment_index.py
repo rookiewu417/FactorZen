@@ -140,10 +140,22 @@ class ExperimentIndex:
         排除**编译失败**的记录：它们 `ic_train=None` → 排序键 0.0 → 会占满 top-k，
         把有信息的「能编译但 IC 低」负例全挤出去。语法坑的价值在 `seen_expressions()`
         的跨 session 去重，不在负例库。
+
+        排除 **holdout 覆盖失败**（``reject_category=holdout_coverage``）：那是缺数据，
+        不是方向性证据，回灌会把 LLM 推向「北向思路无效」的错误结论。
         """
+        from factorzen.discovery.guardrails import REJECT_CATEGORY_HOLDOUT_COVERAGE
+
+        def _is_coverage_fail(r: dict) -> bool:
+            if r.get("reject_category") == REJECT_CATEGORY_HOLDOUT_COVERAGE:
+                return True
+            rr = r.get("reject_reason") or ""
+            return "覆盖不足" in rr
+
         recs = [r for r in self._scoped(data_window)
                 if not r.get("passed", False) and r.get("compile_ok", True)
-                and not is_lookahead_expr(r.get("expression") or "")]
+                and not is_lookahead_expr(r.get("expression") or "")
+                and not _is_coverage_fail(r)]
         recs.sort(key=lambda r: abs(r.get("ic_train") or 0.0))  # 最没用的优先
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]
 

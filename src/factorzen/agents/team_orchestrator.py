@@ -56,6 +56,8 @@ class TeamResult:
     # deflation 基准的尺度；缺了它光凭 n_trials 复算不出 dsr_pvalue。
     # 默认 nan：中途的 on_round_end 检查点尚无最终 basis，写 null 比写假值诚实。
     sharpe_variance: float = float("nan")
+    # holdout 覆盖不足被摘除的叶子 → {leaf: coverage}；manifest 可审计。
+    excluded_leaves: dict[str, float] = field(default_factory=dict)
 
 
 def _normalize(expr: str, leaf_map: dict[str, str] | None = None) -> str:
@@ -389,13 +391,29 @@ def run_team_agent(
     干净样本上；完整的 ``daily`` 只作为求值时的预热前缀。``None``（默认）时退化为旧行为
     （`split_holdout` 直接切整帧），对现有调用方零回归。
     """
-    mining_df, holdout_df, _ = _prepare_segments(
+    mining_df, holdout_df, holdout_start = _prepare_segments(
         daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
     bundle = DataBundle.build(mining_df)
     _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
     # 市场上下文（profile=None → A 股默认）：叶子集/映射/市场名，供 budgets 与逐轮透传。
     ctx = AgentContext.from_profile(profile)
+    # 开局摘死叶：必须在与求值同一套 prep 帧上量覆盖（close→close_adj 别名 + 派生列），
+    # 否则 ret_1d/vwap 等会被误判为「列不存在→覆盖 0」整批摘除。
+    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.leaf_health import (
+        apply_leaf_exclusion,
+        filter_leaves_by_holdout_coverage,
+        log_excluded_leaves,
+    )
+    _kept, excluded_leaves = filter_leaves_by_holdout_coverage(
+        _preprocess_daily(daily, profile), list(ctx.leaf_names), holdout_start,
+        leaf_map=ctx.leaf_map,
+    )
+    log_excluded_leaves(excluded_leaves, prefix="mine-team")
+    ctx.leaf_names, ctx.leaf_map = apply_leaf_exclusion(
+        list(ctx.leaf_names), ctx.leaf_map, excluded_leaves,
+    )
     _eval_start_date = _to_date(eval_start) if eval_start is not None else None
     # 叶子历史预算（只算一次，逐轮复用）：在含预热前缀的完整帧上算各叶子 eval_start 前的
     # 可用预热，只保留短于预热前缀（AGENT_WARMUP_LOOKBACK）的叶子回灌 LLM——引导它别对
@@ -509,6 +527,7 @@ def run_team_agent(
         n_trials=ledger.n_trials,
         rounds_log=rounds_log,
         sharpe_variance=basis.sharpe_variance,
+        excluded_leaves=excluded_leaves,
     )
 
 
@@ -568,6 +587,7 @@ def write_team_manifest(
         "rounds_log": result.rounds_log,
         "attempts": [a.__dict__ for a in result.state.attempts],
         "candidates": result.candidates,
+        "excluded_leaves": getattr(result, "excluded_leaves", {}) or {},
         "git_sha": get_git_sha(),
     }
     path = run_dir / "manifest.json"

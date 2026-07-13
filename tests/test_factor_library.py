@@ -112,6 +112,43 @@ def test_upsert_skips_failing_library_gate(tmp_path):
     assert [r.expression for r in lib] == ["rank(close)"]
 
 
+def test_upsert_blocks_thin_holdout_coverage(tmp_path):
+    """holdout 覆盖稀薄（如北向季末残留仅 5 天）的候选不得入库。
+
+    upsert 是 M1/M5-M6 之外吃 acceptance_reasons 的**第三条路径**（rebuild 走它），
+    P1 修覆盖门时漏了这里——真实后果：div(north_ratio, amount) 靠 5 个季末截面
+    的 holdout_ic 混进 active。防双路径（三路径）漂移。
+    """
+    from factorzen.discovery.factor_library import load_library, upsert
+    res = upsert("ashare", [_cand("div(vol, amount)", n_holdout_days=5)],
+                 eval_window=("20200101", "20260101"), universe="csi300", horizon=1,
+                 run_id="r1", session_dir="s1", git_sha="a", now="2026-07-13",
+                 root=str(tmp_path))
+    assert res.skipped == 1 and res.added == 0
+    assert load_library("ashare", root=str(tmp_path)) == []
+
+
+def test_upsert_admits_adequate_holdout_coverage(tmp_path):
+    """覆盖充足（n_holdout_days ≥ 阈值）且真+有信号 → 正常入库（别把守卫修成一刀切）。"""
+    from factorzen.discovery.factor_library import load_library, upsert
+    res = upsert("ashare", [_cand("rank(close)", n_holdout_days=291)],
+                 eval_window=("20200101", "20260101"), universe="csi300", horizon=1,
+                 run_id="r1", session_dir="s1", git_sha="a", now="2026-07-13",
+                 root=str(tmp_path))
+    assert res.added == 1
+    assert [r.expression for r in load_library("ashare", root=str(tmp_path))] == ["rank(close)"]
+
+
+def test_upsert_without_n_holdout_days_keeps_old_behavior(tmp_path):
+    """旧调用方候选不带 n_holdout_days → 跳过覆盖门（零回归；与 guardrails None 语义一致）。"""
+    from factorzen.discovery.factor_library import upsert
+    res = upsert("ashare", [_cand("rank(close)")],
+                 eval_window=("20200101", "20260101"), universe="csi300", horizon=1,
+                 run_id="r1", session_dir="s1", git_sha="a", now="2026-07-13",
+                 root=str(tmp_path))
+    assert res.added == 1
+
+
 def test_upsert_gate_parity_with_acceptance_reasons(tmp_path):
     """门槛复用：upsert 的入库判定与 acceptance_reasons(gate='library') 一致（非恒真：
     独立枚举多组，交叉核对每一组的进/不进与 acceptance_reasons 是否空原因一致）。"""
@@ -432,9 +469,12 @@ def test_build_library_evaluator_produces_metrics(tmp_path):
     exprs = {r["expression"] for r in rows}
     assert "rank(close)" in exprs
     for r in rows:
-        for k in ("ic_train", "ir_train", "holdout_ic", "dsr_pvalue", "n_train"):
+        for k in ("ic_train", "ir_train", "holdout_ic", "dsr_pvalue", "n_train",
+                  "n_holdout_days"):
             assert k in r
         assert r["n_train"] > 0
+        # 覆盖门燃料：健康表达式的 holdout 有效 IC 天数必须为正且不超过 holdout 段长度
+        assert 0 < r["n_holdout_days"] <= 150
     # 去相关物化器给出紧凑 float32 (date×stock) 矩阵（丢掉 ts_code 字符串列，内存有界）
     m = compact("rank(close)")
     assert isinstance(m, np.ndarray) and m.ndim == 2 and m.dtype == np.float32

@@ -85,3 +85,4 @@ docs/superpowers/
 # mypy daemon 状态文件
 .dmypy.json
 dmypy.json
+.artifacts/

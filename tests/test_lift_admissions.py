@@ -524,3 +524,147 @@ def test_upsert_lift_admissions_never_overwrites_single_track_active(tmp_path):
     assert rec.status == "active"
     assert (rec.admission_track or "single") == "single"
     assert rec.ic_train == 0.03  # 指标未被改写
+
+
+# ── C1: lift_admission SE 契约 ───────────────────────────────────────────────
+
+def test_lift_admission_nonfinite_se_rejects():
+    """SE 缺失/非有限 → reject；finite 0.0 仍合法，过门可 active/probation。"""
+    from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
+    from factorzen.discovery.lift_test import lift_admission
+
+    thr = DEFAULT_LIFT_THRESHOLD
+    assert lift_admission({
+        "lift": thr, "lift_se": None, "lift_second_half": 0.01,
+    }, threshold=thr) == "reject"
+    assert lift_admission({
+        "lift": thr, "lift_se": float("nan"), "lift_second_half": 0.01,
+    }, threshold=thr) == "reject"
+    assert lift_admission({
+        "lift": thr, "lift_se": float("inf"), "lift_second_half": 0.01,
+    }, threshold=thr) == "reject"
+    # finite 0.0 合法：bar = threshold
+    assert lift_admission({
+        "lift": thr, "lift_se": 0.0, "lift_second_half": 0.01,
+    }, threshold=thr) == "active"
+    assert lift_admission({
+        "lift": thr, "lift_se": 0.0, "lift_second_half": -0.001,
+    }, threshold=thr) == "probation"
+
+
+# ── C2: upsert 复测 reject 降级 no_lift ──────────────────────────────────────
+
+def test_upsert_lift_reject_demotes_lift_active(tmp_path):
+    """lift 轨 active 复测 reject → no_lift；写回指标 + demoted 计数 + 落盘一致。"""
+    from factorzen.discovery.factor_library import (
+        FactorRecord,
+        _save_library,
+        load_library,
+        upsert_lift_admissions,
+    )
+
+    prev = FactorRecord(
+        expression="rank(vol)", market="ashare", status="active",
+        admission_track="lift", ic_train=0.01, lift=0.01, lift_se=0.001,
+        lift_second_half=0.005, lift_first_half=0.008, lift_baseline=0.04,
+        added_at="2026-07-01", updated_at="2026-07-01",
+        source_run_id="old_run", source_session_dir="old_sess",
+    )
+    _save_library("ashare", [prev], root=str(tmp_path))
+
+    out = upsert_lift_admissions(
+        [_lift_row(
+            "rank(vol)", lift=-0.01, lift_se=0.002, lift_second_half=-0.02,
+            lift_first_half=-0.005, baseline=0.05,
+        )],
+        market="ashare", root=str(tmp_path),
+        meta=_meta(now="2026-07-14", run_id="retest99"),
+    )
+    assert out.get("demoted_no_lift", 0) == 1
+    assert out["rejected"] == 0
+    assert out["added_active"] == 0 and out["added_probation"] == 0
+
+    lib = {r.expression: r for r in load_library("ashare", root=str(tmp_path))}
+    r = lib["rank(vol)"]
+    assert r.status == "no_lift"
+    assert r.admission_track == "lift"
+    assert abs(r.lift - (-0.01)) < 1e-12
+    assert abs(r.lift_se - 0.002) < 1e-12
+    assert abs(r.lift_first_half - (-0.005)) < 1e-12
+    assert abs(r.lift_second_half - (-0.02)) < 1e-12
+    assert abs(r.lift_baseline - 0.05) < 1e-12
+    assert r.added_at == "2026-07-01"
+    assert r.updated_at == "2026-07-14"
+    assert r.source_run_id == "retest99"
+
+
+def test_upsert_lift_reject_demotes_lift_probation(tmp_path):
+    """lift 轨 probation 复测 reject → no_lift。"""
+    from factorzen.discovery.factor_library import (
+        FactorRecord,
+        _save_library,
+        load_library,
+        upsert_lift_admissions,
+    )
+
+    prev = FactorRecord(
+        expression="rank(high)", market="ashare", status="probation",
+        admission_track="lift", ic_train=0.008, lift=0.003, lift_se=0.001,
+        lift_second_half=-0.001, added_at="2026-07-02", updated_at="2026-07-02",
+    )
+    _save_library("ashare", [prev], root=str(tmp_path))
+
+    out = upsert_lift_admissions(
+        [_lift_row("rank(high)", lift=-0.01, lift_se=0.0, lift_second_half=0.01)],
+        market="ashare", root=str(tmp_path), meta=_meta(),
+    )
+    assert out.get("demoted_no_lift", 0) == 1
+    assert out["rejected"] == 0
+    r = load_library("ashare", root=str(tmp_path))[0]
+    assert r.expression == "rank(high)"
+    assert r.status == "no_lift"
+    assert r.admission_track == "lift"
+
+
+def test_upsert_lift_reject_does_not_touch_single_track(tmp_path):
+    """single 轨 active 复测 reject → 状态不变、计 rejected、无 demoted。"""
+    from factorzen.discovery.factor_library import (
+        FactorRecord,
+        _save_library,
+        load_library,
+        upsert_lift_admissions,
+    )
+
+    single = FactorRecord(
+        expression="rank(close)", market="ashare", status="active",
+        admission_track="single", ic_train=0.03, holdout_ic=0.02,
+        added_at="2026-07-01", updated_at="2026-07-01",
+    )
+    _save_library("ashare", [single], root=str(tmp_path))
+
+    out = upsert_lift_admissions(
+        [_lift_row("rank(close)", lift=-0.01, lift_se=0.0, lift_second_half=0.01)],
+        market="ashare", root=str(tmp_path), meta=_meta(),
+    )
+    assert out["rejected"] == 1
+    assert out.get("demoted_no_lift", 0) == 0
+    assert out.get("skipped_single_track", 0) == 0  # reject 路径不计 skip
+
+    r = load_library("ashare", root=str(tmp_path))[0]
+    assert r.status == "active"
+    assert (r.admission_track or "single") == "single"
+    assert r.ic_train == 0.03
+
+
+def test_upsert_lift_reject_new_expression_not_stored(tmp_path):
+    """新表达式 reject → 不入库、计 rejected。"""
+    from factorzen.discovery.factor_library import load_library, upsert_lift_admissions
+
+    out = upsert_lift_admissions(
+        [_lift_row("rank(low)", lift=-0.01, lift_se=0.0, lift_second_half=0.01)],
+        market="ashare", root=str(tmp_path), meta=_meta(),
+    )
+    assert out["rejected"] == 1
+    assert out.get("demoted_no_lift", 0) == 0
+    assert out["added_active"] == 0 and out["added_probation"] == 0
+    assert load_library("ashare", root=str(tmp_path)) == []

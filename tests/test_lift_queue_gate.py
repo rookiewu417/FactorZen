@@ -20,7 +20,6 @@ from factorzen.discovery.scoring import (
     library_orthogonal_check,
 )
 
-
 # ── a. 过 floor 但 holdout 反号 → 入 lift 队列（修缝隙）──────────────────────
 
 
@@ -91,7 +90,7 @@ def test_soft_library_corr_072_not_hard_reject_is_lift_queue():
         reason_style="residual",
     )
     # 软 reason 附加（与 call site 同文案）
-    reasons = list(reasons) + [f"库相关持保留(corr={mc:.2f})"]
+    reasons = [*reasons, f"库相关持保留(corr={mc:.2f})"]
     passed = not reasons
     assert passed is False
 
@@ -160,7 +159,7 @@ def test_low_corr_full_pass_zero_regression_fast_path():
     assert reasons == []
     # 软 reason 条件：corr ≥ 0.7 才附加
     if abs(mc) >= DEFAULT_DECORR_THRESHOLD:
-        reasons = list(reasons) + [f"库相关持保留(corr={mc:.2f})"]
+        reasons = [*reasons, f"库相关持保留(corr={mc:.2f})"]
     passed = not reasons
     assert passed is True
 
@@ -187,7 +186,7 @@ def test_no_upper_bound_residual_002_queues_when_not_passed():
         "residual_ic_train": 0.02,
         "n_residual_holdout_days": DEFAULT_HOLDOUT_MIN_DAYS,
     }
-    assert 0.02 > DEFAULT_RESIDUAL_IC_FLOOR  # 旧灰区上界之外
+    assert DEFAULT_RESIDUAL_IC_FLOOR < 0.02  # 旧灰区上界之外
     assert is_lift_queue_candidate(cand, objective="residual") is True
 
 
@@ -237,5 +236,5 @@ def test_soft_reason_does_not_classify_as_coverage():
     """软 reason 不触发 coverage 归类（不得污染 known_invalid 路径）。"""
     from factorzen.discovery.guardrails import classify_reject_category
 
-    reasons = [f"库相关持保留(corr=0.72)"]
+    reasons = ["库相关持保留(corr=0.72)"]
     assert classify_reject_category(reasons) is None

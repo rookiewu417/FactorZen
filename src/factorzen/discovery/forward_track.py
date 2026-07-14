@@ -409,7 +409,8 @@ def forward_review(
     """裁决 probation 因子的 paper forward 证据。
 
     - 只处理 status==\"probation\"（single/active/no_lift/correlated 不动）。
-    - adj_ic = ic * sign(ic_train)；缺失/0 符号 → hold + reason=missing_sign。
+    - adj_ic = ic * sign(方向)；方向优先 ``admission_ic``（单因子 admission 窗 RankIC），
+      兜底 ``ic_train``；缺失/0 符号 → hold + reason=missing_sign。
     - 块 SE 复用 ``paired_lift_stats``（adj_ic 当 cand，零序列当 base），禁止重写块 SE。
     - apply=True：promote→active(+forward_confirmed_at/forward_n_days)；demote→no_lift。
     """
@@ -423,7 +424,10 @@ def forward_review(
 
     for rec in probation:
         expr = rec.expression
-        sign = _sign_from_ic_train(rec.ic_train)
+        # admission_ic 优先（lift 轨权威方向）；ic_train 兜底（single 轨/旧行）
+        sign = _sign_from_ic_train(
+            rec.admission_ic if rec.admission_ic is not None else rec.ic_train
+        )
         series = _ics_after_updated(fwd, expr, rec.updated_at)
 
         base_row: dict[str, Any] = {

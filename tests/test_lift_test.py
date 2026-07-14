@@ -366,6 +366,121 @@ def test_lift_admission_four_branches():
     }, threshold=thr) == "reject"
 
 
+def _signed_factor_panels(sign: float, n_days=80, n_stocks=30, seed=1):
+    """构造单因子与 ret 同号/反号相关的面板（admission_ic 符号断言用）。
+
+    factor ≈ sign * ret + 极小噪声 → RankIC 符号 ≈ sign 的符号。
+    """
+    rng = np.random.default_rng(seed)
+    dates = _dates(n_days)
+    lib_rows, cand_rows, ret_rows = [], [], []
+    for d in dates:
+        ret = rng.standard_normal(n_stocks)
+        cand = float(sign) * ret + 0.02 * rng.standard_normal(n_stocks)
+        lib = rng.standard_normal(n_stocks)
+        for s in range(n_stocks):
+            code = f"{s:04d}.SZ"
+            lib_rows.append({"trade_date": d, "ts_code": code, "factor_value": float(lib[s])})
+            cand_rows.append({"trade_date": d, "ts_code": code, "factor_value": float(cand[s])})
+            ret_rows.append({"trade_date": d, "ts_code": code, "ret": float(ret[s])})
+    return (
+        {"lib_a": pl.DataFrame(lib_rows)},
+        pl.DataFrame(cand_rows),
+        pl.DataFrame(ret_rows),
+    )
+
+
+def test_run_lift_tests_admission_ic_reflects_single_factor_sign():
+    """admission_ic = 单因子 admission 窗 RankIC，正/负相关各得对应符号；非组合 IC。"""
+    from factorzen.discovery.lift_test import run_lift_tests
+
+    def combine_stub(fds, rdf, cv, **kw):
+        # 恒正假预测：若误用 candidate_rank_ic 当方向会永远为正
+        return rdf.select(
+            ["trade_date", "ts_code", pl.col("ret").abs().alias("factor_value")]
+        )
+
+    # 正相关
+    active_pos, cand_pos, ret_pos = _signed_factor_panels(+1.0, seed=11)
+    rows_pos = run_lift_tests(
+        [{"expression": "pos_cand", "ic_train": 0.03, "residual_ic_train": 0.02}],
+        market="ashare",
+        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+        active_factor_dfs=active_pos,
+        ret_df=ret_pos,
+        materialize_candidate=lambda e: cand_pos,
+        combine_fn=combine_stub,
+        top_m=None,
+        threshold=0.001,
+    )
+    assert len(rows_pos) == 1
+    rpos = rows_pos[0]
+    assert rpos.get("admission_ic") is not None, rpos
+    assert rpos["admission_ic"] > 0, rpos
+    assert rpos.get("ic_train") == 0.03
+    assert rpos.get("residual_ic_train") == 0.02
+    # 组合模型 IC 可能为正，但方向权威是 admission_ic（单因子）
+    assert "candidate_rank_ic" in rpos
+
+    # 负相关
+    active_neg, cand_neg, ret_neg = _signed_factor_panels(-1.0, seed=22)
+    rows_neg = run_lift_tests(
+        [{"expression": "neg_cand"}],
+        market="ashare",
+        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+        active_factor_dfs=active_neg,
+        ret_df=ret_neg,
+        materialize_candidate=lambda e: cand_neg,
+        combine_fn=combine_stub,
+        top_m=None,
+        threshold=0.001,
+    )
+    assert len(rows_neg) == 1
+    rneg = rows_neg[0]
+    assert rneg.get("admission_ic") is not None, rneg
+    assert rneg["admission_ic"] < 0, rneg
+    # 负向单因子 vs 组合 stub 的 candidate_rank_ic 符号可不同——证明不是同一字段
+    assert rneg["admission_ic"] != rneg.get("candidate_rank_ic") or (
+        rneg.get("candidate_rank_ic") is not None and rneg["candidate_rank_ic"] >= 0
+    )
+
+
+def test_run_lift_tests_error_rows_have_admission_ic_key():
+    """错误路径 row 也有 admission_ic 键（形态一致，下游 no KeyError）。"""
+    from factorzen.discovery.lift_test import run_lift_tests
+
+    active, cand, _, ret = _synth_panels(n_days=60, n_stocks=20, interactive=False)
+
+    def combine_stub(fds, rdf, cv, **kw):
+        return ret.select(["trade_date", "ts_code"]).with_columns(
+            pl.lit(0.0).alias("factor_value")
+        )
+
+    def materialize(expr):
+        if expr == "bad":
+            raise RuntimeError("boom")
+        return cand
+
+    rows = run_lift_tests(
+        [
+            {"expression": "bad", "residual_ic_train": 0.008},
+            {"expression": "ok", "residual_ic_train": 0.007},
+        ],
+        market="ashare",
+        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+        active_factor_dfs=active,
+        ret_df=ret,
+        materialize_candidate=materialize,
+        combine_fn=combine_stub,
+        top_m=10,
+    )
+    assert all("admission_ic" in r for r in rows)
+    # 失败行 admission_ic 应为 None（未成功物化）
+    by = {r["expression"]: r for r in rows}
+    assert by["bad"]["admission_ic"] is None
+    assert by["bad"]["error"]
+
+
 def test_run_lift_tests_new_fields_and_top_m_none():
     """新字段全链 + top_m=None 全测；mock combine 返回可控预测。"""
     from factorzen.discovery.lift_test import run_lift_tests

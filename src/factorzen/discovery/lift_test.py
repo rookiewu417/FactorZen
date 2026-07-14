@@ -350,6 +350,7 @@ def _empty_lift_fields() -> dict[str, Any]:
         "n_blocks": None,
         "lift_first_half": None,
         "lift_second_half": None,
+        "admission_ic": None,  # 单因子 admission 窗 RankIC；错误行也有键，形态一致
     }
 
 
@@ -530,11 +531,20 @@ def run_lift_tests(
                 row["error"] = "bad_panel_schema"
                 results.append(row)
                 continue
+            panel = cand_df.select(["trade_date", "ts_code", "factor_value"])
+            # 单因子 admission 窗 RankIC（方向权威；≠ 组合 candidate_rank_ic）
+            single_daily = _daily_oos_rank_ic(
+                panel, ret_df, start=adm_start, end=adm_end,
+            )
+            row["admission_ic"] = _mean_ic(single_daily)
+            # 透传候选 provenance（审计用；方向权威仍是 admission_ic）
+            row["ic_train"] = c.get("ic_train")
+            row["residual_ic_train"] = c.get("residual_ic_train")
             pool = dict(active_factor_dfs)
             # 键用规范表达式串；若与 active 撞名则覆盖为候选自身（仍测「加它」）。
             # 进 combine 前统一映射安全特征名（候选按插入序恒为最后一个 f{n}）。
             key = str(expr)
-            pool[key] = cand_df.select(["trade_date", "ts_code", "factor_value"])
+            pool[key] = panel
             cand_combined = _combine(_with_safe_feature_names(pool), ret_df, cv)
             cand_daily = _daily_oos_rank_ic(
                 cand_combined, ret_df, start=adm_start, end=adm_end,

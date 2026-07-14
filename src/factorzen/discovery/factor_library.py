@@ -143,6 +143,9 @@ class FactorRecord:
     lift_se: float | None = None
     lift_first_half: float | None = None
     lift_second_half: float | None = None
+    # 单因子 admission 窗 RankIC（方向权威；forward_review 调向优先用此字段）
+    # 非组合 candidate_rank_ic（组合后≈恒正无判别力）
+    admission_ic: float | None = None
     # 审计：holdout 有效覆盖天数（single 轨 upsert 若调用方传入则落盘）
     holdout_n_days: int | None = None
     # paper forward 确认（forward_review --apply 写入）：不进 schema 会被
@@ -342,6 +345,7 @@ def _record_from_candidate(
         turnover=g("turnover"),
         # status/max_corr/correlated_with 由去相关阶段填
         # admission_track 默认 single（单因子裸口径 upsert 不改轨道）
+        admission_ic=g("admission_ic"),  # lift 轨方向权威；旧行缺失 → None
         holdout_n_days=hnd,
         eval_start=eval_start,
         eval_end=eval_end,

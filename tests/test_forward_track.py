@@ -295,6 +295,126 @@ def test_review_missing_sign_holds(tmp_path):
     assert rows[0]["reason"] == "missing_sign"
 
 
+def test_review_admission_ic_preferred_over_ic_train(tmp_path):
+    """admission_ic 优先于 ic_train：admission_ic>0 + forward 正 → promote（即使 ic_train 负）。"""
+    from factorzen.discovery.forward_track import forward_review
+
+    expr = "rank(close)"
+    _write_lib(tmp_path, "ashare", [
+        _lib_row(
+            expr, status="probation", ic_train=-0.04, updated_at="2024-01-01",
+            admission_ic=0.05,
+        ),
+    ])
+    _seed_forward_ics(tmp_path, "ashare", expr, [0.05] * 80)
+
+    rows = forward_review(
+        "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
+    )
+    assert rows[0]["decision"] == "promote"
+    assert rows[0]["reason"] != "missing_sign"
+    assert rows[0]["mean"] is not None and rows[0]["mean"] > 0
+
+
+def test_e2e_lift_admission_ic_enables_promote_chain(tmp_path):
+    """生产形态：lift row 无 ic_train、有 admission_ic → upsert probation → forward promote。
+
+    对照：admission_ic 与 ic_train 皆无 → 仍 hold/missing_sign（修复点在方向传递）。
+    """
+    from factorzen.discovery.factor_library import load_library, upsert_lift_admissions
+    from factorzen.discovery.forward_track import forward_review
+
+    good_expr = "rank(close)"
+    bad_expr = "rank(open)"
+    meta = {
+        "session_dir": "sess/e2e",
+        "run_id": "run_e2e",
+        "universe": "csi300",
+        "eval_start": "20200101",
+        "eval_end": "20260101",
+        "horizon": 5,
+        "git_sha": "deadbeef",
+        "now": "2024-01-01",
+    }
+    # production 形态 lift 结果行：有 admission_ic，无 ic_train（候选挖掘字段未透传时）
+    good_row = {
+        "expression": good_expr,
+        "lift": 0.005,
+        "lift_se": 0.001,
+        "lift_first_half": 0.004,
+        "lift_second_half": 0.004,
+        "baseline": 0.04,
+        "admission_ic": 0.05,
+        # 故意不设 ic_train
+    }
+    bad_row = {
+        "expression": bad_expr,
+        "lift": 0.005,
+        "lift_se": 0.001,
+        "lift_first_half": 0.004,
+        "lift_second_half": 0.004,
+        "baseline": 0.04,
+        # 无 admission_ic、无 ic_train → 方向缺失
+    }
+    out = upsert_lift_admissions(
+        [good_row, bad_row],
+        market="ashare",
+        root=str(tmp_path),
+        meta=meta,
+        allow_active=False,  # 运营 cap：decision=active 也落 probation
+    )
+    assert out["added_probation"] == 2
+    assert out["errors"] == []
+
+    lib = {r.expression: r for r in load_library("ashare", root=str(tmp_path))}
+    assert lib[good_expr].status == "probation"
+    assert lib[good_expr].admission_ic is not None
+    assert abs(lib[good_expr].admission_ic - 0.05) < 1e-12
+    assert lib[good_expr].ic_train is None
+    assert lib[bad_expr].status == "probation"
+    assert lib[bad_expr].admission_ic is None
+    assert lib[bad_expr].ic_train is None
+
+    # 两因子各 80 天全正 forward IC
+    path = tmp_path / "forward_track" / "ashare.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    start = date(2024, 3, 1)
+    for i in range(80):
+        d = _yyyymmdd(start + timedelta(days=i))
+        for expr in (good_expr, bad_expr):
+            lines.append(json.dumps({
+                "date": d, "expression": expr, "ic": 0.05,
+                "n_stocks": 50, "status_at_record": "probation",
+            }))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    rows = forward_review(
+        "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
+    )
+    by = {r["expression"]: r for r in rows}
+    assert by[good_expr]["decision"] == "promote", by[good_expr]
+    assert by[good_expr]["reason"] != "missing_sign"
+    assert by[bad_expr]["decision"] == "hold"
+    assert by[bad_expr]["reason"] == "missing_sign"
+
+
+def test_factor_record_admission_ic_from_dict_compat():
+    """旧 FactorRecord 行（无 admission_ic）反序列化不得报错 → None。"""
+    from factorzen.discovery.factor_library import FactorRecord
+
+    rec = FactorRecord.from_dict({
+        "expression": "rank(close)",
+        "market": "ashare",
+        "status": "probation",
+        "ic_train": None,
+    })
+    assert rec.admission_ic is None
+    d = rec.to_dict()
+    assert "admission_ic" in d
+    assert d["admission_ic"] is None
+
+
 # ── 5. apply 状态机 ──────────────────────────────────────────────────────────
 
 

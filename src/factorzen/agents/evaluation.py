@@ -65,8 +65,14 @@ def _factor_df_from_prepped(node, prepped: pl.DataFrame,
     结果只含扩窗预热后的干净值，且不泄漏 eval_start 之前任何未来不可得的信息（PIT）。
     """
     series = evaluate_materialized(node, prepped, leaf_map)
+    # 先在整帧（含预热/非成分日）上物化，再裁评估截面——滚动算子需要连续时序。
+    # in_universe 列存在时只保留成分内 (date, stock)；列不存在=未启用 membership，零回归。
+    cols = ["trade_date", "ts_code"]
+    has_univ = "in_universe" in prepped.columns
+    if has_univ:
+        cols = [*cols, "in_universe"]
     out = (
-        prepped.select(["trade_date", "ts_code"])
+        prepped.select(cols)
         .with_columns(series.alias("factor_value"))
         .filter(pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
     )
@@ -74,6 +80,8 @@ def _factor_df_from_prepped(node, prepped: pl.DataFrame,
         out = out.filter(pl.col("trade_date") >= eval_start)
     if eval_end is not None:
         out = out.filter(pl.col("trade_date") <= eval_end)
+    if has_univ:
+        out = out.filter(pl.col("in_universe")).drop("in_universe")
     return out
 
 

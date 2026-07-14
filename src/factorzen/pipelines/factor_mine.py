@@ -2,10 +2,14 @@
 """fz mine 的 pipeline 入口：拉数据 → run_session。"""
 from __future__ import annotations
 
+import logging
+
 import polars as pl
 
 from factorzen.discovery.guardrails import DEFAULT_DSR_ALPHA
 from factorzen.discovery.mining_session import run_session
+
+_LOG = logging.getLogger(__name__)
 
 _TRADING_YEAR = 252
 # agent/team（LLM）路的预热前缀交易日数。LLM 窗口无搜索空间上界，实测 structured 爱提
@@ -26,7 +30,6 @@ def _universe_asof_fallback(universe: str, end: str, *, max_months: int = 36) ->
     月仍空则**报错**（绝不静默退化成全市场，那会 OOM 且改变评估口径）。
     """
     import datetime as _dt
-    import logging as _logging
 
     from factorzen.core.universe import get_universe as _gu
 
@@ -35,13 +38,43 @@ def _universe_asof_fallback(universe: str, end: str, *, max_months: int = 36) ->
         probe = probe - _dt.timedelta(days=30)
         cand = _gu(probe.strftime("%Y%m%d"), universe)["ts_code"].to_list()
         if cand:
-            _logging.getLogger(__name__).warning(
+            _LOG.warning(
                 "universe %s 在 %s 无成分快照，as-of 回退到 %s（%d 只）——"
                 "指数成分数据可能未回补到该日期。", universe, end, probe.strftime("%Y%m%d"), len(cand))
             return cand
     raise ValueError(
         f"universe={universe!r} 在 {end} 及此前 {max_months} 个月均无成分快照；"
         f"请回补指数成分数据，或改用 --universe all_a / 显式 --start --end。")
+
+
+def _attach_in_universe(daily: pl.DataFrame, membership: pl.DataFrame,
+                        start: str) -> pl.DataFrame:
+    """将逐日 membership join 到 daily，得到 ``in_universe`` 布尔列。
+
+    - membership 覆盖 [评估窗 start, end]；预热段（trade_date < start）自然 left-join 为
+      null → False（行保留，供滚动算子连续时序；预热行不参与评估截面）。
+    - 评估窗内非成分日 = False；成分日 = True。
+    - **绝不按日删行**——并集股票的全部连续行保留。
+    """
+    if membership.is_empty():
+        return daily.with_columns(pl.lit(False).alias("in_universe"))
+
+    # membership.trade_date 为 Utf8；对齐 daily.trade_date 的 dtype 再 join
+    td_dtype = daily.schema.get("trade_date")
+    mem = membership.select(["trade_date", "ts_code"]).unique()
+    if td_dtype == pl.Date:
+        mem = mem.with_columns(
+            pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d")
+        )
+    elif td_dtype is not None and td_dtype != pl.Utf8:
+        # Datetime 等：先解析为 Date 再 cast
+        mem = mem.with_columns(
+            pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d").cast(td_dtype)
+        )
+
+    mem = mem.with_columns(pl.lit(True).alias("in_universe"))
+    out = daily.join(mem, on=["trade_date", "ts_code"], how="left")
+    return out.with_columns(pl.col("in_universe").fill_null(False))
 
 
 def prepare_mining_daily(start: str, end: str, universe: str | None = None,
@@ -55,18 +88,47 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
 
     ``lookback_days``：预热前缀交易日数。``None``（默认）取 `search_space_max_lookback()`
     —— 覆盖搜索空间最大回看，否则长窗口/深嵌套因子在 `eval_start` 处欠预热被预热门误拒。
+
+    命名 universe（非 None）时：
+    1. 用 ``get_universe_membership(start, end, universe)`` 构造评估窗逐日 PIT 成分
+       （预热段不进 membership；预热行 ``in_universe=False`` 但保留）；
+    2. 拉取集合 = 窗口内曾在成分内的 ``ts_code`` 并集（替代期末快照，消除幸存偏差）；
+    3. 原始 daily **不按日删行**——滚动算子需要连续时序；评估截面由
+       ``in_universe`` 在 evaluation / mining_session 评估帧形成点过滤；
+    4. membership 构造失败时回退期末快照过滤（``get_universe(end, ...)``）并 warning，
+       保证挖掘链路不崩。
+
+    不做的事：manifest ``membership_hash`` 接线；动态过滤池的逐日 membership
+    （``get_universe_membership`` 对 daily_default 等抛 ValueError，本函数捕获后回退期末快照）。
     """
-    from factorzen.core.universe import get_universe
+    from factorzen.core.universe import get_universe, get_universe_membership
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.discovery.search.random_search import search_space_max_lookback
 
     if lookback_days is None:
         lookback_days = search_space_max_lookback()
-    uni = None
+
+    uni: list[str] | None = None
+    membership: pl.DataFrame | None = None
     if universe:
-        uni = get_universe(end, universe)["ts_code"].to_list()
-        if not uni and universe != "all_a":
-            uni = _universe_asof_fallback(universe, end)
+        try:
+            membership = get_universe_membership(start, end, universe)
+            uni = membership["ts_code"].unique().to_list()
+            if not uni and universe != "all_a":
+                # membership 空但命名指数池：沿用 as-of 回退（成分数据未回补）
+                uni = _universe_asof_fallback(universe, end)
+                membership = None
+        except Exception as exc:
+            _LOG.warning(
+                "universe membership 构造失败（%s: %s），回退期末快照过滤 "
+                "get_universe(%s, %s)",
+                type(exc).__name__, exc, end, universe,
+            )
+            uni = get_universe(end, universe)["ts_code"].to_list()
+            if not uni and universe != "all_a":
+                uni = _universe_asof_fallback(universe, end)
+            membership = None
+
     ctx = FactorDataContext(start=start, end=end, required_data=["daily", "daily_basic"],
                             lookback_days=lookback_days, universe=uni)
     daily = ctx.daily.collect()
@@ -81,6 +143,9 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
     daily = attach_fundamentals(daily)
     daily = attach_holders(daily)
     daily = attach_flows(daily)
+
+    if membership is not None:
+        daily = _attach_in_universe(daily, membership, start)
     return daily
 
 

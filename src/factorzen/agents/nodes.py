@@ -608,6 +608,10 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
     只重算 DSR：`holdout_ic` / CI / `ic_train` 都与 N 无关。**不逐轮重跑护栏**——那会让
     N 三角和 over-count（见 discovery 的多轮累积计数陷阱）。
 
+    收尾复核与首轮判定同口径：residual 候选按 residual 指标+floor 复核，防 objective 漂移误杀
+    （raw 弱、residual 强的候选首轮通过后不得被 raw 门二次杀掉）。库空退化无 residual 字段时
+    回退 raw。
+
     已知取舍：被降级的候选此前可能以 `corr>0.7` 压制过其它因子，那些因子仍留在
     `decorrelated=True`，此处不复活。复活需重跑去相关，会引入新的 N 记账问题；
     且方向保守（候选只减不增）。
@@ -633,11 +637,26 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
     for c in state.candidates:
         dsr, pval = deflated_pvalue(c["ir_train"] or 0.0, basis, c["n_train"] or 0)
         c["dsr"], c["dsr_pvalue"] = dsr, pval
-        reasons = acceptance_reasons(
-            gate=gate, ic_train=c["ic_train"], holdout_ic=c["holdout_ic"], dsr_pvalue=pval,
-            ci_low=c["ic_ci_low"], ci_high=c["ic_ci_high"], dsr_alpha=dsr_alpha,
-            holdout_n_days=c.get("n_holdout_days"),
+        # 与 node_guardrails residual 分支同口径；无 residual 字段则回退 raw（库空退化）
+        use_residual = (
+            getattr(state, "objective", "raw") == "residual"
+            and c.get("residual_ic_train") is not None
         )
+        if use_residual:
+            reasons = acceptance_reasons(
+                gate=gate, ic_train=c["residual_ic_train"],
+                holdout_ic=c.get("residual_holdout_ic"), dsr_pvalue=pval,
+                ci_low=c["ic_ci_low"], ci_high=c["ic_ci_high"], dsr_alpha=dsr_alpha,
+                ic_floor=DEFAULT_RESIDUAL_IC_FLOOR,
+                holdout_n_days=c.get("n_residual_holdout_days"),
+                reason_style="residual",
+            )
+        else:
+            reasons = acceptance_reasons(
+                gate=gate, ic_train=c["ic_train"], holdout_ic=c["holdout_ic"], dsr_pvalue=pval,
+                ci_low=c["ic_ci_low"], ci_high=c["ic_ci_high"], dsr_alpha=dsr_alpha,
+                holdout_n_days=c.get("n_holdout_days"),
+            )
         if not reasons:
             survivors.append(c)
         elif (a := by_expr.get(c["expression"])) is not None:

@@ -14,6 +14,7 @@ import numpy as np
 import polars as pl
 
 from factorzen.core.experiment import build_manifest_base, get_git_sha
+from factorzen.core.stats import spearman_avg_rank
 from factorzen.research.combination.cv import PurgedWalkForwardCV
 from factorzen.research.combination.importance import explain
 from factorzen.research.combination.methods import (
@@ -40,7 +41,10 @@ def _max_drawdown(cum: list[float]) -> float:
 def _evaluate_oos(
     combined: pl.DataFrame, ret_df: pl.DataFrame, n_groups: int = 5
 ) -> dict[str, float]:
-    """OOS 组合因子的统一评估:逐日 RankIC + 分层多空 spread,汇总指标。"""
+    """OOS 组合因子的统一评估:逐日 RankIC + 分层多空 spread,汇总指标。
+
+    RankIC 走 ``spearman_avg_rank``（与 lift_test / ic_analysis average-rank 主口径一致）。
+    """
     rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
     m = combined.join(rdf, on=["trade_date", "ts_code"], how="inner")
     day_rows = []
@@ -49,16 +53,13 @@ def _evaluate_oos(
             continue
         f = g["factor_value"].to_numpy().astype(float)
         r = g["ret"].to_numpy().astype(float)
-        if np.std(f) < 1e-12 or np.std(r) < 1e-12:
+        ic = spearman_avg_rank(f, r)
+        if ic is None:
             continue
-        fr = f.argsort().argsort().astype(float)
-        rr = r.argsort().argsort().astype(float)
-        ic = float(np.corrcoef(fr, rr)[0, 1])
         order = f.argsort()
         q = max(1, len(f) // n_groups)
         spread = float(r[order[-q:]].mean() - r[order[:q]].mean())
-        if np.isfinite(ic):
-            day_rows.append((str(_d[0]), ic, spread))
+        day_rows.append((str(_d[0]), ic, spread))
     if not day_rows:
         return {
             "rank_ic_mean": 0.0,

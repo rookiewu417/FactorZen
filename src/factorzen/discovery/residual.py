@@ -26,6 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
+from factorzen.core.stats import spearman_avg_rank as _spearman
 from factorzen.daily.evaluation.ic_analysis import _MIN_CROSS_SAMPLES
 
 # 与 ic_analysis 同门槛；日守卫再取 max(本值, k+10)
@@ -321,32 +322,6 @@ class ResidualProjector:
             "ts_code": out_codes,
             "factor_value": out_vals,
         })
-
-
-def _spearman(a: np.ndarray, b: np.ndarray) -> float | None:
-    """单日 Spearman = Pearson(rank, rank)；退化截面 → None。"""
-    if a.size < 2:
-        return None
-    if float(np.std(a)) < 1e-12 or float(np.std(b)) < 1e-12:
-        return None
-    # 平均秩（ties 取组内平均），与 ic_analysis 的 polars rank(method="average") 口径一致。
-    def _avg_rank(x: np.ndarray) -> np.ndarray:
-        order = np.argsort(x, kind="mergesort")
-        ranks = np.empty(x.size, dtype=np.float64)
-        i = 0
-        while i < x.size:
-            j = i + 1
-            while j < x.size and x[order[j]] == x[order[i]]:
-                j += 1
-            avg = 0.5 * (i + j - 1) + 1.0  # 1-based average rank
-            ranks[order[i:j]] = avg
-            i = j
-        return ranks
-
-    ra = _avg_rank(a)
-    rb = _avg_rank(b)
-    c = float(np.corrcoef(ra, rb)[0, 1])
-    return c if np.isfinite(c) else None
 
 
 def compute_residual_ic(

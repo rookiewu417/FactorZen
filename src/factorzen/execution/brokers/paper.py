@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 from factorzen.daily.evaluation.backtest import BacktestConfig, CostModel
 from factorzen.daily.evaluation.trade_constraints import apply_trade_constraints
@@ -36,7 +37,8 @@ class PaperBroker(BrokerAdapter):
         # 持仓：ts_code -> {volume, can_use_volume, avg_cost}
         self._pos: dict[str, dict[str, float]] = {}
         self._as_of: date | None = None
-        self._market: dict[str, dict[str, float]] = {}
+        # market entry 含 open/pre_close/close/vol/adv 与可选 is_st（bool）
+        self._market: dict[str, dict[str, Any]] = {}
         # 每只标的最近已知收盘价：停牌日（当日 market 无该股行情）按此估值，
         # 避免 NAV 凭空塌陷。随 state 持久化，续跑后仍可用。
         self._last_price: dict[str, float] = {}
@@ -44,7 +46,7 @@ class PaperBroker(BrokerAdapter):
         self._order_seq = 0
 
     # ---- paper 专用时钟（不进共享接口）----
-    def advance_to(self, as_of: date, market: dict[str, dict[str, float]]) -> None:
+    def advance_to(self, as_of: date, market: dict[str, dict[str, Any]]) -> None:
         # 进入新交易日：上一日持仓全部解冻（T+1）
         if self._as_of is None or as_of != self._as_of:
             for p in self._pos.values():
@@ -109,12 +111,14 @@ class PaperBroker(BrokerAdapter):
         exec_price = open_px * (1.0 + self._slip if od.side == "buy" else 1.0 - self._slip)
         signed = od.volume if od.side == "buy" else -od.volume
 
-        # 1) 共享内核：停牌/涨跌停/容量（权重空间）
+        # 1) 共享内核：停牌/涨跌停/容量（权重空间）；is_st 收窄主板 ST 阈值（4.8% vs 9.8%）
         delta_w = signed * exec_price / total_asset if total_asset > 0 else 0.0
         price_map = {od.ts_code: {"open": open_px, "pre_close": rec.get("pre_close"), "vol": rec.get("vol")}}
+        is_st = bool(rec.get("is_st", False))
         ach_w, reason = apply_trade_constraints(
             code=od.ts_code, delta=delta_w, price_map=price_map,
             portfolio_value=total_asset, config=self._config, adv=rec.get("adv"),
+            is_st=is_st,
         )
         if ach_w == 0.0 and reason:
             return OrderAck(oid, od.ts_code, False, reason)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -606,9 +607,14 @@ def test_cli_no_auto_lift_forwards_to_run_team_agent(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "factorzen.pipelines.factor_mine_team.run_team_agent", recording_agent,
     )
+    # 测试封闭性：CI 无 FACTORZEN_LLM_*——注入 llm_fn 绕开配置加载,并主动清 env
+    # 证明不依赖本地 .env（此前本地绿/CI 红的正是这条泄漏）。
+    for _k in [k for k in os.environ if k.startswith("FACTORZEN_LLM")]:
+        monkeypatch.delenv(_k, raising=False)
     pmt.run_team_mine(
         fake_daily, n_rounds=1, seed=1, index_path=str(tmp_path / "x.jsonl"),
         out_dir=str(tmp_path / "mt"), export=False,
+        llm_fn=lambda messages: "{}",
         auto_lift=False, lift_se_mult=1.5,
     )
     assert agent_kw.get("auto_lift") is False

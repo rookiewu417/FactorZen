@@ -674,70 +674,33 @@ def test_build_library_pool_excludes_probation_by_default(tmp_path):
 
 
 def test_node_guardrails_marks_gray_zone():
-    """单因子门拒绝 + 灰区带 → reject_category=gray_zone，n_gray_zone 计数。"""
-    from factorzen.agents.state import AgentState, AttemptRecord
+    """单因子门拒绝 + |IC|≥下界 → is_lift_queue_candidate（原 gray 钩子契约）。"""
+    from factorzen.discovery.guardrails import is_lift_queue_candidate
 
-    # 构造：residual IC 在灰区、覆盖够、库空 → raw 退化路径用裸 IC 也可
-    # 这里走 raw：ic_train 在 [0.005, 0.015)，holdout 反号 → 门不过，但灰区
-    state = AgentState(seed=0)
-    state.attempts = [
-        AttemptRecord(
-            iteration=0, hypothesis="h", expression="rank(close)",
-            compile_ok=True, ic_train=0.008, ir_train=0.3, n_train=200,
-            passed_guardrails=False, critic_verdict=None, error=None,
-        )
-    ]
-    # mock holdout：覆盖够 + 反号
-    import factorzen.validation.holdout as hmod
-    from factorzen.validation.holdout import HoldoutICResult
-
-    daily = pl.DataFrame({
-        "trade_date": [date(2024, 1, 2 + i) for i in range(5) for _ in range(3)],
-        "ts_code": [f"{s:06d}.SH" for _ in range(5) for s in range(3)],
-        "close": [10.0] * 15, "close_adj": [10.0] * 15,
-        "open_adj": [10.0] * 15, "high_adj": [10.0] * 15, "low_adj": [10.0] * 15,
-        "vol": [1e5] * 15, "amount": [1e7] * 15,
-    })
-    # DataBundle 需要 fwd 等——用 MagicMock 最小接口
-    bundle = MagicMock()
-    bundle.fwd_returns = pl.DataFrame({
-        "trade_date": daily["trade_date"],
-        "ts_code": daily["ts_code"],
-        "fwd_ret_1d": [0.01] * 15,
-    })
-    bundle.train_end = "20240110"
-
-    orig = hmod.holdout_ic_result
-    hmod.holdout_ic_result = lambda *a, **k: HoldoutICResult(
-        ic_mean=-0.01, ir=-0.1, ci=(-0.02, 0.0), n_days=100,
-    )
-    try:
-        # 预处理 / 求值可能失败——改用更稳的路径：直接测 is_gray_zone 集成
-        # 若 node_guardrails 因求值失败跳过，至少验证 is_gray_zone 钩子字段契约
-        from factorzen.discovery.guardrails import is_gray_zone
-        probe = {
-            "ic_train": 0.008, "n_holdout_days": 100,
-            "residual_ic_train": None,
-        }
-        assert is_gray_zone(probe, objective="raw")
-    finally:
-        hmod.holdout_ic_result = orig
+    probe = {
+        "ic_train": 0.008, "n_holdout_days": 100,
+        "residual_ic_train": None,
+    }
+    assert is_lift_queue_candidate(probe, objective="raw")
 
 
 def test_mining_session_gray_zone_fields_in_manifest_contract():
-    """manifest 契约：n_gray_zone 字段存在于 write 路径（源码守卫）。"""
+    """manifest 契约：n_gray_zone 字段存在于 write 路径（源码守卫）。
+
+    C1：reject 类别改为 lift_queue；n_gray_zone 计数字段名兼容保留。
+    """
     src = (Path(__file__).resolve().parents[1] / "src" / "factorzen"
            / "discovery" / "mining_session.py").read_text(encoding="utf-8")
     assert "n_gray_zone" in src
-    assert "REJECT_CATEGORY_GRAY_ZONE" in src
-    assert "is_gray_zone" in src
+    assert "REJECT_CATEGORY_LIFT_QUEUE" in src
+    assert "is_lift_queue_candidate" in src
     agents_man = (Path(__file__).resolve().parents[1] / "src" / "factorzen"
                   / "agents" / "manifest.py").read_text(encoding="utf-8")
     assert "n_gray_zone" in agents_man
     nodes = (Path(__file__).resolve().parents[1] / "src" / "factorzen"
              / "agents" / "nodes.py").read_text(encoding="utf-8")
-    assert "REJECT_CATEGORY_GRAY_ZONE" in nodes
-    assert "(灰区,待组合lift)" in nodes
+    assert "REJECT_CATEGORY_LIFT_QUEUE" in nodes
+    assert "(lift队列,待组合裁决)" in nodes
 
 
 # ── CLI 透传 ─────────────────────────────────────────────────────────────────

@@ -156,7 +156,7 @@ def test_node_guardrails_rejects_library_correlated(tmp_path, monkeypatch):
     rejected = next(a for a in state.attempts if a.expression == "rank(close)")
     assert rejected.passed_guardrails is True, "过了定量护栏的事实须保留"
     assert rejected.reject_category == REJECT_CATEGORY_LIBRARY_CORRELATED
-    assert rejected.reject_reason and "与库内因子高相关" in rejected.reject_reason
+    assert rejected.reject_reason and "与库内因子重复" in rejected.reject_reason
     assert "rank(close)" not in {c["expression"] for c in state.candidates}
 
     kept = [c for c in state.candidates if c["expression"] == "rank(vol)"]
@@ -372,12 +372,37 @@ def test_known_invalid_excludes_library_correlated(tmp_path):
     idx.append([
         {"expression": "rank(close)", "passed": False, "compile_ok": True,
          "ic_train": 0.01, "reject_category": REJECT_CATEGORY_LIBRARY_CORRELATED,
-         "reject_reason": "与库内因子高相关(corr=0.95, 最相近=rank(close))"},
+         "reject_reason": "与库内因子重复(corr=0.96, 最相近=rank(close))"},
         {"expression": "rank(vol)", "passed": False, "compile_ok": True,
          "ic_train": 0.001},
     ])
     inv = idx.known_invalid(k=5)
     assert "rank(close)" not in inv
+    assert "rank(vol)" in inv
+
+
+def test_known_invalid_excludes_lift_queue(tmp_path):
+    """lift_queue（与旧 gray_zone）不得进 known_invalid 负例回灌。"""
+    from factorzen.agents.experiment_index import ExperimentIndex
+    from factorzen.discovery.guardrails import (
+        REJECT_CATEGORY_GRAY_ZONE,
+        REJECT_CATEGORY_LIFT_QUEUE,
+    )
+
+    idx = ExperimentIndex(str(tmp_path / "e_lq.jsonl"))
+    idx.append([
+        {"expression": "rank(amount)", "passed": False, "compile_ok": True,
+         "ic_train": 0.008, "reject_category": REJECT_CATEGORY_LIFT_QUEUE,
+         "reject_reason": "残差holdout反号(lift队列,待组合裁决)"},
+        {"expression": "rank(open)", "passed": False, "compile_ok": True,
+         "ic_train": 0.007, "reject_category": REJECT_CATEGORY_GRAY_ZONE,
+         "reject_reason": "旧灰区兼容"},
+        {"expression": "rank(vol)", "passed": False, "compile_ok": True,
+         "ic_train": 0.001},
+    ])
+    inv = idx.known_invalid(k=5)
+    assert "rank(amount)" not in inv
+    assert "rank(open)" not in inv
     assert "rank(vol)" in inv
 
 
@@ -398,11 +423,15 @@ def test_cli_no_library_orthogonal_flag():
 
 def test_reject_category_constant_exists():
     from factorzen.discovery.guardrails import (
+        DEFAULT_DUPLICATE_CORR,
         REJECT_CATEGORY_HOLDOUT_COVERAGE,
         REJECT_CATEGORY_LIBRARY_CORRELATED,
+        REJECT_CATEGORY_LIFT_QUEUE,
     )
     assert REJECT_CATEGORY_LIBRARY_CORRELATED == "library_correlated"
     assert REJECT_CATEGORY_HOLDOUT_COVERAGE == "holdout_coverage"
+    assert REJECT_CATEGORY_LIFT_QUEUE == "lift_queue"
+    assert DEFAULT_DUPLICATE_CORR == 0.95
 
 
 def test_recall_accepts_library_covered():

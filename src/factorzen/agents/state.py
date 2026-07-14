@@ -47,6 +47,8 @@ class AgentState:
     # 库级正交：session 开始物化的库池大小 + 因 library_correlated 被拒的累计数（manifest 用）
     library_pool_size: int = 0
     n_library_correlated_rejects: int = 0
+    # 灰区候选计数（单因子门不过但落 is_gray_zone；后置 lift 通道；manifest 用）
+    n_gray_zone: int = 0
     # 挖掘评估目标：raw | residual（库空时 residual 自动退化 raw，由 resolve_objective 写回）
     objective: str = "residual"
 
@@ -61,5 +63,6 @@ class AgentState:
             "pbo": self.pbo,
             "library_pool_size": self.library_pool_size,
             "n_library_correlated_rejects": self.n_library_correlated_rejects,
+            "n_gray_zone": self.n_gray_zone,
             "objective": self.objective,
         }

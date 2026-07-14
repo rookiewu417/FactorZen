@@ -41,6 +41,9 @@ def test_service_does_not_call_request_when_disabled(tmp_path, monkeypatch):
 def test_service_skips_when_config_incomplete(tmp_path, monkeypatch):
     monkeypatch.setenv("FACTORZEN_LLM_BASE_URL", "https://api.example.com/v1")
     monkeypatch.delenv("FACTORZEN_LLM_API_KEY", raising=False)
+    # 本地 .env 若设 FACTORZEN_LLM_PROFILE(如 cockpit),profile 变量会补全配置——
+    # 本测试断言"不完整须跳过",必须与本地 profile 隔离
+    monkeypatch.delenv("FACTORZEN_LLM_PROFILE", raising=False)
     monkeypatch.setenv("FACTORZEN_LLM_MODEL", "example-model")
 
     explanation, path = generate_llm_explanation(

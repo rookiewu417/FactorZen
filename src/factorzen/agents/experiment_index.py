@@ -147,8 +147,12 @@ class ExperimentIndex:
 
         排除 **库内高相关**（``reject_category=library_correlated``）：IC 未必低，是「重复
         方向」非「无效」；混进负例会误导「这方向没信号」。
+
+        排除 **灰区**（``reject_category=gray_zone``）：单因子弱但待组合 lift 裁决，
+        不是「已验证无效」——混进负例会误杀试用通道方向。
         """
         from factorzen.discovery.guardrails import (
+            REJECT_CATEGORY_GRAY_ZONE,
             REJECT_CATEGORY_HOLDOUT_COVERAGE,
             REJECT_CATEGORY_LIBRARY_CORRELATED,
         )
@@ -162,11 +166,15 @@ class ExperimentIndex:
         def _is_library_corr(r: dict) -> bool:
             return r.get("reject_category") == REJECT_CATEGORY_LIBRARY_CORRELATED
 
+        def _is_gray(r: dict) -> bool:
+            return r.get("reject_category") == REJECT_CATEGORY_GRAY_ZONE
+
         recs = [r for r in self._scoped(data_window)
                 if not r.get("passed", False) and r.get("compile_ok", True)
                 and not is_lookahead_expr(r.get("expression") or "")
                 and not _is_coverage_fail(r)
-                and not _is_library_corr(r)]
+                and not _is_library_corr(r)
+                and not _is_gray(r)]
         recs.sort(key=lambda r: abs(r.get("ic_train") or 0.0))  # 最没用的优先
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]
 

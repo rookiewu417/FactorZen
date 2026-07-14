@@ -27,6 +27,14 @@ DEFAULT_RESIDUAL_IC_FLOOR = 0.010
 # 空/稀疏 holdout 的 ic_mean 哨兵 0.0 曾被同号门误杀（train>0）或假过关（train<0）。
 DEFAULT_HOLDOUT_MIN_DAYS = 60
 
+# 灰区 |IC| 下界：≈1 个标准误。~1160 个交易日日 IC 均值的 SE≈0.003–0.0045
+# （SE≈σ/√n，日 IC 的 σ 典型 0.1–0.15），再低纯属噪声、不值得做 lift 实验。
+DEFAULT_GRAY_IC_FLOOR = 0.003
+# raw 模式灰区下界（裸 IC 噪声地板略高于残差；区间 [0.005, DEFAULT_IC_FLOOR)）。
+DEFAULT_RAW_GRAY_IC_FLOOR = 0.005
+# 组合增量 RankIC 阈值（初值待校准，lift 噪声地板需实测标定）。
+DEFAULT_LIFT_THRESHOLD = 0.001
+
 # 入池判据的两种口径：
 #   "library"（默认，因子库化）：真(holdout 同号) + 有信号(|IC|≥floor)，不含 DSR 单星显著性。
 #   "strict"（单明星）：DSR 显著 + holdout 同号（历史口径，供需要单因子独立显著时选用）。
@@ -36,6 +44,8 @@ DEFAULT_GATE = "library"
 REJECT_CATEGORY_HOLDOUT_COVERAGE = "holdout_coverage"
 # 与库内 active 因子高相关：IC 未必低，是「重复方向」非「无效」——不得混进 known_invalid。
 REJECT_CATEGORY_LIBRARY_CORRELATED = "library_correlated"
+# 单因子门不过但落在灰区、待后置组合 lift 实验裁决（试用通道；非 known_invalid）。
+REJECT_CATEGORY_GRAY_ZONE = "gray_zone"
 
 
 def _holdout_direction_reasons(
@@ -257,6 +267,66 @@ def classify_reject_category(reasons: list[str]) -> str | None:
         if "覆盖不足" in r:
             return REJECT_CATEGORY_HOLDOUT_COVERAGE
     return None
+
+
+def is_gray_zone(candidate: dict, *, objective: str | None = None) -> bool:
+    """灰区判定：单因子库门不过、但对组合 lift 实验仍有价值的候选。
+
+    条件（全部满足）：
+    1. **覆盖门过**——``n_holdout_days ≥ DEFAULT_HOLDOUT_MIN_DAYS``
+       （residual 模式用 ``n_residual_holdout_days``）。
+    2. **非库重复**——未被 ``library_correlated`` 拒
+       （``reject_category`` / ``library_correlated`` 旗标 / ``max_corr_library>0.7``）。
+    3. **|IC| 落在灰区带**——残差：``[DEFAULT_GRAY_IC_FLOOR, DEFAULT_RESIDUAL_IC_FLOOR)``；
+       裸 IC：``[DEFAULT_RAW_GRAY_IC_FLOOR, DEFAULT_IC_FLOOR)``。
+
+    **不要求 holdout 同号**：lift 实验本身就是 OOS 裁决；弱因子约 18% 反号税
+    不在灰区门重复征收。本函数**不改**单因子库门语义——仅标记第二通道候选。
+
+    ``objective``：``"residual"`` / ``"raw"``；``None`` 时若候选带 residual 指标则 residual。
+    """
+    if candidate.get("reject_category") == REJECT_CATEGORY_LIBRARY_CORRELATED:
+        return False
+    if candidate.get("library_correlated"):
+        return False
+    mc = candidate.get("max_corr_library")
+    if mc is not None:
+        try:
+            if abs(float(mc)) > 0.7:
+                return False
+        except (TypeError, ValueError):
+            pass
+
+    if objective == "raw":
+        use_residual = False
+    elif objective == "residual":
+        use_residual = True
+    else:
+        # 未显式指定：有残差 train IC 即 residual 口径（挖掘落盘字段）
+        use_residual = candidate.get("residual_ic_train") is not None
+
+    if use_residual:
+        n_days = candidate.get("n_residual_holdout_days")
+        ic = candidate.get("residual_ic_train")
+        lo, hi = DEFAULT_GRAY_IC_FLOOR, DEFAULT_RESIDUAL_IC_FLOOR
+    else:
+        n_days = candidate.get("n_holdout_days")
+        if n_days is None:
+            n_days = candidate.get("holdout_n_days")
+        ic = candidate.get("ic_train")
+        lo, hi = DEFAULT_RAW_GRAY_IC_FLOOR, DEFAULT_IC_FLOOR
+
+    if n_days is None:
+        return False
+    try:
+        if int(n_days) < DEFAULT_HOLDOUT_MIN_DAYS:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if ic is None or ic != ic:  # None / NaN
+        return False
+    a = abs(float(ic))
+    return lo <= a < hi
 
 
 def acceptance_reasons(

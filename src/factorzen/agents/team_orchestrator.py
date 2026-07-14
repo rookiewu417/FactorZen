@@ -646,6 +646,7 @@ def write_team_manifest(
         "library_pool_size": getattr(result.state, "library_pool_size", 0),
         "n_library_correlated_rejects": getattr(
             result.state, "n_library_correlated_rejects", 0),
+        "n_gray_zone": getattr(result.state, "n_gray_zone", 0),
         "objective": getattr(result.state, "objective", None),
         "git_sha": get_git_sha(),
     }

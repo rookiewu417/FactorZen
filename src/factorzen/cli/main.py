@@ -794,6 +794,7 @@ def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
     """记录 as_of 日库内因子的 paper forward RankIC。
 
     forward 确认窗口随真实时间累积；ops 每日链路接线为后续工作。
+    非 ashare fail closed（return 2）；全部 failed → return 1。
     """
     from factorzen.discovery.backtest_window import latest_data_date
     from factorzen.discovery.factor_library import DEFAULT_ROOT
@@ -802,6 +803,17 @@ def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
     market = args.market
     root = getattr(args, "root", None) or DEFAULT_ROOT
     as_of = getattr(args, "date", None)
+
+    # S5/P8：非 A 股入口 fail closed（尚未接入 profile/provider/leaf-map）
+    if market != "ashare":
+        print(
+            f"[factor-library forward-track] 非 A 股入口 fail closed："
+            f"market={market} 暂未接入 profile/provider/leaf-map；"
+            f"勿用 A 股数据求值非 A 股因子。",
+            file=sys.stderr,
+        )
+        return 2
+
     if not as_of:
         latest = latest_data_date(market)
         if latest is None:
@@ -812,14 +824,30 @@ def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
             )
             return 1
         as_of = latest.strftime("%Y%m%d")
-    out = record_forward_ics(market, as_of, root=root,
-                             universe=getattr(args, "universe", None))
+    try:
+        out = record_forward_ics(market, as_of, root=root,
+                                 universe=getattr(args, "universe", None))
+    except ValueError as exc:
+        print(
+            f"[factor-library forward-track] 失败：{exc}",
+            file=sys.stderr,
+        )
+        return 2
+    recorded = int(out.get("recorded", 0) or 0)
+    failed = int(out.get("failed", 0) or 0)
     print(
         f"[factor-library forward-track] {market} as_of={as_of}："
-        f"recorded={out.get('recorded', 0)} "
+        f"recorded={recorded} "
         f"skipped_existing={out.get('skipped_existing', 0)} "
-        f"failed={out.get('failed', 0)}"
+        f"failed={failed}"
     )
+    if recorded > 0 and failed == recorded:
+        print(
+            f"[factor-library forward-track] 全部 failed"
+            f"（recorded={recorded}），退出码 1",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

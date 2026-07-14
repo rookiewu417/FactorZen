@@ -145,6 +145,10 @@ class FactorRecord:
     lift_second_half: float | None = None
     # 审计：holdout 有效覆盖天数（single 轨 upsert 若调用方传入则落盘）
     holdout_n_days: int | None = None
+    # 统计裁决原文（cap 前）："active"/"probation"；status 可能被运营护栏压到 probation
+    admission_decision: str | None = None
+    # 证据层级：legacy=历史入库；v2=新口径写入；None=未标注（语义≈legacy 但未落盘）
+    evidence_tier: str | None = None  # "legacy" | "v2"
     eval_start: str | None = None
     eval_end: str | None = None
     universe: str | None = None
@@ -493,6 +497,7 @@ def upsert(
         prev = by_expr.get(norm)
         rec = _record_from_candidate(cand, norm, market, eval_window, universe, horizon,
                                      run_id, session_dir, git_sha, now, prev)
+        rec.evidence_tier = "v2"  # 新写入路径一律 v2（与 lift 轨对称）
         if prev is None:
             res.added += 1
         else:
@@ -574,6 +579,7 @@ def upsert_lift_admissions(
     meta: dict | None = None,
     threshold: float = DEFAULT_LIFT_THRESHOLD,
     se_mult: float = 1.0,
+    allow_active: bool = False,
 ) -> dict:
     """把 ``run_lift_tests`` 结果行按 ``lift_admission`` 写入因子库（lift 准入轨道）。
 
@@ -582,6 +588,13 @@ def upsert_lift_admissions(
     - 本函数：**不走**单因子 library gate；门就是 lift 本身
       （``lift_admission`` → active / probation / reject）。落盘
       ``admission_track="lift"``。
+
+    **status cap（``allow_active``，默认 False）**：
+    校准完成前的运营护栏（审查报告 §14.1），**不是永久语义**。
+    ``lift_admission`` 返回 ``"active"`` 且 ``not allow_active`` 时：
+    落盘 ``status="probation"``，但 ``admission_decision`` 保留原始裁决 ``"active"``，
+    计数进 ``added_probation`` 并累加 ``capped_active``。``allow_active=True`` 时
+    decision 即 status（现行为）。reject / 降级路径不受 cap 影响。
 
     reject 语义：
     - 已有 lift 轨 ``active``/``probation`` 复测失败 → 降级 ``no_lift``
@@ -592,8 +605,8 @@ def upsert_lift_admissions(
     已存在同 expression：更新指标与 status（保留 ``added_at``），不重复添加。
     逐行 try/except：一行坏数据不崩整批，进 ``errors`` 列表。
 
-    返回 ``{"added_active", "added_probation", "rejected", "demoted_no_lift", "errors"}``
-    （``demoted_no_lift`` 仅在发生降级时出现）。
+    返回 ``{"added_active", "added_probation", "rejected", "demoted_no_lift",
+    "capped_active", "errors"}``（``demoted_no_lift`` / ``capped_active`` 仅在发生时出现）。
     """
     from factorzen.discovery.lift_test import lift_admission
 
@@ -686,7 +699,20 @@ def upsert_lift_admissions(
                 run_id, session_dir, git_sha, now, prev,
             )
             rec.admission_track = "lift"
-            rec.status = decision  # "active" | "probation"
+            # 统计裁决原文始终落盘；status 受 allow_active 运营护栏约束
+            rec.admission_decision = decision  # "active" | "probation"
+            if decision == "active" and not allow_active:
+                # cap：校准前默认最多写 probation（§14.1），provenance 不丢
+                rec.status = "probation"
+                out["added_probation"] += 1
+                out["capped_active"] = out.get("capped_active", 0) + 1
+            else:
+                rec.status = decision  # allow_active 或本就 probation
+                if decision == "active":
+                    out["added_active"] += 1
+                else:
+                    out["added_probation"] += 1
+            rec.evidence_tier = "v2"  # 新写入路径一律 v2
             rec.lift = _as_float(row.get("lift"))
             rec.lift_baseline = _as_float(row.get("lift_baseline", row.get("baseline")))
             rec.lift_se = _as_float(row.get("lift_se"))
@@ -700,10 +726,6 @@ def upsert_lift_admissions(
 
             by_expr[norm] = rec
             dirty = True
-            if decision == "active":
-                out["added_active"] += 1
-            else:
-                out["added_probation"] += 1
         except Exception as exc:
             out["errors"].append({
                 "index": i,
@@ -715,6 +737,25 @@ def upsert_lift_admissions(
         _save_library(market, list(by_expr.values()), root=root)
         render_markdown(market, root=root)
     return out
+
+
+def tag_legacy_records(market: str, *, root: str = DEFAULT_ROOT) -> dict[str, int]:
+    """把库中 ``evidence_tier is None`` 的记录落盘标 ``"legacy"``（幂等，**不改 status**）。
+
+    已有 tier（``legacy``/``v2`` 等）的记录不动。用于区分历史入库与新口径写入，
+    打标不降级——residual / lift baseline 仍以 active pool 为基准。
+    返回 ``{"tagged": n, "total": len(records)}``。
+    """
+    records = load_library(market, root=root)
+    n_tagged = 0
+    for r in records:
+        if r.evidence_tier is None:
+            r.evidence_tier = "legacy"
+            n_tagged += 1
+    if n_tagged:
+        _save_library(market, records, root=root)
+        render_markdown(market, root=root)
+    return {"tagged": n_tagged, "total": len(records)}
 
 
 def _as_float(v) -> float | None:
@@ -766,16 +807,17 @@ def render_markdown(market: str, root: str = DEFAULT_ROOT) -> str:
     ]
     if records:
         lines += [
-            "| # | expression | market | ic_train | holdout_ic | dsr_pvalue | n_train | status | eval 窗口 | added_at |",
-            "|---|---|---|---|---|---|---|---|---|---|",
+            "| # | expression | market | ic_train | holdout_ic | dsr_pvalue | n_train | status | tier | eval 窗口 | added_at |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
         ]
         for i, r in enumerate(sorted(records, key=_sort_key), 1):
             win = f"{r.eval_start or '-'}–{r.eval_end or '-'}"
             corr = f" (~{r.correlated_with})" if r.status == "correlated" and r.correlated_with else ""
+            tier = r.evidence_tier or "-"
             lines.append(
                 f"| {i} | `{r.expression}` | {r.market} | {_fmt(r.ic_train)} | "
                 f"{_fmt(r.holdout_ic)} | {_fmt(r.dsr_pvalue)} | {_fmt(r.n_train)} | "
-                f"{r.status}{corr} | {win} | {r.added_at or '-'} |"
+                f"{r.status}{corr} | {tier} | {win} | {r.added_at or '-'} |"
             )
     else:
         lines.append("_（空库——该市场当前统一标准+默认窗口下无合格因子）_")
@@ -1000,7 +1042,10 @@ def rebuild(
       逐个重跑 add-one lift（``lift_runner`` / 默认 ``run_lift_tests``，
       ``active_factor_dfs``=新池，``top_m=None``）→ ``lift_admission``：
       active / probation / reject→``status="no_lift"``（记录保留，不删除）。
-      复审整体 try/except：失败不毁单轨结果，manifest 记 error，lift 轨保持原状。
+      **复审路径不 cap**：``decision=="active"`` 维持/写回 active 是对已入库记录的
+      降级/维持判定，不是新晋升（与 ``upsert_lift_admissions`` 的 ``allow_active``
+      运营护栏分工不同）。复审整体 try/except：失败不毁单轨结果，manifest 记 error，
+      lift 轨保持原状。
 
     注入点：``lift_runner(cands, *, active_factor_dfs, combine_fn=..., **kw) -> list[dict]``；
     ``combine_fn`` 转给 runner；``active_factor_dfs`` / ``daily`` 供生产默认路径。
@@ -1199,14 +1244,18 @@ def rebuild(
                     if lift_row.get("lift_second_half") is not None:
                         updated.lift_second_half = _as_float(lift_row.get("lift_second_half"))
 
+                # 复审不 cap：decision 即 status（保留既有 active，非 auto-lift 新晋升）
                 if decision == "active":
                     updated.status = "active"
+                    updated.admission_decision = "active"
                     n_lift_active += 1
                 elif decision == "probation":
                     updated.status = "probation"
+                    updated.admission_decision = "probation"
                     n_lift_probation += 1
                 else:
                     updated.status = "no_lift"
+                    updated.admission_decision = "reject"
                     n_lift_demoted += 1
 
                 # 同 expr 已被 single 轨 gate 收录 → 不覆盖 single 记录（single 零回归）

@@ -1011,6 +1011,8 @@ def _session_end_auto_lift(
         from factorzen.discovery.factor_library import upsert_lift_admissions
 
         dw = data_window or {}
+        # session 自动路径一律 cap（不传 allow_active → 默认 False）：
+        # 校准前 auto-lift 最多写 probation；要写 active 走 CLI --allow-active。
         adm = upsert_lift_admissions(
             results,
             market=market,

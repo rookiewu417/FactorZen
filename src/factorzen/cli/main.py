@@ -732,6 +732,20 @@ def _cmd_factor_library_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_factor_library_tag_legacy(args: argparse.Namespace) -> int:
+    """把 evidence_tier 为 None 的记录落盘标 legacy（幂等，不改 status）。"""
+    from factorzen.discovery import factor_library as fl
+
+    market = args.market
+    root = getattr(args, "root", None) or fl.DEFAULT_ROOT
+    out = fl.tag_legacy_records(market, root=root)
+    print(
+        f"[factor-library tag-legacy] {market}：标记 legacy {out['tagged']} 条"
+        f"（库合计 {out['total']}，已有 tier 不动；不改 status）"
+    )
+    return 0
+
+
 def _lift_admission_str(v) -> str | None:
     """边界日期 → admission 窗字符串（对齐 polars Date→Utf8 的 YYYY-MM-DD）。"""
     if v is None:
@@ -940,11 +954,17 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             },
             threshold=threshold,
             se_mult=float(getattr(args, "se_mult", 1.0) or 1.0),
+            allow_active=bool(getattr(args, "allow_active", False)),
         )
         print(
             f"[factor-library lift-test] 入库：added_active={admissions.get('added_active', 0)} "
             f"added_probation={admissions.get('added_probation', 0)} "
             f"rejected={admissions.get('rejected', 0)}"
+            + (
+                f" capped_active={admissions.get('capped_active', 0)}"
+                if admissions.get("capped_active")
+                else ""
+            )
         )
     elif dry_run:
         n_pass = sum(1 for r in results if r.get("passed"))
@@ -2041,8 +2061,11 @@ def build_parser() -> argparse.ArgumentParser:
     m_team.set_defaults(func=_cmd_mine_team)
 
     # ── fz factor-library ──（分市场因子登记簿：rebuild / list / show / render）
-    fl = sub.add_parser("factor-library",
-                        help="因子库登记簿（分市场·全信息·自动维护）：rebuild/list/show/render/lift-test")
+    fl = sub.add_parser(
+        "factor-library",
+        help="因子库登记簿（分市场·全信息·自动维护）："
+             "rebuild/list/show/render/lift-test/tag-legacy",
+    )
     fl_sub = fl.add_subparsers(dest="factor_library_command", required=True)
 
     fl_rb = fl_sub.add_parser("rebuild",
@@ -2109,6 +2132,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="lift 准入 SE 乘数（默认 1.0：lift ≥ max(threshold, se_mult×SE)）",
     )
     fl_lt.add_argument(
+        "--allow-active", dest="allow_active", action="store_true",
+        help="允许 lift 裁决直接写 active（默认封顶 probation，待校准）",
+    )
+    fl_lt.add_argument(
         "--admission-start", dest="admission_start", default=None,
         help="lift 评分窗起点 YYYYMMDD（覆盖 session manifest holdout 推导）",
     )
@@ -2121,6 +2148,19 @@ def build_parser() -> argparse.ArgumentParser:
     fl_lt.add_argument("--symbols", default=None)
     _add_freq_arg(fl_lt)
     fl_lt.set_defaults(func=_cmd_factor_library_lift_test)
+
+    fl_tl = fl_sub.add_parser(
+        "tag-legacy",
+        help="把 evidence_tier 为 None 的记录标为 legacy（幂等，不改 status）",
+    )
+    fl_tl.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    )
+    fl_tl.add_argument(
+        "--root", default=None,
+        help="因子库根目录（默认 workspace/factor_library）",
+    )
+    fl_tl.set_defaults(func=_cmd_factor_library_tag_legacy)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     # ── fz research ──（端到端编排：mine → 头部 passed 因子 → 循环 build → sim → report）

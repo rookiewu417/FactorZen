@@ -1215,3 +1215,19 @@ def test_fetch_top_list_schema_error_rewrites_year(tmp_path, monkeypatch):
     assert reloaded.height >= 1
     assert reloaded["reason"].dtype == pl.String
 
+
+def test_holder_normalize_drops_junk_end_dates(tmp_path, monkeypatch):
+    """源数据垃圾行防御：null end_date（会崩分区路径构造 month.zfill）与越界日期
+    （实测 Tushare 返回 1900-09-08 / 2053-06-26 的坏行）必须过滤并记日志。"""
+    from factorzen.core.loader import _normalize_holder_frame
+
+    raw = pl.DataFrame({
+        "ts_code": ["000001.SZ", "300070.SZ", "300066.SZ", "000002.SZ"],
+        "ann_date": ["20220430", "20230630", "20230911", "20220430"],
+        "end_date": ["20220331", "20530626", "19000908", None],
+        "holder_num": [50000.0, None, None, 60000.0],
+    })
+    out = _normalize_holder_frame([raw])
+    # 只有合法行存活；null end_date 与越界日期全部被丢
+    assert out.height == 1
+    assert out["ts_code"].to_list() == ["000001.SZ"]

@@ -675,6 +675,18 @@ def _normalize_holder_frame(parts: list[pl.DataFrame]) -> pl.DataFrame:
         .sort(["ts_code", "end_date", "ann_date"])
         .unique(subset=["ts_code", "end_date"], keep="last", maintain_order=True)
     )
+    # 源数据垃圾行防御（实测 Tushare 返回 end_date=1900-09-08/2053-06-26、null 的坏行，
+    # 且 holder_num 同为 null）：null end_date 会崩分区路径构造（month.zfill），
+    # 越界日期会写出垃圾分区。过滤并记数,不静默。
+    import datetime as _dt
+    before = df.height
+    df = df.filter(
+        pl.col("end_date").is_not_null()
+        & (pl.col("end_date") >= _dt.date(2000, 1, 1))
+        & (pl.col("end_date") <= _dt.date(2030, 12, 31))
+    )
+    if df.height < before:
+        logger.warning(f"[stk_holdernumber] 过滤 {before - df.height} 行垃圾 end_date（null/越界）")
     return df.select([c for c in STK_HOLDERNUMBER_COLS if c in df.columns])
 
 

@@ -612,121 +612,135 @@ def _load_holder_fetched_windows(base_dir: Path | None = None) -> list[dict]:
         return []
 
 
-def _is_holder_window_fetched(year: int, base_dir: Path | None = None) -> bool:
-    """跳过判定 = 正式标记文件存在且含该 ann-year（.tmp 不算完成）。"""
-    return any(int(w.get("year", -1)) == year for w in _load_holder_fetched_windows(base_dir))
+def _is_holder_window_fetched(window: str, base_dir: Path | None = None) -> bool:
+    """跳过判定 = 正式标记文件含该公告月窗口（"YYYY-MM"；.tmp 不算完成）。
+
+    向后兼容：旧版整年标记 ``{"year": Y}`` 视为覆盖该年全部月窗口。
+    """
+    year = int(window[:4])
+    for w in _load_holder_fetched_windows(base_dir):
+        if w.get("window") == window:
+            return True
+        if "year" in w and int(w.get("year", -1)) == year:
+            return True
+    return False
 
 
 def _mark_holder_window_fetched(
-    year: int, n_stocks: int, base_dir: Path | None = None,
+    window: str, n_rows: int, base_dir: Path | None = None,
 ) -> None:
-    """原子写入窗口完成标记：写临时文件后 os.replace rename。"""
+    """原子写入月窗口完成标记：写临时文件后 os.replace rename。"""
     path = _holder_windows_path(base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    windows = [w for w in _load_holder_fetched_windows(base_dir) if int(w.get("year", -1)) != year]
+    windows = [w for w in _load_holder_fetched_windows(base_dir) if w.get("window") != window]
     windows.append({
-        "year": year,
-        "n_stocks": n_stocks,
+        "window": window,
+        "n_rows": n_rows,
         "ts": datetime.now().isoformat(timespec="seconds"),
     })
-    windows.sort(key=lambda w: int(w.get("year", 0)))
+    windows.sort(key=lambda w: str(w.get("window") or w.get("year") or ""))
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(windows, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
 
 
+def _month_windows(start_dt: datetime, end_dt: datetime) -> list[tuple[str, str, str]]:
+    """[start, end] 覆盖的公告月窗口 [(m_start, m_end, "YYYY-MM"), ...]（边界月截断）。"""
+    out: list[tuple[str, str, str]] = []
+    cur = datetime(start_dt.year, start_dt.month, 1)
+    while cur <= end_dt:
+        nxt = datetime(cur.year + (1 if cur.month == 12 else 0),
+                       1 if cur.month == 12 else cur.month + 1, 1)
+        m_start = max(cur, start_dt)
+        m_end = min(nxt - timedelta(days=1), end_dt)
+        out.append((m_start.strftime("%Y%m%d"), m_end.strftime("%Y%m%d"),
+                    f"{cur.year:04d}-{cur.month:02d}"))
+        cur = nxt
+    return out
+
+
+def _normalize_holder_frame(parts: list[pl.DataFrame]) -> pl.DataFrame:
+    """holder 帧标准化：数值列 Float64、end_date→Date、按 ann_date 排序后
+    (ts_code, end_date) 去重 keep=last（同期多次公告取最新一次，确定性）。"""
+    str_cols = {"ts_code", "ann_date", "end_date"}
+    aligned = []
+    for p in parts:
+        casts = [c for c in p.columns if c not in str_cols and p[c].dtype != pl.Float64]
+        aligned.append(p.with_columns(
+            [pl.col(c).cast(pl.Float64, strict=False) for c in casts]
+        ))
+    df = (
+        pl.concat(aligned)
+        .with_columns(_str_to_date(pl.col("end_date")))
+        .sort(["ts_code", "end_date", "ann_date"])
+        .unique(subset=["ts_code", "end_date"], keep="last", maintain_order=True)
+    )
+    return df.select([c for c in STK_HOLDERNUMBER_COLS if c in df.columns])
+
+
 def fetch_stk_holdernumber(
     start: str, end: str, ts_codes: list[str] | None = None,
 ) -> pl.DataFrame:
-    """拉股东户数(stk_holdernumber)。按 ts_code 分批 + 按 ann-year 窗口缓存。
+    """拉股东户数(stk_holdernumber)。市场模式按**公告月窗口**整市场拉取。
 
-    Tushare 该接口需 ts_code+start_date/end_date；全市场时从 stock_basic 取清单。
-    抓取窗口按 **ann_date 年**（--start/--end 公告窗口）循环；分区仍按 end_date 落盘。
-    幂等：窗口完成后写 ``_fetched_windows.json``，标记存在才跳过——避免「前一窗口
-    写出的 end_date 分区」误触发跳年。中途死亡无标记 → 重跑该窗口；save 按
-    (ts_code, end_date) upsert 去重。ann_date PIT 对齐在 attach_holders。
+    接口实测：不带 ts_code、以 start_date/end_date（公告日窗口）查询即返回该窗口
+    全市场公告（季末月 ~5k 行）——一月一次调用，11 年 ≈132 次，替代旧「逐股 5000+
+    调用/年」方案（后者 40-60 分钟/年，必然超时）。
+    幂等：月窗口完成后写 ``_fetched_windows.json``（"YYYY-MM"；原子 rename；
+    旧版整年标记向后兼容视为覆盖该年）。API 异常的窗口**不写标记**（下次重跑补）；
+    空窗口合法（写标记 n_rows=0）。分区按 end_date 落盘，save 按 (end_date, ts_code)
+    upsert 去重；ann_date PIT 对齐在 attach_holders。
+
+    ``ts_codes`` 子集模式：逐股直拉直接返回，**不写共享缓存/标记**——部分数据写共享
+    缓存会让完整性标记撒谎（与 fetch_daily 的子集语义一致）。
     """
+    import time as _time
+
     pro = init_tushare()
     data_type = "stk_holdernumber"
     start_dt = datetime.strptime(start, "%Y%m%d")
     end_dt = datetime.strptime(end, "%Y%m%d")
 
-    if ts_codes is None:
-        stock_df = fetch_stock_basic()
-        ts_codes_all: list[str] = stock_df["ts_code"].to_list() if not stock_df.is_empty() else []
-    else:
-        ts_codes_all = list(ts_codes)
-
-    if not ts_codes_all:
-        logger.warning("[stk_holdernumber] 无股票清单，跳过")
-        try:
-            return load_parquet(data_type, start=start, end=end, date_col="end_date").collect()
-        except Exception:
-            return pl.DataFrame()
-
-    n_codes = len(ts_codes_all)
-    for year in range(start_dt.year, end_dt.year + 1):
-        y_start = max(datetime(year, 1, 1), start_dt)
-        y_end = min(datetime(year, 12, 31), end_dt)
-        if y_end < y_start:
-            continue
-        if _is_holder_window_fetched(year):
-            logger.info(f"[stk_holdernumber] ann-year={year} 窗口已完成，跳过")
-            continue
-
-        y_start_str = y_start.strftime("%Y%m%d")
-        y_end_str = y_end.strftime("%Y%m%d")
+    if ts_codes is not None:
         parts: list[pl.DataFrame] = []
-        # 按 ts_code 逐股拉（接口语义：ts_code+start/end）。
-        # 空结果常见（该年无披露）——不走 _retry，避免对空股连打 MAX_RETRIES。
-        for i, code in enumerate(ts_codes_all):
-            if (i + 1) % 500 == 0 or (i + 1) == n_codes:
-                logger.info(
-                    f"[stk_holdernumber] ann-year={year} 进度 {i + 1}/{n_codes}"
-                )
+        for code in ts_codes:
             try:
                 _rate_limit()
-                df_pd = pro.stk_holdernumber(
-                    ts_code=code, start_date=y_start_str, end_date=y_end_str,
-                )
+                df_pd = pro.stk_holdernumber(ts_code=code, start_date=start, end_date=end)
             except Exception as e:
-                logger.warning(
-                    f"[stk_holdernumber] {code} ({i + 1}/{n_codes}) 失败: {e}"
-                )
+                logger.error(f"[stk_holdernumber] {code} 拉取失败: {e}")
                 continue
             if df_pd is not None and not (hasattr(df_pd, "empty") and df_pd.empty):
                 parts.append(pl.from_pandas(df_pd))
+        return _normalize_holder_frame(parts) if parts else pl.DataFrame()
 
-        if parts:
-            str_cols = {"ts_code", "ann_date", "end_date"}
-            aligned = []
-            for p in parts:
-                casts = {
-                    c: pl.Float64
-                    for c in p.columns
-                    if c not in str_cols and p[c].dtype != pl.Float64
-                }
-                aligned.append(
-                    p.with_columns(
-                        [pl.col(c).cast(pl.Float64, strict=False) for c in casts]
-                    )
-                )
-            df = (
-                pl.concat(aligned)
-                .with_columns(_str_to_date(pl.col("end_date")))
-                .unique(subset=["ts_code", "end_date"], keep="last")
-                .sort(["ts_code", "end_date"])
-            )
-            df = df.select([c for c in STK_HOLDERNUMBER_COLS if c in df.columns])
-            # save_parquet append 模式已按 (end_date, ts_code) unique keep=last upsert
+    for m_start, m_end, window in _month_windows(start_dt, end_dt):
+        if _is_holder_window_fetched(window):
+            logger.info(f"[stk_holdernumber] 窗口 {window} 已完成，跳过")
+            continue
+        df_pd = None
+        fetched_ok = False
+        # 空窗口合法（极冷月无公告）→ 不用 _retry（其把空当失败重试并最终抛错）
+        for attempt in (0, 1):
+            try:
+                _rate_limit()
+                df_pd = pro.stk_holdernumber(start_date=m_start, end_date=m_end)
+                fetched_ok = True
+                break
+            except Exception as e:
+                logger.warning(f"[stk_holdernumber] 窗口 {window} 失败(第{attempt + 1}次): {e}")
+                if attempt == 0:
+                    _time.sleep(RETRY_DELAY)
+        if not fetched_ok:
+            # 异常窗口不写标记：留待下次重跑补齐，不静默留洞
+            continue
+        n_rows = 0
+        if df_pd is not None and not (hasattr(df_pd, "empty") and df_pd.empty):
+            df = _normalize_holder_frame([pl.from_pandas(df_pd)])
             save_parquet(df, data_type=data_type, date_col="end_date")
-            logger.info(f"[stk_holdernumber] ann-year={year} 已保存 ({len(df)} 行)")
-        else:
-            logger.warning(f"[stk_holdernumber] ann-year={year} 无数据（全股循环完成）")
-
-        # 全股循环完成（含无数据）才写标记；中途异常不会到此
-        _mark_holder_window_fetched(year, n_codes)
-        logger.info(f"[stk_holdernumber] ann-year={year} 窗口标记已写 (n_stocks={n_codes})")
+            n_rows = len(df)
+        _mark_holder_window_fetched(window, n_rows)
+        logger.info(f"[stk_holdernumber] 窗口 {window} 完成 ({n_rows} 行)")
 
     try:
         return load_parquet(data_type, start=start, end=end, date_col="end_date").collect()

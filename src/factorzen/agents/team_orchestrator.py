@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -931,10 +932,16 @@ def _session_end_auto_lift(
 
         g_lift = group.get("lift")
         g_se = group.get("lift_se")
-        se_val = float(g_se) if g_se is not None and g_se == g_se else 0.0
+        # SE 缺失/非有限 = 区间证据不完整 → 组门不过（与 lift_admission 同契约，
+        # 不再按 0 处理——那会把「无 SE」当「零方差」，bar 退化为裸 threshold 偏宽）
+        if isinstance(g_se, (int, float)) and math.isfinite(float(g_se)):
+            se_finite, se_val = True, float(g_se)
+        else:
+            se_finite, se_val = False, 0.0
         bar = max(float(DEFAULT_LIFT_THRESHOLD), float(lift_se_mult) * se_val)
         group_ok = (
-            g_lift is not None
+            se_finite
+            and g_lift is not None
             and g_lift == g_lift
             and float(g_lift) >= bar
             and not group.get("error")

@@ -354,6 +354,42 @@ def test_lift_hook_group_fail_skips_per_candidate(monkeypatch):
     assert meta["n_lift_evaluated"] == 1
 
 
+def test_lift_hook_group_se_not_finite_fails_gate(monkeypatch):
+    """组门 SE 缺失/非有限 = 区间证据不完整 → 拒，不跑逐候选（不再按 0 处理）。
+
+    旧行为：SE=None/NaN 按 0 → bar 退化为裸 threshold，lift 高就放行——统计上把
+    「无 SE」当「零方差」。与 lift_admission 的 SE 契约对齐。
+    """
+    for bad_se in (None, float("nan")):
+        state = _state_with_lift_queue(["ts_mean(close, 5)", "rank(vol)"])
+        daily, holdout, mat = _holdout_and_mat()
+        calls = {"per": 0}
+
+        def fake_group(*a, _se=bad_se, **k):
+            return {
+                "lift": 0.5, "lift_se": _se, "error": None,  # lift 远超门槛
+                "n_candidates": 2, "expressions": ["ts_mean(close, 5)", "rank(vol)"],
+            }
+
+        def fake_per(*a, _c=calls, **k):
+            _c["per"] += 1
+            return []
+
+        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
+
+        meta = _session_end_auto_lift(
+            state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
+            market="ashare", library_root=str(Path("/tmp/lib")), seed=1,
+            auto_lift=True, lift_se_mult=1.0,
+            materialize_candidate=mat,
+            active_factor_dfs={"base": _panel(100)},
+            ret_df=_panel(100).rename({"factor_value": "ret"}),
+        )
+        assert calls["per"] == 0, f"SE={bad_se!r} 时组门应拒、不跑逐候选"
+        assert meta["lift_results"] == []
+
+
 def test_lift_hook_group_pass_runs_per_and_upsert(monkeypatch):
     """组门过 → 逐候选进 manifest、upsert 收到正确行。"""
     state = _state_with_lift_queue(["ts_mean(close, 5)"])

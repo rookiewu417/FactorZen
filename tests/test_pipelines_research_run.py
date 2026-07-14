@@ -79,6 +79,15 @@ def patched_stages(monkeypatch, tmp_path):
     def fake_get_universe(d, name):
         return pl.DataFrame({"ts_code": codes, "industry": ["银行", "地产", "科技"]})
 
+    def fake_get_membership(start, end, name):
+        # 稳定成分：每日全 codes（与旧 end-snapshot 等价，零回归既有 e2e）
+        rows = [
+            {"trade_date": d.strftime("%Y%m%d"), "ts_code": c}
+            for d in tdates
+            for c in codes
+        ]
+        return pl.DataFrame(rows)
+
     class FakeCtx:
         def __init__(self, **kw): self.kw = kw
 
@@ -134,6 +143,12 @@ def patched_stages(monkeypatch, tmp_path):
 
     monkeypatch.setattr("factorzen.pipelines.factor_mine.run_mine", fake_run_mine)
     monkeypatch.setattr("factorzen.core.universe.get_universe", fake_get_universe)
+    monkeypatch.setattr(
+        "factorzen.pipelines.daily_single.get_universe", fake_get_universe
+    )
+    monkeypatch.setattr(
+        "factorzen.core.universe.get_universe_membership", fake_get_membership
+    )
     monkeypatch.setattr("factorzen.daily.data.context.FactorDataContext", FakeCtx)
     monkeypatch.setattr("factorzen.discovery.factor.ExpressionFactor", FakeExprFactor)
     monkeypatch.setattr("factorzen.core.loader.fetch_daily", fake_fetch_daily)

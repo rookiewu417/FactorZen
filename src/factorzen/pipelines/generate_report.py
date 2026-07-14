@@ -74,7 +74,11 @@ from factorzen.pipelines._report_persistence import (
     _save_quality_report,
     _save_results,
 )
-from factorzen.pipelines.daily_single import _build_forward_return_frame
+from factorzen.pipelines.daily_single import (
+    _build_forward_return_frame,
+    filter_frame_by_membership,
+    load_pit_membership,
+)
 from factorzen.reports.tear_sheet import generate_tear_sheet
 
 setup_logging()
@@ -486,13 +490,21 @@ def _run(
             logger.error(f"数据拉取失败: {e}")
             raise RuntimeError(f"fetch_daily failed: {e}") from e
 
-        # ── 3. 股票池 ──
-        universe = get_universe(args.end, args.universe)
-        if universe.is_empty():
-            logger.error(f"股票池为空: {args.universe} ({args.end})")
-            raise RuntimeError(f"empty universe: {args.universe} ({args.end})")
-        ts_codes = universe["ts_code"].to_list()
-        logger.info(f"股票池: {len(ts_codes)} 只")
+        # ── 3. 股票池（逐日 PIT membership；union 拉取 + 评估截面按日过滤）──
+        try:
+            membership, ts_codes, _universe_meta = load_pit_membership(
+                args.start, args.end, args.universe
+            )
+        except (ValueError, RuntimeError) as e:
+            logger.error(f"股票池 membership 失败: {e}")
+            raise
+        if not ts_codes and args.universe != "all_a":
+            logger.error(f"股票池为空: {args.universe} [{args.start},{args.end}]")
+            raise RuntimeError(f"empty universe membership: {args.universe}")
+        logger.info(
+            f"股票池(PIT membership): union={len(ts_codes)} 只, "
+            f"membership_rows={membership.height}"
+        )
 
         # ── 4. 计算因子 ──
         ctx = FactorDataContext(
@@ -500,7 +512,7 @@ def _run(
             end=args.end,
             required_data=factor.required_data,
             lookback_days=factor.lookback_days,
-            universe=ts_codes,
+            universe=ts_codes if ts_codes else None,
             snapshot_mode=args.frequency,
         )
         try:
@@ -517,9 +529,15 @@ def _run(
         if validation.get("coverage", 0) < 0.5:
             logger.warning("因子覆盖率不足 50%，结果可能不可靠")
 
-        # ── 5. 预处理 ──
+        # ── 5. 预处理 + 逐日 PIT 过滤评估截面 ──
         clean_df = build_preprocessing_pipeline(effective_config).run(factor_df, col="factor_value")
-        logger.info("预处理完成 (去极值 → 填充 → 标准化)")
+        clean_df = filter_frame_by_membership(clean_df, membership)
+        if clean_df.is_empty():
+            logger.error("PIT membership 过滤后因子截面为空")
+            raise RuntimeError("empty factor cross-section after PIT membership filter")
+        logger.info(
+            f"预处理完成 (去极值 → 填充 → 标准化 → 逐日 PIT 过滤, n={clean_df.height})"
+        )
 
         # ── 6. 前向收益（用复权价，与 fz factor test 口径一致，避免除权跳空污染 IC）──
         daily = _load_daily_with_close_adj(args.start, args.end)

@@ -748,14 +748,14 @@ def test_run_ensures_required_data_before_loading_universe(monkeypatch):
         assert kwargs["start"] == "20240102"
         assert kwargs["end"] == "20240103"
 
-    def fake_get_universe(*args, **kwargs):
+    def fake_load_pit_membership(*args, **kwargs):
         calls.append("universe")
         raise RuntimeError("stop after data ensure")
 
     monkeypatch.setattr(run_mod, "get_factor", lambda name: DummyFactor)
     monkeypatch.setattr(run_mod, "get_trade_dates", lambda start, end: [date(2024, 1, 2)])
     monkeypatch.setattr(run_mod, "ensure_data_for_daily_run", fake_ensure_data_for_daily_run)
-    monkeypatch.setattr(run_mod, "get_universe", fake_get_universe)
+    monkeypatch.setattr(run_mod, "load_pit_membership", fake_load_pit_membership)
 
     args = Namespace(
         factor="dummy_factor",

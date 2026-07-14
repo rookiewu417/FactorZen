@@ -10,6 +10,8 @@ lint       = "ruff check ."
 format     = "ruff format ."
 test       = "pytest tests/ -n auto"
 typecheck  = "mypy --cache-dir .cache/mypy --no-sqlite-cache"
+# 提交前增量检查(mypy daemon,首跑后秒级);CI/合并前仍用冷 typecheck 兜 daemon stale
+typecheck-fast = "dmypy run -- src/factorzen"
 coverage   = "python tools/run_coverage.py"
 lab        = "jupyter lab"
 smoke      = "python -c \"import polars; import tushare; print('ok')\""

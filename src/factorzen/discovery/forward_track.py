@@ -12,18 +12,23 @@ from __future__ import annotations
 import json
 import logging
 import math
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import polars as pl
 
+from factorzen.core.experiment import get_git_sha
 from factorzen.core.stats import spearman_avg_rank
 from factorzen.discovery.factor_library import DEFAULT_ROOT, load_library, render_markdown
 from factorzen.discovery.lift_test import paired_lift_stats
 
 _LOG = logging.getLogger(__name__)
+
+# paper-forward 反回灌默认：as_of 距 wall-clock 超过该日历日数 → 拒（除非 allow_backfill）
+DEFAULT_MAX_BACKFILL_DAYS = 10
+FORWARD_TRACK_COMMAND = "forward-track"
 
 # 预热默认：复用 agent 路 AGENT_WARMUP_LOOKBACK（504 交易日）。
 # 理由：库内因子大量来自 LLM/team 路径，窗口无搜索空间上界（可嵌套 ~250 日）；
@@ -53,6 +58,64 @@ def _date_str(v: Any) -> str:
     if len(s) >= 8 and s[:8].isdigit():
         return s[:8]
     return s.replace("-", "")[:8]
+
+
+def _parse_yyyymmdd(v: Any) -> date:
+    """YYYYMMDD / date-like → date；非法 → ValueError。"""
+    s = _date_str(v)
+    if len(s) != 8 or not s.isdigit():
+        raise ValueError(f"非法日期 {v!r}（期望 YYYYMMDD）")
+    return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+
+
+def _wall_clock_iso_utc() -> str:
+    """记录时 wall-clock，ISO UTC（如 2026-07-14T20:31:05Z）。"""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _check_as_of_freshness(
+    as_of_s: str,
+    now_s: str,
+    *,
+    allow_backfill: bool,
+    max_backfill_days: int,
+    high_watermark: str | None = None,
+) -> int:
+    """反回灌 / 未来日校验。返回 as_of 相对 now 的日历 lag 天数。
+
+    - as_of > now → 拒绝未来日
+    - as_of < now - max_backfill_days → 拒绝历史回灌（unless allow_backfill）
+    - as_of < high_watermark（ledger 已有更大 date）→ 亦需 allow_backfill
+    """
+    as_of_d = _parse_yyyymmdd(as_of_s)
+    now_d = _parse_yyyymmdd(now_s)
+    lag = (now_d - as_of_d).days
+    if lag < 0:
+        raise ValueError(
+            f"as_of={as_of_s} 是未来日（now={now_s}），不能记录 forward IC"
+        )
+    if lag > int(max_backfill_days) and not allow_backfill:
+        raise ValueError(
+            f"as_of={as_of_s} 距今 {lag} 日 > max_backfill_days={max_backfill_days}，"
+            f"疑似历史回灌；如确为初始播种/补录请 --allow-backfill"
+        )
+    if (
+        high_watermark
+        and as_of_s < high_watermark
+        and not allow_backfill
+    ):
+        raise ValueError(
+            f"as_of={as_of_s} < ledger high-watermark={high_watermark}，"
+            f"疑似回填已记录区间；如确为补录请 --allow-backfill"
+        )
+    return lag
+
+
+def _ledger_high_watermark(rows: list[dict]) -> str | None:
+    """该 market ledger 已有 max date（YYYYMMDD）；空 → None。"""
+    dates = [_date_str(r.get("date")) for r in rows]
+    dates = [d for d in dates if d and len(d) == 8]
+    return max(dates) if dates else None
 
 
 def _updated_at_key(v: Any) -> str:
@@ -295,6 +358,9 @@ def record_forward_ics(
     leaf_map: dict[str, str] | None = None,
     lookback_days: int | None = None,
     universe: str | None = None,
+    now: str | None = None,
+    allow_backfill: bool = False,
+    max_backfill_days: int = DEFAULT_MAX_BACKFILL_DAYS,
 ) -> dict:
     """记录 as_of 日库内因子的 paper forward RankIC（PIT 口径）。
 
@@ -306,15 +372,31 @@ def record_forward_ics(
     **强制所有记录**用该 universe 装配/记账（覆盖准入口径，打 warning）。
     ``None``（默认）→ 生产路径按各 ``record.universe`` 分组分别装配；注入
     ``daily`` 时保持单帧单组（调用方保证口径）。
+
+    反回灌（S6）：``as_of`` 须接近 wall-clock（``now``，默认 ``date.today()``）；
+    距今超过 ``max_backfill_days``（默认 10）或落后于 ledger high-watermark
+    时拒绝，除非 ``allow_backfill=True``（仍写真实 ``recorded_at`` 供审计）。
+    每行 provenance：``recorded_at`` / ``git_sha`` / ``as_of_lag_days`` /
+    ``command=forward-track``。
     """
     from collections import defaultdict
 
     as_of_s = _date_str(as_of)
+    now_s = _date_str(now) if now is not None else date.today().strftime("%Y%m%d")
+    existing_rows = _load_forward_rows(market, root)
+    lag_days = _check_as_of_freshness(
+        as_of_s,
+        now_s,
+        allow_backfill=bool(allow_backfill),
+        max_backfill_days=int(max_backfill_days),
+        high_watermark=_ledger_high_watermark(existing_rows),
+    )
+
     lb = int(lookback_days) if lookback_days is not None else _default_lookback()
     force_uni = universe  # 显式入参；None = 按 record.universe
 
     recs = [r for r in load_library(market, root=root) if r.status in statuses]
-    existing = _existing_keys(_load_forward_rows(market, root))
+    existing = _existing_keys(existing_rows)
 
     if force_uni is not None and daily is None:
         uniques = {getattr(r, "universe", None) for r in recs}
@@ -336,6 +418,14 @@ def record_forward_ics(
 
     if not to_eval:
         return {"recorded": 0, "skipped_existing": skipped, "failed": 0}
+
+    # 装配前固定 provenance：同批行共享 recorded_at / git_sha / lag
+    provenance = {
+        "recorded_at": _wall_clock_iso_utc(),
+        "git_sha": get_git_sha(),
+        "as_of_lag_days": int(lag_days),
+        "command": FORWARD_TRACK_COMMAND,
+    }
 
     new_rows: list[dict] = []
     failed = 0
@@ -361,6 +451,9 @@ def record_forward_ics(
             )
             new_rows.extend(rows)
             failed += n_fail
+
+    for row in new_rows:
+        row.update(provenance)
 
     _append_forward_rows(market, root, new_rows)
     return {

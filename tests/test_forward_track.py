@@ -116,6 +116,7 @@ def test_pit_ic_uses_factor_t_minus_1_and_ret_t(tmp_path):
 
     out = record_forward_ics(
         "ashare", as_of, root=str(tmp_path), daily=daily, lookback_days=5,
+        now=as_of,  # 历史 fixture：注入 now 避免被反回灌拒
     )
     assert out["recorded"] == 1
     assert out["failed"] == 0
@@ -156,13 +157,13 @@ def test_record_idempotent_skips_existing(tmp_path):
     ])
 
     out1 = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily,
+        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
     )
     assert out1["recorded"] == 2
     assert out1["skipped_existing"] == 0
 
     out2 = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily,
+        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
     )
     assert out2["recorded"] == 0
     assert out2["skipped_existing"] == 2
@@ -677,13 +678,17 @@ def test_assemble_universe_follows_admission_mode(monkeypatch, tmp_path):
     )
     import pytest as _pytest
     with _pytest.raises(RuntimeError, match="stop after capture"):
-        ft.record_forward_ics("ashare", "20260605", root=str(tmp_path))
+        ft.record_forward_ics(
+            "ashare", "20260605", root=str(tmp_path), now="20260605",
+        )
     assert captured["universe"] == "csi300"
 
     # 显式 --universe 覆盖各因子准入口径
     with _pytest.raises(RuntimeError, match="stop after capture"):
-        ft.record_forward_ics("ashare", "20260605", root=str(tmp_path),
-                              universe="csi800")
+        ft.record_forward_ics(
+            "ashare", "20260605", root=str(tmp_path),
+            universe="csi800", now="20260605",
+        )
     assert captured["universe"] == "csi800"
 
 
@@ -750,7 +755,9 @@ def test_record_groups_by_universe_and_assembles_each(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ft, "_assemble_daily", fake_assemble)
 
-    out = ft.record_forward_ics("ashare", as_of, root=str(tmp_path))
+    out = ft.record_forward_ics(
+        "ashare", as_of, root=str(tmp_path), now=as_of,
+    )
     assert out["recorded"] == 4
     assert out["failed"] == 0
 
@@ -782,7 +789,7 @@ def test_ledger_key_includes_universe(tmp_path):
         _lib_row(expr, status="probation", universe="csi300"),
     ])
     out1 = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily,
+        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
     )
     assert out1["recorded"] == 1
     rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
@@ -793,7 +800,7 @@ def test_ledger_key_includes_universe(tmp_path):
         _lib_row(expr, status="probation", universe="csi500"),
     ])
     out2 = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily,
+        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
     )
     assert out2["recorded"] == 1
     assert out2["skipped_existing"] == 0
@@ -860,7 +867,9 @@ def test_record_non_ashare_fail_closed(tmp_path):
     ], root=str(tmp_path))
 
     with pytest.raises(ValueError, match=r"fail closed|暂未接入"):
-        record_forward_ics("crypto", "20240104", root=str(tmp_path), daily=None)
+        record_forward_ics(
+            "crypto", "20240104", root=str(tmp_path), daily=None, now="20240104",
+        )
 
 
 def test_cli_forward_track_non_ashare_nonzero(tmp_path, monkeypatch, capsys):
@@ -920,6 +929,7 @@ def test_injected_daily_zero_regression_single_universe(tmp_path):
     ])
     out = record_forward_ics(
         "ashare", as_of, root=str(tmp_path), daily=daily, lookback_days=5,
+        now=as_of,
     )
     assert out["recorded"] == 1
     assert out["failed"] == 0
@@ -929,6 +939,134 @@ def test_injected_daily_zero_regression_single_universe(tmp_path):
 
     out2 = record_forward_ics(
         "ashare", as_of, root=str(tmp_path), daily=daily, lookback_days=5,
+        now=as_of,
     )
     assert out2["recorded"] == 0
     assert out2["skipped_existing"] == 1
+
+
+# ── 10. S6：wall-clock 反回灌 + provenance ───────────────────────────────────
+
+
+def test_reject_historical_backfill(tmp_path):
+    """as_of 距 now 过远 → ValueError；allow_backfill=True 时放行。"""
+    import pytest
+
+    from factorzen.discovery.forward_track import record_forward_ics
+
+    daily, _d1, _d2, _d3 = _daily_3day()
+    as_of = "20240101"
+    # daily 帧是 20240102–04；用 allow_backfill 路径时 as_of 需在帧内才有 IC，
+    # 此处只断言「反回灌」门禁：先拒旧日，再 allow 后不因门禁失败。
+    _write_lib(tmp_path, "ashare", [
+        _lib_row("close", status="probation"),
+    ])
+
+    with pytest.raises(ValueError, match=r"回灌|max_backfill|allow-backfill"):
+        record_forward_ics(
+            "ashare", as_of, root=str(tmp_path), daily=daily,
+            now="20240301",  # lag=60 > 10
+        )
+
+    # allow_backfill 跳过旧日拒绝（as_of 可能无前序交易日 → failed 可 >0，但不抛）
+    out = record_forward_ics(
+        "ashare", as_of, root=str(tmp_path), daily=daily,
+        now="20240301", allow_backfill=True,
+    )
+    assert "error" not in out
+    assert out["recorded"] >= 1
+
+
+def test_reject_future_as_of(tmp_path):
+    """as_of > now → 拒绝未来日。"""
+    import pytest
+
+    from factorzen.discovery.forward_track import record_forward_ics
+
+    daily, _d1, _d2, _d3 = _daily_3day()
+    _write_lib(tmp_path, "ashare", [
+        _lib_row("close", status="probation"),
+    ])
+
+    with pytest.raises(ValueError, match=r"未来|future"):
+        record_forward_ics(
+            "ashare", "20240310", root=str(tmp_path), daily=daily,
+            now="20240301",
+        )
+
+
+def test_fresh_record_writes_provenance(tmp_path):
+    """lag ≤ max_backfill_days → 正常写入；row 含 recorded_at/git_sha/status_at_record。"""
+    from factorzen.discovery.forward_track import record_forward_ics
+
+    daily, _d1, _d2, d3 = _daily_3day()
+    as_of = _yyyymmdd(d3)  # 20240104
+    _write_lib(tmp_path, "ashare", [
+        _lib_row("close", status="probation"),
+    ])
+
+    out = record_forward_ics(
+        "ashare", as_of, root=str(tmp_path), daily=daily,
+        now="20240106",  # lag=2 ≤ 10
+    )
+    assert out["recorded"] == 1
+    assert out["failed"] == 0
+
+    rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.get("recorded_at"), "recorded_at 必须非空"
+    assert row.get("git_sha"), "git_sha 必须非空"
+    assert row.get("status_at_record") == "probation"
+    assert row.get("as_of_lag_days") == 2
+    assert "T" in row["recorded_at"]  # ISO wall-clock
+
+
+def test_cli_forward_track_stale_date_nonzero(tmp_path, monkeypatch, capsys):
+    """CLI --date 远古、无 --allow-backfill → 非零；带 --allow-backfill → 0。"""
+    import factorzen.cli.main as cli_main
+    from factorzen.cli.main import build_parser
+
+    # 空库亦可：门禁在装配前，allow_backfill 后 to_eval 为空 → recorded=0 仍 0 退出
+    args_reject = build_parser().parse_args([
+        "factor-library", "forward-track",
+        "--market", "ashare",
+        "--date", "20200101",
+        "--root", str(tmp_path),
+    ])
+    rc_reject = cli_main._cmd_factor_library_forward_track(args_reject)
+    assert rc_reject != 0
+    err = capsys.readouterr().err
+    assert "回灌" in err or "backfill" in err.lower() or "max_backfill" in err or "失败" in err
+
+    args_ok = build_parser().parse_args([
+        "factor-library", "forward-track",
+        "--market", "ashare",
+        "--date", "20200101",
+        "--allow-backfill",
+        "--root", str(tmp_path),
+    ])
+    rc_ok = cli_main._cmd_factor_library_forward_track(args_ok)
+    assert rc_ok == 0
+
+
+def test_provenance_persisted_on_disk(tmp_path):
+    """读回 ledger 行断言含 recorded_at/git_sha。"""
+    from factorzen.discovery.forward_track import record_forward_ics
+
+    daily, _d1, _d2, d3 = _daily_3day()
+    as_of = _yyyymmdd(d3)
+    _write_lib(tmp_path, "ashare", [
+        _lib_row("close", status="probation", universe="csi300"),
+    ])
+    record_forward_ics(
+        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
+    )
+    path = tmp_path / "forward_track" / "ashare.jsonl"
+    raw = path.read_text(encoding="utf-8")
+    assert "recorded_at" in raw
+    assert "git_sha" in raw
+    rows = _read_jsonl(path)
+    assert rows[0]["recorded_at"]
+    assert rows[0]["git_sha"]
+    assert rows[0].get("command") == "forward-track"

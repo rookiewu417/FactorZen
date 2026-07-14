@@ -794,7 +794,8 @@ def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
     """记录 as_of 日库内因子的 paper forward RankIC。
 
     forward 确认窗口随真实时间累积；ops 每日链路接线为后续工作。
-    非 ashare fail closed（return 2）；全部 failed → return 1。
+    非 ashare fail closed（return 2）；全部 failed → return 1；
+    历史回灌/未来日拒（return 2，--allow-backfill 逃生口）。
     """
     from factorzen.discovery.backtest_window import latest_data_date
     from factorzen.discovery.factor_library import DEFAULT_ROOT
@@ -825,8 +826,14 @@ def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
             return 1
         as_of = latest.strftime("%Y%m%d")
     try:
-        out = record_forward_ics(market, as_of, root=root,
-                                 universe=getattr(args, "universe", None))
+        out = record_forward_ics(
+            market,
+            as_of,
+            root=root,
+            universe=getattr(args, "universe", None),
+            allow_backfill=bool(getattr(args, "allow_backfill", False)),
+            max_backfill_days=int(getattr(args, "max_backfill_days", 10)),
+        )
     except ValueError as exc:
         print(
             f"[factor-library forward-track] 失败：{exc}",
@@ -2479,6 +2486,15 @@ def build_parser() -> argparse.ArgumentParser:
     fl_ft.add_argument(
         "--universe", default=None,
         help="forward 截面 universe（缺省=库记录准入口径众数；必须与准入一致）",
+    )
+    fl_ft.add_argument(
+        "--allow-backfill", dest="allow_backfill", action="store_true",
+        help="允许 as_of 距今超过 max-backfill-days 的补录/初始播种"
+             "（仍写真实 recorded_at 供审计；默认拒绝历史回灌）",
+    )
+    fl_ft.add_argument(
+        "--max-backfill-days", dest="max_backfill_days", type=int, default=10,
+        help="as_of 相对 wall-clock 允许的最大日历滞后天数（默认 10）",
     )
     fl_ft.set_defaults(func=_cmd_factor_library_forward_track)
 

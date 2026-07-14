@@ -39,7 +39,7 @@ def test_cmd_mine_team_forwards_args_to_run_team_mine(monkeypatch, capsys) -> No
 
     prep_calls: list[tuple] = []
 
-    def fake_prepare(start, end, universe=None, lookback_days=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None, **kw):
         prep_calls.append((start, end, universe))
         return fake_daily
 
@@ -114,7 +114,7 @@ def test_cmd_mine_team_forwards_eval_start(monkeypatch) -> None:
     fake_daily = pl.DataFrame({"ts_code": ["600000.SH"]})
     monkeypatch.setattr(
         "factorzen.pipelines.factor_mine.prepare_mining_daily",
-        lambda start, end, universe=None, lookback_days=None: fake_daily,
+        lambda start, end, universe=None, lookback_days=None, **kw: fake_daily,
     )
     captured: dict[str, object] = {}
 
@@ -150,7 +150,7 @@ def test_cmd_mine_team_provisions_longer_warmup_prefix_for_llm(monkeypatch) -> N
     fake_daily = pl.DataFrame({"ts_code": ["600000.SH"]})
     captured: dict[str, object] = {}
 
-    def fake_prepare(start, end, universe=None, lookback_days=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None, **kw):
         captured["lookback_days"] = lookback_days
         return fake_daily
 
@@ -177,7 +177,7 @@ def test_cmd_mine_team_passes_universe_to_prepare(monkeypatch) -> None:
 
     prep_calls: list[tuple] = []
 
-    def fake_prepare(start, end, universe=None, lookback_days=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None, **kw):
         prep_calls.append((start, end, universe))
         return fake_daily
 

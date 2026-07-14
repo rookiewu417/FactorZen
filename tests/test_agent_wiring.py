@@ -83,7 +83,7 @@ def test_cmd_mine_agent_forwards_patience_and_heal_rounds(monkeypatch):
 
     captured: dict = {}
 
-    def fake_prepare(start, end, universe=None, lookback_days=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None, **kw):
         captured["prepare_lookback"] = lookback_days
         return pl.DataFrame({"ts_code": ["000001.SZ"]})
 
@@ -109,7 +109,7 @@ def test_cmd_mine_team_forwards_structured_patience_heal_rounds(monkeypatch):
 
     captured: dict = {}
 
-    def fake_prepare(start, end, universe=None, lookback_days=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None, **kw):
         captured["prepare_lookback"] = lookback_days
         return pl.DataFrame({"ts_code": ["000001.SZ"]})
 

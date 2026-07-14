@@ -753,7 +753,7 @@ def test_cli_lift_test_parser_and_dry_run(tmp_path, monkeypatch):
         lambda args: (pl.DataFrame({
             "trade_date": [date(2020, 1, 2)], "ts_code": ["000001.SZ"],
             "close": [10.0], "close_adj": [10.0],
-        }), None),
+        }), None, {}),
     )
 
     def fake_lift(gray, **kw):

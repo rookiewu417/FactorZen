@@ -291,7 +291,7 @@ def test_cli_rebuild_wires_daily_and_record_horizon(tmp_path, monkeypatch):
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
     monkeypatch.setattr(
         cli_main, "_prepare_agent_mining_data",
-        lambda args: (_fake_daily_full(), None),
+        lambda args: (_fake_daily_full(), None, {}),
     )
     monkeypatch.setattr(fl, "collect_source_expressions", lambda market: [])
     monkeypatch.setattr(
@@ -333,7 +333,7 @@ def test_cli_rebuild_missing_daily_still_errors(monkeypatch, capsys):
 
     monkeypatch.setattr(
         cli_main, "_prepare_agent_mining_data",
-        lambda args: (None, None),
+        lambda args: (None, None, {}),
     )
     args = build_parser().parse_args([
         "factor-library", "rebuild",
@@ -356,7 +356,7 @@ def _patch_lift_test_capture(monkeypatch, captured: list):
 
     monkeypatch.setattr(
         cli_main, "_prepare_agent_mining_data",
-        lambda args: (_fake_daily_full(), None),
+        lambda args: (_fake_daily_full(), None, {}),
     )
 
     def fake_lift(gray, **kw):

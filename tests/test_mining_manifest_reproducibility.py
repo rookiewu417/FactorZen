@@ -220,8 +220,12 @@ def test_cli_forwards_data_window_and_command_to_agent_pipeline(monkeypatch):
     cli.main(["mine", "agent", "--start", "20220101", "--end", "20231229",
               "--universe", "csi800", "--iterations", "1"])
 
+    # data_window 自带 membership 溯源三键（mock prepare 未填 out_meta → 占位 None）
     assert captured["data_window"] == {"start": "20220101", "end": "20231229",
-                                       "universe": "csi800", "market": "ashare"}
+                                       "universe": "csi800", "market": "ashare",
+                                       "membership_mode": None,
+                                       "membership_hash": None,
+                                       "membership_n_rows": None}
     assert "mine" in captured["command"] and "agent" in captured["command"]
 
 

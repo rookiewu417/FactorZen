@@ -53,7 +53,7 @@ def _patch_lift_deps(monkeypatch, *, upsert_calls: list | None = None):
     monkeypatch.setattr(
         cli_main,
         "_prepare_agent_mining_data",
-        lambda args: (_fake_daily(), None),
+        lambda args: (_fake_daily(), None, {}),
     )
 
     def fake_lift(gray, **kw):
@@ -250,7 +250,7 @@ def test_rebuild_fail_loudly_on_lift_review_error(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_main,
         "_prepare_agent_mining_data",
-        lambda args: (_fake_daily(), None),
+        lambda args: (_fake_daily(), None, {}),
     )
 
     import factorzen.discovery.factor_library as fl
@@ -297,7 +297,7 @@ def test_rebuild_ok_when_no_lift_review_error(monkeypatch):
     monkeypatch.setattr(
         cli_main,
         "_prepare_agent_mining_data",
-        lambda args: (_fake_daily(), None),
+        lambda args: (_fake_daily(), None, {}),
     )
 
     import factorzen.discovery.factor_library as fl

@@ -2,7 +2,9 @@
 """fz mine 的 pipeline 入口：拉数据 → run_session。"""
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 import polars as pl
 
@@ -78,7 +80,8 @@ def _attach_in_universe(daily: pl.DataFrame, membership: pl.DataFrame,
 
 
 def prepare_mining_daily(start: str, end: str, universe: str | None = None,
-                         lookback_days: int | None = None) -> pl.DataFrame:
+                         lookback_days: int | None = None,
+                         out_meta: dict | None = None) -> pl.DataFrame:
     """构建 A 股挖掘/评估用日线帧：**复权价**(FactorDataContext 的 close_adj) + join
     daily_basic(激活 total_mv/pb/pe_ttm 等 BASIC_FEATURES 叶子)。
 
@@ -98,10 +101,19 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
     4. membership 构造失败时回退期末快照过滤（``get_universe(end, ...)``）并 warning，
        保证挖掘链路不崩。
 
-    不做的事：manifest ``membership_hash`` 接线；动态过滤池的逐日 membership
-    （``get_universe_membership`` 对 daily_default 等抛 ValueError，本函数捕获后回退期末快照）。
+    ``out_meta``：可选输出字典。传入非 None 时写入 membership 溯源字段供 manifest 落盘：
+    ``membership_mode``（``"pit"`` / ``"asof_fallback"`` / ``None``）、
+    ``membership_hash``（仅 pit）、``membership_n_rows``（仅 pit）、``universe``。
+    ``out_meta=None`` 时行为零改动（返回类型不变，三调用方零破坏）。
+
+    不做的事：动态过滤池的逐日 membership（``get_universe_membership`` 对
+    daily_default 等抛 ValueError，本函数捕获后回退期末快照并标 ``asof_fallback``）。
     """
-    from factorzen.core.universe import get_universe, get_universe_membership
+    from factorzen.core.universe import (
+        get_universe,
+        get_universe_membership,
+        membership_hash,
+    )
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.discovery.search.random_search import search_space_max_lookback
 
@@ -110,6 +122,10 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
 
     uni: list[str] | None = None
     membership: pl.DataFrame | None = None
+    # 溯源：universe 未设 → None；PIT 成功 → pit；构造失败/空池 as-of 回退 → asof_fallback
+    membership_mode: str | None = None
+    membership_hash_val: str | None = None
+    membership_n_rows: int | None = None
     if universe:
         try:
             membership = get_universe_membership(start, end, universe)
@@ -118,6 +134,11 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
                 # membership 空但命名指数池：沿用 as-of 回退（成分数据未回补）
                 uni = _universe_asof_fallback(universe, end)
                 membership = None
+                membership_mode = "asof_fallback"
+            else:
+                membership_mode = "pit"
+                membership_hash_val = membership_hash(membership)
+                membership_n_rows = int(membership.height)
         except Exception as exc:
             _LOG.warning(
                 "universe membership 构造失败（%s: %s），回退期末快照过滤 "
@@ -128,6 +149,13 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
             if not uni and universe != "all_a":
                 uni = _universe_asof_fallback(universe, end)
             membership = None
+            membership_mode = "asof_fallback"
+
+    if out_meta is not None:
+        out_meta["membership_mode"] = membership_mode
+        out_meta["membership_hash"] = membership_hash_val
+        out_meta["membership_n_rows"] = membership_n_rows
+        out_meta["universe"] = universe
 
     ctx = FactorDataContext(start=start, end=end, required_data=["daily", "daily_basic"],
                             lookback_days=lookback_days, universe=uni)
@@ -149,6 +177,37 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
     return daily
 
 
+def _inject_membership_into_session_manifest(
+    session_dir: str | None, prep_meta: dict
+) -> None:
+    """run_session 无 manifest 注入口：在 run_mine 层读-补-写 membership 溯源字段。
+
+    侵入最小：不改 mining_session 签名；manifest 文件不存在时静默跳过
+    （测试 mock run_session 常只回 session_dir 字符串）。
+    """
+    if not session_dir or not prep_meta:
+        return
+    path = Path(session_dir) / "manifest.json"
+    if not path.is_file():
+        return
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _LOG.warning("无法读取 session manifest 以注入 membership：%s", exc)
+        return
+    for key in (
+        "membership_mode",
+        "membership_hash",
+        "membership_n_rows",
+        "universe",
+    ):
+        if key in prep_meta:
+            manifest[key] = prep_meta[key]
+    path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def run_mine(*, start: str, end: str, universe: str | None = None,
              n_trials: int = 200, top_k: int = 10, seed: int = 42,
              method: str = "random", holdout_ratio: float = 0.2,
@@ -157,14 +216,18 @@ def run_mine(*, start: str, end: str, universe: str | None = None,
              workers: int = 1, update_library: bool = True,
              library_orthogonal: bool = True,
              objective: str = "residual") -> dict:
-    daily = prepare_mining_daily(start, end, universe)
+    prep_meta: dict = {}
+    daily = prepare_mining_daily(start, end, universe, out_meta=prep_meta)
     # 收尾自动 upsert 因子库（--no-library 关）；库根由 run_session 从 out_dir 推导
     # （workspace/mining_sessions → workspace/factor_library）。universe 落进记录溯源。
     # library_orthogonal：搜索期避开库内已覆盖方向（--no-library-orthogonal 关）。
     # objective：残差/裸 IC 挖掘目标（库空时 residual 自动退化 raw）。
-    return run_session(daily, n_trials=n_trials, top_k=top_k, seed=seed, method=method,
-                       holdout_ratio=holdout_ratio, train_ratio=train_ratio,
-                       decorr_threshold=decorr_threshold, min_n_train=min_n_train,
-                       dsr_alpha=dsr_alpha, eval_start=start, workers=workers,
-                       update_library=update_library, library_universe=universe,
-                       library_orthogonal=library_orthogonal, objective=objective)
+    result = run_session(daily, n_trials=n_trials, top_k=top_k, seed=seed, method=method,
+                         holdout_ratio=holdout_ratio, train_ratio=train_ratio,
+                         decorr_threshold=decorr_threshold, min_n_train=min_n_train,
+                         dsr_alpha=dsr_alpha, eval_start=start, workers=workers,
+                         update_library=update_library, library_universe=universe,
+                         library_orthogonal=library_orthogonal, objective=objective)
+    # run_session 无 manifest_extra：读-补-写 membership_*（可复现铁律）
+    _inject_membership_into_session_manifest(result.get("session_dir"), prep_meta)
+    return result

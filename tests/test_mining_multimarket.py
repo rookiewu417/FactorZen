@@ -321,7 +321,7 @@ def test_cmd_mine_team_ashare_passes_profile_none(monkeypatch):
     from factorzen.cli import main as cli
     cap: dict = {}
     monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily",
-                        lambda start, end, universe=None, lookback_days=None: _mock_ashare_daily())
+                        lambda start, end, universe=None, lookback_days=None, **kw: _mock_ashare_daily())
 
     def fake_team_mine(daily, **kw):
         cap.update(kw)

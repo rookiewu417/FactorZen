@@ -664,6 +664,14 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     from factorzen.validation.holdout import split_holdout
 
     market = args.market
+    # A 股不带 --universe = 全 A 5000+ 只拉取，多年窗口必 OOM（实测 ~22GB 被杀）；
+    # 库的评估口径历史上一直是命名池（csi300），无池 rebuild 几乎必为误操作。
+    if market == "ashare" and not getattr(args, "universe", None):
+        print(
+            "[factor-library] 警告：未指定 --universe，将拉取全 A 股（内存开销极大，"
+            "多年窗口可能 OOM）；库的历史口径为 --universe csi300",
+            file=sys.stderr,
+        )
     # 窗口：显式 --start/--end 覆盖，否则默认窗口（最近约 6 年滚动到数据最新端）
     if args.start and args.end:
         start, end = args.start, args.end

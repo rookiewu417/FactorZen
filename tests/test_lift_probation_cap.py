@@ -116,6 +116,124 @@ def test_probation_decision_unaffected_by_cap(tmp_path):
     assert r.admission_decision == "probation"
 
 
+# ── P4：已 forward-confirmed 的 lift active 不被 cap 撤销 ────────────────────
+
+
+def test_confirmed_lift_active_kept_on_active_retest(tmp_path):
+    """已 forward-confirmed 的 lift active + 复测 pass → 保持 active，确认字段不洗。
+
+    默认 allow_active=False 的 cap 只限制「首次自动 active」，不得把已确认
+    active 打回 probation，也不得清空 forward_confirmed_at / forward_n_days。
+    """
+    from factorzen.discovery.factor_library import (
+        FactorRecord,
+        _save_library,
+        load_library,
+        upsert_lift_admissions,
+    )
+
+    confirmed_at = "2026-05-01"
+    prev = FactorRecord(
+        expression="rank(close)",
+        market="ashare",
+        status="active",
+        admission_track="lift",
+        admission_decision="active",
+        forward_confirmed_at=confirmed_at,
+        forward_n_days=60,
+        lift=0.005,
+        lift_se=0.001,
+        lift_second_half=0.004,
+        added_at="2026-01-01",
+        updated_at="2026-05-01",
+    )
+    _save_library("ashare", [prev], root=str(tmp_path))
+
+    out = upsert_lift_admissions(
+        [_active_lift_row("rank(close)")],
+        market="ashare",
+        root=str(tmp_path),
+        meta=_meta(now="2026-07-14", run_id="retest_p4"),
+        # 默认 allow_active=False：旧实现会 cap 到 probation 并洗确认字段
+    )
+    assert out.get("added_active", 0) == 1
+    assert out.get("capped_active", 0) == 0
+    assert out.get("added_probation", 0) == 0
+
+    r = load_library("ashare", root=str(tmp_path))[0]
+    assert r.status == "active"
+    assert r.admission_track == "lift"
+    assert r.admission_decision == "active"
+    assert r.forward_confirmed_at == confirmed_at
+    assert r.forward_n_days == 60
+    assert r.added_at == "2026-01-01"
+    assert r.updated_at == "2026-07-14"
+
+
+def test_confirmed_lift_active_demotes_on_probation_decision(tmp_path):
+    """已 forward-confirmed 的 lift active + 复测统计降级 → 允许降到 probation。"""
+    from factorzen.discovery.factor_library import (
+        FactorRecord,
+        _save_library,
+        load_library,
+        upsert_lift_admissions,
+    )
+
+    prev = FactorRecord(
+        expression="rank(close)",
+        market="ashare",
+        status="active",
+        admission_track="lift",
+        admission_decision="active",
+        forward_confirmed_at="2026-05-01",
+        forward_n_days=60,
+        lift=0.005,
+        lift_se=0.001,
+        lift_second_half=0.004,
+        added_at="2026-01-01",
+        updated_at="2026-05-01",
+    )
+    _save_library("ashare", [prev], root=str(tmp_path))
+
+    out = upsert_lift_admissions(
+        [_probation_lift_row("rank(close)")],
+        market="ashare",
+        root=str(tmp_path),
+        meta=_meta(now="2026-07-14"),
+    )
+    assert out["added_probation"] == 1
+    assert out.get("added_active", 0) == 0
+    assert out.get("capped_active", 0) == 0
+
+    r = load_library("ashare", root=str(tmp_path))[0]
+    assert r.status == "probation"
+    assert r.admission_decision == "probation"
+    # 降级仍应保留确认 provenance（证据历史，非 status 本身）
+    assert r.forward_confirmed_at == "2026-05-01"
+    assert r.forward_n_days == 60
+
+
+def test_new_record_active_still_capped_to_probation(tmp_path):
+    """无 prev、decision=active、allow_active=False → cap 到 probation（零回归）。"""
+    from factorzen.discovery.factor_library import load_library, upsert_lift_admissions
+
+    out = upsert_lift_admissions(
+        [_active_lift_row("rank(vol)")],
+        market="ashare",
+        root=str(tmp_path),
+        meta=_meta(),
+    )
+    assert out["added_probation"] == 1
+    assert out.get("added_active", 0) == 0
+    assert out.get("capped_active", 0) == 1
+
+    r = load_library("ashare", root=str(tmp_path))[0]
+    assert r.status == "probation"
+    assert r.admission_decision == "active"
+    assert r.forward_confirmed_at is None
+    assert r.forward_n_days is None
+
+
 # ── 4：team hook 默认 cap ────────────────────────────────────────────────────
 
 

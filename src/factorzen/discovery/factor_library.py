@@ -347,6 +347,12 @@ def _record_from_candidate(
         # admission_track 默认 single（单因子裸口径 upsert 不改轨道）
         admission_ic=g("admission_ic"),  # lift 轨方向权威；旧行缺失 → None
         holdout_n_days=hnd,
+        # paper forward 确认 provenance：与 added_at 同款从 prev 保留，
+        # 避免幂等重写 / 复测静默洗掉 forward_confirmed_at / forward_n_days
+        forward_confirmed_at=(
+            prev.forward_confirmed_at if prev is not None else None
+        ),
+        forward_n_days=prev.forward_n_days if prev is not None else None,
         eval_start=eval_start,
         eval_end=eval_end,
         universe=universe,
@@ -604,6 +610,12 @@ def upsert_lift_admissions(
     计数进 ``added_probation`` 并累加 ``capped_active``。``allow_active=True`` 时
     decision 即 status（现行为）。reject / 降级路径不受 cap 影响。
 
+    **已 forward-confirmed 的 lift active 短路（状态机单调性）**：
+    若 ``prev`` 已是 lift 轨 ``active`` 且 ``forward_confirmed_at`` 非空，复测
+    decision 仍为 ``active`` 时**绕过 cap**，保持 ``status="active"`` 并保留
+    确认字段（幂等重跑不得撤销已确认状态）。真实失败（decision=probation /
+    reject）仍按既有路径降级。
+
     reject 语义：
     - 已有 lift 轨 ``active``/``probation`` 复测失败 → 降级 ``no_lift``
       （对齐 rebuild preserved_lift 复审），计 ``demoted_no_lift``；
@@ -709,17 +721,29 @@ def upsert_lift_admissions(
             rec.admission_track = "lift"
             # 统计裁决原文始终落盘；status 受 allow_active 运营护栏约束
             rec.admission_decision = decision  # "active" | "probation"
-            if decision == "active" and not allow_active:
-                # cap：校准前默认最多写 probation（§14.1），provenance 不丢
-                rec.status = "probation"
-                out["added_probation"] += 1
-                out["capped_active"] = out.get("capped_active", 0) + 1
-            else:
-                rec.status = decision  # allow_active 或本就 probation
-                if decision == "active":
+            # 已 forward-confirmed 的 lift active：复测 pass 保持 active，绕过 cap
+            # （cap 只限制首次自动晋升，不撤销已确认状态；失败降级仍走下方分支）
+            prev_confirmed_active = (
+                prev is not None
+                and (prev.admission_track or "single") == "lift"
+                and prev.status == "active"
+                and prev.forward_confirmed_at is not None
+            )
+            if decision == "active":
+                if prev_confirmed_active:
+                    rec.status = "active"
                     out["added_active"] += 1
-                else:
+                elif not allow_active:
+                    # cap：校准前默认最多写 probation（§14.1），provenance 不丢
+                    rec.status = "probation"
                     out["added_probation"] += 1
+                    out["capped_active"] = out.get("capped_active", 0) + 1
+                else:
+                    rec.status = "active"
+                    out["added_active"] += 1
+            else:
+                rec.status = decision  # probation
+                out["added_probation"] += 1
             rec.evidence_tier = "v2"  # 新写入路径一律 v2
             rec.lift = _as_float(row.get("lift"))
             rec.lift_baseline = _as_float(row.get("lift_baseline", row.get("baseline")))

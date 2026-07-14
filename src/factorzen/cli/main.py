@@ -647,6 +647,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         llm_workers=getattr(args, "llm_workers", 1),
         auto_lift=not bool(getattr(args, "no_auto_lift", False)),
         lift_se_mult=float(getattr(args, "lift_se_mult", 1.0)),
+        campaign_prior_enabled=not bool(getattr(args, "no_campaign_prior", False)),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
@@ -2193,6 +2194,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "与 --no-library 无关，后者只关收尾 upsert）")
     m_team.add_argument("--objective", choices=["raw", "residual"], default="residual",
                        help="挖掘评估目标：residual=对库残差 IC（默认；库空→raw）；raw=裸 IC")
+    m_team.add_argument("--no-campaign-prior", dest="no_campaign_prior",
+                        action="store_true",
+                        help="关闭跨 session trial family 记账（默认开：finalize 的 DSR 用"
+                             "同评价配置历史唯一表达式∪本 session 的 N，防多重检验清零漏记）")
     m_team.add_argument("--llm-workers", dest="llm_workers", type=int, default=4,
                         help="轮内独立 LLM 调用的并发度（默认 4 提速；1=串行零回归；"
                              "API/pipeline 缺省仍为 1）")

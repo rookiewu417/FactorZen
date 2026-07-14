@@ -8,6 +8,10 @@ team session 末钩子批处理。
 - 每日 OOS RankIC 与 ``combination.experiment._evaluate_oos`` 的逐日 spearman 一致；
 - lift = 配对日 (cand_ic − base_ic) 均值；SE 用 block 均值的样本标准差 / √n_blocks
   （对冲 5 日前向收益重叠导致的日间自相关）。
+- **lift 专用 CV**（``DEFAULT_LIFT_CV``）：rolling ``train_days=250`` / ``test_days=40``
+  / ``purge_days=5`` / ``expanding=False``，典型折数 ~30。相对旧默认
+  （expanding 120d train / 20d test，~85 折）折数更少、后期训练集不再膨胀，
+  **lift 数值与旧 expanding/20d 口径不可直接比**（阈值本待标定）。
 
 评估上下文（``LiftEvalContext`` / ``make_lift_context``）：
 - 统一对 daily **预处理恰好一次**（含 profile），baseline 物化与 candidate
@@ -22,6 +26,8 @@ team session 末钩子批处理。
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +45,18 @@ _LOG = logging.getLogger(__name__)
 DEFAULT_TOP_M = 10
 DEFAULT_HORIZON = 5
 DEFAULT_BLOCK_DAYS = 20
+DEFAULT_LIFT_WORKERS = 4
+
+# lift 专用 CV 单一真源：run_lift_tests / run_group_lift 共用；调用方 cv_params 覆盖语义不变。
+# rolling 250d/40d → 折数 ~30；expanding=False 避免后期折训练集膨胀。
+# 与旧 expanding 120/20 的 lift 数值不可直接比（阈值本待标定）。
+DEFAULT_LIFT_CV: dict[str, Any] = {
+    "train_days": 250,
+    "test_days": 40,
+    "purge_days": 5,
+    "embargo_days": 0,
+    "expanding": False,
+}
 
 # TODO: 后续由 guardrails.REJECT_CATEGORY_LIFT_QUEUE 收口；旧 manifest 仍用 gray_zone。
 LIFT_QUEUE_CATEGORY = "lift_queue"
@@ -353,6 +371,17 @@ def _empty_lift_fields() -> dict[str, Any]:
     }
 
 
+def _lgbm_lift_params(*, lift_workers: int) -> dict[str, Any]:
+    """生产路径 LGBM 线程/确定性参数：并行/串行 parity（同 seed 可复现）。"""
+    workers = max(1, int(lift_workers))
+    n_cpu = os.cpu_count() or 1
+    return {
+        "num_threads": max(1, n_cpu // workers),
+        "deterministic": True,
+        "force_row_wise": True,
+    }
+
+
 def run_lift_tests(
     gray_candidates: list[dict],
     *,
@@ -371,15 +400,25 @@ def run_lift_tests(
     horizon: int | None = None,
     block_days: int = DEFAULT_BLOCK_DAYS,
     ctx: LiftEvalContext | None = None,
+    lift_workers: int = DEFAULT_LIFT_WORKERS,
+    base_daily: pl.DataFrame | None = None,
 ) -> list[dict]:
     """对灰区/lift 队列候选跑 lgbm 组合 OOS lift 实验。
 
     - gray 按 |residual_ic_train|（缺则 |ic_train|）降序；``top_m=None`` 全测，
       否则截断（``truncated_from`` / n_selected 语义不变——**no silent caps**）。
     - 基线**只算一次**（含每日 IC 序列复用）：库内 active 集合 → combine → 每日 RankIC。
+      ``base_daily`` 非 None 时跳过基线 combine，直接复用注入的每日 IC 序列。
     - 每候选：active+candidate → 同 CV 同 seed → 配对日 lift + 块 SE + 半段。
     - ``lift ≥ threshold`` → passed（最终 active/probation/reject 见 ``lift_admission``）。
     - 逐候选 try/except：一个坏候选不崩整批。
+    - ``lift_workers``：候选级线程并行（默认 4）。``<=1`` 纯串行、**不**建
+      ``ThreadPoolExecutor``（零回归约定同 ``_llm_map``）。生产路径每模型注入
+      ``num_threads=cpu//workers`` + deterministic；注入的 ``combine_fn``（测试 mock）
+      不强加 params。
+
+    CV 默认见 ``DEFAULT_LIFT_CV``（rolling 250d/40d，~30 折）；``cv_params`` 覆盖。
+    lift 数值与旧 expanding 120/20 口径不可直接比。
 
     ``ctx``（``LiftEvalContext``，可选）：
     - 缺省时从 ctx 派生 ``active_factor_dfs`` / ``ret_df`` / ``materialize_candidate`` /
@@ -389,7 +428,7 @@ def run_lift_tests(
     - ``ctx=None`` → 现状路径零回归。
 
     测试可注入 ``active_factor_dfs`` / ``ret_df`` / ``combine_fn`` / ``materialize_candidate``
-    做离线 mock；生产路径走 ``make_lift_context`` + ``build_library_pool`` + 表达式物化。
+    / ``base_daily`` 做离线 mock；生产路径走 ``make_lift_context`` + ``build_library_pool``。
     """
     from factorzen.research.combination.cv import PurgedWalkForwardCV
     from factorzen.research.combination.models import combine_lgbm
@@ -401,6 +440,7 @@ def run_lift_tests(
     else:
         selected = ordered[: max(0, int(top_m))]
     truncated = n_input - len(selected)
+    workers = int(lift_workers)
 
     # horizon / admission：显式优先，否则 ctx，再否则默认
     _horizon = (
@@ -410,19 +450,20 @@ def run_lift_tests(
     adm_start = ctx.admission_start if ctx is not None else None
     adm_end = ctx.admission_end if ctx is not None else None
 
-    cv_kw: dict[str, Any] = {
-        "train_days": 120,
-        "test_days": 20,
-        "purge_days": 5,
-        "embargo_days": 0,
-        "expanding": True,
-    }
+    cv_kw: dict[str, Any] = dict(DEFAULT_LIFT_CV)
     if cv_params:
         cv_kw.update(cv_params)
     cv = PurgedWalkForwardCV(**cv_kw)
-    _combine = combine_fn or (
-        lambda fds, rdf, c, **kw: combine_lgbm(fds, rdf, c, seed=seed, **kw)
-    )
+    # 注入 combine_fn（测试 mock）不强加 LGBM params；生产路径保并行/串行 parity
+    if combine_fn is not None:
+        _combine = combine_fn
+    else:
+        _lgbm_params = _lgbm_lift_params(lift_workers=max(1, workers))
+
+        def _combine(fds, rdf, c, **kw):
+            return combine_lgbm(
+                fds, rdf, c, seed=seed, params=_lgbm_params, **kw,
+            )
 
     meta = {
         "truncated_from": n_input if truncated else None,
@@ -480,12 +521,15 @@ def run_lift_tests(
         else:
             materialize_candidate = _default_materializer(daily, leaf_map)
 
-    # ── 基线一次（每日序列复用；评分窗裁剪仅作用于日 IC） ─────────────────
+    # ── 基线（base_daily 注入则跳过 combine；否则算一次并复用日序列） ─────
     try:
-        base_combined = _combine(_with_safe_feature_names(active_factor_dfs), ret_df, cv)
-        base_daily = _daily_oos_rank_ic(
-            base_combined, ret_df, start=adm_start, end=adm_end,
-        )
+        if base_daily is None:
+            base_combined = _combine(
+                _with_safe_feature_names(active_factor_dfs), ret_df, cv,
+            )
+            base_daily = _daily_oos_rank_ic(
+                base_combined, ret_df, start=adm_start, end=adm_end,
+            )
         baseline = _mean_ic(base_daily)
     except Exception as exc:
         _LOG.warning("lift_test baseline 失败: %s: %s", type(exc).__name__, exc)
@@ -505,8 +549,7 @@ def run_lift_tests(
             for c in selected
         ]
 
-    results: list[dict] = []
-    for c in selected:
+    def _eval_one(c: dict) -> dict[str, Any]:
         expr = c.get("expression")
         row: dict[str, Any] = {
             "expression": expr,
@@ -523,13 +566,11 @@ def run_lift_tests(
             cand_df = materialize_candidate(expr) if expr else None
             if cand_df is None or (hasattr(cand_df, "is_empty") and cand_df.is_empty()):
                 row["error"] = "materialize_failed"
-                results.append(row)
-                continue
+                return row
             # 列规范：[trade_date, ts_code, factor_value]
             if "factor_value" not in cand_df.columns:
                 row["error"] = "bad_panel_schema"
-                results.append(row)
-                continue
+                return row
             pool = dict(active_factor_dfs)
             # 键用规范表达式串；若与 active 撞名则覆盖为候选自身（仍测「加它」）。
             # 进 combine 前统一映射安全特征名（候选按插入序恒为最后一个 f{n}）。
@@ -560,8 +601,15 @@ def run_lift_tests(
                 expr, type(exc).__name__, exc,
             )
             row["error"] = f"{type(exc).__name__}:{exc}"
-        results.append(row)
-    return results
+        return row
+
+    # workers<=1：纯串行列表推导，不实例化 ThreadPoolExecutor（零回归同 _llm_map）
+    if workers <= 1:
+        return [_eval_one(c) for c in selected]
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # map 按 selected 序装配（不用 as_completed）
+        return list(pool.map(_eval_one, selected))
 
 
 def run_group_lift(
@@ -582,11 +630,17 @@ def run_group_lift(
     horizon: int | None = None,
     block_days: int = DEFAULT_BLOCK_DAYS,
     ctx: LiftEvalContext | None = None,
+    base_daily: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """整组候选一次 combine vs 基线的配对 lift 统计。
 
     全部候选一起加进 active 池 combine 一次；逐候选物化失败的跳过并记
     ``skipped``；全部物化失败返回 error 行。同样走 ``_with_safe_feature_names``。
+
+    ``base_daily`` 非 None 时跳过基线 combine，复用注入序列；成功路径结果含
+    ``base_daily``（每日 IC 序列，供 ``run_lift_tests`` 复用，省 1 次 combine）。
+
+    CV 默认见 ``DEFAULT_LIFT_CV``（与 ``run_lift_tests`` 同一真源）。
 
     ``ctx`` 语义同 ``run_lift_tests``：缺省参数从 ctx 派生（显式注入优先）；
     评分窗裁日 IC、建模全帧；``ctx=None`` 零回归。结果 dict 含
@@ -603,19 +657,20 @@ def run_group_lift(
     adm_start = ctx.admission_start if ctx is not None else None
     adm_end = ctx.admission_end if ctx is not None else None
 
-    cv_kw: dict[str, Any] = {
-        "train_days": 120,
-        "test_days": 20,
-        "purge_days": 5,
-        "embargo_days": 0,
-        "expanding": True,
-    }
+    cv_kw: dict[str, Any] = dict(DEFAULT_LIFT_CV)
     if cv_params:
         cv_kw.update(cv_params)
     cv = PurgedWalkForwardCV(**cv_kw)
-    _combine = combine_fn or (
-        lambda fds, rdf, c, **kw: combine_lgbm(fds, rdf, c, seed=seed, **kw)
-    )
+    if combine_fn is not None:
+        _combine = combine_fn
+    else:
+        # 组门单次 combine：workers=1 口径的线程数（整组不并行候选）
+        _lgbm_params = _lgbm_lift_params(lift_workers=1)
+
+        def _combine(fds, rdf, c, **kw):
+            return combine_lgbm(
+                fds, rdf, c, seed=seed, params=_lgbm_params, **kw,
+            )
 
     def _err(msg: str, *, skipped: list | None = None, expressions: list | None = None):
         return {
@@ -631,6 +686,7 @@ def run_group_lift(
             "baseline": None,
             "threshold": threshold,
             "error": msg,
+            "base_daily": None,
             **_provenance_fields(
                 admission_start=adm_start,
                 admission_end=adm_end,
@@ -695,10 +751,13 @@ def run_group_lift(
         return _err("all_candidates_materialize_failed", skipped=skipped)
 
     try:
-        base_combined = _combine(_with_safe_feature_names(active_factor_dfs), ret_df, cv)
-        base_daily = _daily_oos_rank_ic(
-            base_combined, ret_df, start=adm_start, end=adm_end,
-        )
+        if base_daily is None:
+            base_combined = _combine(
+                _with_safe_feature_names(active_factor_dfs), ret_df, cv,
+            )
+            base_daily = _daily_oos_rank_ic(
+                base_combined, ret_df, start=adm_start, end=adm_end,
+            )
         baseline = _mean_ic(base_daily)
         group_combined = _combine(_with_safe_feature_names(pool), ret_df, cv)
         group_daily = _daily_oos_rank_ic(
@@ -722,6 +781,7 @@ def run_group_lift(
         "baseline": baseline,
         "threshold": threshold,
         "error": None,
+        "base_daily": base_daily,
         **_provenance_fields(
             admission_start=adm_start,
             admission_end=adm_end,
@@ -814,6 +874,8 @@ extract_lift_queue_from_manifest = extract_gray_candidates_from_manifest
 __all__ = [
     "DEFAULT_BLOCK_DAYS",
     "DEFAULT_HORIZON",
+    "DEFAULT_LIFT_CV",
+    "DEFAULT_LIFT_WORKERS",
     "DEFAULT_TOP_M",
     "LIFT_QUEUE_CATEGORY",
     "LiftEvalContext",

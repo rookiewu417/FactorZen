@@ -647,6 +647,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         llm_workers=getattr(args, "llm_workers", 1),
         auto_lift=not bool(getattr(args, "no_auto_lift", False)),
         lift_se_mult=float(getattr(args, "lift_se_mult", 1.0)),
+        lift_workers=int(getattr(args, "lift_workers", 4) or 4),
         campaign_prior_enabled=not bool(getattr(args, "no_campaign_prior", False)),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
@@ -1056,6 +1057,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             profile_name=getattr(profile, "name", None) if profile is not None else None,
         )
 
+    lift_workers = int(getattr(args, "lift_workers", 4) or 4)
     results = run_lift_tests(
         uniq_gray,
         market=market,
@@ -1066,6 +1068,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         threshold=threshold,
         seed=seed,
         ctx=lift_ctx,
+        lift_workers=lift_workers,
     )
 
     # 打印表（含 lift_se / second_half）+ admission 窗说明
@@ -2223,6 +2226,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--lift-se-mult", dest="lift_se_mult", type=float, default=1.0,
         help="lift 准入 SE 乘数（默认 1.0：lift ≥ max(threshold, se_mult×SE)）",
     )
+    m_team.add_argument(
+        "--lift-workers", dest="lift_workers", type=int, default=4,
+        help="session 末 lift 逐候选线程并发（默认 4；1=串行零回归）",
+    )
     _add_freq_arg(m_team)
     m_team.set_defaults(func=_cmd_mine_team)
 
@@ -2311,6 +2318,10 @@ def build_parser() -> argparse.ArgumentParser:
     fl_lt.add_argument(
         "--admission-end", dest="admission_end", default=None,
         help="lift 评分窗终点 YYYYMMDD（覆盖 session manifest holdout 推导）",
+    )
+    fl_lt.add_argument(
+        "--lift-workers", dest="lift_workers", type=int, default=4,
+        help="候选级 lift 线程并发（默认 4；1=串行零回归）",
     )
     fl_lt.add_argument("--top-n", dest="top_n", type=int, default=50,
                        help="crypto/futures/us universe size")

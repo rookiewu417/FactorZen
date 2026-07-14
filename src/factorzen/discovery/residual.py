@@ -170,6 +170,159 @@ def _day_min_samples(k: int) -> int:
     return max(MIN_CROSS_SAMPLES, int(k) + 10)
 
 
+def _qr_rcond_tol(A: np.ndarray, diag: np.ndarray) -> float:
+    """与 ``np.linalg.lstsq(..., rcond=None)`` 同阶的数值秩阈值。"""
+    scale = float(diag.max()) if diag.size else 1.0
+    return float(np.finfo(np.float64).eps * max(A.shape) * scale)
+
+
+def _qr_basis(X: np.ndarray) -> np.ndarray | None:
+    """对 ``A=[1|X]`` 做 reduced QR，返回满秩列对应的 Q；秩亏 → None。
+
+    秩亏时 Householder QR 无列主元，截断 R 对角不能保证张成完整 col(A)；
+    返回 None 让呼叫方走 ``lstsq``（SVD）慢路径，残差与 ``residualize_cross_section`` 一致。
+    """
+    X = np.asarray(X, dtype=np.float64)
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+    n = int(X.shape[0])
+    if n == 0:
+        return np.zeros((0, 0), dtype=np.float64)
+    A = np.column_stack([np.ones(n, dtype=np.float64), X])
+    Q, R = np.linalg.qr(A, mode="reduced")
+    if R.size == 0:
+        return Q
+    diag = np.abs(np.diag(R))
+    tol = _qr_rcond_tol(A, diag)
+    if np.any(diag <= tol):
+        return None
+    return Q
+
+
+def _project_with_Q_or_lstsq(y: np.ndarray, X: np.ndarray, Q: np.ndarray | None) -> np.ndarray:
+    """``r = y - Q @ (Q.T @ y)``；Q 不可用时回退 lstsq。"""
+    if Q is not None and Q.shape[0] == y.shape[0]:
+        # 满秩 reduced QR：正交投影 residual，与 lstsq 最小二乘残差一致
+        return y - Q @ (Q.T @ y)
+    return residualize_cross_section(y, X)
+
+
+class ResidualProjector:
+    """库面板 per-date QR 预计算：多候选残差化时复用每日 Q。
+
+    构造时对每个 ``trade_date`` 的设计矩阵 ``[1 | X_lib]``（面板全体 ``ts_code`` 行）
+    做 reduced QR，缓存 Q 与行索引（即 ``panel.stock_idx`` / ``panel.stocks``）。
+
+    ``residualize`` / ``project_day`` 语义对齐 ``residualize_cross_section`` +
+    ``compute_residual_ic`` 的日守卫与对齐规则（候选∩库、``max(30, k+10)``、NaN/null）。
+
+    快路径：对齐后的股票集覆盖全日面板轴时，直接 ``y - Q@(Q.T@y)``（两次 matvec）。
+    子集日：对子矩阵现场 reduced QR（仍避免 SVD lstsq）；子矩阵秩亏则 lstsq 回退。
+    """
+
+    def __init__(self, panel: LibraryPanel) -> None:
+        if panel is None or panel.k == 0:
+            raise ValueError("ResidualProjector 需要 k>0 的 LibraryPanel")
+        self.panel = panel
+        self._min_n = _day_min_samples(panel.k)
+        # di → Q (n_stocks, k+1) 或 None（该日全截面秩亏 → project 走 lstsq）
+        self._Q: list[np.ndarray | None] = [
+            _qr_basis(panel.X[di]) for di in range(panel.n_dates)
+        ]
+
+    @classmethod
+    def from_panel(cls, panel: LibraryPanel) -> ResidualProjector:
+        return cls(panel)
+
+    def project_day(
+        self, di: int, y_v: np.ndarray, si_v: np.ndarray,
+    ) -> np.ndarray:
+        """单日投影：``y_v`` 与 ``si_v``（panel 股票轴下标）行对齐。"""
+        y_v = np.asarray(y_v, dtype=np.float64).reshape(-1)
+        si_v = np.asarray(si_v, dtype=np.int64).reshape(-1)
+        if y_v.shape[0] != si_v.shape[0]:
+            raise ValueError(
+                f"y/si 行数不一致: y={y_v.shape[0]}, si={si_v.shape[0]}"
+            )
+        X_day = self.panel.X[di, si_v, :]
+        n_full = self.panel.n_stocks
+        Q_full = self._Q[di]
+        # 全日覆盖（任意行置换）：置换后的 Q 列仍标准正交，可直接投影
+        if (
+            Q_full is not None
+            and si_v.shape[0] == n_full
+            and np.unique(si_v).size == n_full
+        ):
+            Q = Q_full[si_v]
+            return y_v - Q @ (Q.T @ y_v)
+        # 子集：对 [1|X_sub] 现场 QR；秩亏 → lstsq
+        Q_sub = _qr_basis(X_day)
+        return _project_with_Q_or_lstsq(y_v, X_day, Q_sub)
+
+    def residualize(self, factor_df: pl.DataFrame) -> pl.DataFrame:
+        """候选面板逐日残差化 → ``[trade_date, ts_code, factor_value]``（值为残差）。
+
+        与 ``compute_residual_ic`` 相同的对齐/守卫（无收益 join）：
+        - ``factor_value``：``fill_nan(None)`` 后只留有限非空
+        - 库无 ``trade_date`` / 库外 ``ts_code`` → 丢弃
+        - 有效行 ``n_t < max(30, k+10)`` → 整日丢弃
+        """
+        empty = pl.DataFrame(
+            schema={
+                "trade_date": pl.Date,
+                "ts_code": pl.Utf8,
+                "factor_value": pl.Float64,
+            }
+        )
+        if factor_df is None or factor_df.is_empty():
+            return empty
+
+        cand = factor_df.with_columns(pl.col("factor_value").fill_nan(None)).filter(
+            pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite()
+        )
+        if cand.is_empty():
+            return empty
+
+        panel = self.panel
+        min_n = self._min_n
+        out_dates: list = []
+        out_codes: list = []
+        out_vals: list[float] = []
+
+        for date, day_df in cand.group_by("trade_date", maintain_order=True):
+            d = date[0] if isinstance(date, tuple) else date
+            di = panel.date_idx.get(d)
+            if di is None:
+                continue
+            codes = day_df["ts_code"].to_list()
+            y = day_df["factor_value"].to_numpy().astype(np.float64, copy=False)
+            si = np.fromiter(
+                (panel.stock_idx.get(c, -1) for c in codes),
+                dtype=np.int64, count=len(codes),
+            )
+            valid = si >= 0
+            n_valid = int(valid.sum())
+            if n_valid < min_n:
+                continue
+            si_v = si[valid]
+            y_v = y[valid]
+            if y_v.shape[0] < min_n:
+                continue
+            resid = self.project_day(di, y_v, si_v)
+            codes_v = [c for c, ok in zip(codes, valid, strict=True) if ok]
+            out_dates.extend([d] * len(codes_v))
+            out_codes.extend(codes_v)
+            out_vals.extend(resid.tolist())
+
+        if not out_vals:
+            return empty
+        return pl.DataFrame({
+            "trade_date": out_dates,
+            "ts_code": out_codes,
+            "factor_value": out_vals,
+        })
+
+
 def _spearman(a: np.ndarray, b: np.ndarray) -> float | None:
     """单日 Spearman = Pearson(rank, rank)；退化截面 → None。"""
     if a.size < 2:
@@ -202,12 +355,15 @@ def compute_residual_ic(
     fwd_returns: pl.DataFrame,
     *,
     ret_col: str = "fwd_ret_1d",
+    projector: ResidualProjector | None = None,
 ) -> ResidualICResult:
     """对候选面板逐日残差化后算 Rank IC 均值（与 ``compute_rank_ic`` 同口径：逐日 Spearman 均值）。
 
     ``candidate``: [trade_date, ts_code, factor_value]
     ``fwd_returns``: 须含 trade_date, ts_code, ``ret_col``（通常由 ``compute_fwd_returns`` 产出）。
-    只在单日截面内 lstsq；无跨日状态。
+    只在单日截面内 lstsq / QR 投影；无跨日状态。
+
+    ``projector``: 可选；传入时走 ``ResidualProjector.project_day`` 快路径（语义不变）。
     """
     if lib_panel is None or lib_panel.k == 0:
         return ResidualICResult(float("nan"), 0)
@@ -216,7 +372,8 @@ def compute_residual_ic(
     if ret_col not in fwd_returns.columns:
         raise ValueError(f"fwd_returns 缺列 {ret_col!r}")
 
-    cand = candidate.filter(
+    # 与 residualize 同口径：NaN ≠ null，先 fill_nan
+    cand = candidate.with_columns(pl.col("factor_value").fill_nan(None)).filter(
         pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite()
     )
     if cand.is_empty():
@@ -255,11 +412,14 @@ def compute_residual_ic(
         si_v = si[valid]
         y_v = y[valid]
         ret_v = ret[valid]
-        X_day = lib_panel.X[di, si_v, :]  # (n, k) 已 z-score + null→0
         n_t = y_v.shape[0]
         if n_t < min_n:
             continue
-        resid = residualize_cross_section(y_v, X_day)
+        if projector is not None:
+            resid = projector.project_day(di, y_v, si_v)
+        else:
+            X_day = lib_panel.X[di, si_v, :]  # (n, k) 已 z-score + null→0
+            resid = residualize_cross_section(y_v, X_day)
         ic = _spearman(resid, ret_v)
         if ic is not None:
             ics.append(ic)

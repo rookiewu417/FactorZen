@@ -96,6 +96,16 @@ class TeamResult:
     sharpe_variance: float = float("nan")
     # holdout 覆盖不足被摘除的叶子 → {leaf: coverage}；manifest 可审计。
     excluded_leaves: dict[str, float] = field(default_factory=dict)
+    # session 末 lift 钩子产物（partial 检查点保持默认空）
+    n_lift_queue: int = 0
+    lift_group: dict | None = None
+    lift_results: list = field(default_factory=list)
+    lift_admissions: dict = field(default_factory=lambda: {
+        "added_active": 0, "added_probation": 0,
+    })
+    n_lift_evaluated: int = 0
+    lift_dropped_coverage: list = field(default_factory=list)
+    lift_error: str | None = None
 
 
 def _normalize(expr: str, leaf_map: dict[str, str] | None = None) -> str:
@@ -175,7 +185,7 @@ def _run_one_round(
     pending, seed, top_k, heal_rounds, structured, health, data_window, warmup_daily,
     eval_start=None, leaf_budgets=None, hypotheses_per_round=1, profile=None, ctx=None,
     lib_pool=None, library_covered=None, objective: str = "residual",
-    llm_workers: int = 1,
+    llm_workers: int = 1, residual_projector=None,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -372,6 +382,7 @@ def _run_one_round(
         profile=profile,             # crypto 派生列 + 叶子映射；None 零回归
         lib_pool=lib_pool,           # 库级正交 + 残差面板（全窗物化；None/空 → 零回归）
         objective=objective,
+        residual_projector=residual_projector,  # session 级 QR，全量残差 train IC 快路径
     )
     _print_rejections("mine-team", state)
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
@@ -486,6 +497,13 @@ def run_team_agent(
     library_orthogonal: bool = True,
     objective: str = "residual",
     llm_workers: int = 1,
+    auto_lift: bool = True,
+    lift_se_mult: float = 1.0,
+    # 测试注入：session 末 lift 钩子（combine / materialize / active 面板 / ret）
+    lift_combine_fn=None,
+    lift_materialize_candidate=None,
+    lift_active_factor_dfs: dict | None = None,
+    lift_ret_df=None,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -608,6 +626,24 @@ def run_team_agent(
             lib_pool, library_covered = {}, None
     state.objective = objective  # type: ignore[attr-defined]
 
+    # residual 模式 + 库非空：session 开始建一次 ResidualProjector，整 session 复用
+    # （多候选残差 train IC 近免费）。接线点在护栏前全量写 residual_ic_train / 选槽。
+    residual_projector = None
+    if objective == "residual" and lib_pool:
+        try:
+            from factorzen.discovery.residual import (
+                ResidualProjector,
+                build_library_panel,
+            )
+            _panel = build_library_panel(lib_pool)
+            if _panel is not None and _panel.k > 0:
+                residual_projector = ResidualProjector.from_panel(_panel)
+                _step(f"残差投影 ▸ ResidualProjector 就绪（k={_panel.k}）")
+        except Exception as exc:
+            _LOG.warning("ResidualProjector 构建失败（本 session 残差走 lstsq）: %s: %s",
+                         type(exc).__name__, exc)
+            residual_projector = None
+
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
         if patience is not None and round_i > 0:
@@ -628,6 +664,7 @@ def run_team_agent(
                 hypotheses_per_round=hypotheses_per_round, profile=profile, ctx=ctx,
                 lib_pool=lib_pool, library_covered=library_covered,
                 objective=objective, llm_workers=llm_workers,
+                residual_projector=residual_projector,
             )
         except LLMClientError as exc:
             llm_failures += 1
@@ -674,6 +711,25 @@ def run_team_agent(
             data_window=data_window, eval_start=eval_start, index_path=index_path,
             library_root=library_root, top_k=top_k, horizon=horizon)
 
+    # ── session 末自动 lift 钩子（写 manifest 前；失败不杀死挖掘 session）────
+    lift_meta = _session_end_auto_lift(
+        state,
+        daily=daily,
+        holdout_df=holdout_df,
+        profile=profile,
+        ctx=ctx,
+        market=market,
+        library_root=lib_root,
+        seed=seed,
+        auto_lift=auto_lift,
+        lift_se_mult=lift_se_mult,
+        data_window=data_window,
+        combine_fn=lift_combine_fn,
+        materialize_candidate=lift_materialize_candidate,
+        active_factor_dfs=lift_active_factor_dfs,
+        ret_df=lift_ret_df,
+    )
+
     return TeamResult(
         state=state,
         candidates=state.candidates,
@@ -681,7 +737,236 @@ def run_team_agent(
         rounds_log=rounds_log,
         sharpe_variance=basis.sharpe_variance,
         excluded_leaves=excluded_leaves,
+        n_lift_queue=lift_meta.get("n_lift_queue", 0),
+        lift_group=lift_meta.get("lift_group"),
+        lift_results=lift_meta.get("lift_results") or [],
+        lift_admissions=lift_meta.get("lift_admissions") or {
+            "added_active": 0, "added_probation": 0,
+        },
+        n_lift_evaluated=lift_meta.get("n_lift_evaluated", 0),
+        lift_dropped_coverage=lift_meta.get("lift_dropped_coverage") or [],
+        lift_error=lift_meta.get("lift_error"),
     )
+
+
+def _collect_lift_queue(state: AgentState) -> list[dict]:
+    """从 attempts 收集 lift 队列行（expression 去重，保留首次）。"""
+    from factorzen.discovery.guardrails import REJECT_CATEGORY_LIFT_QUEUE
+
+    queue: list[dict] = []
+    seen: set[str] = set()
+    for a in state.attempts:
+        if a.reject_category != REJECT_CATEGORY_LIFT_QUEUE:
+            continue
+        expr = a.expression
+        if not expr or expr in seen:
+            continue
+        seen.add(expr)
+        queue.append({
+            "expression": expr,
+            "ic_train": a.ic_train,
+            "ir_train": a.ir_train,
+            "residual_ic_train": getattr(a, "residual_ic_train", None),
+            "residual_holdout_ic": getattr(a, "residual_holdout_ic", None),
+            "n_holdout_days": getattr(a, "n_holdout_days", None),
+            "n_residual_holdout_days": getattr(a, "n_residual_holdout_days", None),
+            "reject_category": a.reject_category,
+            "reject_reason": a.reject_reason,
+            "hypothesis": a.hypothesis,
+        })
+    return queue
+
+
+def _empty_lift_meta(*, n_lift_queue: int = 0) -> dict:
+    return {
+        "n_lift_queue": n_lift_queue,
+        "lift_group": None,
+        "lift_results": [],
+        "lift_admissions": {"added_active": 0, "added_probation": 0},
+        "n_lift_evaluated": 0,
+        "lift_dropped_coverage": [],
+        "lift_error": None,
+    }
+
+
+def _session_end_auto_lift(
+    state: AgentState,
+    *,
+    daily,
+    holdout_df,
+    profile,
+    ctx,
+    market: str,
+    library_root: str,
+    seed: int,
+    auto_lift: bool = True,
+    lift_se_mult: float = 1.0,
+    data_window: dict | None = None,
+    combine_fn=None,
+    materialize_candidate=None,
+    active_factor_dfs: dict | None = None,
+    ret_df=None,
+) -> dict:
+    """session 末：lift 队列 → 覆盖把关 → 组门 → 逐候选 → upsert。
+
+    整块 try/except：lift 失败绝不杀死已完成的挖掘 session。
+    """
+    queue = _collect_lift_queue(state)
+    if not queue:
+        return _empty_lift_meta(n_lift_queue=0)
+    if not auto_lift:
+        return _empty_lift_meta(n_lift_queue=len(queue))
+
+    meta = _empty_lift_meta(n_lift_queue=len(queue))
+    _step(f"lift 钩子 ▸ 队列 {len(queue)} 个候选（expression 去重）")
+    try:
+        from factorzen.discovery.guardrails import (
+            DEFAULT_HOLDOUT_MIN_DAYS,
+            DEFAULT_LIFT_THRESHOLD,
+        )
+        from factorzen.discovery.lift_test import (
+            run_group_lift,
+            run_lift_tests,
+        )
+
+        leaf_map = ctx.leaf_map if ctx is not None else None
+        holdout_start = holdout_df["trade_date"].min()
+
+        # 物化路径：测试可注入；生产复用 lift_test 默认 materializer
+        mat = materialize_candidate
+        if mat is None:
+            from factorzen.discovery.lift_test import _default_materializer
+            mat = _default_materializer(daily, leaf_map)
+
+        kept: list[dict] = []
+        dropped: list[dict] = []
+        for c in queue:
+            expr = c.get("expression")
+            try:
+                cdf = mat(expr) if expr else None
+            except Exception as exc:
+                dropped.append({
+                    "expression": expr,
+                    "n_oos_days": 0,
+                    "error": f"materialize:{type(exc).__name__}",
+                })
+                continue
+            if cdf is None or (hasattr(cdf, "is_empty") and cdf.is_empty()):
+                dropped.append({
+                    "expression": expr,
+                    "n_oos_days": 0,
+                    "error": "materialize_failed",
+                })
+                continue
+            try:
+                oos = cdf.filter(pl.col("trade_date") >= holdout_start)
+                if "factor_value" in oos.columns:
+                    oos = oos.filter(pl.col("factor_value").is_not_null())
+                n_oos = int(oos["trade_date"].n_unique()) if oos.height else 0
+            except Exception:
+                n_oos = 0
+            if n_oos < DEFAULT_HOLDOUT_MIN_DAYS:
+                dropped.append({
+                    "expression": expr,
+                    "n_oos_days": n_oos,
+                    "error": "holdout_coverage",
+                })
+                continue
+            kept.append(c)
+
+        meta["lift_dropped_coverage"] = dropped
+        if dropped:
+            _step(f"lift 钩子 ▸ 覆盖剔除 {len(dropped)} 个（OOS < {DEFAULT_HOLDOUT_MIN_DAYS} 天）")
+        if not kept:
+            _step("lift 钩子 ▸ 覆盖后队列为空，跳过组测")
+            return meta
+
+        # 组门：1 次 lgbm（基线+组）——失败则不跑逐候选
+        group = run_group_lift(
+            kept,
+            market=market,
+            daily=daily,
+            leaf_map=leaf_map,
+            library_root=library_root,
+            seed=seed,
+            threshold=DEFAULT_LIFT_THRESHOLD,
+            active_factor_dfs=active_factor_dfs,
+            ret_df=ret_df,
+            materialize_candidate=mat,
+            combine_fn=combine_fn,
+        )
+        meta["lift_group"] = group
+        meta["n_lift_evaluated"] = 1  # 组门计 1 次（多重检验 N 记账）
+
+        g_lift = group.get("lift")
+        g_se = group.get("lift_se")
+        se_val = float(g_se) if g_se is not None and g_se == g_se else 0.0
+        bar = max(float(DEFAULT_LIFT_THRESHOLD), float(lift_se_mult) * se_val)
+        group_ok = (
+            g_lift is not None
+            and g_lift == g_lift
+            and float(g_lift) >= bar
+            and not group.get("error")
+        )
+        _step(
+            f"lift 钩子 ▸ 组 lift={g_lift!r} se={g_se!r} bar={bar:.4f} "
+            f"→ {'过' if group_ok else '拒'}"
+        )
+        if not group_ok:
+            # 组门不过：全体 reject，不跑逐候选（省 n 次 lgbm）
+            return meta
+
+        results = run_lift_tests(
+            kept,
+            market=market,
+            daily=daily,
+            leaf_map=leaf_map,
+            library_root=library_root,
+            top_m=None,  # 全测，no silent caps
+            seed=seed,
+            threshold=DEFAULT_LIFT_THRESHOLD,
+            active_factor_dfs=active_factor_dfs,
+            ret_df=ret_df,
+            materialize_candidate=mat,
+            combine_fn=combine_fn,
+        )
+        meta["lift_results"] = results
+        meta["n_lift_evaluated"] = 1 + len(results)
+
+        # 延迟导入：任务 D 契约；测试 monkeypatch factor_library.upsert_lift_admissions
+        from factorzen.discovery.factor_library import upsert_lift_admissions
+
+        dw = data_window or {}
+        adm = upsert_lift_admissions(
+            results,
+            market=market,
+            root=library_root,
+            meta={
+                "eval_start": dw.get("start"),
+                "eval_end": dw.get("end"),
+                "universe": dw.get("universe"),
+                "run_id": f"team_lift_{seed}",
+                "git_sha": get_git_sha(),
+                "leaf_map": leaf_map,
+            },
+            threshold=DEFAULT_LIFT_THRESHOLD,
+            se_mult=float(lift_se_mult),
+        )
+        meta["lift_admissions"] = {
+            "added_active": int(adm.get("added_active", 0)),
+            "added_probation": int(adm.get("added_probation", 0)),
+        }
+        _step(
+            f"lift 钩子 ▸ 准入 active={meta['lift_admissions']['added_active']} "
+            f"probation={meta['lift_admissions']['added_probation']}"
+        )
+        return meta
+    except Exception as exc:
+        msg = f"{type(exc).__name__}: {exc}"
+        meta["lift_error"] = msg
+        _LOG.warning("session 末 lift 钩子失败（不影响挖掘产出）: %s", msg)
+        _step(f"lift 钩子 ▸ 失败（已记 lift_error）: {msg}")
+        return meta
 
 
 def _library_upsert_team(candidates, *, seed, mining_df, ctx, profile, data_window,
@@ -745,6 +1030,16 @@ def write_team_manifest(
         "n_library_correlated_rejects": getattr(
             result.state, "n_library_correlated_rejects", 0),
         "n_gray_zone": getattr(result.state, "n_gray_zone", 0),
+        # n_gray_zone 语义=lift 队列计数（兼容旧字段）；n_lift_queue 为显式同义
+        "n_lift_queue": getattr(result, "n_lift_queue", 0),
+        "lift_group": getattr(result, "lift_group", None),
+        "lift_results": getattr(result, "lift_results", None) or [],
+        "lift_admissions": getattr(result, "lift_admissions", None) or {
+            "added_active": 0, "added_probation": 0,
+        },
+        "n_lift_evaluated": getattr(result, "n_lift_evaluated", 0),
+        "lift_dropped_coverage": getattr(result, "lift_dropped_coverage", None) or [],
+        "lift_error": getattr(result, "lift_error", None),
         "objective": getattr(result.state, "objective", None),
         "git_sha": get_git_sha(),
     }

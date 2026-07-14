@@ -590,7 +590,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
-    from factorzen.pipelines.factor_mine_team import run_team_mine
+    import factorzen.pipelines.factor_mine_team as pmt
 
     # 数据装配与 agent 路径共用 `_prepare_agent_mining_data`（ashare=A 股 loader，
     # crypto=Vision 湖 + 预热前缀）。消除双路径漂移。
@@ -599,17 +599,21 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         print("[mine-team] crypto 挖掘帧为空（检查 --symbols 或数据湖覆盖）", file=sys.stderr)
         return 1
     # eval_start = 挖掘窗口 start（预热前缀边界），同 M1/agent 口径，见 _cmd_mine_agent。
-    res = run_team_mine(daily, n_rounds=args.iterations, seed=args.seed,
-                        top_k=args.top_k, index_path=args.index_path,
-                        structured=args.structured, patience=args.patience,
-                        heal_rounds=args.heal_rounds,
-                        hypotheses_per_round=args.hypotheses_per_round,
-                        data_window=_data_window(args), command=_command_line(args),
-                        eval_start=args.start, profile=profile,
-                        update_library=not getattr(args, "no_library", False),
-                        library_orthogonal=not getattr(args, "no_library_orthogonal", False),
-                        objective=getattr(args, "objective", "residual"),
-                        llm_workers=getattr(args, "llm_workers", 1))
+    res = pmt.run_team_mine(
+        daily, n_rounds=args.iterations, seed=args.seed,
+        top_k=args.top_k, index_path=args.index_path,
+        structured=args.structured, patience=args.patience,
+        heal_rounds=args.heal_rounds,
+        hypotheses_per_round=args.hypotheses_per_round,
+        data_window=_data_window(args), command=_command_line(args),
+        eval_start=args.start, profile=profile,
+        update_library=not getattr(args, "no_library", False),
+        library_orthogonal=not getattr(args, "no_library_orthogonal", False),
+        objective=getattr(args, "objective", "residual"),
+        llm_workers=getattr(args, "llm_workers", 1),
+        auto_lift=not bool(getattr(args, "no_auto_lift", False)),
+        lift_se_mult=float(getattr(args, "lift_se_mult", 1.0)),
+    )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -703,7 +707,7 @@ def _cmd_factor_library_render(args: argparse.Namespace) -> int:
 
 
 def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
-    """灰区候选 → 组合 OOS lift 实验 → 通过者以 probation 入库。"""
+    """灰区/lift 队列候选 → 组合 OOS lift 实验 → lift_admission 入库（非 dry-run）。"""
     import json
     from datetime import date
     from pathlib import Path
@@ -774,38 +778,59 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         seed=seed,
     )
 
-    # 打印表
-    print(f"{'expression':40s}  {'lift':>8s}  {'baseline':>8s}  passed")
+    # 打印表（含 lift_se / second_half）
+    print(
+        f"{'expression':40s}  {'lift':>8s}  {'lift_se':>8s}  {'2nd_half':>8s}  "
+        f"{'baseline':>8s}  passed"
+    )
     for r in results:
         expr = (r.get("expression") or "")[:40]
         lift = r.get("lift")
+        se = r.get("lift_se")
+        sh = r.get("lift_second_half")
         base = r.get("baseline")
         ls = f"{lift:+.4f}" if lift is not None else "  n/a "
+        ses = f"{se:.4f}" if se is not None else "  n/a "
+        shs = f"{sh:+.4f}" if sh is not None else "  n/a "
         bs = f"{base:.4f}" if base is not None else "  n/a "
-        print(f"{expr:40s}  {ls:>8s}  {bs:>8s}  {r.get('passed')}")
-
-    passed_rows = [r for r in results if r.get("passed")]
-    dry_run = bool(getattr(args, "dry_run", False))
-    upsert_res = None
-    if passed_rows and not dry_run:
-        upsert_res = fl.upsert_probation(
-            market, passed_rows,
-            eval_window=(args.start, args.end),
-            universe=getattr(args, "universe", None),
-            horizon=5,
-            run_id=f"lift_{date.today().isoformat()}",
-            session_dir=",".join(sessions),
-            git_sha=get_git_sha(),
-            now=date.today().strftime("%Y-%m-%d"),
-            leaf_map=leaf_map,
-            root=lib_root,
+        print(
+            f"{expr:40s}  {ls:>8s}  {ses:>8s}  {shs:>8s}  {bs:>8s}  {r.get('passed')}"
         )
-        print(f"[factor-library lift-test] probation 入库：新增 {upsert_res.added} / "
-              f"更新 {upsert_res.updated}")
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    admissions = None
+    if results and not dry_run:
+        # apply 路径：lift_admission + upsert_lift_admissions（延迟导入，契约同任务 D）
+        from factorzen.discovery.factor_library import upsert_lift_admissions
+
+        admissions = upsert_lift_admissions(
+            results,
+            market=market,
+            root=lib_root,
+            meta={
+                "eval_start": args.start,
+                "eval_end": args.end,
+                "universe": getattr(args, "universe", None),
+                "horizon": 5,
+                "run_id": f"lift_{date.today().isoformat()}",
+                "session_dir": ",".join(sessions),
+                "git_sha": get_git_sha(),
+                "now": date.today().strftime("%Y-%m-%d"),
+                "leaf_map": leaf_map,
+            },
+            threshold=threshold,
+            se_mult=float(getattr(args, "se_mult", 1.0) or 1.0),
+        )
+        print(
+            f"[factor-library lift-test] 入库：added_active={admissions.get('added_active', 0)} "
+            f"added_probation={admissions.get('added_probation', 0)} "
+            f"rejected={admissions.get('rejected', 0)}"
+        )
     elif dry_run:
-        print(f"[factor-library lift-test] dry-run：通过 {len(passed_rows)} 个，不写库")
+        n_pass = sum(1 for r in results if r.get("passed"))
+        print(f"[factor-library lift-test] dry-run：通过 {n_pass} 个，不写库")
     else:
-        print("[factor-library lift-test] 无通过 lift 阈值的候选")
+        print("[factor-library lift-test] 无结果行")
 
     # 落 lift manifest 到第一个 session（可审计）
     lift_manifest = {
@@ -818,16 +843,13 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         "seed": seed,
         "n_gray_input": len(uniq_gray),
         "n_tested": len(results),
-        "n_passed": len(passed_rows),
+        "n_passed": sum(1 for r in results if r.get("passed")),
         "dry_run": dry_run,
         "baseline": results[0].get("baseline") if results else None,
         "results": results,
         "sessions": sessions,
         "git_sha": get_git_sha(),
-        "upsert": (
-            {"added": upsert_res.added, "updated": upsert_res.updated}
-            if upsert_res is not None else None
-        ),
+        "admissions": admissions,
     }
     out_man = Path(sessions[0]) / "lift_test_manifest.json"
     out_man.write_text(
@@ -1882,6 +1904,14 @@ def build_parser() -> argparse.ArgumentParser:
     m_team.add_argument("--llm-workers", dest="llm_workers", type=int, default=4,
                         help="轮内独立 LLM 调用的并发度（默认 4 提速；1=串行零回归；"
                              "API/pipeline 缺省仍为 1）")
+    m_team.add_argument(
+        "--no-auto-lift", dest="no_auto_lift", action="store_true",
+        help="关闭 session 末自动组 lift 裁决（默认开：lift_queue 候选组测+入库）",
+    )
+    m_team.add_argument(
+        "--lift-se-mult", dest="lift_se_mult", type=float, default=1.0,
+        help="lift 准入 SE 乘数（默认 1.0：lift ≥ max(threshold, se_mult×SE)）",
+    )
     _add_freq_arg(m_team)
     m_team.set_defaults(func=_cmd_mine_team)
 

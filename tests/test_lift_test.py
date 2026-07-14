@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import numpy as np
 import polars as pl
@@ -189,6 +188,326 @@ def test_extract_gray_from_manifest():
     assert {g["expression"] for g in got} == {"a", "c"}
 
 
+def test_extract_mixed_gray_zone_and_lift_queue():
+    """extractor 同时接受 gray_zone（旧）与 lift_queue（新）；别名同实现。"""
+    from factorzen.discovery.lift_test import (
+        LIFT_QUEUE_CATEGORY,
+        extract_gray_candidates_from_manifest,
+        extract_lift_queue_from_manifest,
+    )
+
+    man = {
+        "attempts": [
+            {"expression": "old_gray", "reject_category": "gray_zone",
+             "residual_ic_train": 0.006},
+            {"expression": "new_queue", "reject_category": LIFT_QUEUE_CATEGORY,
+             "residual_ic_train": 0.007},
+            {"expression": "noise", "reject_category": "holdout_coverage"},
+            {"expression": "old_gray", "reject_category": "lift_queue"},  # 去重
+        ],
+        "candidates": [
+            {"expression": "cand_q", "reject_category": "lift_queue", "ic_train": 0.008},
+            {"expression": "cand_g", "reject_category": "gray_zone", "ic_train": 0.009},
+        ],
+    }
+    got = extract_gray_candidates_from_manifest(man)
+    assert {g["expression"] for g in got} == {"old_gray", "new_queue", "cand_q", "cand_g"}
+    assert extract_lift_queue_from_manifest is extract_gray_candidates_from_manifest
+    assert extract_lift_queue_from_manifest(man) == got
+
+
+# ── paired_lift_stats / daily IC / admission / group ─────────────────────────
+
+
+def _ic_df(dates, ics):
+    return pl.DataFrame(
+        {"trade_date": list(dates), "ic": list(ics)},
+        schema={"trade_date": pl.Utf8, "ic": pl.Float64},
+    )
+
+
+def test_paired_lift_stats_hand_calc():
+    """手算：lift / SE / 半段 / 奇数块 / 尾块不足 / n_blocks=1 → SE=None。"""
+    from factorzen.discovery.lift_test import paired_lift_stats
+
+    # 50 日，block_days=20 → 块 [20, 20, 10]；奇数 3 块中位归前半 → 前 2 块 vs 后 1 块
+    dates = [f"202401{d:02d}" for d in range(1, 51)]
+    # base 全 0；cand = 常数序列便于手算
+    # 日 diff: 前 20 日 = 0.02，中 20 日 = 0.04，尾 10 日 = 0.06
+    cand_ics = [0.02] * 20 + [0.04] * 20 + [0.06] * 10
+    base_ics = [0.0] * 50
+    stats = paired_lift_stats(_ic_df(dates, cand_ics), _ic_df(dates, base_ics), block_days=20)
+
+    # lift = (20*0.02 + 20*0.04 + 10*0.06) / 50 = (0.4+0.8+0.6)/50 = 0.036
+    assert stats["n_days"] == 50
+    assert stats["n_blocks"] == 3
+    assert abs(stats["lift"] - 0.036) < 1e-12
+    # 块均值 [0.02, 0.04, 0.06]；SE = std(ddof=1)/sqrt(3)
+    block_means = np.array([0.02, 0.04, 0.06])
+    expected_se = float(block_means.std(ddof=1) / np.sqrt(3))
+    assert abs(stats["lift_se"] - expected_se) < 1e-12
+    # 前半块（2 块 = 40 日）diff 均值 = (20*0.02+20*0.04)/40 = 0.03
+    assert abs(stats["lift_first_half"] - 0.03) < 1e-12
+    # 后半块（1 块 = 10 日）= 0.06
+    assert abs(stats["lift_second_half"] - 0.06) < 1e-12
+
+    # n_blocks=1 → SE=None，second_half=None
+    short = paired_lift_stats(
+        _ic_df(dates[:15], cand_ics[:15]),
+        _ic_df(dates[:15], base_ics[:15]),
+        block_days=20,
+    )
+    assert short["n_blocks"] == 1
+    assert short["lift_se"] is None
+    assert short["lift_first_half"] is not None
+    assert short["lift_second_half"] is None
+    assert abs(short["lift"] - 0.02) < 1e-12
+
+    # 空配对
+    empty = paired_lift_stats(
+        _ic_df(["20240101"], [0.1]),
+        _ic_df(["20240102"], [0.1]),
+        block_days=20,
+    )
+    assert empty["lift"] is None and empty["n_days"] == 0 and empty["lift_se"] is None
+
+
+def test_daily_oos_rank_ic_parity_with_evaluate_oos():
+    """mean(每日序列) ≈ _evaluate_oos rank_ic_mean（atol 1e-12）。"""
+    from factorzen.discovery.lift_test import _daily_oos_rank_ic
+    from factorzen.research.combination.experiment import _evaluate_oos
+
+    rng = np.random.default_rng(42)
+    dates = _dates(30)
+    rows_f, rows_r = [], []
+    for d in dates:
+        f = rng.standard_normal(40)
+        r = 0.4 * f + 0.6 * rng.standard_normal(40)
+        for s in range(40):
+            code = f"{s:04d}.SZ"
+            rows_f.append({
+                "trade_date": d, "ts_code": code, "factor_value": float(f[s]),
+            })
+            rows_r.append({
+                "trade_date": d, "ts_code": code, "ret": float(r[s]),
+            })
+    combined = pl.DataFrame(rows_f)
+    ret_df = pl.DataFrame(rows_r)
+    daily = _daily_oos_rank_ic(combined, ret_df)
+    mean_daily = float(daily["ic"].mean())
+    ref = float(_evaluate_oos(combined, ret_df)["rank_ic_mean"])
+    assert abs(mean_daily - ref) < 1e-12
+    assert daily.columns == ["trade_date", "ic"]
+    assert len(daily) > 0
+
+
+def test_paired_lift_equals_mean_diff_when_dates_align():
+    """日期完全相同时配对 lift == 两序列均值之差。"""
+    from factorzen.discovery.lift_test import paired_lift_stats
+
+    dates = [f"d{i:03d}" for i in range(40)]
+    cand = [0.01 + 0.001 * i for i in range(40)]
+    base = [0.005 + 0.0005 * i for i in range(40)]
+    stats = paired_lift_stats(_ic_df(dates, cand), _ic_df(dates, base), block_days=10)
+    expected = float(np.mean(np.array(cand) - np.array(base)))
+    assert abs(stats["lift"] - expected) < 1e-12
+    assert abs(stats["lift"] - (float(np.mean(cand)) - float(np.mean(base)))) < 1e-12
+
+
+def test_paired_lift_uses_inner_join_dates():
+    """日期不齐时只在交集上配对（比各自均值之差更对）。"""
+    from factorzen.discovery.lift_test import paired_lift_stats
+
+    cand = _ic_df(["d1", "d2", "d3"], [0.10, 0.20, 0.30])
+    base = _ic_df(["d2", "d3", "d4"], [0.05, 0.05, 0.99])
+    stats = paired_lift_stats(cand, base, block_days=20)
+    # 仅 d2,d3：diff = 0.15, 0.25 → mean 0.20
+    assert stats["n_days"] == 2
+    assert abs(stats["lift"] - 0.20) < 1e-12
+    # 非配对：mean(cand)-mean(base) = 0.20 - (0.05+0.05+0.99)/3 ≠ 0.20
+    naive = float(np.mean([0.10, 0.20, 0.30]) - np.mean([0.05, 0.05, 0.99]))
+    assert abs(naive - stats["lift"]) > 1e-6
+
+
+def test_lift_admission_four_branches():
+    """四分支：恰等于阈值 / SE 大于阈值 / second_half=0 / lift=None。"""
+    from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
+    from factorzen.discovery.lift_test import lift_admission
+
+    thr = DEFAULT_LIFT_THRESHOLD  # 0.001
+    # 1) lift 恰等于阈值 + second_half > 0 → active
+    assert lift_admission({
+        "lift": thr, "lift_se": 0.0, "lift_second_half": 0.01,
+    }, threshold=thr) == "active"
+    # 2) SE 大于阈值：bar = se_mult * se；lift 介于 threshold 与 bar 之间 → reject
+    assert lift_admission({
+        "lift": 0.002, "lift_se": 0.005, "lift_second_half": 0.01,
+    }, threshold=thr, se_mult=1.0) == "reject"
+    # lift 过 bar → active
+    assert lift_admission({
+        "lift": 0.006, "lift_se": 0.005, "lift_second_half": 0.01,
+    }, threshold=thr, se_mult=1.0) == "active"
+    # 3) second_half = 0 → probation（过门槛但后半不 > 0）
+    assert lift_admission({
+        "lift": 0.003, "lift_se": 0.0, "lift_second_half": 0.0,
+    }, threshold=thr) == "probation"
+    # second_half None → probation
+    assert lift_admission({
+        "lift": 0.003, "lift_se": None, "lift_second_half": None,
+    }, threshold=thr) == "probation"
+    # 4) lift None / 低于阈值 → reject
+    assert lift_admission({"lift": None}, threshold=thr) == "reject"
+    assert lift_admission({
+        "lift": thr - 1e-9, "lift_se": 0.0, "lift_second_half": 0.01,
+    }, threshold=thr) == "reject"
+
+
+def test_run_lift_tests_new_fields_and_top_m_none():
+    """新字段全链 + top_m=None 全测；mock combine 返回可控预测。"""
+    from factorzen.discovery.lift_test import run_lift_tests
+
+    active, cand, _noise, ret = _synth_panels(n_days=100, n_stocks=25, interactive=False)
+    # 基线：弱噪声预测（截面方差 > 0，避免 std 守卫跳过整天）
+    # 候选 add-one：用 ret 本身作预测 → 近完美 IC，相对基线正 lift
+    rng = np.random.default_rng(7)
+    noise_vals = rng.standard_normal(ret.height)
+    base_pred = ret.select(["trade_date", "ts_code"]).with_columns(
+        pl.Series("factor_value", noise_vals)
+    )
+    call_n = {"n": 0}
+
+    def combine_ctrl(fds, rdf, cv, **kw):
+        call_n["n"] += 1
+        n_factors = len(fds)
+        if n_factors <= len(active):
+            return base_pred
+        return rdf.select(
+            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
+        )
+
+    grays = [
+        {"expression": f"c{i}", "residual_ic_train": 0.009 - i * 0.0001}
+        for i in range(4)
+    ]
+    mats = {f"c{i}": cand for i in range(4)}
+
+    rows = run_lift_tests(
+        grays,
+        market="ashare",
+        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+        active_factor_dfs=active,
+        ret_df=ret,
+        materialize_candidate=lambda e: mats[e],
+        combine_fn=combine_ctrl,
+        top_m=None,  # 全测
+        threshold=0.001,
+        block_days=10,
+    )
+    assert len(rows) == 4
+    assert rows[0]["n_input"] == 4 and rows[0]["n_selected"] == 4
+    assert rows[0]["truncated_from"] is None
+    for r in rows:
+        assert "lift_se" in r
+        assert "n_blocks" in r
+        assert "lift_first_half" in r
+        assert "lift_second_half" in r
+        assert r["lift"] is not None
+        assert r["n_blocks"] is not None and r["n_blocks"] >= 1
+        assert r["passed"] is True  # 完美 ret 预测应对基线有正 lift
+        assert r["error"] is None
+    # 基线 1 + 4 候选
+    assert call_n["n"] == 5
+
+
+def test_run_group_lift_three_states():
+    """run_group_lift：正常 / 部分物化失败 / 全失败。"""
+    from factorzen.discovery.lift_test import run_group_lift
+
+    active, cand, _, ret = _synth_panels(n_days=80, n_stocks=20, interactive=False)
+    rng = np.random.default_rng(3)
+    base_noise = ret.select(["trade_date", "ts_code"]).with_columns(
+        pl.Series("factor_value", rng.standard_normal(ret.height))
+    )
+
+    def combine_stub(fds, rdf, cv, **kw):
+        n = len(fds)
+        # 更多因子 → 用 ret 当预测，制造正 group lift
+        if n > len(active):
+            return rdf.select(
+                ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
+            )
+        return base_noise
+
+    def mat_partial(expr):
+        if expr == "bad":
+            raise RuntimeError("boom")
+        if expr == "empty":
+            return pl.DataFrame(schema={
+                "trade_date": pl.Utf8, "ts_code": pl.Utf8, "factor_value": pl.Float64,
+            })
+        return cand
+
+    # 正常：两个好候选
+    ok = run_group_lift(
+        [
+            {"expression": "g1", "residual_ic_train": 0.006},
+            {"expression": "g2", "residual_ic_train": 0.005},
+        ],
+        market="ashare",
+        daily=pl.DataFrame(),
+        active_factor_dfs=active,
+        ret_df=ret,
+        materialize_candidate=lambda e: cand,
+        combine_fn=combine_stub,
+        threshold=0.001,
+    )
+    assert ok["error"] is None
+    assert ok["n_candidates"] == 2
+    assert set(ok["expressions"]) == {"g1", "g2"}
+    assert ok["skipped"] == []
+    assert ok["lift"] is not None
+    assert "lift_se" in ok and "n_blocks" in ok
+
+    # 部分失败
+    partial = run_group_lift(
+        [
+            {"expression": "good", "residual_ic_train": 0.006},
+            {"expression": "bad", "residual_ic_train": 0.005},
+            {"expression": "empty", "residual_ic_train": 0.004},
+        ],
+        market="ashare",
+        daily=pl.DataFrame(),
+        active_factor_dfs=active,
+        ret_df=ret,
+        materialize_candidate=mat_partial,
+        combine_fn=combine_stub,
+    )
+    assert partial["error"] is None
+    assert partial["n_candidates"] == 1
+    assert partial["expressions"] == ["good"]
+    assert len(partial["skipped"]) == 2
+    skipped_exprs = {s["expression"] for s in partial["skipped"]}
+    assert skipped_exprs == {"bad", "empty"}
+
+    # 全失败
+    all_bad = run_group_lift(
+        [
+            {"expression": "bad", "residual_ic_train": 0.006},
+            {"expression": "empty", "residual_ic_train": 0.005},
+        ],
+        market="ashare",
+        daily=pl.DataFrame(),
+        active_factor_dfs=active,
+        ret_df=ret,
+        materialize_candidate=mat_partial,
+        combine_fn=combine_stub,
+    )
+    assert all_bad["error"] == "all_candidates_materialize_failed"
+    assert all_bad["n_candidates"] == 0
+    assert all_bad["lift"] is None
+    assert len(all_bad["skipped"]) == 2
+
+
 # ── upsert_probation / rebuild 保留 / pool 默认不含 ──────────────────────────
 
 
@@ -354,70 +673,33 @@ def test_build_library_pool_excludes_probation_by_default(tmp_path):
 
 
 def test_node_guardrails_marks_gray_zone():
-    """单因子门拒绝 + 灰区带 → reject_category=gray_zone，n_gray_zone 计数。"""
-    from factorzen.agents.state import AgentState, AttemptRecord
+    """单因子门拒绝 + |IC|≥下界 → is_lift_queue_candidate（原 gray 钩子契约）。"""
+    from factorzen.discovery.guardrails import is_lift_queue_candidate
 
-    # 构造：residual IC 在灰区、覆盖够、库空 → raw 退化路径用裸 IC 也可
-    # 这里走 raw：ic_train 在 [0.005, 0.015)，holdout 反号 → 门不过，但灰区
-    state = AgentState(seed=0)
-    state.attempts = [
-        AttemptRecord(
-            iteration=0, hypothesis="h", expression="rank(close)",
-            compile_ok=True, ic_train=0.008, ir_train=0.3, n_train=200,
-            passed_guardrails=False, critic_verdict=None, error=None,
-        )
-    ]
-    # mock holdout：覆盖够 + 反号
-    import factorzen.validation.holdout as hmod
-    from factorzen.validation.holdout import HoldoutICResult
-
-    daily = pl.DataFrame({
-        "trade_date": [date(2024, 1, 2 + i) for i in range(5) for _ in range(3)],
-        "ts_code": [f"{s:06d}.SH" for _ in range(5) for s in range(3)],
-        "close": [10.0] * 15, "close_adj": [10.0] * 15,
-        "open_adj": [10.0] * 15, "high_adj": [10.0] * 15, "low_adj": [10.0] * 15,
-        "vol": [1e5] * 15, "amount": [1e7] * 15,
-    })
-    # DataBundle 需要 fwd 等——用 MagicMock 最小接口
-    bundle = MagicMock()
-    bundle.fwd_returns = pl.DataFrame({
-        "trade_date": daily["trade_date"],
-        "ts_code": daily["ts_code"],
-        "fwd_ret_1d": [0.01] * 15,
-    })
-    bundle.train_end = "20240110"
-
-    orig = hmod.holdout_ic_result
-    hmod.holdout_ic_result = lambda *a, **k: HoldoutICResult(
-        ic_mean=-0.01, ir=-0.1, ci=(-0.02, 0.0), n_days=100,
-    )
-    try:
-        # 预处理 / 求值可能失败——改用更稳的路径：直接测 is_gray_zone 集成
-        # 若 node_guardrails 因求值失败跳过，至少验证 is_gray_zone 钩子字段契约
-        from factorzen.discovery.guardrails import is_gray_zone
-        probe = {
-            "ic_train": 0.008, "n_holdout_days": 100,
-            "residual_ic_train": None,
-        }
-        assert is_gray_zone(probe, objective="raw")
-    finally:
-        hmod.holdout_ic_result = orig
+    probe = {
+        "ic_train": 0.008, "n_holdout_days": 100,
+        "residual_ic_train": None,
+    }
+    assert is_lift_queue_candidate(probe, objective="raw")
 
 
 def test_mining_session_gray_zone_fields_in_manifest_contract():
-    """manifest 契约：n_gray_zone 字段存在于 write 路径（源码守卫）。"""
+    """manifest 契约：n_gray_zone 字段存在于 write 路径（源码守卫）。
+
+    C1：reject 类别改为 lift_queue；n_gray_zone 计数字段名兼容保留。
+    """
     src = (Path(__file__).resolve().parents[1] / "src" / "factorzen"
            / "discovery" / "mining_session.py").read_text(encoding="utf-8")
     assert "n_gray_zone" in src
-    assert "REJECT_CATEGORY_GRAY_ZONE" in src
-    assert "is_gray_zone" in src
+    assert "REJECT_CATEGORY_LIFT_QUEUE" in src
+    assert "is_lift_queue_candidate" in src
     agents_man = (Path(__file__).resolve().parents[1] / "src" / "factorzen"
                   / "agents" / "manifest.py").read_text(encoding="utf-8")
     assert "n_gray_zone" in agents_man
     nodes = (Path(__file__).resolve().parents[1] / "src" / "factorzen"
              / "agents" / "nodes.py").read_text(encoding="utf-8")
-    assert "REJECT_CATEGORY_GRAY_ZONE" in nodes
-    assert "(灰区,待组合lift)" in nodes
+    assert "REJECT_CATEGORY_LIFT_QUEUE" in nodes
+    assert "(lift队列,待组合裁决)" in nodes
 
 
 # ── CLI 透传 ─────────────────────────────────────────────────────────────────

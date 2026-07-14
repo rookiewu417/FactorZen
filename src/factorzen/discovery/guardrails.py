@@ -27,13 +27,17 @@ DEFAULT_RESIDUAL_IC_FLOOR = 0.010
 # 空/稀疏 holdout 的 ic_mean 哨兵 0.0 曾被同号门误杀（train>0）或假过关（train<0）。
 DEFAULT_HOLDOUT_MIN_DAYS = 60
 
-# 灰区 |IC| 下界：≈1 个标准误。~1160 个交易日日 IC 均值的 SE≈0.003–0.0045
+# lift 队列 |IC| 下界（≈1 个标准误）。~1160 个交易日日 IC 均值的 SE≈0.003–0.0045
 # （SE≈σ/√n，日 IC 的 σ 典型 0.1–0.15），再低纯属噪声、不值得做 lift 实验。
+# 命名保留 GRAY：旧 manifest / 调用方兼容；语义上是 lift_queue 下界，**无上界**。
 DEFAULT_GRAY_IC_FLOOR = 0.003
-# raw 模式灰区下界（裸 IC 噪声地板略高于残差；区间 [0.005, DEFAULT_IC_FLOOR)）。
+# raw 模式 lift 队列下界（裸 IC 噪声地板略高于残差；≥ 此值即可入队，无上界）。
 DEFAULT_RAW_GRAY_IC_FLOOR = 0.005
 # 组合增量 RankIC 阈值（初值待校准，lift 噪声地板需实测标定）。
 DEFAULT_LIFT_THRESHOLD = 0.001
+# 与库内因子「重复」硬拒阈值：corr > 此值 → library_correlated 一票否决。
+# （0.7, 0.95] 为软信号「库相关持保留」，不否决、挡快速通道、可入 lift 队列。）
+DEFAULT_DUPLICATE_CORR = 0.95
 
 # 入池判据的两种口径：
 #   "library"（默认，因子库化）：真(holdout 同号) + 有信号(|IC|≥floor)，不含 DSR 单星显著性。
@@ -42,10 +46,12 @@ DEFAULT_GATE = "library"
 
 # reject_category：coverage 失败不得进 known_invalid 负例回灌（非方向性证据）。
 REJECT_CATEGORY_HOLDOUT_COVERAGE = "holdout_coverage"
-# 与库内 active 因子高相关：IC 未必低，是「重复方向」非「无效」——不得混进 known_invalid。
+# 与库内 active 因子重复（corr > DEFAULT_DUPLICATE_CORR）：是「重复方向」非「无效」——不得混进 known_invalid。
 REJECT_CATEGORY_LIBRARY_CORRELATED = "library_correlated"
-# 单因子门不过但落在灰区、待后置组合 lift 实验裁决（试用通道；非 known_invalid）。
+# 历史灰区类别：已被 lift_queue 取代，仅旧 manifest 读取 / 负例过滤兼容保留，新写入勿用。
 REJECT_CATEGORY_GRAY_ZONE = "gray_zone"
+# 单因子主门不过但 |IC|≥下界、非重复 → 等待 session 末组合 lift 裁决（非 known_invalid）。
+REJECT_CATEGORY_LIFT_QUEUE = "lift_queue"
 
 
 def _holdout_direction_reasons(
@@ -269,19 +275,22 @@ def classify_reject_category(reasons: list[str]) -> str | None:
     return None
 
 
-def is_gray_zone(candidate: dict, *, objective: str | None = None) -> bool:
-    """灰区判定：单因子库门不过、但对组合 lift 实验仍有价值的候选。
+def is_lift_queue_candidate(candidate: dict, *, objective: str | None = None) -> bool:
+    """lift 队列判定：对组合 lift 实验仍有价值的候选（无 IC 上界）。
 
     条件（全部满足）：
     1. **覆盖门过**——``n_holdout_days ≥ DEFAULT_HOLDOUT_MIN_DAYS``
        （residual 模式用 ``n_residual_holdout_days``）。
     2. **非库重复**——未被 ``library_correlated`` 拒
-       （``reject_category`` / ``library_correlated`` 旗标 / ``max_corr_library>0.7``）。
-    3. **|IC| 落在灰区带**——残差：``[DEFAULT_GRAY_IC_FLOOR, DEFAULT_RESIDUAL_IC_FLOOR)``；
-       裸 IC：``[DEFAULT_RAW_GRAY_IC_FLOOR, DEFAULT_IC_FLOOR)``。
+       （``reject_category`` / ``library_correlated`` 旗标 /
+       ``max_corr_library > DEFAULT_DUPLICATE_CORR``）。
+    3. **|IC| ≥ 下界（无上界）**——残差：``|residual_ic_train| ≥ DEFAULT_GRAY_IC_FLOOR``；
+       裸 IC：``|ic_train| ≥ DEFAULT_RAW_GRAY_IC_FLOOR``。
 
-    **不要求 holdout 同号**：lift 实验本身就是 OOS 裁决；弱因子约 18% 反号税
-    不在灰区门重复征收。本函数**不改**单因子库门语义——仅标记第二通道候选。
+    **不检查 passed**：调用方负责「不给已通过主门/快速通道的候选打队列标记」
+    （``if not passed and is_lift_queue_candidate(...)``）。本函数本身不读 ``passed``。
+
+    **不要求 holdout 同号**：lift 实验本身就是 OOS 裁决；弱因子反号税不在此门重复征收。
 
     ``objective``：``"residual"`` / ``"raw"``；``None`` 时若候选带 residual 指标则 residual。
     """
@@ -292,7 +301,7 @@ def is_gray_zone(candidate: dict, *, objective: str | None = None) -> bool:
     mc = candidate.get("max_corr_library")
     if mc is not None:
         try:
-            if abs(float(mc)) > 0.7:
+            if abs(float(mc)) > DEFAULT_DUPLICATE_CORR:
                 return False
         except (TypeError, ValueError):
             pass
@@ -308,13 +317,13 @@ def is_gray_zone(candidate: dict, *, objective: str | None = None) -> bool:
     if use_residual:
         n_days = candidate.get("n_residual_holdout_days")
         ic = candidate.get("residual_ic_train")
-        lo, hi = DEFAULT_GRAY_IC_FLOOR, DEFAULT_RESIDUAL_IC_FLOOR
+        lo = DEFAULT_GRAY_IC_FLOOR
     else:
         n_days = candidate.get("n_holdout_days")
         if n_days is None:
             n_days = candidate.get("holdout_n_days")
         ic = candidate.get("ic_train")
-        lo, hi = DEFAULT_RAW_GRAY_IC_FLOOR, DEFAULT_IC_FLOOR
+        lo = DEFAULT_RAW_GRAY_IC_FLOOR
 
     if n_days is None:
         return False
@@ -325,8 +334,15 @@ def is_gray_zone(candidate: dict, *, objective: str | None = None) -> bool:
         return False
     if ic is None or ic != ic:  # None / NaN
         return False
-    a = abs(float(ic))
-    return lo <= a < hi
+    return abs(float(ic)) >= lo
+
+
+def is_gray_zone(candidate: dict, *, objective: str | None = None) -> bool:
+    """**Deprecated**：语义已变为 lift 队列（无 IC 上界），请改用 ``is_lift_queue_candidate``。
+
+    薄别名，行为与 ``is_lift_queue_candidate`` 完全一致（上界已取消；库重复阈 0.95）。
+    """
+    return is_lift_queue_candidate(candidate, objective=objective)
 
 
 def acceptance_reasons(

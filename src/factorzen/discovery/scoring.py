@@ -109,11 +109,15 @@ def library_orthogonal_check(
     *,
     threshold: float = DEFAULT_DECORR_THRESHOLD,
 ) -> tuple[bool, float, str | None]:
-    """库级正交门：与库池 max|corr| < threshold 则通过。
+    """库相关度量：与库池 max|corr| 是否 ``>= threshold``。
 
-    返回 ``(ok, max_corr_library, nearest_expr)``。
+    返回 ``(ok, max_corr_library, nearest_expr)``——``ok=True`` 当且仅当 max|corr| < threshold。
     ``lib_pool`` 空/None → 恒通过、corr=0（零回归）。
-    M1 与 team/agent 双路径必须调本函数，禁止各自内联阈值判断（架构守卫锁死）。
+
+    **阈值由调用方按政策传入**（本函数只做度量 + 比较，不做硬拒/软信号语义）：
+    - 硬拒重复：``threshold=DEFAULT_DUPLICATE_CORR``（0.95）
+    - 快速通道/旧默认：``threshold=DEFAULT_DECORR_THRESHOLD``（0.7，向后兼容）
+    M1 与 team/agent 双路径必须调本函数，禁止各自内联相关计算（架构守卫锁死）。
     """
     if not lib_pool:
         return True, 0.0, None

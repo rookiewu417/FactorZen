@@ -20,13 +20,14 @@ from factorzen.discovery.expression import (
 )
 from factorzen.discovery.guardrails import (
     DEFAULT_DSR_ALPHA,
+    DEFAULT_DUPLICATE_CORR,
     DEFAULT_GATE,
     DEFAULT_RESIDUAL_IC_FLOOR,
-    REJECT_CATEGORY_GRAY_ZONE,
+    REJECT_CATEGORY_LIFT_QUEUE,
     DeflationBasis,
     acceptance_reasons,
     deflated_pvalue,
-    is_gray_zone,
+    is_lift_queue_candidate,
 )
 from factorzen.discovery.leaf_health import (
     apply_leaf_exclusion,
@@ -97,23 +98,22 @@ def _oos_adjusted_fitness(train_fitness: float, train_tstat: float, valid_tstat:
     return train_fitness
 
 
-def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
-                  gate: str = DEFAULT_GATE, *,
-                  objective: str = "raw") -> bool:
-    """护栏软标记(passed)：``gate`` 口径下入池即 True。
+def _guard_reasons(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
+                   gate: str = DEFAULT_GATE, *,
+                   objective: str = "raw") -> list[str]:
+    """护栏未通过原因（空=入池）。session 内**唯一**的 acceptance_reasons 派发点。
 
     2026-07「因子库化」：默认 ``gate="library"`` —— 真(holdout 与 train 同号) + 有信号
     (|train_IC|≥floor)，**不含 DSR 单星显著性**（显著性挪到组合层 `fz combine run`）。
     ``gate="strict"`` 回到 DSR 显著+同号（松一档 alpha 0.10）。
-    任一必需指标缺失/NaN → 判否(保守)。护栏把「只算不判」变成可被 leaderboard/export-alpha
-    默认过滤的软标记(留 --all 逃生口)，不删候选、不破坏产物契约。
-    与 Agent `node_guardrails` **共用** `acceptance_reasons`（含 holdout_n_days 覆盖门）。
+    任一必需指标缺失/NaN → 判缺失(保守)。与 Agent `node_guardrails` **共用**
+    `acceptance_reasons`（含 holdout_n_days 覆盖门）。
 
     ``objective="residual"``：用残差指标 + ``DEFAULT_RESIDUAL_IC_FLOOR`` 判定；
     裸 IC 字段仍在 ``c`` 里供报告。``"raw"``（默认本函数）喂裸 IC。
     """
     if objective == "residual":
-        return not acceptance_reasons(
+        return acceptance_reasons(
             gate=gate,
             ic_train=c.get("residual_ic_train"),
             holdout_ic=c.get("residual_holdout_ic"),
@@ -124,7 +124,7 @@ def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
             holdout_n_days=c.get("n_residual_holdout_days"),
             reason_style="residual",
         )
-    return not acceptance_reasons(
+    return acceptance_reasons(
         gate=gate,
         ic_train=c.get("ic_train"),
         holdout_ic=c.get("holdout_ic"),
@@ -134,6 +134,13 @@ def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
         holdout_n_days=c.get("n_holdout_days") if c.get("n_holdout_days") is not None
         else c.get("holdout_n_days"),
     )
+
+
+def _guard_passed(c: dict, dsr_alpha: float = DEFAULT_DSR_ALPHA,
+                  gate: str = DEFAULT_GATE, *,
+                  objective: str = "raw") -> bool:
+    """护栏软标记(passed)：``gate`` 口径下入池即 True。委托 `_guard_reasons`（单源）。"""
+    return not _guard_reasons(c, dsr_alpha, gate, objective=objective)
 
 
 def _cross_section_variability(fdf: pl.DataFrame) -> float:
@@ -430,14 +437,13 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     lib_panel = build_library_panel(lib_pool)
     eff_objective = resolve_objective(objective, lib_panel is not None)
 
-    # 贪心去相关选 top-K：先库过滤（共享 library_orthogonal_check），再与已选池去相关。
-    # 理由：库过滤是「与历史已收录方向正交」的硬门；session 去相关是本轮互异。
-    # 共用同一相关函数与阈值，双路径与 team 一致。
-    # residual 模式**保留** corr>0.7 库门（近共线 lstsq 残差≈噪声）。
+    # 贪心去相关选 top-K：先库**重复**硬门（corr>0.95），再与已选池去相关。
+    # 库相关 (0.7, 0.95] 不硬拒——继续评估，由下方软 reason 挡快速通道、可入 lift 队列。
+    # 共用 library_orthogonal_check；政策阈值在调用方（双路径与 team 一致）。
     selected: list[dict] = []
     selected_pool: dict[str, pl.DataFrame] = {}  # expression -> factor_df
     n_library_correlated_rejects = 0
-    n_gray_zone = 0
+    n_gray_zone = 0  # manifest 字段名兼容；语义= lift_queue 计数
     for cand in scored:
         if len(selected) >= top_k:
             break
@@ -446,7 +452,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         except Exception:
             continue
         ok_lib, mc_lib, _nearest = library_orthogonal_check(
-            fdf, lib_pool_mining or lib_pool, threshold=decorr_threshold,
+            fdf, lib_pool_mining or lib_pool, threshold=DEFAULT_DUPLICATE_CORR,
         )
         if not ok_lib:
             n_library_correlated_rejects += 1
@@ -512,13 +518,24 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             c["residual_holdout_ic"] = float(r_h.ic_mean) if r_h.ic_mean == r_h.ic_mean else float("nan")
             c["n_residual_holdout_days"] = int(r_h.n_days)
         # 护栏软标记：算完立刻判，供 leaderboard/export-alpha 默认过滤（--all 逃生口）
-        # residual 模式喂残差指标；与 Agent 共用 acceptance_reasons。
-        c["passed"] = _guard_passed(c, dsr_alpha, objective=eff_objective)
-        # 第二通道：单因子门不过但落灰区 → 标记待后置 lift（挖掘内不跑 lift）。
-        if not c["passed"] and is_gray_zone(c, objective=eff_objective):
-            c["reject_category"] = REJECT_CATEGORY_GRAY_ZONE
+        # residual 模式喂残差指标；与 Agent 共用 acceptance_reasons（经 _guard_reasons 单点）。
+        # 库相关 (0.7, 0.95]：附加软 reason 挡快速通道（passed=False），不硬拒、不进 known_invalid。
+        _reasons = _guard_reasons(c, dsr_alpha, objective=eff_objective)
+        _mc_lib = c.get("max_corr_library")
+        if _mc_lib is not None:
+            try:
+                if abs(float(_mc_lib)) >= DEFAULT_DECORR_THRESHOLD:
+                    _reasons = [*_reasons, f"库相关持保留(corr={float(_mc_lib):.2f})"]
+            except (TypeError, ValueError):
+                pass
+        c["passed"] = not _reasons
+        if _reasons:
+            c["reject_reason"] = "；".join(_reasons)
+        # 第二通道：单因子门不过但可入 lift 队列 → 标记待组合裁决（挖掘内不跑 lift）。
+        if not c["passed"] and is_lift_queue_candidate(c, objective=eff_objective):
+            c["reject_category"] = REJECT_CATEGORY_LIFT_QUEUE
             prev = c.get("reject_reason") or ""
-            c["reject_reason"] = prev + "(灰区,待组合lift)"
+            c["reject_reason"] = prev + "(lift队列,待组合裁决)"
             n_gray_zone += 1
 
     session_dir = Path(out_dir) / f"session_{seed}_{method}"

@@ -67,6 +67,16 @@ def write_session_manifest(
         "library_pool_size": getattr(state, "library_pool_size", 0),
         "n_library_correlated_rejects": getattr(state, "n_library_correlated_rejects", 0),
         "n_gray_zone": getattr(state, "n_gray_zone", 0),
+        # lift 钩子字段：agent 单路径通常无 session 末组测；缺省空值便于统一消费
+        "n_lift_queue": getattr(result, "n_lift_queue", getattr(state, "n_lift_queue", 0)),
+        "lift_group": getattr(result, "lift_group", None),
+        "lift_results": getattr(result, "lift_results", None) or [],
+        "lift_admissions": getattr(result, "lift_admissions", None) or {
+            "added_active": 0, "added_probation": 0,
+        },
+        "n_lift_evaluated": getattr(result, "n_lift_evaluated", 0),
+        "lift_dropped_coverage": getattr(result, "lift_dropped_coverage", None) or [],
+        "lift_error": getattr(result, "lift_error", None),
         "objective": getattr(state, "objective", None),
         "git_sha": get_git_sha(),
     }

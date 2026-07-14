@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 
@@ -930,6 +931,34 @@ def _holdout_bounds_from_manifest(man: dict) -> tuple[str | None, str | None]:
     return _lift_admission_str(start), _lift_admission_str(end)
 
 
+def _group_lift_candidates_by_admission(
+    session_items: list[dict],
+) -> list[tuple[str | None, str | None, list[dict]]]:
+    """跨 session 按 expression 去重（首次出现胜出），再按 admission 窗分组。
+
+    输入每项 ``{"session", "candidates", "adm_start", "adm_end"}``。
+    返回 ``(adm_start, adm_end, candidates)`` 列表，顺序按窗首次出现稳定。
+    纯函数：无 IO、不建帧、不调 run_lift_tests。
+    """
+    seen: set[str] = set()
+    group_order: list[tuple[str | None, str | None]] = []
+    groups: dict[tuple[str | None, str | None], list[dict]] = {}
+
+    for item in session_items:
+        key = (item.get("adm_start"), item.get("adm_end"))
+        for cand in item.get("candidates") or []:
+            expr = cand.get("expression")
+            if not expr or expr in seen:
+                continue
+            seen.add(expr)
+            if key not in groups:
+                groups[key] = []
+                group_order.append(key)
+            groups[key].append(cand)
+
+    return [(s, e, groups[(s, e)]) for s, e in group_order]
+
+
 def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     """灰区/lift 队列候选 → 组合 OOS lift 实验；默认 dry-run，--apply 才入库。"""
     import json
@@ -953,9 +982,15 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         print("[factor-library lift-test] 需至少一个 --session 目录", file=sys.stderr)
         return 2
 
-    gray: list[dict] = []
-    man_starts: list[str] = []
-    man_ends: list[str] = []
+    # 旗标覆盖优先：任一非 None → 所有候选归同一旗标窗（escape hatch）
+    flag_start = getattr(args, "admission_start", None)
+    flag_end = getattr(args, "admission_end", None)
+    use_flag_window = flag_start is not None or flag_end is not None
+    flag_adm_start = _lift_admission_str(flag_start) if flag_start is not None else None
+    flag_adm_end = _lift_admission_str(flag_end) if flag_end is not None else None
+    args_end = _lift_admission_str(getattr(args, "end", None))
+
+    session_items: list[dict] = []
     for s in sessions:
         man_path = Path(s) / "manifest.json"
         if not man_path.is_file():
@@ -966,29 +1001,45 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         except Exception as exc:
             print(f"[factor-library lift-test] 读 manifest 失败 {s}: {exc}", file=sys.stderr)
             continue
-        gray.extend(extract_gray_candidates_from_manifest(man))
+        gray_s = extract_gray_candidates_from_manifest(man)
         hs, he = _holdout_bounds_from_manifest(man)
-        if hs is not None:
-            man_starts.append(hs)
-        if he is not None:
-            man_ends.append(he)
+        if use_flag_window:
+            s_start, s_end = flag_adm_start, flag_adm_end
+        else:
+            s_start = hs
+            s_end = he or args_end
+        session_items.append(
+            {
+                "session": str(s),
+                "candidates": gray_s,
+                "adm_start": s_start,
+                "adm_end": s_end,
+            }
+        )
 
-    # 跨 session 按 expression 去重（保留首次）
-    seen: set[str] = set()
-    uniq_gray: list[dict] = []
-    for g in gray:
-        e = g.get("expression")
-        if e and e not in seen:
-            seen.add(e)
-            uniq_gray.append(g)
-
-    if not uniq_gray:
+    groups = _group_lift_candidates_by_admission(session_items)
+    n_gray = sum(len(cands) for _, _, cands in groups)
+    if n_gray == 0:
         print("[factor-library lift-test] 未从 session 抽到 gray_zone 候选")
         return 0
 
-    print(f"[factor-library lift-test] gray_zone 候选 {len(uniq_gray)} 个（去重后）")
+    print(
+        f"[factor-library lift-test] gray_zone 候选 {n_gray} 个（去重后），"
+        f"admission 分组 {len(groups)} 组"
+    )
+    for gi, (g_start, g_end, cands) in enumerate(groups, start=1):
+        print(
+            f"[factor-library lift-test]   组{gi}: "
+            f"{g_start or '—'} ~ {g_end or '—'}  候选 {len(cands)} 个"
+        )
+        if g_start is None:
+            print(
+                "[factor-library lift-test] 警告：lift 评分未裁剪到 holdout 窗（无独立性保证）",
+                file=sys.stderr,
+            )
+
     market = args.market
-    # 装配日频帧（与 rebuild 同路径）
+    # 装配日频帧一次（各 session 共享；跨 universe 分帧另任务）
     daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[factor-library lift-test] 挖掘帧为空", file=sys.stderr)
@@ -1001,65 +1052,55 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     top_m = getattr(args, "top_m", None) or DEFAULT_TOP_M
     seed = getattr(args, "seed", 0) or 0
 
-    # admission 窗：旗标覆盖 > manifest holdout 边界（多 session 取最早 start / 最晚 end）
-    flag_start = getattr(args, "admission_start", None)
-    flag_end = getattr(args, "admission_end", None)
-    man_start = min(man_starts) if man_starts else None
-    man_end = max(man_ends) if man_ends else _lift_admission_str(getattr(args, "end", None))
-    adm_start = (
-        _lift_admission_str(flag_start) if flag_start is not None else man_start
-    )
-    adm_end = (
-        _lift_admission_str(flag_end) if flag_end is not None else man_end
-    )
-    if adm_start is None and flag_start is None and not man_starts:
-        # 无旗标、manifest 也无 holdout 起点 → 不裁评分窗
-        adm_end = None if flag_end is None else adm_end
-        print(
-            "[factor-library lift-test] 警告：lift 评分未裁剪到 holdout 窗（无独立性保证）",
-            file=sys.stderr,
-        )
-
-    # 统一 ctx：prep 一次；极简 mock 帧缺列时退回手造 ctx（仍透传 admission 窗）
+    # base_ctx：prep 一次；admission 窗 per-group replace
     try:
-        lift_ctx = make_lift_context(
+        base_ctx = make_lift_context(
             market, daily,
             profile=profile,
             leaf_map=leaf_map,
             horizon=DEFAULT_HORIZON,
-            admission_start=adm_start,
-            admission_end=adm_end,
+            admission_start=None,
+            admission_end=None,
             library_root=lib_root,
         )
     except Exception:
-        lift_ctx = LiftEvalContext(
+        base_ctx = LiftEvalContext(
             market=market,
             prepped=daily.sort(["ts_code", "trade_date"]) if daily.height else daily,
             leaf_map=leaf_map,
             horizon=DEFAULT_HORIZON,
-            admission_start=adm_start,
-            admission_end=adm_end,
+            admission_start=None,
+            admission_end=None,
             library_root=lib_root,
             profile_name=getattr(profile, "name", None) if profile is not None else None,
         )
 
-    results = run_lift_tests(
-        uniq_gray,
-        market=market,
-        daily=daily,
-        leaf_map=leaf_map,
-        library_root=lib_root,
-        top_m=top_m,
-        threshold=threshold,
-        seed=seed,
-        ctx=lift_ctx,
-    )
+    results: list[dict] = []
+    for g_start, g_end, cands in groups:
+        grp_ctx = dataclasses.replace(
+            base_ctx, admission_start=g_start, admission_end=g_end,
+        )
+        rows = run_lift_tests(
+            cands,
+            market=market,
+            daily=daily,
+            leaf_map=leaf_map,
+            library_root=lib_root,
+            top_m=top_m,
+            threshold=threshold,
+            seed=seed,
+            ctx=grp_ctx,
+        )
+        for r in rows:
+            r = dict(r)
+            r.setdefault("admission_start", g_start)
+            r.setdefault("admission_end", g_end)
+            results.append(r)
 
-    # 打印表（含 lift_se / second_half）+ admission 窗说明
+    # 打印表（含 lift_se / second_half）
     print(
-        f"[factor-library lift-test] admission 窗："
-        f"{lift_ctx.admission_start or '—'} ~ {lift_ctx.admission_end or '—'} "
-        f"（horizon={lift_ctx.horizon}）"
+        f"[factor-library lift-test] 评分完成："
+        f"{len(groups)} 组 / {len(results)} 行（horizon={base_ctx.horizon}）"
     )
     print(
         f"{'expression':40s}  {'lift':>8s}  {'lift_se':>8s}  {'2nd_half':>8s}  "
@@ -1094,7 +1135,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 "eval_start": args.start,
                 "eval_end": args.end,
                 "universe": getattr(args, "universe", None),
-                "horizon": lift_ctx.horizon,
+                "horizon": base_ctx.horizon,
                 "run_id": f"lift_{date.today().isoformat()}",
                 "session_dir": ",".join(sessions),
                 "git_sha": get_git_sha(),
@@ -1124,6 +1165,17 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         print("[factor-library lift-test] 无结果行")
 
     # 落 lift manifest 到第一个 session（可审计）
+    admission_groups = [
+        {
+            "admission_start": gs,
+            "admission_end": ge,
+            "n_candidates": len(cs),
+        }
+        for gs, ge, cs in groups
+    ]
+    # 单组时顶层 admission_* 与组一致（单 session 零回归）；多组不写并集
+    top_adm_start = groups[0][0] if len(groups) == 1 else None
+    top_adm_end = groups[0][1] if len(groups) == 1 else None
     lift_manifest = {
         "market": market,
         "start": args.start,
@@ -1132,10 +1184,11 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         "threshold": threshold,
         "top_m": top_m,
         "seed": seed,
-        "admission_start": lift_ctx.admission_start,
-        "admission_end": lift_ctx.admission_end,
-        "horizon": lift_ctx.horizon,
-        "n_gray_input": len(uniq_gray),
+        "admission_start": top_adm_start,
+        "admission_end": top_adm_end,
+        "admission_groups": admission_groups,
+        "horizon": base_ctx.horizon,
+        "n_gray_input": n_gray,
         "n_tested": len(results),
         "n_passed": sum(1 for r in results if r.get("passed")),
         "dry_run": dry_run,

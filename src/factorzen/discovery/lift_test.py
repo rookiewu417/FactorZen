@@ -36,6 +36,16 @@ def _oos_rank_ic(combined: pl.DataFrame, ret_df: pl.DataFrame) -> float:
     return float(_evaluate_oos(combined, ret_df).get("rank_ic_mean", 0.0))
 
 
+def _with_safe_feature_names(factor_dfs: dict[str, pl.DataFrame]) -> dict[str, pl.DataFrame]:
+    """键映射为安全特征名 f{i}（按插入序，确定性）。
+
+    lgbm 不接受特征名含特殊 JSON 字符（括号/逗号等）——因子键是**真实表达式**时
+    直接进 combine 会炸 `LightGBMError: Do not support special JSON characters in
+    feature name`（线上事故）。仅影响 lgbm 内部特征名；lift 报告仍用真实表达式
+    （调用方持有原键，映射不外泄）。"""
+    return {f"f{i:03d}": df for i, df in enumerate(factor_dfs.values())}
+
+
 def run_lift_tests(
     gray_candidates: list[dict],
     *,
@@ -119,7 +129,7 @@ def run_lift_tests(
 
     # ── 基线一次 ────────────────────────────────────────────────────────────
     try:
-        base_combined = _combine(dict(active_factor_dfs), ret_df, cv)
+        base_combined = _combine(_with_safe_feature_names(active_factor_dfs), ret_df, cv)
         baseline = _oos_rank_ic(base_combined, ret_df)
     except Exception as exc:
         _LOG.warning("lift_test baseline 失败: %s: %s", type(exc).__name__, exc)
@@ -165,10 +175,11 @@ def run_lift_tests(
                 results.append(row)
                 continue
             pool = dict(active_factor_dfs)
-            # 键用规范表达式串；若与 active 撞名则覆盖为候选自身（仍测「加它」）
+            # 键用规范表达式串；若与 active 撞名则覆盖为候选自身（仍测「加它」）。
+            # 进 combine 前统一映射安全特征名（候选按插入序恒为最后一个 f{n}）。
             key = str(expr)
             pool[key] = cand_df.select(["trade_date", "ts_code", "factor_value"])
-            cand_combined = _combine(pool, ret_df, cv)
+            cand_combined = _combine(_with_safe_feature_names(pool), ret_df, cv)
             cand_ic = _oos_rank_ic(cand_combined, ret_df)
             lift = float(cand_ic) - float(baseline)
             row["candidate_rank_ic"] = cand_ic

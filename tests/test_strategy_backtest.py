@@ -1080,6 +1080,79 @@ def test_quantile_long_short_strategy_selects_top_and_bottom_groups():
     }
 
 
+def test_quantile_long_short_thin_cross_section_returns_empty():
+    """N < n_groups 时不得建单腿裸头寸，应 flat（#7）。"""
+    factor = _factor(
+        [
+            (date(2024, 1, 1), "A", 1.0),
+            (date(2024, 1, 1), "B", 2.0),
+        ]
+    )
+    ctx = BacktestContext(
+        signal_date=date(2024, 1, 1),
+        execution_date=date(2024, 1, 2),
+        factor_slice=factor,
+        price_slice=pl.DataFrame(),
+        current_positions=pl.DataFrame(),
+        factor_col="factor_clean",
+    )
+
+    weights = QuantileLongShortStrategy(n_groups=10).generate_weights(ctx)
+    assert weights.height == 0
+    assert weights.columns == ["ts_code", "target_weight"]
+
+
+def test_quantile_long_short_one_empty_leg_returns_empty():
+    """分组后 long 或 short 任一为空（近常数/退化分桶）→ flat，禁止裸多/裸空（#7）。"""
+    # N=3、n_groups=10：rank 分组最多落到 0/3/6，填不满 top 组 → 旧实现只剩 short 腿
+    factor = _factor(
+        [
+            (date(2024, 1, 1), "A", 1.0),
+            (date(2024, 1, 1), "B", 2.0),
+            (date(2024, 1, 1), "C", 3.0),
+        ]
+    )
+    ctx = BacktestContext(
+        signal_date=date(2024, 1, 1),
+        execution_date=date(2024, 1, 2),
+        factor_slice=factor,
+        price_slice=pl.DataFrame(),
+        current_positions=pl.DataFrame(),
+        factor_col="factor_clean",
+    )
+
+    weights = QuantileLongShortStrategy(n_groups=10).generate_weights(ctx)
+    assert weights.height == 0, "单腿退化截面必须 flat，不得裸空/裸多"
+
+
+def test_quantile_long_short_sufficient_cross_section_zero_regression():
+    """N ≥ n_groups 且两腿齐全时保持等权 long/short（#7 零回归）。"""
+    # 10 只、n_groups=5 → 每组 2 只，top/bottom 各 2
+    factor = _factor(
+        [(date(2024, 1, 1), f"S{i}", float(i)) for i in range(10)]
+    )
+    ctx = BacktestContext(
+        signal_date=date(2024, 1, 1),
+        execution_date=date(2024, 1, 2),
+        factor_slice=factor,
+        price_slice=pl.DataFrame(),
+        current_positions=pl.DataFrame(),
+        factor_col="factor_clean",
+    )
+
+    weights = QuantileLongShortStrategy(n_groups=5).generate_weights(ctx)
+    wmap = dict(zip(weights["ts_code"], weights["target_weight"], strict=True))
+    # bottom: S0,S1 short -0.5 each; top: S8,S9 long +0.5 each
+    assert wmap == {
+        "S0": -0.5,
+        "S1": -0.5,
+        "S8": 0.5,
+        "S9": 0.5,
+    }
+    assert sum(w for w in wmap.values() if w > 0) == pytest.approx(1.0)
+    assert sum(w for w in wmap.values() if w < 0) == pytest.approx(-1.0)
+
+
 def test_topn_long_only_strategy_weights_top_names_equally():
     factor = _factor(
         [

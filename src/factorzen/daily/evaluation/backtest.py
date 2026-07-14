@@ -228,7 +228,8 @@ class QuantileLongShortStrategy(Strategy):
     def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
         factor_col = context.factor_col or self.factor_col
         df = _valid_factor_slice(context.factor_slice, factor_col)
-        if df.is_empty():
+        # 薄截面：股数不足分组数时无法同时填满 top/bottom → flat，禁止单腿裸头寸
+        if df.is_empty() or df.height < self.n_groups:
             return _empty_weights()
 
         grouped = (
@@ -242,20 +243,18 @@ class QuantileLongShortStrategy(Strategy):
         )
         long_df = grouped.filter(pl.col("_group") == self.n_groups - 1)
         short_df = grouped.filter(pl.col("_group") == 0)
-        parts: list[pl.DataFrame] = []
-        if not long_df.is_empty():
-            parts.append(
-                long_df.select(["ts_code"]).with_columns(
-                    pl.lit(1.0 / long_df.height).alias("target_weight")
-                )
-            )
-        if not short_df.is_empty():
-            parts.append(
-                short_df.select(["ts_code"]).with_columns(
-                    pl.lit(-1.0 / short_df.height).alias("target_weight")
-                )
-            )
-        return pl.concat(parts) if parts else _empty_weights()
+        # 两腿必须成对：任一为空（近常数/退化分桶）→ flat，不建裸多/裸空
+        if long_df.is_empty() or short_df.is_empty():
+            return _empty_weights()
+        parts = [
+            long_df.select(["ts_code"]).with_columns(
+                pl.lit(1.0 / long_df.height).alias("target_weight")
+            ),
+            short_df.select(["ts_code"]).with_columns(
+                pl.lit(-1.0 / short_df.height).alias("target_weight")
+            ),
+        ]
+        return pl.concat(parts)
 
 
 class TopNLongOnlyStrategy(Strategy):
@@ -1039,6 +1038,11 @@ def _run_precomputed_weights_backtest_fast(
         if is_st_by_date
         else None
     )
+    # 凡 weights_by_date 中存在的 sig_date 一律记录（含空权重表 = 显式空仓）。
+    # 旧实现 ``if indices:`` 会把显式空仓当成「无信号」carry 前仓；
+    # 与慢路径 has_target_for + generate_weights→空表→平仓 对齐：
+    #   - 日期在表中且权重空 → flat
+    #   - 日期不在表中 → carry（消费处 signal_date not in dict）
     target_by_signal_date: dict[date, tuple[np.ndarray, np.ndarray]] = {}
     for sig_date, weight_df in strategy.weights_by_date.items():
         # 与慢路径每次 generate_weights() 后都过 _validate_target_weights 对齐：
@@ -1052,11 +1056,10 @@ def _run_precomputed_weights_backtest_fast(
             if code_idx is not None:
                 indices.append(code_idx)
                 values.append(float(row["target_weight"]))
-        if indices:
-            target_by_signal_date[sig_date] = (
-                np.array(indices, dtype=int),
-                np.array(values, dtype=float),
-            )
+        target_by_signal_date[sig_date] = (
+            np.array(indices, dtype=int),
+            np.array(values, dtype=float),
+        )
 
     weights = np.zeros(len(codes), dtype=float)
     nav_value = 1.0

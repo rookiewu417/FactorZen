@@ -925,3 +925,108 @@ def test_expression_keys_survive_real_lgbm(tmp_path):
     assert out[0]["error"] is None, f"真实表达式键不得炸 lgbm: {out[0]}"
     assert out[0]["baseline"] is not None
     assert out[0]["expression"] == "mul(rank(vol), neg(ts_std(ret_1d, 20)))"
+
+
+# ── P9：准入 provenance 可重放 ───────────────────────────────────────────────
+
+
+def test_run_lift_tests_admission_provenance_complete():
+    """production 形态 run_lift_tests：row 含 admission/scored/CV/block/baseline_hash。"""
+    import hashlib
+
+    from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
+
+    dates = _dates(60)
+    n_stocks = 15
+    # 两套 active 键集合，验证 baseline_hash 集合稳定与差异
+    active_a = {
+        "lib_z": pl.DataFrame({
+            "trade_date": [d for d in dates for _ in range(n_stocks)],
+            "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+            "factor_value": [
+                float((hash(d) + s) % 17) for d in dates for s in range(n_stocks)
+            ],
+        }),
+        "lib_a": pl.DataFrame({
+            "trade_date": [d for d in dates for _ in range(n_stocks)],
+            "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+            "factor_value": [
+                float((hash(d) * 3 + s) % 13) for d in dates for s in range(n_stocks)
+            ],
+        }),
+    }
+    # 同集合不同插入序 → hash 应相同
+    active_a_reordered = {"lib_a": active_a["lib_a"], "lib_z": active_a["lib_z"]}
+    active_b = {"lib_only": active_a["lib_a"]}
+
+    ret = pl.DataFrame({
+        "trade_date": [d for d in dates for _ in range(n_stocks)],
+        "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+        "ret": [
+            0.01 * (s - n_stocks / 2) + 0.001 * (i % 5)
+            for i, d in enumerate(dates) for s in range(n_stocks)
+        ],
+    })
+    cand = pl.DataFrame({
+        "trade_date": [d for d in dates for _ in range(n_stocks)],
+        "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+        "factor_value": [
+            float(s) + 0.01 * (hash(d) % 7) for d in dates for s in range(n_stocks)
+        ],
+    })
+
+    def combine_stub(fds, rdf, cv, **kw):
+        return rdf.select(
+            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
+        )
+
+    ctx = LiftEvalContext(
+        market="ashare",
+        prepped=pl.DataFrame({"trade_date": ["x"], "ts_code": ["y"], "close": [1.0]}),
+        leaf_map=None,
+        horizon=5,
+        admission_start="20240115",
+        admission_end="20240301",
+        profile_name="ashare_default",
+    )
+    cv_params = {"train_days": 40, "test_days": 10, "purge_days": 3}
+    common = dict(
+        gray_candidates=[{"expression": "cand0", "residual_ic_train": 0.01}],
+        market="ashare",
+        daily=pl.DataFrame(),
+        ret_df=ret,
+        materialize_candidate=lambda e: cand,
+        combine_fn=combine_stub,
+        cv_params=cv_params,
+        block_days=10,
+        threshold=0.001,
+        ctx=ctx,
+        horizon=5,
+    )
+
+    r1 = run_lift_tests(**common, active_factor_dfs=active_a)[0]
+    r1b = run_lift_tests(**common, active_factor_dfs=active_a_reordered)[0]
+    r2 = run_lift_tests(**common, active_factor_dfs=active_b)[0]
+
+    # admission / scored / CV / block / profile / frequency
+    assert r1["admission_start"] == "20240115"
+    assert r1["admission_end"] == "20240301"
+    assert r1["scored_start"] is not None
+    assert r1["scored_end"] is not None
+    assert r1["scored_start"] >= "20240115"
+    assert r1["block_days"] == 10
+    assert r1["cv_train_days"] == 40
+    assert r1["cv_test_days"] == 10
+    assert r1["threshold"] == 0.001
+    assert r1["profile_name"] == "ashare_default"
+    assert r1["frequency"] == "daily"
+    assert r1["horizon"] == 5
+
+    # baseline_hash：同集合稳定（插入序无关）、不同集合不同
+    expected = hashlib.sha256(",".join(sorted(active_a.keys())).encode()).hexdigest()[:16]
+    assert r1["baseline_hash"] == expected
+    assert r1b["baseline_hash"] == r1["baseline_hash"]
+    assert r2["baseline_hash"] is not None
+    assert r2["baseline_hash"] != r1["baseline_hash"]
+    expected_b = hashlib.sha256(",".join(sorted(active_b.keys())).encode()).hexdigest()[:16]
+    assert r2["baseline_hash"] == expected_b

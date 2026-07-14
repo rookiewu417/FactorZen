@@ -21,6 +21,7 @@ team session 末钩子批处理。
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -133,6 +134,46 @@ def _provenance_fields(
         "scored_start": scored_start,
         "scored_end": scored_end,
         "horizon": horizon,
+    }
+
+
+def _baseline_hash(active_factor_dfs: dict[str, Any] | None) -> str | None:
+    """active 表达式集合的稳定 hash（排序后 join；空池 → None）。"""
+    if not active_factor_dfs:
+        return None
+    keys = ",".join(sorted(active_factor_dfs.keys()))
+    return hashlib.sha256(keys.encode()).hexdigest()[:16]
+
+
+def _lift_run_meta(
+    *,
+    n_input: int,
+    n_selected: int,
+    truncated: int,
+    threshold: float,
+    block_days: int,
+    cv_kw: dict[str, Any],
+    ctx: LiftEvalContext | None,
+    market: str,
+    baseline_hash: str | None = None,
+) -> dict[str, Any]:
+    """run_lift_tests 结果行共享的 meta/provenance（经 **meta 进每个 row）。
+
+    不含 lift_se_mult：run_lift_tests 无 se_mult 入参，由 upsert 从调用方注入。
+    """
+    mkt = ctx.market if ctx is not None else market
+    return {
+        "truncated_from": n_input if truncated else None,
+        "n_selected": n_selected,
+        "n_input": n_input,
+        "threshold": threshold,
+        "block_days": int(block_days),
+        "cv_train_days": int(cv_kw.get("train_days", 120)),
+        "cv_test_days": int(cv_kw.get("test_days", 20)),
+        "profile_name": ctx.profile_name if ctx is not None else None,
+        # A 股默认 daily；其它市场不确定则 None（不加臆测）
+        "frequency": "daily" if mkt == "ashare" else None,
+        "baseline_hash": baseline_hash,
     }
 
 
@@ -425,12 +466,6 @@ def run_lift_tests(
         lambda fds, rdf, c, **kw: combine_lgbm(fds, rdf, c, seed=seed, **kw)
     )
 
-    meta = {
-        "truncated_from": n_input if truncated else None,
-        "n_selected": len(selected),
-        "n_input": n_input,
-        "threshold": threshold,
-    }
     prov_empty = _provenance_fields(
         admission_start=adm_start,
         admission_end=adm_end,
@@ -452,6 +487,20 @@ def run_lift_tests(
             active_factor_dfs = build_library_pool(
                 market, daily, leaf_map, root=library_root, statuses=("active",),
             )
+
+    # meta 含准入 provenance；baseline_hash 在 active 解析后一次算好复用
+    meta = _lift_run_meta(
+        n_input=n_input,
+        n_selected=len(selected),
+        truncated=truncated,
+        threshold=threshold,
+        block_days=block_days,
+        cv_kw=cv_kw,
+        ctx=ctx,
+        market=market,
+        baseline_hash=_baseline_hash(active_factor_dfs),
+    )
+
     if not active_factor_dfs:
         _LOG.warning("lift_test: 库内无 active 因子，无法跑基线；全部判不过")
         return [

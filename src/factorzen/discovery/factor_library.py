@@ -160,6 +160,21 @@ class FactorRecord:
     eval_end: str | None = None
     universe: str | None = None
     horizon: int | None = None
+    # lift 准入 provenance（可重放：窗/CV/block/baseline/profile；旧行缺失→None）
+    admission_start: str | None = None
+    admission_end: str | None = None
+    scored_start: str | None = None
+    scored_end: str | None = None
+    block_days: int | None = None
+    cv_train_days: int | None = None
+    cv_test_days: int | None = None
+    lift_threshold: float | None = None
+    lift_se_mult: float | None = None
+    baseline_hash: str | None = None
+    profile_name: str | None = None
+    frequency: str | None = None
+    # 注：target_price / execution_lag 属执行配置 provenance，lift 流程当前不持有，
+    # 不加空壳字段；后续从市场执行配置线程接入。
     source_run_id: str | None = None
     source_session_dir: str | None = None
     git_sha: str | None = None
@@ -357,6 +372,19 @@ def _record_from_candidate(
         eval_end=eval_end,
         universe=universe,
         horizon=horizon,
+        # lift 准入 provenance（缺失→None；threshold 键兼容 row 的 "threshold"）
+        admission_start=g("admission_start"),
+        admission_end=g("admission_end"),
+        scored_start=g("scored_start"),
+        scored_end=g("scored_end"),
+        block_days=g("block_days"),
+        cv_train_days=g("cv_train_days"),
+        cv_test_days=g("cv_test_days"),
+        lift_threshold=g("lift_threshold", "threshold"),
+        lift_se_mult=g("lift_se_mult", "se_mult"),
+        baseline_hash=g("baseline_hash"),
+        profile_name=g("profile_name"),
+        frequency=g("frequency"),
         source_run_id=run_id,
         source_session_dir=session_dir,
         git_sha=git_sha,
@@ -711,9 +739,23 @@ def upsert_lift_admissions(
                 row.get("eval_start") or eval_start or (prev.eval_start if prev else None),
                 row.get("eval_end") or eval_end or (prev.eval_end if prev else None),
             )
+            # row 级 provenance 优先；meta 仅补缺；se_mult/threshold 由 upsert 入参兜底
+            cand = dict(row)
+            for _pk in (
+                "admission_start", "admission_end", "scored_start", "scored_end",
+                "block_days", "cv_train_days", "cv_test_days",
+                "lift_threshold", "lift_se_mult", "baseline_hash",
+                "profile_name", "frequency", "threshold", "se_mult",
+            ):
+                if cand.get(_pk) is None and meta.get(_pk) is not None:
+                    cand[_pk] = meta[_pk]
+            if cand.get("lift_threshold") is None and cand.get("threshold") is None:
+                cand["lift_threshold"] = threshold
+            if cand.get("lift_se_mult") is None and cand.get("se_mult") is None:
+                cand["lift_se_mult"] = se_mult
             # 用 row 指标 + meta provenance 建记录（缺字段 None）
             rec = _record_from_candidate(
-                row, norm, market, eval_window,
+                cand, norm, market, eval_window,
                 row.get("universe") if row.get("universe") is not None else universe,
                 row.get("horizon") if row.get("horizon") is not None else horizon,
                 run_id, session_dir, git_sha, now, prev,

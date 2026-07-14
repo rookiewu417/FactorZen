@@ -780,6 +780,27 @@ def _cmd_factor_library_tag_legacy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_factor_library_lift_null(args: argparse.Namespace) -> int:
+    """lift 统计层 null 校准：扫 se_mult×min_blocks，打印误准入率校准表。"""
+    from factorzen.discovery.lift_null import (
+        calibration_table,
+        format_calibration_markdown,
+    )
+
+    se_mults = tuple(float(x) for x in args.se_mults.split(",") if x.strip())
+    min_blocks = tuple(int(x) for x in args.min_blocks.split(",") if x.strip())
+    rows = calibration_table(
+        n_days=args.n_days, daily_sigma=args.daily_sigma, ar1=args.ar1,
+        se_mults=se_mults, min_blocks_options=min_blocks,
+        n_sims=args.n_sims, seed=args.seed,
+    )
+    print(f"[lift-null] H0=无真实 lift；n_days={args.n_days} σ={args.daily_sigma} "
+          f"ar1={args.ar1} n_sims={args.n_sims} seed={args.seed}")
+    print("[lift-null] 统计层下界：真实链路含选择偏差，误准入只会更高")
+    print(format_calibration_markdown(rows))
+    return 0
+
+
 def _lift_admission_str(v) -> str | None:
     """边界日期 → admission 窗字符串（对齐 polars Date→Utf8 的 YYYY-MM-DD）。"""
     if v is None:
@@ -2195,6 +2216,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="因子库根目录（默认 workspace/factor_library）",
     )
     fl_tl.set_defaults(func=_cmd_factor_library_tag_legacy)
+
+    fl_ln = fl_sub.add_parser(
+        "lift-null",
+        help="lift 统计层 null 校准：H0=无真实 lift 下扫 se_mult×min_blocks 的误准入率",
+    )
+    fl_ln.add_argument("--n-days", dest="n_days", type=int, default=290,
+                       help="配对评分日数（默认 290≈holdout 量级）")
+    fl_ln.add_argument("--daily-sigma", dest="daily_sigma", type=float, default=0.01,
+                       help="日差分(cand_ic−base_ic)标准差量级")
+    fl_ln.add_argument("--ar1", type=float, default=0.3,
+                       help="日差分 AR(1) 自相关（重叠前向收益导致，默认 0.3）")
+    fl_ln.add_argument("--se-mults", dest="se_mults", default="1.0,1.645,2.0",
+                       help="逗号分隔的 SE 乘数网格")
+    fl_ln.add_argument("--min-blocks", dest="min_blocks", default="0,6,10",
+                       help="逗号分隔的最低块数网格（0=不设，现状）")
+    fl_ln.add_argument("--n-sims", dest="n_sims", type=int, default=5000)
+    fl_ln.add_argument("--seed", type=int, default=0)
+    fl_ln.set_defaults(func=_cmd_factor_library_lift_null)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     # ── fz research ──（端到端编排：mine → 头部 passed 因子 → 循环 build → sim → report）

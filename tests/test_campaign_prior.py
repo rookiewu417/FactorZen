@@ -6,10 +6,9 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
-
-import datetime as dt
 
 import numpy as np
 import polars as pl
@@ -20,7 +19,6 @@ from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.agents.team_orchestrator import run_team_agent, write_team_manifest
 from factorzen.discovery.campaign import CampaignPrior, campaign_key, campaign_prior
 from factorzen.discovery.guardrails import DeflationBasis
-
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -327,7 +325,7 @@ def test_orchestrator_manifest_campaign_fields(tmp_path: Path):
     )
     m = json.loads(man_path.read_text(encoding="utf-8"))
 
-    assert "campaign_id" in m and m["campaign_id"]
+    assert m.get("campaign_id")
     assert len(m["campaign_id"]) == 16
     assert m["prior_n_trials"] == 2
     assert m["prior_n_sessions"] == 1

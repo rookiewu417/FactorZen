@@ -831,7 +831,7 @@ def test_fetch_margin_detail_subset_no_cache_write():
 
 
 # ══════════════════════════════════════════════════════════
-# fetch_stk_holdernumber：按 ts_code 逐股 / 落分区 / 幂等
+# fetch_stk_holdernumber：市场模式按公告月窗口 / 落分区 / 幂等
 # ══════════════════════════════════════════════════════════
 
 
@@ -846,8 +846,8 @@ def _pd_holder(code: str = "000001.SZ", ann: str = "20220430", end: str = "20220
     )
 
 
-def test_fetch_stk_holdernumber_by_code_and_saves(tmp_path, monkeypatch):
-    """按 ts_code 逐股拉 stk_holdernumber，落盘并写 ann-year 窗口完成标记。"""
+def test_fetch_stk_holdernumber_market_mode_monthly_windows(tmp_path, monkeypatch):
+    """市场模式：按公告月窗口整市场拉（不带 ts_code），落盘并写 "YYYY-MM" 标记。"""
     from factorzen.core.loader import fetch_stk_holdernumber
 
     monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
@@ -858,32 +858,25 @@ def test_fetch_stk_holdernumber_by_code_and_saves(tmp_path, monkeypatch):
         patch.object(loader_module, "_rate_limit"),
         patch.object(loader_module, "save_parquet") as save,
         patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-        patch.object(loader_module, "fetch_stock_basic",
-                     return_value=pl.DataFrame({"ts_code": ["000001.SZ"]})),
     ):
         fetch_stk_holdernumber("20220101", "20220331")
-    assert mock_pro.stk_holdernumber.call_count >= 1
-    c = mock_pro.stk_holdernumber.call_args
-    assert "ts_code" in c.kwargs
+    # 3 个月窗口各一次调用，且不带 ts_code（整市场按公告窗口）
+    assert mock_pro.stk_holdernumber.call_count == 3
+    for c in mock_pro.stk_holdernumber.call_args_list:
+        assert "ts_code" not in c.kwargs
+        assert "start_date" in c.kwargs and "end_date" in c.kwargs
     save.assert_called()
     assert save.call_args.kwargs.get("data_type") == "stk_holdernumber"
-    # end_date 用于分区
-    assert save.call_args.kwargs.get("date_col") == "end_date" or (
-        save.call_args.args and True  # positional ok if date_col default overridden in call
-    )
     saved = save.call_args.args[0]
     assert "holder_num" in saved.columns
     assert saved["end_date"].dtype == pl.Date
-    # 窗口完成标记已写
-    marker = tmp_path / "stk_holdernumber" / "_fetched_windows.json"
-    assert marker.exists()
     import json
-    windows = json.loads(marker.read_text())
-    assert any(w.get("year") == 2022 for w in windows)
+    windows = json.loads((tmp_path / "stk_holdernumber" / "_fetched_windows.json").read_text())
+    assert {w["window"] for w in windows} == {"2022-01", "2022-02", "2022-03"}
 
 
 def test_fetch_stk_holdernumber_window_marker_skips(tmp_path, monkeypatch):
-    """幂等：ann-year 窗口完成标记存在则跳过（不再看 end_date 分区）。"""
+    """幂等：月窗口标记存在则跳过；旧版整年标记向后兼容视为覆盖该年。"""
     import json
 
     from factorzen.core.loader import fetch_stk_holdernumber
@@ -892,19 +885,61 @@ def test_fetch_stk_holdernumber_window_marker_skips(tmp_path, monkeypatch):
     marker_dir = tmp_path / "stk_holdernumber"
     marker_dir.mkdir(parents=True)
     (marker_dir / "_fetched_windows.json").write_text(
-        json.dumps([{"year": 2022, "n_stocks": 1, "ts": "2026-01-01T00:00:00"}])
+        json.dumps([
+            {"year": 2022, "n_stocks": 1, "ts": "2026-01-01T00:00:00"},   # legacy 整年
+            {"window": "2023-01", "n_rows": 5, "ts": "2026-01-01T00:00:00"},
+        ])
     )
     mock_pro = MagicMock()
     with (
         patch.object(loader_module, "init_tushare", return_value=mock_pro),
         patch.object(loader_module, "save_parquet") as save,
         patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-        patch.object(loader_module, "fetch_stock_basic",
-                     return_value=pl.DataFrame({"ts_code": ["000001.SZ"]})),
     ):
-        fetch_stk_holdernumber("20220101", "20220331")
+        fetch_stk_holdernumber("20220101", "20220331")   # legacy 年覆盖
+        fetch_stk_holdernumber("20230101", "20230131")   # 月标记覆盖
     mock_pro.stk_holdernumber.assert_not_called()
     save.assert_not_called()
+
+
+def test_fetch_stk_holdernumber_subset_mode_no_shared_cache(tmp_path, monkeypatch):
+    """子集模式（ts_codes）：逐股直拉直接返回，不写共享缓存、不写标记——
+    部分数据写共享缓存会让完整性标记撒谎。"""
+    from factorzen.core.loader import fetch_stk_holdernumber
+
+    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
+    mock_pro = MagicMock()
+    mock_pro.stk_holdernumber.return_value = _pd_holder()
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "save_parquet") as save,
+    ):
+        out = fetch_stk_holdernumber("20220101", "20220331", ts_codes=["000001.SZ"])
+    assert mock_pro.stk_holdernumber.call_args.kwargs.get("ts_code") == "000001.SZ"
+    assert not out.is_empty() and "holder_num" in out.columns
+    save.assert_not_called()
+    assert not (tmp_path / "stk_holdernumber" / "_fetched_windows.json").exists()
+
+
+def test_fetch_stk_holdernumber_api_error_window_not_marked(tmp_path, monkeypatch):
+    """API 异常的窗口重试一次后放弃且**不写标记**（下次重跑补齐，不静默留洞）。"""
+    from factorzen.core.loader import fetch_stk_holdernumber
+
+    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
+    monkeypatch.setattr(loader_module, "RETRY_DELAY", 0)
+    mock_pro = MagicMock()
+    mock_pro.stk_holdernumber.side_effect = RuntimeError("boom")
+    with (
+        patch.object(loader_module, "init_tushare", return_value=mock_pro),
+        patch.object(loader_module, "_rate_limit"),
+        patch.object(loader_module, "save_parquet") as save,
+        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+    ):
+        fetch_stk_holdernumber("20220101", "20220131")
+    assert mock_pro.stk_holdernumber.call_count == 2  # 重试一次
+    save.assert_not_called()
+    assert not (tmp_path / "stk_holdernumber" / "_fetched_windows.json").exists()
 
 
 def test_fetch_stk_holdernumber_tmp_marker_not_complete(tmp_path, monkeypatch):
@@ -1180,3 +1215,21 @@ def test_fetch_top_list_schema_error_rewrites_year(tmp_path, monkeypatch):
     assert reloaded.height >= 1
     assert reloaded["reason"].dtype == pl.String
 
+
+def test_holder_normalize_drops_junk_end_dates(tmp_path, monkeypatch):
+    """源数据垃圾行防御：null end_date（会崩分区路径构造 month.zfill）与越界日期
+    （实测 1900/2053/未来期末——后者会经 pit_align 最大 end_date 永久霸占最新期）必须过滤。"""
+    import datetime as dt
+
+    from factorzen.core.loader import _normalize_holder_frame
+    future = (dt.date.today() + dt.timedelta(days=90)).strftime("%Y%m%d")
+    raw = pl.DataFrame({
+        "ts_code": ["000001.SZ", "300070.SZ", "300066.SZ", "000002.SZ", "002389.SZ"],
+        "ann_date": ["20220430", "20230630", "20230911", "20220430", "20250312"],
+        "end_date": ["20220331", "20530626", "19000908", None, future],
+        "holder_num": [50000.0, None, None, 60000.0, None],
+    })
+    out = _normalize_holder_frame([raw])
+    # 只有合法行存活；null end_date 与越界日期全部被丢
+    assert out.height == 1
+    assert out["ts_code"].to_list() == ["000001.SZ"]

@@ -17,18 +17,20 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
 
 from factorzen.discovery.expression import evaluate_materialized, parse_expr, to_expr_string
-from factorzen.discovery.guardrails import acceptance_reasons
+from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD, acceptance_reasons
 
 _LOG = logging.getLogger(__name__)
 
@@ -130,12 +132,19 @@ class FactorRecord:
     ic_ci_high: float | None = None
     pbo: float | None = None
     turnover: float | None = None
-    status: str = "active"           # active / correlated / probation（试用，lift 通道入库）
+    status: str = "active"           # active / correlated / probation / no_lift
     max_corr_in_lib: float | None = None
     correlated_with: str | None = None
-    # 组合增量 lift 通道字段（probation 记录；active 路径为 None）
+    # 准入轨道：single=单因子裸口径；lift=组合 OOS 增量通道
+    admission_track: str = "single"  # "single" | "lift"
+    # 组合增量 lift 通道字段（lift 轨；single 轨通常为 None）
     lift: float | None = None
     lift_baseline: float | None = None
+    lift_se: float | None = None
+    lift_first_half: float | None = None
+    lift_second_half: float | None = None
+    # 审计：holdout 有效覆盖天数（single 轨 upsert 若调用方传入则落盘）
+    holdout_n_days: int | None = None
     eval_start: str | None = None
     eval_end: str | None = None
     universe: str | None = None
@@ -284,7 +293,8 @@ def _save_library(market: str, records: list[FactorRecord], root: str = DEFAULT_
 # ── upsert ───────────────────────────────────────────────────────────────────
 
 def _record_from_candidate(
-    cand: dict, norm_expr: str, market: str, eval_window: tuple[str, str],
+    cand: dict, norm_expr: str, market: str,
+    eval_window: tuple[str | None, str | None],
     universe: str | None, horizon: int | None, run_id: str | None,
     session_dir: str | None, git_sha: str | None, now: str,
     prev: FactorRecord | None,
@@ -297,6 +307,13 @@ def _record_from_candidate(
         return None
 
     eval_start, eval_end = eval_window
+    # holdout 覆盖天数：接受 holdout_n_days / n_holdout_days 两种键
+    hnd = g("holdout_n_days", "n_holdout_days")
+    if hnd is not None:
+        try:
+            hnd = int(hnd)
+        except (TypeError, ValueError):
+            hnd = None
     return FactorRecord(
         expression=norm_expr,
         market=market,
@@ -313,6 +330,8 @@ def _record_from_candidate(
         pbo=g("pbo"),
         turnover=g("turnover"),
         # status/max_corr/correlated_with 由去相关阶段填
+        # admission_track 默认 single（单因子裸口径 upsert 不改轨道）
+        holdout_n_days=hnd,
         eval_start=eval_start,
         eval_end=eval_end,
         universe=universe,
@@ -544,6 +563,121 @@ def upsert_probation(
     _save_library(market, list(by_expr.values()), root=root)
     render_markdown(market, root=root)
     return res
+
+
+def upsert_lift_admissions(
+    rows: list[dict], *, market: str,
+    root: str = "workspace/factor_library",
+    meta: dict | None = None,
+    threshold: float = DEFAULT_LIFT_THRESHOLD,
+    se_mult: float = 1.0,
+) -> dict:
+    """把 ``run_lift_tests`` 结果行按 ``lift_admission`` 写入因子库（lift 准入轨道）。
+
+    **与 ``upsert`` 的分工**：
+    - ``upsert``：单因子裸口径 library gate + 去相关 → ``admission_track="single"``。
+    - 本函数：**不走**单因子 library gate；门就是 lift 本身
+      （``lift_admission`` → active / probation / reject）。落盘
+      ``admission_track="lift"``。reject 跳过不写库。
+
+    已存在同 expression：更新指标与 status（保留 ``added_at``），不重复添加。
+    逐行 try/except：一行坏数据不崩整批，进 ``errors`` 列表。
+
+    返回 ``{"added_active", "added_probation", "rejected", "errors"}``。
+    """
+    from factorzen.discovery.lift_test import lift_admission
+
+    meta = meta or {}
+    eval_start = meta.get("eval_start")
+    eval_end = meta.get("eval_end")
+    universe = meta.get("universe")
+    horizon = meta.get("horizon")
+    run_id = meta.get("run_id") or meta.get("source_run_id")
+    session_dir = meta.get("session_dir") or meta.get("source_session_dir")
+    git_sha = meta.get("git_sha")
+    now = meta.get("now")
+    if not now:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    existing = load_library(market, root=root)
+    by_expr: dict[str, FactorRecord] = {r.expression: r for r in existing}
+
+    out: dict[str, Any] = {
+        "added_active": 0,
+        "added_probation": 0,
+        "rejected": 0,
+        "errors": [],
+    }
+    leaf_map = meta.get("leaf_map")
+    dirty = False
+
+    for i, row in enumerate(rows or []):
+        try:
+            if not isinstance(row, dict):
+                out["errors"].append({"index": i, "error": "row is not a dict"})
+                continue
+            raw = row.get("expression")
+            if not raw:
+                out["errors"].append({"index": i, "error": "missing expression"})
+                continue
+            decision = lift_admission(row, threshold=threshold, se_mult=se_mult)
+            if decision == "reject":
+                out["rejected"] += 1
+                continue
+
+            norm = _normalize(str(raw), leaf_map if isinstance(leaf_map, dict) else None)
+            prev = by_expr.get(norm)
+            # single 轨 active 不被 lift 批次覆盖/降级（与 rebuild 侧守卫同语义:
+            # single 成员资格由裸口径 gate 管理,lift 批处理无权改写）。
+            if (
+                prev is not None
+                and (prev.admission_track or "single") != "lift"
+                and prev.status == "active"
+            ):
+                out["skipped_single_track"] = out.get("skipped_single_track", 0) + 1
+                continue
+            eval_window = (
+                row.get("eval_start") or eval_start or (prev.eval_start if prev else None),
+                row.get("eval_end") or eval_end or (prev.eval_end if prev else None),
+            )
+            # 用 row 指标 + meta provenance 建记录（缺字段 None）
+            rec = _record_from_candidate(
+                row, norm, market, eval_window,
+                row.get("universe") if row.get("universe") is not None else universe,
+                row.get("horizon") if row.get("horizon") is not None else horizon,
+                run_id, session_dir, git_sha, now, prev,
+            )
+            rec.admission_track = "lift"
+            rec.status = decision  # "active" | "probation"
+            rec.lift = _as_float(row.get("lift"))
+            rec.lift_baseline = _as_float(row.get("lift_baseline", row.get("baseline")))
+            rec.lift_se = _as_float(row.get("lift_se"))
+            rec.lift_first_half = _as_float(row.get("lift_first_half"))
+            rec.lift_second_half = _as_float(row.get("lift_second_half"))
+            # 覆盖天数：row 或 meta
+            hnd = row.get("holdout_n_days", row.get("n_holdout_days", meta.get("holdout_n_days")))
+            if hnd is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    rec.holdout_n_days = int(hnd)
+
+            by_expr[norm] = rec
+            dirty = True
+            if decision == "active":
+                out["added_active"] += 1
+            else:
+                out["added_probation"] += 1
+        except Exception as exc:
+            out["errors"].append({
+                "index": i,
+                "expression": (row.get("expression") if isinstance(row, dict) else None),
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+
+    if dirty:
+        _save_library(market, list(by_expr.values()), root=root)
+        render_markdown(market, root=root)
+    return out
 
 
 def _as_float(v) -> float | None:
@@ -799,6 +933,13 @@ def rebuild(
     compact_materialize: CompactMaterializer | None = None, decorr_threshold: float = 0.7,
     leaf_map: dict[str, str] | None = None, root: str = DEFAULT_ROOT,
     manifest_extra: dict | None = None, fresh: bool = True,
+    # ── lift 轨复审注入点（测试 mock / 生产默认 run_lift_tests）──────────────
+    lift_runner: Callable[..., list[dict]] | None = None,
+    combine_fn: Callable | None = None,
+    active_factor_dfs: dict[str, pl.DataFrame] | None = None,
+    daily: pl.DataFrame | None = None,
+    lift_threshold: float = DEFAULT_LIFT_THRESHOLD,
+    se_mult: float = 1.0,
 ) -> UpsertResult:
     """在统一窗口重算历史因子并**从头重建**该市场库（"可比"且"权威"的关键）。
 
@@ -810,18 +951,42 @@ def rebuild(
     否则旧库里已失效的记录（如 P0 修复前误收的前视因子、或已从算子库移除的表达式）会残留，
     rebuild 就不再"权威"。清空只针对本 market 文件，不动别的市场。
 
-    **probation 原样保留**：试用因子已由 lift 裁决入库；rebuild 重跑单因子门会全灭、
-    重跑 lift 太贵。fresh 清空前先抽出 ``status=probation`` 记录，upsert 后写回
-    （不重算指标；后续人工/定期 lift 复审属遗留项）。
-    落 ``rebuild_{market}_manifest.json``（窗口/源/git_sha/时间，可复现）。
+    **双轨 rebuild**：
+    - **single 轨**（``admission_track=="single"`` 或旧记录无字段）：现有裸口径
+      library gate + 去相关，**零回归**。
+    - **单因子 probation 原样保留**（``upsert_probation`` 遗留路径，非 lift 轨）：
+      fresh 清空前抽出，upsert 后写回（不重算）。
+    - **lift 轨**（``admission_track=="lift"``）：单轨 rebuild 得到新 active 池后，
+      逐个重跑 add-one lift（``lift_runner`` / 默认 ``run_lift_tests``，
+      ``active_factor_dfs``=新池，``top_m=None``）→ ``lift_admission``：
+      active / probation / reject→``status="no_lift"``（记录保留，不删除）。
+      复审整体 try/except：失败不毁单轨结果，manifest 记 error，lift 轨保持原状。
+
+    注入点：``lift_runner(cands, *, active_factor_dfs, combine_fn=..., **kw) -> list[dict]``；
+    ``combine_fn`` 转给 runner；``active_factor_dfs`` / ``daily`` 供生产默认路径。
+    落 ``rebuild_{market}_manifest.json``（窗口/源/git_sha/时间 + lift 复审计数，可复现）。
     """
-    # 保留 probation：fresh 会清库，须先抽出
+    from factorzen.discovery.lift_test import lift_admission
+
+    # 保留：single 轨 probation + 全部 lift 轨（fresh 会清库，须先抽出）
     preserved_probation: list[FactorRecord] = []
+    preserved_lift: list[FactorRecord] = []
     if fresh:
-        preserved_probation = [
-            r for r in load_library(market, root=root) if r.status == "probation"
-        ]
+        existing_pre = load_library(market, root=root)
+        for r in existing_pre:
+            track = r.admission_track or "single"
+            if track == "lift":
+                preserved_lift.append(r)
+            elif r.status == "probation":
+                # single 轨（或旧无字段）probation：原样保留，不重算
+                preserved_probation.append(r)
         library_path(market, root).unlink(missing_ok=True)  # 从零重建，清旧库（仅本 market）
+    else:
+        # 非 fresh：仍对库内 lift 轨做复审（不抽 single probation）
+        preserved_lift = [
+            r for r in load_library(market, root=root)
+            if (r.admission_track or "single") == "lift"
+        ]
 
     uniq: list[str] = []
     seen: set[str] = set()
@@ -839,8 +1004,8 @@ def rebuild(
         compact_materialize=compact_materialize, leaf_map=leaf_map, root=root,
     )
 
-    # 写回 probation（规范形已在库则不覆盖 active——同 expr 被 rebuild 重新评估进库时
-    # 以 gate 路径为准；仅当库内尚无该 expr 时补回试用记录）
+    # 写回 single 轨 probation（规范形已在库则不覆盖——同 expr 被 gate 路径重算进库时
+    # 以 gate 为准；仅当库内尚无该 expr 时补回试用记录）
     if preserved_probation:
         lib = load_library(market, root=root)
         by_expr = {r.expression: r for r in lib}
@@ -857,6 +1022,140 @@ def rebuild(
              and by_expr[pr.expression].status == "probation"]
         )
 
+    # ── lift 轨复审 ──────────────────────────────────────────────────────────
+    n_lift_reviewed = 0
+    n_lift_active = 0
+    n_lift_probation = 0
+    n_lift_demoted = 0
+    n_lift_evaluated = 0
+    lift_review_error: str | None = None
+
+    if preserved_lift:
+        try:
+            # 新 active 池物化（供 add-one 基线）；优先注入的 active_factor_dfs
+            pool_dfs = active_factor_dfs
+            if pool_dfs is None and materialize is not None:
+                pool_dfs = {}
+                for r in load_library(market, root=root):
+                    if r.status != "active":
+                        continue
+                    try:
+                        panel = materialize(r.expression)
+                    except Exception:
+                        panel = None
+                    if panel is not None:
+                        pool_dfs[r.expression] = panel
+            if pool_dfs is None:
+                pool_dfs = {}
+
+            runner = lift_runner
+            if runner is None:
+                # 生产默认：run_lift_tests（需 daily）
+                if daily is None:
+                    raise RuntimeError(
+                        "lift 轨复审需要 lift_runner 或 daily（默认 run_lift_tests）"
+                    )
+                from factorzen.discovery.lift_test import run_lift_tests
+
+                def runner(cands, *, active_factor_dfs=None, combine_fn=None, **kw):
+                    return run_lift_tests(
+                        cands,
+                        market=market,
+                        daily=daily,
+                        leaf_map=leaf_map,
+                        library_root=root,
+                        top_m=None,
+                        threshold=lift_threshold,
+                        active_factor_dfs=active_factor_dfs,
+                        combine_fn=combine_fn,
+                        horizon=horizon or 5,
+                    )
+
+            lib = load_library(market, root=root)
+            by_expr = {r.expression: r for r in lib}
+            reviewed: list[FactorRecord] = []
+
+            for rec in preserved_lift:
+                n_lift_reviewed += 1
+                cand_row = {
+                    "expression": rec.expression,
+                    "ic_train": rec.ic_train,
+                    "holdout_ic": rec.holdout_ic,
+                    "n_train": rec.n_train,
+                }
+                rows = runner(
+                    [cand_row],
+                    active_factor_dfs=pool_dfs,
+                    combine_fn=combine_fn,
+                )
+                n_lift_evaluated += 1  # 每次 add-one 计 1 次 lgbm（多重检验 N）
+                if not rows:
+                    # 无结果 → 视为无增量
+                    decision = "reject"
+                    lift_row: dict = {}
+                else:
+                    lift_row = rows[0]
+                    decision = lift_admission(
+                        lift_row, threshold=lift_threshold, se_mult=se_mult,
+                    )
+
+                # 在原记录上更新 status / lift 字段（保留 provenance / added_at）
+                updated = FactorRecord.from_dict(rec.to_dict())
+                updated.updated_at = now
+                updated.admission_track = "lift"
+                if lift_row:
+                    if lift_row.get("lift") is not None:
+                        updated.lift = _as_float(lift_row.get("lift"))
+                    if lift_row.get("lift_baseline", lift_row.get("baseline")) is not None:
+                        updated.lift_baseline = _as_float(
+                            lift_row.get("lift_baseline", lift_row.get("baseline"))
+                        )
+                    if lift_row.get("lift_se") is not None:
+                        updated.lift_se = _as_float(lift_row.get("lift_se"))
+                    if lift_row.get("lift_first_half") is not None:
+                        updated.lift_first_half = _as_float(lift_row.get("lift_first_half"))
+                    if lift_row.get("lift_second_half") is not None:
+                        updated.lift_second_half = _as_float(lift_row.get("lift_second_half"))
+
+                if decision == "active":
+                    updated.status = "active"
+                    n_lift_active += 1
+                elif decision == "probation":
+                    updated.status = "probation"
+                    n_lift_probation += 1
+                else:
+                    updated.status = "no_lift"
+                    n_lift_demoted += 1
+
+                # 同 expr 已被 single 轨 gate 收录 → 不覆盖 single 记录（single 零回归）
+                existing = by_expr.get(updated.expression)
+                if existing is not None and (existing.admission_track or "single") != "lift":
+                    continue
+                by_expr[updated.expression] = updated
+                reviewed.append(updated)
+
+            _save_library(market, list(by_expr.values()), root=root)
+            render_markdown(market, root=root)
+            res.records.extend(reviewed)
+        except Exception as exc:
+            # 复审失败：不毁单轨结果；lift 轨写回原状
+            lift_review_error = f"{type(exc).__name__}: {exc}"
+            _LOG.warning("rebuild lift review failed for %s: %s", market, lift_review_error)
+            lib = load_library(market, root=root)
+            by_expr = {r.expression: r for r in lib}
+            for pr in preserved_lift:
+                if pr.expression not in by_expr or (
+                    by_expr[pr.expression].admission_track or "single"
+                ) == "lift":
+                    by_expr[pr.expression] = pr
+            _save_library(market, list(by_expr.values()), root=root)
+            render_markdown(market, root=root)
+            # 失败时计数归零（未成功复审）；n_lift_reviewed 保留尝试意图
+            n_lift_active = sum(1 for r in preserved_lift if r.status == "active")
+            n_lift_probation = sum(1 for r in preserved_lift if r.status == "probation")
+            n_lift_demoted = sum(1 for r in preserved_lift if r.status == "no_lift")
+            n_lift_evaluated = 0
+
     manifest = {
         "market": market, "eval_start": eval_window[0], "eval_end": eval_window[1],
         "universe": universe, "horizon": horizon, "git_sha": git_sha, "rebuilt_at": now,
@@ -864,7 +1163,14 @@ def rebuild(
         "added": res.added, "updated": res.updated, "correlated": res.correlated,
         "skipped": res.skipped,
         "n_probation_preserved": len(preserved_probation),
+        "n_lift_reviewed": n_lift_reviewed,
+        "n_lift_active": n_lift_active,
+        "n_lift_probation": n_lift_probation,
+        "n_lift_demoted": n_lift_demoted,
+        "n_lift_evaluated": n_lift_evaluated,
     }
+    if lift_review_error is not None:
+        manifest["lift_review_error"] = lift_review_error
     if manifest_extra:
         manifest.update(manifest_extra)
     Path(root).mkdir(parents=True, exist_ok=True)

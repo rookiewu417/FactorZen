@@ -167,56 +167,60 @@ def _run_one_round(
     tasks: list[dict] = []
 
     # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
-    # 产出 hyp_batches: [(假设, 表达式集)]。revise 分支单假设；fresh 分支可多假设（task D，
-    # hypotheses_per_round>1 时逐假设独立走分解→翻译，attempts 累积，护栏/Critic 仍每轮一次）。
+    # 产出 hyp_batches: [(假设, 表达式集)]。**revise 批次与新假设同轮并行**：
+    # 修订不再独占整轮——GPT 类引擎的候选常被 Critic 连环判 revise_expr，
+    # 纯修订轮会把吞吐塌缩（实测 19→3→2）；修订价值保留，但不得挤占新假设配额。
+    hyp_batches: list[tuple[str, list[str]]] = []
     if pending and pending["kind"] == "revise_expr":
-        _step("  ②→③ Coder 依 Critic 反馈修订表达式")
-        hypothesis = pending["hypothesis"]
-        hyps = [hypothesis]
-        hyp_batches = [(hypothesis, revise_expressions(
-            hypothesis, pending["exprs"], pending["reason"], llm_fn,
-            leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names))]
+        _step("  ②→③ Coder 依 Critic 反馈修订表达式（与新假设并行）")
+        revised = revise_expressions(
+            pending["hypothesis"], pending["exprs"], pending["reason"], llm_fn,
+            leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names)
+        if revised:
+            hyp_batches.append((pending["hypothesis"], revised))
+
+    _step("  ② Hypothesis 提假设"
+          + (f"（×{hypotheses_per_round}）" if hypotheses_per_round > 1 else "")
+          + ("（结构化：机制/预期符号/证伪）" if structured else ""))
+    # revise_expr 的 reason 同样作为 feedback 供新假设避坑（原语义仅 revise_hypothesis）
+    fb = pending["reason"] if pending and pending["kind"] in (
+        "revise_hypothesis", "revise_expr") else ""
+    if structured:
+        # RD-Agent 步1 结构化假设：direction/mechanism/expected_sign/falsification
+        shyps = propose_structured(
+            llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+            feedback=fb, n=hypotheses_per_round, market=ctx.market,
+            leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
+        )
+        hyps = [format_structured(h) for h in shyps]
     else:
-        _step("  ② Hypothesis 提假设"
-              + (f"（×{hypotheses_per_round}）" if hypotheses_per_round > 1 else "")
-              + ("（结构化：机制/预期符号/证伪）" if structured else ""))
-        fb = pending["reason"] if pending and pending["kind"] == "revise_hypothesis" else ""
-        if structured:
-            # RD-Agent 步1 结构化假设：direction/mechanism/expected_sign/falsification
-            shyps = propose_structured(
-                llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
-                feedback=fb, n=hypotheses_per_round, market=ctx.market,
-                leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
-            )
-            hyps = [format_structured(h) for h in shyps]
+        hyps = propose_hypotheses(
+            llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+            feedback=fb, n=hypotheses_per_round, market=ctx.market,
+            leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
+        )
+    if not hyps and not hyp_batches:
+        _step("  · Hypothesis 未产出假设，跳过本轮")
+        state.iteration += 1
+        return None
+    # 逐假设独立走「任务分解 → Coder 翻译」（步2 任务分解拆两步：每次 LLM 调用只专注
+    # 一件事，合并则假设过细或规格过粗）。所有假设的 tasks 汇入 rounds_log 供溯源。
+    for h in hyps:
+        h_tasks = decompose_tasks(h, llm_fn) if structured else []
+        tasks.extend(h_tasks)
+        if h_tasks:
+            h_exprs: list[str] = []
+            for t in h_tasks:
+                h_exprs.extend(write_expressions(
+                    _task_text(t), llm_fn, avoid=rec.known_invalid,
+                    leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names))
         else:
-            hyps = propose_hypotheses(
-                llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
-                feedback=fb, n=hypotheses_per_round, market=ctx.market,
-                leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
-            )
-        if not hyps:
-            _step("  · Hypothesis 未产出假设，跳过本轮")
-            state.iteration += 1
-            return None
-        # 逐假设独立走「任务分解 → Coder 翻译」（步2 任务分解拆两步：每次 LLM 调用只专注
-        # 一件事，合并则假设过细或规格过粗）。所有假设的 tasks 汇入 rounds_log 供溯源。
-        hyp_batches = []
-        for h in hyps:
-            h_tasks = decompose_tasks(h, llm_fn) if structured else []
-            tasks.extend(h_tasks)
-            if h_tasks:
-                h_exprs: list[str] = []
-                for t in h_tasks:
-                    h_exprs.extend(write_expressions(
-                        _task_text(t), llm_fn, avoid=rec.known_invalid,
-                        leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names))
-            else:
-                # 未启用分解、或 LLM 分解失败（空 tasks）→ 降级为整条假设直译，不空转
-                h_exprs = write_expressions(h, llm_fn, avoid=rec.known_invalid,
-                                            leaf_budgets=leaf_budgets, market=ctx.market,
-                                            leaf_names=ctx.leaf_names)
-            hyp_batches.append((h, h_exprs))
+            # 未启用分解、或 LLM 分解失败（空 tasks）→ 降级为整条假设直译，不空转
+            h_exprs = write_expressions(h, llm_fn, avoid=rec.known_invalid,
+                                        leaf_budgets=leaf_budgets, market=ctx.market,
+                                        leaf_names=ctx.leaf_names)
+        hyp_batches.append((h, h_exprs))
+    if hyps:
         _step(f"  ③ Coder 翻译表达式（{len(hyps)} 假设"
               + (f" / {len(tasks)} 子任务" if tasks else "") + "）")
     if heal_rounds > 0:
@@ -266,8 +270,9 @@ def _run_one_round(
                     state, refed, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
                     eval_start=eval_start, eval_end=ev_end, profile=profile, leaf_map=ctx.leaf_map,
                 )
-    # 代表假设/表达式：供 Critic stub 与 revise pending（多假设时取最后一个批次，同现状语义）
-    hypothesis = hyps[-1] if hyps else ""
+    # 代表假设/表达式：供 Critic stub 与 revise pending（多假设时取最后一个批次，同现状语义；
+    # 纯修订轮——新假设为空但修订批次在——回退到修订批次的假设，不许空串）
+    hypothesis = hyps[-1] if hyps else (hyp_batches[-1][0] if hyp_batches else "")
     exprs = hyp_batches[-1][1] if hyp_batches else []
     n_before = len(state.candidates)                       # Important 1: 护栏前快照
     _step("  ⑤ 防过拟合护栏（DSR / holdout / CI / 去相关 / 库级正交）")

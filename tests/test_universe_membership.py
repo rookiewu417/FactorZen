@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import logging
 from datetime import date
 
 import polars as pl
@@ -171,7 +170,7 @@ def test_all_a_list_delist_expand(monkeypatch):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# prepare_mining_daily：调出 / 调入 / 连续性 / 回退
+# prepare_mining_daily：调出 / 调入 / 连续性 / fail-closed
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -220,7 +219,8 @@ def _patch_prepare_stack(monkeypatch, daily: pl.DataFrame, *, end_universe=None)
         def daily(self):
             uni = self.kw.get("universe")
             df = daily
-            if uni is not None:
+            # 与 FactorDataContext 一致：空 list 假值 → 不过滤（all_a 空池=全市场）
+            if uni:
                 df = df.filter(pl.col("ts_code").is_in(list(uni)))
             return df.lazy()
 
@@ -313,10 +313,10 @@ def test_continuity_rows_preserved(monkeypatch):
     assert 0 < out["in_universe"].sum() < out.height
 
 
-def test_membership_failure_falls_back_to_eop(monkeypatch, caplog):
-    """membership 构造抛异常 → 期末快照过滤 + warning，链路不崩。"""
+def test_membership_failure_fails_closed(monkeypatch):
+    """命名指数 membership 构造抛异常 → fail closed，拒绝静态回退。"""
     daily = _synthetic_daily_frame()
-    fm, FakeCtx = _patch_prepare_stack(
+    fm, _ = _patch_prepare_stack(
         monkeypatch, daily, end_universe=["B.SZ", "C.SZ"]
     )
 
@@ -327,19 +327,57 @@ def test_membership_failure_falls_back_to_eop(monkeypatch, caplog):
         "factorzen.core.universe.get_universe_membership", _boom
     )
 
-    with caplog.at_level(logging.WARNING):
-        out = fm.prepare_mining_daily(
-            "20240102", "20240205", universe="csi300"
-        )
+    with pytest.raises(ValueError, match=r"PIT membership|look-ahead|拒绝回退"):
+        fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
 
-    # 回退期末快照：仅 B/C
-    assert set(FakeCtx.last_kw["universe"]) == {"B.SZ", "C.SZ"}
-    assert "in_universe" not in out.columns
-    assert any("membership" in r.message.lower() or "回退" in r.message
-               or "fallback" in r.message.lower()
-               for r in caplog.records), (
-        f"应有 warning，实得 {[r.message for r in caplog.records]}"
+
+def test_membership_empty_named_index_fails_closed(monkeypatch):
+    """命名指数 membership 返回空 → fail closed，拒绝 as-of 回退。"""
+    daily = _synthetic_daily_frame()
+    fm, _ = _patch_prepare_stack(
+        monkeypatch, daily, end_universe=["B.SZ", "C.SZ"]
     )
+
+    monkeypatch.setattr(
+        "factorzen.core.universe.get_universe_membership",
+        lambda *a, **k: pl.DataFrame(
+            {
+                "trade_date": pl.Series([], dtype=pl.Utf8),
+                "ts_code": pl.Series([], dtype=pl.Utf8),
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match=r"空|未回补|拒绝|as-of|PIT"):
+        fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
+
+
+def test_all_a_empty_membership_still_succeeds(monkeypatch):
+    """all_a 空 membership 视为全市场，不抛错、不走静态回退。"""
+    daily = _synthetic_daily_frame()
+    fm, FakeCtx = _patch_prepare_stack(monkeypatch, daily)
+
+    monkeypatch.setattr(
+        "factorzen.core.universe.get_universe_membership",
+        lambda *a, **k: pl.DataFrame(
+            {
+                "trade_date": pl.Series([], dtype=pl.Utf8),
+                "ts_code": pl.Series([], dtype=pl.Utf8),
+            }
+        ),
+    )
+
+    out_meta: dict = {}
+    out = fm.prepare_mining_daily(
+        "20240102", "20240205", universe="all_a", out_meta=out_meta
+    )
+    # all_a 空池：uni=[] 对 FactorDataContext 即不过滤；仍标 pit 并 attach in_universe
+    assert FakeCtx.last_kw["universe"] == []
+    assert out_meta["membership_mode"] == "pit"
+    assert "in_universe" in out.columns
+    assert out.height == daily.height
+    # 空 membership → 全部 in_universe=False（attach 语义）
+    assert not out["in_universe"].any()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -647,6 +647,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         llm_workers=getattr(args, "llm_workers", 1),
         auto_lift=not bool(getattr(args, "no_auto_lift", False)),
         lift_se_mult=float(getattr(args, "lift_se_mult", 1.0)),
+        campaign_prior_enabled=not bool(getattr(args, "no_campaign_prior", False)),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
@@ -664,6 +665,14 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     from factorzen.validation.holdout import split_holdout
 
     market = args.market
+    # A 股不带 --universe = 全 A 5000+ 只拉取，多年窗口必 OOM（实测 ~22GB 被杀）；
+    # 库的评估口径历史上一直是命名池（csi300），无池 rebuild 几乎必为误操作。
+    if market == "ashare" and not getattr(args, "universe", None):
+        print(
+            "[factor-library] 警告：未指定 --universe，将拉取全 A 股（内存开销极大，"
+            "多年窗口可能 OOM）；库的历史口径为 --universe csi300",
+            file=sys.stderr,
+        )
     # 窗口：显式 --start/--end 覆盖，否则默认窗口（最近约 6 年滚动到数据最新端）
     if args.start and args.end:
         start, end = args.start, args.end
@@ -777,6 +786,90 @@ def _cmd_factor_library_tag_legacy(args: argparse.Namespace) -> int:
         f"[factor-library tag-legacy] {market}：标记 legacy {out['tagged']} 条"
         f"（库合计 {out['total']}，已有 tier 不动；不改 status）"
     )
+    return 0
+
+
+def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
+    """记录 as_of 日库内因子的 paper forward RankIC。
+
+    forward 确认窗口随真实时间累积；ops 每日链路接线为后续工作。
+    """
+    from factorzen.discovery.backtest_window import latest_data_date
+    from factorzen.discovery.factor_library import DEFAULT_ROOT
+    from factorzen.discovery.forward_track import record_forward_ics
+
+    market = args.market
+    root = getattr(args, "root", None) or DEFAULT_ROOT
+    as_of = getattr(args, "date", None)
+    if not as_of:
+        latest = latest_data_date(market)
+        if latest is None:
+            print(
+                f"[factor-library forward-track] 探测不到 {market} 最新交易日；"
+                f"请显式传 --date YYYYMMDD",
+                file=sys.stderr,
+            )
+            return 1
+        as_of = latest.strftime("%Y%m%d")
+    out = record_forward_ics(market, as_of, root=root)
+    print(
+        f"[factor-library forward-track] {market} as_of={as_of}："
+        f"recorded={out.get('recorded', 0)} "
+        f"skipped_existing={out.get('skipped_existing', 0)} "
+        f"failed={out.get('failed', 0)}"
+    )
+    return 0
+
+
+def _cmd_factor_library_forward_review(args: argparse.Namespace) -> int:
+    """裁决 probation 因子的 paper forward 证据；默认 dry-run，--apply 才写库。
+
+    forward 确认窗口随真实时间累积；ops 每日链路接线为后续工作。
+    """
+    from factorzen.discovery.factor_library import DEFAULT_ROOT
+    from factorzen.discovery.forward_track import forward_review
+
+    market = args.market
+    root = getattr(args, "root", None) or DEFAULT_ROOT
+    apply = bool(getattr(args, "apply", False))
+    rows = forward_review(
+        market,
+        root=root,
+        min_days=int(getattr(args, "min_days", 60)),
+        se_mult=float(getattr(args, "se_mult", 1.645)),
+        block_days=int(getattr(args, "block_days", 20)),
+        apply=apply,
+    )
+    print(
+        f"[factor-library forward-review] {market}："
+        f"{len(rows)} 个 probation 裁决（apply={apply}）"
+    )
+    if rows:
+        print(f"{'expression':<42} {'decision':<10} {'n':>5} {'mean':>10} {'ci_low':>10}")
+        for r in rows:
+            expr = r.get("expression") or ""
+            if len(expr) > 40:
+                expr = expr[:37] + "..."
+            mean = r.get("mean")
+            ci = r.get("ci_low")
+            mean_s = f"{mean:.4f}" if isinstance(mean, (int, float)) and mean == mean else "-"
+            ci_s = f"{ci:.4f}" if isinstance(ci, (int, float)) and ci == ci else "-"
+            print(
+                f"{expr:<42} {r.get('decision', '-'):<10} "
+                f"{r.get('n_days', 0):>5} {mean_s:>10} {ci_s:>10}"
+            )
+    if apply:
+        n_promote = sum(1 for r in rows if r.get("decision") == "promote")
+        n_demote = sum(1 for r in rows if r.get("decision") == "demote")
+        n_hold = sum(1 for r in rows if r.get("decision") == "hold")
+        print(
+            f"[factor-library forward-review] 状态转换："
+            f"promote={n_promote} demote={n_demote} hold={n_hold}"
+        )
+    else:
+        print(
+            "[factor-library forward-review] dry-run（加 --apply 写库并更新 markdown）"
+        )
     return 0
 
 
@@ -2101,6 +2194,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "与 --no-library 无关，后者只关收尾 upsert）")
     m_team.add_argument("--objective", choices=["raw", "residual"], default="residual",
                        help="挖掘评估目标：residual=对库残差 IC（默认；库空→raw）；raw=裸 IC")
+    m_team.add_argument("--no-campaign-prior", dest="no_campaign_prior",
+                        action="store_true",
+                        help="关闭跨 session trial family 记账（默认开：finalize 的 DSR 用"
+                             "同评价配置历史唯一表达式∪本 session 的 N，防多重检验清零漏记）")
     m_team.add_argument("--llm-workers", dest="llm_workers", type=int, default=4,
                         help="轮内独立 LLM 调用的并发度（默认 4 提速；1=串行零回归；"
                              "API/pipeline 缺省仍为 1）")
@@ -2119,7 +2216,8 @@ def build_parser() -> argparse.ArgumentParser:
     fl = sub.add_parser(
         "factor-library",
         help="因子库登记簿（分市场·全信息·自动维护）："
-             "rebuild/list/show/render/lift-test/tag-legacy",
+             "rebuild/list/show/render/lift-test/tag-legacy/"
+             "forward-track/forward-review",
     )
     fl_sub = fl.add_subparsers(dest="factor_library_command", required=True)
 
@@ -2234,6 +2332,54 @@ def build_parser() -> argparse.ArgumentParser:
     fl_ln.add_argument("--n-sims", dest="n_sims", type=int, default=5000)
     fl_ln.add_argument("--seed", type=int, default=0)
     fl_ln.set_defaults(func=_cmd_factor_library_lift_null)
+
+    fl_ft = fl_sub.add_parser(
+        "forward-track",
+        help="记录 as_of 日库内因子 paper forward RankIC"
+             "（确认窗口随真实时间累积；ops 每日链路接线为后续工作）",
+    )
+    fl_ft.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    )
+    fl_ft.add_argument(
+        "--date", default=None,
+        help="确认日 YYYYMMDD（缺省=数据最新交易日 latest_data_date）",
+    )
+    fl_ft.add_argument(
+        "--root", default=None,
+        help="因子库根目录（默认 workspace/factor_library）",
+    )
+    fl_ft.set_defaults(func=_cmd_factor_library_forward_track)
+
+    fl_fr = fl_sub.add_parser(
+        "forward-review",
+        help="裁决 probation 因子 paper forward 证据"
+             "（确认窗口随真实时间累积；ops 每日链路接线为后续工作）",
+    )
+    fl_fr.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    )
+    fl_fr.add_argument(
+        "--min-days", dest="min_days", type=int, default=60,
+        help="最低有效 forward 天数（默认 60）",
+    )
+    fl_fr.add_argument(
+        "--se-mult", dest="se_mult", type=float, default=1.645,
+        help="块 SE 乘数（默认 1.645≈单侧 95%）",
+    )
+    fl_fr.add_argument(
+        "--block-days", dest="block_days", type=int, default=20,
+        help="块 SE 块长（交易日，默认 20）",
+    )
+    fl_fr.add_argument(
+        "--apply", dest="apply", action="store_true",
+        help="写库：promote→active / demote→no_lift（默认 dry-run 只打印）",
+    )
+    fl_fr.add_argument(
+        "--root", default=None,
+        help="因子库根目录（默认 workspace/factor_library）",
+    )
+    fl_fr.set_defaults(func=_cmd_factor_library_forward_review)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     # ── fz research ──（端到端编排：mine → 头部 passed 因子 → 循环 build → sim → report）

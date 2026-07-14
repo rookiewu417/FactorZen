@@ -596,7 +596,8 @@ def node_guardrails(
 
 
 def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DSR_ALPHA,
-                             gate: str = DEFAULT_GATE, daily=None, bundle=None, profile=None):
+                             gate: str = DEFAULT_GATE, daily=None, bundle=None, profile=None,
+                             prior=None):
     """收尾：用**最终** basis 统一重算候选的 DSR，据此复核入池。返回该 basis。
 
     ``gate="library"``（默认）下入池判据 N-**无关**（真+有信号，不含 DSR），故收尾只重算 DSR
@@ -607,6 +608,12 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
     但候选集是从整个 session 的 N 次试验里选出来的，多重检验记账必须覆盖整个搜索。
     实测 `team_51_6r` 的 round-0 候选记录 p=0.0011，按最终 N=18 复算是 p=0.0212（差 19 倍），
     且 manifest 报 n_trials=18 —— 拿 manifest 复算不出产物里的 p。
+
+    **campaign prior（跨 session 族）**：同一评价配置下多个 team session 若各自从零计数，
+    则 DSR 的 N 只在 session 内诚实——跨 session 的多重检验漏记。``prior`` 为
+    :class:`~factorzen.discovery.campaign.CampaignPrior` 时，basis 用
+    **历史唯一表达式 IR ∪ 本 session 新增**（表达式级去重、历史优先）构造，
+    消除「N 取决于候选碰巧在第几个 session 被找到」的旧缺陷。``prior=None`` 零回归。
 
     只重算 DSR：`holdout_ic` / CI / `ic_train` 都与 N 无关。**不逐轮重跑护栏**——那会让
     N 三角和 over-count（见 discovery 的多轮累积计数陷阱）。
@@ -620,6 +627,7 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
     且方向保守（候选只减不增）。
 
     `daily`/`bundle` 给出时重算池级 PBO——候选集变了，旧 PBO 描述的是另一个池。
+    返回的 basis 供调用方落 manifest（``basis.n_trials`` = family 总 N）。
     """
     from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.discovery.guardrails import (
@@ -629,9 +637,18 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
         pool_pbo,
     )
 
-    basis = DeflationBasis.from_ir_pool(
-        [a.ir_train for a in state.attempts if a.compile_ok], two_sided=True
-    )
+    # 表达式级 trial 池：本 session compile_ok 的 (expr, ir)
+    session_pool = [(a.expression, a.ir_train) for a in state.attempts if a.compile_ok]
+    if prior is not None:
+        # 历史优先：同表达式不双计；union = prior.irs + 本 session 新增 IR
+        union_irs = list(prior.irs) + [
+            ir for expr, ir in session_pool if expr not in prior.expressions
+        ]
+        basis = DeflationBasis.from_ir_pool(union_irs, two_sided=True)
+    else:
+        basis = DeflationBasis.from_ir_pool(
+            [ir for _, ir in session_pool], two_sided=True
+        )
     if not state.candidates:
         return basis
 

@@ -107,6 +107,12 @@ class TeamResult:
     n_lift_evaluated: int = 0
     lift_dropped_coverage: list = field(default_factory=list)
     lift_error: str | None = None
+    # campaign trial family：跨 session DSR N 累计（partial 检查点保持默认）
+    campaign_id: str | None = None
+    prior_n_trials: int = 0
+    prior_n_sessions: int = 0
+    # finalize 所用 basis 的 n_trials（prior ∪ session 唯一）；无 prior 时 ≈ 本 session
+    n_trials_family: int = 0
 
 
 def _normalize(expr: str, leaf_map: dict[str, str] | None = None) -> str:
@@ -536,6 +542,9 @@ def run_team_agent(
     lift_materialize_candidate=None,
     lift_active_factor_dfs: dict | None = None,
     lift_ret_df=None,
+    # 跨 session DSR N 累计：从 experiment_index 重建同 campaign 历史 trial 池。
+    # CLI 旗标由主控后补；测试可关以验证零回归。
+    campaign_prior_enabled: bool = True,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -599,18 +608,11 @@ def run_team_agent(
             _preprocess_daily(daily, profile), _eval_start_date, ctx.leaf_names,
             leaf_map=ctx.leaf_map)
         leaf_budgets = {k: v for k, v in _all_budgets.items() if v < AGENT_WARMUP_LOOKBACK}
-    # ── 记录在案的假设：多重检验的 N **不跨 session 累积** ──────────────────────
-    # ledger 每 session 从 0 起。而 Librarian 把历史已试表达式喂给 LLM 让它避开，于是后续
-    # session 在同一搜索空间的剩余部分继续搜索——累计试了 120 次，DSR 却按本 session 的 N 判。
-    #
-    # 这是一个**假设**，不是已验证的结论：「跨 session 的 N 应该是多少」是建模立场
-    # （对比 P0——M1 真实的 dsr_pvalue 可反解校验，那才是事实）。当前它 latent：
-    # run_team_mine 只有 `fz mine team` 一个调用者，ops daily / research run 都不跑 team 挖掘。
-    #
-    # 若将来出现无人值守的 team 挖掘循环（多个 session 堆在同一 index_path 上），须改为：
-    # 从 index 重建**同一 data_window** 的历史 IR 池，与本 session 池合并后交给
-    # DeflationBasis.from_ir_pool —— N 与 sharpe_variance 天然同源（R8）。
-    # 前提字段（ir_train / n_train / data_window）已由 Librarian 落盘。
+    # ── campaign trial family：跨 session DSR N 累计 ──────────────────────────
+    # ledger 仍每 session 从 0 起（本 session 诚实计数，manifest.n_trials 语义不变）。
+    # session 末从 experiment_index 重建同 campaign 历史 IR 池（见 campaign_prior），
+    # 与本 session 池做表达式级 union 后交给 node_finalize_guardrails —— N 与
+    # sharpe_variance 同源（R8）。开关 campaign_prior_enabled（默认 True）。
     #
     # 另有一条更根本、且 N 累积管不到的问题：**holdout 跨 session 复用**。每个 session 都拿
     # 同一段 holdout 验收候选，跑 10 个 session 它就被看了 10 遍，不再是 OOS 而是第二个训练集。
@@ -718,9 +720,58 @@ def run_team_agent(
                                     n_trials=ledger.n_trials, rounds_log=rounds_log))
 
     # 收尾复核：早轮候选此前按「截至当轮」的 N 定 p，门槛偏松。用最终 basis 统一重判。
+    # 若启用 campaign prior：先从 index 重建同窗历史 trial 池（排除本 run_id，防双计），
+    # finalize 用 prior∪session 的 union N 做 deflation。
     _step("收尾复核：以最终 N 统一重判候选 DSR")
+    prior = None
+    campaign_id: str | None = None
+    prior_n_trials = 0
+    prior_n_sessions = 0
+    if campaign_prior_enabled:
+        try:
+            from factorzen.discovery.campaign import campaign_key, campaign_prior
+            from factorzen.discovery.guardrails import DEFAULT_GATE
+
+            dw = data_window or {}
+            # 与库/index 分族同一套 market 解析：profile.name → data_window → ashare
+            mkt = getattr(profile, "name", None) or dw.get("market") or "ashare"
+            campaign_id = campaign_key(
+                market=mkt,
+                universe=dw.get("universe"),
+                start=dw.get("start"),
+                end=dw.get("end"),
+                holdout_ratio=holdout_ratio,
+                objective=objective,
+                horizon=horizon,
+                gate=DEFAULT_GATE,  # run_team_agent 尚未暴露 gate 参数；与 node_* 默认一致
+            )
+            # Librarian 落盘 run_id = f"team_{seed}"；本 session 行已逐轮写入，须排除
+            prior = campaign_prior(
+                index_path,
+                market=mkt,
+                universe=dw.get("universe"),
+                start=dw.get("start"),
+                end=dw.get("end"),
+                exclude_run_ids={f"team_{seed}"},
+            )
+            if prior is not None:
+                prior_n_trials = prior.n_trials
+                prior_n_sessions = prior.n_sessions
+                if prior.n_trials:
+                    _step(f"  campaign prior ▸ N_hist={prior.n_trials} "
+                          f"sessions={prior.n_sessions} id={campaign_id}")
+        except Exception as exc:
+            _LOG.warning(
+                "campaign prior 构造失败，本 session 退化为 session 内 N: %s: %s",
+                type(exc).__name__, exc,
+            )
+            prior = None
+            # campaign_id 若已算成则仍落盘，便于审计；prior 计数字段保持 0
+
     before = {c["expression"] for c in state.candidates}
-    basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle, profile=profile)
+    basis = node_finalize_guardrails(
+        state, daily=mining_df, bundle=bundle, profile=profile, prior=prior,
+    )
     demoted = before - {c["expression"] for c in state.candidates}
     if demoted:
         # Librarian 逐轮写 index 时 `passed=True` 已经落盘。补写更正记录——
@@ -778,6 +829,10 @@ def run_team_agent(
         n_lift_evaluated=lift_meta.get("n_lift_evaluated", 0),
         lift_dropped_coverage=lift_meta.get("lift_dropped_coverage") or [],
         lift_error=lift_meta.get("lift_error"),
+        campaign_id=campaign_id,
+        prior_n_trials=prior_n_trials,
+        prior_n_sessions=prior_n_sessions,
+        n_trials_family=basis.n_trials,
     )
 
 
@@ -1094,6 +1149,11 @@ def write_team_manifest(
         # 那时还没有最终 basis。`deflation_two_sided` 说明 effective_trials = 2×n_trials。
         "sharpe_variance": json_safe_float(result.sharpe_variance),
         "deflation_two_sided": True,
+        # campaign trial family：跨 session 累计 N（n_trials 仍=本 session）
+        "campaign_id": getattr(result, "campaign_id", None),
+        "prior_n_trials": getattr(result, "prior_n_trials", 0) or 0,
+        "prior_n_sessions": getattr(result, "prior_n_sessions", 0) or 0,
+        "n_trials_family": getattr(result, "n_trials_family", 0) or 0,
         "iterations": result.state.iteration,
         "params": params,
         "partial": partial,

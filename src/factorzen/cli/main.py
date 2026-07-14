@@ -941,7 +941,6 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
     from factorzen.discovery.lift_test import (
         DEFAULT_HORIZON,
-        DEFAULT_TOP_M,
         LiftEvalContext,
         extract_gray_candidates_from_manifest,
         make_lift_context,
@@ -988,7 +987,10 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
 
     print(f"[factor-library lift-test] gray_zone 候选 {len(uniq_gray)} 个（去重后）")
     market = args.market
-    # 装配日频帧（与 rebuild 同路径）
+    # 装配日频帧：与 mine agent/team **同源** `_prepare_agent_mining_data`
+    # → ashare=`prepare_mining_daily`（复权价 + daily_basic + 基本面/股东/两融/龙虎榜 attach
+    # + AGENT_WARMUP_LOOKBACK 预热前缀）。禁止另起一套 loader，否则事件叶子缺列/fill
+    # 语义漂移 → 候选近乎全空 → build_panel「行因子齐全」暴跌、lift 成噪声。
     daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[factor-library lift-test] 挖掘帧为空", file=sys.stderr)
@@ -998,7 +1000,14 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     threshold = getattr(args, "threshold", None)
     if threshold is None:
         threshold = DEFAULT_LIFT_THRESHOLD
-    top_m = getattr(args, "top_m", None) or DEFAULT_TOP_M
+    # top_m=None → 全测（与 session 末钩子一致）；仅显式 --top-m 截断，并告警（no silent caps）
+    top_m = getattr(args, "top_m", None)
+    if top_m is not None:
+        print(
+            f"[factor-library lift-test] 警告：--top-m={top_m} 将截断候选 "
+            f"（输入 {len(uniq_gray)} 个，仅测 top-{int(top_m)}）",
+            file=sys.stderr,
+        )
     seed = getattr(args, "seed", 0) or 0
 
     # admission 窗：旗标覆盖 > manifest holdout 边界（多 session 取最早 start / 最晚 end）
@@ -1032,6 +1041,10 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             library_root=lib_root,
         )
     except Exception:
+        # 回退=raw 帧当 prepped:派生叶子(ret_1d 等)将全空——真实数据不应走到这
+        # (2026-07-14 事故根因:候选全空面板→lift 全噪声)。仅容极简 mock 帧。
+        print("[factor-library lift-test] 警告：预处理失败,回退 raw 帧(派生叶子将缺失,"
+              "真实数据下结果不可信)", file=sys.stderr)
         lift_ctx = LiftEvalContext(
             market=market,
             prepped=daily.sort(["ts_code", "trade_date"]) if daily.height else daily,
@@ -2265,8 +2278,10 @@ def build_parser() -> argparse.ArgumentParser:
     fl_lt.add_argument("--start", required=True, help="评估窗口起点 YYYYMMDD")
     fl_lt.add_argument("--end", required=True, help="评估窗口终点 YYYYMMDD")
     fl_lt.add_argument("--universe", default=None, help="A股 universe 名（如 csi300）")
-    fl_lt.add_argument("--top-m", dest="top_m", type=int, default=10,
-                       help="按 |residual_ic_train| 取 top-M 控成本（默认 10）")
+    fl_lt.add_argument(
+        "--top-m", dest="top_m", type=int, default=None,
+        help="按 |residual_ic_train| 取 top-M 控成本（默认 None=全测；显式截断会打印告警）",
+    )
     fl_lt.add_argument("--threshold", type=float, default=None,
                        help="RankIC lift 阈值（默认 DEFAULT_LIFT_THRESHOLD=0.001）")
     fl_lt.add_argument("--seed", type=int, default=0)

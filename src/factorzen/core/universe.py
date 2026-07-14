@@ -316,8 +316,11 @@ def get_universe(
             return result
 
         except Exception as e:
-            logger.warning(f"[universe] {universe_name} 指数成分股加载失败 ({e})，降级为全 A 股")
-            return all_a
+            raise ValueError(
+                f"universe={universe_name!r} 指数成分加载失败；"
+                f"拒绝静默降级为全 A（会改变截面口径）。"
+                f"请回补指数成分数据或显式改用 --universe all_a。"
+            ) from e
 
     if universe_name == "lft_default":
         universe_name = "daily_default"

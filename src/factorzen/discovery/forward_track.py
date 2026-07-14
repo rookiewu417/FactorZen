@@ -94,18 +94,39 @@ def _existing_keys(rows: list[dict]) -> set[tuple[str, str]]:
     return keys
 
 
-def _assemble_daily(market: str, as_of: str, lookback_days: int) -> pl.DataFrame:
+def _assemble_daily(
+    market: str, as_of: str, lookback_days: int, universe: str | None = None,
+) -> pl.DataFrame:
     """生产装配：小窗 [as_of, as_of] + lookback 预热前缀。
 
     目前以 A 股 ``prepare_mining_daily`` 为主路径；非 ashare 时同样调用
     （测试应注入 daily，跳过装配）。
+
+    ``universe``：forward IC 的截面必须与因子**准入时的 universe 一致**——
+    csi300 准入的因子在全 A 截面上算 forward IC 是另一个统计量，不能用于裁决
+    （首跑实测 n_stocks=5511 暴露此漂移）。
     """
     from factorzen.pipelines.factor_mine import prepare_mining_daily
 
     # start=end=as_of：评分只覆盖确认日；FactorDataContext 再往前拉 lookback 交易日预热，
     # 从而 t-1 落在帧内（因子滞后截面 + 收益分母）。
     _ = market  # 预留多市场；装配器当前为 A 股主路径
-    return prepare_mining_daily(as_of, as_of, lookback_days=lookback_days)
+    return prepare_mining_daily(as_of, as_of, universe=universe,
+                                lookback_days=lookback_days)
+
+
+def _library_universe_mode(recs: list) -> str | None:
+    """库记录 universe 字段的众数（None 计入）；空库 → None。
+
+    forward 截面口径缺省跟随准入口径；库内混合 universe 时取众数并由调用方
+    warning——混口径库本身是治理问题，不在此处解决。
+    """
+    from collections import Counter
+
+    if not recs:
+        return None
+    c = Counter(r.universe for r in recs)
+    return c.most_common(1)[0][0]
 
 
 def _preprocess(daily: pl.DataFrame, leaf_map: dict[str, str] | None) -> pl.DataFrame:
@@ -221,12 +242,17 @@ def record_forward_ics(
     daily: pl.DataFrame | None = None,
     leaf_map: dict[str, str] | None = None,
     lookback_days: int | None = None,
+    universe: str | None = None,
 ) -> dict:
     """记录 as_of 日库内因子的 paper forward RankIC（PIT 口径）。
 
     落盘 ``{root}/forward_track/{market}.jsonl``。
     幂等：同 (date, expression) 已存在 → 跳过不重写。
     返回 ``{recorded, skipped_existing, failed}``。
+
+    ``universe``：forward 截面口径。``None``（默认）→ 取库记录 universe 众数
+    （与准入口径一致；混口径时 warning）。只影响生产装配路径（注入 ``daily``
+    时由调用方保证口径）。
     """
     as_of_s = _date_str(as_of)
     lb = int(lookback_days) if lookback_days is not None else _default_lookback()
@@ -247,7 +273,15 @@ def record_forward_ics(
         return {"recorded": 0, "skipped_existing": skipped, "failed": 0}
 
     if daily is None:
-        daily = _assemble_daily(market, as_of_s, lb)
+        uni = universe if universe is not None else _library_universe_mode(recs)
+        if universe is None and uni is not None:
+            uniques = {r.universe for r in recs}
+            if len(uniques) > 1:
+                _LOG.warning(
+                    "forward_track: 库内 universe 混口径 %s，按众数 %r 装配截面",
+                    sorted(str(u) for u in uniques), uni,
+                )
+        daily = _assemble_daily(market, as_of_s, lb, universe=uni)
     prepped = _preprocess(daily, leaf_map)
     dates = _trading_dates_sorted(prepped)
     prev = _prev_trade_date(dates, as_of_s)

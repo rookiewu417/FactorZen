@@ -524,3 +524,43 @@ def test_forward_fields_survive_library_roundtrip(tmp_path):
     again = load_library("ashare", root=str(tmp_path))
     assert again[0].forward_confirmed_at == "2026-07-14"
     assert again[0].forward_n_days == 75
+
+
+def test_assemble_universe_follows_admission_mode(monkeypatch, tmp_path):
+    """forward 截面口径必须跟随准入 universe（众数），不是全 A。
+
+    首跑实测 n_stocks=5511（全 A）暴露：csi300 准入的因子在全 A 截面上的
+    forward IC 是另一个统计量，不能用于裁决。
+    """
+    from factorzen.discovery import forward_track as ft
+    from factorzen.discovery.factor_library import FactorRecord, _save_library
+
+    recs = [
+        FactorRecord(expression="rank(close)", market="ashare", status="active",
+                     universe="csi300", ic_train=0.02,
+                     added_at="2026-07-01", updated_at="2026-07-01"),
+        FactorRecord(expression="rank(vol)", market="ashare", status="probation",
+                     universe="csi300", ic_train=0.02,
+                     added_at="2026-07-01", updated_at="2026-07-01"),
+    ]
+    _save_library("ashare", recs, root=str(tmp_path))
+
+    captured: dict = {}
+
+    def fake_prepare(start, end, universe=None, lookback_days=None, **kw):
+        captured["universe"] = universe
+        raise RuntimeError("stop after capture")  # 只验证透传，不真装配
+
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare,
+    )
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="stop after capture"):
+        ft.record_forward_ics("ashare", "20260605", root=str(tmp_path))
+    assert captured["universe"] == "csi300"
+
+    # 显式 --universe 覆盖众数
+    with _pytest.raises(RuntimeError, match="stop after capture"):
+        ft.record_forward_ics("ashare", "20260605", root=str(tmp_path),
+                              universe="csi800")
+    assert captured["universe"] == "csi800"

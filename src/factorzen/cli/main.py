@@ -811,7 +811,8 @@ def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
             )
             return 1
         as_of = latest.strftime("%Y%m%d")
-    out = record_forward_ics(market, as_of, root=root)
+    out = record_forward_ics(market, as_of, root=root,
+                             universe=getattr(args, "universe", None))
     print(
         f"[factor-library forward-track] {market} as_of={as_of}："
         f"recorded={out.get('recorded', 0)} "
@@ -2348,6 +2349,10 @@ def build_parser() -> argparse.ArgumentParser:
     fl_ft.add_argument(
         "--root", default=None,
         help="因子库根目录（默认 workspace/factor_library）",
+    )
+    fl_ft.add_argument(
+        "--universe", default=None,
+        help="forward 截面 universe（缺省=库记录准入口径众数；必须与准入一致）",
     )
     fl_ft.set_defaults(func=_cmd_factor_library_forward_track)
 

@@ -828,6 +828,7 @@ def run_team_agent(
         active_factor_dfs=lift_active_factor_dfs,
         ret_df=lift_ret_df,
         run_id=session_run_id,
+        horizon=horizon,
     )
 
     return TeamResult(
@@ -917,6 +918,7 @@ def _session_end_auto_lift(
     market: str,
     library_root: str,
     seed: int,
+    horizon: int,
     auto_lift: bool = True,
     lift_se_mult: float = 1.0,
     data_window: dict | None = None,
@@ -927,6 +929,9 @@ def _session_end_auto_lift(
     run_id: str | None = None,
 ) -> dict:
     """session 末：lift 队列 → 覆盖把关 → 组门 → 逐候选 → upsert。
+
+    ``horizon``：与 ``run_team_agent`` 的 mining horizon 一致，强制显式传入
+    （禁止再吃 ``DEFAULT_HORIZON`` 隐式默认，避免 single 评估与 lift 入库漂移）。
 
     整块 try/except：lift 失败绝不杀死已完成的挖掘 session。
     """
@@ -944,7 +949,6 @@ def _session_end_auto_lift(
             DEFAULT_LIFT_THRESHOLD,
         )
         from factorzen.discovery.lift_test import (
-            DEFAULT_HORIZON,
             make_lift_context,
             run_group_lift,
             run_lift_tests,
@@ -958,11 +962,12 @@ def _session_end_auto_lift(
         adm_end = _lift_admission_str(holdout_end)
 
         # 统一评估上下文：prep 一次；覆盖检查与评分共用同一 prepped materializer
+        # horizon 跟随 mining session（run_team_agent 入参），禁止硬编码 DEFAULT_HORIZON
         lift_ctx = make_lift_context(
             market, daily,
             profile=profile,
             leaf_map=leaf_map,
-            horizon=DEFAULT_HORIZON,  # 显式传，不隐式吃默认
+            horizon=horizon,
             admission_start=adm_start,
             admission_end=adm_end,
             library_root=library_root,

@@ -328,6 +328,7 @@ def test_team_hook_default_cap_writes_probation(monkeypatch, tmp_path):
         market="ashare", library_root=str(tmp_path), seed=1,
         materialize_candidate=mat,
         active_factor_dfs={"base": _panel(100)},
+        horizon=1,
     )
     # 默认 cap：统计决策 active 但计数进 probation
     assert meta.get("lift_error") is None, meta.get("lift_error")

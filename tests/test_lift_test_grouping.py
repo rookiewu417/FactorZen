@@ -153,6 +153,8 @@ def _write_session_with_holdout(
     expressions: list[str],
     holdout_start: str,
     holdout_end: str,
+    horizon: int | None = None,
+    horizon_in_params: bool = False,
 ) -> Path:
     run_dir = root / name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -165,16 +167,20 @@ def _write_session_with_holdout(
         }
         for expr in expressions
     ]
+    man: dict = {
+        "holdout_start": holdout_start,
+        "holdout_end": holdout_end,
+        "end": holdout_end,
+        "attempts": attempts,
+        "candidates": [],
+    }
+    if horizon is not None:
+        if horizon_in_params:
+            man["params"] = {"horizon": horizon}
+        else:
+            man["horizon"] = horizon
     (run_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "holdout_start": holdout_start,
-                "holdout_end": holdout_end,
-                "end": holdout_end,
-                "attempts": attempts,
-                "candidates": [],
-            }
-        ),
+        json.dumps(man),
         encoding="utf-8",
     )
     return run_dir
@@ -424,3 +430,247 @@ def test_cli_lift_test_single_session_one_group(tmp_path, monkeypatch):
     assert calls[0]["n"] == 1
     assert calls[0]["start"] == "2024-06-01"
     assert calls[0]["end"] == "2024-08-31"
+
+
+# ── P5：horizon 从 flag / manifest 解析，禁硬编码 DEFAULT_HORIZON ─────────────
+
+
+def test_horizon_from_manifest_top_level_and_params():
+    """纯函数：顶层 horizon / params.horizon / 皆无。"""
+    from factorzen.cli.main import _horizon_from_manifest
+
+    assert _horizon_from_manifest({"horizon": 3}) == 3
+    assert _horizon_from_manifest({"params": {"horizon": 7}}) == 7
+    assert _horizon_from_manifest({"params": {}}) is None
+    assert _horizon_from_manifest({}) is None
+    # 顶层优先于 params
+    assert _horizon_from_manifest({"horizon": 2, "params": {"horizon": 9}}) == 2
+
+
+def test_cli_lift_test_horizon_from_manifest(tmp_path, monkeypatch):
+    """session manifest horizon=3、不传 --horizon → run_lift_tests ctx.horizon==3。
+
+    旧实现恒 DEFAULT_HORIZON=5（红）。
+    """
+    import factorzen.cli.main as cli_main
+    import factorzen.discovery.lift_test as lt_mod
+    from factorzen.cli.main import build_parser
+
+    sa = _write_session_with_holdout(
+        tmp_path,
+        "h3",
+        expressions=["rank(close)"],
+        holdout_start="2024-06-01",
+        holdout_end="2024-08-31",
+        horizon=3,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_prepare_agent_mining_data",
+        lambda args: (_fake_daily(), None, {}),
+    )
+    captured: list = []
+
+    def fake_lift(gray, **kw):
+        captured.append(kw)
+        return [
+            {
+                "expression": g.get("expression"),
+                "lift": 0.0,
+                "lift_se": 0.0,
+                "lift_second_half": 0.0,
+                "baseline": 0.0,
+                "passed": False,
+            }
+            for g in gray
+        ]
+
+    monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
+
+    args = build_parser().parse_args(
+        [
+            "factor-library",
+            "lift-test",
+            "--session",
+            str(sa),
+            "--start",
+            "20200101",
+            "--end",
+            "20241231",
+            "--library-root",
+            str(tmp_path / "lib"),
+        ]
+    )
+    rc = cli_main._cmd_factor_library_lift_test(args)
+    assert rc == 0
+    assert captured
+    ctx = captured[0].get("ctx")
+    assert ctx is not None
+    assert ctx.horizon == 3, f"期望 manifest horizon=3，got {ctx.horizon}"
+
+
+def test_cli_lift_test_horizon_flag_overrides_manifest(tmp_path, monkeypatch):
+    """--horizon 7 覆盖 session manifest horizon=3。"""
+    import factorzen.cli.main as cli_main
+    import factorzen.discovery.lift_test as lt_mod
+    from factorzen.cli.main import build_parser
+
+    sa = _write_session_with_holdout(
+        tmp_path,
+        "h3",
+        expressions=["rank(close)"],
+        holdout_start="2024-06-01",
+        holdout_end="2024-08-31",
+        horizon=3,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_prepare_agent_mining_data",
+        lambda args: (_fake_daily(), None, {}),
+    )
+    captured: list = []
+
+    def fake_lift(gray, **kw):
+        captured.append(kw)
+        return [
+            {
+                "expression": g.get("expression"),
+                "lift": 0.0,
+                "lift_se": 0.0,
+                "lift_second_half": 0.0,
+                "baseline": 0.0,
+                "passed": False,
+            }
+            for g in gray
+        ]
+
+    monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
+
+    args = build_parser().parse_args(
+        [
+            "factor-library",
+            "lift-test",
+            "--session",
+            str(sa),
+            "--start",
+            "20200101",
+            "--end",
+            "20241231",
+            "--library-root",
+            str(tmp_path / "lib"),
+            "--horizon",
+            "7",
+        ]
+    )
+    rc = cli_main._cmd_factor_library_lift_test(args)
+    assert rc == 0
+    assert captured[0]["ctx"].horizon == 7
+
+
+def test_cli_lift_test_horizon_params_key(tmp_path, monkeypatch):
+    """team-style manifest：params.horizon=4 → ctx.horizon==4。"""
+    import factorzen.cli.main as cli_main
+    import factorzen.discovery.lift_test as lt_mod
+    from factorzen.cli.main import build_parser
+
+    sa = _write_session_with_holdout(
+        tmp_path,
+        "hp",
+        expressions=["rank(vol)"],
+        holdout_start="2024-06-01",
+        holdout_end="2024-08-31",
+        horizon=4,
+        horizon_in_params=True,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_prepare_agent_mining_data",
+        lambda args: (_fake_daily(), None, {}),
+    )
+    captured: list = []
+
+    def fake_lift(gray, **kw):
+        captured.append(kw)
+        return [
+            {
+                "expression": g.get("expression"),
+                "lift": 0.0,
+                "lift_se": 0.0,
+                "lift_second_half": 0.0,
+                "baseline": 0.0,
+                "passed": False,
+            }
+            for g in gray
+        ]
+
+    monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
+
+    args = build_parser().parse_args(
+        [
+            "factor-library",
+            "lift-test",
+            "--session",
+            str(sa),
+            "--start",
+            "20200101",
+            "--end",
+            "20241231",
+            "--library-root",
+            str(tmp_path / "lib"),
+        ]
+    )
+    rc = cli_main._cmd_factor_library_lift_test(args)
+    assert rc == 0
+    assert captured[0]["ctx"].horizon == 4
+
+
+def test_cli_lift_test_multi_session_horizon_mismatch_warns(
+    tmp_path, monkeypatch, capsys,
+):
+    """多 session horizon 不一致 → stderr 警告，仍用第一个 session 的值。"""
+    import factorzen.cli.main as cli_main
+    import factorzen.discovery.lift_test as lt_mod
+    from factorzen.cli.main import build_parser
+
+    sa = _write_session_with_holdout(
+        tmp_path, "a", expressions=["e1"],
+        holdout_start="2024-01-01", holdout_end="2024-03-31", horizon=3,
+    )
+    sb = _write_session_with_holdout(
+        tmp_path, "b", expressions=["e2"],
+        holdout_start="2024-10-01", holdout_end="2024-12-31", horizon=10,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_prepare_agent_mining_data",
+        lambda args: (_fake_daily(), None, {}),
+    )
+    captured: list = []
+
+    def fake_lift(gray, **kw):
+        captured.append(kw)
+        return [
+            {
+                "expression": g.get("expression"),
+                "lift": 0.0, "lift_se": 0.0, "lift_second_half": 0.0,
+                "baseline": 0.0, "passed": False,
+            }
+            for g in gray
+        ]
+
+    monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
+
+    args = build_parser().parse_args(
+        [
+            "factor-library", "lift-test",
+            "--session", str(sa), str(sb),
+            "--start", "20200101", "--end", "20241231",
+            "--library-root", str(tmp_path / "lib"),
+        ]
+    )
+    rc = cli_main._cmd_factor_library_lift_test(args)
+    assert rc == 0
+    # base_ctx 统一 resolved_horizon=3（首 session）
+    assert all(c["ctx"].horizon == 3 for c in captured)
+    err = capsys.readouterr().err
+    assert "horizon" in err.lower() or "不一致" in err

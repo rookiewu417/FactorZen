@@ -931,6 +931,28 @@ def _holdout_bounds_from_manifest(man: dict) -> tuple[str | None, str | None]:
     return _lift_admission_str(start), _lift_admission_str(end)
 
 
+def _horizon_from_manifest(man: dict) -> int | None:
+    """从 session manifest 抽 mining horizon。
+
+    键名（对照写盘代码）：
+    - team：``write_team_manifest`` 把调用方 ``params`` 原样落盘 → ``params.horizon``
+      （``run_team_mine`` 当前 params 未必写 horizon，缺则返回 None）
+    - mining_session：顶层字段可选 ``horizon``（``run_session`` 有入参但历史 manifest
+      多数未落盘）
+    - 顶层 ``horizon`` 优先于 ``params.horizon``
+    """
+    raw = man.get("horizon")
+    if raw is None:
+        params = man.get("params") or {}
+        raw = params.get("horizon")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _group_lift_candidates_by_admission(
     session_items: list[dict],
 ) -> list[tuple[str | None, str | None, list[dict]]]:
@@ -991,6 +1013,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     args_end = _lift_admission_str(getattr(args, "end", None))
 
     session_items: list[dict] = []
+    manifest_horizons: list[int] = []
     for s in sessions:
         man_path = Path(s) / "manifest.json"
         if not man_path.is_file():
@@ -1003,6 +1026,9 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             continue
         gray_s = extract_gray_candidates_from_manifest(man)
         hs, he = _holdout_bounds_from_manifest(man)
+        man_h = _horizon_from_manifest(man)
+        if man_h is not None:
+            manifest_horizons.append(man_h)
         if use_flag_window:
             s_start, s_end = flag_adm_start, flag_adm_end
         else:
@@ -1016,6 +1042,21 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 "adm_end": s_end,
             }
         )
+
+    # horizon：--horizon 旗标 > 首个 session manifest mining horizon > DEFAULT_HORIZON
+    flag_horizon = getattr(args, "horizon", None)
+    if flag_horizon is not None:
+        resolved_horizon = int(flag_horizon)
+    elif manifest_horizons:
+        resolved_horizon = manifest_horizons[0]
+        if len(set(manifest_horizons)) > 1:
+            print(
+                f"[factor-library lift-test] 警告：多 session mining horizon 不一致 "
+                f"{manifest_horizons}，统一使用第一个 session 的 {resolved_horizon}",
+                file=sys.stderr,
+            )
+    else:
+        resolved_horizon = DEFAULT_HORIZON
 
     groups = _group_lift_candidates_by_admission(session_items)
     n_gray = sum(len(cands) for _, _, cands in groups)
@@ -1052,13 +1093,13 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     top_m = getattr(args, "top_m", None) or DEFAULT_TOP_M
     seed = getattr(args, "seed", 0) or 0
 
-    # base_ctx：prep 一次；admission 窗 per-group replace
+    # base_ctx：prep 一次；admission 窗 per-group replace（不改 horizon）
     try:
         base_ctx = make_lift_context(
             market, daily,
             profile=profile,
             leaf_map=leaf_map,
-            horizon=DEFAULT_HORIZON,
+            horizon=resolved_horizon,
             admission_start=None,
             admission_end=None,
             library_root=lib_root,
@@ -1068,7 +1109,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             market=market,
             prepped=daily.sort(["ts_code", "trade_date"]) if daily.height else daily,
             leaf_map=leaf_map,
-            horizon=DEFAULT_HORIZON,
+            horizon=resolved_horizon,
             admission_start=None,
             admission_end=None,
             library_root=lib_root,
@@ -2349,6 +2390,10 @@ def build_parser() -> argparse.ArgumentParser:
     fl_lt.add_argument(
         "--admission-end", dest="admission_end", default=None,
         help="lift 评分窗终点 YYYYMMDD（覆盖 session manifest holdout 推导）",
+    )
+    fl_lt.add_argument(
+        "--horizon", type=int, default=None,
+        help="lift 前向持有期；默认跟随 session manifest 的 mining horizon，兜底 DEFAULT_HORIZON",
     )
     fl_lt.add_argument("--top-n", dest="top_n", type=int, default=50,
                        help="crypto/futures/us universe size")

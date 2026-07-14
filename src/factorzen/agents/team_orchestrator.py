@@ -821,6 +821,20 @@ def _empty_lift_meta(*, n_lift_queue: int = 0) -> dict:
     }
 
 
+def _lift_admission_str(v) -> str | None:
+    """holdout 边界 → admission 窗字符串（对齐 polars Date→Utf8 的 YYYY-MM-DD）。"""
+    if v is None:
+        return None
+    if hasattr(v, "strftime"):
+        return v.strftime("%Y-%m-%d")
+    s = str(v).strip().replace("/", "-")
+    if len(s) == 8 and s.isdigit():
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    if len(s) >= 10 and s[4] == "-":
+        return s[:10]
+    return s
+
+
 def _session_end_auto_lift(
     state: AgentState,
     *,
@@ -857,18 +871,38 @@ def _session_end_auto_lift(
             DEFAULT_LIFT_THRESHOLD,
         )
         from factorzen.discovery.lift_test import (
+            DEFAULT_HORIZON,
+            make_lift_context,
             run_group_lift,
             run_lift_tests,
         )
 
         leaf_map = ctx.leaf_map if ctx is not None else None
         holdout_start = holdout_df["trade_date"].min()
+        holdout_end = holdout_df["trade_date"].max()
+        # admission 窗：与 polars Date→Utf8 口径对齐（YYYY-MM-DD），供评分日 IC 裁剪
+        adm_start = _lift_admission_str(holdout_start)
+        adm_end = _lift_admission_str(holdout_end)
 
-        # 物化路径：测试可注入；生产复用 lift_test 默认 materializer
+        # 统一评估上下文：prep 一次；覆盖检查与评分共用同一 prepped materializer
+        lift_ctx = make_lift_context(
+            market, daily,
+            profile=profile,
+            leaf_map=leaf_map,
+            horizon=DEFAULT_HORIZON,  # 显式传，不隐式吃默认
+            admission_start=adm_start,
+            admission_end=adm_end,
+            library_root=library_root,
+        )
+        meta["admission_start"] = adm_start
+        meta["admission_end"] = adm_end
+        meta["horizon"] = lift_ctx.horizon
+
+        # 物化路径：显式注入优先；否则用 ctx.prepped 的 materializer（消除 prep 不对称）
         mat = materialize_candidate
         if mat is None:
-            from factorzen.discovery.lift_test import _default_materializer
-            mat = _default_materializer(daily, leaf_map)
+            from factorzen.discovery.lift_test import _materializer_from_prepped
+            mat = _materializer_from_prepped(lift_ctx.prepped, leaf_map)
 
         kept: list[dict] = []
         dropped: list[dict] = []
@@ -926,6 +960,7 @@ def _session_end_auto_lift(
             ret_df=ret_df,
             materialize_candidate=mat,
             combine_fn=combine_fn,
+            ctx=lift_ctx,
         )
         meta["lift_group"] = group
         meta["n_lift_evaluated"] = 1  # 组门计 1 次（多重检验 N 记账）
@@ -967,6 +1002,7 @@ def _session_end_auto_lift(
             ret_df=ret_df,
             materialize_candidate=mat,
             combine_fn=combine_fn,
+            ctx=lift_ctx,
         )
         meta["lift_results"] = results
         meta["n_lift_evaluated"] = 1 + len(results)
@@ -983,6 +1019,7 @@ def _session_end_auto_lift(
                 "eval_start": dw.get("start"),
                 "eval_end": dw.get("end"),
                 "universe": dw.get("universe"),
+                "horizon": lift_ctx.horizon,
                 "run_id": f"team_lift_{seed}",
                 "git_sha": get_git_sha(),
                 "leaf_map": leaf_map,

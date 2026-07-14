@@ -346,7 +346,7 @@ def test_ctx_none_zero_regression_same_inputs():
     a = run_lift_tests(**kwargs)
     b = run_lift_tests(**kwargs, ctx=None)
     assert len(a) == len(b) == 2
-    for ra, rb in zip(a, b):
+    for ra, rb in zip(a, b, strict=True):
         assert ra == rb
     # provenance 存在（ctx=None 时 admission 不裁）
     for r in a:

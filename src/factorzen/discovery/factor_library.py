@@ -977,6 +977,9 @@ def rebuild(
     daily: pl.DataFrame | None = None,
     lift_threshold: float = DEFAULT_LIFT_THRESHOLD,
     se_mult: float = 1.0,
+    profile=None,
+    admission_start: str | None = None,
+    admission_end: str | None = None,
 ) -> UpsertResult:
     """在统一窗口重算历史因子并**从头重建**该市场库（"可比"且"权威"的关键）。
 
@@ -1087,14 +1090,53 @@ def rebuild(
 
             runner = lift_runner
             if runner is None:
-                # 生产默认：run_lift_tests（需 daily）
+                # 生产默认：run_lift_tests（需 daily）+ LiftEvalContext
                 if daily is None:
                     raise RuntimeError(
                         "lift 轨复审需要 lift_runner 或 daily（默认 run_lift_tests）"
                     )
-                from factorzen.discovery.lift_test import run_lift_tests
+                from factorzen.agents.evaluation import _preprocess_daily
+                from factorzen.discovery.lift_test import (
+                    LiftEvalContext,
+                    run_lift_tests,
+                )
 
-                def runner(cands, *, active_factor_dfs=None, combine_fn=None, **kw):
+                # prep 一次；按 horizon 缓存 ctx（ret panel 依赖 horizon，不可共享）
+                prepped = _preprocess_daily(daily, profile).sort(
+                    ["ts_code", "trade_date"]
+                )
+                profile_name = (
+                    getattr(profile, "name", None) if profile is not None else None
+                )
+                ctx_by_h: dict[int, LiftEvalContext] = {}
+                # 捕获 rebuild 全局 horizon（runner 参数 horizon 会遮蔽外层名）
+                _rebuild_h = horizon
+
+                def _ctx_for(h: int) -> LiftEvalContext:
+                    if h not in ctx_by_h:
+                        ctx_by_h[h] = LiftEvalContext(
+                            market=market,
+                            prepped=prepped,
+                            leaf_map=leaf_map,
+                            horizon=int(h),
+                            admission_start=admission_start,
+                            admission_end=admission_end,
+                            library_root=root,
+                            profile_name=profile_name,
+                        )
+                    return ctx_by_h[h]
+
+                def runner(
+                    cands, *, active_factor_dfs=None, combine_fn=None,
+                    horizon=None, **kw,
+                ):
+                    # 调用方传 rec.horizon；缺省退回 rebuild 全局 horizon 或 5
+                    if horizon is not None:
+                        h = int(horizon)
+                    elif _rebuild_h is not None:
+                        h = int(_rebuild_h)
+                    else:
+                        h = 5
                     return run_lift_tests(
                         cands,
                         market=market,
@@ -1105,7 +1147,7 @@ def rebuild(
                         threshold=lift_threshold,
                         active_factor_dfs=active_factor_dfs,
                         combine_fn=combine_fn,
-                        horizon=horizon or 5,
+                        ctx=_ctx_for(h),
                     )
 
             lib = load_library(market, root=root)
@@ -1120,10 +1162,13 @@ def rebuild(
                     "holdout_ic": rec.holdout_ic,
                     "n_train": rec.n_train,
                 }
+                # rec.horizon 优先（准入目标）；否则 rebuild 全局 horizon；再否则 5
+                rec_h = rec.horizon if rec.horizon is not None else (horizon if horizon is not None else 5)
                 rows = runner(
                     [cand_row],
                     active_factor_dfs=pool_dfs,
                     combine_fn=combine_fn,
+                    horizon=rec_h,
                 )
                 n_lift_evaluated += 1  # 每次 add-one 计 1 次 lgbm（多重检验 N）
                 if not rows:
@@ -1205,6 +1250,9 @@ def rebuild(
         "n_lift_probation": n_lift_probation,
         "n_lift_demoted": n_lift_demoted,
         "n_lift_evaluated": n_lift_evaluated,
+        # lift 复审评分窗（与 single 轨 holdout 尾段对齐；None=未裁）
+        "lift_admission_start": admission_start,
+        "lift_admission_end": admission_end,
     }
     if lift_review_error is not None:
         manifest["lift_review_error"] = lift_review_error

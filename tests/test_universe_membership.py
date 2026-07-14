@@ -119,7 +119,7 @@ def test_csi800_is_monthly_union(patch_calendar_and_members):
 def test_dynamic_universe_raises(name):
     from factorzen.core.universe import get_universe_membership
 
-    with pytest.raises(ValueError, match="不支持|基础池|membership"):
+    with pytest.raises(ValueError, match=r"不支持|基础池|membership"):
         get_universe_membership("20240102", "20240205", name)
 
 

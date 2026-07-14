@@ -66,6 +66,7 @@ def write_session_manifest(
         "candidates": result.candidates,
         "library_pool_size": getattr(state, "library_pool_size", 0),
         "n_library_correlated_rejects": getattr(state, "n_library_correlated_rejects", 0),
+        "n_gray_zone": getattr(state, "n_gray_zone", 0),
         "objective": getattr(state, "objective", None),
         "git_sha": get_git_sha(),
     }

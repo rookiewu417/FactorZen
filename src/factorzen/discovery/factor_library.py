@@ -130,9 +130,12 @@ class FactorRecord:
     ic_ci_high: float | None = None
     pbo: float | None = None
     turnover: float | None = None
-    status: str = "active"           # active（独立）/ correlated（与库内已有高相关，仍收录）
+    status: str = "active"           # active / correlated / probation（试用，lift 通道入库）
     max_corr_in_lib: float | None = None
     correlated_with: str | None = None
+    # 组合增量 lift 通道字段（probation 记录；active 路径为 None）
+    lift: float | None = None
+    lift_baseline: float | None = None
     eval_start: str | None = None
     eval_end: str | None = None
     universe: str | None = None
@@ -207,6 +210,7 @@ def library_covered_expressions(
 ) -> list[str]:
     """库内 status∈statuses 因子按 |ic_train| 降序取前 k 的表达式（供 LLM 提示）。
 
+    默认只取 ``active``——**probation 不进挖掘正交参照系**（试用因子不该挡新候选）。
     文件不存在/空 → []。不物化、不求值。
     """
     recs = [r for r in load_library(market, root=root) if r.status in statuses]
@@ -226,6 +230,8 @@ def build_library_pool(
     """把库内因子物化为 mining/评估帧上的因子值面板，供搜索期库级正交去相关。
 
     - 取 status∈statuses 记录，按 |ic_train| 降序。
+    - 默认只取 ``active``——**probation 不进挖掘正交参照系**（试用因子不该挡新候选；
+      组合 staging 是否纳入由调用方在 staging csv 控制，本函数不替组合做决策）。
     - 每条 expression 用 ``evaluate_materialized`` 在 ``daily`` 上算
       ``[trade_date, ts_code, factor_value]``（与挖掘物化路径一致）。
     - 非法/求值失败/全 null 的表达式跳过并计数——一条坏记录不许崩整个 pool。
@@ -489,6 +495,67 @@ def upsert(
     return res
 
 
+def upsert_probation(
+    market: str, passed_lift_rows: list[dict], *,
+    eval_window: tuple[str, str], universe: str | None, horizon: int | None,
+    run_id: str | None, session_dir: str | None, git_sha: str | None, now: str,
+    leaf_map: dict[str, str] | None = None, root: str = DEFAULT_ROOT,
+) -> UpsertResult:
+    """把 lift 实验通过的灰区候选以 ``status="probation"`` 入库。
+
+    **跳过单因子 library gate**——它们已由组合 lift 裁决；本函数不调用
+    ``acceptance_reasons``。灰区门已排除 ≥0.7 库相关，此处**不再重复**算库相关
+    （注释：省一次物化；若日后灰区门放宽，再考虑 upsert 内二次相关标记）。
+
+    仍做规范形去重：已在库 → 更新指标/lift 字段 + ``status=probation``（保留
+    ``added_at``）；新 → 新增。不改变库内既有 active/correlated 记录的 status
+    （除非规范形撞到同一表达式——则升级/覆盖为 probation 并写 lift）。
+    """
+    existing = load_library(market, root=root)
+    by_expr: dict[str, FactorRecord] = {r.expression: r for r in existing}
+
+    res = UpsertResult()
+    for row in passed_lift_rows:
+        raw = row.get("expression")
+        if not raw:
+            continue
+        if not row.get("passed", True):
+            res.skipped += 1
+            continue
+        norm = _normalize(raw, leaf_map)
+        prev = by_expr.get(norm)
+        rec = _record_from_candidate(
+            row, norm, market, eval_window, universe, horizon,
+            run_id, session_dir, git_sha, now, prev,
+        )
+        rec.status = "probation"
+        # lift 字段：优先 row 上的 lift / lift_baseline / baseline
+        rec.lift = _as_float(row.get("lift"))
+        rec.lift_baseline = _as_float(
+            row.get("lift_baseline", row.get("baseline"))
+        )
+        if prev is None:
+            res.added += 1
+        else:
+            res.updated += 1
+        by_expr[norm] = rec
+        res.records.append(rec)
+
+    _save_library(market, list(by_expr.values()), root=root)
+    render_markdown(market, root=root)
+    return res
+
+
+def _as_float(v) -> float | None:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 # ── markdown 渲染 ────────────────────────────────────────────────────────────
 
 def _fmt(v, nd: int = 4) -> str:
@@ -513,6 +580,7 @@ def render_markdown(market: str, root: str = DEFAULT_ROOT) -> str:
     records = load_library(market, root=root)
     n_active = sum(1 for r in records if r.status == "active")
     n_corr = sum(1 for r in records if r.status == "correlated")
+    n_prob = sum(1 for r in records if r.status == "probation")
     windows = sorted({(r.eval_start, r.eval_end) for r in records if r.eval_start})
     win_str = ", ".join(f"{s}–{e}" for s, e in windows) if windows else "-"
     updated = max((r.updated_at for r in records if r.updated_at), default="-")
@@ -520,7 +588,7 @@ def render_markdown(market: str, root: str = DEFAULT_ROOT) -> str:
     lines = [
         f"# 因子库 · {market}",
         "",
-        f"- active: **{n_active}** · correlated: **{n_corr}** · 合计 {len(records)}",
+        f"- active: **{n_active}** · correlated: **{n_corr}** · probation: **{n_prob}** · 合计 {len(records)}",
         f"- 评估窗口: {win_str}",
         f"- 更新时间: {updated}",
         "",
@@ -551,16 +619,18 @@ def render_markdown(market: str, root: str = DEFAULT_ROOT) -> str:
 
 def render_summary(root: str = DEFAULT_ROOT) -> str:
     """跨市场总览 ``summary.md``：各市场 active/correlated 数 + 最强因子（按 holdout_ic）。"""
-    lines = ["# 因子库总览", "", "| market | active | correlated | 最强因子 (holdout_ic) |",
-             "|---|---|---|---|"]
+    lines = ["# 因子库总览", "",
+             "| market | active | correlated | probation | 最强因子 (holdout_ic) |",
+             "|---|---|---|---|---|"]
     for market in ("ashare", "crypto", "futures", "us"):
         records = load_library(market, root=root)
         n_active = sum(1 for r in records if r.status == "active")
         n_corr = sum(1 for r in records if r.status == "correlated")
+        n_prob = sum(1 for r in records if r.status == "probation")
         best = min(records, key=_sort_key, default=None)  # _sort_key 用负号，min=最强
         best_str = (f"`{best.expression}` ({_fmt(best.holdout_ic)})"
                     if best is not None else "-")
-        lines.append(f"| {market} | {n_active} | {n_corr} | {best_str} |")
+        lines.append(f"| {market} | {n_active} | {n_corr} | {n_prob} | {best_str} |")
     md = "\n".join(lines) + "\n"
     out = Path(root) / "summary.md"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -739,9 +809,18 @@ def rebuild(
     ``fresh``（默认 True）：rebuild 语义 = **从零重算全部历史源**，先清空该市场旧库再写入——
     否则旧库里已失效的记录（如 P0 修复前误收的前视因子、或已从算子库移除的表达式）会残留，
     rebuild 就不再"权威"。清空只针对本 market 文件，不动别的市场。
+
+    **probation 原样保留**：试用因子已由 lift 裁决入库；rebuild 重跑单因子门会全灭、
+    重跑 lift 太贵。fresh 清空前先抽出 ``status=probation`` 记录，upsert 后写回
+    （不重算指标；后续人工/定期 lift 复审属遗留项）。
     落 ``rebuild_{market}_manifest.json``（窗口/源/git_sha/时间，可复现）。
     """
+    # 保留 probation：fresh 会清库，须先抽出
+    preserved_probation: list[FactorRecord] = []
     if fresh:
+        preserved_probation = [
+            r for r in load_library(market, root=root) if r.status == "probation"
+        ]
         library_path(market, root).unlink(missing_ok=True)  # 从零重建，清旧库（仅本 market）
 
     uniq: list[str] = []
@@ -760,12 +839,31 @@ def rebuild(
         compact_materialize=compact_materialize, leaf_map=leaf_map, root=root,
     )
 
+    # 写回 probation（规范形已在库则不覆盖 active——同 expr 被 rebuild 重新评估进库时
+    # 以 gate 路径为准；仅当库内尚无该 expr 时补回试用记录）
+    if preserved_probation:
+        lib = load_library(market, root=root)
+        by_expr = {r.expression: r for r in lib}
+        n_kept = 0
+        for pr in preserved_probation:
+            if pr.expression not in by_expr:
+                by_expr[pr.expression] = pr
+                n_kept += 1
+        if n_kept:
+            _save_library(market, list(by_expr.values()), root=root)
+            render_markdown(market, root=root)
+        res.records.extend(
+            [pr for pr in preserved_probation if pr.expression in by_expr
+             and by_expr[pr.expression].status == "probation"]
+        )
+
     manifest = {
         "market": market, "eval_start": eval_window[0], "eval_end": eval_window[1],
         "universe": universe, "horizon": horizon, "git_sha": git_sha, "rebuilt_at": now,
         "n_sources": len(sources), "n_unique": len(uniq), "n_evaluated": len(cand_dicts),
         "added": res.added, "updated": res.updated, "correlated": res.correlated,
         "skipped": res.skipped,
+        "n_probation_preserved": len(preserved_probation),
     }
     if manifest_extra:
         manifest.update(manifest_extra)

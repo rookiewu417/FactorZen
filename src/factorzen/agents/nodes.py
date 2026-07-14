@@ -231,11 +231,13 @@ def node_guardrails(
 
     from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.discovery.guardrails import (
+        REJECT_CATEGORY_GRAY_ZONE,
         REJECT_CATEGORY_LIBRARY_CORRELATED,
         DeflationBasis,
         acceptance_reasons,
         classify_reject_category,
         deflated_pvalue,
+        is_gray_zone,
         pool_pbo,
     )
     from factorzen.discovery.residual import (
@@ -422,6 +424,19 @@ def node_guardrails(
                 # 记下未过原因，供进度与收尾"近失表"展示（为什么没进候选池）。
                 a.reject_reason = "；".join(reasons)
                 a.reject_category = classify_reject_category(reasons)
+                # 第二通道：单因子门不过但落灰区 → 标记待后置 lift（挖掘内不跑 lift）。
+                gray_probe = {
+                    "ic_train": ic_tr,
+                    "n_holdout_days": n_h,
+                    "residual_ic_train": residual_ic_tr,
+                    "n_residual_holdout_days": n_residual_h,
+                    "reject_category": a.reject_category,
+                    "max_corr_library": mc_lib if lib_pool else None,
+                }
+                if is_gray_zone(gray_probe, objective=eff_objective):
+                    a.reject_category = REJECT_CATEGORY_GRAY_ZONE
+                    a.reject_reason = (a.reject_reason or "") + "(灰区,待组合lift)"
+                    state.n_gray_zone = getattr(state, "n_gray_zone", 0) + 1
         except Exception as exc:
             # 静默 continue 会让「这个候选炸了」与「这个候选没过护栏」不可区分。
             a.reject_reason = f"护栏计算异常({type(exc).__name__})"

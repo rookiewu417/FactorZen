@@ -701,6 +701,141 @@ def _cmd_factor_library_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
+    """灰区候选 → 组合 OOS lift 实验 → 通过者以 probation 入库。"""
+    import json
+    from datetime import date
+    from pathlib import Path
+
+    from factorzen.core.experiment import get_git_sha
+    from factorzen.discovery import factor_library as fl
+    from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
+    from factorzen.discovery.lift_test import (
+        DEFAULT_TOP_M,
+        extract_gray_candidates_from_manifest,
+        run_lift_tests,
+    )
+
+    sessions = list(args.session or [])
+    if not sessions:
+        print("[factor-library lift-test] 需至少一个 --session 目录", file=sys.stderr)
+        return 2
+
+    gray: list[dict] = []
+    for s in sessions:
+        man_path = Path(s) / "manifest.json"
+        if not man_path.is_file():
+            print(f"[factor-library lift-test] 跳过（无 manifest）: {s}", file=sys.stderr)
+            continue
+        try:
+            man = json.loads(man_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[factor-library lift-test] 读 manifest 失败 {s}: {exc}", file=sys.stderr)
+            continue
+        gray.extend(extract_gray_candidates_from_manifest(man))
+
+    # 跨 session 按 expression 去重（保留首次）
+    seen: set[str] = set()
+    uniq_gray: list[dict] = []
+    for g in gray:
+        e = g.get("expression")
+        if e and e not in seen:
+            seen.add(e)
+            uniq_gray.append(g)
+
+    if not uniq_gray:
+        print("[factor-library lift-test] 未从 session 抽到 gray_zone 候选")
+        return 0
+
+    print(f"[factor-library lift-test] gray_zone 候选 {len(uniq_gray)} 个（去重后）")
+    market = args.market
+    # 装配日频帧（与 rebuild 同路径）
+    daily, profile = _prepare_agent_mining_data(args)
+    if daily is None:
+        print("[factor-library lift-test] 挖掘帧为空", file=sys.stderr)
+        return 1
+    leaf_map = profile.factors.leaf_features() if profile is not None else None
+    lib_root = getattr(args, "library_root", None) or fl.DEFAULT_ROOT
+    threshold = getattr(args, "threshold", None)
+    if threshold is None:
+        threshold = DEFAULT_LIFT_THRESHOLD
+    top_m = getattr(args, "top_m", None) or DEFAULT_TOP_M
+    seed = getattr(args, "seed", 0) or 0
+
+    results = run_lift_tests(
+        uniq_gray,
+        market=market,
+        daily=daily,
+        leaf_map=leaf_map,
+        library_root=lib_root,
+        top_m=top_m,
+        threshold=threshold,
+        seed=seed,
+    )
+
+    # 打印表
+    print(f"{'expression':40s}  {'lift':>8s}  {'baseline':>8s}  passed")
+    for r in results:
+        expr = (r.get("expression") or "")[:40]
+        lift = r.get("lift")
+        base = r.get("baseline")
+        ls = f"{lift:+.4f}" if lift is not None else "  n/a "
+        bs = f"{base:.4f}" if base is not None else "  n/a "
+        print(f"{expr:40s}  {ls:>8s}  {bs:>8s}  {r.get('passed')}")
+
+    passed_rows = [r for r in results if r.get("passed")]
+    dry_run = bool(getattr(args, "dry_run", False))
+    upsert_res = None
+    if passed_rows and not dry_run:
+        upsert_res = fl.upsert_probation(
+            market, passed_rows,
+            eval_window=(args.start, args.end),
+            universe=getattr(args, "universe", None),
+            horizon=5,
+            run_id=f"lift_{date.today().isoformat()}",
+            session_dir=",".join(sessions),
+            git_sha=get_git_sha(),
+            now=date.today().strftime("%Y-%m-%d"),
+            leaf_map=leaf_map,
+            root=lib_root,
+        )
+        print(f"[factor-library lift-test] probation 入库：新增 {upsert_res.added} / "
+              f"更新 {upsert_res.updated}")
+    elif dry_run:
+        print(f"[factor-library lift-test] dry-run：通过 {len(passed_rows)} 个，不写库")
+    else:
+        print("[factor-library lift-test] 无通过 lift 阈值的候选")
+
+    # 落 lift manifest 到第一个 session（可审计）
+    lift_manifest = {
+        "market": market,
+        "start": args.start,
+        "end": args.end,
+        "universe": getattr(args, "universe", None),
+        "threshold": threshold,
+        "top_m": top_m,
+        "seed": seed,
+        "n_gray_input": len(uniq_gray),
+        "n_tested": len(results),
+        "n_passed": len(passed_rows),
+        "dry_run": dry_run,
+        "baseline": results[0].get("baseline") if results else None,
+        "results": results,
+        "sessions": sessions,
+        "git_sha": get_git_sha(),
+        "upsert": (
+            {"added": upsert_res.added, "updated": upsert_res.updated}
+            if upsert_res is not None else None
+        ),
+    }
+    out_man = Path(sessions[0]) / "lift_test_manifest.json"
+    out_man.write_text(
+        json.dumps(lift_manifest, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+    print(f"[factor-library lift-test] → {out_man}")
+    return 0
+
+
 def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -1748,7 +1883,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── fz factor-library ──（分市场因子登记簿：rebuild / list / show / render）
     fl = sub.add_parser("factor-library",
-                        help="因子库登记簿（分市场·全信息·自动维护）：rebuild/list/show/render")
+                        help="因子库登记簿（分市场·全信息·自动维护）：rebuild/list/show/render/lift-test")
     fl_sub = fl.add_subparsers(dest="factor_library_command", required=True)
 
     fl_rb = fl_sub.add_parser("rebuild",
@@ -1781,6 +1916,33 @@ def build_parser() -> argparse.ArgumentParser:
     fl_rd = fl_sub.add_parser("render", help="重生 {market}.md（不重算）")
     fl_rd.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
     fl_rd.set_defaults(func=_cmd_factor_library_render)
+
+    fl_lt = fl_sub.add_parser(
+        "lift-test",
+        help="灰区候选组合增量 lift 实验 → 通过者以 status=probation 入库（第二通道）",
+    )
+    fl_lt.add_argument(
+        "--session", nargs="+", required=True,
+        help="mine_team / mine-agent / mining_session 的 run 目录（含 manifest.json）",
+    )
+    fl_lt.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
+    fl_lt.add_argument("--start", required=True, help="评估窗口起点 YYYYMMDD")
+    fl_lt.add_argument("--end", required=True, help="评估窗口终点 YYYYMMDD")
+    fl_lt.add_argument("--universe", default=None, help="A股 universe 名（如 csi300）")
+    fl_lt.add_argument("--top-m", dest="top_m", type=int, default=10,
+                       help="按 |residual_ic_train| 取 top-M 控成本（默认 10）")
+    fl_lt.add_argument("--threshold", type=float, default=None,
+                       help="RankIC lift 阈值（默认 DEFAULT_LIFT_THRESHOLD=0.001）")
+    fl_lt.add_argument("--seed", type=int, default=0)
+    fl_lt.add_argument("--library-root", dest="library_root", default=None,
+                       help="因子库根目录（默认 workspace/factor_library）")
+    fl_lt.add_argument("--dry-run", dest="dry_run", action="store_true",
+                       help="只跑实验不写库")
+    fl_lt.add_argument("--top-n", dest="top_n", type=int, default=50,
+                       help="crypto/futures/us universe size")
+    fl_lt.add_argument("--symbols", default=None)
+    _add_freq_arg(fl_lt)
+    fl_lt.set_defaults(func=_cmd_factor_library_lift_test)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     # ── fz research ──（端到端编排：mine → 头部 passed 因子 → 循环 build → sim → report）

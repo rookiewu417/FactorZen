@@ -22,9 +22,11 @@ from factorzen.discovery.guardrails import (
     DEFAULT_DSR_ALPHA,
     DEFAULT_GATE,
     DEFAULT_RESIDUAL_IC_FLOOR,
+    REJECT_CATEGORY_GRAY_ZONE,
     DeflationBasis,
     acceptance_reasons,
     deflated_pvalue,
+    is_gray_zone,
 )
 from factorzen.discovery.leaf_health import (
     apply_leaf_exclusion,
@@ -435,6 +437,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     selected: list[dict] = []
     selected_pool: dict[str, pl.DataFrame] = {}  # expression -> factor_df
     n_library_correlated_rejects = 0
+    n_gray_zone = 0
     for cand in scored:
         if len(selected) >= top_k:
             break
@@ -511,6 +514,12 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         # 护栏软标记：算完立刻判，供 leaderboard/export-alpha 默认过滤（--all 逃生口）
         # residual 模式喂残差指标；与 Agent 共用 acceptance_reasons。
         c["passed"] = _guard_passed(c, dsr_alpha, objective=eff_objective)
+        # 第二通道：单因子门不过但落灰区 → 标记待后置 lift（挖掘内不跑 lift）。
+        if not c["passed"] and is_gray_zone(c, objective=eff_objective):
+            c["reject_category"] = REJECT_CATEGORY_GRAY_ZONE
+            prev = c.get("reject_reason") or ""
+            c["reject_reason"] = prev + "(灰区,待组合lift)"
+            n_gray_zone += 1
 
     session_dir = Path(out_dir) / f"session_{seed}_{method}"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -529,6 +538,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 "excluded_leaves": excluded_leaves,
                 "library_pool_size": len(lib_pool),
                 "n_library_correlated_rejects": n_library_correlated_rejects,
+                "n_gray_zone": n_gray_zone,
                 "objective": eff_objective,
                 "reproduce_note": "导出因子在 exported/；复现需复制到 workspace/factors/daily/ 后 fz factor run <name> --set preprocessing.neutralize=false（IC parity）"}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))

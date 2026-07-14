@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -193,6 +194,7 @@ def _run_one_round(
     eval_start=None, leaf_budgets=None, hypotheses_per_round=1, profile=None, ctx=None,
     lib_pool=None, library_covered=None, objective: str = "residual",
     llm_workers: int = 1, residual_projector=None,
+    run_id: str | None = None, campaign_id: str | None = None,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -503,9 +505,10 @@ def _run_one_round(
     record(
         index,
         round_attempts,
-        run_id=f"team_{seed}",
+        run_id=run_id if run_id is not None else f"team_{seed}",
         candidates=new_cands,
         data_window=data_window,
+        campaign_id=campaign_id,
     )
     state.iteration += 1
     return next_pending
@@ -545,6 +548,8 @@ def run_team_agent(
     # 跨 session DSR N 累计：从 experiment_index 重建同 campaign 历史 trial 池。
     # CLI 旗标由主控后补；测试可关以验证零回归。
     campaign_prior_enabled: bool = True,
+    # 测试注入：固定 session run_id（None → team_{seed}_{uuid8}，每次调用唯一）
+    run_id: str | None = None,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -678,6 +683,23 @@ def run_team_agent(
                          type(exc).__name__, exc)
             residual_projector = None
 
+    # session 级唯一 run_id（同 seed 复用不再互斥排除历史）+ 完整统计问题 campaign_id
+    session_run_id = run_id if run_id is not None else f"team_{seed}_{uuid.uuid4().hex[:8]}"
+    from factorzen.discovery.campaign import campaign_key as _campaign_key
+    from factorzen.discovery.guardrails import DEFAULT_GATE as _DEFAULT_GATE
+
+    _dw0 = data_window or {}
+    session_campaign_id = _campaign_key(
+        market=market,
+        universe=_dw0.get("universe"),
+        start=_dw0.get("start"),
+        end=_dw0.get("end"),
+        holdout_ratio=holdout_ratio,
+        objective=objective,
+        horizon=horizon,
+        gate=_DEFAULT_GATE,
+    )
+
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
         if patience is not None and round_i > 0:
@@ -699,6 +721,7 @@ def run_team_agent(
                 lib_pool=lib_pool, library_covered=library_covered,
                 objective=objective, llm_workers=llm_workers,
                 residual_projector=residual_projector,
+                run_id=session_run_id, campaign_id=session_campaign_id,
             )
         except LLMClientError as exc:
             llm_failures += 1
@@ -720,8 +743,8 @@ def run_team_agent(
                                     n_trials=ledger.n_trials, rounds_log=rounds_log))
 
     # 收尾复核：早轮候选此前按「截至当轮」的 N 定 p，门槛偏松。用最终 basis 统一重判。
-    # 若启用 campaign prior：先从 index 重建同窗历史 trial 池（排除本 run_id，防双计），
-    # finalize 用 prior∪session 的 union N 做 deflation。
+    # 若启用 campaign prior：先从 index 重建同族历史 trial 池（按 campaign_id 精确过滤，
+    # 排除本 session_run_id 防双计），finalize 用 prior∪session 的 union N 做 deflation。
     _step("收尾复核：以最终 N 统一重判候选 DSR")
     prior = None
     campaign_id: str | None = None
@@ -729,30 +752,21 @@ def run_team_agent(
     prior_n_sessions = 0
     if campaign_prior_enabled:
         try:
-            from factorzen.discovery.campaign import campaign_key, campaign_prior
-            from factorzen.discovery.guardrails import DEFAULT_GATE
+            from factorzen.discovery.campaign import campaign_prior
 
             dw = data_window or {}
             # 与库/index 分族同一套 market 解析：profile.name → data_window → ashare
             mkt = getattr(profile, "name", None) or dw.get("market") or "ashare"
-            campaign_id = campaign_key(
-                market=mkt,
-                universe=dw.get("universe"),
-                start=dw.get("start"),
-                end=dw.get("end"),
-                holdout_ratio=holdout_ratio,
-                objective=objective,
-                horizon=horizon,
-                gate=DEFAULT_GATE,  # run_team_agent 尚未暴露 gate 参数；与 node_* 默认一致
-            )
-            # Librarian 落盘 run_id = f"team_{seed}"；本 session 行已逐轮写入，须排除
+            campaign_id = session_campaign_id
+            # 本 session 行已逐轮 record 写入，须按唯一 session_run_id 排除，防双计
             prior = campaign_prior(
                 index_path,
                 market=mkt,
                 universe=dw.get("universe"),
                 start=dw.get("start"),
                 end=dw.get("end"),
-                exclude_run_ids={f"team_{seed}"},
+                exclude_run_ids={session_run_id},
+                campaign_id=session_campaign_id,
             )
             if prior is not None:
                 prior_n_trials = prior.n_trials
@@ -780,8 +794,9 @@ def run_team_agent(
         record(
             index,
             [a for a in state.attempts if a.expression in demoted],
-            run_id=f"team_{seed}",
+            run_id=session_run_id,
             data_window=data_window,
+            campaign_id=session_campaign_id,
         )
 
     # ── 自动维护因子库（M5/M6 收尾 upsert）──────────────────────────────────────
@@ -792,7 +807,8 @@ def run_team_agent(
         _library_upsert_team(
             state.candidates, seed=seed, mining_df=mining_df, ctx=ctx, profile=profile,
             data_window=data_window, eval_start=eval_start, index_path=index_path,
-            library_root=library_root, top_k=top_k, horizon=horizon)
+            library_root=library_root, top_k=top_k, horizon=horizon,
+            run_id=session_run_id)
 
     # ── session 末自动 lift 钩子（写 manifest 前；失败不杀死挖掘 session）────
     lift_meta = _session_end_auto_lift(
@@ -811,6 +827,7 @@ def run_team_agent(
         materialize_candidate=lift_materialize_candidate,
         active_factor_dfs=lift_active_factor_dfs,
         ret_df=lift_ret_df,
+        run_id=session_run_id,
     )
 
     return TeamResult(
@@ -907,6 +924,7 @@ def _session_end_auto_lift(
     materialize_candidate=None,
     active_factor_dfs: dict | None = None,
     ret_df=None,
+    run_id: str | None = None,
 ) -> dict:
     """session 末：lift 队列 → 覆盖把关 → 组门 → 逐候选 → upsert。
 
@@ -1077,7 +1095,9 @@ def _session_end_auto_lift(
                 "eval_end": dw.get("end"),
                 "universe": dw.get("universe"),
                 "horizon": lift_ctx.horizon,
-                "run_id": f"team_lift_{seed}",
+                "run_id": (
+                    f"{run_id}_lift" if run_id is not None else f"team_lift_{seed}"
+                ),
                 "git_sha": get_git_sha(),
                 "leaf_map": leaf_map,
             },
@@ -1102,7 +1122,8 @@ def _session_end_auto_lift(
 
 
 def _library_upsert_team(candidates, *, seed, mining_df, ctx, profile, data_window,
-                         eval_start, index_path, library_root, top_k, horizon) -> None:
+                         eval_start, index_path, library_root, top_k, horizon,
+                         run_id: str | None = None) -> None:
     """M5/M6 收尾把最终 passed 候选 upsert 进因子库。全 try/except 兜底，A股零回归底线。"""
     from datetime import date
 
@@ -1124,7 +1145,9 @@ def _library_upsert_team(candidates, *, seed, mining_df, ctx, profile, data_wind
 
         _fl.upsert(
             market, candidates, eval_window=(_start, _end), universe=dw.get("universe"),
-            horizon=horizon, run_id=f"team_{seed}", session_dir=None,
+            horizon=horizon,
+            run_id=run_id if run_id is not None else f"team_{seed}",
+            session_dir=None,
             git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
             compact_materialize=compact, leaf_map=leaf_map, root=root)
     except Exception as exc:  # 库写入失败不许影响挖掘产出（A股零回归底线）

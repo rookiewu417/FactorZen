@@ -76,14 +76,20 @@ def campaign_prior(
     start,
     end,
     exclude_run_ids: set[str] | None = None,
+    campaign_id: str | None = None,
 ) -> CampaignPrior | None:
     """从 ExperimentIndex jsonl 重建同 campaign 的历史 trial 池。
 
-    过滤：data_window 的 start/end/universe（及 market 字段若行内有）与入参匹配、
-    compile_ok 为真、ir_train 可转 float 且有限；exclude_run_ids 里的 run_id 跳过
-    （session 末调用时排除本 run——本 session 的行已被逐轮 record 写入 index，
-    不排除会双计）。按 expression 去重保首行。文件不存在/空 → None。
-    损坏行跳过不崩（与 index 现有容错一致）。
+    过滤分两支：
+    - ``campaign_id`` 非 None：按行顶层 ``campaign_id`` 精确匹配（已编码
+      market/universe/start/end/holdout/objective/horizon/gate）。缺字段的
+      legacy 行保守排除（与 index 对缺 data_window 老行一致）。
+    - ``campaign_id`` 为 None（legacy / M1）：按 data_window 的
+      start/end/universe/market 过滤；返回的 campaign_id 用全-None 算。
+
+    两支共通：compile_ok 为真、ir_train 可转 float 且有限；exclude_run_ids
+    里的 run_id 跳过（session 末排除本 run，防双计）。按 expression 去重保首行。
+    文件不存在/空 → None。损坏行跳过不崩。
     """
     path = Path(index_path)
     if not path.exists():
@@ -96,11 +102,13 @@ def campaign_prior(
     if not text.strip():
         return None
 
+    want_cid = _canon(campaign_id) if campaign_id is not None else None
     want_start = _canon(start)
     want_end = _canon(end)
     want_universe = _canon(universe)
     want_market = _canon(market)
     exclude = exclude_run_ids or set()
+    strict = want_cid is not None
 
     # 按 expression 去重保首行；同时收集 run_id
     first_ir: dict[str, float] = {}
@@ -122,17 +130,23 @@ def campaign_prior(
         if rid is not None and rid in exclude:
             continue
 
-        dw = r.get("data_window")
-        if not isinstance(dw, dict):
-            continue
-        if _canon(dw.get("start")) != want_start:
-            continue
-        if _canon(dw.get("end")) != want_end:
-            continue
-        if _canon(dw.get("universe")) != want_universe:
-            continue
-        if _canon(dw.get("market")) != want_market:
-            continue
+        if strict:
+            # 精确分族：缺 campaign_id 的旧行保守排除
+            row_cid = _canon(r.get("campaign_id"))
+            if row_cid is None or row_cid != want_cid:
+                continue
+        else:
+            dw = r.get("data_window")
+            if not isinstance(dw, dict):
+                continue
+            if _canon(dw.get("start")) != want_start:
+                continue
+            if _canon(dw.get("end")) != want_end:
+                continue
+            if _canon(dw.get("universe")) != want_universe:
+                continue
+            if _canon(dw.get("market")) != want_market:
+                continue
 
         if not r.get("compile_ok", True):
             continue
@@ -155,13 +169,19 @@ def campaign_prior(
         if rid is not None:
             run_ids.add(str(rid))
 
-    if not order:
-        # 有文件但无匹配 trial：返回空 prior（调用方仍可写 campaign_id；
-        # finalize 侧 prior.n_trials=0 与 prior=None 对 basis 等价）
+    if strict:
+        # 与 manifest 写入的完整-key campaign_id 一致（可审计重建 basis）
+        assert want_cid is not None
+        cid: str = want_cid
+    else:
         cid = campaign_key(
             market=market, universe=universe, start=start, end=end,
             holdout_ratio=None, objective=None, horizon=None, gate=None,
         )
+
+    if not order:
+        # 有文件但无匹配 trial：返回空 prior（调用方仍可写 campaign_id；
+        # finalize 侧 prior.n_trials=0 与 prior=None 对 basis 等价）
         return CampaignPrior(
             campaign_id=cid,
             n_trials=0,
@@ -171,10 +191,6 @@ def campaign_prior(
             source_path=str(path),
         )
 
-    cid = campaign_key(
-        market=market, universe=universe, start=start, end=end,
-        holdout_ratio=None, objective=None, horizon=None, gate=None,
-    )
     irs = [first_ir[e] for e in order]
     return CampaignPrior(
         campaign_id=cid,

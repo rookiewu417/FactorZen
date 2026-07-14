@@ -142,6 +142,7 @@ def record(
     *,
     candidates: list[dict] | None = None,
     data_window: dict | None = None,
+    campaign_id: str | None = None,
 ) -> None:
     """把本 run 所有 AttemptRecord 写入 experiment_index。
 
@@ -152,6 +153,10 @@ def record(
 
     candidates: 可选。含 holdout_ic 的候选列表，用于归一化匹配后回填 holdout_ic 到记录，
     供 known_valid 按 |holdout_ic| 排序。
+
+    campaign_id: 完整统计问题 key（market/universe/start/end/holdout/objective/horizon/gate
+    的哈希）。写在行顶层，**不**塞进 data_window——window_key 语义是数据窗，
+    被 seen_expressions/known_invalid 等消费，不能混入 objective/horizon/gate。
     """
     # 构建 holdout_ic 查找字典（归一化匹配，Important 2）
     hic_map: dict[str, float] = {}
@@ -183,7 +188,8 @@ def record(
             "reject_reason": a.reject_reason,       # 护栏/去相关死因文案
             "reject_category": a.reject_category,   # 如 holdout_coverage → known_invalid 过滤
             "n_holdout_days": a.n_holdout_days,
-            "data_window": data_window,             # 族边界：(start,end,universe,market)
+            "data_window": data_window,             # 数据窗：(start,end,universe,market)
+            "campaign_id": campaign_id,             # 完整统计问题族（顶层，非 data_window）
             "run_id": run_id,
         }
         # 回填 holdout_ic（归一化匹配）

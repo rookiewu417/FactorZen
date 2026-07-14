@@ -145,6 +145,10 @@ class FactorRecord:
     lift_second_half: float | None = None
     # 审计：holdout 有效覆盖天数（single 轨 upsert 若调用方传入则落盘）
     holdout_n_days: int | None = None
+    # paper forward 确认（forward_review --apply 写入）：不进 schema 会被
+    # from_dict 丢弃 → 下一次 load→save 循环静默洗掉，故必须正式建字段
+    forward_confirmed_at: str | None = None
+    forward_n_days: int | None = None
     # 统计裁决原文（cap 前）："active"/"probation"；status 可能被运营护栏压到 probation
     admission_decision: str | None = None
     # 证据层级：legacy=历史入库；v2=新口径写入；None=未标注（语义≈legacy 但未落盘）

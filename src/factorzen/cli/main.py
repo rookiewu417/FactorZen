@@ -788,6 +788,90 @@ def _cmd_factor_library_tag_legacy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
+    """记录 as_of 日库内因子的 paper forward RankIC。
+
+    forward 确认窗口随真实时间累积；ops 每日链路接线为后续工作。
+    """
+    from factorzen.discovery.backtest_window import latest_data_date
+    from factorzen.discovery.factor_library import DEFAULT_ROOT
+    from factorzen.discovery.forward_track import record_forward_ics
+
+    market = args.market
+    root = getattr(args, "root", None) or DEFAULT_ROOT
+    as_of = getattr(args, "date", None)
+    if not as_of:
+        latest = latest_data_date(market)
+        if latest is None:
+            print(
+                f"[factor-library forward-track] 探测不到 {market} 最新交易日；"
+                f"请显式传 --date YYYYMMDD",
+                file=sys.stderr,
+            )
+            return 1
+        as_of = latest.strftime("%Y%m%d")
+    out = record_forward_ics(market, as_of, root=root)
+    print(
+        f"[factor-library forward-track] {market} as_of={as_of}："
+        f"recorded={out.get('recorded', 0)} "
+        f"skipped_existing={out.get('skipped_existing', 0)} "
+        f"failed={out.get('failed', 0)}"
+    )
+    return 0
+
+
+def _cmd_factor_library_forward_review(args: argparse.Namespace) -> int:
+    """裁决 probation 因子的 paper forward 证据；默认 dry-run，--apply 才写库。
+
+    forward 确认窗口随真实时间累积；ops 每日链路接线为后续工作。
+    """
+    from factorzen.discovery.factor_library import DEFAULT_ROOT
+    from factorzen.discovery.forward_track import forward_review
+
+    market = args.market
+    root = getattr(args, "root", None) or DEFAULT_ROOT
+    apply = bool(getattr(args, "apply", False))
+    rows = forward_review(
+        market,
+        root=root,
+        min_days=int(getattr(args, "min_days", 60)),
+        se_mult=float(getattr(args, "se_mult", 1.645)),
+        block_days=int(getattr(args, "block_days", 20)),
+        apply=apply,
+    )
+    print(
+        f"[factor-library forward-review] {market}："
+        f"{len(rows)} 个 probation 裁决（apply={apply}）"
+    )
+    if rows:
+        print(f"{'expression':<42} {'decision':<10} {'n':>5} {'mean':>10} {'ci_low':>10}")
+        for r in rows:
+            expr = r.get("expression") or ""
+            if len(expr) > 40:
+                expr = expr[:37] + "..."
+            mean = r.get("mean")
+            ci = r.get("ci_low")
+            mean_s = f"{mean:.4f}" if isinstance(mean, (int, float)) and mean == mean else "-"
+            ci_s = f"{ci:.4f}" if isinstance(ci, (int, float)) and ci == ci else "-"
+            print(
+                f"{expr:<42} {r.get('decision', '-'):<10} "
+                f"{r.get('n_days', 0):>5} {mean_s:>10} {ci_s:>10}"
+            )
+    if apply:
+        n_promote = sum(1 for r in rows if r.get("decision") == "promote")
+        n_demote = sum(1 for r in rows if r.get("decision") == "demote")
+        n_hold = sum(1 for r in rows if r.get("decision") == "hold")
+        print(
+            f"[factor-library forward-review] 状态转换："
+            f"promote={n_promote} demote={n_demote} hold={n_hold}"
+        )
+    else:
+        print(
+            "[factor-library forward-review] dry-run（加 --apply 写库并更新 markdown）"
+        )
+    return 0
+
+
 def _cmd_factor_library_lift_null(args: argparse.Namespace) -> int:
     """lift 统计层 null 校准：扫 se_mult×min_blocks，打印误准入率校准表。"""
     from factorzen.discovery.lift_null import (
@@ -2127,7 +2211,8 @@ def build_parser() -> argparse.ArgumentParser:
     fl = sub.add_parser(
         "factor-library",
         help="因子库登记簿（分市场·全信息·自动维护）："
-             "rebuild/list/show/render/lift-test/tag-legacy",
+             "rebuild/list/show/render/lift-test/tag-legacy/"
+             "forward-track/forward-review",
     )
     fl_sub = fl.add_subparsers(dest="factor_library_command", required=True)
 
@@ -2242,6 +2327,54 @@ def build_parser() -> argparse.ArgumentParser:
     fl_ln.add_argument("--n-sims", dest="n_sims", type=int, default=5000)
     fl_ln.add_argument("--seed", type=int, default=0)
     fl_ln.set_defaults(func=_cmd_factor_library_lift_null)
+
+    fl_ft = fl_sub.add_parser(
+        "forward-track",
+        help="记录 as_of 日库内因子 paper forward RankIC"
+             "（确认窗口随真实时间累积；ops 每日链路接线为后续工作）",
+    )
+    fl_ft.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    )
+    fl_ft.add_argument(
+        "--date", default=None,
+        help="确认日 YYYYMMDD（缺省=数据最新交易日 latest_data_date）",
+    )
+    fl_ft.add_argument(
+        "--root", default=None,
+        help="因子库根目录（默认 workspace/factor_library）",
+    )
+    fl_ft.set_defaults(func=_cmd_factor_library_forward_track)
+
+    fl_fr = fl_sub.add_parser(
+        "forward-review",
+        help="裁决 probation 因子 paper forward 证据"
+             "（确认窗口随真实时间累积；ops 每日链路接线为后续工作）",
+    )
+    fl_fr.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    )
+    fl_fr.add_argument(
+        "--min-days", dest="min_days", type=int, default=60,
+        help="最低有效 forward 天数（默认 60）",
+    )
+    fl_fr.add_argument(
+        "--se-mult", dest="se_mult", type=float, default=1.645,
+        help="块 SE 乘数（默认 1.645≈单侧 95%）",
+    )
+    fl_fr.add_argument(
+        "--block-days", dest="block_days", type=int, default=20,
+        help="块 SE 块长（交易日，默认 20）",
+    )
+    fl_fr.add_argument(
+        "--apply", dest="apply", action="store_true",
+        help="写库：promote→active / demote→no_lift（默认 dry-run 只打印）",
+    )
+    fl_fr.add_argument(
+        "--root", default=None,
+        help="因子库根目录（默认 workspace/factor_library）",
+    )
+    fl_fr.set_defaults(func=_cmd_factor_library_forward_review)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     # ── fz research ──（端到端编排：mine → 头部 passed 因子 → 循环 build → sim → report）

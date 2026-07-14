@@ -173,6 +173,9 @@ class UpsertResult:
     correlated: int = 0        # 本批被标记为 correlated 的数量
     skipped: int = 0           # 未过 library gate 被跳过的数量
     records: list[FactorRecord] = field(default_factory=list)  # 本批新增/更新的记录（含最终 status）
+    # rebuild 专用：lift 轨复审失败原因（None=未失败/无 lift 记录）。调用方（CLI）
+    # 必须检查——复审失败时旧记录已恢复，静默返回会造成「表面成功、实际跳过」。
+    lift_review_error: str | None = None
 
 
 # ── 序列化辅助 ───────────────────────────────────────────────────────────────
@@ -578,12 +581,19 @@ def upsert_lift_admissions(
     - ``upsert``：单因子裸口径 library gate + 去相关 → ``admission_track="single"``。
     - 本函数：**不走**单因子 library gate；门就是 lift 本身
       （``lift_admission`` → active / probation / reject）。落盘
-      ``admission_track="lift"``。reject 跳过不写库。
+      ``admission_track="lift"``。
+
+    reject 语义：
+    - 已有 lift 轨 ``active``/``probation`` 复测失败 → 降级 ``no_lift``
+      （对齐 rebuild preserved_lift 复审），计 ``demoted_no_lift``；
+    - 其余（新表达式 / single 轨 / 已是 no_lift 等）→ 跳过不写库，计 ``rejected``。
+      **single 轨记录绝不被 reject 改写**。
 
     已存在同 expression：更新指标与 status（保留 ``added_at``），不重复添加。
     逐行 try/except：一行坏数据不崩整批，进 ``errors`` 列表。
 
-    返回 ``{"added_active", "added_probation", "rejected", "errors"}``。
+    返回 ``{"added_active", "added_probation", "rejected", "demoted_no_lift", "errors"}``
+    （``demoted_no_lift`` 仅在发生降级时出现）。
     """
     from factorzen.discovery.lift_test import lift_admission
 
@@ -621,13 +631,40 @@ def upsert_lift_admissions(
             if not raw:
                 out["errors"].append({"index": i, "error": "missing expression"})
                 continue
-            decision = lift_admission(row, threshold=threshold, se_mult=se_mult)
-            if decision == "reject":
-                out["rejected"] += 1
-                continue
-
+            # norm/prev 提前：reject 降级路径也要查既有 lift 轨记录
             norm = _normalize(str(raw), leaf_map if isinstance(leaf_map, dict) else None)
             prev = by_expr.get(norm)
+            decision = lift_admission(row, threshold=threshold, se_mult=se_mult)
+            if decision == "reject":
+                # lift 轨 active/probation 复测失败 → 降级 no_lift（对齐 rebuild）
+                if (
+                    prev is not None
+                    and (prev.admission_track or "single") == "lift"
+                    and prev.status in ("active", "probation")
+                ):
+                    prev.status = "no_lift"
+                    prev.lift = _as_float(row.get("lift"))
+                    prev.lift_baseline = _as_float(
+                        row.get("lift_baseline", row.get("baseline"))
+                    )
+                    prev.lift_se = _as_float(row.get("lift_se"))
+                    prev.lift_first_half = _as_float(row.get("lift_first_half"))
+                    prev.lift_second_half = _as_float(row.get("lift_second_half"))
+                    if run_id is not None:
+                        prev.source_run_id = run_id
+                    if session_dir is not None:
+                        prev.source_session_dir = session_dir
+                    if git_sha is not None:
+                        prev.git_sha = git_sha
+                    prev.updated_at = now
+                    by_expr[norm] = prev
+                    dirty = True
+                    out["demoted_no_lift"] = out.get("demoted_no_lift", 0) + 1
+                else:
+                    # 无 prev / single 轨 / 已是 no_lift 等：不改写，计 rejected
+                    out["rejected"] += 1
+                continue
+
             # single 轨 active 不被 lift 批次覆盖/降级（与 rebuild 侧守卫同语义:
             # single 成员资格由裸口径 gate 管理,lift 批处理无权改写）。
             if (
@@ -1171,6 +1208,7 @@ def rebuild(
     }
     if lift_review_error is not None:
         manifest["lift_review_error"] = lift_review_error
+        res.lift_review_error = lift_review_error
     if manifest_extra:
         manifest.update(manifest_extra)
     Path(root).mkdir(parents=True, exist_ok=True)

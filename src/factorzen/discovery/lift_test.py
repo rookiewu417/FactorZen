@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from factorzen.core.stats import spearman_avg_rank
 from factorzen.discovery.guardrails import (
     DEFAULT_LIFT_THRESHOLD,
     REJECT_CATEGORY_GRAY_ZONE,
@@ -51,10 +52,9 @@ def _daily_oos_rank_ic(
     """逐日 OOS RankIC 序列，口径对齐 ``_evaluate_oos`` 的 rank_ic_mean 分量。
 
     返回 ``[trade_date, ic]``（已按 trade_date 排序；无有效日时为空表）。
-    分组守卫与 spearman 实现与 experiment._evaluate_oos 一致：
+    分组守卫与 spearman 与 experiment._evaluate_oos 一致（core.stats average-rank）：
     - 日截面 len < n_groups*2 → 跳过
-    - factor / ret 标准差 < 1e-12 → 跳过
-    - rank 相关非有限 → 跳过
+    - spearman_avg_rank 返回 None（n<2 / 常数列 / 非有限）→ 跳过
     """
     rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
     m = combined.join(rdf, on=["trade_date", "ts_code"], how="inner")
@@ -64,12 +64,8 @@ def _daily_oos_rank_ic(
             continue
         f = g["factor_value"].to_numpy().astype(float)
         r = g["ret"].to_numpy().astype(float)
-        if np.std(f) < 1e-12 or np.std(r) < 1e-12:
-            continue
-        fr = f.argsort().argsort().astype(float)
-        rr = r.argsort().argsort().astype(float)
-        ic = float(np.corrcoef(fr, rr)[0, 1])
-        if np.isfinite(ic):
+        ic = spearman_avg_rank(f, r)
+        if ic is not None:
             day_rows.append((str(_d[0]), ic))
     if not day_rows:
         return pl.DataFrame(
@@ -185,11 +181,14 @@ def lift_admission(
 ) -> str:
     """统一准入规则：返回 ``\"active\" | \"probation\" | \"reject\"``。
 
-    - lift is None → reject
-    - lift ≥ max(threshold, se_mult × (lift_se or 0)) 且 lift_second_half > 0 → active
+    - lift is None / 非有限 → reject
+    - lift_se is None / 转换失败 / 非有限（NaN、±inf）→ reject
+      （区间证据不完整，不再按 0 处理）
+    - lift ≥ max(threshold, se_mult × lift_se) 且 lift_second_half > 0 → active
     - lift ≥ 同上门槛但 second_half 为 None 或 ≤ 0 → probation
     - 否则 reject
 
+    finite lift_se（含 0.0）合法：bar = max(threshold, se_mult × se)。
     orchestrator / rebuild / CLI 三处共用此单一实现。
     """
     lift = row.get("lift")
@@ -199,13 +198,19 @@ def lift_admission(
         lift_f = float(lift)
     except (TypeError, ValueError):
         return "reject"
-    if lift_f != lift_f:  # NaN
+    if not np.isfinite(lift_f):  # NaN/±inf 与 docstring 契约一致
         return "reject"
 
     se_raw = row.get("lift_se")
-    se_val = float(se_raw) if se_raw is not None else 0.0
-    if se_val != se_val:  # NaN se → 当 0
-        se_val = 0.0
+    if se_raw is None:
+        return "reject"
+    try:
+        se_val = float(se_raw)
+    except (TypeError, ValueError):
+        return "reject"
+    # SE 非有限 = 区间证据不完整 → reject（不按 0 退化）
+    if not np.isfinite(se_val):
+        return "reject"
     bar = max(float(threshold), float(se_mult) * se_val)
     if lift_f < bar:
         return "reject"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -387,27 +388,66 @@ def _run_one_round(
     _print_rejections("mine-team", state)
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
 
-    # ⑤ Critic：看本轮候选（guardrails 已跑，含 dsr/holdout）
-    # Minor 2: 取本轮新增候选；无则构造 stub（不误杀，不取旧候选）
-    cand = new_cands[-1] if new_cands else {
-        "expression": results[-1]["expression"] if results else (exprs[0] if exprs else ""),
-        "hypothesis": hypothesis,
-        "ic_train": results[-1]["ic_train"] if results else None,
-        "ir_train": results[-1]["ir_train"] if results else None,
-        "turnover": results[-1].get("turnover") if results else None,
-    }
+    # ⑤ Critic：按 hypothesis 分组裁决（每假设一次 critique，控 LLM 成本）。
+    # Minor 2: 无本轮新增候选则构造 stub 一次 critique（不误杀、不取旧候选）。
+    # 多假设时不得整轮连坐：verdict 只回填同组 attempts，drop 只移同组候选。
+    # next_pending / rounds_log["verdict"|"reason"] 取最后一组（= 代表假设为最后批次，零回归）。
     _step("  ⑥ Critic 裁决")
-    verdict = critique(cand, llm_fn)
+    group_verdicts: list[dict] = []
+    if not new_cands:
+        cand = {
+            "expression": results[-1]["expression"] if results else (exprs[0] if exprs else ""),
+            "hypothesis": hypothesis,
+            "ic_train": results[-1]["ic_train"] if results else None,
+            "ir_train": results[-1]["ir_train"] if results else None,
+            "turnover": results[-1].get("turnover") if results else None,
+        }
+        verdict = critique(cand, llm_fn)
+        round_expr = cand.get("expression", "")
+        for a in state.attempts:
+            if a.iteration == state.iteration and a.expression == round_expr:
+                a.critic_verdict = verdict.verdict
+        group_verdicts.append({
+            "hypothesis": cand.get("hypothesis") or hypothesis,
+            "verdict": verdict.verdict,
+            "reason": verdict.reason,
+        })
+    else:
+        # 按 hypothesis 分组，保持首次出现序（cand 必有 hypothesis，见 nodes.py cand_row）
+        groups: dict[str, list[dict]] = {}
+        for c in new_cands:
+            groups.setdefault(c["hypothesis"], []).append(c)
 
-    # 回填 critic_verdict 到本轮**全部**新增候选对应的 attempt，而不只是 Critic 直接点评的
-    # 代表候选：裁决针对的是本轮的假设方向，而 new_cands 同源于一个 hypothesis。
-    # 这也是 known_valid() 判定所依赖的字段——只回填代表的话，drop 时其余候选 verdict=None，
-    # 会漏进「已验证有效」。（早先靠重置 passed_guardrails 实现连坐，见 drop 分支的说明。）
-    round_expr = cand.get("expression", "")
-    round_exprs = {c["expression"] for c in new_cands} or {round_expr}
-    for a in state.attempts:
-        if a.iteration == state.iteration and a.expression in round_exprs:
-            a.critic_verdict = verdict.verdict
+        cand = new_cands[-1]   # 占位；循环末写为最后一组代表
+        verdict = None         # type: ignore[assignment]
+        drop_exprs: set[str] = set()
+        for hyp_key, group_cands in groups.items():
+            rep = group_cands[-1]   # 该组最后一个候选为代表
+            v = critique(rep, llm_fn)
+            group_verdicts.append({
+                "hypothesis": hyp_key,
+                "verdict": v.verdict,
+                "reason": v.reason,
+            })
+            group_exprs = {c["expression"] for c in group_cands}
+            for a in state.attempts:
+                if a.iteration == state.iteration and a.expression in group_exprs:
+                    a.critic_verdict = v.verdict
+            if v.verdict == "drop":
+                drop_exprs |= group_exprs
+            cand, verdict = rep, v
+
+        # drop：按 expression 匹配且 index>=n_before 过滤重建（禁止 del [n_before:] 整段连坐）
+        # 否决回路：drop 不得进 known_valid；passed_guardrails 是不可变事实，不由 verdict 改写
+        # （见 ExperimentIndex._VETOED_VERDICTS / known_valid 读 critic_verdict）。
+        if drop_exprs:
+            state.candidates = [
+                c for i, c in enumerate(state.candidates)
+                if not (i >= n_before and c["expression"] in drop_exprs)
+            ]
+            new_cands = [c for c in new_cands if c["expression"] not in drop_exprs]
+
+    assert verdict is not None  # stub 或 groups 非空时必赋值
 
     # leaf_guidance 摘要：可复现审计（挖穿/未探索列表；None 时不落假值）
     _lg = rec.leaf_guidance
@@ -426,23 +466,15 @@ def _run_one_round(
         "hypothesis": "；".join(hyps),
         "tasks": tasks,                       # 步2 产物，实验溯源用（非 structured 轮为 []）
         "expressions": [r["expression"] for r in results],
-        "verdict": verdict.verdict,
+        "verdict": verdict.verdict,           # 最后一组（消费方零回归）
         "reason": verdict.reason,
+        "verdicts": group_verdicts,           # 全组按组序，审计用
         "leaf_guidance": _lg_summary,
     })
 
-    # verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
+    # 最后一组 verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
+    # drop 的 candidates/new_cands 清理已在分组循环完成；stub 无新增候选可删。
     if verdict.verdict == "drop":
-        del state.candidates[n_before:]                    # Important 1: 移除本轮新增候选
-        # 否决回路（原 commit 1e0bda4）：drop 的候选不得被 known_valid() 当作「已验证有效」
-        # 喂给后续轮次/session 的假设生成。
-        #
-        # 早先的实现是把 AttemptRecord.passed_guardrails 重置为 False——那是**用事实字段
-        # 编码复用决策**：该因子确实过了全部定量护栏，标成 passed=False 会让它落进
-        # known_invalid 被当作「已验证无效」，同样是污染，只是方向相反。
-        # 现在 passed_guardrails 是不可变的事实，否决由 known_valid() 读 verdict 完成
-        # （见 ExperimentIndex._VETOED_VERDICTS）。语义不变，契约自洽。
-        new_cands = []          # 不再回填 holdout_ic 等"已验证"字段（Librarian 写入用）
         next_pending = None
     elif verdict.verdict == "revise_expr":
         # 定位代表候选所属假设 + 该假设的表达式集（多假设时归位到正确批次；
@@ -900,10 +932,16 @@ def _session_end_auto_lift(
 
         g_lift = group.get("lift")
         g_se = group.get("lift_se")
-        se_val = float(g_se) if g_se is not None and g_se == g_se else 0.0
+        # SE 缺失/非有限 = 区间证据不完整 → 组门不过（与 lift_admission 同契约，
+        # 不再按 0 处理——那会把「无 SE」当「零方差」，bar 退化为裸 threshold 偏宽）
+        if isinstance(g_se, (int, float)) and math.isfinite(float(g_se)):
+            se_finite, se_val = True, float(g_se)
+        else:
+            se_finite, se_val = False, 0.0
         bar = max(float(DEFAULT_LIFT_THRESHOLD), float(lift_se_mult) * se_val)
         group_ok = (
-            g_lift is not None
+            se_finite
+            and g_lift is not None
             and g_lift == g_lift
             and float(g_lift) >= bar
             and not group.get("error")

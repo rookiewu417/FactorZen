@@ -14,6 +14,8 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
+from factorzen.core.stats import spearman_avg_rank
+
 # IC 缓存: {factor_name: (dates_sorted list[str], ic ndarray)}
 IcCache = dict[str, tuple[list[str], np.ndarray]]
 
@@ -38,15 +40,10 @@ def _zscore_factor(df: pl.DataFrame, col: str = "factor_value") -> pl.DataFrame:
 
 
 def _rank_ic_numpy(fv: np.ndarray, rv: np.ndarray) -> float | None:
-    """单日 RankIC: Pearson(rank(f), rank(r)), 与历史 argsort 口径一致。"""
+    """单日 RankIC: average-rank Spearman（core.stats）；截面 n<10 跳过。"""
     if fv.size < 10:
         return None
-    if float(np.std(fv)) < 1e-12 or float(np.std(rv)) < 1e-12:
-        return None
-    fv_rank = fv.argsort().argsort().astype(float)
-    rv_rank = rv.argsort().argsort().astype(float)
-    ic = float(np.corrcoef(fv_rank, rv_rank)[0, 1])
-    return ic if np.isfinite(ic) else None
+    return spearman_avg_rank(fv, rv)
 
 
 def _compute_ic_dated(

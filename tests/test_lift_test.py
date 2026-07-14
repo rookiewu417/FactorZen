@@ -351,10 +351,14 @@ def test_lift_admission_four_branches():
     assert lift_admission({
         "lift": 0.003, "lift_se": 0.0, "lift_second_half": 0.0,
     }, threshold=thr) == "probation"
-    # second_half None → probation
+    # second_half None + 有限 SE → probation
+    assert lift_admission({
+        "lift": 0.003, "lift_se": 0.0, "lift_second_half": None,
+    }, threshold=thr) == "probation"
+    # SE 缺失/非有限 = 区间证据不完整 → reject（不再按 0 退化）
     assert lift_admission({
         "lift": 0.003, "lift_se": None, "lift_second_half": None,
-    }, threshold=thr) == "probation"
+    }, threshold=thr) == "reject"
     # 4) lift None / 低于阈值 → reject
     assert lift_admission({"lift": None}, threshold=thr) == "reject"
     assert lift_admission({

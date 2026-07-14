@@ -654,6 +654,14 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
                      compact_materialize=compact_materialize,
                      git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
                      leaf_map=leaf_map, decorr_threshold=args.decorr_threshold)
+    # lift 轨复审失败时 rebuild 已恢复旧记录；CLI 必须 fail-loudly，禁止「表面成功」
+    if res.lift_review_error is not None:
+        print(
+            f"[factor-library] lift 轨复审失败：{res.lift_review_error}"
+            f"（旧 lift 记录已恢复，本次 rebuild 不完整）",
+            file=sys.stderr,
+        )
+        return 1
     print(f"[factor-library] {market} rebuild：新增 {res.added} / 更新 {res.updated} / "
           f"标记 correlated {res.correlated} / 跳过 {res.skipped}（窗口 {start}–{end}）")
     print(f"[factor-library] → workspace/factor_library/{market}.jsonl + {market}.md")
@@ -707,7 +715,7 @@ def _cmd_factor_library_render(args: argparse.Namespace) -> int:
 
 
 def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
-    """灰区/lift 队列候选 → 组合 OOS lift 实验 → lift_admission 入库（非 dry-run）。"""
+    """灰区/lift 队列候选 → 组合 OOS lift 实验；默认 dry-run，--apply 才入库。"""
     import json
     from datetime import date
     from pathlib import Path
@@ -797,7 +805,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             f"{expr:40s}  {ls:>8s}  {ses:>8s}  {shs:>8s}  {bs:>8s}  {r.get('passed')}"
         )
 
-    dry_run = bool(getattr(args, "dry_run", False))
+    # 默认 dry-run；仅 --apply 才写库（--dry-run 为兼容旗标，与 --apply 互斥）
+    dry_run = not bool(getattr(args, "apply", False))
     admissions = None
     if results and not dry_run:
         # apply 路径：lift_admission + upsert_lift_admissions（延迟导入，契约同任务 D）
@@ -828,7 +837,9 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         )
     elif dry_run:
         n_pass = sum(1 for r in results if r.get("passed"))
-        print(f"[factor-library lift-test] dry-run：通过 {n_pass} 个，不写库")
+        print(
+            f"[factor-library lift-test] dry-run：通过 {n_pass} 个，不写库（加 --apply 写库）"
+        )
     else:
         print("[factor-library lift-test] 无结果行")
 
@@ -1970,8 +1981,19 @@ def build_parser() -> argparse.ArgumentParser:
     fl_lt.add_argument("--seed", type=int, default=0)
     fl_lt.add_argument("--library-root", dest="library_root", default=None,
                        help="因子库根目录（默认 workspace/factor_library）")
-    fl_lt.add_argument("--dry-run", dest="dry_run", action="store_true",
-                       help="只跑实验不写库")
+    fl_lt_write = fl_lt.add_mutually_exclusive_group()
+    fl_lt_write.add_argument(
+        "--apply", dest="apply", action="store_true",
+        help="将通过的候选写入因子库（默认 dry-run 只打印）",
+    )
+    fl_lt_write.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="只打印不写库（当前已是默认行为，保留为兼容旗标）",
+    )
+    fl_lt.add_argument(
+        "--se-mult", dest="se_mult", type=float, default=1.0,
+        help="lift 准入 SE 乘数（默认 1.0：lift ≥ max(threshold, se_mult×SE)）",
+    )
     fl_lt.add_argument("--top-n", dest="top_n", type=int, default=50,
                        help="crypto/futures/us universe size")
     fl_lt.add_argument("--symbols", default=None)

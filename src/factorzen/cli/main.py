@@ -620,10 +620,14 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
 
 def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     from datetime import date
+    from datetime import datetime as _dt
+
+    import polars as pl
 
     from factorzen.core.experiment import get_git_sha
     from factorzen.discovery import factor_library as fl
     from factorzen.discovery.backtest_window import default_window
+    from factorzen.validation.holdout import split_holdout
 
     market = args.market
     # 窗口：显式 --start/--end 覆盖，否则默认窗口（最近约 6 年滚动到数据最新端）
@@ -649,11 +653,25 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     evaluate, compact_materialize = fl.build_library_evaluator(
         daily, holdout_ratio=args.holdout_ratio, eval_start=start, leaf_map=leaf_map,
         profile=profile)
-    res = fl.rebuild(market, sources=sources, eval_window=(start, end), universe=args.universe,
-                     horizon=args.horizon, evaluate=evaluate,
-                     compact_materialize=compact_materialize,
-                     git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
-                     leaf_map=leaf_map, decorr_threshold=args.decorr_threshold)
+    # lift 复审评分窗 = single 轨 evaluator 的 holdout 尾段（同 split_holdout 口径）
+    # build_library_evaluator 内部：sample = prepped[trade_date>=eval_start] 再 split；
+    # prep 不改 trade_date 集合，这里对 daily 同边界切分即可复用同一 holdout 起止。
+    es_date = _dt.strptime(start, "%Y%m%d").date() if start else None
+    sample = daily if es_date is None else daily.filter(pl.col("trade_date") >= es_date)
+    _, holdout_df, holdout_start = split_holdout(
+        sample, holdout_ratio=float(args.holdout_ratio),
+    )
+    lift_adm_start = _lift_admission_str(holdout_start)
+    lift_adm_end = _lift_admission_str(holdout_df["trade_date"].max())
+    res = fl.rebuild(
+        market, sources=sources, eval_window=(start, end), universe=args.universe,
+        horizon=args.horizon, evaluate=evaluate,
+        compact_materialize=compact_materialize,
+        git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
+        leaf_map=leaf_map, decorr_threshold=args.decorr_threshold,
+        daily=daily, profile=profile,
+        admission_start=lift_adm_start, admission_end=lift_adm_end,
+    )
     # lift 轨复审失败时 rebuild 已恢复旧记录；CLI 必须 fail-loudly，禁止「表面成功」
     if res.lift_review_error is not None:
         print(
@@ -714,6 +732,55 @@ def _cmd_factor_library_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_factor_library_tag_legacy(args: argparse.Namespace) -> int:
+    """把 evidence_tier 为 None 的记录落盘标 legacy（幂等，不改 status）。"""
+    from factorzen.discovery import factor_library as fl
+
+    market = args.market
+    root = getattr(args, "root", None) or fl.DEFAULT_ROOT
+    out = fl.tag_legacy_records(market, root=root)
+    print(
+        f"[factor-library tag-legacy] {market}：标记 legacy {out['tagged']} 条"
+        f"（库合计 {out['total']}，已有 tier 不动；不改 status）"
+    )
+    return 0
+
+
+def _lift_admission_str(v) -> str | None:
+    """边界日期 → admission 窗字符串（对齐 polars Date→Utf8 的 YYYY-MM-DD）。"""
+    if v is None:
+        return None
+    if hasattr(v, "strftime"):
+        return v.strftime("%Y-%m-%d")
+    s = str(v).strip().replace("/", "-")
+    if len(s) == 8 and s.isdigit():
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    if len(s) >= 10 and s[4] == "-":
+        return s[:10]
+    return s
+
+
+def _holdout_bounds_from_manifest(man: dict) -> tuple[str | None, str | None]:
+    """从 session manifest 抽 holdout 评分窗边界。
+
+    侦察结论：
+    - mining_session：顶层 ``holdout_start``（``str(date)``，常为 YYYY-MM-DD）
+    - mine_team / mine-agent：当前**不落** holdout_start，仅 params 有
+      holdout_ratio / start / end / eval_start——无交易日历时无法反推切点，
+      故只认显式 holdout 字段（顶层或 params.holdout_start）。
+    - end：params.end / end / mining_end（多 session 取最晚）
+    """
+    start = man.get("holdout_start")
+    if start is None:
+        params = man.get("params") or {}
+        start = params.get("holdout_start")
+    end = man.get("holdout_end") or man.get("mining_end") or man.get("end")
+    if end is None:
+        params = man.get("params") or {}
+        end = params.get("end") or params.get("eval_end")
+    return _lift_admission_str(start), _lift_admission_str(end)
+
+
 def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     """灰区/lift 队列候选 → 组合 OOS lift 实验；默认 dry-run，--apply 才入库。"""
     import json
@@ -724,8 +791,11 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     from factorzen.discovery import factor_library as fl
     from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
     from factorzen.discovery.lift_test import (
+        DEFAULT_HORIZON,
         DEFAULT_TOP_M,
+        LiftEvalContext,
         extract_gray_candidates_from_manifest,
+        make_lift_context,
         run_lift_tests,
     )
 
@@ -735,6 +805,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         return 2
 
     gray: list[dict] = []
+    man_starts: list[str] = []
+    man_ends: list[str] = []
     for s in sessions:
         man_path = Path(s) / "manifest.json"
         if not man_path.is_file():
@@ -746,6 +818,11 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             print(f"[factor-library lift-test] 读 manifest 失败 {s}: {exc}", file=sys.stderr)
             continue
         gray.extend(extract_gray_candidates_from_manifest(man))
+        hs, he = _holdout_bounds_from_manifest(man)
+        if hs is not None:
+            man_starts.append(hs)
+        if he is not None:
+            man_ends.append(he)
 
     # 跨 session 按 expression 去重（保留首次）
     seen: set[str] = set()
@@ -775,6 +852,48 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     top_m = getattr(args, "top_m", None) or DEFAULT_TOP_M
     seed = getattr(args, "seed", 0) or 0
 
+    # admission 窗：旗标覆盖 > manifest holdout 边界（多 session 取最早 start / 最晚 end）
+    flag_start = getattr(args, "admission_start", None)
+    flag_end = getattr(args, "admission_end", None)
+    man_start = min(man_starts) if man_starts else None
+    man_end = max(man_ends) if man_ends else _lift_admission_str(getattr(args, "end", None))
+    adm_start = (
+        _lift_admission_str(flag_start) if flag_start is not None else man_start
+    )
+    adm_end = (
+        _lift_admission_str(flag_end) if flag_end is not None else man_end
+    )
+    if adm_start is None and flag_start is None and not man_starts:
+        # 无旗标、manifest 也无 holdout 起点 → 不裁评分窗
+        adm_end = None if flag_end is None else adm_end
+        print(
+            "[factor-library lift-test] 警告：lift 评分未裁剪到 holdout 窗（无独立性保证）",
+            file=sys.stderr,
+        )
+
+    # 统一 ctx：prep 一次；极简 mock 帧缺列时退回手造 ctx（仍透传 admission 窗）
+    try:
+        lift_ctx = make_lift_context(
+            market, daily,
+            profile=profile,
+            leaf_map=leaf_map,
+            horizon=DEFAULT_HORIZON,
+            admission_start=adm_start,
+            admission_end=adm_end,
+            library_root=lib_root,
+        )
+    except Exception:
+        lift_ctx = LiftEvalContext(
+            market=market,
+            prepped=daily.sort(["ts_code", "trade_date"]) if daily.height else daily,
+            leaf_map=leaf_map,
+            horizon=DEFAULT_HORIZON,
+            admission_start=adm_start,
+            admission_end=adm_end,
+            library_root=lib_root,
+            profile_name=getattr(profile, "name", None) if profile is not None else None,
+        )
+
     results = run_lift_tests(
         uniq_gray,
         market=market,
@@ -784,9 +903,15 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         top_m=top_m,
         threshold=threshold,
         seed=seed,
+        ctx=lift_ctx,
     )
 
-    # 打印表（含 lift_se / second_half）
+    # 打印表（含 lift_se / second_half）+ admission 窗说明
+    print(
+        f"[factor-library lift-test] admission 窗："
+        f"{lift_ctx.admission_start or '—'} ~ {lift_ctx.admission_end or '—'} "
+        f"（horizon={lift_ctx.horizon}）"
+    )
     print(
         f"{'expression':40s}  {'lift':>8s}  {'lift_se':>8s}  {'2nd_half':>8s}  "
         f"{'baseline':>8s}  passed"
@@ -820,7 +945,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 "eval_start": args.start,
                 "eval_end": args.end,
                 "universe": getattr(args, "universe", None),
-                "horizon": 5,
+                "horizon": lift_ctx.horizon,
                 "run_id": f"lift_{date.today().isoformat()}",
                 "session_dir": ",".join(sessions),
                 "git_sha": get_git_sha(),
@@ -829,11 +954,17 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             },
             threshold=threshold,
             se_mult=float(getattr(args, "se_mult", 1.0) or 1.0),
+            allow_active=bool(getattr(args, "allow_active", False)),
         )
         print(
             f"[factor-library lift-test] 入库：added_active={admissions.get('added_active', 0)} "
             f"added_probation={admissions.get('added_probation', 0)} "
             f"rejected={admissions.get('rejected', 0)}"
+            + (
+                f" capped_active={admissions.get('capped_active', 0)}"
+                if admissions.get("capped_active")
+                else ""
+            )
         )
     elif dry_run:
         n_pass = sum(1 for r in results if r.get("passed"))
@@ -852,6 +983,9 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         "threshold": threshold,
         "top_m": top_m,
         "seed": seed,
+        "admission_start": lift_ctx.admission_start,
+        "admission_end": lift_ctx.admission_end,
+        "horizon": lift_ctx.horizon,
         "n_gray_input": len(uniq_gray),
         "n_tested": len(results),
         "n_passed": sum(1 for r in results if r.get("passed")),
@@ -1927,8 +2061,11 @@ def build_parser() -> argparse.ArgumentParser:
     m_team.set_defaults(func=_cmd_mine_team)
 
     # ── fz factor-library ──（分市场因子登记簿：rebuild / list / show / render）
-    fl = sub.add_parser("factor-library",
-                        help="因子库登记簿（分市场·全信息·自动维护）：rebuild/list/show/render/lift-test")
+    fl = sub.add_parser(
+        "factor-library",
+        help="因子库登记簿（分市场·全信息·自动维护）："
+             "rebuild/list/show/render/lift-test/tag-legacy",
+    )
     fl_sub = fl.add_subparsers(dest="factor_library_command", required=True)
 
     fl_rb = fl_sub.add_parser("rebuild",
@@ -1994,11 +2131,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--se-mult", dest="se_mult", type=float, default=1.0,
         help="lift 准入 SE 乘数（默认 1.0：lift ≥ max(threshold, se_mult×SE)）",
     )
+    fl_lt.add_argument(
+        "--allow-active", dest="allow_active", action="store_true",
+        help="允许 lift 裁决直接写 active（默认封顶 probation，待校准）",
+    )
+    fl_lt.add_argument(
+        "--admission-start", dest="admission_start", default=None,
+        help="lift 评分窗起点 YYYYMMDD（覆盖 session manifest holdout 推导）",
+    )
+    fl_lt.add_argument(
+        "--admission-end", dest="admission_end", default=None,
+        help="lift 评分窗终点 YYYYMMDD（覆盖 session manifest holdout 推导）",
+    )
     fl_lt.add_argument("--top-n", dest="top_n", type=int, default=50,
                        help="crypto/futures/us universe size")
     fl_lt.add_argument("--symbols", default=None)
     _add_freq_arg(fl_lt)
     fl_lt.set_defaults(func=_cmd_factor_library_lift_test)
+
+    fl_tl = fl_sub.add_parser(
+        "tag-legacy",
+        help="把 evidence_tier 为 None 的记录标为 legacy（幂等，不改 status）",
+    )
+    fl_tl.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    )
+    fl_tl.add_argument(
+        "--root", default=None,
+        help="因子库根目录（默认 workspace/factor_library）",
+    )
+    fl_tl.set_defaults(func=_cmd_factor_library_tag_legacy)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     # ── fz research ──（端到端编排：mine → 头部 passed 因子 → 循环 build → sim → report）

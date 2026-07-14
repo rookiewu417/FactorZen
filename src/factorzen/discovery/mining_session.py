@@ -56,14 +56,25 @@ _LOG = logging.getLogger(__name__)
 
 
 def _factor_values(node, daily: pl.DataFrame, eval_start=None, leaf_map=None) -> pl.DataFrame:
+    """物化因子值并裁到评估截面。
+
+    先在整帧（含预热/非成分日）上求值——滚动算子需要连续时序；再按 eval_start 裁剪。
+    若 daily 含 ``in_universe`` 列，评估截面只保留成分内行（列不存在=未启用 membership，零回归）。
+    """
     df = daily.sort(["ts_code", "trade_date"])
     df = df.with_columns(
         evaluate_materialized(node, df, leaf_map).alias("factor_value"))
-    out = df.select(["trade_date", "ts_code", "factor_value"]).filter(
+    cols = ["trade_date", "ts_code", "factor_value"]
+    has_univ = "in_universe" in df.columns
+    if has_univ:
+        cols = [*cols, "in_universe"]
+    out = df.select(cols).filter(
         pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
     if eval_start is not None:
         from factorzen.discovery.scoring import _cut_literal
         out = out.filter(pl.col("trade_date") >= _cut_literal(out, eval_start))
+    if has_univ:
+        out = out.filter(pl.col("in_universe")).drop("in_universe")
     return out
 
 

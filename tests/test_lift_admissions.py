@@ -74,8 +74,10 @@ def test_upsert_lift_admissions_three_states(tmp_path):
         # lift 过低 → reject
         _lift_row("rank(vol)", lift=0.0001, lift_se=0.0, lift_second_half=0.01),
     ]
+    # allow_active=True：测 lift_admission 三态 decision→status 映射（默认 cap 见 test_lift_probation_cap）
     out = upsert_lift_admissions(
         rows, market="ashare", root=str(tmp_path), meta=_meta(),
+        allow_active=True,
     )
     assert out["added_active"] == 1
     assert out["added_probation"] == 1
@@ -116,6 +118,7 @@ def test_upsert_lift_admissions_bad_row_tolerant(tmp_path):
     ]
     out = upsert_lift_admissions(
         rows, market="ashare", root=str(tmp_path), meta=_meta(),
+        allow_active=True,
     )
     assert out["added_active"] == 1
     assert len(out["errors"]) == 2

@@ -8,10 +8,21 @@ team session 末钩子批处理。
 - 每日 OOS RankIC 与 ``combination.experiment._evaluate_oos`` 的逐日 spearman 一致；
 - lift = 配对日 (cand_ic − base_ic) 均值；SE 用 block 均值的样本标准差 / √n_blocks
   （对冲 5 日前向收益重叠导致的日间自相关）。
+
+评估上下文（``LiftEvalContext`` / ``make_lift_context``）：
+- 统一对 daily **预处理恰好一次**（含 profile），baseline 物化与 candidate
+  materializer 共用同一 ``prepped`` 帧——消除「active 未 prep / candidate 自 prep
+  且不传 profile」的不对称。
+- **评分窗 ≠ 建模窗**：combine / CV 仍在全帧滚动（walk-forward 可用窗前数据）；
+  仅对日 IC 序列按 ``admission_start`` / ``admission_end`` 裁剪后做配对统计。
+- ``admission_start=None``（默认）→ 不裁评分窗，向后兼容逃生口；
+  ``admission_end=None`` → 裁到帧尾。
+- ``horizon`` 显式写入 ctx 与结果行，不再隐式依赖 ``DEFAULT_HORIZON``。
 """
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -47,7 +58,12 @@ def _rank_ic_key(c: dict) -> float:
 
 
 def _daily_oos_rank_ic(
-    combined: pl.DataFrame, ret_df: pl.DataFrame, n_groups: int = 5
+    combined: pl.DataFrame,
+    ret_df: pl.DataFrame,
+    n_groups: int = 5,
+    *,
+    start: str | None = None,
+    end: str | None = None,
 ) -> pl.DataFrame:
     """逐日 OOS RankIC 序列，口径对齐 ``_evaluate_oos`` 的 rank_ic_mean 分量。
 
@@ -55,6 +71,9 @@ def _daily_oos_rank_ic(
     分组守卫与 spearman 与 experiment._evaluate_oos 一致（core.stats average-rank）：
     - 日截面 len < n_groups*2 → 跳过
     - spearman_avg_rank 返回 None（n<2 / 常数列 / 非有限）→ 跳过
+
+    ``start`` / ``end``：评分窗闭区间裁剪（trade_date 字符串比较，YYYYMMDD 安全）；
+    None 表示不裁该端。模型层（combine/CV）不经此裁剪——只影响返回的日 IC 序列。
     """
     rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
     m = combined.join(rdf, on=["trade_date", "ts_code"], how="inner")
@@ -72,9 +91,98 @@ def _daily_oos_rank_ic(
             schema={"trade_date": pl.Utf8, "ic": pl.Float64},
         )
     day_rows.sort(key=lambda x: x[0])
-    return pl.DataFrame(
+    out = pl.DataFrame(
         {"trade_date": [d for d, _ in day_rows], "ic": [ic for _, ic in day_rows]},
         schema={"trade_date": pl.Utf8, "ic": pl.Float64},
+    )
+    if start is not None:
+        out = out.filter(pl.col("trade_date") >= start)
+    if end is not None:
+        out = out.filter(pl.col("trade_date") <= end)
+    return out
+
+
+def _scored_bounds(
+    cand_daily: pl.DataFrame, base_daily: pl.DataFrame,
+) -> tuple[str | None, str | None]:
+    """配对日实际 min/max trade_date；无有效配对 → (None, None)。"""
+    if cand_daily is None or base_daily is None:
+        return None, None
+    if cand_daily.is_empty() or base_daily.is_empty():
+        return None, None
+    c = cand_daily.select(pl.col("trade_date").cast(pl.Utf8))
+    b = base_daily.select(pl.col("trade_date").cast(pl.Utf8))
+    joined = c.join(b, on="trade_date", how="inner")
+    if joined.is_empty():
+        return None, None
+    dates = joined["trade_date"].sort()
+    return str(dates[0]), str(dates[-1])
+
+
+def _provenance_fields(
+    *,
+    admission_start: str | None,
+    admission_end: str | None,
+    scored_start: str | None,
+    scored_end: str | None,
+    horizon: int,
+) -> dict[str, Any]:
+    return {
+        "admission_start": admission_start,
+        "admission_end": admission_end,
+        "scored_start": scored_start,
+        "scored_end": scored_end,
+        "horizon": horizon,
+    }
+
+
+@dataclass
+class LiftEvalContext:
+    """统一 lift 评估上下文：一次 prep、显式 horizon、可选 admission 评分窗。
+
+    - ``prepped``：已预处理帧（可含预热前缀）；物化 / 建模用全帧。
+    - ``admission_start`` / ``admission_end``：仅裁**评分**日 IC（None=不裁 / 至帧尾）。
+    - ``profile_name``：provenance；profile 对象不进 ctx（防序列化坑）。
+    """
+
+    market: str
+    prepped: pl.DataFrame
+    leaf_map: dict[str, str] | None
+    horizon: int
+    admission_start: str | None
+    admission_end: str | None
+    library_root: str = "workspace/factor_library"
+    profile_name: str | None = None
+
+
+def make_lift_context(
+    market: str,
+    daily: pl.DataFrame,
+    *,
+    profile=None,
+    leaf_map: dict[str, str] | None = None,
+    horizon: int = DEFAULT_HORIZON,
+    admission_start: str | None = None,
+    admission_end: str | None = None,
+    library_root: str = "workspace/factor_library",
+) -> LiftEvalContext:
+    """构造 ``LiftEvalContext``：``_preprocess_daily(daily, profile)`` 恰好一次并 sort。
+
+    baseline 与 candidate 此后共用同一 ``prepped``（对称性的根）。
+    """
+    from factorzen.agents.evaluation import _preprocess_daily
+
+    prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
+    profile_name = getattr(profile, "name", None) if profile is not None else None
+    return LiftEvalContext(
+        market=market,
+        prepped=prepped,
+        leaf_map=leaf_map,
+        horizon=int(horizon),
+        admission_start=admission_start,
+        admission_end=admission_end,
+        library_root=library_root,
+        profile_name=profile_name,
     )
 
 
@@ -260,8 +368,9 @@ def run_lift_tests(
     ret_df: pl.DataFrame | None = None,
     materialize_candidate=None,
     combine_fn=None,
-    horizon: int = DEFAULT_HORIZON,
+    horizon: int | None = None,
     block_days: int = DEFAULT_BLOCK_DAYS,
+    ctx: LiftEvalContext | None = None,
 ) -> list[dict]:
     """对灰区/lift 队列候选跑 lgbm 组合 OOS lift 实验。
 
@@ -272,8 +381,15 @@ def run_lift_tests(
     - ``lift ≥ threshold`` → passed（最终 active/probation/reject 见 ``lift_admission``）。
     - 逐候选 try/except：一个坏候选不崩整批。
 
+    ``ctx``（``LiftEvalContext``，可选）：
+    - 缺省时从 ctx 派生 ``active_factor_dfs`` / ``ret_df`` / ``materialize_candidate`` /
+      ``horizon``（**显式注入优先于 ctx**——现有 mock 契约不破）。
+    - 评分窗：``_daily_oos_rank_ic`` 透传 ``ctx.admission_start/end``；
+      combine/CV **不裁**（评分窗 ≠ 建模窗）。``admission_start=None`` → 不裁。
+    - ``ctx=None`` → 现状路径零回归。
+
     测试可注入 ``active_factor_dfs`` / ``ret_df`` / ``combine_fn`` / ``materialize_candidate``
-    做离线 mock；生产路径走 ``build_library_pool`` + 表达式物化 + horizon 前向收益。
+    做离线 mock；生产路径走 ``make_lift_context`` + ``build_library_pool`` + 表达式物化。
     """
     from factorzen.research.combination.cv import PurgedWalkForwardCV
     from factorzen.research.combination.models import combine_lgbm
@@ -285,6 +401,14 @@ def run_lift_tests(
     else:
         selected = ordered[: max(0, int(top_m))]
     truncated = n_input - len(selected)
+
+    # horizon / admission：显式优先，否则 ctx，再否则默认
+    _horizon = (
+        int(horizon) if horizon is not None
+        else (ctx.horizon if ctx is not None else DEFAULT_HORIZON)
+    )
+    adm_start = ctx.admission_start if ctx is not None else None
+    adm_end = ctx.admission_end if ctx is not None else None
 
     cv_kw: dict[str, Any] = {
         "train_days": 120,
@@ -306,14 +430,27 @@ def run_lift_tests(
         "n_input": n_input,
         "threshold": threshold,
     }
+    prov_empty = _provenance_fields(
+        admission_start=adm_start,
+        admission_end=adm_end,
+        scored_start=None,
+        scored_end=None,
+        horizon=_horizon,
+    )
 
-    # ── 物化：active 面板 + 收益 ────────────────────────────────────────────
+    # ── 物化：active 面板 + 收益（ctx 派生；显式注入优先） ─────────────────
     if active_factor_dfs is None:
         from factorzen.discovery.factor_library import build_library_pool
 
-        active_factor_dfs = build_library_pool(
-            market, daily, leaf_map, root=library_root, statuses=("active",),
-        )
+        if ctx is not None:
+            active_factor_dfs = build_library_pool(
+                ctx.market, ctx.prepped, ctx.leaf_map,
+                root=ctx.library_root, statuses=("active",),
+            )
+        else:
+            active_factor_dfs = build_library_pool(
+                market, daily, leaf_map, root=library_root, statuses=("active",),
+            )
     if not active_factor_dfs:
         _LOG.warning("lift_test: 库内无 active 因子，无法跑基线；全部判不过")
         return [
@@ -326,20 +463,29 @@ def run_lift_tests(
                 "error": "empty_active_library",
                 **_empty_lift_fields(),
                 **meta,
+                **prov_empty,
             }
             for c in selected
         ]
 
     if ret_df is None:
-        ret_df = _build_ret_panel(daily, horizon=horizon)
+        ret_src = ctx.prepped if ctx is not None else daily
+        ret_df = _build_ret_panel(ret_src, horizon=_horizon)
 
     if materialize_candidate is None:
-        materialize_candidate = _default_materializer(daily, leaf_map)
+        if ctx is not None:
+            materialize_candidate = _materializer_from_prepped(
+                ctx.prepped, ctx.leaf_map,
+            )
+        else:
+            materialize_candidate = _default_materializer(daily, leaf_map)
 
-    # ── 基线一次（每日序列复用） ────────────────────────────────────────────
+    # ── 基线一次（每日序列复用；评分窗裁剪仅作用于日 IC） ─────────────────
     try:
         base_combined = _combine(_with_safe_feature_names(active_factor_dfs), ret_df, cv)
-        base_daily = _daily_oos_rank_ic(base_combined, ret_df)
+        base_daily = _daily_oos_rank_ic(
+            base_combined, ret_df, start=adm_start, end=adm_end,
+        )
         baseline = _mean_ic(base_daily)
     except Exception as exc:
         _LOG.warning("lift_test baseline 失败: %s: %s", type(exc).__name__, exc)
@@ -354,6 +500,7 @@ def run_lift_tests(
                 **_empty_lift_fields(),
                 **{k: v for k, v in meta.items() if k != "threshold"},
                 "threshold": threshold,
+                **prov_empty,
             }
             for c in selected
         ]
@@ -370,6 +517,7 @@ def run_lift_tests(
             "error": None,
             **_empty_lift_fields(),
             **meta,
+            **prov_empty,
         }
         try:
             cand_df = materialize_candidate(expr) if expr else None
@@ -388,15 +536,20 @@ def run_lift_tests(
             key = str(expr)
             pool[key] = cand_df.select(["trade_date", "ts_code", "factor_value"])
             cand_combined = _combine(_with_safe_feature_names(pool), ret_df, cv)
-            cand_daily = _daily_oos_rank_ic(cand_combined, ret_df)
+            cand_daily = _daily_oos_rank_ic(
+                cand_combined, ret_df, start=adm_start, end=adm_end,
+            )
             cand_ic = _mean_ic(cand_daily)
             stats = paired_lift_stats(cand_daily, base_daily, block_days=block_days)
+            scored_s, scored_e = _scored_bounds(cand_daily, base_daily)
             row["candidate_rank_ic"] = cand_ic
             row["lift"] = stats["lift"]
             row["lift_se"] = stats["lift_se"]
             row["n_blocks"] = stats["n_blocks"]
             row["lift_first_half"] = stats["lift_first_half"]
             row["lift_second_half"] = stats["lift_second_half"]
+            row["scored_start"] = scored_s
+            row["scored_end"] = scored_e
             lift_v = stats["lift"]
             row["passed"] = bool(
                 lift_v is not None and float(lift_v) >= threshold
@@ -426,17 +579,29 @@ def run_group_lift(
     ret_df: pl.DataFrame | None = None,
     materialize_candidate=None,
     combine_fn=None,
-    horizon: int = DEFAULT_HORIZON,
+    horizon: int | None = None,
     block_days: int = DEFAULT_BLOCK_DAYS,
+    ctx: LiftEvalContext | None = None,
 ) -> dict[str, Any]:
     """整组候选一次 combine vs 基线的配对 lift 统计。
 
     全部候选一起加进 active 池 combine 一次；逐候选物化失败的跳过并记
     ``skipped``；全部物化失败返回 error 行。同样走 ``_with_safe_feature_names``。
+
+    ``ctx`` 语义同 ``run_lift_tests``：缺省参数从 ctx 派生（显式注入优先）；
+    评分窗裁日 IC、建模全帧；``ctx=None`` 零回归。结果 dict 含
+    ``admission_start/end`` / ``scored_start/end`` / ``horizon`` provenance。
     """
     del top_m  # 组测全量；保留形参兼容注入签名
     from factorzen.research.combination.cv import PurgedWalkForwardCV
     from factorzen.research.combination.models import combine_lgbm
+
+    _horizon = (
+        int(horizon) if horizon is not None
+        else (ctx.horizon if ctx is not None else DEFAULT_HORIZON)
+    )
+    adm_start = ctx.admission_start if ctx is not None else None
+    adm_end = ctx.admission_end if ctx is not None else None
 
     cv_kw: dict[str, Any] = {
         "train_days": 120,
@@ -466,22 +631,41 @@ def run_group_lift(
             "baseline": None,
             "threshold": threshold,
             "error": msg,
+            **_provenance_fields(
+                admission_start=adm_start,
+                admission_end=adm_end,
+                scored_start=None,
+                scored_end=None,
+                horizon=_horizon,
+            ),
         }
 
     if active_factor_dfs is None:
         from factorzen.discovery.factor_library import build_library_pool
 
-        active_factor_dfs = build_library_pool(
-            market, daily, leaf_map, root=library_root, statuses=("active",),
-        )
+        if ctx is not None:
+            active_factor_dfs = build_library_pool(
+                ctx.market, ctx.prepped, ctx.leaf_map,
+                root=ctx.library_root, statuses=("active",),
+            )
+        else:
+            active_factor_dfs = build_library_pool(
+                market, daily, leaf_map, root=library_root, statuses=("active",),
+            )
     if not active_factor_dfs:
         return _err("empty_active_library")
 
     if ret_df is None:
-        ret_df = _build_ret_panel(daily, horizon=horizon)
+        ret_src = ctx.prepped if ctx is not None else daily
+        ret_df = _build_ret_panel(ret_src, horizon=_horizon)
 
     if materialize_candidate is None:
-        materialize_candidate = _default_materializer(daily, leaf_map)
+        if ctx is not None:
+            materialize_candidate = _materializer_from_prepped(
+                ctx.prepped, ctx.leaf_map,
+            )
+        else:
+            materialize_candidate = _default_materializer(daily, leaf_map)
 
     skipped: list[dict[str, Any]] = []
     expressions: list[str] = []
@@ -512,11 +696,16 @@ def run_group_lift(
 
     try:
         base_combined = _combine(_with_safe_feature_names(active_factor_dfs), ret_df, cv)
-        base_daily = _daily_oos_rank_ic(base_combined, ret_df)
+        base_daily = _daily_oos_rank_ic(
+            base_combined, ret_df, start=adm_start, end=adm_end,
+        )
         baseline = _mean_ic(base_daily)
         group_combined = _combine(_with_safe_feature_names(pool), ret_df, cv)
-        group_daily = _daily_oos_rank_ic(group_combined, ret_df)
+        group_daily = _daily_oos_rank_ic(
+            group_combined, ret_df, start=adm_start, end=adm_end,
+        )
         stats = paired_lift_stats(group_daily, base_daily, block_days=block_days)
+        scored_s, scored_e = _scored_bounds(group_daily, base_daily)
     except Exception as exc:
         _LOG.warning("run_group_lift 失败: %s: %s", type(exc).__name__, exc)
         return _err(
@@ -533,6 +722,13 @@ def run_group_lift(
         "baseline": baseline,
         "threshold": threshold,
         "error": None,
+        **_provenance_fields(
+            admission_start=adm_start,
+            admission_end=adm_end,
+            scored_start=scored_s,
+            scored_end=scored_e,
+            horizon=_horizon,
+        ),
     }
 
 
@@ -551,12 +747,12 @@ def _build_ret_panel(daily: pl.DataFrame, *, horizon: int = DEFAULT_HORIZON) -> 
     )
 
 
-def _default_materializer(daily: pl.DataFrame, leaf_map: dict[str, str] | None):
-    """表达式 → 因子面板（与 build_library_pool / _factor_df_from_prepped 同路径）。"""
-    from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
+def _materializer_from_prepped(
+    prepped: pl.DataFrame, leaf_map: dict[str, str] | None,
+):
+    """表达式 → 因子面板；接收**已 prep** 帧，不再二次预处理。"""
+    from factorzen.agents.evaluation import _factor_df_from_prepped
     from factorzen.discovery.expression import parse_expr
-
-    prepped = _preprocess_daily(daily).sort(["ts_code", "trade_date"])
 
     def _mat(expr: str) -> pl.DataFrame | None:
         try:
@@ -569,6 +765,17 @@ def _default_materializer(daily: pl.DataFrame, leaf_map: dict[str, str] | None):
             return None
 
     return _mat
+
+
+def _default_materializer(daily: pl.DataFrame, leaf_map: dict[str, str] | None):
+    """表达式 → 因子面板（与 build_library_pool / _factor_df_from_prepped 同路径）。
+
+    内部 prep 后委托 ``_materializer_from_prepped``；签名/行为零回归。
+    """
+    from factorzen.agents.evaluation import _preprocess_daily
+
+    prepped = _preprocess_daily(daily).sort(["ts_code", "trade_date"])
+    return _materializer_from_prepped(prepped, leaf_map)
 
 
 def extract_gray_candidates_from_manifest(manifest: dict) -> list[dict]:
@@ -609,9 +816,11 @@ __all__ = [
     "DEFAULT_HORIZON",
     "DEFAULT_TOP_M",
     "LIFT_QUEUE_CATEGORY",
+    "LiftEvalContext",
     "extract_gray_candidates_from_manifest",
     "extract_lift_queue_from_manifest",
     "lift_admission",
+    "make_lift_context",
     "paired_lift_stats",
     "run_group_lift",
     "run_lift_tests",

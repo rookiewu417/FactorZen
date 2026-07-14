@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -29,6 +30,12 @@ from factorzen.core.loader import fetch_namechange, fetch_stock_basic
 from factorzen.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# 动态过滤池：过滤条件（停牌/涨跌停/流动性）本身逐日变化，不属于成分 membership 语义。
+# 挖掘请用基础池（all_a / csi300 / csi500 / csi800）。
+_DYNAMIC_UNIVERSES = frozenset(
+    {"daily_default", "intraday_default", "lft_default", "mft_default"}
+)
 
 
 # ══════════════════════════════════════════════════════════
@@ -334,6 +341,222 @@ def get_universe(
 
     # 不应到达此处
     return all_a
+
+
+# ══════════════════════════════════════════════════════════
+# 逐日 PIT membership（消除期末成分幸存偏差）
+# ══════════════════════════════════════════════════════════
+
+
+def _year_months_in_range(start: str, end: str) -> list[str]:
+    """返回 [start, end] 覆盖的自然月列表，格式 ``YYYYMM``。"""
+    y, m = int(start[:4]), int(start[4:6])
+    y_end, m_end = int(end[:4]), int(end[4:6])
+    out: list[str] = []
+    while (y, m) <= (y_end, m_end):
+        out.append(f"{y:04d}{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return out
+
+
+def _month_asof_date(year_month: str, start: str, end: str) -> str:
+    """某自然月用于拉取成分的 as-of 日：当月**第一天**，夹在 [start, end] 内。
+
+    PIT 取舍：``_load_index_members`` 按 ``trade_date <= as-of`` 截取已生效成分。
+    月初 as-of = 该月开盘时已生效的上次调样；月中生效的调整**滞后**到下月才反映
+    ——宁滞后勿前视（月末 as-of 会让月初交易日提前看到月中调样，是前视）。
+    """
+    asof = f"{year_month}01"
+    if asof > end:
+        asof = end
+    if asof < start:
+        asof = start
+    return asof
+
+
+def membership_hash(membership: pl.DataFrame) -> str:
+    """对 membership 表做内容 hash（排序后稳定），供 manifest 溯源。
+
+    本任务只提供 hash 函数，不做 manifest 接线（后续任务接）。
+    """
+    if membership.is_empty():
+        return hashlib.sha256(b"").hexdigest()
+    sorted_df = (
+        membership.select(["trade_date", "ts_code"])
+        .unique()
+        .sort(["trade_date", "ts_code"])
+    )
+    payload = "\n".join(f"{td}|{code}" for td, code in sorted_df.iter_rows())
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def get_universe_membership(
+    start: str,
+    end: str,
+    universe_name: str,
+) -> pl.DataFrame:
+    """逐日 PIT 成分 membership：``[trade_date(Utf8), ts_code]``。
+
+    对命名指数池（csi300/csi500/csi800）按**自然月**取 ``_load_index_members``
+    （月度 parquet 缓存命中则零网络），将该月成分展开到该月内、且落在
+    ``[start, end]`` 的全部交易日。``csi800 = csi300 ∪ csi500`` 逐月并。
+
+    ``all_a``：按 ``list_date`` / ``delist_date`` 构造上市区间后逐日展开
+    （与 ``get_universe("all_a", date)`` 的 PIT 语义一致：``list_date <= d`` 且
+    ``delist_date is null | delist_date > d``）。
+
+    动态过滤池（``daily_default`` / ``intraday_default`` 及别名）**不支持**——
+    其过滤条件（停牌/涨跌停/流动性）本身逐日变化，不属于成分 membership 语义；
+    挖掘请改用基础池。
+
+    不做的事（后续任务 / 其他路径）：
+    - manifest ``membership_hash`` 接线；
+    - lift/rebuild 消费路径的 membership（它们经 ``_prepare_agent_mining_data`` →
+      ``prepare_mining_daily`` 间接受益）；
+    - 动态过滤池的逐日语义。
+
+    Parameters
+    ----------
+    start, end : str
+        评估窗边界 ``"YYYYMMDD"``（membership 不覆盖预热段）。
+    universe_name : str
+        基础池名：``all_a`` / ``csi300`` / ``csi500`` / ``csi800``。
+
+    Returns
+    -------
+    pl.DataFrame
+        列 ``trade_date`` (Utf8 YYYYMMDD)、``ts_code``；可能为空表。
+
+    Raises
+    ------
+    ValueError
+        未知池名，或动态过滤池。
+    """
+    if universe_name in _DYNAMIC_UNIVERSES:
+        raise ValueError(
+            f"universe={universe_name!r} 是动态过滤池，不支持逐日 membership；"
+            f"挖掘请用基础池 all_a / csi300 / csi500 / csi800"
+        )
+    if universe_name not in _UNIVERSE_REGISTRY:
+        valid = ", ".join(_UNIVERSE_REGISTRY.keys())
+        raise ValueError(f"未知 universe_name: '{universe_name}'。可选: {valid}")
+
+    if start > end:
+        raise ValueError(f"start ({start}) 不能晚于 end ({end})")
+
+    if universe_name == "all_a":
+        return _membership_all_a(start, end)
+
+    if universe_name in ("csi300", "csi500", "csi800"):
+        return _membership_index(start, end, universe_name)
+
+    # 不应到达（动态池已拒）
+    raise ValueError(
+        f"universe={universe_name!r} 不支持逐日 membership；"
+        f"请用基础池 all_a / csi300 / csi500 / csi800"
+    )
+
+
+def _membership_index(start: str, end: str, universe_name: str) -> pl.DataFrame:
+    """指数池：按月拉成分 → 展开到该月交易日。"""
+    from factorzen.core.calendar import get_trade_dates
+
+    trade_dates = get_trade_dates(start, end)
+    if not trade_dates:
+        return pl.DataFrame(
+            schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8}
+        )
+
+    # 交易日按月分桶
+    by_month: dict[str, list[str]] = {}
+    for d in trade_dates:
+        ym = d.strftime("%Y%m")
+        by_month.setdefault(ym, []).append(d.strftime("%Y%m%d"))
+
+    index_names = (
+        ("csi300", "csi500") if universe_name == "csi800" else (universe_name,)
+    )
+    parts: list[pl.DataFrame] = []
+    for ym, day_strs in by_month.items():
+        asof = _month_asof_date(ym, start, end)
+        members: set[str] = set()
+        for uname in index_names:
+            code = _INDEX_CODE_MAP[uname]
+            members.update(_load_index_members(code, asof))
+        if not members:
+            continue
+        parts.append(
+            pl.DataFrame({"trade_date": day_strs}).join(
+                pl.DataFrame({"ts_code": sorted(members)}), how="cross"
+            )
+        )
+
+    if not parts:
+        return pl.DataFrame(
+            schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8}
+        )
+    return pl.concat(parts).select(["trade_date", "ts_code"]).unique()
+
+
+def _membership_all_a(start: str, end: str) -> pl.DataFrame:
+    """全 A：按 list_date / delist_date 上市区间逐日展开。
+
+    与 ``get_universe("all_a", date)`` 同口径（含退市日严格大于）。
+    若基础数据无 delist_date 列，则仅按 list_date 过滤（退市不可得时的取舍）。
+    """
+    from factorzen.core.calendar import get_trade_dates
+
+    trade_dates = get_trade_dates(start, end)
+    if not trade_dates:
+        return pl.DataFrame(
+            schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8}
+        )
+
+    basic = get_stock_basic()
+    start_d = datetime.strptime(start, "%Y%m%d").date()
+    end_d = datetime.strptime(end, "%Y%m%d").date()
+
+    # 窗口内可能在市的股票（粗滤，减小 cross join）
+    stocks = basic.filter(
+        pl.col("list_date").is_not_null()
+        & (pl.col("list_date").cast(pl.Date) <= pl.lit(end_d))
+    )
+    if "delist_date" in stocks.columns:
+        stocks = stocks.filter(
+            pl.col("delist_date").is_null()
+            | (pl.col("delist_date").cast(pl.Date) > pl.lit(start_d))
+        )
+
+    if stocks.is_empty():
+        return pl.DataFrame(
+            schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8}
+        )
+
+    td = pl.DataFrame(
+        {
+            "trade_date": [d.strftime("%Y%m%d") for d in trade_dates],
+            "_td": trade_dates,
+        }
+    )
+    sel_cols = ["ts_code", "list_date"]
+    if "delist_date" in stocks.columns:
+        sel_cols.append("delist_date")
+
+    joined = stocks.select(sel_cols).join(td, how="cross")
+    mask = pl.col("list_date").cast(pl.Date) <= pl.col("_td")
+    if "delist_date" in joined.columns:
+        mask = mask & (
+            pl.col("delist_date").is_null()
+            | (pl.col("delist_date").cast(pl.Date) > pl.col("_td"))
+        )
+    return (
+        joined.filter(mask)
+        .select(["trade_date", "ts_code"])
+        .unique()
+    )
 
 
 # ══════════════════════════════════════════════════════════

@@ -107,6 +107,127 @@ def test_csi800_is_monthly_union(patch_calendar_and_members):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 逐日 as-of PIT：查询窗无关 / 月中调样 / 跨月继承（S2）
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 6 月假交易日：含调样日 6/15 前后（6/14 OLD、6/17 NEW、6/20 查询窗反例）
+_JUN_DATES = [
+    date(2024, 6, 3),
+    date(2024, 6, 4),
+    date(2024, 6, 14),
+    date(2024, 6, 17),
+    date(2024, 6, 20),
+    date(2024, 6, 28),
+]
+_MAY_DATES = [
+    date(2024, 5, 6),
+    date(2024, 5, 10),
+    date(2024, 5, 20),
+    date(2024, 5, 31),
+]
+_MIDMONTH_TRADE_DATES = _MAY_DATES + _JUN_DATES
+
+_OLD_MEMBERS = ["OLD.SZ", "KEEP.SZ"]
+_NEW_MEMBERS = ["NEW.SZ", "KEEP.SZ"]
+_MAY_MEMBERS = ["MAY.SZ", "HOLD.SZ"]
+
+
+def _mock_trade_dates_midmonth(start: str, end: str) -> list[date]:
+    return [
+        d
+        for d in _MIDMONTH_TRADE_DATES
+        if start <= d.strftime("%Y%m%d") <= end
+    ]
+
+
+def _members_midmonth_resample(index_code: str, date_str: str) -> list[str]:
+    """模拟 6/15 调样：≤6/14 = OLD，≥6/15 = NEW；5 月有独立成分。
+
+    与真实 ``_load_index_members`` 逐日 as-of 语义对齐（含跨月继承由调用方 mock）。
+    """
+    if index_code != "000300.SH":
+        return []
+    if date_str < "20240615":
+        if date_str[:6] == "202405":
+            return list(_MAY_MEMBERS)
+        # 6 月调样前：仍是 5 月末/调样前成分（此处用 OLD 表示 6 月初已生效快照）
+        if date_str[:6] == "202406":
+            return list(_OLD_MEMBERS)
+        return list(_MAY_MEMBERS)
+    return list(_NEW_MEMBERS)
+
+
+def _members_cross_month_inherit(index_code: str, date_str: str) -> list[str]:
+    """5 月有 snapshot；6 月无新 snapshot → 逐日 as-of 继承 5 月成分（不为空）。"""
+    if index_code != "000300.SH":
+        return []
+    # 真实 _load_index_members：6 月无 trade_date<=d 时回退上一有数据月
+    if date_str[:6] in ("202405", "202406"):
+        return list(_MAY_MEMBERS)
+    return []
+
+
+def _codes_on(mem: pl.DataFrame, trade_date: str) -> set[str]:
+    return set(
+        mem.filter(pl.col("trade_date") == trade_date)["ts_code"].to_list()
+    )
+
+
+def test_membership_query_window_independent(monkeypatch):
+    """同一 trade_date 成分不随查询 start 漂移（复审反例：6/1 起 vs 6/20 起）。
+
+    旧实现 first-of-month + start-clamp：窗 [6/1,6/30] 的 6/20 得 OLD，
+    窗 [6/20,6/30] 的 6/20 得 NEW —— 必须修复为二者相等且均为 NEW。
+    """
+    monkeypatch.setattr(
+        "factorzen.core.calendar.get_trade_dates", _mock_trade_dates_midmonth
+    )
+    monkeypatch.setattr(
+        "factorzen.core.universe._load_index_members", _members_midmonth_resample
+    )
+    from factorzen.core.universe import get_universe_membership
+
+    full = get_universe_membership("20240601", "20240630", "csi300")
+    late = get_universe_membership("20240620", "20240630", "csi300")
+
+    full_620 = _codes_on(full, "20240620")
+    late_620 = _codes_on(late, "20240620")
+    assert full_620 == late_620
+    assert full_620 == set(_NEW_MEMBERS)
+
+
+def test_membership_midmonth_resample_switches_on_effective_date(monkeypatch):
+    """月中调样在生效日当天切换，不再整月冻结在月初成分。"""
+    monkeypatch.setattr(
+        "factorzen.core.calendar.get_trade_dates", _mock_trade_dates_midmonth
+    )
+    monkeypatch.setattr(
+        "factorzen.core.universe._load_index_members", _members_midmonth_resample
+    )
+    from factorzen.core.universe import get_universe_membership
+
+    mem = get_universe_membership("20240601", "20240630", "csi300")
+    assert _codes_on(mem, "20240614") == set(_OLD_MEMBERS)
+    assert _codes_on(mem, "20240617") == set(_NEW_MEMBERS)
+
+
+def test_membership_cross_month_inherits_prior_snapshot(monkeypatch):
+    """某月无 snapshot 时交易日成分继承上一有数据月份，不为空。"""
+    monkeypatch.setattr(
+        "factorzen.core.calendar.get_trade_dates", _mock_trade_dates_midmonth
+    )
+    monkeypatch.setattr(
+        "factorzen.core.universe._load_index_members",
+        _members_cross_month_inherit,
+    )
+    from factorzen.core.universe import get_universe_membership
+
+    mem = get_universe_membership("20240501", "20240630", "csi300")
+    for d in ("20240510", "20240531", "20240603", "20240620", "20240628"):
+        assert _codes_on(mem, d) == set(_MAY_MEMBERS), f"empty or wrong on {d}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 6b. 动态池 ValueError
 # ═══════════════════════════════════════════════════════════════════════════
 

@@ -53,7 +53,10 @@ def compute_size_ic(
     Returns:
         pl.DataFrame (cap_bucket, ic) 或 SizeICResult
     """
-    # 按市值排序分桶
+    # 按市值排序分桶（NaN 市值非 null，rank 排最大会误入最大市值桶）
+    factor_df = factor_df.filter(
+        pl.col(cap_col).is_not_null() & pl.col(cap_col).is_not_nan()
+    )
     df = (
         factor_df.with_columns(
             pl.col(cap_col).rank("ordinal", descending=False).over("trade_date").alias("_cap_rank")

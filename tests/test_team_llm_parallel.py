@@ -194,7 +194,7 @@ def test_cmd_mine_team_forwards_llm_workers(monkeypatch):
 
     captured: dict = {}
 
-    def fake_prepare(start, end, universe=None, lookback_days=None):
+    def fake_prepare(start, end, universe=None, lookback_days=None, **kw):
         return pl.DataFrame({"ts_code": ["000001.SZ"]})
 
     def fake_run_team_mine(daily, **kw):

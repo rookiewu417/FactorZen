@@ -491,15 +491,38 @@ def _command_line(args: argparse.Namespace) -> str:
     return getattr(args, "command_line", "")
 
 
+def _membership_prep_meta_empty(universe: str | None = None) -> dict:
+    """非 A 股 / 未走 prepare_mining_daily 时的 membership 溯源占位（mode=None）。"""
+    return {
+        "membership_mode": None,
+        "membership_hash": None,
+        "membership_n_rows": None,
+        "universe": universe,
+    }
+
+
+def _data_window_with_membership(args: argparse.Namespace, prep_meta: dict) -> dict:
+    """data_window + membership_* 三字段（与 start/end/universe 平级并入 params）。"""
+    return {
+        **_data_window(args),
+        "membership_mode": prep_meta.get("membership_mode"),
+        "membership_hash": prep_meta.get("membership_hash"),
+        "membership_n_rows": prep_meta.get("membership_n_rows"),
+    }
+
+
 def _prepare_agent_mining_data(args: argparse.Namespace):
-    """按 market 装配含预热前缀的挖掘帧，返回 ``(daily, profile)``（profile=None → A 股）。
+    """按 market 装配含预热前缀的挖掘帧，返回 ``(daily, profile, prep_meta)``。
 
-    - ashare：`prepare_mining_daily`（复权价 + daily_basic + 全叶子），profile=None（零回归）。
+    - ashare：`prepare_mining_daily`（复权价 + daily_basic + 全叶子），profile=None（零回归）；
+      ``prep_meta`` 含 ``membership_mode`` / ``membership_hash`` / ``membership_n_rows`` / ``universe``。
     - crypto：`build_crypto_daily`（Vision 湖），向前多拉 `AGENT_WARMUP_LOOKBACK` 自然日作预热前缀
-      （crypto 24/7，1 bar≈1 自然日，与 A 股口径一致）；symbols 取 --symbols 或 universe Top-N。
+      （crypto 24/7，1 bar≈1 自然日，与 A 股口径一致）；symbols 取 --symbols 或 universe Top-N；
+      membership 不适用 → mode=None。
 
-    daily 为空（crypto 湖无对应 symbol 数据）→ 返回 ``(None, profile)``，调用方报错退出。
+    daily 为空（crypto 湖无对应 symbol 数据）→ 返回 ``(None, profile, prep_meta)``，调用方报错退出。
     """
+
     from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK, prepare_mining_daily
 
     market = getattr(args, "market", "ashare")
@@ -514,13 +537,14 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
             symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
         else:
             symbols = profile.universe.snapshot(args.end)
+        prep_meta = _membership_prep_meta_empty(getattr(args, "universe", None))
         if not symbols:
-            return None, profile
+            return None, profile, prep_meta
         warmup_start = (_dt.datetime.strptime(args.start, "%Y%m%d").date()
                         - _dt.timedelta(days=AGENT_WARMUP_LOOKBACK)).strftime("%Y%m%d")
         freq = getattr(args, "freq", None) or profile.base_freq
         daily = build_crypto_daily(profile.provider, symbols, warmup_start, args.end, freq)
-        return (None if daily.is_empty() else daily), profile
+        return (None if daily.is_empty() else daily), profile, prep_meta
     if market == "futures":
         import datetime as _dt
 
@@ -532,13 +556,14 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
             symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
         else:
             symbols = profile.universe.snapshot(args.end)
+        prep_meta = _membership_prep_meta_empty(getattr(args, "universe", None))
         if not symbols:
-            return None, profile
+            return None, profile, prep_meta
         # 预热前缀：AGENT_WARMUP_LOOKBACK 交易日 → 自然日近似（243 交易日/年，×1.55 覆盖节假日）。
         warmup_start = (_dt.datetime.strptime(args.start, "%Y%m%d").date()
                         - _dt.timedelta(days=int(AGENT_WARMUP_LOOKBACK * 1.55))).strftime("%Y%m%d")
         daily = build_futures_daily(profile.provider, symbols, warmup_start, args.end)
-        return (None if daily.is_empty() else daily), profile
+        return (None if daily.is_empty() else daily), profile, prep_meta
     if market == "us":
         import datetime as _dt
 
@@ -550,17 +575,23 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
             symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
         else:
             symbols = profile.universe.snapshot(args.end)
+        prep_meta = _membership_prep_meta_empty(getattr(args, "universe", None))
         if not symbols:
-            return None, profile
+            return None, profile, prep_meta
         # 预热前缀：AGENT_WARMUP_LOOKBACK 交易日 → 自然日近似（252 交易日/年，×1.5 覆盖周末/假日）。
         warmup_start = (_dt.datetime.strptime(args.start, "%Y%m%d").date()
                         - _dt.timedelta(days=int(AGENT_WARMUP_LOOKBACK * 1.5))).strftime("%Y%m%d")
         daily = build_us_daily(profile.provider, symbols, warmup_start, args.end)
-        return (None if daily.is_empty() else daily), profile
+        return (None if daily.is_empty() else daily), profile, prep_meta
     # A 股：预热前缀用 agent 专用加长值（LLM 窗口无搜索空间上界，长窗因子用 180 会被误判欠预热）。
+    prep_meta = {}
     daily = prepare_mining_daily(args.start, args.end, args.universe,
-                                 lookback_days=AGENT_WARMUP_LOOKBACK)
-    return daily, None
+                                 lookback_days=AGENT_WARMUP_LOOKBACK,
+                                 out_meta=prep_meta)
+    if not prep_meta:
+        # 替身实现可能不填 out_meta：补占位，调用方仍能稳定解包
+        prep_meta = _membership_prep_meta_empty(getattr(args, "universe", None))
+    return daily, None, prep_meta
 
 
 def _cmd_mine_agent(args: argparse.Namespace) -> int:
@@ -569,16 +600,18 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
         return 2
     from factorzen.pipelines.factor_mine_agent import run_agent_mine
 
-    daily, profile = _prepare_agent_mining_data(args)
+    daily, profile, prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[mine-agent] crypto 挖掘帧为空（检查 --symbols 或数据湖覆盖）", file=sys.stderr)
         return 1
     # eval_start = 挖掘窗口 start（预热前缀边界），与 M1 `run_mine(eval_start=start)` 同口径：
     # 缺了它预热前缀会被 split_holdout 当训练数据。
+    # membership_* 并入 data_window → agent params（与 start/end/universe 平级，铁律#3）。
     res = run_agent_mine(daily, n_rounds=args.iterations, seed=args.seed,
                          top_k=args.top_k, human_review=args.human_review,
                          patience=args.patience, heal_rounds=args.heal_rounds,
-                         data_window=_data_window(args), command=_command_line(args),
+                         data_window=_data_window_with_membership(args, prep_meta),
+                         command=_command_line(args),
                          eval_start=args.start, profile=profile,
                          library_orthogonal=not getattr(args, "no_library_orthogonal", False),
                          objective=getattr(args, "objective", "residual"))
@@ -594,7 +627,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
 
     # 数据装配与 agent 路径共用 `_prepare_agent_mining_data`（ashare=A 股 loader，
     # crypto=Vision 湖 + 预热前缀）。消除双路径漂移。
-    daily, profile = _prepare_agent_mining_data(args)
+    daily, profile, prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[mine-team] crypto 挖掘帧为空（检查 --symbols 或数据湖覆盖）", file=sys.stderr)
         return 1
@@ -605,7 +638,8 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         structured=args.structured, patience=args.patience,
         heal_rounds=args.heal_rounds,
         hypotheses_per_round=args.hypotheses_per_round,
-        data_window=_data_window(args), command=_command_line(args),
+        data_window=_data_window_with_membership(args, prep_meta),
+        command=_command_line(args),
         eval_start=args.start, profile=profile,
         update_library=not getattr(args, "no_library", False),
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
@@ -641,7 +675,7 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
             return 1
     # 装配数据（复用挖掘装配 `_prepare_agent_mining_data`，含预热前缀）：窗口写回 args
     args.start, args.end = start, end
-    daily, profile = _prepare_agent_mining_data(args)
+    daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[factor-library] 挖掘帧为空（检查 --symbols / 数据湖覆盖 / 缓存回补）",
               file=sys.stderr)
@@ -840,7 +874,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     print(f"[factor-library lift-test] gray_zone 候选 {len(uniq_gray)} 个（去重后）")
     market = args.market
     # 装配日频帧（与 rebuild 同路径）
-    daily, profile = _prepare_agent_mining_data(args)
+    daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[factor-library lift-test] 挖掘帧为空", file=sys.stderr)
         return 1

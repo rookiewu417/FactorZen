@@ -598,7 +598,7 @@ def test_cli_no_auto_lift_forwards_to_run_team_agent(monkeypatch, tmp_path):
     })
     monkeypatch.setattr(
         "factorzen.cli.main._prepare_agent_mining_data",
-        lambda args: (fake_daily, None),
+        lambda args: (fake_daily, None, {}),
     )
 
     # parser 契约

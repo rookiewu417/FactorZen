@@ -259,6 +259,7 @@ def test_cli_allow_active_forwarded(tmp_path, monkeypatch):
                 "close_adj": [10.0],
             }),
             None,
+            {},
         ),
     )
     monkeypatch.setattr(
@@ -326,6 +327,7 @@ def test_cli_apply_default_allow_active_false(tmp_path, monkeypatch):
                 "close_adj": [10.0],
             }),
             None,
+            {},
         ),
     )
     monkeypatch.setattr(

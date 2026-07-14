@@ -232,3 +232,36 @@ def test_critic_drop_removes_candidate(tmp_path: Path):
     # 对偶不变量：它过了护栏，也不该被当作"已验证无效"喂给 LLM
     assert drop_expr not in index.known_invalid(k=10), \
         f"过了定量护栏的表达式 {drop_expr} 不应出现在 known_invalid() 中"
+
+
+def test_revise_runs_alongside_new_hypotheses(tmp_path: Path):
+    """轮1 Critic revise_expr → 轮2 必须**同时**评估修订产物与新假设产物。
+
+    修复动机：GPT 类引擎的候选常被 Critic 判 revise_expr，纯修订轮会把吞吐
+    塌缩（实测 19→3→2）——修订价值保留，但不得挤占新假设配额。
+    路由用独特假设名 HYPMOM/HYPREV（样板文案不可能含它们，防误触发假绿）。
+    """
+    state = {"crit": 0, "prop": 0}
+
+    def fn(messages):
+        text = "\n".join(m["content"] for m in messages)
+        if "风控审计员" in text:                      # critic：首轮 revise，其后 keep
+            state["crit"] += 1
+            v = "revise_expr" if state["crit"] == 1 else "keep"
+            return json.dumps({"verdict": v, "reason": "窗口太短"})
+        if "风控反馈" in text and "改写出" in text:    # revise_expressions
+            return json.dumps({"expressions": ["ts_mean(close,20)"]})
+        if "HYPREV" in text:                          # write(新假设2)
+            return json.dumps({"expressions": ["ts_std(close,10)"]})
+        if "HYPMOM" in text:                          # write(新假设1)
+            return json.dumps({"expressions": ["ts_mean(close,5)"]})
+        state["prop"] += 1                            # propose：轮1 HYPMOM、轮2 HYPREV
+        return json.dumps({"hypotheses": ["HYPMOM" if state["prop"] == 1 else "HYPREV"]})
+
+    daily = _mock_daily()
+    res = run_team_agent(daily, fn, n_rounds=2, seed=1, heal_rounds=0,
+                         index_path=str(tmp_path / "e.jsonl"))
+    exprs = {a.expression for a in res.state.attempts}
+    assert "ts_mean(close, 20)" in exprs, f"轮2 应有修订产物: {exprs}"
+    assert "ts_std(close, 10)" in exprs, f"轮2 还应有新假设产物(修订不得挤占): {exprs}"
+    assert state["prop"] == 2, f"两轮都应 propose(修订轮不得跳过新假设), 实得 {state['prop']}"

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
 import polars as pl
 
@@ -41,10 +43,46 @@ from factorzen.validation.multiple_testing import TrialLedger
 
 _LOG = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 
 def _step(msg: str) -> None:
     """过程提示 → stdout。挖掘由 CLI 触发，用户要看实时进度；不走 logging 免被默认级别吞掉。"""
     print(f"[mine-team] {msg}", flush=True)
+
+
+def _llm_map(callables: list[Callable[[], _T]], workers: int) -> list[_T]:
+    """执行一组零参可调用，**按提交序**返回结果。
+
+    ``workers <= 1``：纯串行列表推导，**不**实例化 ``ThreadPoolExecutor``——既有有状态
+    scripted ``llm_fn`` 依赖调用序且非线程安全，API 缺省必须零回归。
+
+    ``workers > 1``：线程池并发；worker 内捕获异常回传，装配阶段按提交序遇到的**第一个**
+    异常重新抛出（保持 round 级 ``except LLMClientError`` / llm_failure_patience 语义）。
+    生成阶段不得写共享 state——调用方保证 callables 只产纯结果。
+    """
+    if not callables:
+        return []
+    if workers <= 1:
+        return [fn() for fn in callables]
+
+    def _capture(fn: Callable[[], _T]) -> tuple[bool, _T | BaseException]:
+        try:
+            return True, fn()
+        except BaseException as exc:  # 契约：装配期按序重抛
+            return False, exc
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_capture, fn) for fn in callables]
+        # 按提交序收集（不用 as_completed）——产物与完成序无关
+        outcomes = [fut.result() for fut in futures]
+
+    results: list[_T] = []
+    for ok, val in outcomes:
+        if not ok:
+            raise val  # type: ignore[misc]
+        results.append(val)  # type: ignore[arg-type]
+    return results
 
 
 @dataclass
@@ -137,6 +175,7 @@ def _run_one_round(
     pending, seed, top_k, heal_rounds, structured, health, data_window, warmup_daily,
     eval_start=None, leaf_budgets=None, hypotheses_per_round=1, profile=None, ctx=None,
     lib_pool=None, library_covered=None, objective: str = "residual",
+    llm_workers: int = 1,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -170,67 +209,110 @@ def _run_one_round(
     # 产出 hyp_batches: [(假设, 表达式集)]。**revise 批次与新假设同轮并行**：
     # 修订不再独占整轮——GPT 类引擎的候选常被 Critic 连环判 revise_expr，
     # 纯修订轮会把吞吐塌缩（实测 19→3→2）；修订价值保留，但不得挤占新假设配额。
+    #
+    # LLM 墙钟并行（llm_workers>1）：彼此独立的调用经 `_llm_map` 并发；
+    # workers=1 走纯串行、不进 executor（有状态 scripted llm 零回归）。
+    # 拓扑：revise∥propose → 跨假设「分解→write」链并发（链内 decompose 先于 write，
+    # 同假设多 task 的 write 也可并发）→ heal 批并发 → 评估串行 → 预热 revise 并发。
+    # Critic/Evaluator/护栏不动。
     hyp_batches: list[tuple[str, list[str]]] = []
-    if pending and pending["kind"] == "revise_expr":
-        _step("  ②→③ Coder 依 Critic 反馈修订表达式（与新假设并行）")
-        revised = revise_expressions(
-            pending["hypothesis"], pending["exprs"], pending["reason"], llm_fn,
-            leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names)
-        if revised:
-            hyp_batches.append((pending["hypothesis"], revised))
-
-    _step("  ② Hypothesis 提假设"
-          + (f"（×{hypotheses_per_round}）" if hypotheses_per_round > 1 else "")
-          + ("（结构化：机制/预期符号/证伪）" if structured else ""))
     # revise_expr 的 reason 同样作为 feedback 供新假设避坑（原语义仅 revise_hypothesis）
     fb = pending["reason"] if pending and pending["kind"] in (
         "revise_hypothesis", "revise_expr") else ""
-    if structured:
-        # RD-Agent 步1 结构化假设：direction/mechanism/expected_sign/falsification
-        shyps = propose_structured(
+
+    def _do_revise() -> list[str]:
+        assert pending is not None
+        return revise_expressions(
+            pending["hypothesis"], pending["exprs"], pending["reason"], llm_fn,
+            leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names)
+
+    def _do_propose() -> list[str]:
+        if structured:
+            shyps = propose_structured(
+                llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
+                feedback=fb, n=hypotheses_per_round, market=ctx.market,
+                leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
+            )
+            return [format_structured(h) for h in shyps]
+        return propose_hypotheses(
             llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
             feedback=fb, n=hypotheses_per_round, market=ctx.market,
             leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
         )
-        hyps = [format_structured(h) for h in shyps]
-    else:
-        hyps = propose_hypotheses(
-            llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
-            feedback=fb, n=hypotheses_per_round, market=ctx.market,
-            leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
-        )
+
+    # 修订批 ∥ propose（互相独立）；提交序：revise（若有）→ propose
+    gen_fns: list[Callable[[], list[str]]] = []
+    gen_tags: list[str] = []
+    if pending and pending["kind"] == "revise_expr":
+        _step("  ②→③ Coder 依 Critic 反馈修订表达式（与新假设并行）")
+        gen_fns.append(_do_revise)
+        gen_tags.append("revise")
+    _step("  ② Hypothesis 提假设"
+          + (f"（×{hypotheses_per_round}）" if hypotheses_per_round > 1 else "")
+          + ("（结构化：机制/预期符号/证伪）" if structured else ""))
+    gen_fns.append(_do_propose)
+    gen_tags.append("propose")
+    gen_outs = _llm_map(gen_fns, llm_workers)
+    hyps: list[str] = []
+    for tag, out in zip(gen_tags, gen_outs, strict=True):
+        if tag == "revise":
+            if out and pending is not None:
+                hyp_batches.append((str(pending["hypothesis"]), list(out)))
+        else:
+            hyps = list(out)
     if not hyps and not hyp_batches:
         _step("  · Hypothesis 未产出假设，跳过本轮")
         state.iteration += 1
         return None
-    # 逐假设独立走「任务分解 → Coder 翻译」（步2 任务分解拆两步：每次 LLM 调用只专注
-    # 一件事，合并则假设过细或规格过粗）。所有假设的 tasks 汇入 rounds_log 供溯源。
-    for h in hyps:
+
+    # 逐假设独立走「任务分解 → Coder 翻译」。跨假设可并发；链内 decompose 先于其 write；
+    # 同假设多 task 的 write 之间也可并发。结果按假设提交序装配。
+    def _hyp_chain(h: str) -> tuple[str, list[dict], list[str]]:
         h_tasks = decompose_tasks(h, llm_fn) if structured else []
-        tasks.extend(h_tasks)
         if h_tasks:
-            h_exprs: list[str] = []
-            for t in h_tasks:
-                h_exprs.extend(write_expressions(
-                    _task_text(t), llm_fn, avoid=rec.known_invalid,
-                    leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names))
+            def _mk_write(task: dict) -> Callable[[], list[str]]:
+                def _run() -> list[str]:
+                    return write_expressions(
+                        _task_text(task), llm_fn, avoid=rec.known_invalid,
+                        leaf_budgets=leaf_budgets, market=ctx.market,
+                        leaf_names=ctx.leaf_names)
+                return _run
+            expr_lists = _llm_map([_mk_write(t) for t in h_tasks], llm_workers)
+            h_exprs = [e for xs in expr_lists for e in xs]
         else:
             # 未启用分解、或 LLM 分解失败（空 tasks）→ 降级为整条假设直译，不空转
-            h_exprs = write_expressions(h, llm_fn, avoid=rec.known_invalid,
-                                        leaf_budgets=leaf_budgets, market=ctx.market,
-                                        leaf_names=ctx.leaf_names)
+            h_exprs = write_expressions(
+                h, llm_fn, avoid=rec.known_invalid,
+                leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names)
+        return h, h_tasks, h_exprs
+
+    def _mk_chain(hyp: str) -> Callable[[], tuple[str, list[dict], list[str]]]:
+        return lambda: _hyp_chain(hyp)
+
+    chain_outs = _llm_map([_mk_chain(h) for h in hyps], llm_workers)
+    for h, h_tasks, h_exprs in chain_outs:
+        tasks.extend(h_tasks)
         hyp_batches.append((h, h_exprs))
     if hyps:
         _step(f"  ③ Coder 翻译表达式（{len(hyps)} 假设"
               + (f" / {len(tasks)} 子任务" if tasks else "") + "）")
     if heal_rounds > 0:
         from factorzen.agents.self_heal import heal_expressions
-        hyp_batches = [
-            (h, heal_expressions(ex, h, llm_fn, max_rounds=heal_rounds, health_check=health,
-                                 leaf_map=ctx.leaf_map, market=ctx.market,
-                                 leaf_names=ctx.leaf_names))
-            for h, ex in hyp_batches
-        ]
+
+        def _heal_one(item: tuple[str, list[str]]) -> tuple[str, list[str]]:
+            h, ex = item
+            return (
+                h,
+                heal_expressions(
+                    ex, h, llm_fn, max_rounds=heal_rounds, health_check=health,
+                    leaf_map=ctx.leaf_map, market=ctx.market, leaf_names=ctx.leaf_names,
+                ),
+            )
+
+        def _mk_heal(batch: tuple[str, list[str]]) -> Callable[[], tuple[str, list[str]]]:
+            return lambda: _heal_one(batch)
+
+        hyp_batches = _llm_map([_mk_heal(b) for b in hyp_batches], llm_workers)
 
     # ④ Evaluator：逐假设评估（跨 session + session 内去重）+ 预热错误回灌（只一轮，B3）
     # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）。
@@ -259,11 +341,17 @@ def _run_one_round(
             warm_errs = [r for r in h_results
                          if r["error"] and "预热不足" in r["error"]][:warm_budget]
             warm_budget -= len(warm_errs)
-            refed: list[str] = []
-            for r in warm_errs:
-                refed.extend(revise_from_error(h, r["expression"], r["error"], llm_fn,
-                                               leaf_budgets=leaf_budgets, market=ctx.market,
-                                               leaf_names=ctx.leaf_names))
+            # revise_from_error 逐条独立可并发；结果按提交序展平（与串行 extend 序一致）
+            def _mk_refeed(row: dict, hyp: str) -> Callable[[], list[str]]:
+                def _run() -> list[str]:
+                    return revise_from_error(
+                        hyp, row["expression"], row["error"], llm_fn,
+                        leaf_budgets=leaf_budgets, market=ctx.market,
+                        leaf_names=ctx.leaf_names)
+                return _run
+
+            refed_lists = _llm_map([_mk_refeed(r, h) for r in warm_errs], llm_workers)
+            refed = [e for xs in refed_lists for e in xs]
             if refed:
                 _step(f"  ④+ 预热错误回灌 revise（{len(warm_errs)} 条 → {len(refed)} 修正）")
                 results += _evaluate_and_record(
@@ -397,6 +485,7 @@ def run_team_agent(
     horizon: int = 1,
     library_orthogonal: bool = True,
     objective: str = "residual",
+    llm_workers: int = 1,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -418,6 +507,10 @@ def run_team_agent(
     （`_prepare_segments`）再 split holdout，`mining_df`/`holdout_df`/`bundle` 全部建在
     干净样本上；完整的 ``daily`` 只作为求值时的预热前缀。``None``（默认）时退化为旧行为
     （`split_holdout` 直接切整帧），对现有调用方零回归。
+
+    ``llm_workers``：轮内彼此独立的 LLM 调用并发度。``1``（API 缺省）纯串行、不进
+    ``ThreadPoolExecutor``——既有有状态 scripted ``llm_fn`` 零回归。``>1`` 时 futures
+    按提交序装配，同 seed 产物与完成序无关。CLI ``fz mine team`` 缺省 4。
     """
     mining_df, holdout_df, holdout_start = _prepare_segments(
         daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
@@ -534,7 +627,7 @@ def run_team_agent(
                 eval_start=_eval_start_date, leaf_budgets=leaf_budgets,
                 hypotheses_per_round=hypotheses_per_round, profile=profile, ctx=ctx,
                 lib_pool=lib_pool, library_covered=library_covered,
-                objective=objective,
+                objective=objective, llm_workers=llm_workers,
             )
         except LLMClientError as exc:
             llm_failures += 1

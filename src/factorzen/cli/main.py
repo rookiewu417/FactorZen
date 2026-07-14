@@ -608,7 +608,8 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
                         eval_start=args.start, profile=profile,
                         update_library=not getattr(args, "no_library", False),
                         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
-                        objective=getattr(args, "objective", "residual"))
+                        objective=getattr(args, "objective", "residual"),
+                        llm_workers=getattr(args, "llm_workers", 1))
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -1878,6 +1879,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "与 --no-library 无关，后者只关收尾 upsert）")
     m_team.add_argument("--objective", choices=["raw", "residual"], default="residual",
                        help="挖掘评估目标：residual=对库残差 IC（默认；库空→raw）；raw=裸 IC")
+    m_team.add_argument("--llm-workers", dest="llm_workers", type=int, default=4,
+                        help="轮内独立 LLM 调用的并发度（默认 4 提速；1=串行零回归；"
+                             "API/pipeline 缺省仍为 1）")
     _add_freq_arg(m_team)
     m_team.set_defaults(func=_cmd_mine_team)
 

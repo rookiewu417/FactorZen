@@ -496,3 +496,31 @@ def test_cli_lift_test_parser_and_dry_run(tmp_path, monkeypatch):
     assert man["dry_run"] is True
     assert man["n_passed"] == 1
     assert man["threshold"] == 0.002
+
+
+def test_expression_keys_survive_real_lgbm(tmp_path):
+    """因子字典键是**真实表达式**（含括号/逗号）时必须能过真 lgbm——
+    线上事故回归：LightGBMError: Do not support special JSON characters in
+    feature name（合成测试用安全名没抓到，真实表达式键立刻炸基线）。
+    进 combine 边界前键须映射为安全特征名，报告仍用真实表达式。
+    """
+    from factorzen.discovery.lift_test import run_lift_tests
+
+    actives, cand_panel, _noise, ret_df = _synth_panels(interactive=True)
+    # 键改成真实表达式形态（括号/逗号/空格——lgbm 特征名黑名单字符）
+    actives = {f"rank(ts_mean(close, {5 + i}))": df
+               for i, (_k, df) in enumerate(actives.items())}
+    gray = [{"expression": "mul(rank(vol), neg(ts_std(ret_1d, 20)))",
+             "residual_ic_train": 0.006}]
+
+    out = run_lift_tests(
+        gray, market="ashare", daily=pl.DataFrame(),
+        active_factor_dfs=actives, ret_df=ret_df,
+        materialize_candidate=lambda e: cand_panel,
+        cv_params={"train_days": 60, "test_days": 20, "purge_days": 2,
+                   "embargo_days": 0},
+        top_m=1, threshold=-1.0, seed=0,
+    )   # 不注入 combine_fn → 走真 combine_lgbm
+    assert out[0]["error"] is None, f"真实表达式键不得炸 lgbm: {out[0]}"
+    assert out[0]["baseline"] is not None
+    assert out[0]["expression"] == "mul(rank(vol), neg(ts_std(ret_1d, 20)))"

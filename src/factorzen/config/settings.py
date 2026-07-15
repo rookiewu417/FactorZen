@@ -37,6 +37,8 @@ DATA_RAW_FUTURES = DATA_RAW / "fut_daily"
 DATA_RAW_US = DATA_RAW / "us_daily"
 DATA_PROCESSED = DATA_DIR / "processed"
 DATA_CACHE = DATA_DIR / "cache"
+DATA_DERIVED = DATA_DIR / "derived"
+INTRADAY_FEATURES_DIR = DATA_DERIVED / "intraday_features"
 CRYPTO_LAKE = DATA_DIR / "crypto_lake"  # crypto 永续数据湖（Binance Vision）
 
 OUTPUT_DIR = WORKSPACE_RUNS / "artifacts"

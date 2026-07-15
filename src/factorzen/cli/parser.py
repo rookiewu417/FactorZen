@@ -230,6 +230,30 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     bf.add_argument("--lake-root", dest="lake_root", default=str(CRYPTO_LAKE))
     bf.set_defaults(func=commands._cmd_data_crypto_backfill)
 
+    ifeat = data_sub.add_parser("intraday-features", help="Intraday feature panel workflows")
+    ifeat_sub = ifeat.add_subparsers(dest="intraday_features_command", required=True)
+    if_build = ifeat_sub.add_parser("build", help="Build daily intraday feature panel from 1min lake")
+    if_build.add_argument("--start", required=True, help="Start date YYYYMMDD")
+    if_build.add_argument("--end", required=True, help="End date YYYYMMDD")
+    if_build.add_argument("--freq", default="5min", help="Bar frequency (default 5min)")
+    if_build.add_argument("--version", default="v1", help="Battery version (default v1)")
+    if_build.add_argument(
+        "--codes",
+        default=None,
+        help="Comma-separated ts_code filter (optional)",
+    )
+    if_build.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Rewrite when battery_hash mismatches existing manifest",
+    )
+    if_build.set_defaults(func=commands._cmd_data_intraday_features_build)
+
+    if_status = ifeat_sub.add_parser("status", help="Show intraday feature manifest and partitions")
+    if_status.add_argument("--freq", default="5min", help="Bar frequency (default 5min)")
+    if_status.add_argument("--version", default="v1", help="Battery version (default v1)")
+    if_status.set_defaults(func=commands._cmd_data_intraday_features_status)
+
     config = sub.add_parser("config", help="Config workflows")
     config_sub = config.add_subparsers(dest="config_command", required=True)
     validate = config_sub.add_parser("validate", help="Validate a YAML run config")

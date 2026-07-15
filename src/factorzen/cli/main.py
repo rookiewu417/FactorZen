@@ -285,6 +285,63 @@ def _cmd_data_crypto_backfill(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_data_intraday_features_build(args: argparse.Namespace) -> int:
+    """物化日内特征面板：``fz data intraday-features build``。"""
+    from factorzen.intraday.features.engine import build_intraday_features
+
+    codes = None
+    if getattr(args, "codes", None):
+        codes = [c.strip() for c in args.codes.split(",") if c.strip()]
+    try:
+        report = build_intraday_features(
+            args.start,
+            args.end,
+            freq=args.freq,
+            version=args.version,
+            codes=codes,
+            overwrite=bool(getattr(args, "overwrite", False)),
+        )
+    except Exception as exc:
+        print(f"[intraday-features] build 失败: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"[intraday-features] build 完成: months={report.months} "
+        f"rows={report.rows} n_stocks={report.n_stocks} "
+        f"manifest={report.manifest_path}"
+    )
+    return 0
+
+
+def _cmd_data_intraday_features_status(args: argparse.Namespace) -> int:
+    """查看日内特征 manifest 与分区：``fz data intraday-features status``。"""
+    from factorzen.config.settings import INTRADAY_FEATURES_DIR
+    from factorzen.core.storage import partition_exists
+    from factorzen.intraday.features.engine import read_manifest
+    from factorzen.intraday.sessions import normalize_freq
+
+    freq = normalize_freq(args.freq)
+    version = args.version
+    manifest = read_manifest(version=version, freq=freq, base_dir=INTRADAY_FEATURES_DIR)
+    if manifest is None:
+        print(
+            f"[intraday-features] 无 manifest（version={version} freq={freq}），"
+            "请先运行: fz data intraday-features build --start ... --end ...",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(manifest, ensure_ascii=False, indent=2))
+    cov = manifest.get("coverage") or {}
+    months = list(cov.get("months") or [])
+    data_type = f"{version}/{freq}"
+    print("\nmonth\tpartition_exists")
+    for ym in months:
+        y_str, m_str = ym.split("-")
+        y, m = int(y_str), int(m_str)
+        ok = partition_exists(data_type, y, m, base_dir=INTRADAY_FEATURES_DIR)
+        print(f"{ym}\t{ok}")
+    return 0
+
+
 def _cmd_config_validate(args: argparse.Namespace) -> int:
     from factorzen.config.research import default_benchmark_for_universe, load_run_config
 

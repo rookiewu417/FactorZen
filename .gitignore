@@ -18,6 +18,7 @@ tmp/
 # Local agent/tool state
 .claude/
 CLAUDE.md
+AGENTS.md
 
 # Workspace is generated output by default.  Explicitly allow only versioned
 # inputs/templates and placeholder directories; new runtime folders stay ignored.

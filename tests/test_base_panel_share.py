@@ -358,15 +358,15 @@ def test_run_lift_tests_real_lgbm_base_panel_parity():
 
 
 def test_adaptive_lift_workers_from_sysconf(monkeypatch):
-    """可用内存 → workers = max(1, min(4, gb//5))。"""
+    """可用内存 → workers = max(2, min(4, gb//5))。"""
     from factorzen.discovery import lift_test as lt
 
-    # 23GB → 4；12GB → 2；4GB → 1；0 → 1（max 保底）
+    # 23GB → 4；12GB → 2；4GB → 2（下限）；0 → 2；cap 100GB → 4
     cases = [
         (23 * 1024**3, 4),
         (12 * 1024**3, 2),
-        (4 * 1024**3, 1),
-        (0, 1),
+        (4 * 1024**3, 2),
+        (0, 2),
         (100 * 1024**3, 4),  # cap
     ]
     page = 4096
@@ -400,7 +400,7 @@ def test_resolve_lift_workers_explicit_not_overridden(monkeypatch):
     from factorzen.discovery import lift_test as lt
 
     def _sysconf(name):
-        # 假装只有 4GB → 自适应应为 1
+        # 假装只有 4GB → 自适应下限 2；显式 1 仍串行
         if name == "SC_AVPHYS_PAGES":
             return (4 * 1024**3) // 4096
         if name == "SC_PAGE_SIZE":
@@ -408,19 +408,19 @@ def test_resolve_lift_workers_explicit_not_overridden(monkeypatch):
         raise ValueError(name)
 
     monkeypatch.setattr(lt.os, "sysconf", _sysconf)
-    assert lt.adaptive_lift_workers() == 1
+    assert lt.adaptive_lift_workers() == 2
     assert lt.resolve_lift_workers(6) == 6
     assert lt.resolve_lift_workers(1) == 1
     assert lt.resolve_lift_workers(0) == 0
 
 
 def test_run_lift_tests_default_workers_adaptive(monkeypatch):
-    """lift_workers=None（默认）走自适应，不建超限线程池。"""
+    """lift_workers=None（默认）走自适应；低内存仍 ≥2 建池；显式 1 不建池。"""
     from factorzen.discovery import lift_test as lt
 
     def _sysconf(name):
         if name == "SC_AVPHYS_PAGES":
-            return (8 * 1024**3) // 4096  # 8GB → 1
+            return (8 * 1024**3) // 4096  # 8GB → max(2, 1)=2
         if name == "SC_PAGE_SIZE":
             return 4096
         raise ValueError(name)
@@ -458,20 +458,192 @@ def test_run_lift_tests_default_workers_adaptive(monkeypatch):
             ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
         )
 
-    rows = lt.run_lift_tests(
-        [{"expression": "c0", "residual_ic_train": 0.01}],
+    common = dict(
         market="ashare",
         daily=pl.DataFrame(),
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: cand,
         combine_fn=combine,
-        lift_workers=None,  # 显式 None = 自适应
         top_m=None,
     )
+    rows = lt.run_lift_tests(
+        [{"expression": "c0", "residual_ic_train": 0.01}],
+        lift_workers=None,  # 显式 None = 自适应
+        **common,
+    )
     assert len(rows) == 1
-    # 8GB → workers=1 → 不建池
+    # 8GB → workers=2 → 建池
+    assert created["n"] == 1
+    assert created["max_workers"] == 2
+
+    created["n"] = 0
+    created["max_workers"] = None
+    rows1 = lt.run_lift_tests(
+        [{"expression": "c0", "residual_ic_train": 0.01}],
+        lift_workers=1,  # 显式串行
+        **common,
+    )
+    assert len(rows1) == 1
     assert created["n"] == 0
+
+
+# ── H2 全零行：退化候选 / 安全名一致性 ──────────────────────────────────────
+
+
+def test_degenerate_candidate_shared_path_is_error_not_zero_lift():
+    """先红契约：物化后全 null 候选走共享路径 → error，禁止 lift=0 假结论。
+
+    正常候选同批不受影响。
+    """
+    import factorzen.discovery.lift_test as lt
+    from factorzen.research.combination.models import combine_lgbm as real_combine
+
+    baseline, cand_ok, ret, _full = _synth_five_plus_one(
+        n_days=80, n_stocks=16, seed=9, candidate_extra=False,
+    )
+    active = {"lib_a": baseline["b0"], "lib_b": baseline["b1"]}
+    dates = _dates(80)
+    codes = [f"{i:04d}.SZ" for i in range(16)]
+    # 全 null 候选（与 drop_degenerate 同口径）
+    cand_null = pl.DataFrame({
+        "trade_date": [d for d in dates for _ in codes],
+        "ts_code": codes * len(dates),
+        "factor_value": [None] * (len(dates) * len(codes)),
+    }).with_columns(pl.col("factor_value").cast(pl.Float64))
+
+    def thin_combine(fds, rdf, cv, **kw):
+        return real_combine(
+            fds, rdf, cv,
+            seed=0, n_estimators=20, min_child_samples=8, num_leaves=12,
+            **{k: v for k, v in kw.items() if k == "base_panel"},
+        )
+
+    mats = {"null_cand": cand_null, "ok_cand": cand_ok}
+    grays = [
+        {"expression": "null_cand", "residual_ic_train": 0.03},
+        {"expression": "ok_cand", "residual_ic_train": 0.02},
+    ]
+    daily = pl.DataFrame({"trade_date": [], "ts_code": [], "close": []})
+    cv_params = {
+        "train_days": 35, "test_days": 12, "purge_days": 3, "expanding": False,
+    }
+
+    import factorzen.research.combination.models as models_mod
+
+    original = models_mod.combine_lgbm
+    models_mod.combine_lgbm = thin_combine  # type: ignore[assignment]
+    try:
+        rows = lt.run_lift_tests(
+            grays,
+            market="ashare",
+            daily=daily,
+            active_factor_dfs=active,
+            ret_df=ret,
+            materialize_candidate=lambda e: mats[e],
+            combine_fn=None,  # 生产共享路径
+            lift_workers=1,
+            seed=0,
+            top_m=None,
+            threshold=-1.0,
+            cv_params=cv_params,
+        )
+    finally:
+        models_mod.combine_lgbm = original  # type: ignore[assignment]
+
+    assert len(rows) == 2
+    by = {r["expression"]: r for r in rows}
+    bad = by["null_cand"]
+    good = by["ok_cand"]
+    # 退化：显式 error，不是 lift=0 / se=0 的假结论
+    assert bad["error"] == "degenerate_candidate"
+    assert bad["lift"] is None
+    assert bad["passed"] is False
+    # 正常候选不受影响
+    assert good["error"] is None
+    assert good["lift"] is not None
+
+
+def test_safe_pool_append_never_collides_with_base_keys():
+    """集合一致性：追加安全名与 base_panel 列集不交；撞名表达式仍得新列。"""
+    from factorzen.discovery.lift_test import (
+        _safe_pool_with_new_factors,
+        _with_safe_feature_names,
+    )
+    from factorzen.research.combination.models import _feature_names, build_panel
+
+    baseline, cand, ret, _ = _synth_five_plus_one(
+        n_days=40, n_stocks=8, seed=3, candidate_extra=False,
+    )
+    # 候选表达式已在 active 中（撞名）
+    active = {"lib_a": baseline["b0"], "cand_x": baseline["b1"]}
+    safe_active = _with_safe_feature_names(active)
+    base = build_panel(safe_active, ret)
+    base_feats = set(_feature_names(base))
+
+    # 旧整表重映射：键集 ⊆ base → 静默不 join
+    pool_collide = dict(active)
+    pool_collide["cand_x"] = cand
+    remapped = _with_safe_feature_names(pool_collide)
+    assert set(remapped) <= base_feats
+
+    # 修复：追加新键
+    appended = _safe_pool_with_new_factors(safe_active, {"cand_x": cand})
+    new_keys = set(appended) - base_feats
+    assert new_keys == {f"f{len(safe_active):03d}"}
+    assert set(safe_active).issubset(set(appended))
+    assert set(safe_active) == base_feats
+
+
+def test_combine_lgbm_rejects_all_degenerate_new_factors():
+    """combine 层防御：意图新增的因子全被 drop → 显式 ValueError。"""
+    import pytest
+
+    from factorzen.research.combination.cv import PurgedWalkForwardCV
+    from factorzen.research.combination.models import build_panel, combine_lgbm
+
+    baseline, _cand, ret, _ = _synth_five_plus_one(
+        n_days=50, n_stocks=10, seed=1, candidate_extra=False,
+    )
+    active = {"b0": baseline["b0"], "b1": baseline["b1"]}
+    base = build_panel(active, ret)
+    dates = _dates(50)
+    codes = [f"{i:04d}.SZ" for i in range(10)]
+    null_cand = pl.DataFrame({
+        "trade_date": [d for d in dates for _ in codes],
+        "ts_code": codes * len(dates),
+        "factor_value": [None] * (len(dates) * len(codes)),
+    }).with_columns(pl.col("factor_value").cast(pl.Float64))
+    cv = PurgedWalkForwardCV(
+        train_days=25, test_days=10, purge_days=2, expanding=False,
+    )
+    with pytest.raises(ValueError, match="degenerate_new_factors"):
+        combine_lgbm(
+            {"new_null": null_cand},
+            ret,
+            cv,
+            base_panel=base,
+            seed=0,
+            n_estimators=10,
+            min_child_samples=5,
+        )
+
+
+def test_paired_lift_stats_all_zero_diff_se_is_none():
+    """diff 全零：lift=0 但 lift_se=None（不许当 SE=0 强结论）。"""
+    from factorzen.discovery.lift_test import paired_lift_stats
+
+    dates = [f"202401{d:02d}" for d in range(1, 41)]
+    ics = [0.01 + 0.001 * (i % 5) for i in range(40)]
+    daily = pl.DataFrame(
+        {"trade_date": dates, "ic": ics},
+        schema={"trade_date": pl.Utf8, "ic": pl.Float64},
+    )
+    stats = paired_lift_stats(daily, daily, block_days=10)
+    assert stats["lift"] == 0.0
+    assert stats["n_days"] == 40
+    assert stats["lift_se"] is None
+    assert stats["n_blocks"] == 4
 
 
 def test_fold_test_dates_invariant_to_factor_dict_order():

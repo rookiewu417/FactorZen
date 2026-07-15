@@ -228,12 +228,20 @@ def combine_lgbm(
         full_feat = _factor_panel(factor_dfs)
         full_panel = build_panel(factor_dfs, ret_df)
     else:
-        factor_dfs = drop_degenerate_factors(factor_dfs) if factor_dfs else {}
         base_names = _feature_names(base_panel)
+        base_set = set(base_names)
+        raw = dict(factor_dfs) if factor_dfs else {}
+        # drop 前锁定「意图新增」键：全被剔后必须显式失败，禁止静默 = 基线
+        raw_new = {k: v for k, v in raw.items() if k not in base_set}
+        factor_dfs = drop_degenerate_factors(raw) if raw else {}
         if not base_names and not factor_dfs:
             raise ValueError("base_panel 无因子列且 factor_dfs 为空,无法组合")
-        base_set = set(base_names)
         new_dfs = {k: v for k, v in factor_dfs.items() if k not in base_set}
+        if raw_new and not new_dfs:
+            raise ValueError(
+                "degenerate_new_factors: 新增因子均为空/全缺,"
+                "无法在 base_panel 上增量组合"
+            )
         # 调用方传了基线键 → 按 factor_dfs 插入序;只传新因子 → base 列序 + 新键
         if factor_dfs and any(k in base_set for k in factor_dfs):
             names = list(factor_dfs.keys())

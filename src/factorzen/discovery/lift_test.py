@@ -66,16 +66,16 @@ _LIFT_WORKERS_FALLBACK = 2
 
 
 def adaptive_lift_workers() -> int:
-    """按可用内存自适应 lift 并发：``max(1, min(4, 可用内存GB // 5))``。
+    """按可用内存自适应 lift 并发：``max(2, min(4, 可用内存GB // 5))``。
 
-    依据：峰值 ≈ 共享长表 1–2GB + workers × 每 worker 3–4GB；取 5GB/worker
-    保守估计。Linux 用 ``SC_AVPHYS_PAGES * SC_PAGE_SIZE``；``sysconf`` 异常
-    回退 2（实测 2 并发在 23GB 机稳定，4+ 易 OOM）。
+    依据：共享 base_panel 后每 worker 峰值约 0.5–1GB；2 并发在任意常见内存
+    状况下都安全。Linux 用 ``SC_AVPHYS_PAGES * SC_PAGE_SIZE``；``sysconf`` 异常
+    回退 2。显式 ``lift_workers=1`` 仍走纯串行（语义不变）。
     """
     try:
         avail = int(os.sysconf("SC_AVPHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
         avail_gb = avail / (1024.0 ** 3)
-        return max(1, min(_LIFT_WORKERS_CAP, int(avail_gb // _LIFT_GB_PER_WORKER)))
+        return max(2, min(_LIFT_WORKERS_CAP, int(avail_gb // _LIFT_GB_PER_WORKER)))
     except (AttributeError, OSError, ValueError, TypeError):
         return _LIFT_WORKERS_FALLBACK
 
@@ -303,6 +303,25 @@ def paired_lift_stats(
         block_slices.append(chunk)
     n_blocks = len(block_means)
 
+    # 日 diff 全零：候选 IC ≡ 基线（常见于候选列未进模型/全缺）。
+    # SE=0 会像「高确信度零增量」；无信息时 SE 置 None，准入走 reject。
+    if n_days > 0 and bool(np.all(diffs == 0)):
+        mid0 = (n_blocks + 1) // 2
+        first0 = block_slices[:mid0]
+        second0 = block_slices[mid0:]
+        return {
+            "lift": 0.0,
+            "lift_se": None,
+            "n_blocks": n_blocks,
+            "n_days": n_days,
+            "lift_first_half": (
+                float(np.mean(np.concatenate(first0))) if first0 else None
+            ),
+            "lift_second_half": (
+                float(np.mean(np.concatenate(second0))) if second0 else None
+            ),
+        }
+
     if n_blocks < 2:
         lift_se: float | None = None
     else:
@@ -398,6 +417,31 @@ def _with_safe_feature_names(factor_dfs: dict[str, pl.DataFrame]) -> dict[str, p
     return {f"f{i:03d}": df for i, df in enumerate(factor_dfs.values())}
 
 
+def _is_degenerate_factor_df(df: pl.DataFrame | None) -> bool:
+    """与 ``drop_degenerate_factors`` 同口径：空帧 / 无 factor_value / 全缺。"""
+    if df is None or df.height == 0 or "factor_value" not in df.columns:
+        return True
+    return int(df["factor_value"].null_count()) >= df.height
+
+
+def _safe_pool_with_new_factors(
+    safe_active: dict[str, pl.DataFrame],
+    new_factor_dfs: dict[str, pl.DataFrame],
+) -> dict[str, pl.DataFrame]:
+    """在已映射的基线安全名后**追加**新因子键（f{n}, f{n+1}, …）。
+
+    禁止对「基线+候选」整表重映射：若候选表达式已在 active 中，整表重映射会
+    得到与 base_panel **相同**的 f{{i}} 键集，共享路径 ``new_dfs`` 为空 →
+    静默 lift=0（G2 全零行事故根因 b）。追加保证新列名永不落在 base 列集内。
+    """
+    out = dict(safe_active)
+    i = len(safe_active)
+    for df in new_factor_dfs.values():
+        out[f"f{i:03d}"] = df
+        i += 1
+    return out
+
+
 def _empty_lift_fields() -> dict[str, Any]:
     return {
         "lift_se": None,
@@ -449,14 +493,16 @@ def run_lift_tests(
     - ``lift ≥ threshold`` → passed（最终 active/probation/reject 见 ``lift_admission``）。
     - 逐候选 try/except：一个坏候选不崩整批。
     - ``lift_workers``：候选级线程并行。``None``（默认）→
-      ``adaptive_lift_workers()``（``max(1, min(4, 可用内存GB//5))``，sysconf
+      ``adaptive_lift_workers()``（``max(2, min(4, 可用内存GB//5))``，sysconf
       异常回退 2）；显式 int 不走自适应。``<=1`` 纯串行、**不**建
       ``ThreadPoolExecutor``（零回归约定同 ``_llm_map``）。生产路径每模型注入
       ``num_threads=cpu//workers`` + deterministic；注入的 ``combine_fn``（测试 mock）
       不强加 params。
     - **基线宽面板共享**（生产路径）：``build_panel(active)`` 一次，worker 只读
-      引用；每候选 ``combine_lgbm({候选列}, base_panel=...)`` 只 join 新列。
-      注入 ``combine_fn`` 时关闭共享（mock 契约零回归）。
+      引用；每候选在稳定 ``safe_active`` 后**追加**新安全名再
+      ``combine_lgbm(..., base_panel=)`` 只 join 新列。注入 ``combine_fn`` 时
+      关闭共享（mock 契约零回归）。候选全缺 → ``error=degenerate_candidate``
+      （禁止静默 lift=0）。
 
     CV 默认见 ``DEFAULT_LIFT_CV``（rolling 250d/40d，~30 折）；``cv_params`` 覆盖。
     lift 数值与旧 expanding 120/20 口径不可直接比。
@@ -631,17 +677,23 @@ def run_lift_tests(
                 row["error"] = "bad_panel_schema"
                 return row
             cand_sel = cand_df.select(["trade_date", "ts_code", "factor_value"])
-            # 键用规范表达式串；若与 active 撞名则覆盖为候选自身（仍测「加它」）。
-            # 进 combine 前统一映射安全特征名（候选按插入序恒为最后一个 f{n}）。
-            # 全量 dict + base_panel：CV 日期并集与旧路径一致，build 只 join 新列。
-            pool = dict(active_factor_dfs)
-            pool[str(expr)] = cand_sel
-            safe_pool = _with_safe_feature_names(pool)
+            # 全缺/空候选：与 drop_degenerate 同口径 → 显式 error，禁止静默 lift=0
+            if _is_degenerate_factor_df(cand_sel):
+                row["error"] = "degenerate_candidate"
+                return row
+            # 共享路径：在 stable safe_active 后追加候选新键（永不与 base 列撞名）。
+            # 非共享：整表重映射（旧路径）；键用表达式串，与 active 撞名则覆盖。
             if base_panel is not None:
+                safe_pool = _safe_pool_with_new_factors(
+                    safe_active, {str(expr): cand_sel},
+                )
                 cand_combined = _combine(
                     safe_pool, ret_df, cv, base_panel=base_panel,
                 )
             else:
+                pool = dict(active_factor_dfs)
+                pool[str(expr)] = cand_sel
+                safe_pool = _with_safe_feature_names(pool)
                 cand_combined = _combine(safe_pool, ret_df, cv)
             cand_daily = _daily_oos_rank_ic(
                 cand_combined, ret_df, start=adm_start, end=adm_end,
@@ -806,7 +858,11 @@ def run_group_lift(
             if "factor_value" not in cand_df.columns:
                 skipped.append({"expression": expr, "error": "bad_panel_schema"})
                 continue
-            pool[str(expr)] = cand_df.select(["trade_date", "ts_code", "factor_value"])
+            cand_sel = cand_df.select(["trade_date", "ts_code", "factor_value"])
+            if _is_degenerate_factor_df(cand_sel):
+                skipped.append({"expression": expr, "error": "degenerate_candidate"})
+                continue
+            pool[str(expr)] = cand_sel
             expressions.append(str(expr))
         except Exception as exc:
             skipped.append({
@@ -842,13 +898,15 @@ def run_group_lift(
             )
         baseline = _mean_ic(base_daily)
 
-        safe_pool = _with_safe_feature_names(pool)
+        # 新候选按 expressions 序追加安全名（与 base 列集不交）
+        new_only = {e: pool[e] for e in expressions}
         if base_panel is not None:
-            # 全量 dict + base_panel：一次 join N 个新候选列，CV 日期并集不变
+            safe_pool = _safe_pool_with_new_factors(safe_active, new_only)
             group_combined = _combine(
                 safe_pool, ret_df, cv, base_panel=base_panel,
             )
         else:
+            safe_pool = _with_safe_feature_names(pool)
             group_combined = _combine(safe_pool, ret_df, cv)
         group_daily = _daily_oos_rank_ic(
             group_combined, ret_df, start=adm_start, end=adm_end,

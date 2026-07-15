@@ -14,11 +14,13 @@ import pytest
 
 from factorzen.execution.store import SessionStore
 from factorzen.ops.config import OpsConfig
+from factorzen.ops.runner import STAGES
 from factorzen.ops.stages import (
     OpsStageError,
     stage_audit,
     stage_data,
     stage_guard,
+    stage_intraday_features,
     stage_live_step,
     stage_report,
     stage_signal,
@@ -101,6 +103,63 @@ def test_stage_audit_warning_respects_fail_on(monkeypatch):
         stage_audit(_cfg(audit_types=["daily"], audit_fail_on="warning"), date(2026, 1, 20), {})
     # fail_on=error(默认)→ warning 放行
     assert stage_audit(_cfg(audit_types=["daily"]), date(2026, 1, 20), {}) == {"daily": "warning"}
+
+
+# ── intraday_features ─────────────────────────────────
+def test_stage_intraday_features_skipped_when_disabled(monkeypatch):
+    """默认 intraday_leaves=False：no-op skip，不调 build。"""
+    called: list[object] = []
+
+    def fake_build(*a, **k):
+        called.append((a, k))
+        raise AssertionError("build_intraday_features 不应被调用")
+
+    monkeypatch.setattr(
+        "factorzen.intraday.features.engine.build_intraday_features",
+        fake_build,
+    )
+    assert stage_intraday_features(_cfg(), date(2026, 1, 20), {}) == {"skipped": True}
+    assert called == []
+
+
+def test_stage_intraday_features_calls_build_with_window_and_freq(monkeypatch):
+    """intraday_leaves=True：按 lookback 窗口与配置 freq 调用 build。"""
+    seen: dict = {}
+
+    def fake_build(start, end, *, freq="5min", overwrite=False, **k):
+        seen.update(start=start, end=end, freq=freq, overwrite=overwrite)
+        return SimpleNamespace(months=["202601"], rows=42)
+
+    monkeypatch.setattr(
+        "factorzen.intraday.features.engine.build_intraday_features",
+        fake_build,
+    )
+    out = stage_intraday_features(
+        _cfg(intraday_leaves=True, intraday_freq="5min", lookback_days=10),
+        date(2026, 1, 20),
+        {},
+    )
+    assert out == {
+        "skipped": False,
+        "months": ["202601"],
+        "rows": 42,
+        "freq": "5min",
+    }
+    assert seen == {
+        "start": "20260110",
+        "end": "20260120",
+        "freq": "5min",
+        "overwrite": False,
+    }
+
+
+def test_stages_order_intraday_features_before_signal():
+    """STAGES 含 intraday_features，且位于 data/audit 之后、signal 之前。"""
+    names = [n for n, _ in STAGES]
+    assert "intraday_features" in names
+    assert names.index("data") < names.index("intraday_features")
+    assert names.index("audit") < names.index("intraday_features")
+    assert names.index("intraday_features") < names.index("signal")
 
 
 # ── signal ────────────────────────────────────────────

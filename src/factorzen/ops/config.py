@@ -32,6 +32,10 @@ class OpsConfig(BaseModel):
     benchmark: str = "000300.SH"
     universe: str | None = None
 
+    # ── 日内特征（可选；启用则每日链路先增量 build 面板再出信号）──
+    intraday_leaves: bool = False
+    intraday_freq: str = "5min"
+
     # ── 数据质量门 ──
     audit_types: list[str] = Field(default_factory=lambda: ["daily", "daily_basic"])
     audit_fail_on: Literal["error", "warning"] = "error"

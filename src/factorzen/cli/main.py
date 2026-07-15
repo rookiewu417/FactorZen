@@ -522,6 +522,8 @@ def _cmd_research_run(args: argparse.Namespace) -> int:
         risk_aversion=args.lam, w_max=args.w_max, turnover=args.turnover,
         industry_neutral=args.industry_neutral, lookback=args.lookback,
         run_id=args.run_id, command=["research", "run"],
+        intraday=bool(getattr(args, "intraday_leaves", False)),
+        intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
     )
     print(f"[research] 完成 run_id={res['run_id']} 因子={res['expression']!r}")
     print(f"[research] 调仓 {res['n_rebalances']} 次 · sharpe={res['sharpe']} · ann_ret={res['ann_ret']}")

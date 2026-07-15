@@ -221,3 +221,43 @@ def test_run_research_custom_run_id_threads_everywhere(patched_stages, tmp_path)
     assert calls["sim"][0]["run_id"] == "myrun"
     assert all(c["out_dir"].endswith("portfolios/myrun") for c in calls["portfolio"])
     assert Path(res["report_html"]).name == "portfolio_myrun.html"
+
+
+def test_run_research_passes_intraday_to_mine_and_manifest(patched_stages, tmp_path):
+    """``--intraday-leaves`` 透传：run_mine 收到 intraday 参数，manifest.config 可复现落盘。"""
+    from factorzen.pipelines.research_run import run_research
+
+    calls = patched_stages
+    res = run_research(
+        start="20240101", end="20240110", n_trials=10, seed=42,
+        rebalance_days=2, warmup=2, out_root=str(tmp_path),
+        intraday=True, intraday_freq="15min",
+    )
+    # 挖掘阶段把 i_* 纳入搜索空间
+    assert calls["mine"]["intraday"] is True
+    assert calls["mine"]["intraday_freq"] == "15min"
+    # 默认可复现：manifest config 记 flag（漏记=假复现）
+    manifest = json.loads(
+        (tmp_path / "research" / res["run_id"] / "manifest.json").read_text(encoding="utf-8")
+    )
+    cfg = manifest["config"]
+    assert cfg["intraday"] is True
+    assert cfg["intraday_freq"] == "15min"
+
+
+def test_run_research_intraday_defaults_off(patched_stages, tmp_path):
+    """默认关日内叶子（零回归）：run_mine 收 intraday=False，manifest 仍记字段。"""
+    from factorzen.pipelines.research_run import run_research
+
+    calls = patched_stages
+    res = run_research(
+        start="20240101", end="20240110", n_trials=10, seed=42,
+        rebalance_days=2, warmup=2, out_root=str(tmp_path),
+    )
+    assert calls["mine"]["intraday"] is False
+    assert calls["mine"]["intraday_freq"] == "5min"
+    manifest = json.loads(
+        (tmp_path / "research" / res["run_id"] / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["config"]["intraday"] is False
+    assert manifest["config"]["intraday_freq"] == "5min"

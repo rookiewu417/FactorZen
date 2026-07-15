@@ -109,8 +109,13 @@ def run_research(*, start: str, end: str, universe: str | None = None,
                  risk_aversion: float = 1.0, w_max: float = 0.05,
                  turnover: float | None = None, industry_neutral: bool = False,
                  lookback: int = 60, run_id: str | None = None,
-                 out_root: str = "workspace", command: list[str] | None = None) -> dict:
+                 out_root: str = "workspace", command: list[str] | None = None,
+                 intraday: bool = False, intraday_freq: str = "5min") -> dict:
     """一条命令跑通 mine → 头部 passed 因子 → 按调仓日循环 build → sim → report。
+
+    ``intraday`` / ``intraday_freq`` 透传给 ``run_mine``，把 i_* 叶子纳入挖掘搜索空间；
+    α 面板经 ``ExpressionFactor.compute`` 在表达式含 i_* 时自动 attach 日内面板，
+    风险/组合/sim 不直接消费 i_* 叶子。
 
     返回 ``{run_id, expression, n_rebalances, mining_session_dir, portfolios_root,
     sim_dir, report_html, sharpe, ann_ret}``。所有产物落 ``{out_root}/{stage}/{run_id}...``。
@@ -138,7 +143,8 @@ def run_research(*, start: str, end: str, universe: str | None = None,
 
     # ── 1) 挖掘 → 选头部 passed 因子 ──
     mine_res = run_mine(start=start, end=end, universe=universe, n_trials=n_trials,
-                        top_k=top_k, seed=seed, method=method)
+                        top_k=top_k, seed=seed, method=method,
+                        intraday=intraday, intraday_freq=intraday_freq)
     expr = _select_passed_expression(mine_res["candidates"])
 
     # ── 2) 整段因子面板：union 拉取（替代期末快照，消除调出股整窗消失）──
@@ -229,6 +235,7 @@ def run_research(*, start: str, end: str, universe: str | None = None,
                 "method": method, "seed": seed, "top_k": top_k, "rebalance_days": rebalance_days,
                 "warmup": warmup, "risk_aversion": risk_aversion, "w_max": w_max,
                 "turnover": turnover, "industry_neutral": industry_neutral, "lookback": lookback,
+                "intraday": intraday, "intraday_freq": intraday_freq,
                 "expression": expr, "n_rebalances": len(build_dirs)},
     )
     (research_dir / "manifest.json").write_text(

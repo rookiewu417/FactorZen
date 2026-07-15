@@ -87,6 +87,25 @@ def stage_audit(cfg: OpsConfig, as_of: date, ctx: dict[str, Any]) -> dict[str, A
     return statuses
 
 
+def stage_intraday_features(cfg: OpsConfig, as_of: date, ctx: dict[str, Any]) -> dict[str, Any]:
+    """日内特征面板增量 build（仅 cfg.intraday_leaves=True 时执行；否则 no-op skip）。
+
+    在 signal 阶段之前把 [window] 的 i_* 面板物化，供 live 信号的 i_* 因子物化 attach。
+    """
+    if not cfg.intraday_leaves:
+        return {"skipped": True}
+    from factorzen.intraday.features.engine import build_intraday_features
+
+    start, end = _window(cfg, as_of)
+    rep = build_intraday_features(start, end, freq=cfg.intraday_freq, overwrite=False)
+    return {
+        "skipped": False,
+        "months": rep.months,
+        "rows": rep.rows,
+        "freq": cfg.intraday_freq,
+    }
+
+
 def stage_signal(cfg: OpsConfig, as_of: date, ctx: dict[str, Any]) -> dict[str, Any]:
     """信号生成:执行外部命令(None=跳过,直接消费已有 portfolio 产物)。"""
     if cfg.signal_command is None:

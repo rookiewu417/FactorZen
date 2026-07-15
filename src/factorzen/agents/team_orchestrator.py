@@ -540,6 +540,7 @@ def run_team_agent(
     llm_workers: int = 1,
     auto_lift: bool = True,
     lift_se_mult: float = 1.0,
+    lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     # 测试注入：session 末 lift 钩子（combine / materialize / active 面板 / ret）
     lift_combine_fn=None,
     lift_materialize_candidate=None,
@@ -822,6 +823,7 @@ def run_team_agent(
         seed=seed,
         auto_lift=auto_lift,
         lift_se_mult=lift_se_mult,
+        lift_workers=lift_workers,
         data_window=data_window,
         combine_fn=lift_combine_fn,
         materialize_candidate=lift_materialize_candidate,
@@ -921,6 +923,7 @@ def _session_end_auto_lift(
     horizon: int,
     auto_lift: bool = True,
     lift_se_mult: float = 1.0,
+    lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     data_window: dict | None = None,
     combine_fn=None,
     materialize_candidate=None,
@@ -930,6 +933,8 @@ def _session_end_auto_lift(
 ) -> dict:
     """session 末：lift 队列 → 覆盖把关 → 组门 → 逐候选 → upsert。
 
+    组门算完后把 ``base_daily`` 传给 ``run_lift_tests`` 复用，省 1 次基线 combine。
+    ``lift_workers`` 透传到逐候选并行（None=按可用内存自适应；``<=1`` 串行）。
     ``horizon``：与 ``run_team_agent`` 的 mining horizon 一致，强制显式传入
     （禁止再吃 ``DEFAULT_HORIZON`` 隐式默认，避免 single 评估与 lift 入库漂移）。
 
@@ -1040,7 +1045,11 @@ def _session_end_auto_lift(
             combine_fn=combine_fn,
             ctx=lift_ctx,
         )
-        meta["lift_group"] = group
+        # base_daily 是 polars 帧，不可进 JSON manifest；抽出复用后从落盘视图剥离
+        shared_base_daily = group.get("base_daily")
+        meta["lift_group"] = {
+            k: v for k, v in group.items() if k != "base_daily"
+        }
         meta["n_lift_evaluated"] = 1  # 组门计 1 次（多重检验 N 记账）
 
         g_lift = group.get("lift")
@@ -1081,6 +1090,8 @@ def _session_end_auto_lift(
             materialize_candidate=mat,
             combine_fn=combine_fn,
             ctx=lift_ctx,
+            lift_workers=lift_workers,
+            base_daily=shared_base_daily,
         )
         meta["lift_results"] = results
         meta["n_lift_evaluated"] = 1 + len(results)

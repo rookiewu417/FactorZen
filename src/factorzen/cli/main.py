@@ -648,6 +648,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         llm_workers=getattr(args, "llm_workers", 1),
         auto_lift=not bool(getattr(args, "no_auto_lift", False)),
         lift_se_mult=float(getattr(args, "lift_se_mult", 1.0)),
+        lift_workers=getattr(args, "lift_workers", None),  # None→自适应(按可用内存)
         campaign_prior_enabled=not bool(getattr(args, "no_campaign_prior", False)),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
@@ -1027,7 +1028,6 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
     from factorzen.discovery.lift_test import (
         DEFAULT_HORIZON,
-        DEFAULT_TOP_M,
         LiftEvalContext,
         extract_gray_candidates_from_manifest,
         make_lift_context,
@@ -1115,7 +1115,9 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             )
 
     market = args.market
-    # 装配日频帧一次（各 session 共享；跨 universe 分帧另任务）
+    # 装配日频帧一次（各 session 共享；跨 universe 分帧另任务）——与 mine agent/team
+    # **同源** `_prepare_agent_mining_data`。禁止另起一套 loader，否则事件叶子缺列/fill
+    # 语义漂移 → 候选近乎全空 → build_panel「行因子齐全」暴跌、lift 成噪声。
     daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[factor-library lift-test] 挖掘帧为空", file=sys.stderr)
@@ -1125,7 +1127,14 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     threshold = getattr(args, "threshold", None)
     if threshold is None:
         threshold = DEFAULT_LIFT_THRESHOLD
-    top_m = getattr(args, "top_m", None) or DEFAULT_TOP_M
+    # top_m=None → 全测（与 session 末钩子一致）；仅显式 --top-m 截断，并告警（no silent caps）
+    top_m = getattr(args, "top_m", None)
+    if top_m is not None:
+        print(
+            f"[factor-library lift-test] 警告：--top-m={top_m} 将截断候选 "
+            f"（输入 {n_gray} 个，每组仅测 top-{int(top_m)}）",
+            file=sys.stderr,
+        )
     seed = getattr(args, "seed", 0) or 0
 
     # base_ctx：prep 一次；admission 窗 per-group replace（不改 horizon）
@@ -1140,6 +1149,10 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             library_root=lib_root,
         )
     except Exception:
+        # 回退=raw 帧当 prepped:派生叶子(ret_1d 等)将全空——真实数据不应走到这
+        # (2026-07-14 事故根因:候选全空面板→lift 全噪声)。仅容极简 mock 帧。
+        print("[factor-library lift-test] 警告：预处理失败,回退 raw 帧(派生叶子将缺失,"
+              "真实数据下结果不可信)", file=sys.stderr)
         base_ctx = LiftEvalContext(
             market=market,
             prepped=daily.sort(["ts_code", "trade_date"]) if daily.height else daily,
@@ -1151,6 +1164,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             profile_name=getattr(profile, "name", None) if profile is not None else None,
         )
 
+    lift_workers = getattr(args, "lift_workers", None)  # None→自适应(按可用内存)
     results: list[dict] = []
     for g_start, g_end, cands in groups:
         grp_ctx = dataclasses.replace(
@@ -1166,6 +1180,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             threshold=threshold,
             seed=seed,
             ctx=grp_ctx,
+            lift_workers=lift_workers,
         )
         for r in rows:
             r = dict(r)
@@ -2339,6 +2354,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--lift-se-mult", dest="lift_se_mult", type=float, default=1.0,
         help="lift 准入 SE 乘数（默认 1.0：lift ≥ max(threshold, se_mult×SE)）",
     )
+    m_team.add_argument(
+        "--lift-workers", dest="lift_workers", type=int, default=None,
+        help="session 末 lift 逐候选线程并发（默认 4=显式；API 缺省 None 按可用内存自适应；1=串行）",
+    )
     _add_freq_arg(m_team)
     m_team.set_defaults(func=_cmd_mine_team)
 
@@ -2394,8 +2413,10 @@ def build_parser() -> argparse.ArgumentParser:
     fl_lt.add_argument("--start", required=True, help="评估窗口起点 YYYYMMDD")
     fl_lt.add_argument("--end", required=True, help="评估窗口终点 YYYYMMDD")
     fl_lt.add_argument("--universe", default=None, help="A股 universe 名（如 csi300）")
-    fl_lt.add_argument("--top-m", dest="top_m", type=int, default=10,
-                       help="按 |residual_ic_train| 取 top-M 控成本（默认 10）")
+    fl_lt.add_argument(
+        "--top-m", dest="top_m", type=int, default=None,
+        help="按 |residual_ic_train| 取 top-M 控成本（默认 None=全测；显式截断会打印告警）",
+    )
     fl_lt.add_argument("--threshold", type=float, default=None,
                        help="RankIC lift 阈值（默认 DEFAULT_LIFT_THRESHOLD=0.001）")
     fl_lt.add_argument("--seed", type=int, default=0)
@@ -2425,6 +2446,10 @@ def build_parser() -> argparse.ArgumentParser:
     fl_lt.add_argument(
         "--admission-end", dest="admission_end", default=None,
         help="lift 评分窗终点 YYYYMMDD（覆盖 session manifest holdout 推导）",
+    )
+    fl_lt.add_argument(
+        "--lift-workers", dest="lift_workers", type=int, default=None,
+        help="候选级 lift 线程并发（None=按可用内存自适应,下限2上限4；1=串行）",
     )
     fl_lt.add_argument(
         "--horizon", type=int, default=None,

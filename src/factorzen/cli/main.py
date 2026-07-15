@@ -1132,7 +1132,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     if top_m is not None:
         print(
             f"[factor-library lift-test] 警告：--top-m={top_m} 将截断候选 "
-            f"（输入 {len(uniq_gray)} 个，仅测 top-{int(top_m)}）",
+            f"（输入 {n_gray} 个，每组仅测 top-{int(top_m)}）",
             file=sys.stderr,
         )
     seed = getattr(args, "seed", 0) or 0

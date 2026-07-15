@@ -497,6 +497,7 @@ def test_session_hook_reuses_group_base_daily(monkeypatch):
         auto_lift=True,
         lift_se_mult=1.0,
         lift_workers=3,
+        horizon=1,
         materialize_candidate=mat,
         active_factor_dfs={"base": _panel(100)},
         ret_df=_panel(100).rename({"factor_value": "ret"}),

@@ -35,6 +35,7 @@ def _inject_membership_into_session_manifest(
         "membership_hash",
         "membership_n_rows",
         "universe",
+        "intraday_panel",  # 日内特征面板溯源（仅 --intraday-leaves 时有）
     ):
         if key in prep_meta:
             manifest[key] = prep_meta[key]
@@ -50,9 +51,14 @@ def run_mine(*, start: str, end: str, universe: str | None = None,
              min_n_train: int = 5, dsr_alpha: float = DEFAULT_DSR_ALPHA,
              workers: int = 1, update_library: bool = True,
              library_orthogonal: bool = True,
-             objective: str = "residual") -> dict:
+             objective: str = "residual",
+             intraday: bool = False,
+             intraday_freq: str = "5min") -> dict:
     prep_meta: dict = {}
-    daily = prepare_mining_daily(start, end, universe, out_meta=prep_meta)
+    daily = prepare_mining_daily(
+        start, end, universe, out_meta=prep_meta,
+        intraday=intraday, intraday_freq=intraday_freq,
+    )
     # 收尾自动 upsert 因子库（--no-library 关）；库根由 run_session 从 out_dir 推导
     # （workspace/mining_sessions → workspace/factor_library）。universe 落进记录溯源。
     # library_orthogonal：搜索期避开库内已覆盖方向（--no-library-orthogonal 关）。

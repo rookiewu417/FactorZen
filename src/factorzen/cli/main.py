@@ -471,6 +471,10 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") not in ("crypto",) and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
+    # --intraday-leaves 仅 ashare（在 market 分流前拦截）
+    if getattr(args, "intraday_leaves", False) and getattr(args, "market", "ashare") != "ashare":
+        print("[mine] --intraday-leaves 仅 ashare 支持", file=sys.stderr)
+        return 2
     if getattr(args, "market", "ashare") == "crypto":
         return _mine_search_crypto(args)
     if getattr(args, "market", "ashare") == "futures":
@@ -496,6 +500,8 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         update_library=not getattr(args, "no_library", False),
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
         objective=getattr(args, "objective", "residual"),
+        intraday=bool(getattr(args, "intraday_leaves", False)),
+        intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
@@ -568,13 +574,19 @@ def _membership_prep_meta_empty(universe: str | None = None) -> dict:
 
 
 def _data_window_with_membership(args: argparse.Namespace, prep_meta: dict) -> dict:
-    """data_window + membership_* 三字段（与 start/end/universe 平级并入 params）。"""
-    return {
+    """data_window + membership_* 三字段（与 start/end/universe 平级并入 params）。
+
+    若 prep_meta 含 ``intraday_panel`` 溯源，一并写入（--intraday-leaves 路径）。
+    """
+    out = {
         **_data_window(args),
         "membership_mode": prep_meta.get("membership_mode"),
         "membership_hash": prep_meta.get("membership_hash"),
         "membership_n_rows": prep_meta.get("membership_n_rows"),
     }
+    if "intraday_panel" in prep_meta:
+        out["intraday_panel"] = prep_meta["intraday_panel"]
+    return out
 
 
 def _prepare_agent_mining_data(args: argparse.Namespace):
@@ -652,9 +664,13 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
         return (None if daily.is_empty() else daily), profile, prep_meta
     # A 股：预热前缀用 agent 专用加长值（LLM 窗口无搜索空间上界，长窗因子用 180 会被误判欠预热）。
     prep_meta = {}
-    daily = prepare_mining_daily(args.start, args.end, args.universe,
-                                 lookback_days=AGENT_WARMUP_LOOKBACK,
-                                 out_meta=prep_meta)
+    daily = prepare_mining_daily(
+        args.start, args.end, args.universe,
+        lookback_days=AGENT_WARMUP_LOOKBACK,
+        out_meta=prep_meta,
+        intraday=bool(getattr(args, "intraday_leaves", False)),
+        intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
+    )
     if not prep_meta:
         # 替身实现可能不填 out_meta：补占位，调用方仍能稳定解包
         prep_meta = _membership_prep_meta_empty(getattr(args, "universe", None))
@@ -1184,12 +1200,32 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     # 装配日频帧一次（各 session 共享；跨 universe 分帧另任务）——与 mine agent/team
     # **同源** `_prepare_agent_mining_data`。禁止另起一套 loader，否则事件叶子缺列/fill
     # 语义漂移 → 候选近乎全空 → build_panel「行因子齐全」暴跌、lift 成噪声。
+    # 自动置位：lift 队列 ∪ 库内 active 任一表达式引用 i_* → 装日内面板（堵死缺列静默失败）。
+    lib_root = getattr(args, "library_root", None) or fl.DEFAULT_ROOT
+    from factorzen.discovery.preparation import expressions_need_intraday
+    all_exprs: list[str] = []
+    for _gs, _ge, cands in groups:
+        for c in cands:
+            e = c.get("expression") if isinstance(c, dict) else None
+            if e:
+                all_exprs.append(str(e))
+    try:
+        for rec in fl.load_library(market, root=lib_root):
+            if getattr(rec, "status", None) == "active" and rec.expression:
+                all_exprs.append(str(rec.expression))
+    except Exception:
+        pass
+    need_intraday = bool(getattr(args, "intraday_leaves", False)) or expressions_need_intraday(
+        all_exprs
+    )
+    if need_intraday:
+        args.intraday_leaves = True
+
     daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[factor-library lift-test] 挖掘帧为空", file=sys.stderr)
         return 1
     leaf_map = profile.factors.leaf_features() if profile is not None else None
-    lib_root = getattr(args, "library_root", None) or fl.DEFAULT_ROOT
     threshold = getattr(args, "threshold", None)
     if threshold is None:
         threshold = DEFAULT_LIFT_THRESHOLD

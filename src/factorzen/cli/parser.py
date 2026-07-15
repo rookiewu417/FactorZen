@@ -307,6 +307,14 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     m_search.add_argument("--objective", choices=["raw", "residual"], default="residual",
                           help="挖掘评估目标：residual=对库内 active 因子截面正交后的残差 IC "
                                "（默认；库空自动退化为 raw）；raw=裸 Rank IC（旧口径）")
+    m_search.add_argument(
+        "--intraday-leaves", dest="intraday_leaves", action="store_true",
+        help="启用日内特征叶子 i_* 接入挖掘（仅 ashare；默认关，零回归）",
+    )
+    m_search.add_argument(
+        "--intraday-freq", dest="intraday_freq", default="5min",
+        help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
+    )
     _add_freq_arg(m_search)
     m_search.set_defaults(func=commands._cmd_mine_search)
 
@@ -364,6 +372,14 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
                          help="关闭搜索期库级正交过滤（默认开：护栏阶段避开库内 active 方向）")
     m_agent.add_argument("--objective", choices=["raw", "residual"], default="residual",
                         help="挖掘评估目标：residual=对库残差 IC（默认；库空→raw）；raw=裸 IC")
+    m_agent.add_argument(
+        "--intraday-leaves", dest="intraday_leaves", action="store_true",
+        help="启用日内特征叶子 i_* 接入挖掘（仅 ashare；默认关，零回归）",
+    )
+    m_agent.add_argument(
+        "--intraday-freq", dest="intraday_freq", default="5min",
+        help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
+    )
     _add_freq_arg(m_agent)
     m_agent.set_defaults(func=commands._cmd_mine_agent)
 
@@ -418,6 +434,14 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     m_team.add_argument(
         "--lift-workers", dest="lift_workers", type=int, default=None,
         help="session 末 lift 逐候选线程并发（默认自适应可用内存，上限 4；1=串行）",
+    )
+    m_team.add_argument(
+        "--intraday-leaves", dest="intraday_leaves", action="store_true",
+        help="启用日内特征叶子 i_* 接入挖掘（仅 ashare；默认关，零回归）",
+    )
+    m_team.add_argument(
+        "--intraday-freq", dest="intraday_freq", default="5min",
+        help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
     )
     _add_freq_arg(m_team)
     m_team.set_defaults(func=commands._cmd_mine_team)
@@ -519,6 +543,14 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_lt.add_argument("--top-n", dest="top_n", type=int, default=50,
                        help="crypto/futures/us universe size")
     fl_lt.add_argument("--symbols", default=None)
+    fl_lt.add_argument(
+        "--intraday-leaves", dest="intraday_leaves", action="store_true",
+        help="启用日内特征叶子 i_* 装帧（仅 ashare；库内已有 i_* 因子时也会自动置位）",
+    )
+    fl_lt.add_argument(
+        "--intraday-freq", dest="intraday_freq", default="5min",
+        help="日内特征面板频率（默认 5min；仅 ashare）",
+    )
     _add_freq_arg(fl_lt)
     fl_lt.set_defaults(func=commands._cmd_factor_library_lift_test)
 

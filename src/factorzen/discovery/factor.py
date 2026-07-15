@@ -77,6 +77,11 @@ class ExpressionFactor(DailyFactor):
                     daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
             from factorzen.daily.data.flows import attach_flows
             daily = attach_flows(daily)
+        # 仅在引用日内特征叶子时 attach（与挖掘路径共用 attach_intraday，防漂移）
+        from factorzen.core.feature_schema import INTRADAY_FEATURES
+        if self._feats & INTRADAY_FEATURES:
+            from factorzen.daily.data.intraday import attach_intraday
+            daily = attach_intraday(daily, require=True)
         # 排序必须在依赖行序的派生列（shift/over）之前完成，否则 ret_1d 等会用到
         # 乱序的「上一行」当成「前一交易日」算出错误结果（与 mining_session.py 保持一致）
         df = daily.sort(["ts_code", "trade_date"])

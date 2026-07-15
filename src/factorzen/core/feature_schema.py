@@ -1,5 +1,26 @@
 """Market-data leaf schema shared by ingestion and expression evaluation."""
 
+# 日内特征叶子（与 intraday.features.battery("v1") 名字一致；写死在此，core 不依赖 intraday）。
+INTRADAY_FEATURES: set[str] = {
+    "i_rv",
+    "i_rskew",
+    "i_rkurt",
+    "i_downvol_ratio",
+    "i_updown_vol",
+    "i_ret_open30",
+    "i_ret_close30",
+    "i_ret_mid",
+    "i_vwap_dev",
+    "i_pv_corr",
+    "i_smart_money",
+    "i_vol_open30_share",
+    "i_vol_close30_share",
+    "i_vol_entropy",
+    "i_amihud",
+    "i_path_eff",
+    "i_max_ret_share",
+}
+
 LEAF_FEATURES: dict[str, str] = {
     "close": "close_adj",
     "open": "open_adj",
@@ -41,6 +62,24 @@ LEAF_FEATURES: dict[str, str] = {
     "holder_num_chg": "holder_num_chg",
     "top_list_net_buy": "top_list_net_buy",
     "top_list_flag": "top_list_flag",
+    # 日内特征叶子（恒等映射；必须追加在末尾，既有键相对顺序不可变——随机搜索按键序采样）
+    "i_rv": "i_rv",
+    "i_rskew": "i_rskew",
+    "i_rkurt": "i_rkurt",
+    "i_downvol_ratio": "i_downvol_ratio",
+    "i_updown_vol": "i_updown_vol",
+    "i_ret_open30": "i_ret_open30",
+    "i_ret_close30": "i_ret_close30",
+    "i_ret_mid": "i_ret_mid",
+    "i_vwap_dev": "i_vwap_dev",
+    "i_pv_corr": "i_pv_corr",
+    "i_smart_money": "i_smart_money",
+    "i_vol_open30_share": "i_vol_open30_share",
+    "i_vol_close30_share": "i_vol_close30_share",
+    "i_vol_entropy": "i_vol_entropy",
+    "i_amihud": "i_amihud",
+    "i_path_eff": "i_path_eff",
+    "i_max_ret_share": "i_max_ret_share",
 }
 
 BASIC_FEATURES: set[str] = {

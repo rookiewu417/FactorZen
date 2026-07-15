@@ -740,10 +740,11 @@ def test_record_groups_by_universe_and_assembles_each(monkeypatch, tmp_path):
     as_of = _yyyymmdd(d3)
     assemble_calls: list[dict] = []
 
-    def fake_assemble(market, as_of_arg, lookback_days, universe=None):
+    def fake_assemble(market, as_of_arg, lookback_days, universe=None, expressions=None):
         assemble_calls.append({
             "market": market, "as_of": as_of_arg,
             "lookback_days": lookback_days, "universe": universe,
+            "expressions": expressions,
         })
         if universe == "csi300":
             return daily_300

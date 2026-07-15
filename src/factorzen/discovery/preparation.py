@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import warnings
+from collections.abc import Iterable
+
 import polars as pl
 
 
@@ -26,12 +29,39 @@ def _attach_in_universe(
     return out.with_columns(pl.col("in_universe").fill_null(False))
 
 
+def expressions_need_intraday(
+    exprs: Iterable[str],
+    leaf_map: dict[str, str] | None = None,
+) -> bool:
+    """任一表达式引用 ``INTRADAY_FEATURES`` 叶子 → True。
+
+    parse 失败的表达式跳过（不抛），避免畸形候选阻塞装帧。
+    """
+    from factorzen.core.feature_schema import INTRADAY_FEATURES
+    from factorzen.discovery.expression import feature_names, parse_expr
+
+    for e in exprs:
+        if not e:
+            continue
+        try:
+            node = parse_expr(str(e), leaf_map)
+        except Exception:
+            continue
+        if feature_names(node) & INTRADAY_FEATURES:
+            return True
+    return False
+
+
 def prepare_mining_daily(
     start: str,
     end: str,
     universe: str | None = None,
     lookback_days: int | None = None,
     out_meta: dict | None = None,
+    *,
+    intraday: bool = False,
+    intraday_freq: str = "5min",
+    intraday_version: str = "v1",
 ) -> pl.DataFrame:
     """Build the canonical A-share frame used by every discovery path.
 
@@ -41,6 +71,9 @@ def prepare_mining_daily(
 
     Named universes fail closed if their daily membership cannot be constructed.  A
     static/as-of fallback would introduce survivorship bias and is intentionally absent.
+
+    ``intraday=True`` 时在 attach 链末尾 join 日内特征面板（``require=True``）；
+    默认 ``False`` 保持 A 股日频链路字节级零回归。
     """
     from factorzen.core.universe import get_universe_membership, membership_hash
     from factorzen.daily.data.context import FactorDataContext
@@ -106,6 +139,32 @@ def prepare_mining_daily(
     daily = attach_fundamentals(daily)
     daily = attach_holders(daily)
     daily = attach_flows(daily)
+
+    if intraday:
+        from factorzen.daily.data.intraday import attach_intraday
+
+        daily = attach_intraday(
+            daily,
+            freq=intraday_freq,
+            version=intraday_version,
+            require=True,
+            out_meta=out_meta,
+        )
+        # 面板 coverage 起点晚于扩窗取数起点 → 短历史由 leaf 预算/warmup 门处理，只 warn
+        if out_meta is not None:
+            panel_meta = out_meta.get("intraday_panel") or {}
+            cov_start = panel_meta.get("coverage_start")
+            exp_start = context.expanded_start
+            if (
+                cov_start is not None
+                and str(cov_start).replace("-", "")[:8]
+                > str(exp_start).replace("-", "")[:8]
+            ):
+                warnings.warn(
+                    f"日内特征面板 coverage 起点 {cov_start} 晚于扩窗取数起点 "
+                    f"{exp_start}；短历史叶子由 leaf 预算/warmup 门自然处理。",
+                    stacklevel=2,
+                )
 
     if membership is not None:
         daily = _attach_in_universe(daily, membership)

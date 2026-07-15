@@ -187,14 +187,20 @@ def _ensure_intraday_cols(daily: pl.DataFrame) -> pl.DataFrame:
 def _read_manifest_fields(
     version: str, freq: str,
 ) -> tuple[str | None, str | None, str | None]:
-    """读 manifest 的 battery_hash / coverage.start / coverage.end；读不到 → 全 None。"""
-    try:
-        from factorzen.intraday.features.engine import read_manifest
+    """读 manifest 的 battery_hash / coverage.start / coverage.end；读不到 → 全 None。
 
-        man = read_manifest(version=version, freq=freq, base_dir=INTRADAY_FEATURES_DIR)
-    except Exception:
+    直接读 JSON（不 import intraday.features），避免 daily→intraday 依赖环
+    （架构守卫 test_top_level_package_dependency_graph_is_acyclic）；
+    路径与 intraday.features.engine.read_manifest 落盘口径一致。
+    """
+    import json
+
+    manifest_path = INTRADAY_FEATURES_DIR / version / freq / "manifest.json"
+    try:
+        man = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return None, None, None
-    if not man:
+    if not isinstance(man, dict):
         return None, None, None
     bhash = man.get("battery_hash")
     cov = man.get("coverage") or {}

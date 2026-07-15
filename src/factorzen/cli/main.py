@@ -2175,7 +2175,7 @@ def build_parser() -> argparse.ArgumentParser:
     bf.add_argument("--end", required=True)
     bf.add_argument("--symbols", default=None, help="逗号分隔;缺省=按上月成交额 Top-N 自动选池")
     bf.add_argument("--top-n", dest="top_n", type=int, default=50)
-    bf.add_argument("--lake-root", dest="lake_root", default="workspace/crypto_lake")
+    bf.add_argument("--lake-root", dest="lake_root", default="data/crypto_lake")
     bf.set_defaults(func=_cmd_data_crypto_backfill)
 
     config = sub.add_parser("config", help="Config workflows")

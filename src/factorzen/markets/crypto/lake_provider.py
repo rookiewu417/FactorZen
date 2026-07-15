@@ -9,6 +9,7 @@ from pathlib import Path
 
 import polars as pl
 
+from factorzen.config.settings import CRYPTO_LAKE
 from factorzen.markets.base import DataProvider
 from factorzen.markets.crypto.frequency import normalize_freq
 from factorzen.markets.crypto.lake import CryptoLake
@@ -21,7 +22,7 @@ from factorzen.markets.crypto.resample import (
 
 class CryptoLakeProvider(DataProvider):
     def __init__(self, lake: CryptoLake | None = None,
-                 lake_root: str | Path = "workspace/crypto_lake") -> None:
+                 lake_root: str | Path = CRYPTO_LAKE) -> None:
         self.lake = lake or CryptoLake(lake_root)
 
     def _require_lake(self) -> None:

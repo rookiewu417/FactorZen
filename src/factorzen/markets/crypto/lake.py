@@ -17,6 +17,8 @@ from typing import Any
 
 import polars as pl
 
+from factorzen.config.settings import CRYPTO_LAKE
+
 
 def month_range(start: str, end: str) -> list[str]:
     """[start, end]("YYYYMMDD")覆盖到的月份列表("YYYY-MM")。"""
@@ -72,7 +74,7 @@ _METRICS_SCHEMA = {"event_time": pl.Datetime("us"), "open_interest": pl.Float64}
 
 
 class CryptoLake:
-    def __init__(self, root: str | Path = "workspace/crypto_lake") -> None:
+    def __init__(self, root: str | Path = CRYPTO_LAKE) -> None:
         self.root = Path(root)
 
     # ── 路径 ──────────────────────────────────────────────

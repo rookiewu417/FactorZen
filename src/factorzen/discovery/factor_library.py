@@ -185,6 +185,9 @@ class FactorRecord:
     git_sha: str | None = None
     added_at: str | None = None
     updated_at: str | None = None
+    # 日内特征叶子溯源（旧 jsonl 无此字段 → from_dict 向前兼容读入不崩）
+    intraday_leaves: list[str] | None = None
+    intraday_panel: str | None = None
 
     def to_dict(self) -> dict:
         """JSON 安全序列化：NaN/inf → None（jsonl 须合法 JSON）。"""
@@ -348,6 +351,30 @@ def _record_from_candidate(
             hnd = int(hnd)
         except (TypeError, ValueError):
             hnd = None
+
+    # 日内叶子溯源：表达式 parse 后 ∩ INTRADAY_FEATURES；去重键 by_expr 不动
+    from factorzen.core.feature_schema import INTRADAY_FEATURES
+    from factorzen.discovery.expression import feature_names
+
+    i_leaves: list[str] | None = None
+    i_panel: str | None = None
+    try:
+        feats = feature_names(parse_expr(norm_expr))
+        hit = sorted(feats & INTRADAY_FEATURES)
+        if hit:
+            i_leaves = hit
+            raw_panel = g("intraday_panel")
+            if isinstance(raw_panel, dict):
+                ver = raw_panel.get("version") or "v1"
+                fr = raw_panel.get("freq") or "5min"
+                i_panel = f"{ver}@{fr}"
+            elif isinstance(raw_panel, str) and raw_panel:
+                i_panel = raw_panel
+            else:
+                i_panel = "v1@5min"
+    except Exception:
+        pass
+
     return FactorRecord(
         expression=norm_expr,
         market=market,
@@ -395,6 +422,8 @@ def _record_from_candidate(
         git_sha=git_sha,
         added_at=prev.added_at if prev is not None else now,   # 保留原入库日
         updated_at=now,
+        intraday_leaves=i_leaves,
+        intraday_panel=i_panel,
     )
 
 

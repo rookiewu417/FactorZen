@@ -79,6 +79,22 @@ MARKET_CAVEATS: dict[str, str] = {
     "us": US_CAVEATS,
 }
 
+# 日内特征叶子语义（仅当 leaf_names ∩ INTRADAY_FEATURES 非空时注入；不改既有常量字符串）。
+ASHARE_INTRADAY_LEAF_NOTES: str = (
+    "日内特征叶子 i_*（已聚合为日频标量，t 日收盘可得、PIT 安全）:\n"
+    "- i_rv: 日内已实现波动率；i_rskew/i_rkurt: 日内收益偏度/峰度；\n"
+    "- i_downvol_ratio: 下行波动占比；i_updown_vol: 上下行波动比对数；\n"
+    "- i_ret_open30/i_ret_close30/i_ret_mid: 开盘/收盘约30分钟与中间时段收益；\n"
+    "- i_vwap_dev: 收盘相对全日 VWAP 偏离；i_pv_corr: 价量 Pearson 相关；\n"
+    "- i_smart_money: 高冲击桶 VWAP 相对全日 VWAP；\n"
+    "- i_vol_open30_share/i_vol_close30_share: 开/收盘约30分钟成交量占比；\n"
+    "- i_vol_entropy: 成交量时间分布归一化熵；i_amihud: Amihud 非流动性；\n"
+    "- i_path_eff: 价格路径效率；i_max_ret_share: 最大单桶绝对收益占比。\n"
+    "提示: (1) 叶子已是日频聚合，可与日线算子直接组合；"
+    "(2) t 日值在 t 日收盘后可得，PIT 安全、无盘中前视；"
+    "(3) 与日线量价叶子相关性高，优先找正交方向（结构/路径/聪明钱/时段分解）。"
+)
+
 # 未知市场的通用兜底：只保留跨市场恒成立的 PIT 铁律 + 成本提示，不抛异常
 # （新市场未登记 caveats 时仍给出核心风控约束，而非空白 prompt）。
 _GENERIC_CAVEATS = (

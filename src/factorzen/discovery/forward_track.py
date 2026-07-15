@@ -161,6 +161,7 @@ def _existing_keys(rows: list[dict]) -> set[tuple[str, str, str | None]]:
 
 def _assemble_daily(
     market: str, as_of: str, lookback_days: int, universe: str | None = None,
+    expressions: list[str] | None = None,
 ) -> pl.DataFrame:
     """生产装配：小窗 [as_of, as_of] + lookback 预热前缀。
 
@@ -170,16 +171,25 @@ def _assemble_daily(
     ``universe``：forward IC 的截面必须与因子**准入时的 universe 一致**——
     csi300 准入的因子在全 A 截面上算 forward IC 是另一个统计量，不能用于裁决
     （首跑实测 n_stocks=5511 暴露此漂移）。
+
+    ``expressions``：将要物化的表达式集合；任一引用 ``i_*`` 则自动
+    ``intraday=True`` 装帧（库内已有日内因子时防缺列静默失败）。
     """
     if market != "ashare":
         raise ValueError(
             f"forward-track 暂未接入 {market} 的 profile/provider/leaf-map；"
             f"非 A 股入口 fail closed，勿用 A 股数据求值非 A 股因子。"
         )
+    from factorzen.discovery.preparation import expressions_need_intraday
+
+    need_intraday = expressions_need_intraday(expressions or [])
     # start=end=as_of：评分只覆盖确认日；FactorDataContext 再往前拉 lookback 交易日预热，
     # 从而 t-1 落在帧内（因子滞后截面 + 收益分母）。
-    return prepare_mining_daily(as_of, as_of, universe=universe,
-                                lookback_days=lookback_days)
+    return prepare_mining_daily(
+        as_of, as_of, universe=universe,
+        lookback_days=lookback_days,
+        intraday=need_intraday,
+    )
 
 
 def _effective_universe(rec: Any, force_universe: str | None) -> str | None:
@@ -442,7 +452,10 @@ def record_forward_ics(
         for r in to_eval:
             groups[_effective_universe(r, force_uni)].append(r)
         for grp_uni, group_recs in groups.items():
-            daily_g = _assemble_daily(market, as_of_s, lb, universe=grp_uni)
+            group_exprs = [str(r.expression) for r in group_recs if getattr(r, "expression", None)]
+            daily_g = _assemble_daily(
+                market, as_of_s, lb, universe=grp_uni, expressions=group_exprs,
+            )
             prepped = _preprocess(daily_g, leaf_map)
             rows, n_fail = _eval_forward_on_frame(
                 group_recs, prepped, as_of_s, leaf_map, force_universe=force_uni,

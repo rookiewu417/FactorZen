@@ -219,6 +219,11 @@ def build_agent_messages(
     )
     from factorzen.llm.prompt_fragments import market_caveats
     system = system + "\n" + market_caveats(market)
+    # 仅当本轮可用叶子含 i_* 时注入日内语义表（零回归：不含 i_* 时 system 逐字节不变）
+    from factorzen.core.feature_schema import INTRADAY_FEATURES
+    if set(leaf_names) & INTRADAY_FEATURES:
+        from factorzen.llm.prompt_fragments import ASHARE_INTRADAY_LEAF_NOTES
+        system = system + "\n" + ASHARE_INTRADAY_LEAF_NOTES
     hint = format_leaf_budget_hint(leaf_budgets)
     if hint:
         system = system + "\n" + hint

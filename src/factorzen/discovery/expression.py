@@ -193,7 +193,7 @@ def warmup_bars(node, prepped: pl.DataFrame, eval_start,
                 leaf_map: dict[str, str] | None = None) -> int:
     """表达式各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**的最小值 = 真实可用预热 bar 数。
 
-    M1 搜索路径（`mining_session`）与 agent 路径（`agents/evaluation`）共用本判定，
+    M1 搜索路径（`mining_session`）与 agent 路径（`discovery/evaluation`）共用本判定，
     两侧的预热门（`required_lookback` 对照）据此对齐，消除双路径漂移。
 
     不能按预热段交易日数算：daily_basic 缺 2019 时 dv_ttm 在预热段全 null，

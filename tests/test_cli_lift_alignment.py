@@ -85,7 +85,7 @@ def _write_lift_queue_session(tmp_path: Path, expressions: list[str]) -> Path:
 
 def _mining_path_nonzero_rows(daily: pl.DataFrame, expr: str) -> int:
     """挖掘路径口径：preprocess → factor_df_from_prepped 非空行数。"""
-    from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
+    from factorzen.discovery.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.discovery.expression import parse_expr
 
     prepped = _preprocess_daily(daily)

@@ -19,20 +19,22 @@ tmp/
 .claude/
 CLAUDE.md
 
-workspace/runs/*
-!workspace/runs/.gitkeep
+# Workspace is generated output by default.  Explicitly allow only versioned
+# inputs/templates and placeholder directories; new runtime folders stay ignored.
+workspace/*
+!workspace/configs/
+!workspace/configs/**
+!workspace/factors/
+!workspace/factors/**
+!workspace/factor_evaluations/
 workspace/factor_evaluations/*
 !workspace/factor_evaluations/.gitkeep
-workspace/mining_sessions/
-workspace/risk_models/
-workspace/portfolios/
-workspace/sim/
-workspace/reports/
-workspace/crypto_lake*/
-workspace/first_reversal/
-workspace/execution/
-workspace/ops/
-workspace/factor_library/
+!workspace/notebooks/
+workspace/notebooks/*
+!workspace/notebooks/.gitkeep
+!workspace/runs/
+workspace/runs/*
+!workspace/runs/.gitkeep
 
 # Python
 __pycache__/

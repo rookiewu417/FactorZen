@@ -1,6 +1,6 @@
 ﻿"""Intraday 分钟频数据上下文。为分钟频因子提供 lazy 数据加载。
 
-通过 common.storage.load_parquet("minute", ...) 惰性加载分钟线数据，
+通过 core.storage.load_parquet("minute_<bar_size>", ...) 惰性加载分钟线数据，
 支持 universe 过滤和 max_bars 安全上限。
 """
 
@@ -76,4 +76,3 @@ class IntradayDataContext:
         for data_type in self.required_data:
             if data_type == "minute":
                 _ = self.minute
-

@@ -93,6 +93,9 @@ def test_minute_lazy_loading():
 
         result = ctx.minute
         mock_load.assert_called_once()
+        # 存储 data_type 必须按 freq 命名空间 minute_{bar_size}（对齐 loader.fetch_minute，
+        # 否则读到空的 "minute" 分区——双路径漂移）。
+        assert mock_load.call_args.args[0] == "minute_1min"
         assert isinstance(result, pl.LazyFrame)
         assert ctx._minute is not None
 

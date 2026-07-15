@@ -13,7 +13,7 @@ from pathlib import Path
 # 各市场缓存根（探测最新可用交易日用）。改这里即改探测源。
 _ASHARE_DAILY_ROOT = "data/raw/daily"
 _FUTURES_DAILY_ROOT = "data/raw/fut_daily"
-_CRYPTO_LAKE_ROOT = "workspace/crypto_lake"
+_CRYPTO_LAKE_ROOT = "data/crypto_lake"
 # 美股缓存：provider 按 symbol 落 ``data/raw/us_daily/{sym}.parquet``（非 Hive 年月分区）。
 _US_DAILY_ROOT = "data/raw/us_daily"
 
@@ -113,7 +113,7 @@ def _us_latest_date(root: str) -> date | None:
 def latest_data_date(market: str) -> date | None:
     """探测该市场缓存的最大可用 ``trade_date``。缓存缺失 → None（调用方须回退/报错）。
 
-    A股扫 ``data/raw/daily``；期货扫 ``data/raw/fut_daily``；crypto 读 ``workspace/crypto_lake``；
+    A股扫 ``data/raw/daily``；期货扫 ``data/raw/fut_daily``；crypto 读 ``data/crypto_lake``；
     美股扫 ``data/raw/us_daily``（每 symbol 一 parquet）。
     """
     if market == "ashare":

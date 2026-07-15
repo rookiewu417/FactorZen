@@ -6,8 +6,10 @@ RiskModel 本期(MC0)传 None，延后 MC3 填。
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from factorzen.config.settings import CRYPTO_LAKE
 from factorzen.markets import registry
 from factorzen.markets.base import MarketProfile
 from factorzen.markets.crypto.calendar import CryptoCalendar
@@ -27,7 +29,7 @@ def build_crypto_profile(
     min_amount: float = 0.0,
     min_list_days: int = 30,
     source: str | None = None,
-    lake_root: str = "workspace/crypto_lake",
+    lake_root: str | Path = CRYPTO_LAKE,
 ) -> MarketProfile:
     from factorzen.markets.crypto.lake_provider import CryptoLakeProvider
     from factorzen.markets.crypto.risk import CryptoRiskModel

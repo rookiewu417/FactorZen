@@ -130,8 +130,15 @@ def _daily_oos_rank_ic(
     ``start`` / ``end``：评分窗闭区间裁剪（trade_date 字符串比较，YYYYMMDD 安全）；
     None 表示不裁该端。模型层（combine/CV）不经此裁剪——只影响返回的日 IC 序列。
     """
+    # 两侧都 cast:candidate 物化面板 trade_date 可能是 pl.Date(prepped 帧原生),
+    # ret 侧 Utf8——单侧 cast 会 SchemaError(2026-07-15 apply 全灭事故:38/38
+    # "join keys don't match")。日期字符串 YYYYMMDD 序与 Date 序一致。
     rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
-    m = combined.join(rdf, on=["trade_date", "ts_code"], how="inner")
+    m = combined.with_columns(
+        pl.col("trade_date").dt.strftime("%Y%m%d")
+        if combined.schema.get("trade_date") == pl.Date
+        else pl.col("trade_date").cast(pl.Utf8)
+    ).join(rdf, on=["trade_date", "ts_code"], how="inner")
     day_rows: list[tuple[str, float]] = []
     for _d, g in m.group_by("trade_date", maintain_order=True):
         if len(g) < n_groups * 2:

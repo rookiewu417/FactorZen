@@ -1030,3 +1030,31 @@ def test_run_lift_tests_admission_provenance_complete():
     assert r2["baseline_hash"] != r1["baseline_hash"]
     expected_b = hashlib.sha256(",".join(sorted(active_b.keys())).encode()).hexdigest()[:16]
     assert r2["baseline_hash"] == expected_b
+
+
+def test_daily_oos_rank_ic_mixed_trade_date_dtypes():
+    """回归:candidate 面板 trade_date=pl.Date、ret=Utf8 → 不许 SchemaError 且能配对。
+
+    2026-07-15 apply 事故:38/38 候选死于 join 键 dtype 不匹配(admission_ic 路径把
+    Date 面板直喂本函数)。
+    """
+    import datetime as dt
+
+    import polars as pl
+
+    from factorzen.discovery.lift_test import _daily_oos_rank_ic
+
+    days = [dt.date(2024, 1, 2 + i) for i in range(3)]
+    codes = [f"{i:06d}.SZ" for i in range(12)]
+    combined = pl.DataFrame({
+        "trade_date": [d for d in days for _ in codes],          # pl.Date
+        "ts_code": codes * len(days),
+        "factor_value": [float(hash((str(d), c)) % 100) for d in days for c in codes],
+    })
+    ret = pl.DataFrame({
+        "trade_date": [d.strftime("%Y%m%d") for d in days for _ in codes],  # Utf8
+        "ts_code": codes * len(days),
+        "ret": [((hash((c, str(d))) % 200) - 100) / 5000.0 for d in days for c in codes],
+    })
+    daily = _daily_oos_rank_ic(combined, ret)
+    assert daily.height == len(days)  # 三个截面日全部配对成功

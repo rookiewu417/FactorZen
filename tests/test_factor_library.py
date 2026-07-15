@@ -509,7 +509,7 @@ def test_compact_corr_parity_with_max_correlation():
 
 def test_evaluate_batches_candidates_not_all_at_once(monkeypatch):
     """内存有界回归：evaluate 分批调 evaluate_expressions，绝不一次性把全部候选塞进去。"""
-    import factorzen.agents.evaluation as _ev
+    import factorzen.discovery.evaluation as _ev
     from factorzen.discovery.factor_library import build_library_evaluator
     batch_sizes: list[int] = []
     real = _ev.evaluate_expressions
@@ -593,32 +593,3 @@ def test_rebuild_is_fresh_drops_stale_records(tmp_path):
     lib = [r.expression for r in load_library("ashare", root=str(tmp_path))]
     assert lib == ["rank(close)"]                              # 只剩本次重算结果
     assert not any("delay(ret_1d, -1" in e for e in lib)       # 前视残留被清
-
-
-# ── OOM 根因修复：命名 universe 空池的 as-of 回退（防「空→全市场→OOM」）───────────────
-
-def test_universe_asof_fallback_walks_back_to_valid_snapshot(monkeypatch):
-    """命名 universe 在 end 无成分快照时，按月回退到最近有成分的日期（防空池退化成全市场）。"""
-    import factorzen.core.universe as U
-    from factorzen.pipelines.factor_mine import _universe_asof_fallback
-    calls: list[str] = []
-
-    def fake_gu(date_str, name):
-        calls.append(date_str)
-        if len(calls) >= 3:                                   # 前两次空，第三次有成分
-            return pl.DataFrame({"ts_code": ["000001.SZ", "000002.SZ"]})
-        return pl.DataFrame({"ts_code": []})
-
-    monkeypatch.setattr(U, "get_universe", fake_gu)
-    uni = _universe_asof_fallback("csi300", "20260605", max_months=12)
-    assert uni == ["000001.SZ", "000002.SZ"]
-    assert len(calls) == 3                                    # 回退到非空即止
-
-
-def test_universe_asof_fallback_raises_when_all_empty(monkeypatch):
-    """回退窗内始终无成分 → 报错（绝不静默退化成全市场，那会 OOM 且改评估口径）。"""
-    import factorzen.core.universe as U
-    from factorzen.pipelines.factor_mine import _universe_asof_fallback
-    monkeypatch.setattr(U, "get_universe", lambda d, n: pl.DataFrame({"ts_code": []}))
-    with pytest.raises(ValueError, match="无成分快照"):
-        _universe_asof_fallback("csi300", "20260605", max_months=3)

@@ -12,6 +12,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from factorzen.config.settings import OPS_SITE_DIR, OPS_STATE_DIR
+
 
 class OpsConfig(BaseModel):
     """无人值守每日链路的配置。"""
@@ -44,10 +46,10 @@ class OpsConfig(BaseModel):
 
     # ── 发布(track record 静态页)──
     publish_enabled: bool = False
-    publish_site_dir: str = "workspace/ops/site"
+    publish_site_dir: str = str(OPS_SITE_DIR)
 
     # ── 幂等状态 ──
-    state_dir: str = "workspace/ops/state"
+    state_dir: str = str(OPS_STATE_DIR)
 
 
 def load_ops_config(path: str | Path) -> OpsConfig:

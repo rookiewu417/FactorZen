@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from factorzen.agents.team_orchestrator import run_team_agent, write_team_manifest
+from factorzen.config.settings import MINE_TEAM_DIR
 from factorzen.pipelines.factor_mine_agent import (
     _llm_meta,
     _print_final_stats,
@@ -32,7 +33,7 @@ def run_team_mine(
     n_rounds: int,
     seed: int,
     index_path: str,
-    out_dir: str = "workspace/mine_team",
+    out_dir: str = str(MINE_TEAM_DIR),
     llm_fn=None,
     top_k: int = 5,
     holdout_ratio: float = 0.2,

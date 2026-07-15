@@ -12,63 +12,26 @@ from typing import Literal
 
 import polars as pl
 
-# 叶子名 → 求值表中的列名。vwap/log_vol/ret_1d/amplitude/intraday_ret/overnight_ret 为派生列（ExpressionFactor 预计算）。
-LEAF_FEATURES: dict[str, str] = {
-    "close": "close_adj", "open": "open_adj", "high": "high_adj", "low": "low_adj",
-    "vol": "vol", "amount": "amount", "vwap": "vwap", "log_vol": "log_vol", "ret_1d": "ret_1d",
-    "amplitude": "amplitude", "intraday_ret": "intraday_ret", "overnight_ret": "overnight_ret",
-    "total_mv": "total_mv", "circ_mv": "circ_mv", "pb": "pb", "pe_ttm": "pe_ttm",
-    "ps_ttm": "ps_ttm", "dv_ttm": "dv_ttm",
-    "turnover_rate": "turnover_rate", "turnover_rate_f": "turnover_rate_f",
-    "volume_ratio": "volume_ratio", "float_share": "float_share",
-    # 基本面（财报 fina_indicator，按公告日 PIT 对齐；与量价正交，供价值/质量/成长类因子）
-    # 质量：roe/roa/毛利率/净利率/资产负债率(杠杆)
-    "roe": "roe", "roa": "roa",
-    "grossprofit_margin": "grossprofit_margin", "netprofit_margin": "netprofit_margin",
-    "debt_to_assets": "debt_to_assets",
-    # 成长：营收同比/净利同比/资产同比
-    "or_yoy": "or_yoy", "netprofit_yoy": "netprofit_yoy", "assets_yoy": "assets_yoy",
-    # 资金流/北向（日频 point-in-time，与量价/基本面均正交）
-    "net_mf_amount": "net_mf_amount",  # 主力资金净流入额
-    "north_ratio": "north_ratio",      # 北向持股占比
-    # 两融/杠杆情绪（margin_detail；T 日数据 T+1 早间披露 → attach 内置 lag(1)；
-    # rzye/rzmre 单位元；margin_ratio=rzye/(circ_mv×1e4)，margin_buy_ratio=rzmre/(amount×1e3)）
-    "margin_ratio": "margin_ratio",           # 融资余额/流通市值（杠杆拥挤度）
-    "margin_buy_ratio": "margin_buy_ratio",   # 融资买入额/成交额（杠杆资金参与度）
-    "margin_balance": "margin_balance",       # 融资余额原值 rzye（元，已 lag）
-    "short_balance": "short_balance",         # 融券余量原值 rqyl（股，已 lag）
-    # 股东户数（stk_holdernumber；按 ann_date PIT；holder_num_chg 源侧期际环比，非 ts_*）
-    "holder_num": "holder_num",               # 最新一期股东户数（户）
-    "holder_num_chg": "holder_num_chg",       # 相邻两期环比 (本期-上期)/上期；随 ann_date 生效
-    # 龙虎榜（top_list；t 日盘后披露 → attach lag(1)；已知日未上榜 fill 0，未拉取日 null）
-    # net_amount 万元→×1e4、amount 千元→×1e3，比前统一到元；同日多原因先 sum net_amount
-    "top_list_net_buy": "top_list_net_buy",   # 昨日龙虎榜净买入额/成交额
-    "top_list_flag": "top_list_flag",         # 昨日是否上榜 0/1（未知日 null）
-}
-BASIC_FEATURES: set[str] = {
-    "total_mv", "circ_mv", "pb", "pe_ttm", "ps_ttm", "dv_ttm",
-    "turnover_rate", "turnover_rate_f", "volume_ratio", "float_share",
-}
-# 需 finance 数据 + PIT 对齐的基本面叶子。用了这些叶子的因子须先 attach_fundamentals，
-# 否则回测/物化路径上它们全 null（双路径漂移，陷阱#2）。fina_indicator 字段名即叶子名。
-FUNDAMENTAL_FEATURES: set[str] = {
-    "roe", "roa", "grossprofit_margin", "netprofit_margin", "debt_to_assets",
-    "or_yoy", "netprofit_yoy", "assets_yoy",
-}
-# 股东户数叶子（stk_holdernumber + ann_date PIT）。用了它们的因子须先 attach_holders。
-HOLDER_FEATURES: set[str] = {
-    "holder_num", "holder_num_chg",
-}
-# 两融叶子（margin_detail + T+1 lag）。子集于 FLOW_FEATURES：物化路径经 attach_flows 门接入。
-MARGIN_FEATURES: set[str] = {
-    "margin_ratio", "margin_buy_ratio", "margin_balance", "short_balance",
-}
-# 龙虎榜叶子（top_list + lag(1) + 条件 fill 0：已知日未上榜=0，未拉取=null）。子集于 FLOW_FEATURES。
-TOPLIST_FEATURES: set[str] = {
-    "top_list_net_buy", "top_list_flag",
-}
-# 需资金流/北向/两融/龙虎榜数据的日频叶子。用了它们的因子须先 attach_flows，否则回测/物化路径上全 null。
-FLOW_FEATURES: set[str] = {"net_mf_amount", "north_ratio"} | MARGIN_FEATURES | TOPLIST_FEATURES
+from factorzen.core.feature_schema import (
+    BASIC_FEATURES,
+    FLOW_FEATURES,
+    FUNDAMENTAL_FEATURES,
+    HOLDER_FEATURES,
+    LEAF_FEATURES,
+    MARGIN_FEATURES,
+    TOPLIST_FEATURES,
+)
+
+__all__ = [
+    "BASIC_FEATURES",
+    "FLOW_FEATURES",
+    "FUNDAMENTAL_FEATURES",
+    "HOLDER_FEATURES",
+    "LEAF_FEATURES",
+    "MARGIN_FEATURES",
+    "OPERATORS",
+    "TOPLIST_FEATURES",
+]
 
 _MIN = 3  # rolling 最小样本
 

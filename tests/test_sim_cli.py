@@ -149,7 +149,9 @@ def test_cmd_sim_run_forwards_filtered_run_dirs_without_explicit_cost_model(
         str(portfolio_root / "run_b"),
     ]
     assert calls["daily"] is daily_df
-    assert calls["kwargs"] == {"out_dir": "workspace/sim", "run_id": "myrun"}
+    from factorzen.config.settings import SIM_DIR
+
+    assert calls["kwargs"] == {"out_dir": str(SIM_DIR), "run_id": "myrun"}
     assert "cost_model" not in calls["kwargs"]
 
     out = capsys.readouterr().out

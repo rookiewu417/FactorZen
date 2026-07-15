@@ -19,10 +19,12 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
 from factorzen.core.experiment import get_git_sha
 from factorzen.core.stats import spearman_avg_rank
 from factorzen.discovery.factor_library import DEFAULT_ROOT, load_library, render_markdown
 from factorzen.discovery.lift_test import paired_lift_stats
+from factorzen.discovery.preparation import prepare_mining_daily
 
 _LOG = logging.getLogger(__name__)
 
@@ -35,8 +37,6 @@ FORWARD_TRACK_COMMAND = "forward-track"
 # search_space_max_lookback(=180) 只覆盖随机搜索 windows≤60，对库内长窗因子欠预热。
 # 记录器只评单日截面，装配小窗 + 长前缀即可。
 def _default_lookback() -> int:
-    from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
-
     return int(AGENT_WARMUP_LOOKBACK)
 
 
@@ -176,8 +176,6 @@ def _assemble_daily(
             f"forward-track 暂未接入 {market} 的 profile/provider/leaf-map；"
             f"非 A 股入口 fail closed，勿用 A 股数据求值非 A 股因子。"
         )
-    from factorzen.pipelines.factor_mine import prepare_mining_daily
-
     # start=end=as_of：评分只覆盖确认日；FactorDataContext 再往前拉 lookback 交易日预热，
     # 从而 t-1 落在帧内（因子滞后截面 + 收益分母）。
     return prepare_mining_daily(as_of, as_of, universe=universe,
@@ -194,7 +192,7 @@ def _effective_universe(rec: Any, force_universe: str | None) -> str | None:
 
 def _preprocess(daily: pl.DataFrame, leaf_map: dict[str, str] | None) -> pl.DataFrame:
     """与 build_library_pool / lift 同款：先 ``_preprocess_daily`` 再物化。"""
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
 
     # leaf_map 非 None 时通常已有市场派生列；A 股 profile=None 走默认 prep。
     # 本记录器不持有 profile，统一走 A 股 prep（测试注入帧同样受益）。

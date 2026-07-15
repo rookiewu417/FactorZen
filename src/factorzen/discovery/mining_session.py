@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from factorzen.config.settings import DAILY_FACTORS_DIR, MINING_SESSIONS_DIR
 from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import (
@@ -250,7 +251,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 decorr_threshold: float = DEFAULT_DECORR_THRESHOLD, min_n_train: int = 5,
                 dsr_alpha: float = DEFAULT_DSR_ALPHA,
                 eval_start: str | None = None,
-                out_dir: str = "workspace/mining_sessions",
+                out_dir: str = str(MINING_SESSIONS_DIR),
                 profile=None, workers: int = 1,
                 update_library: bool = True, library_root: str | None = None,
                 library_universe: str | None = None, horizon: int = 1,
@@ -568,7 +569,10 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 "n_library_correlated_rejects": n_library_correlated_rejects,
                 "n_gray_zone": n_gray_zone,
                 "objective": eff_objective,
-                "reproduce_note": "导出因子在 exported/；复现需复制到 workspace/factors/daily/ 后 fz factor run <name> --set preprocessing.neutralize=false（IC parity）"}
+                "reproduce_note": (
+                    f"导出因子在 exported/；复现需复制到 {DAILY_FACTORS_DIR}/ 后 "
+                    "fz factor run <name> --set preprocessing.neutralize=false（IC parity）"
+                )}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     from factorzen.discovery.export import export_candidate
     exported_dir = session_dir / "exported"

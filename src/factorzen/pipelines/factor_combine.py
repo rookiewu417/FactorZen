@@ -13,6 +13,7 @@ from typing import Any
 
 import polars as pl
 
+from factorzen.config.settings import COMBINATIONS_DIR
 from factorzen.research.combination.cv import PurgedWalkForwardCV
 from factorzen.research.combination.experiment import run_combination_experiment
 
@@ -27,7 +28,7 @@ def run_factor_combination(
     embargo_days: int = 0,
     methods: list[str] | None = None,
     seed: int = 0,
-    out_dir: str = "workspace/combinations",
+    out_dir: str = str(COMBINATIONS_DIR),
     run_id: str | None = None,
     command: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -201,7 +202,7 @@ def combine_from_session(
     passed_only: bool = True,
     top_n: int | None = None,
     decorr_threshold: float = 0.7,
-    out_dir: str = "workspace/combinations",
+    out_dir: str = str(COMBINATIONS_DIR),
     train_days: int = 120,
     test_days: int = 20,
     purge_days: int = 5,
@@ -231,8 +232,8 @@ def combine_from_session(
     from datetime import datetime
     from pathlib import Path
 
-    from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
+    from factorzen.discovery.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.discovery.expression import parse_expr
     from factorzen.pipelines.factor_mine import prepare_mining_daily
 

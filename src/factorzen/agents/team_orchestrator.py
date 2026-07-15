@@ -12,7 +12,6 @@ from typing import TypeVar
 
 import polars as pl
 
-from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.manifest import dump_manifest, json_safe_float
 from factorzen.agents.nodes import (
@@ -35,7 +34,9 @@ from factorzen.agents.roles.hypothesis import (
 )
 from factorzen.agents.roles.librarian import recall, record
 from factorzen.agents.state import AgentState, AttemptRecord
+from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
 from factorzen.core.experiment import get_git_sha
+from factorzen.discovery.evaluation import evaluate_expressions, make_health_check
 from factorzen.discovery.expression import parse_expr, to_expr_string
 from factorzen.discovery.scoring import DataBundle
 from factorzen.llm.client import LLMClientError
@@ -586,7 +587,7 @@ def run_team_agent(
     ctx = AgentContext.from_profile(profile)
     # 开局摘死叶：必须在与求值同一套 prep 帧上量覆盖（close→close_adj 别名 + 派生列），
     # 否则 ret_1d/vwap 等会被误判为「列不存在→覆盖 0」整批摘除。
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.leaf_health import (
         apply_leaf_exclusion,
         filter_leaves_by_holdout_coverage,
@@ -607,9 +608,8 @@ def run_team_agent(
     # 内部同一套 _preprocess_daily 帧算，才能与预热门判 have 逐值一致（见 leaf_warmup_budgets）。
     leaf_budgets: dict[str, int] | None = None
     if _eval_start_date is not None:
-        from factorzen.agents.evaluation import _preprocess_daily
+        from factorzen.discovery.evaluation import _preprocess_daily
         from factorzen.discovery.expression import leaf_warmup_budgets
-        from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
         _all_budgets = leaf_warmup_budgets(
             _preprocess_daily(daily, profile), _eval_start_date, ctx.leaf_names,
             leaf_map=ctx.leaf_map)
@@ -646,7 +646,7 @@ def run_team_agent(
     lib_root = library_root or str(Path(index_path).parent / "factor_library")
     if library_orthogonal:
         try:
-            from factorzen.agents.evaluation import _preprocess_daily
+            from factorzen.discovery.evaluation import _preprocess_daily
             from factorzen.discovery.factor_library import (
                 build_library_pool,
                 library_covered_expressions,
@@ -1146,8 +1146,8 @@ def _library_upsert_team(candidates, *, seed, mining_df, ctx, profile, data_wind
     try:
         if not candidates:
             return
-        from factorzen.agents.evaluation import _preprocess_daily
         from factorzen.discovery import factor_library as _fl
+        from factorzen.discovery.evaluation import _preprocess_daily
         market = getattr(profile, "name", None) or (
             (data_window or {}).get("market")) or "ashare"
         root = library_root or str(Path(index_path).parent / "factor_library")

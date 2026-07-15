@@ -6,7 +6,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from factorzen.agents.evaluation import _node_to_factor_df
+from factorzen.discovery.evaluation import _node_to_factor_df
 from factorzen.discovery.expression import parse_expr
 
 
@@ -67,7 +67,7 @@ def test_warmup_bars_counts_nonnull_history_per_leaf():
     保留作为 min-vs-max-across-leaves 回归的判别项：与 dv_ttm（预热恒 0）组合，
     只有正确取 `min()` 才会得到 0；若误用 `max()`，会被 open 的满预热天数掩盖。
     """
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.expression import warmup_bars
 
     daily = _synthetic_daily(n_days=100)
@@ -95,7 +95,7 @@ def test_warmup_bars_counts_nonnull_history_per_leaf():
 
 def test_warmup_bars_absent_column_and_constant_expr():
     """两个当前只靠代码自证、无断言守护的边界情形。"""
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.expression import warmup_bars
 
     daily = _synthetic_daily(n_days=100)
@@ -116,7 +116,7 @@ def test_warmup_bars_excludes_nan_not_just_null():
 
     直接构造 NaN（不经 derived.py 的除法），使断言独立于 ret_1d 缺零分母守卫的行为。
     """
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.expression import warmup_bars
 
     daily = _synthetic_daily(n_days=100)
@@ -177,7 +177,7 @@ def test_train_ic_dates_exclude_warmup_segment():
     `evaluate_expressions` 内部有没有裁剪，n_train 都被钉在同一个数，断言两边
     都过，零判别力（已用 bug-injection 探针验证，见 task-1.3-report.md）。
     """
-    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.discovery.evaluation import evaluate_expressions
     from factorzen.discovery.scoring import DataBundle
 
     full = _synthetic_daily(n_days=120)                     # 含预热段的完整帧
@@ -201,7 +201,7 @@ def test_insufficient_warmup_expression_is_rejected_not_silently_noisy():
     反例保护：operators._MIN = 3 意味着 250 日窗口只要 3 个观测就出值，
     静默通过时它会带着噪声 IC 进入 DSR 的 IR 池。
     """
-    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.discovery.evaluation import evaluate_expressions
 
     full = _synthetic_daily(n_days=120)
     eval_start = dt.date(2020, 2, 1)          # 预热段仅 31 个交易日
@@ -220,7 +220,7 @@ def test_insufficient_warmup_expression_is_rejected_not_silently_noisy():
 
 def test_eval_end_without_eval_start_raises():
     """eval_end 单传（无 eval_start）会静默跳过下界裁剪与预热门——必须早失败，而不是悄悄放行。"""
-    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.discovery.evaluation import evaluate_expressions
 
     full = _synthetic_daily(n_days=120)
     with pytest.raises(ValueError, match="eval_start"):
@@ -247,8 +247,8 @@ def test_split_happens_after_clipping_to_eval_start():
 def test_m1_and_agent_paths_agree_on_train_ic_days():
     """跨路径一致性：M1 的 run_session(eval_start=) 与 agent 的 evaluate_expressions(eval_start=)
     对同一表达式、同一帧，train 段有效 IC 天数必须相等。"""
-    from factorzen.agents.evaluation import evaluate_expressions
     from factorzen.agents.team_orchestrator import _prepare_segments
+    from factorzen.discovery.evaluation import evaluate_expressions
     from factorzen.discovery.mining_session import _factor_values
     from factorzen.discovery.scoring import DataBundle, quick_fitness
 
@@ -303,7 +303,7 @@ def test_warmup_shortfall_not_dragged_by_shallow_derived_leaf():
 
     前提用真实数值钉死『旧 min-vs-max 会假拒』的拓扑,再断言新逐叶门放行。
     """
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.expression import (
         required_lookback,
         warmup_bars,
@@ -326,7 +326,7 @@ def test_warmup_shortfall_not_dragged_by_shallow_derived_leaf():
 
 def test_warmup_shortfall_flags_genuinely_underwarmed_leaf():
     """反向守卫(防修过头):某叶真的够不着自身 need 时必须报欠预热,返回最欠的叶。"""
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.expression import warmup_shortfall
 
     prepped = _preprocess_daily(_synthetic_daily(n_days=100))
@@ -339,7 +339,7 @@ def test_warmup_shortfall_flags_genuinely_underwarmed_leaf():
 
 def test_m1_underwarmed_false_for_mixed_depth_expr():
     """M1 路径(mining_session._underwarmed):mixed 表达式不再假拒,真欠仍拒。"""
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.mining_session import _underwarmed
 
     prepped = _preprocess_daily(_synthetic_daily(n_days=100))
@@ -354,7 +354,7 @@ def test_agent_evaluate_no_false_warmup_rejection_for_mixed_expr():
 
     与 M1 用同一道共享门(warmup_shortfall),两条路对同一 mixed 拓扑判定一致。
     """
-    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.discovery.evaluation import evaluate_expressions
     from factorzen.discovery.scoring import DataBundle
 
     full = _synthetic_daily(n_days=120)

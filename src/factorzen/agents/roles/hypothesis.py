@@ -1,8 +1,8 @@
 """Hypothesis 角色：提经济直觉方向，注入长期记忆（避开已知无效，借鉴已知有效）。"""
 from __future__ import annotations
 
-from factorzen.agents.roles.librarian import format_leaf_guidance, format_library_covered
 from factorzen.llm.generation import LLMFn, extract_json_items
+from factorzen.llm.prompt_fragments import format_leaf_guidance, format_library_covered
 
 # 可用信号族——中性列举；具体方向优先/避开由动态 leaf_guidance（挖穿/未探索）引导。
 _SIGNAL_FAMILIES = (

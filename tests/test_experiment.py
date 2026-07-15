@@ -10,7 +10,7 @@ def test_experiment_success(tmp_path, monkeypatch):
     from factorzen.core import experiment as exp_mod
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
 
     cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
 
@@ -25,8 +25,8 @@ def test_experiment_success(tmp_path, monkeypatch):
 
 
 def test_auto_run_id_includes_factor_name(tmp_path, monkeypatch):
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     cfg = RunConfig(factor="momentum_12_1", start="20230101", end="20241231")
@@ -43,7 +43,7 @@ def test_experiment_failure(tmp_path, monkeypatch):
     from factorzen.core import experiment as exp_mod
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
 
     cfg = RunConfig(factor="x", start="20230101", end="20241231")
 
@@ -59,8 +59,8 @@ def test_experiment_index_created_on_success(tmp_path, monkeypatch):
     """成功 run 后，experiment_index.jsonl 被创建并含正确字段。"""
     import json as _json
 
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     cfg = RunConfig(factor="reversal_5d", start="20240101", end="20241231")
@@ -81,8 +81,8 @@ def test_experiment_index_appends_multiple_runs(tmp_path, monkeypatch):
     """两次 run 各 append 一行，JSONL 共两行。"""
     import json as _json
 
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
 
@@ -102,8 +102,8 @@ def test_experiment_index_records_failure_status(tmp_path, monkeypatch):
     """失败 run 的状态也被记录到索引。"""
     import json as _json
 
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     cfg = RunConfig(factor="x", start="20240101", end="20241231")
@@ -117,8 +117,8 @@ def test_experiment_index_records_failure_status(tmp_path, monkeypatch):
 
 
 def test_experiment_records_reproducibility_metadata(tmp_path, monkeypatch):
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: True)
@@ -140,8 +140,8 @@ def test_experiment_records_reproducibility_metadata(tmp_path, monkeypatch):
 
 
 def test_record_experiment_metadata_survives_run_finalization(tmp_path, monkeypatch):
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     cfg = RunConfig(factor="x", start="20230101", end="20241231")
@@ -157,8 +157,8 @@ def test_record_experiment_metadata_survives_run_finalization(tmp_path, monkeypa
 
 
 def test_manifest_records_duration_seconds(tmp_path, monkeypatch):
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
@@ -175,8 +175,8 @@ def test_manifest_records_duration_seconds(tmp_path, monkeypatch):
 def test_experiment_warns_when_git_dirty(tmp_path, monkeypatch, caplog):
     import logging
 
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: True)
@@ -191,8 +191,8 @@ def test_experiment_warns_when_git_dirty(tmp_path, monkeypatch, caplog):
 def test_experiment_does_not_warn_when_clean(tmp_path, monkeypatch, caplog):
     import logging
 
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: False)
@@ -238,8 +238,8 @@ def test_build_manifest_base_accepts_plain_dict_config(monkeypatch):
 
 def test_build_manifest_base_used_by_run_experiment_unchanged(tmp_path, monkeypatch):
     """run_experiment() 重构为复用 build_manifest_base 后，对外行为（字段集合/取值）保持不变。"""
+    from factorzen.config.research import RunConfig
     from factorzen.core import experiment as exp_mod
-    from factorzen.core.config_loader import RunConfig
 
     monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
     cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")

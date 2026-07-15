@@ -486,11 +486,11 @@ def test_node_guardrails_rejects_redundant_with_residual_reason(tmp_path, monkey
         critic_verdict=None, error=None, ir_train=0.5, turnover=0.2, n_train=80,
     ))
     monkeypatch.setattr(
-        "factorzen.agents.evaluation._factor_df_from_prepped",
+        "factorzen.discovery.evaluation._factor_df_from_prepped",
         lambda *a, **k: cand_fdf,
     )
     monkeypatch.setattr(
-        "factorzen.agents.evaluation._preprocess_daily",
+        "factorzen.discovery.evaluation._preprocess_daily",
         lambda df, profile=None: df,
     )
 

@@ -9,6 +9,11 @@ from typing import Any, cast
 import polars as pl
 from pydantic import ValidationError
 
+from factorzen.config.research import (
+    RunConfig,
+    build_default_daily_research_config,
+    default_benchmark_for_universe,
+)
 from factorzen.config.settings import (
     ROOT,
     daily_factor_output_dir,
@@ -16,15 +21,6 @@ from factorzen.config.settings import (
     daily_result_output_dir,
 )
 from factorzen.core.calendar import get_trade_dates
-from factorzen.core.config_loader import (
-    RunConfig,
-    build_backtest_strategies,
-    build_cost_model,
-    build_default_daily_research_config,
-    build_preprocessing_pipeline,
-    build_runtime_backtest_config,
-    default_benchmark_for_universe,
-)
 from factorzen.core.data_ensure import ensure_data_for_daily_run
 from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
 from factorzen.core.experiment import (
@@ -43,6 +39,12 @@ from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns, compute_
 from factorzen.daily.evaluation.turnover import compute_turnover
 from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 from factorzen.daily.factors.registry import get_factor
+from factorzen.daily.runtime import (
+    build_backtest_strategies,
+    build_cost_model,
+    build_preprocessing_pipeline,
+    build_runtime_backtest_config,
+)
 from factorzen.experiments.run_paths import copy_outputs_to_run_dir
 from factorzen.llm import generate_llm_explanation
 from factorzen.reports.tear_sheet import generate_tear_sheet
@@ -1149,11 +1151,11 @@ def main():
     overrides = args.set_overrides or []
     try:
         if args.config:
-            from factorzen.core.config_loader import load_run_config
+            from factorzen.config.research import load_run_config
 
             run_config = load_run_config(args.config, overrides=overrides)
         elif overrides and args.factor and args.start and args.end:
-            from factorzen.core.config_loader import build_run_config_from_dict
+            from factorzen.config.research import build_run_config_from_dict
 
             base = build_default_daily_research_config(
                 factor=args.factor,

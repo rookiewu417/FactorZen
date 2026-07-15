@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
+from factorzen.config.settings import PORTFOLIOS_DIR
 from factorzen.markets.base import MarketProfile
 from factorzen.markets.crypto.frequency import periods_per_year as _freq_ppy
 from factorzen.markets.crypto.risk import build_crypto_risk_model
@@ -34,7 +35,7 @@ def build_crypto_portfolio(
     gross_limit: float = 1.0,
     risk_aversion: float = 1.0,
     sector_neutral: bool = True,
-    out_dir: str = "workspace/portfolios",
+    out_dir: str = str(PORTFOLIOS_DIR),
     run_id: str | None = None,
     signal_date: str | None = None,
     sector_map: dict[str, str] | None = None,

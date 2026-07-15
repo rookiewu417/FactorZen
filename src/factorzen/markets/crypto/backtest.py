@@ -15,6 +15,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
+from factorzen.config.settings import SIM_DIR
 from factorzen.markets.crypto.costs import CryptoCostModel
 
 _CRYPTO_PERIODS_PER_YEAR = 365
@@ -136,7 +137,7 @@ def run_crypto_simulation(
     *,
     symbols: list[str] | None = None,
     freq: str | None = None,
-    out_dir: str = "workspace/sim",
+    out_dir: str = str(SIM_DIR),
     run_id: str | None = None,
 ) -> dict:
     """crypto 模拟交易编排：读组合权重 → 拉 crypto bar+funding → NAV 回测 → 落盘。

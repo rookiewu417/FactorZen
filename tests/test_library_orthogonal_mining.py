@@ -350,8 +350,8 @@ def test_hypothesis_prompt_no_library_byte_stable():
 def test_format_library_covered_shared_architecture_guard():
     """双路径（hypothesis / build_agent_messages）共用 format_library_covered。"""
     from factorzen.agents.roles import hypothesis as hyp_mod
-    from factorzen.agents.roles.librarian import format_library_covered
     from factorzen.llm import generation as gen_mod
+    from factorzen.llm.prompt_fragments import format_library_covered
 
     assert "format_library_covered" in inspect.getsource(hyp_mod.propose_hypotheses)
     assert "format_library_covered" in inspect.getsource(gen_mod.build_agent_messages)

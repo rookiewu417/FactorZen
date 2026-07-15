@@ -508,7 +508,7 @@ def test_all_a_empty_membership_still_succeeds(monkeypatch):
 
 def test_eval_frame_filters_in_universe_false():
     """评估截面不含 in_universe=False 行。"""
-    from factorzen.agents.evaluation import _factor_df_from_prepped
+    from factorzen.discovery.evaluation import _factor_df_from_prepped
     from factorzen.discovery.expression import parse_expr
 
     days = _JAN_DATES + _FEB_DATES
@@ -553,7 +553,7 @@ def test_eval_frame_filters_in_universe_false():
 
 def test_eval_frame_no_in_universe_column_zero_regression():
     """无 in_universe 列时评估帧不过滤（零回归）。"""
-    from factorzen.agents.evaluation import _factor_df_from_prepped
+    from factorzen.discovery.evaluation import _factor_df_from_prepped
     from factorzen.discovery.expression import parse_expr
 
     days = _JAN_DATES

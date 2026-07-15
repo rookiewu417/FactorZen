@@ -12,7 +12,7 @@ import json
 import numpy as np
 import polars as pl
 
-from factorzen.agents.evaluation import _factor_turnover, evaluate_expressions
+from factorzen.discovery.evaluation import _factor_turnover, evaluate_expressions
 from factorzen.discovery.scoring import DataBundle
 
 

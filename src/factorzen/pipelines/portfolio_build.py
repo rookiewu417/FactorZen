@@ -11,6 +11,7 @@ import polars as pl
 
 from factorzen.attribution.brinson import brinson_attribution
 from factorzen.attribution.risk_attribution import risk_factor_attribution
+from factorzen.config.settings import PORTFOLIOS_DIR
 from factorzen.core.experiment import build_manifest_base
 from factorzen.portfolio.constraints import ConstraintConfig
 from factorzen.portfolio.optimizer import optimize_portfolio
@@ -21,7 +22,7 @@ def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
                   factor_returns_latest, bench_weights=None, prev_weights=None,
                   risk_aversion=1.0, neutral_factors=None, turnover_budget=None,
                   w_max=0.05, long_only=True, budget=1.0, gross_limit=None,
-                  periods_per_year=252, out_dir="workspace/portfolios", run_id=None,
+                  periods_per_year=252, out_dir=str(PORTFOLIOS_DIR), run_id=None,
                   signal_date: str | None = None,
                   command: list[str] | None = None) -> dict:
     t0 = time.perf_counter()

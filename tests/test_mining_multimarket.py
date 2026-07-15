@@ -173,7 +173,7 @@ def test_agent_context_from_profile_crypto_vs_default():
 
 
 def test_evaluate_expressions_crypto_profile_parses_funding():
-    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.discovery.evaluation import evaluate_expressions
     from factorzen.discovery.scoring import DataBundle
     daily = _crypto_daily()
     bundle = DataBundle.build(daily)
@@ -193,7 +193,7 @@ def test_crypto_leaf_map_parity_across_parse_warmup_eval():
     leaf_warmup_budgets 都吃同一 crypto leaf_map）。"""
     import datetime as dt
 
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.expression import (
         leaf_warmup_budgets,
         parse_expr,
@@ -216,7 +216,7 @@ def test_crypto_leaf_map_parity_across_parse_warmup_eval():
 
 
 def test_make_health_check_crypto_profile_funding_healthy():
-    from factorzen.agents.evaluation import make_health_check
+    from factorzen.discovery.evaluation import make_health_check
     prof = _CryptoProfileStub()
     daily = _crypto_daily(n_days=60)
     check = make_health_check(daily, profile=prof, leaf_map=prof.factors.leaf_features())

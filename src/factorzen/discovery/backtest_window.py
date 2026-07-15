@@ -10,12 +10,19 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
+from factorzen.config.settings import (
+    CRYPTO_LAKE,
+    DATA_RAW_DAILY,
+    DATA_RAW_FUTURES,
+    DATA_RAW_US,
+)
+
 # 各市场缓存根（探测最新可用交易日用）。改这里即改探测源。
-_ASHARE_DAILY_ROOT = "data/raw/daily"
-_FUTURES_DAILY_ROOT = "data/raw/fut_daily"
-_CRYPTO_LAKE_ROOT = "data/crypto_lake"
+_ASHARE_DAILY_ROOT = DATA_RAW_DAILY
+_FUTURES_DAILY_ROOT = DATA_RAW_FUTURES
+_CRYPTO_LAKE_ROOT = CRYPTO_LAKE
 # 美股缓存：provider 按 symbol 落 ``data/raw/us_daily/{sym}.parquet``（非 Hive 年月分区）。
-_US_DAILY_ROOT = "data/raw/us_daily"
+_US_DAILY_ROOT = DATA_RAW_US
 
 # crypto 数据成熟度起点下限（早于此的 K 线覆盖不足，不作训练窗口）。
 _CRYPTO_START_FLOOR = date(2021, 1, 1)
@@ -33,7 +40,7 @@ def _coerce_date(v) -> date:
     raise ValueError(f"无法解析交易日: {v!r}")
 
 
-def _max_trade_date_partitioned(root: str) -> date | None:
+def _max_trade_date_partitioned(root: str | Path) -> date | None:
     """扫 Hive 分区 ``root/year=YYYY/month=MM/*.parquet``，读最新分区 parquet 的 trade_date 最大值。
 
     只读最深（最新 year→month）的那个分区文件，避免全量扫描。目录/文件缺失或无 trade_date 列
@@ -88,7 +95,7 @@ def _crypto_lake_end() -> date | None:
     return None
 
 
-def _us_latest_date(root: str) -> date | None:
+def _us_latest_date(root: str | Path) -> date | None:
     """美股缓存最新交易日：扫 ``root/*.parquet``（每 symbol 一文件）取 trade_date 最大值。"""
     base = Path(root)
     if not base.is_dir():

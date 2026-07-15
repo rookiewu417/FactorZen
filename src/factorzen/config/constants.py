@@ -5,6 +5,10 @@ TRADING_DAYS_PER_YEAR: int = 252
 TRADING_DAYS_PER_MONTH: int = 21
 TRADING_DAYS_PER_WEEK: int = 5
 
+# LLM 因子允许嵌套年度窗口；统一供 agent/team 与 forward-track 使用，避免
+# discovery 反向依赖 pipeline 只为读取预热策略。
+AGENT_WARMUP_LOOKBACK: int = 2 * TRADING_DAYS_PER_YEAR
+
 # ── 预处理 ──────────────────────────────────────────────────────────────────────
 # MAD 去极值：高斯分布下 MAD → σ 转换系数
 MAD_GAUSSIAN_CONST: float = 1.4826

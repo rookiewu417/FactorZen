@@ -35,6 +35,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from factorzen.config.settings import FACTOR_LIBRARY_DIR
 from factorzen.core.stats import spearman_avg_rank
 from factorzen.discovery.guardrails import (
     DEFAULT_LIFT_THRESHOLD,
@@ -253,7 +254,7 @@ class LiftEvalContext:
     horizon: int
     admission_start: str | None
     admission_end: str | None
-    library_root: str = "workspace/factor_library"
+    library_root: str = str(FACTOR_LIBRARY_DIR)
     profile_name: str | None = None
 
 
@@ -266,13 +267,13 @@ def make_lift_context(
     horizon: int = DEFAULT_HORIZON,
     admission_start: str | None = None,
     admission_end: str | None = None,
-    library_root: str = "workspace/factor_library",
+    library_root: str = str(FACTOR_LIBRARY_DIR),
 ) -> LiftEvalContext:
     """构造 ``LiftEvalContext``：``_preprocess_daily(daily, profile)`` 恰好一次并 sort。
 
     baseline 与 candidate 此后共用同一 ``prepped``（对称性的根）。
     """
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
 
     prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
     profile_name = getattr(profile, "name", None) if profile is not None else None
@@ -517,7 +518,7 @@ def run_lift_tests(
     market: str,
     daily: pl.DataFrame,
     leaf_map: dict[str, str] | None = None,
-    library_root: str = "workspace/factor_library",
+    library_root: str = str(FACTOR_LIBRARY_DIR),
     cv_params: dict[str, Any] | None = None,
     top_m: int | None = None,
     threshold: float = DEFAULT_LIFT_THRESHOLD,
@@ -801,7 +802,7 @@ def run_group_lift(
     market: str,
     daily: pl.DataFrame,
     leaf_map: dict[str, str] | None = None,
-    library_root: str = "workspace/factor_library",
+    library_root: str = str(FACTOR_LIBRARY_DIR),
     cv_params: dict[str, Any] | None = None,
     top_m: int | None = None,  # 与 run_lift_tests 签名对齐；组测忽略截断
     threshold: float = DEFAULT_LIFT_THRESHOLD,
@@ -1024,7 +1025,7 @@ def _materializer_from_prepped(
     prepped: pl.DataFrame, leaf_map: dict[str, str] | None,
 ):
     """表达式 → 因子面板；接收**已 prep** 帧，不再二次预处理。"""
-    from factorzen.agents.evaluation import _factor_df_from_prepped
+    from factorzen.discovery.evaluation import _factor_df_from_prepped
     from factorzen.discovery.expression import parse_expr
 
     def _mat(expr: str) -> pl.DataFrame | None:
@@ -1045,7 +1046,7 @@ def _default_materializer(daily: pl.DataFrame, leaf_map: dict[str, str] | None):
 
     内部 prep 后委托 ``_materializer_from_prepped``；签名/行为零回归。
     """
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
 
     prepped = _preprocess_daily(daily).sort(["ts_code", "trade_date"])
     return _materializer_from_prepped(prepped, leaf_map)

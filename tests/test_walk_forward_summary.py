@@ -44,7 +44,7 @@ def _make_factor_price(n_dates: int = 40, n_stocks: int = 20, seed: int = 7):
 
 
 def test_walk_forward_summary_marks_insufficient_data():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 
     factor_df, price_df = _make_factor_price(n_dates=12)
@@ -77,7 +77,7 @@ def test_walk_forward_summary_marks_insufficient_data():
 
 
 def test_walk_forward_summary_returns_oos_metrics_when_folds_exist():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 
     factor_df, price_df = _make_factor_price(n_dates=36, n_stocks=80)
@@ -114,7 +114,7 @@ def test_walk_forward_summary_returns_oos_metrics_when_folds_exist():
 
 
 def test_walk_forward_summary_uses_top_n_candidates_from_n_trials(monkeypatch):
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.daily.evaluation.backtest import PrecomputedWeightsStrategy
     from factorzen.daily.evaluation.walk_forward import WalkForwardResult
     from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
@@ -161,7 +161,7 @@ def test_walk_forward_summary_uses_top_n_candidates_from_n_trials(monkeypatch):
 
 
 def test_walk_forward_summary_skips_runner_when_disabled(monkeypatch):
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 
     def unexpected_runner(**_kwargs):

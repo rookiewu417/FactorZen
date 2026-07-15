@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import polars as pl
 
+from factorzen.core.feature_schema import FLOW_FEATURES, MARGIN_FEATURES, TOPLIST_FEATURES
+
 # 叶子名 → (缓存分区, 源列名)。北向 ratio 重命名为 north_ratio,避免与通用名冲突。
 # 两融/龙虎榜由专用 _attach_* 处理(需 lag/比值/fill0),不进此表。
 _FLOW_SOURCES: dict[str, tuple[str, str]] = {
@@ -57,8 +59,6 @@ def attach_flows(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame] | Non
     ``injected``:``{分区名: DataFrame}`` 供测试注入,绕过 parquet 读取。
     两融/龙虎榜在 join 前对源列做组内 lag(1)；龙虎榜对已知日条件 fill 0。
     """
-    from factorzen.discovery.operators import FLOW_FEATURES, MARGIN_FEATURES, TOPLIST_FEATURES
-
     if daily.is_empty() or "trade_date" not in daily.columns:
         return daily
     injected = injected or {}
@@ -277,7 +277,6 @@ def _align_trade_date(sel: pl.DataFrame, daily: pl.DataFrame) -> pl.DataFrame:
 
 
 def _ensure_flow_cols(daily: pl.DataFrame) -> pl.DataFrame:
-    from factorzen.discovery.operators import FLOW_FEATURES
     missing = [c for c in sorted(FLOW_FEATURES) if c not in daily.columns]
     if missing:
         daily = daily.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])

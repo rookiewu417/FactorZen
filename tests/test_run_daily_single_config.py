@@ -158,7 +158,7 @@ def test_build_attribution_result_uses_long_book_for_brinson():
 def test_run_backtest_strategies_runs_each_configured_strategy(monkeypatch):
     from types import SimpleNamespace
 
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines import daily_single as mod
 
     cfg = RunConfig(
@@ -205,7 +205,7 @@ def test_run_backtest_strategies_passes_is_st_by_date_to_backtest(monkeypatch):
     """
     from types import SimpleNamespace
 
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines import daily_single as mod
 
     cfg = RunConfig(
@@ -240,7 +240,7 @@ def test_run_backtest_strategies_passes_is_st_by_date_to_backtest(monkeypatch):
 
 
 def test_merge_run_config_args_uses_yaml_for_missing_cli_values():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _merge_run_config_args
 
     args = Namespace(
@@ -283,7 +283,7 @@ def test_merge_run_config_args_uses_yaml_for_missing_cli_values():
 
 
 def test_merge_run_config_args_keeps_explicit_cli_values():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _merge_run_config_args
 
     args = Namespace(
@@ -326,7 +326,7 @@ def test_merge_run_config_args_keeps_explicit_cli_values():
 
 
 def test_merge_run_config_args_keeps_explicit_cli_benchmark():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _merge_run_config_args
 
     args = Namespace(
@@ -408,7 +408,7 @@ def test_merge_run_config_args_all_uses_universe_matched_benchmark():
 
 
 def test_dry_run_payload_includes_effective_config_and_output_dir():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _build_dry_run_payload
 
     cfg = RunConfig(
@@ -430,7 +430,7 @@ def test_dry_run_payload_includes_effective_config_and_output_dir():
 
 
 def test_dry_run_payload_includes_execution_options():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _build_dry_run_payload
 
     cfg = RunConfig(
@@ -447,7 +447,7 @@ def test_dry_run_payload_includes_execution_options():
 
 
 def test_merge_run_config_args_all_overrides_yaml_defaults():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _merge_run_config_args
 
     args = Namespace(
@@ -668,7 +668,7 @@ def test_build_neutralized_ic_frame_includes_industry_and_market_cap():
 
 
 def test_preprocess_with_industry_neutralization_uses_universe_industry():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _preprocess_factor
 
     rows = []
@@ -732,7 +732,7 @@ def test_load_daily_basic_for_neutralization_reads_ensured_cache(monkeypatch):
 
 def test_run_ensures_required_data_before_loading_universe(monkeypatch):
     import factorzen.pipelines.daily_single as run_mod
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
 
     calls: list[str] = []
 

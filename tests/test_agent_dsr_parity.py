@@ -26,9 +26,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-from factorzen.agents.evaluation import evaluate_expressions
 from factorzen.agents.nodes import node_guardrails
 from factorzen.agents.state import AgentState, AttemptRecord
+from factorzen.discovery.evaluation import evaluate_expressions
 from factorzen.discovery.guardrails import DeflationBasis, deflated_pvalue
 from factorzen.discovery.scoring import DataBundle
 from factorzen.validation.deflated_sharpe import deflated_sharpe

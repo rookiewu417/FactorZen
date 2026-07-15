@@ -242,7 +242,7 @@ def test_merge_report_config_args_all_uses_universe_matched_benchmark():
 def test_merge_report_config_args_all_overrides_yaml_benchmark():
     from argparse import Namespace
 
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines import generate_report as mod
 
     args = Namespace(
@@ -282,7 +282,7 @@ def test_merge_report_config_args_all_overrides_yaml_benchmark():
 def test_merge_report_config_args_all_keeps_explicit_deep_options():
     from argparse import Namespace
 
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines import generate_report as mod
 
     args = Namespace(

@@ -98,9 +98,9 @@ def test_node_guardrails_n_accounting_and_holdout_isolation():
     import numpy as np
     import polars as pl
 
-    from factorzen.agents.evaluation import evaluate_expressions
     from factorzen.agents.nodes import node_guardrails
     from factorzen.agents.state import AgentState, AttemptRecord
+    from factorzen.discovery.evaluation import evaluate_expressions
     from factorzen.discovery.scoring import DataBundle
     from factorzen.validation.holdout import split_holdout
     from factorzen.validation.multiple_testing import TrialLedger
@@ -165,9 +165,9 @@ def test_node_guardrails_family_aware_dedup():
     import numpy as np
     import polars as pl
 
-    from factorzen.agents.evaluation import evaluate_expressions
     from factorzen.agents.nodes import node_guardrails
     from factorzen.agents.state import AgentState, AttemptRecord
+    from factorzen.discovery.evaluation import evaluate_expressions
     from factorzen.discovery.scoring import DataBundle
     from factorzen.validation.holdout import split_holdout
     from factorzen.validation.multiple_testing import TrialLedger
@@ -337,9 +337,9 @@ def test_node_guardrails_n_honest_accounting():
     import numpy as np
     import polars as pl
 
-    from factorzen.agents.evaluation import evaluate_expressions
     from factorzen.agents.nodes import node_guardrails, node_reflect
     from factorzen.agents.state import AgentState, AttemptRecord
+    from factorzen.discovery.evaluation import evaluate_expressions
     from factorzen.discovery.scoring import DataBundle
     from factorzen.validation.holdout import split_holdout
     from factorzen.validation.multiple_testing import TrialLedger

@@ -286,7 +286,7 @@ def test_run_session_and_agent_agree_reject_underwarmed(monkeypatch, tmp_path):
     """
     import datetime as _dt
 
-    from factorzen.agents.evaluation import evaluate_expressions
+    from factorzen.discovery.evaluation import evaluate_expressions
     from factorzen.discovery.expression import parse_expr
     from factorzen.discovery.mining_session import run_session
     from factorzen.discovery.scoring import DataBundle

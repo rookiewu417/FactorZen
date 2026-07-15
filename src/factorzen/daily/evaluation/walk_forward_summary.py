@@ -7,9 +7,8 @@ from typing import Any
 
 import polars as pl
 
-from factorzen.core.config_loader import (
+from factorzen.config.research import (
     RunConfig,
-    build_runtime_backtest_config,
     build_top_n_candidate_params,
 )
 from factorzen.daily.evaluation.backtest import (
@@ -22,6 +21,7 @@ from factorzen.daily.evaluation.walk_forward import (
     WalkForwardSplitter,
     run_walk_forward_search,
 )
+from factorzen.daily.runtime import build_runtime_backtest_config
 
 
 def summarize_walk_forward_result(

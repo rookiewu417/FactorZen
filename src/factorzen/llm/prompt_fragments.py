@@ -88,6 +88,27 @@ _GENERIC_CAVEATS = (
 )
 
 
+def format_library_covered(library_covered: list[str] | None) -> str:
+    """Render the shared library-coverage hint for all LLM generation paths."""
+    if not library_covered:
+        return ""
+    return "库内已有(追求与其正交,换方向): " + "；".join(library_covered)
+
+
+def format_leaf_guidance(leaf_guidance: dict[str, list[str]] | None) -> str:
+    """Render shared exhausted/unexplored leaf guidance for LLM prompts."""
+    if not leaf_guidance:
+        return ""
+    parts: list[str] = []
+    exhausted = leaf_guidance.get("exhausted") or []
+    unexplored = leaf_guidance.get("unexplored") or []
+    if exhausted:
+        parts.append("已挖穿(避开,除非机制全新): " + "；".join(exhausted))
+    if unexplored:
+        parts.append("未探索(优先考虑): " + "、".join(unexplored))
+    return "\n".join(parts)
+
+
 def market_caveats(market: str) -> str:
     """按市场取约束片段。未知市场返回通用 PIT/成本兜底(不抛)。
 

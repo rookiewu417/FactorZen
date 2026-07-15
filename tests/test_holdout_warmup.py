@@ -73,7 +73,7 @@ def _truth_holdout_values(evaluator, daily: pl.DataFrame, holdout_start) -> pl.D
 
 
 def test_agent_holdout_values_match_full_frame_ground_truth():
-    from factorzen.agents.evaluation import _node_to_factor_df
+    from factorzen.discovery.evaluation import _node_to_factor_df
     from factorzen.discovery.expression import parse_expr
 
     daily = _daily()
@@ -91,7 +91,7 @@ def test_agent_holdout_values_match_full_frame_ground_truth():
 
 def test_agent_holdout_without_warmup_is_biased_at_the_boundary():
     """判别性前置：不预热确实产生偏差——否则本文件的修复无意义。"""
-    from factorzen.agents.evaluation import _node_to_factor_df
+    from factorzen.discovery.evaluation import _node_to_factor_df
     from factorzen.discovery.expression import parse_expr
 
     daily = _daily()
@@ -112,7 +112,7 @@ def test_agent_holdout_warmup_leaks_no_future_information():
     做法——把 holdout 段**之后**的价格全部改掉，重算，holdout 首日的值必须不变。
     （若求值用了未来数据，改动会渗回来。）
     """
-    from factorzen.agents.evaluation import _node_to_factor_df
+    from factorzen.discovery.evaluation import _node_to_factor_df
     from factorzen.discovery.expression import parse_expr
 
     daily = _daily()
@@ -138,7 +138,7 @@ def test_agent_holdout_warmup_leaks_no_future_information():
 
 def test_agent_preprocess_pre_close_uses_prior_session_when_warmed():
     """`pre_close` 在只喂 holdout 帧时被 fill_null 成当日 close；预热后应取 mining 末日 close。"""
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
 
     daily = _daily()
     mining, holdout_df, hstart = split_holdout(daily, holdout_ratio=0.2)
@@ -295,7 +295,7 @@ def test_team_orchestrator_passes_the_full_frame_not_the_mining_slice(tmp_path, 
 
 def test_both_paths_produce_identical_holdout_values():
     """M1 与 Agent 在 holdout 段的因子值必须逐值相同——双路径登记簿。"""
-    from factorzen.agents.evaluation import _node_to_factor_df
+    from factorzen.discovery.evaluation import _node_to_factor_df
     from factorzen.discovery.expression import parse_expr
     from factorzen.discovery.mining_session import _factor_values
 

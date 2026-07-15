@@ -4,9 +4,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from factorzen.agents.evaluation import evaluate_expressions, make_health_check
 from factorzen.agents.memory import negative_recall
 from factorzen.agents.state import AgentState, AttemptRecord
+from factorzen.discovery.evaluation import evaluate_expressions, make_health_check
 from factorzen.discovery.expression import parse_expr, to_expr_string
 from factorzen.discovery.guardrails import (
     DEFAULT_DSR_ALPHA,
@@ -233,7 +233,7 @@ def node_guardrails(
     """
     from tqdm import tqdm
 
-    from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
+    from factorzen.discovery.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.discovery.guardrails import (
         DEFAULT_DUPLICATE_CORR,
         DEFAULT_GRAY_IC_FLOOR,
@@ -629,7 +629,7 @@ def node_finalize_guardrails(state: AgentState, *, dsr_alpha: float = DEFAULT_DS
     `daily`/`bundle` 给出时重算池级 PBO——候选集变了，旧 PBO 描述的是另一个池。
     返回的 basis 供调用方落 manifest（``basis.n_trials`` = family 总 N）。
     """
-    from factorzen.agents.evaluation import _factor_df_from_prepped, _preprocess_daily
+    from factorzen.discovery.evaluation import _factor_df_from_prepped, _preprocess_daily
     from factorzen.discovery.guardrails import (
         DeflationBasis,
         acceptance_reasons,

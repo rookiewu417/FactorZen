@@ -101,11 +101,13 @@ def test_ops_config_accepts_zero_slippage():
 
 def test_ops_config_defaults_directly():
     """直接构造(仅两个必填)时全部默认值就位。"""
+    from factorzen.config.settings import OPS_SITE_DIR, OPS_STATE_DIR
+
     cfg = OpsConfig(session_dir="s", portfolio_run_dirs_glob="g")
     assert cfg.lookback_days == 90
     assert cfg.universe is None
     assert cfg.slippage_bps == 0.0
     assert cfg.notify_url_env == "FACTORZEN_NOTIFY_WEBHOOK"
     assert cfg.publish_enabled is False
-    assert cfg.publish_site_dir == "workspace/ops/site"
-    assert cfg.state_dir == "workspace/ops/state"
+    assert cfg.publish_site_dir == str(OPS_SITE_DIR)
+    assert cfg.state_dir == str(OPS_STATE_DIR)

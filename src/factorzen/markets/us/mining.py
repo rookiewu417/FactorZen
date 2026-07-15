@@ -10,6 +10,7 @@ from typing import Any
 
 import polars as pl
 
+from factorzen.config.settings import MINING_SESSIONS_DIR
 from factorzen.discovery.export import alpha_cross_section_from_daily
 from factorzen.discovery.mining_session import run_session
 from factorzen.markets.base import MarketProfile
@@ -33,7 +34,7 @@ def run_us_mining(
     seed: int,
     method: str = "random",
     freq: str | None = None,
-    out_dir: str = "workspace/mining_sessions",
+    out_dir: str = str(MINING_SESSIONS_DIR),
     **session_kw: Any,
 ) -> dict:
     """美股因子挖掘：装配后复权日线帧 → run_session(profile=us)。"""

@@ -4,7 +4,7 @@ import datetime as dt
 import numpy as np
 import polars as pl
 
-from factorzen.agents.evaluation import evaluate_expressions
+from factorzen.discovery.evaluation import evaluate_expressions
 from factorzen.discovery.scoring import DataBundle
 
 

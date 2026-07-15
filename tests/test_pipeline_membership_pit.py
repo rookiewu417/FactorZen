@@ -185,7 +185,7 @@ def test_daily_single_filters_eval_cross_section_by_membership(
     monkeypatch, tmp_path
 ):
     """smoke：mock 到 IC 前，断言评估截面无 A 的 2 月行，且落盘 membership。"""
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines import daily_single as ds
 
     mem = _membership_with_exit()
@@ -465,7 +465,7 @@ def test_research_run_uses_membership_union(monkeypatch, tmp_path):
 
 def test_generate_report_filters_by_membership(monkeypatch, tmp_path):
     """generate_report 非 reuse 路径：IC 截面经 membership 过滤。"""
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
     from factorzen.pipelines import generate_report as gr
 
     mem = _membership_with_exit()

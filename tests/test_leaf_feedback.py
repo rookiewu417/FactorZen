@@ -10,11 +10,11 @@ from factorzen.agents.roles import hypothesis as hyp_mod
 from factorzen.agents.roles.librarian import (
     EXHAUSTED_MIN_TRIES,
     UNEXPLORED_MAX_TRIES,
-    format_leaf_guidance,
     recall,
 )
 from factorzen.discovery.guardrails import REJECT_CATEGORY_HOLDOUT_COVERAGE
 from factorzen.llm import generation as gen_mod
+from factorzen.llm.prompt_fragments import format_leaf_guidance
 
 
 def _rec(

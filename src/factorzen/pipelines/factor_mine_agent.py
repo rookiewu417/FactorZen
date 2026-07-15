@@ -8,6 +8,7 @@ from pathlib import Path
 
 from factorzen.agents.manifest import write_session_manifest
 from factorzen.agents.orchestrator import run_llm_agent
+from factorzen.config.settings import MINE_AGENT_DIR
 from factorzen.llm.config import load_llm_config
 
 
@@ -154,7 +155,7 @@ def _print_near_miss(result, cands, *, label: str, top: int = 8) -> None:
         print(f"[{label}]       原因：{a.reject_reason}")
 
 
-def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = "workspace/mine_agent",
+def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_AGENT_DIR),
                    llm_fn=None, top_k: int = 5, holdout_ratio: float = 0.2,
                    human_review: bool = False, run_id: str | None = None,
                    export: bool = True, patience: int | None = None,

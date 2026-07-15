@@ -37,16 +37,6 @@ class Recall:
 LibrarianBriefing = Recall
 
 
-def format_library_covered(library_covered: list[str] | None) -> str:
-    """把库内已覆盖方向渲染成 Hypothesis / M5 prompt 共用注入文案。
-
-    空/None → 空串（零回归：不改 prompt 形状）。双路径必须调本函数，避免文案漂移。
-    """
-    if not library_covered:
-        return ""
-    return "库内已有(追求与其正交,换方向): " + "；".join(library_covered)
-
-
 def build_leaf_guidance(
     stats: dict[str, dict],
     leaf_names: list[str],
@@ -84,24 +74,6 @@ def build_leaf_guidance(
         if n_exprs <= unexplored_max:
             unexplored.append(name)
     return {"exhausted": exhausted, "unexplored": unexplored}
-
-
-def format_leaf_guidance(leaf_guidance: dict[str, list[str]] | None) -> str:
-    """把 leaf_guidance 渲染成 Hypothesis / M5 prompt 共用的注入文案。
-
-    空/None → 空串（零回归：不改 prompt 形状）。双路径（team hypothesis 与
-    ``build_agent_messages``）必须调本函数，避免文案漂移。
-    """
-    if not leaf_guidance:
-        return ""
-    parts: list[str] = []
-    exhausted = leaf_guidance.get("exhausted") or []
-    unexplored = leaf_guidance.get("unexplored") or []
-    if exhausted:
-        parts.append("已挖穿(避开,除非机制全新): " + "；".join(exhausted))
-    if unexplored:
-        parts.append("未探索(优先考虑): " + "、".join(unexplored))
-    return "\n".join(parts)
 
 
 def recall(

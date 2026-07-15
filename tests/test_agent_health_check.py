@@ -17,8 +17,8 @@ import json
 import numpy as np
 import polars as pl
 
-from factorzen.agents.evaluation import make_health_check
 from factorzen.agents.self_heal import heal_expressions
+from factorzen.discovery.evaluation import make_health_check
 
 _ALL_NULL = "div(close, sub(close, close))"   # 分母恒 0 → _safe_div 全列 null
 _HEALTHY = "ts_mean(close, 5)"
@@ -71,7 +71,7 @@ def test_parse_error_is_diagnosed():
 
 def test_eval_error_is_diagnosed(monkeypatch):
     """求值抛异常 → 诊断带上异常类型与消息（供 LLM 修正）。"""
-    from factorzen.agents import evaluation as ev
+    from factorzen.discovery import evaluation as ev
 
     check = ev.make_health_check(_mock_daily())
 

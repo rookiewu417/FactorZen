@@ -1,6 +1,8 @@
-# src/factorzen/agents/evaluation.py
-"""把 LLM 产出的表达式字符串批量评估为 Rank IC/IR。
-全部用 discovery 的公开接口，不重构 run_session（零回归）。"""
+"""表达式的统一预处理、物化与批量 Rank IC/IR 评估。
+
+本模块属于 discovery：随机/遗传挖掘、LLM agent、因子库复审和 forward-track
+都通过这里共享同一套 PIT 预热与截面语义。
+"""
 from __future__ import annotations
 
 import logging

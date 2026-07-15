@@ -1,4 +1,4 @@
-"""YAML 运行配置加载与 Pydantic v2 验证。"""
+"""声明式研究配置 schema、YAML 加载与纯配置变换。"""
 
 from __future__ import annotations
 
@@ -309,101 +309,6 @@ def load_run_config(path: Path | str, overrides: Sequence[str] | None = None) ->
     if overrides:
         apply_overrides(data, overrides)
     return RunConfig.model_validate(data)
-
-
-def build_preprocessing_pipeline(config: RunConfig):
-    """Build the runtime preprocessing pipeline from a validated run config."""
-    from factorzen.daily.preprocessing.pipeline import PreprocessingPipeline
-
-    return PreprocessingPipeline(
-        steps=["outlier", "missing", "normalize"],
-        outlier_method=config.preprocessing.outlier,
-        normalizer_method=config.preprocessing.normalizer,
-        neutralize=config.preprocessing.neutralize,
-    )
-
-
-def build_runtime_backtest_config(
-    config: RunConfig,
-    factor_col: str = "factor_clean",
-    frequency: str = "daily",
-    strategy_spec: StrategySpec | None = None,
-):
-    """Build daily.evaluation.backtest.BacktestConfig from RunConfig."""
-    from factorzen.daily.evaluation.backtest import BacktestConfig as RuntimeBacktestConfig
-
-    return RuntimeBacktestConfig(
-        factor_col=factor_col,
-        frequency=frequency,
-        max_abs_weight=(
-            strategy_spec.max_abs_weight
-            if strategy_spec is not None and strategy_spec.max_abs_weight is not None
-            else config.backtest.max_abs_weight
-        ),
-        rebalance_threshold=(
-            strategy_spec.rebalance_threshold
-            if strategy_spec is not None and strategy_spec.rebalance_threshold is not None
-            else config.backtest.rebalance_threshold
-        ),
-        strategy_type=strategy_spec.type if strategy_spec is not None else None,
-        strategy_params=dict(strategy_spec.params) if strategy_spec is not None else {},
-        cost_model=(
-            strategy_spec.cost_model
-            if strategy_spec is not None and strategy_spec.cost_model is not None
-            else config.backtest.cost_model
-        ),
-        alpha=(
-            strategy_spec.alpha
-            if strategy_spec is not None and strategy_spec.alpha is not None
-            else config.backtest.alpha
-        ),
-        fallback_adv=(
-            strategy_spec.fallback_adv
-            if strategy_spec is not None and strategy_spec.fallback_adv is not None
-            else config.backtest.fallback_adv
-        ),
-    )
-
-
-def build_cost_model(config: RunConfig, strategy_spec: StrategySpec | None = None):
-    """Build the configured transaction cost model."""
-    from factorzen.daily.evaluation.cost_models import LinearCostModel, SquareRootImpactCostModel
-
-    cost_model = (
-        strategy_spec.cost_model
-        if strategy_spec and strategy_spec.cost_model
-        else config.backtest.cost_model
-    )
-    if cost_model == "square_root_impact":
-        return SquareRootImpactCostModel(
-            alpha=strategy_spec.alpha
-            if strategy_spec and strategy_spec.alpha is not None
-            else config.backtest.alpha,
-            fallback_adv=(
-                strategy_spec.fallback_adv
-                if strategy_spec and strategy_spec.fallback_adv is not None
-                else config.backtest.fallback_adv
-            ),
-        )
-    return LinearCostModel()
-
-
-def build_backtest_strategy(config: RunConfig):
-    """Build the configured strategy for the default single-factor evaluation."""
-    strategies = build_backtest_strategies(config)
-    return strategies[config.backtest.primary or next(iter(strategies))]
-
-
-def build_backtest_strategies(config: RunConfig):
-    """Build named runtime strategies from RunConfig."""
-    from factorzen.daily.evaluation.strategy_registry import build_strategy
-
-    strategies = {}
-    for spec in config.backtest.strategy_specs:
-        strategy = build_strategy(spec.type, spec.params)
-        strategy.name = spec.name
-        strategies[spec.name] = strategy
-    return strategies
 
 
 def build_top_n_candidate_params(config: RunConfig) -> list[dict[str, int]]:

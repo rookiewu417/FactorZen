@@ -15,19 +15,12 @@ from typing import Any, cast
 
 import polars as pl
 
+from factorzen.config.research import RunConfig, load_run_config
 from factorzen.config.settings import (
     daily_report_output_dir,
     daily_result_output_dir,
 )
 from factorzen.core.calendar import get_trade_dates
-from factorzen.core.config_loader import (
-    RunConfig,
-    build_backtest_strategies,
-    build_cost_model,
-    build_preprocessing_pipeline,
-    build_runtime_backtest_config,
-    load_run_config,
-)
 from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
 from factorzen.core.experiment import (
     record_experiment_metadata,
@@ -54,6 +47,12 @@ from factorzen.daily.evaluation.ic_analysis import (
 from factorzen.daily.evaluation.turnover import compute_turnover
 from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 from factorzen.daily.factors.registry import get_factor
+from factorzen.daily.runtime import (
+    build_backtest_strategies,
+    build_cost_model,
+    build_preprocessing_pipeline,
+    build_runtime_backtest_config,
+)
 from factorzen.experiments.run_paths import copy_outputs_to_run_dir
 from factorzen.llm import generate_llm_explanation
 from factorzen.pipelines._report_config import (

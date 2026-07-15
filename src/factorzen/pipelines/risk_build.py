@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from factorzen.config.settings import RISK_MODELS_DIR
 from factorzen.core.experiment import build_manifest_base
 from factorzen.risk import RiskModel
 
@@ -53,7 +54,7 @@ def load_risk_inputs(
     return daily, daily_basic
 
 
-def run_risk_build(daily, daily_basic, stocks, start, end, *, out_dir="workspace/risk_models",
+def run_risk_build(daily, daily_basic, stocks, start, end, *, out_dir=str(RISK_MODELS_DIR),
                    cov_half_life=90, nw_lags=2, spec_half_life=90, spec_shrinkage=0.3,
                    run_id=None, command: list[str] | None = None) -> dict:
     t0 = time.perf_counter()

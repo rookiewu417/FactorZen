@@ -29,12 +29,17 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from factorzen.config.settings import (
+    FACTOR_LIBRARY_DIR,
+    MINE_TEAM_DIR,
+    MINING_SESSIONS_DIR,
+)
 from factorzen.discovery.expression import evaluate_materialized, parse_expr, to_expr_string
 from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD, acceptance_reasons
 
 _LOG = logging.getLogger(__name__)
 
-DEFAULT_ROOT = "workspace/factor_library"
+DEFAULT_ROOT = str(FACTOR_LIBRARY_DIR)
 
 # 去相关默认参数（内存有界）：每批评估表达式数、去相关紧凑矩阵的日期采样上限。
 DEFAULT_EVAL_BATCH = 64
@@ -617,7 +622,7 @@ def upsert_probation(
 
 def upsert_lift_admissions(
     rows: list[dict], *, market: str,
-    root: str = "workspace/factor_library",
+    root: str = DEFAULT_ROOT,
     meta: dict | None = None,
     threshold: float = DEFAULT_LIFT_THRESHOLD,
     se_mult: float = 1.0,
@@ -929,8 +934,8 @@ def render_summary(root: str = DEFAULT_ROOT) -> str:
 
 def collect_source_expressions(
     market: str, *,
-    mine_team_root: str = "workspace/mine_team",
-    mining_sessions_root: str = "workspace/mining_sessions",
+    mine_team_root: str = str(MINE_TEAM_DIR),
+    mining_sessions_root: str = str(MINING_SESSIONS_DIR),
     experiment_index_paths: list[str] | None = None,
 ) -> list[str]:
     """扫历史产物收集该市场的候选表达式（去重、保序）。缺失/损坏文件跳过。
@@ -1016,7 +1021,7 @@ def build_library_evaluator(
     """
     from datetime import datetime as _dt
 
-    from factorzen.agents.evaluation import _preprocess_daily, evaluate_expressions
+    from factorzen.discovery.evaluation import _preprocess_daily, evaluate_expressions
     from factorzen.discovery.guardrails import DeflationBasis, deflated_pvalue
     from factorzen.discovery.scoring import DataBundle
     from factorzen.validation.holdout import holdout_ic_result, split_holdout
@@ -1214,7 +1219,7 @@ def rebuild(
                     raise RuntimeError(
                         "lift 轨复审需要 lift_runner 或 daily（默认 run_lift_tests）"
                     )
-                from factorzen.agents.evaluation import _preprocess_daily
+                from factorzen.discovery.evaluation import _preprocess_daily
                 from factorzen.discovery.lift_test import (
                     LiftEvalContext,
                     run_lift_tests,

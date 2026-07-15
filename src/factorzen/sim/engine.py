@@ -35,6 +35,7 @@ from typing import Any
 
 import polars as pl
 
+from factorzen.config.settings import SIM_DIR
 from factorzen.core.experiment import get_git_sha
 from factorzen.core.universe import build_is_st_by_date
 from factorzen.daily.evaluation.backtest import (
@@ -178,7 +179,7 @@ def run_portfolio_simulation(
     portfolio_run_dirs: list[str],
     daily: pl.DataFrame,
     *,
-    out_dir: str = "workspace/sim",
+    out_dir: str = str(SIM_DIR),
     run_id: str | None = None,
     cost_model: CostModel | CostModelBase | None = None,
 ) -> dict:

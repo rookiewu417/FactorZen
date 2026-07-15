@@ -19,6 +19,7 @@ from factorzen.agents.nodes import (
 )
 from factorzen.agents.state import AgentState
 from factorzen.agents.team_orchestrator import _prepare_segments, _to_date
+from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
 from factorzen.discovery.scoring import DataBundle
 from factorzen.llm.client import LLMClientError
 from factorzen.llm.generation import LLMFn
@@ -86,7 +87,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     from factorzen.agents.nodes import AgentContext
     ctx = AgentContext.from_profile(profile)
     # 开局摘死叶（与 team / M1 同口径；prep 帧与求值一致，避免派生列误摘）
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.leaf_health import (
         apply_leaf_exclusion,
         filter_leaves_by_holdout_coverage,
@@ -102,9 +103,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     )
     leaf_budgets: dict[str, int] | None = None
     if _eval_start_date is not None:
-        from factorzen.agents.evaluation import _preprocess_daily
+        from factorzen.discovery.evaluation import _preprocess_daily
         from factorzen.discovery.expression import leaf_warmup_budgets
-        from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
         _all_budgets = leaf_warmup_budgets(
             _preprocess_daily(daily, profile), _eval_start_date, ctx.leaf_names,
             leaf_map=ctx.leaf_map)
@@ -124,7 +124,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     if library_orthogonal:
         try:
 
-            from factorzen.agents.evaluation import _preprocess_daily
+            from factorzen.discovery.evaluation import _preprocess_daily
             from factorzen.discovery.factor_library import (
                 DEFAULT_ROOT,
                 build_library_pool,

@@ -4,6 +4,8 @@ from datetime import date
 
 import polars as pl
 
+from factorzen.core.feature_schema import FUNDAMENTAL_FEATURES, HOLDER_FEATURES
+
 
 def pit_align(
     fina_df: pl.DataFrame,
@@ -60,7 +62,6 @@ def pit_align(
 # 挖掘/物化路径共用的基本面叶子——单一真源在 operators.FUNDAMENTAL_FEATURES，此处只排序取用
 # （防「注册的叶子」与「attach 的列」漂移）。fina_indicator 字段名即叶子名。
 def _fundamental_cols() -> list[str]:
-    from factorzen.discovery.operators import FUNDAMENTAL_FEATURES
     return sorted(FUNDAMENTAL_FEATURES)
 
 
@@ -128,7 +129,6 @@ def _ensure_fundamental_cols(daily: pl.DataFrame) -> pl.DataFrame:
 
 
 def _holder_cols() -> list[str]:
-    from factorzen.discovery.operators import HOLDER_FEATURES
     return sorted(HOLDER_FEATURES)
 
 

@@ -5,7 +5,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from factorzen.agents.roles.librarian import (  # 双路径共用再导出
+from factorzen.llm.prompt_fragments import (
     format_leaf_guidance,
     format_library_covered,
 )

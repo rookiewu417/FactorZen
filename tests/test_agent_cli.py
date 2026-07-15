@@ -156,8 +156,8 @@ def test_cmd_mine_agent_provisions_longer_warmup_prefix_for_llm(monkeypatch):
     import polars as pl
 
     from factorzen.cli import main as cli
+    from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
     from factorzen.discovery.search.random_search import search_space_max_lookback
-    from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
 
     fake_daily = pl.DataFrame({"ts_code": ["000001.SZ"]})
     captured: dict[str, object] = {}

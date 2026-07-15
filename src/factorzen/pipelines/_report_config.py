@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from factorzen.core.config_loader import (
+from factorzen.config.research import (
     RunConfig,
     default_benchmark_for_universe,
     with_default_all_strategies,

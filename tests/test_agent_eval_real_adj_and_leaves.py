@@ -11,7 +11,7 @@ from datetime import date, timedelta
 import numpy as np
 import polars as pl
 
-from factorzen.agents.evaluation import evaluate_expressions
+from factorzen.discovery.evaluation import evaluate_expressions
 from factorzen.discovery.scoring import DataBundle
 
 
@@ -55,7 +55,7 @@ def test_derived_and_basic_leaves_evaluable():
 
 def test_uses_real_close_adj_not_faked_from_close():
     """close_adj 明显≠close 时，ret_1d 须用 close_adj 计算，而非被 close 冒充。"""
-    from factorzen.agents.evaluation import _preprocess_daily
+    from factorzen.discovery.evaluation import _preprocess_daily
 
     daily = _daily_with_adj_and_basic(n_stocks=2, n_days=10)
     prepped = _preprocess_daily(daily)

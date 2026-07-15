@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from factorzen.core.config_loader import (
+from factorzen.config.research import (
     apply_overrides,
     build_run_config_from_dict,
     load_run_config,

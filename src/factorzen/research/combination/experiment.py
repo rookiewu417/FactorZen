@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from factorzen.config.settings import COMBINATIONS_DIR
 from factorzen.core.experiment import build_manifest_base, get_git_sha
 from factorzen.core.stats import spearman_avg_rank
 from factorzen.research.combination.cv import PurgedWalkForwardCV
@@ -113,7 +114,7 @@ def run_combination_experiment(
     cv: PurgedWalkForwardCV,
     methods: list[str] | None = None,
     seed: int = 0,
-    out_dir: str = "workspace/combinations",
+    out_dir: str = str(COMBINATIONS_DIR),
     run_id: str | None = None,
     command: list[str] | None = None,
 ) -> dict[str, Any]:

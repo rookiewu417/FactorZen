@@ -673,9 +673,7 @@ def test_assemble_universe_follows_admission_mode(monkeypatch, tmp_path):
         captured["universe"] = universe
         raise RuntimeError("stop after capture")  # 只验证透传，不真装配
 
-    monkeypatch.setattr(
-        "factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare,
-    )
+    monkeypatch.setattr(ft, "prepare_mining_daily", fake_prepare)
     import pytest as _pytest
     with _pytest.raises(RuntimeError, match="stop after capture"):
         ft.record_forward_ics(

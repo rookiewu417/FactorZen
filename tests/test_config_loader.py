@@ -6,7 +6,7 @@ import pytest
 
 
 def test_load_valid_config(tmp_path):
-    from factorzen.core.config_loader import load_run_config
+    from factorzen.config.research import load_run_config
 
     yaml_content = "factor: momentum_20d\nstart: '20230101'\nend: '20241231'\n"
     p = tmp_path / "test.yaml"
@@ -18,7 +18,7 @@ def test_load_valid_config(tmp_path):
 
 
 def test_load_config_with_seed(tmp_path):
-    from factorzen.core.config_loader import load_run_config
+    from factorzen.config.research import load_run_config
 
     yaml_content = "factor: reversal\nstart: '20230101'\nend: '20241231'\nseed: 99\n"
     p = tmp_path / "test.yaml"
@@ -30,7 +30,7 @@ def test_load_config_with_seed(tmp_path):
 def test_invalid_outlier_method(tmp_path):
     import pydantic
 
-    from factorzen.core.config_loader import load_run_config
+    from factorzen.config.research import load_run_config
 
     yaml_content = (
         "factor: x\nstart: '20230101'\nend: '20241231'\npreprocessing:\n  outlier: invalid_method\n"
@@ -42,7 +42,7 @@ def test_invalid_outlier_method(tmp_path):
 
 
 def test_default_preprocessing():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
 
     cfg = RunConfig(factor="x", start="20230101", end="20241231")
     assert cfg.preprocessing.outlier == "mad"
@@ -50,7 +50,7 @@ def test_default_preprocessing():
 
 
 def test_walk_forward_is_disabled_by_default_and_can_be_enabled():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
 
     default_cfg = RunConfig(factor="x", start="20230101", end="20241231")
     enabled_cfg = RunConfig(
@@ -65,7 +65,8 @@ def test_walk_forward_is_disabled_by_default_and_can_be_enabled():
 
 
 def test_build_preprocessing_pipeline_from_run_config():
-    from factorzen.core.config_loader import RunConfig, build_preprocessing_pipeline
+    from factorzen.config.research import RunConfig
+    from factorzen.daily.runtime import build_preprocessing_pipeline
 
     cfg = RunConfig(
         factor="x",
@@ -86,7 +87,8 @@ def test_build_preprocessing_pipeline_from_run_config():
 
 
 def test_build_runtime_backtest_config_from_run_config():
-    from factorzen.core.config_loader import RunConfig, build_runtime_backtest_config
+    from factorzen.config.research import RunConfig
+    from factorzen.daily.runtime import build_runtime_backtest_config
 
     cfg = RunConfig(
         factor="x",
@@ -108,8 +110,9 @@ def test_build_runtime_backtest_config_from_run_config():
 
 
 def test_build_cost_model_from_run_config():
-    from factorzen.core.config_loader import RunConfig, build_cost_model
+    from factorzen.config.research import RunConfig
     from factorzen.daily.evaluation.cost_models import LinearCostModel, SquareRootImpactCostModel
+    from factorzen.daily.runtime import build_cost_model
 
     linear_cfg = RunConfig(factor="x", start="20230101", end="20241231")
     assert isinstance(build_cost_model(linear_cfg), LinearCostModel)
@@ -124,7 +127,7 @@ def test_build_cost_model_from_run_config():
 
 
 def test_default_benchmark_is_derived_from_universe():
-    from factorzen.core.config_loader import default_benchmark_for_universe
+    from factorzen.config.research import default_benchmark_for_universe
 
     assert default_benchmark_for_universe("csi300") == "000300.SH"
     assert default_benchmark_for_universe("csi500") == "000905.SH"
@@ -133,8 +136,9 @@ def test_default_benchmark_is_derived_from_universe():
 
 
 def test_build_backtest_strategy_uses_top_n():
-    from factorzen.core.config_loader import RunConfig, build_backtest_strategy
+    from factorzen.config.research import RunConfig
     from factorzen.daily.evaluation.backtest import TopNLongOnlyStrategy
+    from factorzen.daily.runtime import build_backtest_strategy
 
     cfg = RunConfig(
         factor="x",
@@ -150,7 +154,7 @@ def test_build_backtest_strategy_uses_top_n():
 
 
 def test_backtest_config_supports_multiple_named_strategies():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
 
     cfg = RunConfig(
         factor="x",
@@ -178,7 +182,8 @@ def test_backtest_config_supports_multiple_named_strategies():
 
 
 def test_strategy_spec_can_override_runtime_backtest_settings():
-    from factorzen.core.config_loader import RunConfig, build_runtime_backtest_config
+    from factorzen.config.research import RunConfig
+    from factorzen.daily.runtime import build_runtime_backtest_config
 
     cfg = RunConfig(
         factor="x",
@@ -209,7 +214,7 @@ def test_strategy_spec_can_override_runtime_backtest_settings():
 
 
 def test_legacy_backtest_config_exposes_default_strategy_spec():
-    from factorzen.core.config_loader import RunConfig
+    from factorzen.config.research import RunConfig
 
     cfg = RunConfig(
         factor="x",
@@ -225,8 +230,9 @@ def test_legacy_backtest_config_exposes_default_strategy_spec():
 
 
 def test_build_backtest_strategies_returns_named_runtime_strategies():
-    from factorzen.core.config_loader import RunConfig, build_backtest_strategies
+    from factorzen.config.research import RunConfig
     from factorzen.daily.evaluation.backtest import QuantileLongShortStrategy, TopNLongOnlyStrategy
+    from factorzen.daily.runtime import build_backtest_strategies
 
     cfg = RunConfig(
         factor="x",
@@ -250,7 +256,7 @@ def test_build_backtest_strategies_returns_named_runtime_strategies():
 
 
 def test_default_all_strategy_specs_include_builtin_suite():
-    from factorzen.core.config_loader import default_all_strategy_specs
+    from factorzen.config.research import default_all_strategy_specs
 
     specs = default_all_strategy_specs()
 
@@ -271,7 +277,7 @@ def test_default_all_strategy_specs_include_builtin_suite():
 
 
 def test_build_top_n_candidate_params_uses_n_trials():
-    from factorzen.core.config_loader import RunConfig, build_top_n_candidate_params
+    from factorzen.config.research import RunConfig, build_top_n_candidate_params
 
     cfg = RunConfig(
         factor="x",
@@ -287,7 +293,7 @@ def test_build_top_n_candidate_params_uses_n_trials():
 
 
 def test_build_top_n_candidate_params_skips_weights_above_cap():
-    from factorzen.core.config_loader import RunConfig, build_top_n_candidate_params
+    from factorzen.config.research import RunConfig, build_top_n_candidate_params
 
     cfg = RunConfig(
         factor="x",
@@ -307,7 +313,7 @@ def test_build_top_n_candidate_params_skips_weights_above_cap():
 
 
 def test_default_daily_research_config_top_n_override_updates_primary_strategy():
-    from factorzen.core.config_loader import (
+    from factorzen.config.research import (
         build_default_daily_research_config,
         build_run_config_from_dict,
     )

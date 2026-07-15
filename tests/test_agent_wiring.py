@@ -97,7 +97,7 @@ def test_cmd_mine_agent_forwards_patience_and_heal_rounds(monkeypatch):
 
     rc = cli.main(["mine", "agent", "--start", "20220101", "--end", "20231231",
                    "--patience", "3", "--heal-rounds", "1"])
-    from factorzen.pipelines.factor_mine import AGENT_WARMUP_LOOKBACK
+    from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
     assert rc == 0
     assert captured["patience"] == 3
     assert captured["heal_rounds"] == 1

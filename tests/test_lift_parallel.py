@@ -375,7 +375,7 @@ def test_cli_lift_workers_from_outer_parser(tmp_path, monkeypatch):
         "--library-root", str(tmp_path / "lib"),
         "--dry-run",
     ])
-    assert args_def.lift_workers == 4
+    assert args_def.lift_workers is None  # None→run_lift_tests 自适应(按可用内存)
 
 
 def test_session_hook_reuses_group_base_daily(monkeypatch):

@@ -537,7 +537,7 @@ def run_team_agent(
     llm_workers: int = 1,
     auto_lift: bool = True,
     lift_se_mult: float = 1.0,
-    lift_workers: int = 4,
+    lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     # 测试注入：session 末 lift 钩子（combine / materialize / active 面板 / ret）
     lift_combine_fn=None,
     lift_materialize_candidate=None,
@@ -904,7 +904,7 @@ def _session_end_auto_lift(
     seed: int,
     auto_lift: bool = True,
     lift_se_mult: float = 1.0,
-    lift_workers: int = 4,
+    lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     data_window: dict | None = None,
     combine_fn=None,
     materialize_candidate=None,
@@ -914,7 +914,7 @@ def _session_end_auto_lift(
     """session 末：lift 队列 → 覆盖把关 → 组门 → 逐候选 → upsert。
 
     组门算完后把 ``base_daily`` 传给 ``run_lift_tests`` 复用，省 1 次基线 combine。
-    ``lift_workers`` 透传到逐候选并行（默认 4；``<=1`` 串行）。
+    ``lift_workers`` 透传到逐候选并行（None=按可用内存自适应；``<=1`` 串行）。
 
     整块 try/except：lift 失败绝不杀死已完成的挖掘 session。
     """

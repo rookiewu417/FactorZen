@@ -52,7 +52,7 @@ def run_team_mine(
     llm_workers: int = 1,
     auto_lift: bool = True,
     lift_se_mult: float = 1.0,
-    lift_workers: int = 4,
+    lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     campaign_prior_enabled: bool = True,
 ) -> dict:
     """跑多 Agent 团队挖掘，每轮增量落 manifest，收尾写 candidates.csv + 导出候选。

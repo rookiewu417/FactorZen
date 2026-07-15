@@ -45,7 +45,8 @@ _LOG = logging.getLogger(__name__)
 DEFAULT_TOP_M = 10
 DEFAULT_HORIZON = 5
 DEFAULT_BLOCK_DAYS = 20
-DEFAULT_LIFT_WORKERS = 4
+# None → run_lift_tests 内自适应；显式 int（含 CLI --lift-workers）不走自适应。
+DEFAULT_LIFT_WORKERS: int | None = None
 
 # lift 专用 CV 单一真源：run_lift_tests / run_group_lift 共用；调用方 cv_params 覆盖语义不变。
 # rolling 250d/40d → 折数 ~30；expanding=False 避免后期折训练集膨胀。
@@ -57,6 +58,41 @@ DEFAULT_LIFT_CV: dict[str, Any] = {
     "embargo_days": 0,
     "expanding": False,
 }
+
+# 每 worker 峰值约 3–5GB（build_panel 中间物化）；预留共享长表 1–2GB → 约 5GB/worker。
+_LIFT_GB_PER_WORKER = 5
+_LIFT_WORKERS_CAP = 4
+_LIFT_WORKERS_FALLBACK = 2
+
+
+def adaptive_lift_workers() -> int:
+    """按可用内存自适应 lift 并发：``max(1, min(4, 可用内存GB // 5))``。
+
+    依据：峰值 ≈ 共享长表 1–2GB + workers × 每 worker 3–4GB；取 5GB/worker
+    保守估计。Linux 用 ``SC_AVPHYS_PAGES * SC_PAGE_SIZE``；``sysconf`` 异常
+    回退 2（实测 2 并发在 23GB 机稳定，4+ 易 OOM）。
+    """
+    try:
+        avail = int(os.sysconf("SC_AVPHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
+        avail_gb = avail / (1024.0 ** 3)
+        return max(1, min(_LIFT_WORKERS_CAP, int(avail_gb // _LIFT_GB_PER_WORKER)))
+    except (AttributeError, OSError, ValueError, TypeError):
+        return _LIFT_WORKERS_FALLBACK
+
+
+def resolve_lift_workers(lift_workers: int | None) -> int:
+    """``None`` → 自适应并打日志；显式 int 原样使用（含 0/负数，由调用方 ``<=1`` 串行）。"""
+    if lift_workers is None:
+        w = adaptive_lift_workers()
+        try:
+            avail = int(os.sysconf("SC_AVPHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
+            avail_gb = avail / (1024.0 ** 3)
+            reason = f"avail_mem≈{avail_gb:.1f}GB // {_LIFT_GB_PER_WORKER}, cap={_LIFT_WORKERS_CAP}"
+        except (AttributeError, OSError, ValueError, TypeError):
+            reason = f"sysconf 失败回退 {_LIFT_WORKERS_FALLBACK}"
+        _LOG.info("lift_workers 自适应 → %d（%s）", w, reason)
+        return w
+    return int(lift_workers)
 
 # TODO: 后续由 guardrails.REJECT_CATEGORY_LIFT_QUEUE 收口；旧 manifest 仍用 gray_zone。
 LIFT_QUEUE_CATEGORY = "lift_queue"
@@ -400,7 +436,7 @@ def run_lift_tests(
     horizon: int | None = None,
     block_days: int = DEFAULT_BLOCK_DAYS,
     ctx: LiftEvalContext | None = None,
-    lift_workers: int = DEFAULT_LIFT_WORKERS,
+    lift_workers: int | None = DEFAULT_LIFT_WORKERS,
     base_daily: pl.DataFrame | None = None,
 ) -> list[dict]:
     """对灰区/lift 队列候选跑 lgbm 组合 OOS lift 实验。
@@ -412,10 +448,15 @@ def run_lift_tests(
     - 每候选：active+candidate → 同 CV 同 seed → 配对日 lift + 块 SE + 半段。
     - ``lift ≥ threshold`` → passed（最终 active/probation/reject 见 ``lift_admission``）。
     - 逐候选 try/except：一个坏候选不崩整批。
-    - ``lift_workers``：候选级线程并行（默认 4）。``<=1`` 纯串行、**不**建
+    - ``lift_workers``：候选级线程并行。``None``（默认）→
+      ``adaptive_lift_workers()``（``max(1, min(4, 可用内存GB//5))``，sysconf
+      异常回退 2）；显式 int 不走自适应。``<=1`` 纯串行、**不**建
       ``ThreadPoolExecutor``（零回归约定同 ``_llm_map``）。生产路径每模型注入
       ``num_threads=cpu//workers`` + deterministic；注入的 ``combine_fn``（测试 mock）
       不强加 params。
+    - **基线宽面板共享**（生产路径）：``build_panel(active)`` 一次，worker 只读
+      引用；每候选 ``combine_lgbm({候选列}, base_panel=...)`` 只 join 新列。
+      注入 ``combine_fn`` 时关闭共享（mock 契约零回归）。
 
     CV 默认见 ``DEFAULT_LIFT_CV``（rolling 250d/40d，~30 折）；``cv_params`` 覆盖。
     lift 数值与旧 expanding 120/20 口径不可直接比。
@@ -431,7 +472,7 @@ def run_lift_tests(
     / ``base_daily`` 做离线 mock；生产路径走 ``make_lift_context`` + ``build_library_pool``。
     """
     from factorzen.research.combination.cv import PurgedWalkForwardCV
-    from factorzen.research.combination.models import combine_lgbm
+    from factorzen.research.combination.models import build_panel, combine_lgbm
 
     n_input = len(gray_candidates)
     ordered = sorted(gray_candidates, key=_rank_ic_key, reverse=True)
@@ -440,7 +481,7 @@ def run_lift_tests(
     else:
         selected = ordered[: max(0, int(top_m))]
     truncated = n_input - len(selected)
-    workers = int(lift_workers)
+    workers = resolve_lift_workers(lift_workers)
 
     # horizon / admission：显式优先，否则 ctx，再否则默认
     _horizon = (
@@ -455,6 +496,8 @@ def run_lift_tests(
         cv_kw.update(cv_params)
     cv = PurgedWalkForwardCV(**cv_kw)
     # 注入 combine_fn（测试 mock）不强加 LGBM params；生产路径保并行/串行 parity
+    # 与 base_panel 共享（mock 仍收全量 factor_dfs，契约不变）
+    share_base_panel = combine_fn is None
     if combine_fn is not None:
         _combine = combine_fn
     else:
@@ -521,12 +564,28 @@ def run_lift_tests(
         else:
             materialize_candidate = _default_materializer(daily, leaf_map)
 
+    # ── 基线宽面板（生产路径一次构建，worker 只读共享；mock 关闭） ───────
+    safe_active = _with_safe_feature_names(active_factor_dfs)
+    base_panel: pl.DataFrame | None = None
+    if share_base_panel:
+        try:
+            base_panel = build_panel(safe_active, ret_df)
+        except Exception as exc:
+            _LOG.warning(
+                "lift_test base_panel 构建失败，回退逐候选全量 build: %s: %s",
+                type(exc).__name__, exc,
+            )
+            base_panel = None
+
     # ── 基线（base_daily 注入则跳过 combine；否则算一次并复用日序列） ─────
     try:
         if base_daily is None:
-            base_combined = _combine(
-                _with_safe_feature_names(active_factor_dfs), ret_df, cv,
-            )
+            if base_panel is not None:
+                base_combined = _combine(
+                    safe_active, ret_df, cv, base_panel=base_panel,
+                )
+            else:
+                base_combined = _combine(safe_active, ret_df, cv)
             base_daily = _daily_oos_rank_ic(
                 base_combined, ret_df, start=adm_start, end=adm_end,
             )
@@ -571,12 +630,19 @@ def run_lift_tests(
             if "factor_value" not in cand_df.columns:
                 row["error"] = "bad_panel_schema"
                 return row
-            pool = dict(active_factor_dfs)
+            cand_sel = cand_df.select(["trade_date", "ts_code", "factor_value"])
             # 键用规范表达式串；若与 active 撞名则覆盖为候选自身（仍测「加它」）。
             # 进 combine 前统一映射安全特征名（候选按插入序恒为最后一个 f{n}）。
-            key = str(expr)
-            pool[key] = cand_df.select(["trade_date", "ts_code", "factor_value"])
-            cand_combined = _combine(_with_safe_feature_names(pool), ret_df, cv)
+            # 全量 dict + base_panel：CV 日期并集与旧路径一致，build 只 join 新列。
+            pool = dict(active_factor_dfs)
+            pool[str(expr)] = cand_sel
+            safe_pool = _with_safe_feature_names(pool)
+            if base_panel is not None:
+                cand_combined = _combine(
+                    safe_pool, ret_df, cv, base_panel=base_panel,
+                )
+            else:
+                cand_combined = _combine(safe_pool, ret_df, cv)
             cand_daily = _daily_oos_rank_ic(
                 cand_combined, ret_df, start=adm_start, end=adm_end,
             )
@@ -648,7 +714,7 @@ def run_group_lift(
     """
     del top_m  # 组测全量；保留形参兼容注入签名
     from factorzen.research.combination.cv import PurgedWalkForwardCV
-    from factorzen.research.combination.models import combine_lgbm
+    from factorzen.research.combination.models import build_panel, combine_lgbm
 
     _horizon = (
         int(horizon) if horizon is not None
@@ -661,6 +727,7 @@ def run_group_lift(
     if cv_params:
         cv_kw.update(cv_params)
     cv = PurgedWalkForwardCV(**cv_kw)
+    share_base_panel = combine_fn is None
     if combine_fn is not None:
         _combine = combine_fn
     else:
@@ -751,15 +818,38 @@ def run_group_lift(
         return _err("all_candidates_materialize_failed", skipped=skipped)
 
     try:
+        safe_active = _with_safe_feature_names(active_factor_dfs)
+        base_panel: pl.DataFrame | None = None
+        if share_base_panel:
+            try:
+                base_panel = build_panel(safe_active, ret_df)
+            except Exception as exc:
+                _LOG.warning(
+                    "run_group_lift base_panel 构建失败，回退全量: %s: %s",
+                    type(exc).__name__, exc,
+                )
+                base_panel = None
+
         if base_daily is None:
-            base_combined = _combine(
-                _with_safe_feature_names(active_factor_dfs), ret_df, cv,
-            )
+            if base_panel is not None:
+                base_combined = _combine(
+                    safe_active, ret_df, cv, base_panel=base_panel,
+                )
+            else:
+                base_combined = _combine(safe_active, ret_df, cv)
             base_daily = _daily_oos_rank_ic(
                 base_combined, ret_df, start=adm_start, end=adm_end,
             )
         baseline = _mean_ic(base_daily)
-        group_combined = _combine(_with_safe_feature_names(pool), ret_df, cv)
+
+        safe_pool = _with_safe_feature_names(pool)
+        if base_panel is not None:
+            # 全量 dict + base_panel：一次 join N 个新候选列，CV 日期并集不变
+            group_combined = _combine(
+                safe_pool, ret_df, cv, base_panel=base_panel,
+            )
+        else:
+            group_combined = _combine(safe_pool, ret_df, cv)
         group_daily = _daily_oos_rank_ic(
             group_combined, ret_df, start=adm_start, end=adm_end,
         )
@@ -879,11 +969,13 @@ __all__ = [
     "DEFAULT_TOP_M",
     "LIFT_QUEUE_CATEGORY",
     "LiftEvalContext",
+    "adaptive_lift_workers",
     "extract_gray_candidates_from_manifest",
     "extract_lift_queue_from_manifest",
     "lift_admission",
     "make_lift_context",
     "paired_lift_stats",
+    "resolve_lift_workers",
     "run_group_lift",
     "run_lift_tests",
 ]

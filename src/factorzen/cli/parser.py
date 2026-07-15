@@ -673,6 +673,14 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
                        help="行业中性到 universe 等权基准")
     r_run.add_argument("--run-id", dest="run_id", default=None,
                        help="贯穿全链路的 run_id（默认 research_<seed>_<method>）")
+    r_run.add_argument(
+        "--intraday-leaves", dest="intraday_leaves", action="store_true",
+        help="启用日内特征叶子 i_*（需先 fz data intraday-features build）；仅 ashare",
+    )
+    r_run.add_argument(
+        "--intraday-freq", dest="intraday_freq", default="5min",
+        help="日内特征频率",
+    )
     r_run.set_defaults(func=commands._cmd_research_run)
 
     validate = sub.add_parser("validate", help="Overfitting / robustness checks")

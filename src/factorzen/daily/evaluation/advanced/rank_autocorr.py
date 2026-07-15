@@ -73,6 +73,11 @@ def compute_rank_autocorr(
     if lags is None:
         lags = [1]
 
+    # 只保留有效因子值参与截面 rank（NaN 非 null，rank 排最大会污染秩自相关）
+    factor_df = factor_df.filter(
+        pl.col(factor_col).is_not_null() & pl.col(factor_col).is_not_nan()
+    )
+
     # 按日期排序，计算每天的排名
     df = factor_df.sort(["ts_code", "trade_date"]).with_columns(
         pl.col(factor_col).rank("ordinal", descending=False).over("trade_date").alias("_rank")

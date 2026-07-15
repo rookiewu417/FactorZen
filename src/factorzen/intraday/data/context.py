@@ -47,8 +47,10 @@ class IntradayDataContext:
         if "minute" not in self.required_data:
             raise ValueError("minute data not declared in required_data")
         if self._minute is None:
+            # 存储 data_type 按 freq 命名空间（与 loader.fetch_minute 的 ``minute_{freq}`` 一致，
+            # 避免 1min/5min 混分区）；``required_data`` 里的 "minute" 只是逻辑声明。
             lf = load_parquet(
-                "minute",
+                f"minute_{self.bar_size}",
                 start=self.expanded_start,
                 end=self.end,
                 date_col="trade_time",

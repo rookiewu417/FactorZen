@@ -366,6 +366,121 @@ def test_lift_admission_four_branches():
     }, threshold=thr) == "reject"
 
 
+def _signed_factor_panels(sign: float, n_days=80, n_stocks=30, seed=1):
+    """构造单因子与 ret 同号/反号相关的面板（admission_ic 符号断言用）。
+
+    factor ≈ sign * ret + 极小噪声 → RankIC 符号 ≈ sign 的符号。
+    """
+    rng = np.random.default_rng(seed)
+    dates = _dates(n_days)
+    lib_rows, cand_rows, ret_rows = [], [], []
+    for d in dates:
+        ret = rng.standard_normal(n_stocks)
+        cand = float(sign) * ret + 0.02 * rng.standard_normal(n_stocks)
+        lib = rng.standard_normal(n_stocks)
+        for s in range(n_stocks):
+            code = f"{s:04d}.SZ"
+            lib_rows.append({"trade_date": d, "ts_code": code, "factor_value": float(lib[s])})
+            cand_rows.append({"trade_date": d, "ts_code": code, "factor_value": float(cand[s])})
+            ret_rows.append({"trade_date": d, "ts_code": code, "ret": float(ret[s])})
+    return (
+        {"lib_a": pl.DataFrame(lib_rows)},
+        pl.DataFrame(cand_rows),
+        pl.DataFrame(ret_rows),
+    )
+
+
+def test_run_lift_tests_admission_ic_reflects_single_factor_sign():
+    """admission_ic = 单因子 admission 窗 RankIC，正/负相关各得对应符号；非组合 IC。"""
+    from factorzen.discovery.lift_test import run_lift_tests
+
+    def combine_stub(fds, rdf, cv, **kw):
+        # 恒正假预测：若误用 candidate_rank_ic 当方向会永远为正
+        return rdf.select(
+            ["trade_date", "ts_code", pl.col("ret").abs().alias("factor_value")]
+        )
+
+    # 正相关
+    active_pos, cand_pos, ret_pos = _signed_factor_panels(+1.0, seed=11)
+    rows_pos = run_lift_tests(
+        [{"expression": "pos_cand", "ic_train": 0.03, "residual_ic_train": 0.02}],
+        market="ashare",
+        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+        active_factor_dfs=active_pos,
+        ret_df=ret_pos,
+        materialize_candidate=lambda e: cand_pos,
+        combine_fn=combine_stub,
+        top_m=None,
+        threshold=0.001,
+    )
+    assert len(rows_pos) == 1
+    rpos = rows_pos[0]
+    assert rpos.get("admission_ic") is not None, rpos
+    assert rpos["admission_ic"] > 0, rpos
+    assert rpos.get("ic_train") == 0.03
+    assert rpos.get("residual_ic_train") == 0.02
+    # 组合模型 IC 可能为正，但方向权威是 admission_ic（单因子）
+    assert "candidate_rank_ic" in rpos
+
+    # 负相关
+    active_neg, cand_neg, ret_neg = _signed_factor_panels(-1.0, seed=22)
+    rows_neg = run_lift_tests(
+        [{"expression": "neg_cand"}],
+        market="ashare",
+        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+        active_factor_dfs=active_neg,
+        ret_df=ret_neg,
+        materialize_candidate=lambda e: cand_neg,
+        combine_fn=combine_stub,
+        top_m=None,
+        threshold=0.001,
+    )
+    assert len(rows_neg) == 1
+    rneg = rows_neg[0]
+    assert rneg.get("admission_ic") is not None, rneg
+    assert rneg["admission_ic"] < 0, rneg
+    # 负向单因子 vs 组合 stub 的 candidate_rank_ic 符号可不同——证明不是同一字段
+    assert rneg["admission_ic"] != rneg.get("candidate_rank_ic") or (
+        rneg.get("candidate_rank_ic") is not None and rneg["candidate_rank_ic"] >= 0
+    )
+
+
+def test_run_lift_tests_error_rows_have_admission_ic_key():
+    """错误路径 row 也有 admission_ic 键（形态一致，下游 no KeyError）。"""
+    from factorzen.discovery.lift_test import run_lift_tests
+
+    active, cand, _, ret = _synth_panels(n_days=60, n_stocks=20, interactive=False)
+
+    def combine_stub(fds, rdf, cv, **kw):
+        return ret.select(["trade_date", "ts_code"]).with_columns(
+            pl.lit(0.0).alias("factor_value")
+        )
+
+    def materialize(expr):
+        if expr == "bad":
+            raise RuntimeError("boom")
+        return cand
+
+    rows = run_lift_tests(
+        [
+            {"expression": "bad", "residual_ic_train": 0.008},
+            {"expression": "ok", "residual_ic_train": 0.007},
+        ],
+        market="ashare",
+        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+        active_factor_dfs=active,
+        ret_df=ret,
+        materialize_candidate=materialize,
+        combine_fn=combine_stub,
+        top_m=10,
+    )
+    assert all("admission_ic" in r for r in rows)
+    # 失败行 admission_ic 应为 None（未成功物化）
+    by = {r["expression"]: r for r in rows}
+    assert by["bad"]["admission_ic"] is None
+    assert by["bad"]["error"]
+
+
 def test_run_lift_tests_new_fields_and_top_m_none():
     """新字段全链 + top_m=None 全测；mock combine 返回可控预测。"""
     from factorzen.discovery.lift_test import run_lift_tests
@@ -810,3 +925,108 @@ def test_expression_keys_survive_real_lgbm(tmp_path):
     assert out[0]["error"] is None, f"真实表达式键不得炸 lgbm: {out[0]}"
     assert out[0]["baseline"] is not None
     assert out[0]["expression"] == "mul(rank(vol), neg(ts_std(ret_1d, 20)))"
+
+
+# ── P9：准入 provenance 可重放 ───────────────────────────────────────────────
+
+
+def test_run_lift_tests_admission_provenance_complete():
+    """production 形态 run_lift_tests：row 含 admission/scored/CV/block/baseline_hash。"""
+    import hashlib
+
+    from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
+
+    dates = _dates(60)
+    n_stocks = 15
+    # 两套 active 键集合，验证 baseline_hash 集合稳定与差异
+    active_a = {
+        "lib_z": pl.DataFrame({
+            "trade_date": [d for d in dates for _ in range(n_stocks)],
+            "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+            "factor_value": [
+                float((hash(d) + s) % 17) for d in dates for s in range(n_stocks)
+            ],
+        }),
+        "lib_a": pl.DataFrame({
+            "trade_date": [d for d in dates for _ in range(n_stocks)],
+            "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+            "factor_value": [
+                float((hash(d) * 3 + s) % 13) for d in dates for s in range(n_stocks)
+            ],
+        }),
+    }
+    # 同集合不同插入序 → hash 应相同
+    active_a_reordered = {"lib_a": active_a["lib_a"], "lib_z": active_a["lib_z"]}
+    active_b = {"lib_only": active_a["lib_a"]}
+
+    ret = pl.DataFrame({
+        "trade_date": [d for d in dates for _ in range(n_stocks)],
+        "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+        "ret": [
+            0.01 * (s - n_stocks / 2) + 0.001 * (i % 5)
+            for i, d in enumerate(dates) for s in range(n_stocks)
+        ],
+    })
+    cand = pl.DataFrame({
+        "trade_date": [d for d in dates for _ in range(n_stocks)],
+        "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+        "factor_value": [
+            float(s) + 0.01 * (hash(d) % 7) for d in dates for s in range(n_stocks)
+        ],
+    })
+
+    def combine_stub(fds, rdf, cv, **kw):
+        return rdf.select(
+            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
+        )
+
+    ctx = LiftEvalContext(
+        market="ashare",
+        prepped=pl.DataFrame({"trade_date": ["x"], "ts_code": ["y"], "close": [1.0]}),
+        leaf_map=None,
+        horizon=5,
+        admission_start="20240115",
+        admission_end="20240301",
+        profile_name="ashare_default",
+    )
+    cv_params = {"train_days": 40, "test_days": 10, "purge_days": 3}
+    common = dict(
+        gray_candidates=[{"expression": "cand0", "residual_ic_train": 0.01}],
+        market="ashare",
+        daily=pl.DataFrame(),
+        ret_df=ret,
+        materialize_candidate=lambda e: cand,
+        combine_fn=combine_stub,
+        cv_params=cv_params,
+        block_days=10,
+        threshold=0.001,
+        ctx=ctx,
+        horizon=5,
+    )
+
+    r1 = run_lift_tests(**common, active_factor_dfs=active_a)[0]
+    r1b = run_lift_tests(**common, active_factor_dfs=active_a_reordered)[0]
+    r2 = run_lift_tests(**common, active_factor_dfs=active_b)[0]
+
+    # admission / scored / CV / block / profile / frequency
+    assert r1["admission_start"] == "20240115"
+    assert r1["admission_end"] == "20240301"
+    assert r1["scored_start"] is not None
+    assert r1["scored_end"] is not None
+    assert r1["scored_start"] >= "20240115"
+    assert r1["block_days"] == 10
+    assert r1["cv_train_days"] == 40
+    assert r1["cv_test_days"] == 10
+    assert r1["threshold"] == 0.001
+    assert r1["profile_name"] == "ashare_default"
+    assert r1["frequency"] == "daily"
+    assert r1["horizon"] == 5
+
+    # baseline_hash：同集合稳定（插入序无关）、不同集合不同
+    expected = hashlib.sha256(",".join(sorted(active_a.keys())).encode()).hexdigest()[:16]
+    assert r1["baseline_hash"] == expected
+    assert r1b["baseline_hash"] == r1["baseline_hash"]
+    assert r2["baseline_hash"] is not None
+    assert r2["baseline_hash"] != r1["baseline_hash"]
+    expected_b = hashlib.sha256(",".join(sorted(active_b.keys())).encode()).hexdigest()[:16]
+    assert r2["baseline_hash"] == expected_b

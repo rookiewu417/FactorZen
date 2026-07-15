@@ -76,6 +76,71 @@ def test_run_portfolio_simulation_produces_metrics(tmp_path: Path):
     assert "ann_ret" in res, "返回 dict 缺少 ann_ret"
 
 
+def test_sim_manifest_reproducibility_fields(tmp_path: Path):
+    """可复现铁律#3：sim manifest 须含 inputs/窗口/成本/配置/command/git_sha，
+    事后能从 manifest 重跑同一 sim（旧实现仅 run_id/n_signals/git_sha）。
+    """
+    codes = ["000001.SZ", "000002.SZ"]
+    p1 = _write_portfolio_dir(tmp_path, "p1", codes, [0.5, 0.5], "2023-01-10")
+    p2 = _write_portfolio_dir(tmp_path, "p2", codes, [0.3, 0.7], "2023-02-01")
+    daily = _fake_daily(codes)
+    inputs = [p1, p2]
+    res = run_portfolio_simulation(
+        inputs, daily, out_dir=str(tmp_path / "sim_mf"), run_id="mf1"
+    )
+    run_dir = Path(res["run_dir"])
+    raw = (run_dir / "manifest.json").read_text(encoding="utf-8")
+    # JSON 合法：无不可序列化对象导致的落盘失败；可 loads 回来
+    manifest = json.loads(raw)
+
+    # 保留字段
+    assert manifest["run_id"] == "mf1"
+    assert manifest["n_signals"] == 2
+    assert manifest.get("git_sha"), "git_sha 须非空"
+
+    # 可复现字段
+    assert manifest.get("inputs") == inputs, "inputs 须为 portfolio_run_dirs 列表"
+    assert manifest.get("start") == "2023-01-10"
+    assert manifest.get("end") == "2023-02-01"
+    assert manifest.get("command") == "sim run"
+    assert isinstance(manifest.get("cost_model"), dict) and manifest["cost_model"], (
+        "cost_model 须为非空 dict（费率/印花/借券等）"
+    )
+    assert isinstance(manifest.get("config"), dict) and manifest["config"], (
+        "config 须为非空 dict（BacktestConfig 关键字段）"
+    )
+    # n_exec_dates：有执行日时应为正
+    assert isinstance(manifest.get("n_exec_dates"), int)
+    assert manifest["n_exec_dates"] > 0
+
+
+def test_sim_manifest_json_roundtrip_and_no_nav_regression(tmp_path: Path):
+    """manifest 加厚不得改 nav/metrics 产物；JSON 可往返 loads。"""
+    codes = ["000001.SZ", "000002.SZ"]
+    p1 = _write_portfolio_dir(tmp_path, "p1", codes, [0.5, 0.5], "2023-01-10")
+    daily = _fake_daily(codes)
+    res = run_portfolio_simulation(
+        [p1], daily, out_dir=str(tmp_path / "sim_rt"), run_id="rt1"
+    )
+    run_dir = Path(res["run_dir"])
+
+    # JSON 往返
+    raw = (run_dir / "manifest.json").read_text(encoding="utf-8")
+    m1 = json.loads(raw)
+    m2 = json.loads(json.dumps(m1, ensure_ascii=False))
+    assert m2 == m1
+
+    # 零回归：返回值与 metrics/nav 仍可用
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    for k in ("ann_ret", "sharpe", "max_dd"):
+        assert k in metrics
+    assert res.get("sharpe") == metrics.get("sharpe")
+    assert res.get("max_dd") == metrics.get("max_dd")
+    assert res.get("ann_ret") == metrics.get("ann_ret")
+    nav = pl.read_parquet(run_dir / "nav.parquet")
+    assert "nav" in nav.columns and nav.height > 0
+
+
 def test_run_portfolio_simulation_multiple_signals(tmp_path: Path):
     """多个 signal_date 时仍能正常落盘。"""
     codes = ["000001.SZ", "000002.SZ"]

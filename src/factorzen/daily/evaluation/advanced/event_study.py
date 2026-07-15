@@ -53,8 +53,10 @@ def compute_event_study(
     windows = list(range(-pre_window, post_window + 1))
     n_windows = len(windows)
 
-    # 过滤有效因子值
-    valid_factor = factor_df.filter(pl.col(factor_col).is_not_null())
+    # 过滤有效因子值（NaN 非 null，rank 排最大会把 NaN 股误判为 top 事件）
+    valid_factor = factor_df.filter(
+        pl.col(factor_col).is_not_null() & pl.col(factor_col).is_not_nan()
+    )
     if valid_factor.is_empty():
         return EventStudyResult(
             windows=windows,

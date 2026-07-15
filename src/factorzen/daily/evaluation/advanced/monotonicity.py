@@ -56,6 +56,17 @@ def compute_monotonicity(
     Returns:
         MonotonicityResult
     """
+    # 只保留有效因子值参与截面 rank/分组（NaN 非 null，rank 排最大会污染最高组）
+    factor_df = factor_df.filter(
+        pl.col(factor_col).is_not_null() & pl.col(factor_col).is_not_nan()
+    )
+    if factor_df.is_empty():
+        return MonotonicityResult(
+            factor_name=factor_col,
+            monotonicity_score=0.0,
+            group_means=[],
+            direction="neutral",
+        )
     df = (
         factor_df.with_columns(
             pl.col(factor_col).rank("ordinal", descending=False).over("trade_date").alias("_rank")

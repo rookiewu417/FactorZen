@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import asdict, is_dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -44,6 +46,39 @@ from factorzen.daily.evaluation.backtest import (
 from factorzen.daily.evaluation.cost_models import CostModelBase
 
 _logger = logging.getLogger(__name__)
+
+
+def _jsonable(obj: Any) -> Any:
+    """把 cost_model / BacktestConfig 等转为 JSON 可序列化结构。
+
+    date → isoformat；dataclass → asdict 递归；不可序列化对象 → type 名 + 公开属性或 str。
+    """
+    if obj is None or isinstance(obj, (str, int, bool)):
+        return obj
+    if isinstance(obj, float):
+        return obj
+    if isinstance(obj, date):
+        return obj.isoformat()
+    if isinstance(obj, Path):
+        return str(obj)
+    if is_dataclass(obj) and not isinstance(obj, type):
+        return {k: _jsonable(v) for k, v in asdict(obj).items()}
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    # CostModelBase 非 dataclass 子类等：记 type + 公开属性
+    if hasattr(obj, "__dict__"):
+        out: dict[str, Any] = {"_type": type(obj).__name__}
+        for k, v in vars(obj).items():
+            if k.startswith("_"):
+                continue
+            try:
+                out[k] = _jsonable(v)
+            except (TypeError, ValueError):
+                out[k] = str(v)
+        return out
+    return str(obj)
 
 # 组合优化成功状态（参考 portfolio/optimizer.py::OptimizeResult.status，来源于
 # cvxpy Problem.status，或捕获 SolverError/DCPError 时固定的 "error"）。其余
@@ -242,16 +277,22 @@ def run_portfolio_simulation(
     (run_dir / "metrics.json").write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2)
     )
+    sig_dates = list(weights_by_date.keys())
+    n_exec_dates = int(bt.nav.height) if not bt.nav.is_empty() else 0
+    manifest: dict[str, Any] = {
+        "run_id": rid,
+        "n_signals": len(weights_by_date),
+        "git_sha": get_git_sha(),
+        "inputs": list(portfolio_run_dirs),
+        "start": min(sig_dates).isoformat() if sig_dates else None,
+        "end": max(sig_dates).isoformat() if sig_dates else None,
+        "n_exec_dates": n_exec_dates,
+        "cost_model": _jsonable(effective_cost_model),
+        "config": _jsonable(sim_config),
+        "command": "sim run",
+    }
     (run_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "run_id": rid,
-                "n_signals": len(weights_by_date),
-                "git_sha": get_git_sha(),
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+        json.dumps(manifest, ensure_ascii=False, indent=2)
     )
 
     return {

@@ -98,19 +98,20 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
     2. 拉取集合 = 窗口内曾在成分内的 ``ts_code`` 并集（替代期末快照，消除幸存偏差）；
     3. 原始 daily **不按日删行**——滚动算子需要连续时序；评估截面由
        ``in_universe`` 在 evaluation / mining_session 评估帧形成点过滤；
-    4. membership 构造失败时回退期末快照过滤（``get_universe(end, ...)``）并 warning，
-       保证挖掘链路不崩。
+    4. **fail closed**：命名动态指数（非 ``all_a``）的 membership 构造抛异常或返回空池时
+       直接 ``raise ValueError``，**拒绝**静态/as-of 回退生成可入库产物（会引入
+       look-ahead + 幸存者偏差，违反 PIT 铁律）。``all_a`` 空池仍视为全市场成功路径。
 
     ``out_meta``：可选输出字典。传入非 None 时写入 membership 溯源字段供 manifest 落盘：
-    ``membership_mode``（``"pit"`` / ``"asof_fallback"`` / ``None``）、
+    ``membership_mode``（成功时 ``"pit"``；universe 未设为 ``None``）、
     ``membership_hash``（仅 pit）、``membership_n_rows``（仅 pit）、``universe``。
+    本函数成功路径不再产生 ``"asof_fallback"``。
     ``out_meta=None`` 时行为零改动（返回类型不变，三调用方零破坏）。
 
     不做的事：动态过滤池的逐日 membership（``get_universe_membership`` 对
-    daily_default 等抛 ValueError，本函数捕获后回退期末快照并标 ``asof_fallback``）。
+    daily_default 等抛 ValueError）——异常向上 fail closed，由调用方改用 all_a 或回补数据。
     """
     from factorzen.core.universe import (
-        get_universe,
         get_universe_membership,
         membership_hash,
     )
@@ -122,34 +123,31 @@ def prepare_mining_daily(start: str, end: str, universe: str | None = None,
 
     uni: list[str] | None = None
     membership: pl.DataFrame | None = None
-    # 溯源：universe 未设 → None；PIT 成功 → pit；构造失败/空池 as-of 回退 → asof_fallback
+    # 溯源：universe 未设 → None；PIT 成功 → pit（本函数不再产生 asof_fallback）
     membership_mode: str | None = None
     membership_hash_val: str | None = None
     membership_n_rows: int | None = None
     if universe:
         try:
             membership = get_universe_membership(start, end, universe)
-            uni = membership["ts_code"].unique().to_list()
-            if not uni and universe != "all_a":
-                # membership 空但命名指数池：沿用 as-of 回退（成分数据未回补）
-                uni = _universe_asof_fallback(universe, end)
-                membership = None
-                membership_mode = "asof_fallback"
-            else:
-                membership_mode = "pit"
-                membership_hash_val = membership_hash(membership)
-                membership_n_rows = int(membership.height)
         except Exception as exc:
-            _LOG.warning(
-                "universe membership 构造失败（%s: %s），回退期末快照过滤 "
-                "get_universe(%s, %s)",
-                type(exc).__name__, exc, end, universe,
+            raise ValueError(
+                f"universe={universe!r} 的逐日 PIT membership 构造失败"
+                f"（{type(exc).__name__}: {exc}）；"
+                f"拒绝回退静态成分生成可入库产物（会引入 look-ahead+幸存偏差，违反 PIT 铁律）。"
+                f"请回补指数成分数据，或改用 --universe all_a。"
+            ) from exc
+        uni = membership["ts_code"].unique().to_list()
+        if not uni and universe != "all_a":
+            raise ValueError(
+                f"universe={universe!r} 在 [{start},{end}] 的逐日 PIT membership 为空"
+                f"（成分数据未回补到该窗口）；"
+                f"拒绝 as-of/静态成分回退生成可入库产物（会引入 look-ahead+幸存偏差，违反 PIT 铁律）。"
+                f"请回补指数成分数据，或改用 --universe all_a。"
             )
-            uni = get_universe(end, universe)["ts_code"].to_list()
-            if not uni and universe != "all_a":
-                uni = _universe_asof_fallback(universe, end)
-            membership = None
-            membership_mode = "asof_fallback"
+        membership_mode = "pit"
+        membership_hash_val = membership_hash(membership)
+        membership_n_rows = int(membership.height)
 
     if out_meta is not None:
         out_meta["membership_mode"] = membership_mode

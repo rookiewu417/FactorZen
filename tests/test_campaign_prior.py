@@ -27,8 +27,34 @@ _WIN_B = {"start": "20180101", "end": "20201231", "universe": "csi500", "market"
 _N_OBS = 303
 
 
-def _line(expr: str, ir: float, *, run_id: str, window: dict, compile_ok: bool = True) -> str:
-    return json.dumps({
+def _full_key(**overrides) -> str:
+    """与 team_orchestrator 默认配置对齐的完整 campaign_key。"""
+    from factorzen.discovery.guardrails import DEFAULT_GATE
+
+    base = dict(
+        market="ashare",
+        universe="csi300",
+        start="20200605",
+        end="20260605",
+        holdout_ratio=0.2,
+        objective="residual",
+        horizon=1,
+        gate=DEFAULT_GATE,
+    )
+    base.update(overrides)
+    return campaign_key(**base)
+
+
+def _line(
+    expr: str,
+    ir: float,
+    *,
+    run_id: str,
+    window: dict,
+    compile_ok: bool = True,
+    campaign_id: str | None = None,
+) -> str:
+    rec = {
         "expression": expr,
         "hypothesis": "h",
         "ic_train": ir / 10.0,
@@ -41,7 +67,10 @@ def _line(expr: str, ir: float, *, run_id: str, window: dict, compile_ok: bool =
         "error": None,
         "data_window": window,
         "run_id": run_id,
-    }, ensure_ascii=False)
+    }
+    if campaign_id is not None:
+        rec["campaign_id"] = campaign_id
+    return json.dumps(rec, ensure_ascii=False)
 
 
 def _write_index(path: Path, lines: list[str]) -> str:
@@ -300,10 +329,11 @@ def test_finalize_prior_none_zero_regression():
 
 def test_orchestrator_manifest_campaign_fields(tmp_path: Path):
     """mock index + 小 session：manifest 含 campaign 族字段；family = prior + session 新增。"""
-    # 历史：2 个唯一表达式，同窗
+    # 历史：2 个唯一表达式，同完整统计问题（须带 campaign_id，否则精确过滤保守排除）
+    hist_cid = _full_key()
     hist = [
-        _line("ts_std(close,10)", 0.08, run_id="team_99", window=_WIN_A),
-        _line("rank(vol)", 0.06, run_id="team_99", window=_WIN_A),
+        _line("ts_std(close,10)", 0.08, run_id="team_99", window=_WIN_A, campaign_id=hist_cid),
+        _line("rank(vol)", 0.06, run_id="team_99", window=_WIN_A, campaign_id=hist_cid),
     ]
     index_path = _write_index(tmp_path / "experiment_index.jsonl", hist)
 
@@ -318,6 +348,7 @@ def test_orchestrator_manifest_campaign_fields(tmp_path: Path):
         library_orthogonal=False,
         auto_lift=False,
         campaign_prior_enabled=True,
+        run_id="team_42_testfix",
     )
     man_path = write_team_manifest(
         res, out_dir=str(tmp_path / "out"), run_id="t_campaign",
@@ -370,3 +401,168 @@ def test_orchestrator_campaign_prior_disabled_zero_regression(tmp_path: Path):
     assert m_off.get("prior_n_sessions", 0) == 0
     # 无 prior 时 family = 本 session N（basis.n_trials）
     assert m_off["n_trials_family"] == m_off["n_trials"] or m_off["n_trials_family"] >= 0
+
+
+# ── 8. S3/P7：按完整统计问题分族 + 同 seed 不互斥 ─────────────────────────
+
+
+def test_campaign_prior_filters_by_campaign_id_not_window_only(tmp_path: Path):
+    """配置分族：同窗不同 objective/horizon 不得混入同一 prior 池。
+
+    旧实现只按 market/universe/start/end 过滤 → 两组 4 条全进池（n_trials=4）。
+    新实现按 campaign_id 精确过滤 → 只含组 X（n_trials=2）。
+    """
+    cid_x = _full_key(objective="residual", horizon=1)
+    cid_y = _full_key(objective="raw", horizon=5)
+    assert cid_x != cid_y
+
+    lines = [
+        _line("expr_x1", 0.10, run_id="team_x", window=_WIN_A, campaign_id=cid_x),
+        _line("expr_x2", 0.20, run_id="team_x", window=_WIN_A, campaign_id=cid_x),
+        _line("expr_y1", 0.30, run_id="team_y", window=_WIN_A, campaign_id=cid_y),
+        _line("expr_y2", 0.40, run_id="team_y", window=_WIN_A, campaign_id=cid_y),
+    ]
+    path = _write_index(tmp_path / "idx.jsonl", lines)
+
+    prior = campaign_prior(
+        path,
+        market="ashare",
+        universe="csi300",
+        start="20200605",
+        end="20260605",
+        campaign_id=cid_x,
+    )
+    assert prior is not None
+    assert prior.n_trials == 2
+    assert prior.expressions == {"expr_x1", "expr_x2"}
+    assert "expr_y1" not in prior.expressions
+    assert prior.campaign_id == cid_x
+
+
+def test_campaign_prior_campaign_id_matches_input(tmp_path: Path):
+    """prior.campaign_id 必须等于传入的 campaign_id（= manifest 写入值），非全-None 哈希。"""
+    cid = _full_key()
+    lines = [
+        _line("e1", 0.1, run_id="r1", window=_WIN_A, campaign_id=cid),
+    ]
+    path = _write_index(tmp_path / "idx.jsonl", lines)
+    prior = campaign_prior(
+        path,
+        market="ashare",
+        universe="csi300",
+        start="20200605",
+        end="20260605",
+        campaign_id=cid,
+    )
+    assert prior is not None
+    assert prior.campaign_id == cid
+    # 全-None key 与完整 key 不同（审计可重建 basis）
+    none_key = campaign_key(
+        market="ashare", universe="csi300", start="20200605", end="20260605",
+        holdout_ratio=None, objective=None, horizon=None, gate=None,
+    )
+    assert prior.campaign_id != none_key
+
+
+def test_campaign_prior_same_seed_distinct_run_ids_both_counted(tmp_path: Path):
+    """同 seed 历史不互斥：不同 run_id 的两 session 都应计入 prior。
+
+    旧实现 run_id=f'team_{seed}' 固定 → exclude 当前时误把全部同 seed 历史排除。
+    新实现 session 唯一 run_id；exclude 仅本 run → 历史两条都在。
+    """
+    cid = _full_key()
+    lines = [
+        _line("e_aaa", 0.11, run_id="team_seed_aaa", window=_WIN_A, campaign_id=cid),
+        _line("e_bbb", 0.22, run_id="team_seed_bbb", window=_WIN_A, campaign_id=cid),
+    ]
+    path = _write_index(tmp_path / "idx.jsonl", lines)
+    prior = campaign_prior(
+        path,
+        market="ashare",
+        universe="csi300",
+        start="20200605",
+        end="20260605",
+        campaign_id=cid,
+        exclude_run_ids={"team_seed_current"},
+    )
+    assert prior is not None
+    assert prior.n_trials == 2
+    assert prior.n_sessions == 2
+    assert prior.expressions == {"e_aaa", "e_bbb"}
+
+
+def test_campaign_prior_legacy_none_campaign_id_window_filter(tmp_path: Path):
+    """campaign_id=None 时保持 legacy 按窗过滤（向后兼容既有测试与 M1）。"""
+    # 两组不同 campaign_id，但同窗 → legacy 应混池 n_trials=4
+    cid_x = _full_key(objective="residual", horizon=1)
+    cid_y = _full_key(objective="raw", horizon=5)
+    lines = [
+        _line("expr_x1", 0.10, run_id="team_x", window=_WIN_A, campaign_id=cid_x),
+        _line("expr_x2", 0.20, run_id="team_x", window=_WIN_A, campaign_id=cid_x),
+        _line("expr_y1", 0.30, run_id="team_y", window=_WIN_A, campaign_id=cid_y),
+        _line("expr_y2", 0.40, run_id="team_y", window=_WIN_A, campaign_id=cid_y),
+        _line("expr_c1", 0.50, run_id="team_c", window=_WIN_B, campaign_id="other"),
+    ]
+    path = _write_index(tmp_path / "idx.jsonl", lines)
+    prior = campaign_prior(
+        path,
+        market="ashare",
+        universe="csi300",
+        start="20200605",
+        end="20260605",
+        campaign_id=None,
+    )
+    assert prior is not None
+    assert prior.n_trials == 4
+    assert prior.expressions == {"expr_x1", "expr_x2", "expr_y1", "expr_y2"}
+    # legacy campaign_id 用全-None 算
+    none_key = campaign_key(
+        market="ashare", universe="csi300", start="20200605", end="20260605",
+        holdout_ratio=None, objective=None, horizon=None, gate=None,
+    )
+    assert prior.campaign_id == none_key
+
+
+def test_campaign_prior_strict_excludes_legacy_rows_without_campaign_id(tmp_path: Path):
+    """campaign_id 精确过滤时，缺 campaign_id 的旧行保守排除。"""
+    cid = _full_key()
+    lines = [
+        _line("with_id", 0.10, run_id="r1", window=_WIN_A, campaign_id=cid),
+        _line("legacy_no_id", 0.99, run_id="r2", window=_WIN_A),  # 无 campaign_id
+    ]
+    path = _write_index(tmp_path / "idx.jsonl", lines)
+    prior = campaign_prior(
+        path,
+        market="ashare",
+        universe="csi300",
+        start="20200605",
+        end="20260605",
+        campaign_id=cid,
+    )
+    assert prior is not None
+    assert prior.n_trials == 1
+    assert prior.expressions == {"with_id"}
+
+
+def test_librarian_record_writes_campaign_id(tmp_path: Path):
+    """record(..., campaign_id=) 写入 index 行顶层字段（不进 data_window）。"""
+    from factorzen.agents.experiment_index import ExperimentIndex
+    from factorzen.agents.roles.librarian import record
+    from factorzen.agents.state import AttemptRecord
+
+    idx = ExperimentIndex(str(tmp_path / "idx.jsonl"))
+    a = AttemptRecord(
+        iteration=0, hypothesis="h", expression="rank(close)", compile_ok=True,
+        ic_train=0.01, passed_guardrails=False, critic_verdict=None, error=None,
+        ir_train=0.1, turnover=0.3, n_train=_N_OBS,
+    )
+    record(
+        idx, [a], run_id="r1",
+        data_window=dict(_WIN_A),
+        campaign_id="cidZ",
+    )
+    raw = (tmp_path / "idx.jsonl").read_text(encoding="utf-8").strip()
+    row = json.loads(raw)
+    assert row["campaign_id"] == "cidZ"
+    assert row["data_window"] == _WIN_A
+    assert "campaign_id" not in (row.get("data_window") or {})

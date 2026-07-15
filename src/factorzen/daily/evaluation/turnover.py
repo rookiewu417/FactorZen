@@ -39,6 +39,11 @@ def compute_turnover(
         n_groups: 分组数
     """
     require_columns(factor_df, ["trade_date", "ts_code", factor_col], context="compute_turnover")
+    # 只保留有效因子值参与截面 rank/分组。polars 中 NaN 不是 null，且 rank 把
+    # NaN 排为最大值——未过滤时 NaN 股进最高组并抬高 max_rank，污染迁移/换手。
+    factor_df = factor_df.filter(
+        pl.col(factor_col).is_not_null() & pl.col(factor_col).is_not_nan()
+    )
     # 每日分组
     df = (
         factor_df.with_columns(

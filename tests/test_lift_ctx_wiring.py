@@ -184,6 +184,7 @@ def test_team_hook_admission_window_in_ctx_and_meta(monkeypatch):
         materialize_candidate=mat,
         active_factor_dfs={"base": _panel(100)},
         ret_df=_panel(100).rename({"factor_value": "ret"}),
+        horizon=DEFAULT_HORIZON,
     )
 
     hs = holdout["trade_date"].min()
@@ -245,6 +246,7 @@ def test_team_hook_injected_materializer_skips_default(monkeypatch):
         market="ashare", library_root="/tmp/lib", seed=1,
         materialize_candidate=mat,
         active_factor_dfs={"base": _panel(100)},
+        horizon=1,
     )
     assert calls == [], f"注入 materialize 时不应构造默认 mat，got {calls}"
     assert meta.get("lift_error") is None

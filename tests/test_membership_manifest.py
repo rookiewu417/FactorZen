@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
+import pytest
 
 # ── 与 test_universe_membership 对齐的假日历 / 成分 ──────────────────────
 _JAN_DATES = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
@@ -137,8 +138,8 @@ def test_out_meta_pit_success(monkeypatch):
     assert out_meta["membership_n_rows"] > 0
 
 
-def test_out_meta_asof_fallback_on_membership_failure(monkeypatch):
-    """membership 构造抛异常 → mode=asof_fallback、hash=None。"""
+def test_out_meta_membership_failure_fails_closed(monkeypatch):
+    """membership 构造抛异常 → fail closed（不再写 asof_fallback 可入库 meta）。"""
     daily = _synthetic_daily_frame()
     fm, _ = _patch_prepare_stack(
         monkeypatch, daily, end_universe=["B.SZ", "C.SZ"]
@@ -152,15 +153,12 @@ def test_out_meta_asof_fallback_on_membership_failure(monkeypatch):
     )
 
     out_meta: dict = {}
-    out = fm.prepare_mining_daily(
-        "20240102", "20240205", universe="csi300", out_meta=out_meta
-    )
-
-    assert "in_universe" not in out.columns
-    assert out_meta["membership_mode"] == "asof_fallback"
-    assert out_meta["membership_hash"] is None
-    assert out_meta.get("membership_n_rows") is None
-    assert out_meta["universe"] == "csi300"
+    with pytest.raises(ValueError, match=r"PIT membership|拒绝回退"):
+        fm.prepare_mining_daily(
+            "20240102", "20240205", universe="csi300", out_meta=out_meta
+        )
+    # 抛错前未写入可入库 meta（fail closed 不落 asof_fallback 产物）
+    assert out_meta == {}
 
 
 def test_out_meta_universe_none(monkeypatch):

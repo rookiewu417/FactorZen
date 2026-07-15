@@ -148,16 +148,39 @@ def test_csi800_is_union_of_300_and_500(stock_basic, monkeypatch):
     assert set(result["ts_code"].to_list()) == {"600000.SH", "600001.SH", "300003.SZ"}
 
 
-def test_csi_index_failure_falls_back_to_all_a(stock_basic, monkeypatch):
-    """指数加载抛异常时应降级为全 A 股，而非崩溃。"""
+def test_csi_index_failure_fail_closed(stock_basic, monkeypatch):
+    """指数加载抛异常时 fail closed：raise ValueError，拒绝静默降级为全 A。
+
+    旧实现 ``return all_a`` 会在调用方要 csi300 时静默换成 5000+ 股宽截面，
+    改变 IC/组合/回测口径；宁 fail closed 勿静默错口径。
+    """
 
     def _boom(code, ds):
         raise RuntimeError("tushare down")
 
     monkeypatch.setattr(U, "_load_index_members", _boom)
-    result = get_universe("20240115", "csi500")
-    # 全 A（PIT 过滤后 4 只均在市）
+    with pytest.raises(ValueError, match=r"指数成分加载失败.*拒绝静默降级为全 A") as ei:
+        get_universe("20240115", "csi300")
+    assert ei.value.__cause__ is not None
+    assert "tushare down" in str(ei.value.__cause__)
+    assert "all_a" in str(ei.value)
+
+
+def test_all_a_unaffected_by_index_loader(stock_basic, monkeypatch):
+    """all_a 路径不经过指数加载；即便 _load_index_members 会炸也不应影响。"""
+
+    def _boom(code, ds):
+        raise RuntimeError("should not be called for all_a")
+
+    monkeypatch.setattr(U, "_load_index_members", _boom)
+    result = get_universe("20240115", "all_a")
     assert result.height == 4
+    assert set(result["ts_code"].to_list()) == {
+        "600000.SH",
+        "600001.SH",
+        "600002.SH",
+        "300003.SZ",
+    }
 
 
 # ══════════════════════════════════════════════════════════

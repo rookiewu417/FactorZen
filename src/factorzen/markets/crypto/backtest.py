@@ -176,10 +176,35 @@ def run_crypto_simulation(
         git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except Exception:
         git_sha = "unknown"
-    (run_dir / "manifest.json").write_text(json.dumps(
-        {"run_id": rid, "market": profile.name, "freq": freq,
-         "n_signals": len(weights_by_date), "n_symbols": len(symbols),
-         "git_sha": git_sha}, ensure_ascii=False, indent=2))
+    # 可复现铁律#3：与 A 股 sim.engine 对齐，补 inputs/窗口/成本/command
+    from factorzen.sim.engine import _jsonable
+
+    sig_dates = list(weights_by_date.keys())
+    nav_df = sim["nav"]
+    n_exec_dates = int(nav_df.height) if not nav_df.is_empty() else 0
+
+    def _sig_iso(d: object) -> str:
+        return d.isoformat() if hasattr(d, "isoformat") else str(d)
+
+    manifest = {
+        "run_id": rid,
+        "market": profile.name,
+        "freq": freq,
+        "n_signals": len(weights_by_date),
+        "n_symbols": len(symbols),
+        "git_sha": git_sha,
+        "inputs": list(portfolio_run_dirs),
+        "start": start,  # 回测窗口（调用方入参）；信号窗口见 signal_start/end
+        "end": end,
+        "signal_start": _sig_iso(min(sig_dates)) if sig_dates else None,
+        "signal_end": _sig_iso(max(sig_dates)) if sig_dates else None,
+        "n_exec_dates": n_exec_dates,
+        "cost_model": _jsonable(profile.costs),
+        "command": "crypto sim run",
+    }
+    (run_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2)
+    )
     m = sim["metrics"]
     return {"run_dir": str(run_dir), "sharpe": m["sharpe"], "max_dd": m["max_dd"],
             "ann_ret": m["ann_ret"]}

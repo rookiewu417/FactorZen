@@ -671,3 +671,198 @@ def test_upsert_lift_reject_new_expression_not_stored(tmp_path):
     assert out.get("demoted_no_lift", 0) == 0
     assert out["added_active"] == 0 and out["added_probation"] == 0
     assert load_library("ashare", root=str(tmp_path)) == []
+
+
+# ── P9：准入 provenance 落盘可重放 ───────────────────────────────────────────
+
+
+def test_upsert_lift_admissions_persists_admission_provenance(tmp_path):
+    """run_lift_tests row → upsert → 读回 FactorRecord 字段与 row 一致。"""
+    from factorzen.discovery.factor_library import load_library, upsert_lift_admissions
+    from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
+
+    dates = []
+    d = date(2024, 1, 2)
+    while len(dates) < 50:
+        if d.weekday() < 5:
+            dates.append(d.strftime("%Y%m%d"))
+        d += timedelta(days=1)
+    n_stocks = 12
+    active = {
+        "lib_b": pl.DataFrame({
+            "trade_date": [dd for dd in dates for _ in range(n_stocks)],
+            "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+            "factor_value": [float(s + 1) for _ in dates for s in range(n_stocks)],
+        }),
+        "lib_a": pl.DataFrame({
+            "trade_date": [dd for dd in dates for _ in range(n_stocks)],
+            "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+            "factor_value": [float(s) for _ in dates for s in range(n_stocks)],
+        }),
+    }
+    ret = pl.DataFrame({
+        "trade_date": [dd for dd in dates for _ in range(n_stocks)],
+        "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+        "ret": [0.01 * s for _ in dates for s in range(n_stocks)],
+    })
+    cand = pl.DataFrame({
+        "trade_date": [dd for dd in dates for _ in range(n_stocks)],
+        "ts_code": [f"{s:04d}.SZ" for _ in dates for s in range(n_stocks)],
+        "factor_value": [float(s) + 0.5 for _ in dates for s in range(n_stocks)],
+    })
+
+    def combine_stub(fds, rdf, cv, **kw):
+        return rdf.select(
+            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
+        )
+
+    ctx = LiftEvalContext(
+        market="ashare",
+        prepped=pl.DataFrame({"trade_date": ["x"], "ts_code": ["y"], "close": [1.0]}),
+        leaf_map=None,
+        horizon=5,
+        admission_start="20240120",
+        admission_end="20240315",
+        profile_name="ashare_v1",
+    )
+    rows = run_lift_tests(
+        [{"expression": "rank(close)", "residual_ic_train": 0.02, "ic_train": 0.03}],
+        market="ashare",
+        daily=pl.DataFrame(),
+        active_factor_dfs=active,
+        ret_df=ret,
+        materialize_candidate=lambda e: cand,
+        combine_fn=combine_stub,
+        cv_params={"train_days": 30, "test_days": 8, "purge_days": 2},
+        block_days=12,
+        threshold=0.001,
+        ctx=ctx,
+    )
+    # 强制 passed 以便 upsert 写入（本测只关心 provenance 落盘）
+    rows[0]["lift"] = 0.05
+    rows[0]["lift_se"] = 0.001
+    rows[0]["lift_first_half"] = 0.04
+    rows[0]["lift_second_half"] = 0.06
+    rows[0]["passed"] = True
+    row = rows[0]
+
+    upsert_lift_admissions(
+        [row],
+        market="ashare",
+        root=str(tmp_path),
+        meta=_meta(horizon=5, now="2026-07-14"),
+        threshold=0.001,
+        se_mult=1.645,
+        allow_active=True,
+    )
+    rec = load_library("ashare", root=str(tmp_path))[0]
+
+    assert rec.admission_start == row["admission_start"] == "20240120"
+    assert rec.admission_end == row["admission_end"] == "20240315"
+    assert rec.scored_start == row["scored_start"]
+    assert rec.scored_end == row["scored_end"]
+    assert rec.block_days == row["block_days"] == 12
+    assert rec.cv_train_days == row["cv_train_days"] == 30
+    assert rec.cv_test_days == row["cv_test_days"] == 8
+    assert rec.baseline_hash == row["baseline_hash"]
+    assert rec.baseline_hash is not None
+    assert rec.profile_name == row["profile_name"] == "ashare_v1"
+    assert rec.frequency == row["frequency"] == "daily"
+    assert rec.horizon == 5
+    # threshold 来自 row；se_mult 由 upsert 入参注入
+    assert rec.lift_threshold == 0.001
+    assert rec.lift_se_mult == 1.645
+
+
+def test_old_jsonl_missing_admission_provenance_fields():
+    """旧 jsonl 无 P9 字段 → from_dict 不报错、新字段默认 None。"""
+    from factorzen.discovery.factor_library import FactorRecord
+
+    old = {
+        "expression": "rank(close)",
+        "market": "ashare",
+        "ic_train": 0.05,
+        "status": "active",
+        "admission_track": "lift",
+        "lift": 0.01,
+        "horizon": 5,
+        "eval_start": "20200101",
+        "eval_end": "20240101",
+    }
+    r = FactorRecord.from_dict(old)
+    assert r.admission_start is None
+    assert r.admission_end is None
+    assert r.scored_start is None
+    assert r.scored_end is None
+    assert r.block_days is None
+    assert r.cv_train_days is None
+    assert r.cv_test_days is None
+    assert r.lift_threshold is None
+    assert r.lift_se_mult is None
+    assert r.baseline_hash is None
+    assert r.profile_name is None
+    assert r.frequency is None
+    # round-trip 含新键且为 None
+    d = r.to_dict()
+    for k in (
+        "admission_start", "admission_end", "scored_start", "scored_end",
+        "block_days", "cv_train_days", "cv_test_days",
+        "lift_threshold", "lift_se_mult", "baseline_hash",
+        "profile_name", "frequency",
+    ):
+        assert k in d
+        assert d[k] is None
+
+
+def test_upsert_row_provenance_beats_meta(tmp_path):
+    """row 级 admission provenance 优先于 upsert meta 同名字段。"""
+    from factorzen.discovery.factor_library import load_library, upsert_lift_admissions
+
+    row = _lift_row(
+        "rank(vol)",
+        lift=0.02,
+        lift_se=0.0,
+        lift_second_half=0.03,
+        admission_start="20230101",
+        admission_end="20230601",
+        scored_start="20230105",
+        scored_end="20230530",
+        block_days=15,
+        cv_train_days=90,
+        cv_test_days=15,
+        baseline_hash="deadbeefcafe0001",
+        profile_name="row_profile",
+        frequency="daily",
+        threshold=0.002,
+        lift_se_mult=1.5,
+    )
+    upsert_lift_admissions(
+        [row],
+        market="ashare",
+        root=str(tmp_path),
+        meta=_meta(
+            admission_start="19990101",  # 应被 row 压过
+            admission_end="19991231",
+            block_days=99,
+            profile_name="meta_profile",
+            baseline_hash="should_not_win",
+            now="2026-07-14",
+        ),
+        # 裁决用低门槛保证写入；落盘 lift_threshold 仍取 row.threshold=0.002
+        threshold=0.001,
+        se_mult=9.0,  # row.lift_se_mult=1.5 优先
+        allow_active=True,
+    )
+    rec = load_library("ashare", root=str(tmp_path))[0]
+    assert rec.admission_start == "20230101"
+    assert rec.admission_end == "20230601"
+    assert rec.scored_start == "20230105"
+    assert rec.scored_end == "20230530"
+    assert rec.block_days == 15
+    assert rec.cv_train_days == 90
+    assert rec.cv_test_days == 15
+    assert rec.baseline_hash == "deadbeefcafe0001"
+    assert rec.profile_name == "row_profile"
+    assert rec.frequency == "daily"
+    assert rec.lift_threshold == 0.002
+    assert rec.lift_se_mult == 1.5

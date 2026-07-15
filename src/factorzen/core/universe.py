@@ -316,8 +316,11 @@ def get_universe(
             return result
 
         except Exception as e:
-            logger.warning(f"[universe] {universe_name} 指数成分股加载失败 ({e})，降级为全 A 股")
-            return all_a
+            raise ValueError(
+                f"universe={universe_name!r} 指数成分加载失败；"
+                f"拒绝静默降级为全 A（会改变截面口径）。"
+                f"请回补指数成分数据或显式改用 --universe all_a。"
+            ) from e
 
     if universe_name == "lft_default":
         universe_name = "daily_default"
@@ -362,21 +365,6 @@ def _year_months_in_range(start: str, end: str) -> list[str]:
     return out
 
 
-def _month_asof_date(year_month: str, start: str, end: str) -> str:
-    """某自然月用于拉取成分的 as-of 日：当月**第一天**，夹在 [start, end] 内。
-
-    PIT 取舍：``_load_index_members`` 按 ``trade_date <= as-of`` 截取已生效成分。
-    月初 as-of = 该月开盘时已生效的上次调样；月中生效的调整**滞后**到下月才反映
-    ——宁滞后勿前视（月末 as-of 会让月初交易日提前看到月中调样，是前视）。
-    """
-    asof = f"{year_month}01"
-    if asof > end:
-        asof = end
-    if asof < start:
-        asof = start
-    return asof
-
-
 def membership_hash(membership: pl.DataFrame) -> str:
     """对 membership 表做内容 hash（排序后稳定），供 manifest 溯源。
 
@@ -400,9 +388,10 @@ def get_universe_membership(
 ) -> pl.DataFrame:
     """逐日 PIT 成分 membership：``[trade_date(Utf8), ts_code]``。
 
-    对命名指数池（csi300/csi500/csi800）按**自然月**取 ``_load_index_members``
-    （月度 parquet 缓存命中则零网络），将该月成分展开到该月内、且落在
-    ``[start, end]`` 的全部交易日。``csi800 = csi300 ∪ csi500`` 逐月并。
+    对命名指数池（csi300/csi500/csi800）**逐交易日 as-of**：交易日 ``d`` 的
+    成分 = ``⋃_idx _load_index_members(code, d)``（``csi800 = csi300 ∪ csi500``）。
+    ``_load_index_members`` 已按 ``trade_date <= d`` 取最近快照并跨月回退，
+    故同一 ``d`` 的成分与查询窗 ``[start, end]`` 无关；月中调样在生效日当天切换。
 
     ``all_a``：按 ``list_date`` / ``delist_date`` 构造上市区间后逐日展开
     （与 ``get_universe("all_a", date)`` 的 PIT 语义一致：``list_date <= d`` 且
@@ -461,7 +450,13 @@ def get_universe_membership(
 
 
 def _membership_index(start: str, end: str, universe_name: str) -> pl.DataFrame:
-    """指数池：按月拉成分 → 展开到该月交易日。"""
+    """指数池：逐交易日 as-of 成分（查询窗无关、月中调样当日切换）。
+
+    每个交易日 ``d`` 调用 ``_load_index_members(code, d)`` 求并集。
+    ``_load_index_members`` 已实现逐日 as-of（含跨月回退最近快照）并按
+    ``(DATA_CACHE, index_code, date_str)`` 记忆化，故同一 ``d`` 无论
+    ``[start, end]`` 如何截取，成分一致。
+    """
     from factorzen.core.calendar import get_trade_dates
 
     trade_dates = get_trade_dates(start, end)
@@ -470,35 +465,26 @@ def _membership_index(start: str, end: str, universe_name: str) -> pl.DataFrame:
             schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8}
         )
 
-    # 交易日按月分桶
-    by_month: dict[str, list[str]] = {}
-    for d in trade_dates:
-        ym = d.strftime("%Y%m")
-        by_month.setdefault(ym, []).append(d.strftime("%Y%m%d"))
-
     index_names = (
         ("csi300", "csi500") if universe_name == "csi800" else (universe_name,)
     )
-    parts: list[pl.DataFrame] = []
-    for ym, day_strs in by_month.items():
-        asof = _month_asof_date(ym, start, end)
+    rows: list[dict[str, str]] = []
+    for d in trade_dates:
+        day_str = d.strftime("%Y%m%d")
         members: set[str] = set()
         for uname in index_names:
             code = _INDEX_CODE_MAP[uname]
-            members.update(_load_index_members(code, asof))
+            members.update(_load_index_members(code, day_str))
         if not members:
             continue
-        parts.append(
-            pl.DataFrame({"trade_date": day_strs}).join(
-                pl.DataFrame({"ts_code": sorted(members)}), how="cross"
-            )
-        )
+        for code in members:
+            rows.append({"trade_date": day_str, "ts_code": code})
 
-    if not parts:
+    if not rows:
         return pl.DataFrame(
             schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8}
         )
-    return pl.concat(parts).select(["trade_date", "ts_code"]).unique()
+    return pl.DataFrame(rows).select(["trade_date", "ts_code"]).unique()
 
 
 def _membership_all_a(start: str, end: str) -> pl.DataFrame:

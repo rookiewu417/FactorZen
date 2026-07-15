@@ -51,6 +51,82 @@ setup_logging()
 logger = get_logger(__name__)
 
 
+def filter_frame_by_membership(
+    df: pl.DataFrame,
+    membership: pl.DataFrame,
+) -> pl.DataFrame:
+    """按逐日 PIT membership 过滤评估截面：只保留当日成分 ``(trade_date, ts_code)``。
+
+    ``membership`` 列 ``trade_date`` 为 Utf8 YYYYMMDD；``df.trade_date`` 可能是
+    Date / Utf8 / Datetime——对齐 dtype 后再 inner join（口径同 factor_mine._attach_in_universe）。
+    空 membership → 返回同 schema 空表。
+    """
+    if df.is_empty():
+        return df
+    if membership.is_empty():
+        return df.clear()
+
+    mem = membership.select(["trade_date", "ts_code"]).unique()
+    td_dtype = df.schema.get("trade_date")
+    if td_dtype == pl.Date:
+        mem = mem.with_columns(pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d"))
+    elif td_dtype is not None and td_dtype != pl.Utf8:
+        mem = mem.with_columns(
+            pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d").cast(td_dtype)
+        )
+    return df.join(mem, on=["trade_date", "ts_code"], how="inner")
+
+
+def load_pit_membership(
+    start: str,
+    end: str,
+    universe_name: str,
+) -> tuple[pl.DataFrame, list[str], pl.DataFrame]:
+    """取评估窗逐日 PIT membership + union ts_codes + 行业元数据。
+
+    Returns
+    -------
+    membership
+        ``[trade_date(Utf8), ts_code]`` 逐日成分。
+    ts_codes
+        窗口内曾在成分内的并集（供 FactorDataContext 拉取，保证滚动连续）。
+    universe_meta
+        期末 ``get_universe`` 快照（含 industry，供中性化/分层 IC/归因；
+        调出股可能不在此表——行业缺失时下游 left-join 跳过，不回退 end-only 成分过滤）。
+
+    Raises
+    ------
+    ValueError
+        ``get_universe_membership`` 对动态池/未知池抛错时原样上抛（不静默回退期末快照）。
+    RuntimeError
+        命名指数 membership 为空（成分未回补）；``all_a`` 空池允许（全市场语义）。
+    """
+    from factorzen.core.universe import get_universe_membership
+
+    try:
+        membership = get_universe_membership(start, end, universe_name)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(
+            f"universe={universe_name!r} 的逐日 PIT membership 构造失败"
+            f"（{type(exc).__name__}: {exc}）；"
+            f"拒绝回退期末快照（会引入 look-ahead+幸存偏差）。"
+            f"请回补指数成分数据，或改用 all_a / csi300 / csi500 / csi800。"
+        ) from exc
+
+    ts_codes = membership["ts_code"].unique().to_list() if not membership.is_empty() else []
+    if not ts_codes and universe_name != "all_a":
+        raise RuntimeError(
+            f"universe={universe_name!r} 在 [{start},{end}] 的逐日 PIT membership 为空"
+            f"（成分数据未回补）；拒绝用期末快照冒充评估池。"
+        )
+
+    # 行业元数据：期末快照（secondary；评估截面过滤以 membership 为准）
+    universe_meta = get_universe(end, universe_name)
+    return membership, ts_codes, universe_meta
+
+
 def _find_default_run_config_path(
     factor_name: str,
     frequency: str,
@@ -619,21 +695,32 @@ def _run(
         raise RuntimeError(f"ensure_data_for_daily_run failed: {e}") from e
     progress.advance("data")
 
-    # ── 3. 股票池 ──
-    universe = get_universe(args.end, args.universe)
-    if universe.is_empty():
-        logger.error(f"股票池为空: {args.universe} ({args.end})")
-        raise RuntimeError(f"empty universe: {args.universe} ({args.end})")
-    ts_codes = universe["ts_code"].to_list()
-    logger.info(f"股票池: {len(ts_codes)} 只")
+    # ── 3. 股票池（逐日 PIT membership；union 供拉取，评估截面再按日过滤）──
+    try:
+        membership, ts_codes, universe = load_pit_membership(
+            args.start, args.end, args.universe
+        )
+    except (ValueError, RuntimeError) as e:
+        logger.error(f"股票池 membership 失败: {e}")
+        raise
+    if not ts_codes and args.universe != "all_a":
+        logger.error(f"股票池为空: {args.universe} [{args.start},{args.end}]")
+        raise RuntimeError(f"empty universe membership: {args.universe}")
+    logger.info(
+        f"股票池(PIT membership): union={len(ts_codes)} 只, "
+        f"membership_rows={membership.height}"
+    )
 
-    # ── 3b. 保存 universe 快照（供复现和审计）──
+    # ── 3b. 保存逐日 membership（供复现和审计；口径=PIT，非期末快照）──
     result_output_dir.mkdir(parents=True, exist_ok=True)
     universe_snapshot_path = (
         result_output_dir / f"{factor.name}_{args.start}_{args.end}_universe.parquet"
     )
-    universe.write_parquet(str(universe_snapshot_path))
-    logger.info(f"Universe 快照已保存: {universe_snapshot_path} ({len(ts_codes)} 只)")
+    membership.write_parquet(str(universe_snapshot_path))
+    logger.info(
+        f"Universe membership 已保存: {universe_snapshot_path} "
+        f"(rows={membership.height}, union={len(ts_codes)})"
+    )
     progress.advance("universe")
 
     # ── 4. 计算因子 ──
@@ -642,7 +729,7 @@ def _run(
         end=args.end,
         required_data=factor.required_data,
         lookback_days=factor.lookback_days,
-        universe=ts_codes,
+        universe=ts_codes if ts_codes else None,
         snapshot_mode=args.frequency,
     )
     try:
@@ -660,7 +747,8 @@ def _run(
         logger.warning("因子覆盖率不足 50%，结果可能不可靠")
     progress.advance("factor")
 
-    # ── 5. 预处理 ──
+    # ── 5. 预处理（先预处理再按日 PIT 过滤评估截面——预处理可在 union 上做，
+    #    截面统计更稳；IC/回测/换手只看当日成分）──
     daily_basic_for_neutralize = None
     if (
         effective_config.preprocessing.neutralize
@@ -678,7 +766,13 @@ def _run(
         universe=universe,
         daily_basic=daily_basic_for_neutralize,
     )
-    logger.info("预处理完成 (去极值 → 填充 → 标准化)")
+    clean_df = filter_frame_by_membership(clean_df, membership)
+    if clean_df.is_empty():
+        logger.error("PIT membership 过滤后因子截面为空")
+        raise RuntimeError("empty factor cross-section after PIT membership filter")
+    logger.info(
+        f"预处理完成 (去极值 → 填充 → 标准化 → 逐日 PIT 过滤, n={clean_df.height})"
+    )
     progress.advance("preprocess")
 
     # ── 6. 计算前向收益 ──

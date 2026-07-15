@@ -143,6 +143,9 @@ class FactorRecord:
     lift_se: float | None = None
     lift_first_half: float | None = None
     lift_second_half: float | None = None
+    # 单因子 admission 窗 RankIC（方向权威；forward_review 调向优先用此字段）
+    # 非组合 candidate_rank_ic（组合后≈恒正无判别力）
+    admission_ic: float | None = None
     # 审计：holdout 有效覆盖天数（single 轨 upsert 若调用方传入则落盘）
     holdout_n_days: int | None = None
     # paper forward 确认（forward_review --apply 写入）：不进 schema 会被
@@ -157,6 +160,21 @@ class FactorRecord:
     eval_end: str | None = None
     universe: str | None = None
     horizon: int | None = None
+    # lift 准入 provenance（可重放：窗/CV/block/baseline/profile；旧行缺失→None）
+    admission_start: str | None = None
+    admission_end: str | None = None
+    scored_start: str | None = None
+    scored_end: str | None = None
+    block_days: int | None = None
+    cv_train_days: int | None = None
+    cv_test_days: int | None = None
+    lift_threshold: float | None = None
+    lift_se_mult: float | None = None
+    baseline_hash: str | None = None
+    profile_name: str | None = None
+    frequency: str | None = None
+    # 注：target_price / execution_lag 属执行配置 provenance，lift 流程当前不持有，
+    # 不加空壳字段；后续从市场执行配置线程接入。
     source_run_id: str | None = None
     source_session_dir: str | None = None
     git_sha: str | None = None
@@ -342,11 +360,31 @@ def _record_from_candidate(
         turnover=g("turnover"),
         # status/max_corr/correlated_with 由去相关阶段填
         # admission_track 默认 single（单因子裸口径 upsert 不改轨道）
+        admission_ic=g("admission_ic"),  # lift 轨方向权威；旧行缺失 → None
         holdout_n_days=hnd,
+        # paper forward 确认 provenance：与 added_at 同款从 prev 保留，
+        # 避免幂等重写 / 复测静默洗掉 forward_confirmed_at / forward_n_days
+        forward_confirmed_at=(
+            prev.forward_confirmed_at if prev is not None else None
+        ),
+        forward_n_days=prev.forward_n_days if prev is not None else None,
         eval_start=eval_start,
         eval_end=eval_end,
         universe=universe,
         horizon=horizon,
+        # lift 准入 provenance（缺失→None；threshold 键兼容 row 的 "threshold"）
+        admission_start=g("admission_start"),
+        admission_end=g("admission_end"),
+        scored_start=g("scored_start"),
+        scored_end=g("scored_end"),
+        block_days=g("block_days"),
+        cv_train_days=g("cv_train_days"),
+        cv_test_days=g("cv_test_days"),
+        lift_threshold=g("lift_threshold", "threshold"),
+        lift_se_mult=g("lift_se_mult", "se_mult"),
+        baseline_hash=g("baseline_hash"),
+        profile_name=g("profile_name"),
+        frequency=g("frequency"),
         source_run_id=run_id,
         source_session_dir=session_dir,
         git_sha=git_sha,
@@ -600,6 +638,12 @@ def upsert_lift_admissions(
     计数进 ``added_probation`` 并累加 ``capped_active``。``allow_active=True`` 时
     decision 即 status（现行为）。reject / 降级路径不受 cap 影响。
 
+    **已 forward-confirmed 的 lift active 短路（状态机单调性）**：
+    若 ``prev`` 已是 lift 轨 ``active`` 且 ``forward_confirmed_at`` 非空，复测
+    decision 仍为 ``active`` 时**绕过 cap**，保持 ``status="active"`` 并保留
+    确认字段（幂等重跑不得撤销已确认状态）。真实失败（decision=probation /
+    reject）仍按既有路径降级。
+
     reject 语义：
     - 已有 lift 轨 ``active``/``probation`` 复测失败 → 降级 ``no_lift``
       （对齐 rebuild preserved_lift 复审），计 ``demoted_no_lift``；
@@ -695,9 +739,23 @@ def upsert_lift_admissions(
                 row.get("eval_start") or eval_start or (prev.eval_start if prev else None),
                 row.get("eval_end") or eval_end or (prev.eval_end if prev else None),
             )
+            # row 级 provenance 优先；meta 仅补缺；se_mult/threshold 由 upsert 入参兜底
+            cand = dict(row)
+            for _pk in (
+                "admission_start", "admission_end", "scored_start", "scored_end",
+                "block_days", "cv_train_days", "cv_test_days",
+                "lift_threshold", "lift_se_mult", "baseline_hash",
+                "profile_name", "frequency", "threshold", "se_mult",
+            ):
+                if cand.get(_pk) is None and meta.get(_pk) is not None:
+                    cand[_pk] = meta[_pk]
+            if cand.get("lift_threshold") is None and cand.get("threshold") is None:
+                cand["lift_threshold"] = threshold
+            if cand.get("lift_se_mult") is None and cand.get("se_mult") is None:
+                cand["lift_se_mult"] = se_mult
             # 用 row 指标 + meta provenance 建记录（缺字段 None）
             rec = _record_from_candidate(
-                row, norm, market, eval_window,
+                cand, norm, market, eval_window,
                 row.get("universe") if row.get("universe") is not None else universe,
                 row.get("horizon") if row.get("horizon") is not None else horizon,
                 run_id, session_dir, git_sha, now, prev,
@@ -705,17 +763,29 @@ def upsert_lift_admissions(
             rec.admission_track = "lift"
             # 统计裁决原文始终落盘；status 受 allow_active 运营护栏约束
             rec.admission_decision = decision  # "active" | "probation"
-            if decision == "active" and not allow_active:
-                # cap：校准前默认最多写 probation（§14.1），provenance 不丢
-                rec.status = "probation"
-                out["added_probation"] += 1
-                out["capped_active"] = out.get("capped_active", 0) + 1
-            else:
-                rec.status = decision  # allow_active 或本就 probation
-                if decision == "active":
+            # 已 forward-confirmed 的 lift active：复测 pass 保持 active，绕过 cap
+            # （cap 只限制首次自动晋升，不撤销已确认状态；失败降级仍走下方分支）
+            prev_confirmed_active = (
+                prev is not None
+                and (prev.admission_track or "single") == "lift"
+                and prev.status == "active"
+                and prev.forward_confirmed_at is not None
+            )
+            if decision == "active":
+                if prev_confirmed_active:
+                    rec.status = "active"
                     out["added_active"] += 1
-                else:
+                elif not allow_active:
+                    # cap：校准前默认最多写 probation（§14.1），provenance 不丢
+                    rec.status = "probation"
                     out["added_probation"] += 1
+                    out["capped_active"] = out.get("capped_active", 0) + 1
+                else:
+                    rec.status = "active"
+                    out["added_active"] += 1
+            else:
+                rec.status = decision  # probation
+                out["added_probation"] += 1
             rec.evidence_tier = "v2"  # 新写入路径一律 v2
             rec.lift = _as_float(row.get("lift"))
             rec.lift_baseline = _as_float(row.get("lift_baseline", row.get("baseline")))

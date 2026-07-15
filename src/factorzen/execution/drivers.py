@@ -7,6 +7,7 @@ from typing import Any
 
 import polars as pl
 
+from factorzen.core.universe import build_is_st_by_date
 from factorzen.daily.evaluation.backtest import _precompute_adv_20d_by_date
 from factorzen.execution.brokers.paper import PaperBroker
 from factorzen.execution.engine import step
@@ -15,17 +16,34 @@ from factorzen.sim.engine import _load_weights_by_date
 
 
 def _market_of_day(
-    daily: pl.DataFrame, d: date, adv_by_date: dict[date, dict[str, float]] | None = None
+    daily: pl.DataFrame,
+    d: date,
+    adv_by_date: dict[date, dict[str, float]] | None = None,
+    is_st_by_date: dict[date, set[str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     day = daily.filter(pl.col("trade_date") == d)
     adv_today = (adv_by_date or {}).get(d, {})
+    st_today = (is_st_by_date or {}).get(d, set())
     out: dict[str, dict[str, Any]] = {}
     for row in day.iter_rows(named=True):
-        out[row["ts_code"]] = {
+        code = row["ts_code"]
+        out[code] = {
             "open": row.get("open"), "pre_close": row.get("pre_close"),
             "close": row.get("close"), "vol": row.get("vol"),
-            "adv": adv_today.get(row["ts_code"]),
+            "adv": adv_today.get(code),
+            # PIT：当日 ST 状态，供 PaperBroker 收窄涨跌停阈值（4.8% vs 9.8%）
+            "is_st": code in st_today,
         }
+    return out
+
+
+def _ref_price_from_market(market: dict[str, dict[str, Any]]) -> dict[str, float]:
+    """执行定量参考价：用 pre_close（决策时已知），不用当日 close（前视）。"""
+    out: dict[str, float] = {}
+    for c, m in market.items():
+        px = m.get("pre_close")
+        if px is not None and float(px) > 0:
+            out[c] = float(px)
     return out
 
 
@@ -56,6 +74,9 @@ def run_replay(
     # 成交额均值（_precompute_adv_20d_by_date 对当日 shift(1)，无未来函数）。
     # daily 缺 amount 列时该函数优雅降级返回 {}，adv 保持 None，不崩、不报错。
     adv_by_date = _precompute_adv_20d_by_date(daily, all_dates)
+    # PIT ST 涨跌停阈值：与 sim 同款，只构建一次全程复用。
+    codes = daily.select("ts_code").unique()["ts_code"].to_list()
+    is_st_by_date = build_is_st_by_date(codes, all_dates)
 
     n_steps = 0
     for d in dates:
@@ -71,13 +92,14 @@ def run_replay(
         applicable = [s for s in weights_by_date if s < d]
         if not applicable:
             continue
-        market = _market_of_day(daily, d, adv_by_date)
+        market = _market_of_day(daily, d, adv_by_date, is_st_by_date)
         broker.advance_to(d, market)
         wdf = weights_by_date[max(applicable)]
         current_weights = dict(
             zip(wdf["ts_code"].to_list(), wdf["target_weight"].to_list(), strict=True)
         )
-        ref_price = {c: m["close"] for c, m in market.items() if m.get("close")}
+        # 定量用 pre_close（决策时已知），不用当日 close（收盘才有=前视）
+        ref_price = _ref_price_from_market(market)
         rec = step(broker, current_weights, ref_price)
         rec["as_of_date"] = d.isoformat()
         # 落可续跑态（覆盖 step 的显示视图），使扩窗 replay / 后续 fz live step 能
@@ -138,7 +160,9 @@ def run_daily_step(
     # 当日 market（daily 已含所需窗口；调用方保证 daily 覆盖 as_of 及其前
     # ~20 交易日以算 ADV）
     adv_by_date = _precompute_adv_20d_by_date(daily, all_dates)
-    market = _market_of_day(daily, as_of, adv_by_date)
+    codes = daily.select("ts_code").unique()["ts_code"].to_list()
+    is_st_by_date = build_is_st_by_date(codes, all_dates)
+    market = _market_of_day(daily, as_of, adv_by_date, is_st_by_date)
     broker.advance_to(as_of, market)
     weights_by_date = _load_weights_by_date(portfolio_run_dirs)
     # `s < as_of`：信号次一交易日才执行，与 sim 对齐、避免未来函数（见 run_replay 注释）
@@ -152,7 +176,8 @@ def run_daily_step(
         }
     wdf = weights_by_date[max(applicable)]
     weights = dict(zip(wdf["ts_code"].to_list(), wdf["target_weight"].to_list(), strict=True))
-    ref_price = {c: m["close"] for c, m in market.items() if m.get("close")}
+    # 定量用 pre_close（决策时已知），不用当日 close（收盘才有=前视）
+    ref_price = _ref_price_from_market(market)
     rec = step(broker, weights, ref_price)
     rec["as_of_date"] = as_of.isoformat()
     rec["broker_state"] = broker.state()  # 可续跑态（覆盖 step 的显示视图）

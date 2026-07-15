@@ -124,6 +124,10 @@ def run_research(*, start: str, end: str, universe: str | None = None,
     from factorzen.core.universe import get_universe
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.discovery.factor import ExpressionFactor
+    from factorzen.pipelines.daily_single import (
+        filter_frame_by_membership,
+        load_pit_membership,
+    )
     from factorzen.pipelines.factor_mine import run_mine
     from factorzen.pipelines.portfolio_build import run_portfolio
     from factorzen.risk.model import RiskModel
@@ -137,15 +141,20 @@ def run_research(*, start: str, end: str, universe: str | None = None,
                         top_k=top_k, seed=seed, method=method)
     expr = _select_passed_expression(mine_res["candidates"])
 
-    # ── 2) 整段因子面板（与 export-alpha 一致，走 ExpressionFactor.compute）──
-    stocks_full = get_universe(end, uni_name)
-    uni_full = stocks_full["ts_code"].to_list()
-    ctx = FactorDataContext(start=start, end=end, required_data=["daily", "daily_basic"],
-                            lookback_days=lookback, universe=uni_full)
+    # ── 2) 整段因子面板：union 拉取（替代期末快照，消除调出股整窗消失）──
+    # membership 逐日 PIT；panel 计算后按日过滤，再进调仓 α 截面。
+    membership, uni_full, _universe_meta = load_pit_membership(start, end, uni_name)
+    ctx = FactorDataContext(
+        start=start, end=end, required_data=["daily", "daily_basic"],
+        lookback_days=lookback, universe=uni_full if uni_full else None,
+    )
     panel = ExpressionFactor(expression=expr).compute(ctx)  # [trade_date, ts_code, factor_value]
+    panel = filter_frame_by_membership(panel, membership)
 
-    # ── 3) 全区间日频（sim 用 + 派生调仓日）──
-    daily_full = loader.fetch_daily(start, end).filter(pl.col("ts_code").is_in(uni_full))
+    # ── 3) 全区间日频（sim 用 + 派生调仓日）；拉取用 union，sim 持仓可能含历史成分 ──
+    daily_full = loader.fetch_daily(start, end)
+    if uni_full:
+        daily_full = daily_full.filter(pl.col("ts_code").is_in(uni_full))
     # 风险模型专用：带 lookback 预热的历史（与 fz portfolio build 的 load_risk_inputs
     # 同口径，消除双路径漂移）——否则每个调仓日 RiskModel.build 的窗口首日滚动风格因子
     # 全空、因子集钉死在退化截面、静默退化，且与 portfolio build 产出不同风险模型。
@@ -160,6 +169,8 @@ def run_research(*, start: str, end: str, universe: str | None = None,
         )
 
     # ── 4) 按调仓日循环 build（**直调 run_portfolio**：CLI 无法设 run_id、会覆盖同一目录）──
+    # 调仓日成分：get_universe(d) 已是 as-of 当日 PIT（含 industry，供 RiskModel）；
+    # 与 membership 同口径（指数池 as-of），并补 α 面板已按 membership 过滤。
     portfolios_root = Path(out_root) / "portfolios" / rid
     alpha_tmp = portfolios_root / "_alpha"
     build_dirs: list[str] = []

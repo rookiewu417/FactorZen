@@ -21,6 +21,7 @@ DATA_RAW_FINANCE = DATA_RAW / "finance"
 DATA_RAW_MINUTE = DATA_RAW / "minute"
 DATA_PROCESSED = DATA_DIR / "processed"
 DATA_CACHE = DATA_DIR / "cache"
+CRYPTO_LAKE = DATA_DIR / "crypto_lake"  # crypto 永续数据湖（Binance Vision）
 
 OUTPUT_DIR = WORKSPACE_RUNS / "artifacts"
 OUTPUT_DAILY = OUTPUT_DIR / "daily"

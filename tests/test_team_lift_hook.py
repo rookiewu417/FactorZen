@@ -345,6 +345,7 @@ def test_lift_hook_group_fail_skips_per_candidate(monkeypatch):
         materialize_candidate=mat,
         active_factor_dfs={"base": _panel(100)},
         ret_df=_panel(100).rename({"factor_value": "ret"}),
+        horizon=1,
     )
     assert calls["group"] == 1
     assert calls["per"] == 0
@@ -385,6 +386,7 @@ def test_lift_hook_group_se_not_finite_fails_gate(monkeypatch):
             materialize_candidate=mat,
             active_factor_dfs={"base": _panel(100)},
             ret_df=_panel(100).rename({"factor_value": "ret"}),
+            horizon=1,
         )
         assert calls["per"] == 0, f"SE={bad_se!r} 时组门应拒、不跑逐候选"
         assert meta["lift_results"] == []
@@ -426,6 +428,7 @@ def test_lift_hook_group_pass_runs_per_and_upsert(monkeypatch):
         market="ashare", library_root="/tmp/lib", seed=1,
         materialize_candidate=mat,
         active_factor_dfs={"base": _panel(100)},
+        horizon=1,
     )
     assert len(meta["lift_results"]) == 1
     assert meta["lift_admissions"]["added_active"] == 1
@@ -447,6 +450,7 @@ def test_lift_hook_exception_does_not_kill_session(monkeypatch, tmp_path: Path):
         state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
         market="ashare", library_root=str(tmp_path), seed=1,
         materialize_candidate=mat,
+        horizon=1,
     )
     assert meta["lift_error"] is not None
     assert "RuntimeError" in meta["lift_error"]
@@ -526,6 +530,7 @@ def test_lift_hook_drops_low_oos_coverage(monkeypatch):
         market="ashare", library_root="/tmp/lib", seed=1,
         materialize_candidate=mat,
         active_factor_dfs={"b": _panel(100)},
+        horizon=1,
     )
     dropped_exprs = {d["expression"] for d in meta["lift_dropped_coverage"]}
     assert "ts_mean(close, 5)" in dropped_exprs
@@ -551,6 +556,7 @@ def test_lift_hook_dedupes_expressions(monkeypatch):
         market="ashare", library_root="/tmp", seed=0,
         materialize_candidate=mat,
         active_factor_dfs={"b": _panel(100)},
+        horizon=1,
     )
     assert meta["n_lift_queue"] == 1
     assert seen_n == [1]
@@ -695,7 +701,70 @@ def test_auto_lift_false_skips_expensive_path(monkeypatch):
     meta = _session_end_auto_lift(
         state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
         market="ashare", library_root="/tmp", seed=0, auto_lift=False,
+        horizon=1,
     )
     assert meta["n_lift_queue"] == 1
     assert called["g"] == 0
     assert meta["n_lift_evaluated"] == 0
+
+
+def test_session_end_auto_lift_uses_explicit_horizon(monkeypatch):
+    """P5：auto-lift 必须用传入的 mining horizon，禁止硬编码 DEFAULT_HORIZON=5。
+
+    旧实现 make_lift_context(..., horizon=DEFAULT_HORIZON) → meta/ctx.horizon==5。
+    """
+    state = _state_with_lift_queue(["ts_mean(close, 5)"])
+    daily, holdout, mat = _holdout_and_mat()
+    captured: dict = {}
+
+    def fake_group(*a, **k):
+        captured["group_ctx"] = k.get("ctx")
+        return {
+            "lift": 0.01, "lift_se": 0.001, "error": None,
+            "n_candidates": 1, "expressions": ["ts_mean(close, 5)"],
+        }
+
+    def fake_per(*a, **k):
+        captured["per_ctx"] = k.get("ctx")
+        return [{
+            "expression": "ts_mean(close, 5)",
+            "lift": 0.008, "lift_se": 0.001,
+            "lift_second_half": 0.004, "baseline": 0.02, "passed": True,
+        }]
+
+    def fake_upsert(rows, *, market, **kw):
+        captured["upsert_meta"] = kw.get("meta") or {}
+        return {"added_active": 1, "added_probation": 0, "rejected": 0, "errors": []}
+
+    monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+    monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
+    monkeypatch.setattr(
+        "factorzen.discovery.factor_library.upsert_lift_admissions",
+        fake_upsert, raising=False,
+    )
+
+    meta = _session_end_auto_lift(
+        state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
+        market="ashare", library_root="/tmp/lib", seed=1,
+        auto_lift=True, lift_se_mult=1.0,
+        materialize_candidate=mat,
+        active_factor_dfs={"base": _panel(100)},
+        ret_df=_panel(100).rename({"factor_value": "ret"}),
+        horizon=1,
+    )
+    assert meta.get("horizon") == 1, f"期望 mining horizon=1，got {meta.get('horizon')}"
+    assert captured["group_ctx"].horizon == 1
+    assert captured["per_ctx"].horizon == 1
+    assert captured["upsert_meta"].get("horizon") == 1
+
+    # 另一组：horizon=3 不走默认 5
+    meta3 = _session_end_auto_lift(
+        state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
+        market="ashare", library_root="/tmp/lib", seed=1,
+        auto_lift=True, lift_se_mult=1.0,
+        materialize_candidate=mat,
+        active_factor_dfs={"base": _panel(100)},
+        ret_df=_panel(100).rename({"factor_value": "ret"}),
+        horizon=3,
+    )
+    assert meta3.get("horizon") == 3

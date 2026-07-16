@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import polars as pl
 from pydantic import ValidationError
@@ -46,7 +46,6 @@ from factorzen.daily.runtime import (
     build_runtime_backtest_config,
 )
 from factorzen.experiments.run_paths import copy_outputs_to_run_dir
-from factorzen.llm import generate_llm_explanation
 from factorzen.pipelines._report_direction import (
     _apply_backtest_direction,
     _decide_backtest_direction,
@@ -179,14 +178,6 @@ def _find_default_run_config_path(
 
 def _merge_run_config_args(args: argparse.Namespace, run_config: RunConfig | None):
     """Merge YAML config into argparse args without overriding explicit CLI values."""
-    cli_benchmark = args.benchmark is not None
-    cli_ic_method = args.ic_method is not None
-    cli_neutralized_ic = args.neutralized_ic is not None
-    cli_event_study = args.event_study is not None
-    using_builtin_default = run_config is None or bool(
-        getattr(args, "_uses_builtin_default_config", False)
-    )
-
     if run_config is None and args.factor and args.start and args.end:
         run_config = build_default_daily_research_config(
             factor=args.factor,
@@ -203,38 +194,11 @@ def _merge_run_config_args(args: argparse.Namespace, run_config: RunConfig | Non
                 setattr(args, field, getattr(run_config, field))
         if args.benchmark is None and run_config.benchmark is not None:
             args.benchmark = run_config.benchmark
-        if args.ic_method is None:
-            args.ic_method = run_config.ic_method
-        if args.neutralized_ic is None:
-            args.neutralized_ic = run_config.neutralized_ic
-        if args.event_study is None:
-            args.event_study = run_config.event_study
 
     if args.universe is None:
         args.universe = "csi300"
     if args.benchmark is None:
         args.benchmark = default_benchmark_for_universe(args.universe)
-
-    if getattr(args, "all", False):
-        if not cli_benchmark:
-            args.benchmark = default_benchmark_for_universe(args.universe)
-        if not cli_ic_method:
-            args.ic_method = "both"
-        if not cli_neutralized_ic:
-            args.neutralized_ic = True
-        if not cli_event_study:
-            args.event_study = True
-        args.llm_explain = True
-
-    if using_builtin_default:
-        args.llm_explain = True
-
-    if args.ic_method is None:
-        args.ic_method = "rank"
-    if args.neutralized_ic is None:
-        args.neutralized_ic = False
-    if args.event_study is None:
-        args.event_study = False
 
     missing = [field for field in ("factor", "start", "end") if getattr(args, field, None) is None]
     if missing:
@@ -253,7 +217,7 @@ def _effective_run_config(args: argparse.Namespace, run_config: RunConfig | None
         benchmark=args.benchmark,
         seed=args.seed,
     )
-    config = base.model_copy(
+    return base.model_copy(
         update={
             "factor": args.factor,
             "start": args.start,
@@ -261,12 +225,8 @@ def _effective_run_config(args: argparse.Namespace, run_config: RunConfig | None
             "universe": args.universe,
             "benchmark": args.benchmark or base.benchmark,
             "seed": args.seed,
-            "ic_method": args.ic_method,
-            "neutralized_ic": args.neutralized_ic,
-            "event_study": args.event_study,
         }
     )
-    return config
 
 
 def _write_run_metrics(path: str, ic_result: Any, bt_result: Any) -> None:
@@ -298,11 +258,7 @@ def _build_dry_run_payload(
         "config": config.model_dump(),
         "output_dir": (ROOT / "workspace" / "factor_evaluations" / "<run_id>").as_posix(),
     }
-    if args is not None:
-        payload["execution"] = {
-            "llm_explain": bool(getattr(args, "llm_explain", False)),
-            "llm_refresh": bool(getattr(args, "llm_refresh", False)),
-        }
+    # args 保留形参以兼容调用方；execution 深度旗标已移除
     return payload
 
 
@@ -369,49 +325,6 @@ def _ensure_date_column(df: pl.DataFrame, column: str) -> pl.DataFrame:
     return df
 
 
-def _sector_lookup(universe: pl.DataFrame) -> pl.DataFrame:
-    if universe.is_empty() or not {"ts_code", "industry"}.issubset(set(universe.columns)):
-        return pl.DataFrame(schema={"ts_code": pl.Utf8, "sector": pl.Utf8})
-    return (
-        universe.select(["ts_code", "industry"])
-        .rename({"industry": "sector"})
-        .filter(pl.col("sector").is_not_null() & (pl.col("sector") != ""))
-        .unique(subset=["ts_code"])
-    )
-
-
-def _build_neutralized_ic_frame(
-    clean_df: pl.DataFrame,
-    ret_df: pl.DataFrame,
-    *,
-    universe: pl.DataFrame,
-    daily_basic: pl.DataFrame | None,
-) -> pl.DataFrame:
-    frame = _ensure_date_column(clean_df, "trade_date").join(
-        _ensure_date_column(ret_df, "trade_date")
-        .select(["trade_date", "ts_code", "fwd_ret_1d"])
-        .rename({"fwd_ret_1d": "ret_1d"}),
-        on=["trade_date", "ts_code"],
-        how="inner",
-    )
-
-    if not universe.is_empty() and {"ts_code", "industry"}.issubset(set(universe.columns)):
-        industry_lut = (
-            universe.select(["ts_code", "industry"])
-            .filter(pl.col("industry").is_not_null() & (pl.col("industry") != ""))
-            .unique(subset=["ts_code"])
-        )
-        frame = frame.join(industry_lut, on="ts_code", how="left")
-
-    if daily_basic is not None and not daily_basic.is_empty() and "total_mv" in daily_basic.columns:
-        size_lut = _ensure_date_column(daily_basic, "trade_date").select(
-            ["trade_date", "ts_code", "total_mv"]
-        )
-        frame = frame.join(size_lut, on=["trade_date", "ts_code"], how="left")
-
-    return frame
-
-
 def _build_forward_return_frame(daily: pl.DataFrame) -> pl.DataFrame:
     """Build IC forward-return labels, preferring adjusted close when available."""
     if "close_adj" not in daily.columns:
@@ -443,168 +356,31 @@ def _build_forward_return_frame(daily: pl.DataFrame) -> pl.DataFrame:
     return compute_fwd_returns(ret_df, ret_col="ret", price_col=price_col)
 
 
-def _build_advanced_results(
-    clean_df: pl.DataFrame,
+def _compute_monotonicity_result(
+    backtest_df: pl.DataFrame,
     ret_df: pl.DataFrame,
     *,
-    universe: pl.DataFrame,
-    daily_basic: pl.DataFrame | None,
-) -> dict[str, Any] | None:
-    advanced: dict[str, Any] = {}
-    sector_lut = _sector_lookup(universe)
-    if not sector_lut.is_empty():
-        try:
-            from factorzen.daily.evaluation.advanced import compute_sector_ic
-
-            sector_df = (
-                clean_df.join(sector_lut, on="ts_code", how="left")
-                .join(
-                    ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]),
-                    on=["trade_date", "ts_code"],
-                    how="inner",
-                )
-                .filter(pl.col("sector").is_not_null())
-            )
-            if not sector_df.is_empty():
-                advanced["sector"] = compute_sector_ic(
-                    sector_df,
-                    factor_col="factor_clean",
-                    ret_col="fwd_ret_1d",
-                    sector_col="sector",
-                    return_object=True,
-                )
-        except Exception as e:
-            logger.warning(f"行业分层 IC 计算失败（跳过）: {e}")
-
-    if daily_basic is not None and not daily_basic.is_empty() and "total_mv" in daily_basic.columns:
-        try:
-            from factorzen.daily.evaluation.advanced import compute_size_ic
-
-            size_df = (
-                clean_df.join(
-                    daily_basic.select(["trade_date", "ts_code", "total_mv"]),
-                    on=["trade_date", "ts_code"],
-                    how="left",
-                )
-                .join(
-                    ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]),
-                    on=["trade_date", "ts_code"],
-                    how="inner",
-                )
-                .filter(pl.col("total_mv").is_not_null())
-            )
-            if not size_df.is_empty():
-                advanced["size"] = compute_size_ic(
-                    size_df,
-                    factor_col="factor_clean",
-                    ret_col="fwd_ret_1d",
-                    cap_col="total_mv",
-                    n_buckets=3,
-                    return_object=True,
-                )
-        except Exception as e:
-            logger.warning(f"市值分层 IC 计算失败（跳过）: {e}")
-
-    return advanced or None
-
-
-def _build_attribution_result(
-    bt_result: Any,
-    daily: pl.DataFrame,
-    universe: pl.DataFrame,
-) -> dict[str, Any] | None:
-    positions = getattr(bt_result, "positions", None)
-    if positions is None or positions.is_empty() or daily.is_empty():
-        return None
-
-    sector_lut = _sector_lookup(universe)
-    if sector_lut.is_empty() or not {"trade_date", "ts_code", "weight"}.issubset(
-        set(positions.columns)
-    ):
-        return None
-
+    n_groups: int = 5,
+) -> Any | None:
+    """方向对齐后的信号 + fwd_ret_1d 单调性；失败返回 None。"""
     try:
-        from factorzen.daily.evaluation.attribution import brinson_attribution
+        from factorzen.daily.evaluation.advanced import compute_monotonicity
 
-        daily_ret = (
-            _ensure_date_column(daily, "trade_date")
-            .select(["trade_date", "ts_code", "close"])
-            .sort(["ts_code", "trade_date"])
-            .with_columns(
-                (pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0).alias("ret")
-            )
-            .select(["trade_date", "ts_code", "ret"])
-            .filter(pl.col("ret").is_not_null() & pl.col("ret").is_finite())
+        mono_df = backtest_df.join(
+            ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]),
+            on=["trade_date", "ts_code"],
+            how="inner",
         )
-        long_positions = (
-            _ensure_date_column(positions, "trade_date")
-            .select(["trade_date", "ts_code", "weight"])
-            .filter(pl.col("weight") > 0)
-            .join(sector_lut, on="ts_code", how="inner")
-            .join(daily_ret, on=["trade_date", "ts_code"], how="inner")
+        mono = compute_monotonicity(
+            mono_df,
+            factor_col="factor_clean",
+            ret_col="fwd_ret_1d",
+            n_groups=n_groups,
         )
-        if long_positions.is_empty():
-            return None
-
-        daily_weight = long_positions.group_by("trade_date").agg(
-            pl.col("weight").sum().alias("_daily_weight")
-        )
-        long_positions = (
-            long_positions.join(daily_weight, on="trade_date", how="left")
-            .filter(pl.col("_daily_weight") > 0)
-            .with_columns((pl.col("weight") / pl.col("_daily_weight")).alias("_stock_weight"))
-            .with_columns((pl.col("_stock_weight") * pl.col("ret")).alias("_weighted_ret"))
-        )
-        portfolio = (
-            long_positions.group_by(["trade_date", "sector"])
-            .agg(
-                [
-                    pl.col("_stock_weight").sum().alias("port_weight"),
-                    pl.col("_weighted_ret").sum().alias("_ret_num"),
-                ]
-            )
-            .with_columns((pl.col("_ret_num") / pl.col("port_weight")).alias("port_ret"))
-            .select(["trade_date", "sector", "port_weight", "port_ret"])
-        )
-        if portfolio.is_empty():
-            return None
-
-        portfolio_dates = portfolio.select("trade_date").unique()
-        benchmark_base = (
-            daily_ret.join(sector_lut, on="ts_code", how="inner")
-            .join(portfolio_dates, on="trade_date", how="inner")
-            .filter(pl.col("ret").is_not_null() & pl.col("ret").is_finite())
-        )
-        benchmark_counts = benchmark_base.group_by("trade_date").agg(pl.len().alias("_n_total"))
-        benchmark = (
-            benchmark_base.group_by(["trade_date", "sector"])
-            .agg([pl.len().alias("_n_sector"), pl.col("ret").mean().alias("bench_ret")])
-            .join(benchmark_counts, on="trade_date", how="left")
-            .with_columns((pl.col("_n_sector") / pl.col("_n_total")).alias("bench_weight"))
-            .select(["trade_date", "sector", "bench_weight", "bench_ret"])
-        )
-        if benchmark.is_empty():
-            return None
-
-        sector_returns = (
-            benchmark.select(["trade_date", "sector", "bench_ret"])
-            .join(
-                portfolio.select(["trade_date", "sector", "port_ret"]),
-                on=["trade_date", "sector"],
-                how="left",
-            )
-            .with_columns(pl.col("port_ret").fill_null(pl.col("bench_ret")))
-        )
-        brinson = brinson_attribution(
-            portfolio.select(["trade_date", "sector", "port_weight"]),
-            benchmark.select(["trade_date", "sector", "bench_weight"]),
-            sector_returns.select(["trade_date", "sector", "port_ret", "bench_ret"]),
-        )
-        if brinson.sector_df.is_empty():
-            return None
-        return {"brinson": brinson}
+        logger.info(f"单调性: score={mono.monotonicity_score:.3f}")
+        return mono
     except Exception as e:
-        logger.warning(f"Brinson 行业归因计算失败（跳过）: {e}")
+        logger.warning(f"单调性分析失败（跳过）: {e}")
         return None
 
 
@@ -654,7 +430,7 @@ def _run(
     timer: StageTimer | None = None,
 ) -> dict[str, str]:
     timer = timer or StageTimer()
-    progress = OverallProgress(16, label="Daily run").start()
+    progress = OverallProgress(14, label="Daily run").start()
     # ── 0b. 设置全局随机种子（可选）──
     if args.seed is not None:
         from factorzen.core.seed import set_global_seed
@@ -692,8 +468,7 @@ def _run(
             needs_size_neutralization=(
                 effective_config.preprocessing.neutralize
                 and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
-            )
-            or bool(getattr(args, "neutralized_ic", False)),
+            ),
             is_qlib_factor=getattr(factor, "category", "") == "qlib"
             or factor.name.startswith("qlib_"),
         )
@@ -827,81 +602,9 @@ def _run(
     )
     backtest_df = _apply_backtest_direction(clean_df, backtest_direction)
 
-    # 可选：Pearson IC / Both IC（仍用原始 clean_df）
-    pearson_ic_result = None
-    if args.ic_method in ("pearson", "both"):
-        from factorzen.daily.evaluation.ic_analysis import BothIcResult, IcStats, compute_ic
-
-        # 构建含 ret_1d 列的简化 DataFrame
-        merged_simple = clean_df.join(
-            ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename(
-                {"fwd_ret_1d": "ret_1d"}
-            ),
-            on=["trade_date", "ts_code"],
-            how="inner",
-        )
-        if args.ic_method == "both":
-            both_ic = cast(
-                BothIcResult,
-                compute_ic(
-                    merged_simple,
-                    factor_col="factor_clean",
-                    ret_col="ret_1d",
-                    method="both",
-                ),
-            )
-            pearson_ic_result = both_ic["pearson"]
-            logger.info(
-                f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, "
-                f"IR: {pearson_ic_result.ir:.2f}"
-            )
-        else:
-            pearson_ic_result = cast(
-                IcStats,
-                compute_ic(
-                    merged_simple,
-                    factor_col="factor_clean",
-                    ret_col="ret_1d",
-                    method="pearson",
-                ),
-            )
-            logger.info(
-                f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, "
-                f"IR: {pearson_ic_result.ir:.2f}"
-            )
-
-    # 可选：中性化 IC
-    neutralized_ic_result = None
-    if args.neutralized_ic:
-        from factorzen.daily.evaluation.advanced import compute_neutralized_ic
-
-        # 尝试构建含 ret_1d 的因子 DataFrame
-        if daily_basic_for_neutralize is None:
-            try:
-                daily_basic_for_neutralize = load_parquet(
-                    "daily_basic", start=args.start, end=args.end
-                ).collect()
-            except Exception as e:
-                logger.warning(
-                    "daily_basic cache load failed; "
-                    f"neutralized IC will use available exposures: {e}"
-                )
-        merged_neutral = _build_neutralized_ic_frame(
-            clean_df,
-            ret_df,
-            universe=universe,
-            daily_basic=daily_basic_for_neutralize,
-        )
-        try:
-            neutralized_ic_result = compute_neutralized_ic(merged_neutral, ret_col="ret_1d")
-            logger.info(f"Neutralized IC Mean: {neutralized_ic_result.ic_mean:.4f}")
-        except Exception as e:
-            logger.warning(f"中性化 IC 计算失败（跳过）: {e}")
-    progress.advance("optional-ic")
-
     # ── 8. 策略回测（IC 对齐方向后的信号）──
     with timer.stage("策略回测"):
-        bt_result, strategy_results = _run_backtest_strategies(
+        bt_result, _ = _run_backtest_strategies(
             effective_config,
             backtest_df,
             daily,
@@ -959,7 +662,7 @@ def _run(
     if effective_config.walk_forward.enabled:
         with timer.stage("Walk-forward"):
             try:
-                walk_forward_summary, walk_forward_result = run_quantile_walk_forward_summary(
+                walk_forward_summary, _ = run_quantile_walk_forward_summary(
                     backtest_df,
                     daily,
                     effective_config,
@@ -969,31 +672,14 @@ def _run(
                 logger.info(f"Walk-forward 摘要: {walk_forward_summary}")
             except Exception as e:
                 walk_forward_summary = {"status": "error", "n_folds": 0, "error": str(e)}
-                walk_forward_result = None
                 logger.warning(f"Walk-forward 计算失败（跳过）: {e}")
     else:
         walk_forward_summary = {"status": "disabled", "n_folds": 0}
-        walk_forward_result = None
         logger.info("Walk-forward 已关闭，跳过")
     progress.advance("walk-forward")
 
-    # ── 11. 落盘 ──
-    daily_basic_for_breakdowns = daily_basic_for_neutralize
-    try:
-        if daily_basic_for_breakdowns is None:
-            daily_basic_for_breakdowns = load_parquet(
-                "daily_basic", start=args.start, end=args.end
-            ).collect()
-    except Exception as e:
-        logger.warning(f"daily_basic 缓存加载失败，跳过市值分层 IC: {e}")
-
-    advanced_results = _build_advanced_results(
-        clean_df,
-        ret_df,
-        universe=universe,
-        daily_basic=daily_basic_for_breakdowns,
-    )
-    attribution_result = _build_attribution_result(bt_result, daily, universe)
+    # ── 11. 单调性（与回测同一信号口径）──
+    mono_result = _compute_monotonicity_result(backtest_df, ret_df, n_groups=5)
 
     walk_forward_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_walk_forward.json"
     walk_forward_path.write_text(
@@ -1009,22 +695,7 @@ def _run(
         )
     except Exception as e:
         logger.warning(f"更新 meta walk_forward 失败（跳过）: {e}")
-
-    # ── 11b. 事件研究（可选）──
-    event_study_result = None
-    if args.event_study:
-        from factorzen.daily.evaluation.advanced import compute_event_study
-
-        factor_simple = clean_df.select(["trade_date", "ts_code", "factor_clean"])
-        ret_simple = ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename(
-            {"fwd_ret_1d": "ret_1d"}
-        )
-        try:
-            event_study_result = compute_event_study(factor_simple, ret_simple)
-            logger.info(f"事件研究完成: {event_study_result.n_events} 个事件")
-        except Exception as e:
-            logger.warning(f"事件研究计算失败（跳过）: {e}")
-    progress.advance("advanced")
+    progress.advance("mono")
 
     # ── 12. Benchmark 对比（可选）──
     benchmark_result = None
@@ -1048,48 +719,21 @@ def _run(
             logger.warning(f"Benchmark 计算失败（跳过）: {e}")
     progress.advance("benchmark")
 
-    # ── 13. HTML 报告（当 --benchmark 提供时生成，或始终生成）──
+    # ── 13. HTML 报告 ──
     date_range = f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ {args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
-    llm_explanation, llm_explanation_path = generate_llm_explanation(
-        enabled=args.llm_explain,
-        refresh=args.llm_refresh,
-        cache_dir=result_output_dir,
-        factor_name=factor.name,
-        factor_description=getattr(factor, "description", ""),
-        start=args.start,
-        end=args.end,
-        frequency=args.frequency,
-        date_range=date_range,
-        universe=args.universe,
-        ic_result=ic_result,
-        bt_result=bt_result,
-        to_result=to_result,
-        walk_forward_summary=walk_forward_summary,
-        quality_report=quality_report,
-        backtest_direction=backtest_direction,
-    )
-    progress.advance("llm")
     with timer.stage("报告生成"):
         html = generate_tear_sheet(
-            factor_name=factor.name,
-            ic_result=ic_result,
-            bt_result=bt_result,
-            to_result=to_result,
+            factor.name,
+            ic_result,
+            bt_result,
+            to_result,
             frequency=args.frequency,
             date_range=date_range,
-            advanced_results=advanced_results,
             universe=args.universe,
+            mono_result=mono_result,
             benchmark_result=benchmark_result,
-            attribution_result=attribution_result,
             backtest_direction=backtest_direction,
-            event_study_result=event_study_result,
-            walk_forward_result=walk_forward_result,
             walk_forward_summary=walk_forward_summary,
-            pearson_ic_result=pearson_ic_result if args.ic_method in ("pearson", "both") else None,
-            neutralized_ic_result=neutralized_ic_result if args.neutralized_ic else None,
-            llm_explanation=llm_explanation.to_dict() if llm_explanation is not None else None,
-            strategy_results=strategy_results,
-            primary_strategy=effective_config.backtest.primary,
             quality_report=quality_report,
         )
     report_output_dir.mkdir(parents=True, exist_ok=True)
@@ -1107,8 +751,6 @@ def _run(
         "report": str(report_path),
         "meta": str(meta_path),
     }
-    if llm_explanation_path is not None:
-        outputs["llm_explanation"] = str(llm_explanation_path)
     if getattr(args, "metrics_out", None):
         _write_run_metrics(args.metrics_out, ic_result, bt_result)
     progress.close()
@@ -1148,56 +790,10 @@ def main():
         dest="metrics_out",
         help=argparse.SUPPRESS,  # 内部接口：评估完写 IC + 主策略回测指标 JSON，供 factor sweep 读取
     )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="启用单因子深度评估预设：both IC、neutralized IC、事件研究、按 universe 匹配 benchmark、LLM 解读",
-    )
-    parser.add_argument(
-        "--ic-method",
-        default=None,
-        choices=["rank", "pearson", "both"],
-        dest="ic_method",
-        help="IC 计算方法：rank（Spearman，默认）/ pearson / both",
-    )
-    parser.add_argument(
-        "--neutralized-ic",
-        action="store_true",
-        dest="neutralized_ic",
-        default=None,
-        help="是否计算中性化后的 Rank IC（需要因子 DataFrame 含 industry 或 log_mktcap 列）",
-    )
-    parser.add_argument(
-        "--event-study",
-        action="store_true",
-        dest="event_study",
-        default=None,
-        help="是否执行事件研究分析（选 Top 5%% 分位股票为事件）",
-    )
-    parser.add_argument(
-        "--llm-explain",
-        action="store_true",
-        help="启用大模型因子解读；无 YAML 默认配置会自动启用，缺少 FACTORZEN_LLM_* 配置时跳过",
-    )
-    parser.add_argument(
-        "--llm-refresh",
-        action="store_true",
-        help="启用 --llm-explain 时忽略已有 LLM 解读缓存并重新生成",
-    )
     args = parser.parse_args()
 
     # ── 0. 加载 YAML 配置（可选），CLI 参数优先级更高 ──
     run_config = None
-    if args.config is None and args.all and args.factor:
-        try:
-            default_config = _find_default_run_config_path(args.factor, args.frequency)
-        except (ImportError, ValueError) as e:
-            logger.error(str(e))
-            sys.exit(2)
-        if default_config is not None:
-            args.config = str(default_config)
-            logger.info(f"自动加载默认运行配置: {default_config}")
-
     overrides = args.set_overrides or []
     try:
         if args.config:
@@ -1219,7 +815,6 @@ def main():
                 base["backtest"].pop("primary", None)
                 base["backtest"].pop("strategies", None)
             run_config = build_run_config_from_dict(base, overrides=overrides)
-            args._uses_builtin_default_config = True
     except (ImportError, ValueError) as e:
         logger.error(str(e))
         sys.exit(2)

@@ -178,68 +178,7 @@ def test_reversed_backtest_direction_flips_factor_clean():
     assert out["factor_clean"].to_list() == [-2.0]
 
 
-def test_merge_report_config_args_all_enables_report_defaults():
-    from argparse import Namespace
-
-    from factorzen.pipelines import generate_report as mod
-
-    args = Namespace(
-        factor="momentum_20d",
-        start="20240101",
-        end="20240131",
-        universe=None,
-        benchmark=None,
-        frequency="daily",
-        reuse=False,
-        config=None,
-        all=True,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        llm_explain=False,
-        llm_refresh=False,
-    )
-
-    merged = mod._merge_report_config_args(args, None)
-
-    assert merged.universe == "csi300"
-    assert merged.benchmark == "000300.SH"
-    assert merged.reuse is True  # --all help 承诺启用 reuse，代码须与之一致
-    assert merged.ic_method == "both"
-    assert merged.neutralized_ic is True
-    assert merged.event_study is True
-    assert merged.llm_explain is True
-    assert merged.llm_refresh is False
-
-
-def test_merge_report_config_args_all_uses_universe_matched_benchmark():
-    from argparse import Namespace
-
-    from factorzen.pipelines import generate_report as mod
-
-    args = Namespace(
-        factor="momentum_20d",
-        start="20240101",
-        end="20240131",
-        universe="csi500",
-        benchmark=None,
-        frequency="daily",
-        reuse=False,
-        config=None,
-        all=True,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        llm_explain=False,
-        llm_refresh=False,
-    )
-
-    merged = mod._merge_report_config_args(args, None)
-
-    assert merged.benchmark == "000905.SH"
-
-
-def test_merge_report_config_args_all_overrides_yaml_benchmark():
+def test_merge_report_config_args_uses_yaml_and_defaults_benchmark():
     from argparse import Namespace
 
     from factorzen.config.research import RunConfig
@@ -254,32 +193,27 @@ def test_merge_report_config_args_all_overrides_yaml_benchmark():
         frequency="daily",
         reuse=False,
         config=None,
-        all=True,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        llm_explain=False,
-        llm_refresh=False,
     )
     cfg = RunConfig(
         factor="momentum_20d",
         start="20230101",
         end="20241231",
         universe="csi500",
-        benchmark="000300.SH",
+        benchmark=None,
     )
 
     merged = mod._merge_report_config_args(args, cfg)
 
+    assert merged.factor == "momentum_20d"
+    assert merged.start == "20230101"
+    assert merged.end == "20241231"
+    assert merged.universe == "csi500"
     assert merged.benchmark == "000905.SH"
-    assert merged.reuse is True  # --all 启用 reuse
-    assert merged.ic_method == "both"
-    assert merged.neutralized_ic is True
-    assert merged.event_study is True
-    assert merged.llm_explain is True
+    for banned in ("ic_method", "neutralized_ic", "event_study", "llm_explain", "llm_refresh", "all"):
+        assert banned not in vars(merged)
 
 
-def test_merge_report_config_args_all_keeps_explicit_deep_options():
+def test_merge_report_config_args_keeps_explicit_benchmark():
     from argparse import Namespace
 
     from factorzen.config.research import RunConfig
@@ -289,35 +223,65 @@ def test_merge_report_config_args_all_keeps_explicit_deep_options():
         factor=None,
         start=None,
         end=None,
-        universe=None,
+        universe="csi500",
         benchmark="000300.SH",
         frequency="daily",
-        reuse=False,
+        reuse=True,
         config=None,
-        all=True,
-        ic_method="pearson",
-        neutralized_ic=False,
-        event_study=False,
-        llm_explain=False,
-        llm_refresh=False,
     )
     cfg = RunConfig(
         factor="momentum_20d",
         start="20230101",
         end="20241231",
-        universe="csi500",
+        universe="csi800",
         benchmark="000905.SH",
     )
 
     merged = mod._merge_report_config_args(args, cfg)
 
     assert merged.benchmark == "000300.SH"
-    assert merged.ic_method == "pearson"
-    assert merged.neutralized_ic is False
-    assert merged.event_study is False
+    assert merged.reuse is True
+    assert merged.universe == "csi500"
 
 
-def test_effective_report_config_without_yaml_uses_default_strategy_suite():
+def test_effective_report_config_without_yaml_matches_daily_single_preset():
+    """双路径对齐：report 无 YAML 时必须与 daily_single 用同一份研究预设。"""
+    from argparse import Namespace
+
+    from factorzen.config.research import build_default_daily_research_config
+    from factorzen.pipelines import generate_report as mod
+
+    args = Namespace(
+        factor="momentum_20d",
+        start="20240101",
+        end="20240131",
+        universe=None,
+        benchmark=None,
+        frequency="daily",
+        reuse=False,
+        config=None,
+    )
+
+    merged = mod._merge_report_config_args(args, None)
+    cfg = mod._effective_report_config(merged, None)
+
+    daily_preset = build_default_daily_research_config(
+        factor="momentum_20d",
+        start="20240101",
+        end="20240131",
+        universe=merged.universe,
+        benchmark=merged.benchmark,
+    )
+    assert [spec.name for spec in cfg.backtest.strategy_specs] == [
+        spec.name for spec in daily_preset.backtest.strategy_specs
+    ] == ["quantile_ls_5"]
+    assert cfg.backtest.primary == daily_preset.backtest.primary == "quantile_ls_5"
+    assert cfg.preprocessing == daily_preset.preprocessing
+    for banned in ("ic_method", "neutralized_ic", "event_study"):
+        assert banned not in cfg.model_dump()
+
+
+def test_merge_report_config_args_default_universe_csi300():
     from argparse import Namespace
 
     from factorzen.pipelines import generate_report as mod
@@ -331,20 +295,8 @@ def test_effective_report_config_without_yaml_uses_default_strategy_suite():
         frequency="daily",
         reuse=False,
         config=None,
-        all=False,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        llm_explain=False,
-        llm_refresh=False,
     )
 
     merged = mod._merge_report_config_args(args, None)
-    cfg = mod._effective_report_config(merged, None)
-
-    assert [spec.name for spec in cfg.backtest.strategy_specs] == [
-        "topn_50",
-        "quantile_ls_5",
-        "factor_weighted_ls",
-        "optimizer_mv_long_only",
-    ]
+    assert merged.universe == "csi300"
+    assert merged.benchmark == "000300.SH"

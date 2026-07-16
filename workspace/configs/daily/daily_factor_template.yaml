@@ -107,10 +107,3 @@ walk_forward:
 
   # Number of top_n candidates to try in walk-forward IS selection.
   n_trials: 50
-
-# Supported: rank, pearson, both.
-ic_method: rank
-
-# Optional deep evaluation switches. `--all` enables both regardless of YAML unless explicit CLI values override it.
-event_study: false
-neutralized_ic: false

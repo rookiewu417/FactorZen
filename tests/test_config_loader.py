@@ -255,26 +255,6 @@ def test_build_backtest_strategies_returns_named_runtime_strategies():
     assert strategies["ls_4"].n_groups == 4
 
 
-def test_default_all_strategy_specs_include_builtin_suite():
-    from factorzen.config.research import default_all_strategy_specs
-
-    specs = default_all_strategy_specs()
-
-    assert [spec.name for spec in specs] == [
-        "topn_50",
-        "quantile_ls_5",
-        "factor_weighted_ls",
-        "optimizer_mv_long_only",
-    ]
-    assert [spec.type for spec in specs] == [
-        "topn_long_only",
-        "quantile_long_short",
-        "factor_weighted",
-        "optimizer_strategy",
-    ]
-    assert specs[3].params["optimizer"] == "mean_variance"
-    assert specs[3].params["long_only"] is True
-
 
 def test_build_top_n_candidate_params_uses_n_trials():
     from factorzen.config.research import RunConfig, build_top_n_candidate_params
@@ -326,7 +306,8 @@ def test_default_daily_research_config_top_n_override_updates_primary_strategy()
 
     cfg = build_run_config_from_dict(base, overrides=["backtest.top_n=30"])
 
-    assert cfg.backtest.primary == "topn_30"
-    primary = cfg.backtest.strategy_specs[0]
-    assert primary.name == "topn_30"
-    assert primary.params["top_n"] == 30
+    # 默认主策略为 quantile_ls_5，top_n 覆盖不会改写 quantile 规格
+    assert cfg.backtest.primary == "quantile_ls_5"
+    assert cfg.backtest.top_n == 30
+    assert cfg.backtest.strategy_specs[0].name == "quantile_ls_5"
+    assert cfg.backtest.strategy_specs[0].params == {"quantiles": 5}

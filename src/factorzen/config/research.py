@@ -69,61 +69,14 @@ class BacktestConfig(BaseModel):
         return self.strategies
 
 
-def default_all_strategy_specs() -> list[StrategySpec]:
-    """Default built-in strategy suite used by --all when no YAML suite is provided."""
-    return [
-        StrategySpec(
-            name="topn_50",
-            type="topn_long_only",
-            params={"top_n": 50},
-            max_abs_weight=0.1,
-            cost_model="linear",
-        ),
-        StrategySpec(
-            name="quantile_ls_5",
-            type="quantile_long_short",
-            params={"quantiles": 5},
-            max_abs_weight=0.1,
-            cost_model="linear",
-        ),
-        StrategySpec(
-            name="factor_weighted_ls",
-            type="factor_weighted",
-            params={"long_only": False, "gross_exposure": 2.0},
-            max_abs_weight=0.05,
-            cost_model="linear",
-        ),
-        StrategySpec(
-            name="optimizer_mv_long_only",
-            type="optimizer_strategy",
-            params={
-                "optimizer": "mean_variance",
-                "risk_aversion": 1.0,
-                "lookback_days": 60,
-                "cov_estimator": "ledoit_wolf",
-                "long_only": True,
-                "top_n": 100,
-                "max_weight": 0.08,
-                "gross_exposure": 1.0,
-                "net_exposure": 1.0,
-            },
-            max_abs_weight=0.08,
-            cost_model="linear",
-        ),
-    ]
-
-
-def with_default_all_strategies(config: RunConfig) -> RunConfig:
-    """Return a copy configured to run the default built-in strategy suite."""
-    return config.model_copy(
-        update={
-            "backtest": config.backtest.model_copy(
-                update={
-                    "primary": "topn_50",
-                    "strategies": default_all_strategy_specs(),
-                }
-            )
-        }
+def _default_quantile_ls_5_spec() -> StrategySpec:
+    """单因子默认主策略：5 分位多空。"""
+    return StrategySpec(
+        name="quantile_ls_5",
+        type="quantile_long_short",
+        params={"quantiles": 5},
+        max_abs_weight=0.1,
+        cost_model="linear",
     )
 
 
@@ -137,6 +90,8 @@ class WalkForwardConfig(BaseModel):
 
 
 class RunConfig(BaseModel):
+    """旧 YAML 中的 ic_method / event_study / neutralized_ic 等字段由 pydantic 默认 extra=ignore 忽略。"""
+
     factor: str
     universe: str = "csi500"
     start: str  # YYYYMMDD
@@ -146,9 +101,6 @@ class RunConfig(BaseModel):
     preprocessing: PreprocessingConfig = Field(default_factory=PreprocessingConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     walk_forward: WalkForwardConfig = Field(default_factory=WalkForwardConfig)
-    ic_method: Literal["rank", "pearson", "both"] = "rank"
-    event_study: bool = False
-    neutralized_ic: bool = False
 
 
 def build_default_daily_research_config(
@@ -176,8 +128,8 @@ def build_default_daily_research_config(
             neutralize_by="industry+size",
         ),
         backtest=BacktestConfig(
-            primary="topn_50",
-            strategies=default_all_strategy_specs(),
+            primary="quantile_ls_5",
+            strategies=[_default_quantile_ls_5_spec()],
         ),
         walk_forward=WalkForwardConfig(
             enabled=False,
@@ -187,9 +139,6 @@ def build_default_daily_research_config(
             embargo_days=5,
             n_trials=50,
         ),
-        ic_method="both",
-        neutralized_ic=True,
-        event_study=True,
     )
 
 

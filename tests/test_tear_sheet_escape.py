@@ -1,21 +1,28 @@
-"""tear_sheet 的 LLM 解读文本须 HTML 转义。
+"""tear_sheet 外部不可信文本须 HTML 转义。
 
-summary_html 在模板里经 `{{ summary_html | safe }}` 渲染（绕过 jinja2 autoescape），
-其中 LLM 输出的 evidence/usage/rating 是外部不可信文本，未转义会造成 HTML/JS 注入。
+新版模板不再有 `| safe` 旁路，全部变量走 jinja2 autoescape；
+本测试守住该不变量：因子名 / 方向判定 reason / 质量警告中的
+HTML 注入内容不得原样出现在渲染结果里。
 """
 from __future__ import annotations
 
+from factorzen.reports.tear_sheet import generate_tear_sheet
 
-def test_generate_summary_text_escapes_llm_html():
-    from factorzen.reports.tear_sheet import _generate_summary_text
 
-    llm = {
-        "evidence_assessment": "<script>alert('xss')</script>",
-        "usage_suggestion": "<img src=x onerror=alert(1)>",
-        "rating": "A",
-        "confidence": "high",
-    }
-    out = _generate_summary_text("f", {}, llm)
-    assert "<script>" not in out, "LLM evidence 中的 <script> 应被转义"
-    assert "&lt;script&gt;" in out, "转义后应出现 &lt;script&gt;"
-    assert "<img src=x" not in out, "LLM usage 中的 <img onerror> 应被转义"
+def test_tear_sheet_escapes_untrusted_text():
+    html = generate_tear_sheet(
+        "<script>alert('xss')</script>",
+        None,
+        None,
+        None,
+        date_range="2024-01-01 ~ 2024-06-30",
+        universe="csi300",
+        backtest_direction={
+            "direction": "reversed",
+            "reason": "<img src=x onerror=alert(1)>",
+        },
+        quality_report={"warnings": ["<script>alert('q')</script>"]},
+    )
+    assert "<script>" not in html, "因子名/警告中的 <script> 应被转义"
+    assert "&lt;script&gt;" in html, "转义后应出现 &lt;script&gt;"
+    assert "<img src=x" not in html, "方向 reason 中的 <img onerror> 应被转义"

@@ -32,13 +32,6 @@ def test_factor_run_forwards_to_daily_pipeline(monkeypatch):
                 "workspace/configs/daily/daily_factor_template.yaml",
                 "--seed",
                 "42",
-                "--ic-method",
-                "both",
-                "--neutralized-ic",
-                "--event-study",
-                "--llm-explain",
-                "--llm-refresh",
-                "--all",
                 "--dry-run",
             ]
         )
@@ -61,13 +54,6 @@ def test_factor_run_forwards_to_daily_pipeline(monkeypatch):
         "workspace/configs/daily/daily_factor_template.yaml",
         "--seed",
         "42",
-        "--ic-method",
-        "both",
-        "--neutralized-ic",
-        "--event-study",
-        "--llm-explain",
-        "--llm-refresh",
-        "--all",
         "--dry-run",
     ]
 
@@ -101,13 +87,6 @@ def test_report_build_forwards_to_report_pipeline(monkeypatch):
                 "--config",
                 "workspace/configs/daily/daily_factor_template.yaml",
                 "--reuse",
-                "--ic-method",
-                "both",
-                "--neutralized-ic",
-                "--event-study",
-                "--llm-explain",
-                "--llm-refresh",
-                "--all",
             ]
         )
         == 0
@@ -130,13 +109,6 @@ def test_report_build_forwards_to_report_pipeline(monkeypatch):
         "--config",
         "workspace/configs/daily/daily_factor_template.yaml",
         "--reuse",
-        "--ic-method",
-        "both",
-        "--neutralized-ic",
-        "--event-study",
-        "--llm-explain",
-        "--llm-refresh",
-        "--all",
     ]
 
 

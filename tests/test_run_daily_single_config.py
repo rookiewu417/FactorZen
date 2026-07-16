@@ -9,6 +9,21 @@ import polars as pl
 import pytest
 
 
+def _ns(**kw):
+    base = dict(
+        factor=None,
+        start=None,
+        end=None,
+        universe=None,
+        benchmark=None,
+        seed=None,
+    )
+    base.update(kw)
+    return Namespace(**base)
+
+
+
+
 def test_build_forward_return_frame_prefers_adjusted_close():
     from factorzen.pipelines.daily_single import _build_forward_return_frame
 
@@ -71,88 +86,6 @@ def test_build_forward_return_frame_falls_back_per_stock_for_partial_adjusted_cl
     assert stock_b["fwd_ret_1d"][0] == pytest.approx(0.1)
 
 
-def test_build_advanced_results_includes_sector_and_size_breakdowns():
-    from factorzen.pipelines.daily_single import _build_advanced_results
-
-    rows = []
-    ret_rows = []
-    universe_rows = []
-    basic_rows = []
-    for i in range(12):
-        code = f"{i:06d}.SZ"
-        industry = "Bank" if i < 6 else "Tech"
-        universe_rows.append({"ts_code": code, "industry": industry})
-        for date_str, offset in [("2024-01-02", 0), ("2024-01-03", 1)]:
-            rows.append(
-                {
-                    "trade_date": date_str,
-                    "ts_code": code,
-                    "factor_clean": float(i + offset),
-                }
-            )
-            ret_rows.append(
-                {
-                    "trade_date": date_str,
-                    "ts_code": code,
-                    "fwd_ret_1d": float(i - offset) / 100.0,
-                }
-            )
-            basic_rows.append(
-                {
-                    "trade_date": date_str,
-                    "ts_code": code,
-                    "total_mv": float(100 + i),
-                }
-            )
-
-    advanced = _build_advanced_results(
-        pl.DataFrame(rows),
-        pl.DataFrame(ret_rows),
-        universe=pl.DataFrame(universe_rows),
-        daily_basic=pl.DataFrame(basic_rows),
-    )
-
-    assert advanced is not None
-    assert advanced["sector"].sector_ic_df.height > 0
-    assert advanced["size"].buckets
-
-
-def test_build_attribution_result_uses_long_book_for_brinson():
-    from types import SimpleNamespace
-
-    from factorzen.daily.evaluation.attribution import BrinsonResult
-    from factorzen.pipelines.daily_single import _build_attribution_result
-
-    positions = pl.DataFrame(
-        [
-            {"trade_date": "2024-01-03", "ts_code": "000001.SZ", "weight": 0.6},
-            {"trade_date": "2024-01-03", "ts_code": "000002.SZ", "weight": 0.4},
-            {"trade_date": "2024-01-03", "ts_code": "000003.SZ", "weight": -0.5},
-        ]
-    )
-    daily = pl.DataFrame(
-        [
-            {"trade_date": "2024-01-02", "ts_code": "000001.SZ", "close": 10.0},
-            {"trade_date": "2024-01-02", "ts_code": "000002.SZ", "close": 20.0},
-            {"trade_date": "2024-01-02", "ts_code": "000003.SZ", "close": 30.0},
-            {"trade_date": "2024-01-03", "ts_code": "000001.SZ", "close": 11.0},
-            {"trade_date": "2024-01-03", "ts_code": "000002.SZ", "close": 19.0},
-            {"trade_date": "2024-01-03", "ts_code": "000003.SZ", "close": 33.0},
-        ]
-    )
-    universe = pl.DataFrame(
-        [
-            {"ts_code": "000001.SZ", "industry": "Bank"},
-            {"ts_code": "000002.SZ", "industry": "Tech"},
-            {"ts_code": "000003.SZ", "industry": "Tech"},
-        ]
-    )
-
-    attribution = _build_attribution_result(SimpleNamespace(positions=positions), daily, universe)
-
-    assert attribution is not None
-    assert isinstance(attribution["brinson"], BrinsonResult)
-    assert set(attribution["brinson"].sector_df["sector"].to_list()) == {"Bank", "Tech"}
 
 
 def test_run_backtest_strategies_runs_each_configured_strategy(monkeypatch):
@@ -243,20 +176,7 @@ def test_merge_run_config_args_uses_yaml_for_missing_cli_values():
     from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _merge_run_config_args
 
-    args = Namespace(
-        factor=None,
-        start=None,
-        end=None,
-        universe=None,
-        benchmark=None,
-        seed=None,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        all=False,
-        llm_explain=False,
-        llm_refresh=False,
-    )
+    args = _ns()
     cfg = RunConfig(
         factor="momentum_20d",
         start="20230101",
@@ -264,9 +184,6 @@ def test_merge_run_config_args_uses_yaml_for_missing_cli_values():
         universe="csi500",
         benchmark=None,
         seed=42,
-        ic_method="both",
-        neutralized_ic=True,
-        event_study=True,
     )
 
     merged = _merge_run_config_args(args, cfg)
@@ -277,28 +194,19 @@ def test_merge_run_config_args_uses_yaml_for_missing_cli_values():
     assert merged.universe == "csi500"
     assert merged.benchmark == "000905.SH"
     assert merged.seed == 42
-    assert merged.ic_method == "both"
-    assert merged.neutralized_ic is True
-    assert merged.event_study is True
 
 
 def test_merge_run_config_args_keeps_explicit_cli_values():
     from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _merge_run_config_args
 
-    args = Namespace(
+    args = _ns(
         factor="reversal_5d",
         start="20240101",
         end="20241231",
         universe="csi300",
         benchmark=None,
         seed=7,
-        ic_method="pearson",
-        neutralized_ic=False,
-        event_study=False,
-        all=False,
-        llm_explain=False,
-        llm_refresh=False,
     )
     cfg = RunConfig(
         factor="momentum_20d",
@@ -307,9 +215,6 @@ def test_merge_run_config_args_keeps_explicit_cli_values():
         universe="csi500",
         benchmark="000905.SH",
         seed=42,
-        ic_method="both",
-        neutralized_ic=True,
-        event_study=True,
     )
 
     merged = _merge_run_config_args(args, cfg)
@@ -320,29 +225,13 @@ def test_merge_run_config_args_keeps_explicit_cli_values():
     assert merged.universe == "csi300"
     assert merged.benchmark == "000905.SH"
     assert merged.seed == 7
-    assert merged.ic_method == "pearson"
-    assert merged.neutralized_ic is False
-    assert merged.event_study is False
 
 
 def test_merge_run_config_args_keeps_explicit_cli_benchmark():
     from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _merge_run_config_args
 
-    args = Namespace(
-        factor=None,
-        start=None,
-        end=None,
-        universe=None,
-        benchmark="000852.SH",
-        seed=None,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        all=False,
-        llm_explain=False,
-        llm_refresh=False,
-    )
+    args = _ns(benchmark="000852.SH")
     cfg = RunConfig(
         factor="momentum_20d",
         start="20230101",
@@ -353,58 +242,6 @@ def test_merge_run_config_args_keeps_explicit_cli_benchmark():
     merged = _merge_run_config_args(args, cfg)
 
     assert merged.benchmark == "000852.SH"
-
-
-def test_merge_run_config_args_all_enables_single_factor_defaults():
-    from factorzen.pipelines.daily_single import _merge_run_config_args
-
-    args = Namespace(
-        factor="momentum_20d",
-        start="20240101",
-        end="20240131",
-        universe=None,
-        benchmark=None,
-        seed=None,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        all=True,
-        llm_explain=False,
-        llm_refresh=False,
-    )
-
-    merged = _merge_run_config_args(args, None)
-
-    assert merged.universe == "csi500"
-    assert merged.benchmark == "000905.SH"
-    assert merged.ic_method == "both"
-    assert merged.neutralized_ic is True
-    assert merged.event_study is True
-    assert merged.llm_explain is True
-    assert merged.llm_refresh is False
-
-
-def test_merge_run_config_args_all_uses_universe_matched_benchmark():
-    from factorzen.pipelines.daily_single import _merge_run_config_args
-
-    args = Namespace(
-        factor="momentum_20d",
-        start="20240101",
-        end="20240131",
-        universe="csi500",
-        benchmark=None,
-        seed=None,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        all=True,
-        llm_explain=False,
-        llm_refresh=False,
-    )
-
-    merged = _merge_run_config_args(args, None)
-
-    assert merged.benchmark == "000905.SH"
 
 
 def test_dry_run_payload_includes_effective_config_and_output_dir():
@@ -427,78 +264,50 @@ def test_dry_run_payload_includes_effective_config_and_output_dir():
     assert payload["config"]["backtest"]["top_n"] == 25
     assert payload["config"]["walk_forward"]["n_trials"] == 3
     assert payload["output_dir"].endswith("workspace/factor_evaluations/<run_id>")
+    assert "execution" not in payload
+    for banned in ("ic_method", "neutralized_ic", "event_study", "llm_explain", "llm_refresh"):
+        assert banned not in payload["config"]
 
 
-def test_dry_run_payload_includes_execution_options():
-    from factorzen.config.research import RunConfig
-    from factorzen.pipelines.daily_single import _build_dry_run_payload
-
-    cfg = RunConfig(
-        factor="momentum_20d",
-        start="20230101",
-        end="20231231",
-    )
-    args = Namespace(llm_explain=True, llm_refresh=False)
-
-    payload = _build_dry_run_payload(cfg, args=args)
-
-    assert payload["execution"]["llm_explain"] is True
-    assert payload["execution"]["llm_refresh"] is False
-
-
-def test_merge_run_config_args_all_overrides_yaml_defaults():
-    from factorzen.config.research import RunConfig
-    from factorzen.pipelines.daily_single import _merge_run_config_args
-
-    args = Namespace(
-        factor=None,
-        start=None,
-        end=None,
-        universe=None,
-        benchmark=None,
-        seed=None,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        all=True,
-        llm_explain=False,
-        llm_refresh=False,
-    )
-    cfg = RunConfig(
-        factor="momentum_20d",
-        start="20230101",
-        end="20241231",
-        universe="csi500",
-        benchmark="000300.SH",
-        ic_method="rank",
-        neutralized_ic=False,
-        event_study=False,
+def test_merge_run_config_args_and_dry_run_drop_deep_eval_keys():
+    """防回归：合并后的 namespace / dry-run payload 不再含深度评估键。"""
+    from factorzen.pipelines.daily_single import (
+        _build_dry_run_payload,
+        _effective_run_config,
+        _merge_run_config_args,
     )
 
-    merged = _merge_run_config_args(args, cfg)
-
-    assert merged.benchmark == "000905.SH"
-    assert merged.ic_method == "both"
-    assert merged.neutralized_ic is True
-    assert merged.event_study is True
-
-
-def test_effective_run_config_without_yaml_uses_default_strategy_suite():
-    from factorzen.pipelines.daily_single import _effective_run_config, _merge_run_config_args
-
-    args = Namespace(
+    args = _ns(
         factor="momentum_20d",
         start="20240101",
         end="20240131",
-        universe=None,
-        benchmark=None,
-        seed=None,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        all=False,
-        llm_explain=False,
-        llm_refresh=False,
+    )
+    # 旧 YAML 字段应被 ignore，不应出现在 args 上
+    merged = _merge_run_config_args(args, None)
+    for banned in ("ic_method", "neutralized_ic", "event_study", "llm_explain", "llm_refresh", "all"):
+        assert not hasattr(merged, banned) or getattr(merged, banned, None) is None
+        # 更严格：合并逻辑不应写入这些属性
+        assert banned not in vars(merged)
+
+    cfg = _effective_run_config(merged, None)
+    dumped = cfg.model_dump()
+    for banned in ("ic_method", "neutralized_ic", "event_study"):
+        assert banned not in dumped
+
+    payload = _build_dry_run_payload(cfg, args=merged)
+    assert "execution" not in payload
+    for banned in ("llm_explain", "llm_refresh", "ic_method", "neutralized_ic", "event_study"):
+        assert banned not in payload.get("execution", {})
+        assert banned not in payload["config"]
+
+
+def test_effective_run_config_without_yaml_uses_quantile_ls_5():
+    from factorzen.pipelines.daily_single import _effective_run_config, _merge_run_config_args
+
+    args = _ns(
+        factor="momentum_20d",
+        start="20240101",
+        end="20240131",
     )
 
     merged = _merge_run_config_args(args, None)
@@ -509,33 +318,19 @@ def test_effective_run_config_without_yaml_uses_default_strategy_suite():
     assert cfg.seed == 42
     assert cfg.preprocessing.neutralize is True
     assert cfg.preprocessing.neutralize_by == "industry+size"
-    assert cfg.ic_method == "both"
-    assert cfg.neutralized_ic is True
-    assert cfg.event_study is True
-    assert [spec.name for spec in cfg.backtest.strategy_specs] == [
-        "topn_50",
-        "quantile_ls_5",
-        "factor_weighted_ls",
-        "optimizer_mv_long_only",
-    ]
+    assert cfg.backtest.primary == "quantile_ls_5"
+    assert [spec.name for spec in cfg.backtest.strategy_specs] == ["quantile_ls_5"]
+    assert cfg.backtest.strategy_specs[0].type == "quantile_long_short"
+    assert cfg.backtest.strategy_specs[0].params == {"quantiles": 5}
 
 
-def test_merge_run_config_args_without_yaml_enables_comprehensive_defaults():
+def test_merge_run_config_args_without_yaml_fills_benchmark_and_seed():
     from factorzen.pipelines.daily_single import _merge_run_config_args
 
-    args = Namespace(
+    args = _ns(
         factor="momentum_20d",
         start="20240101",
         end="20240131",
-        universe=None,
-        benchmark=None,
-        seed=None,
-        ic_method=None,
-        neutralized_ic=None,
-        event_study=None,
-        all=False,
-        llm_explain=False,
-        llm_refresh=False,
     )
 
     merged = _merge_run_config_args(args, None)
@@ -543,10 +338,6 @@ def test_merge_run_config_args_without_yaml_enables_comprehensive_defaults():
     assert merged.universe == "csi500"
     assert merged.benchmark == "000905.SH"
     assert merged.seed == 42
-    assert merged.ic_method == "both"
-    assert merged.neutralized_ic is True
-    assert merged.event_study is True
-    assert merged.llm_explain is True
 
 
 def test_find_default_run_config_path_matches_factor_field(tmp_path):
@@ -626,45 +417,6 @@ def test_find_default_run_config_path_prefers_factor_named_config(tmp_path):
 
     assert path == config_dir / "momentum_20d.yaml"
 
-
-def test_build_neutralized_ic_frame_includes_industry_and_market_cap():
-    from factorzen.pipelines.daily_single import _build_neutralized_ic_frame
-
-    clean_df = pl.DataFrame(
-        [
-            {"trade_date": "2024-01-02", "ts_code": "000001.SZ", "factor_clean": 1.0},
-            {"trade_date": "2024-01-02", "ts_code": "000002.SZ", "factor_clean": -1.0},
-        ]
-    )
-    ret_df = pl.DataFrame(
-        [
-            {"trade_date": "2024-01-02", "ts_code": "000001.SZ", "fwd_ret_1d": 0.01},
-            {"trade_date": "2024-01-02", "ts_code": "000002.SZ", "fwd_ret_1d": -0.01},
-        ]
-    )
-    universe = pl.DataFrame(
-        [
-            {"ts_code": "000001.SZ", "industry": "Bank"},
-            {"ts_code": "000002.SZ", "industry": "Tech"},
-        ]
-    )
-    daily_basic = pl.DataFrame(
-        [
-            {"trade_date": "2024-01-02", "ts_code": "000001.SZ", "total_mv": 100.0},
-            {"trade_date": "2024-01-02", "ts_code": "000002.SZ", "total_mv": 200.0},
-        ]
-    )
-
-    frame = _build_neutralized_ic_frame(
-        clean_df,
-        ret_df,
-        universe=universe,
-        daily_basic=daily_basic,
-    )
-
-    assert set(["factor_clean", "ret_1d", "industry", "total_mv"]).issubset(frame.columns)
-    assert frame.select(pl.col("industry").null_count()).item() == 0
-    assert frame.select(pl.col("total_mv").null_count()).item() == 0
 
 
 def test_preprocess_with_industry_neutralization_uses_universe_industry():

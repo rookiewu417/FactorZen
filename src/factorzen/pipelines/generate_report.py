@@ -44,7 +44,6 @@ from factorzen.daily.factors.registry import get_factor
 from factorzen.daily.runtime import (
     build_backtest_strategies,
     build_cost_model,
-    build_preprocessing_pipeline,
     build_runtime_backtest_config,
 )
 from factorzen.experiments.run_paths import copy_outputs_to_run_dir
@@ -69,6 +68,8 @@ from factorzen.pipelines._report_persistence import (
 from factorzen.pipelines.daily_single import (
     _build_forward_return_frame,
     _compute_monotonicity_result,
+    _load_daily_basic_for_neutralization,
+    _preprocess_factor,
     filter_frame_by_membership,
     load_pit_membership,
 )
@@ -264,7 +265,7 @@ def _run(
 
         # ── 3. 股票池（逐日 PIT membership；union 拉取 + 评估截面按日过滤）──
         try:
-            membership, ts_codes, _universe_meta = load_pit_membership(
+            membership, ts_codes, universe_meta = load_pit_membership(
                 args.start, args.end, args.universe
             )
         except (ValueError, RuntimeError) as e:
@@ -301,8 +302,29 @@ def _run(
         if validation.get("coverage", 0) < 0.5:
             logger.warning("因子覆盖率不足 50%，结果可能不可靠")
 
-        # ── 5. 预处理 + 逐日 PIT 过滤评估截面 ──
-        clean_df = build_preprocessing_pipeline(effective_config).run(factor_df, col="factor_value")
+        # ── 5. 预处理（与 daily_single 同口径：中性化 side data 齐备）+ 逐日 PIT 过滤 ──
+        # 不带 side data 直调 pipeline 会让 industry+size 中性化静默跳过（仅 warning），
+        # 与 fz factor run 的因子值口径漂移——双路径登记簿。
+        daily_basic_for_neutralize = None
+        if (
+            effective_config.preprocessing.neutralize
+            and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
+        ):
+            try:
+                daily_basic_for_neutralize = _load_daily_basic_for_neutralization(
+                    args.start, args.end
+                )
+            except Exception as e:
+                logger.error(f"daily_basic 本地缓存读取失败，无法执行市值中性化: {e}")
+                raise RuntimeError(
+                    f"load daily_basic cache failed for neutralization: {e}"
+                ) from e
+        clean_df = _preprocess_factor(
+            factor_df,
+            effective_config,
+            universe=universe_meta,
+            daily_basic=daily_basic_for_neutralize,
+        )
         clean_df = filter_frame_by_membership(clean_df, membership)
         if clean_df.is_empty():
             logger.error("PIT membership 过滤后因子截面为空")

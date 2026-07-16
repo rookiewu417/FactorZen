@@ -21,7 +21,9 @@ def _merge_report_config_args(args: argparse.Namespace, run_config: RunConfig | 
             args.benchmark = run_config.benchmark
 
     if args.universe is None:
-        args.universe = "csi300"
+        # 与 fz factor run 的无 YAML 研究预设一致（csi500）；此前默认 csi300
+        # 会让 report 全量重算路径与 daily_single 用不同股票池（双路径漂移）。
+        args.universe = "csi500"
     if args.benchmark is None:
         args.benchmark = default_benchmark_for_universe(args.universe)
 

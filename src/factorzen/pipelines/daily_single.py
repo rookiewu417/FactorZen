@@ -196,7 +196,8 @@ def _merge_run_config_args(args: argparse.Namespace, run_config: RunConfig | Non
             args.benchmark = run_config.benchmark
 
     if args.universe is None:
-        args.universe = "csi300"
+        # 与研究预设默认一致（csi500）；report 侧 _report_config 同款兜底，改一处必查另一处
+        args.universe = "csi500"
     if args.benchmark is None:
         args.benchmark = default_benchmark_for_universe(args.universe)
 

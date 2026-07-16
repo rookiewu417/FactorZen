@@ -281,7 +281,8 @@ def test_effective_report_config_without_yaml_matches_daily_single_preset():
         assert banned not in cfg.model_dump()
 
 
-def test_merge_report_config_args_default_universe_csi300():
+def test_merge_report_config_args_default_universe_csi500():
+    """无 YAML 时 universe 兜底须与 fz factor run 研究预设一致（csi500）。"""
     from argparse import Namespace
 
     from factorzen.pipelines import generate_report as mod
@@ -298,5 +299,5 @@ def test_merge_report_config_args_default_universe_csi300():
     )
 
     merged = mod._merge_report_config_args(args, None)
-    assert merged.universe == "csi300"
-    assert merged.benchmark == "000300.SH"
+    assert merged.universe == "csi500"
+    assert merged.benchmark == "000905.SH"

@@ -89,3 +89,6 @@ docs/superpowers/
 .dmypy.json
 dmypy.json
 .artifacts/
+
+# omm 架构缓存(未跟踪,曾含可疑注入文本,勿入库)
+.omm/

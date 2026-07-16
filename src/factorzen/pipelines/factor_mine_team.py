@@ -55,6 +55,10 @@ def run_team_mine(
     lift_se_mult: float = 1.0,
     lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     campaign_prior_enabled: bool = True,
+    intraday_scout: bool = False,
+    scout_k: int = 4,
+    scout_max_leaves: int = 12,
+    scout_freq: str = "5min",
 ) -> dict:
     """跑多 Agent 团队挖掘，每轮增量落 manifest，收尾写 candidates.csv + 导出候选。
 
@@ -124,6 +128,10 @@ def run_team_mine(
         auto_lift=auto_lift,
         lift_se_mult=lift_se_mult,
         lift_workers=lift_workers,
+        intraday_scout=intraday_scout,
+        scout_k=scout_k,
+        scout_max_leaves=scout_max_leaves,
+        scout_freq=scout_freq,
     )
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

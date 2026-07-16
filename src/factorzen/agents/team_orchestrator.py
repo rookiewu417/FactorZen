@@ -115,6 +115,8 @@ class TeamResult:
     prior_n_sessions: int = 0
     # finalize 所用 basis 的 n_trials（prior ∪ session 唯一）；无 prior 时 ≈ 本 session
     n_trials_family: int = 0
+    # 日内 Feature Scout 审计块（flag-off 时 None，manifest 不写）
+    intraday_scout: dict | None = None
 
 
 def _normalize(expr: str, leaf_map: dict[str, str] | None = None) -> str:
@@ -552,6 +554,13 @@ def run_team_agent(
     campaign_prior_enabled: bool = True,
     # 测试注入：固定 session run_id（None → team_{seed}_{uuid8}，每次调用唯一）
     run_id: str | None = None,
+    # 日内 Feature Scout：每轮 LLM 提案 K 个 bar 表达式 → 物化 → 筛 → 注入 session；
+    # 仅被准入因子引用的 ix_* 在 session 末永久化。默认 False → 零开销零回归。
+    intraday_scout: bool = False,
+    scout_k: int = 4,
+    scout_max_leaves: int = 12,
+    scout_freq: str = "5min",
+    scout_base_dir: str | Path | None = None,  # 测试隔离 registry/缓存；生产 None
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -701,6 +710,15 @@ def run_team_agent(
         gate=_DEFAULT_GATE,
     )
 
+    # 日内 Feature Scout：仅 flag-on 建状态（flag-off 零开销）
+    scout_state = None
+    scout_promoted: list[str] = []
+    if intraday_scout:
+        from factorzen.agents.scout_support import ScoutState
+
+        scout_state = ScoutState()
+        _step(f"日内 Scout 启用 ▸ k={scout_k} max_leaves={scout_max_leaves} freq={scout_freq}")
+
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
         if patience is not None and round_i > 0:
@@ -710,6 +728,40 @@ def run_team_agent(
                 break
         last_cand_count = len(state.candidates)
         _step(f"── 第 {round_i + 1}/{n_rounds} 轮 " + "─" * 40)
+        # 轮初 scout：注入后重绑 mining/holdout/daily 再进 _run_one_round
+        if scout_state is not None:
+            from factorzen.agents.scout_support import run_scout_round
+            from factorzen.discovery.intraday_expr import _frame_date_bounds
+
+            _s0, _s1 = _frame_date_bounds(daily)
+            scout_start = _s0 or (_dw0.get("start") or "")
+            scout_end = _s1 or (_dw0.get("end") or "")
+            if leaf_budgets is None and _eval_start_date is not None:
+                leaf_budgets = {}
+            try:
+                _frames = run_scout_round(
+                    llm_fn=llm_fn,
+                    state=scout_state,
+                    k=scout_k,
+                    max_leaves=scout_max_leaves,
+                    start=scout_start,
+                    end=scout_end,
+                    freq=scout_freq,
+                    frames={"mining": mining_df, "holdout": holdout_df, "daily": daily},
+                    ctx=ctx,
+                    holdout_start=holdout_start,
+                    eval_start=_eval_start_date,
+                    leaf_budgets=leaf_budgets,
+                    profile=profile,
+                )
+                mining_df = _frames["mining"]
+                holdout_df = _frames["holdout"]
+                daily = _frames["daily"]
+                if scout_state.injected:
+                    _step(f"  ⓪ Scout 注入叶: {scout_state.injected}")
+            except Exception as exc:
+                _LOG.warning("scout 轮次失败（跳过本轮注入）: %s: %s",
+                             type(exc).__name__, exc)
         try:
             pending = _run_one_round(
                 state, llm_fn, index=index, ledger=ledger, rounds_log=rounds_log,
@@ -833,6 +885,53 @@ def run_team_agent(
         horizon=horizon,
     )
 
+    # ── session 末：被准入/probation 因子引用的 ix_* 永久化 ─────────────────
+    scout_block = None
+    if scout_state is not None:
+        from factorzen.agents.scout_support import (
+            promote_admitted_exprs,
+            scout_manifest_block,
+        )
+        from factorzen.discovery.intraday_expr import _frame_date_bounds
+
+        admitted_exprs = [c["expression"] for c in state.candidates if c.get("expression")]
+        for row in (lift_meta.get("lift_results") or []):
+            if isinstance(row, dict) and row.get("passed") and row.get("expression"):
+                admitted_exprs.append(str(row["expression"]))
+        _fs, _fe = _frame_date_bounds(daily)
+        full_start = (_dw0.get("start") or _fs or "")
+        full_end = (_dw0.get("end") or _fe or "")
+        # 优先 builtin 面板 manifest coverage（B-W1 同口径读盘）
+        try:
+            from factorzen.daily.data.intraday import _read_manifest_fields
+
+            _bh, cov_s, cov_e = _read_manifest_fields("v1", scout_freq)
+            if cov_s:
+                full_start = str(cov_s).replace("-", "")[:8]
+            if cov_e:
+                full_end = str(cov_e).replace("-", "")[:8]
+            del _bh
+        except Exception:
+            pass
+        try:
+            scout_promoted = promote_admitted_exprs(
+                session_dir=None,
+                admitted_exprs=admitted_exprs,
+                state=scout_state,
+                session=session_run_id,
+                full_start=full_start,
+                full_end=full_end,
+                freq=scout_freq,
+                base_dir=Path(scout_base_dir) if scout_base_dir is not None else None,
+                leaf_map=ctx.leaf_map,
+            )
+            if scout_promoted:
+                _step(f"Scout promote ▸ {scout_promoted}")
+        except Exception as exc:
+            _LOG.warning("scout promote 失败: %s: %s", type(exc).__name__, exc)
+            scout_promoted = []
+        scout_block = scout_manifest_block(scout_state, promoted=scout_promoted)
+
     return TeamResult(
         state=state,
         candidates=state.candidates,
@@ -853,6 +952,7 @@ def run_team_agent(
         prior_n_trials=prior_n_trials,
         prior_n_sessions=prior_n_sessions,
         n_trials_family=basis.n_trials,
+        intraday_scout=scout_block,
     )
 
 
@@ -1219,6 +1319,9 @@ def write_team_manifest(
         "objective": getattr(result.state, "objective", None),
         "git_sha": get_git_sha(),
     }
+    scout_block = getattr(result, "intraday_scout", None)
+    if scout_block is not None:
+        manifest["intraday_scout"] = scout_block
     path = run_dir / "manifest.json"
     dump_manifest(manifest, path)
     return path

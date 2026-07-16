@@ -42,6 +42,8 @@ class AgentResult:
     # （`expected_max_sharpe ∝ sqrt(sharpe_variance)`）——manifest 就无法自证。
     # 默认 nan：中途的 `on_round_end` 检查点尚无最终 basis，写 null 比写一个假值诚实。
     sharpe_variance: float = float("nan")
+    # 日内 Feature Scout 审计块（flag-off 时 None）
+    intraday_scout: dict | None = None
 
 
 def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int = 5,
@@ -53,7 +55,13 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                   eval_start: str | None = None, profile=None,
                   library_orthogonal: bool = True,
                   library_root: str | None = None,
-                  objective: str = "residual") -> AgentResult:
+                  objective: str = "residual",
+                  # 日内 Feature Scout（与 team 共用 scout_support；默认关零回归）
+                  intraday_scout: bool = False,
+                  scout_k: int = 4,
+                  scout_max_leaves: int = 12,
+                  scout_freq: str = "5min",
+                  scout_base_dir: str | None = None) -> AgentResult:
     """跑 n_rounds 轮 Agent 挖掘闭环。
 
     ``on_round_end``：每个**成功**轮次结束时以当前累积结果回调，供调用方增量落盘。
@@ -147,6 +155,15 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             lib_pool, library_covered = {}, None
     state.objective = objective  # type: ignore[attr-defined]
 
+    # 日内 Feature Scout：仅 flag-on 建状态（flag-off 零开销）
+    scout_state = None
+    scout_promoted: list[str] = []
+    if intraday_scout:
+        from factorzen.agents.scout_support import ScoutState
+
+        scout_state = ScoutState()
+        _step(f"日内 Scout 启用 ▸ k={scout_k} max_leaves={scout_max_leaves} freq={scout_freq}")
+
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
         if patience is not None and round_i > 0:
@@ -156,6 +173,40 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                 break
         last_cand_count = len(state.candidates)
         _step(f"── 第 {round_i + 1}/{n_rounds} 轮 " + "─" * 40)
+        # 轮初 scout（node_generate 前）：注入后重绑 mining/holdout/daily
+        if scout_state is not None:
+            from factorzen.agents.scout_support import run_scout_round
+            from factorzen.discovery.intraday_expr import _frame_date_bounds
+
+            _s0, _s1 = _frame_date_bounds(daily)
+            scout_start = _s0 or (eval_start or "")
+            scout_end = _s1 or ""
+            if leaf_budgets is None and _eval_start_date is not None:
+                leaf_budgets = {}
+            try:
+                _frames = run_scout_round(
+                    llm_fn=llm_fn,
+                    state=scout_state,
+                    k=scout_k,
+                    max_leaves=scout_max_leaves,
+                    start=scout_start,
+                    end=scout_end,
+                    freq=scout_freq,
+                    frames={"mining": mining_df, "holdout": holdout_df, "daily": daily},
+                    ctx=ctx,
+                    holdout_start=holdout_start,
+                    eval_start=_eval_start_date,
+                    leaf_budgets=leaf_budgets,
+                    profile=profile,
+                )
+                mining_df = _frames["mining"]
+                holdout_df = _frames["holdout"]
+                daily = _frames["daily"]
+                if scout_state.injected:
+                    _step(f"  ⓪ Scout 注入叶: {scout_state.injected}")
+            except Exception as exc:
+                _LOG.warning("scout 轮次失败（跳过本轮注入）: %s: %s",
+                             type(exc).__name__, exc)
         try:
             _step("  ① 生成假设 + 表达式")
             # leaf_guidance=None：M5 无跨 session index；注入函数与 team 共用，
@@ -208,8 +259,55 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     # 收尾复核：早轮候选此前按「截至当轮」的 N 定 p，门槛偏松。用最终 basis 统一重判。
     _step("收尾复核：以最终 N 统一重判候选 DSR")
     basis = node_finalize_guardrails(state, daily=mining_df, bundle=bundle, profile=profile)
+
+    # ── session 末：准入候选引用的 ix_* 永久化 ─────────────────────────────
+    scout_block = None
+    if scout_state is not None:
+        from pathlib import Path
+
+        from factorzen.agents.scout_support import (
+            promote_admitted_exprs,
+            scout_manifest_block,
+        )
+        from factorzen.discovery.intraday_expr import _frame_date_bounds
+
+        admitted_exprs = [c["expression"] for c in state.candidates if c.get("expression")]
+        _fs, _fe = _frame_date_bounds(daily)
+        full_start = eval_start or _fs or ""
+        full_end = _fe or ""
+        try:
+            from factorzen.daily.data.intraday import _read_manifest_fields
+
+            _bh, cov_s, cov_e = _read_manifest_fields("v1", scout_freq)
+            if cov_s:
+                full_start = str(cov_s).replace("-", "")[:8]
+            if cov_e:
+                full_end = str(cov_e).replace("-", "")[:8]
+            del _bh
+        except Exception:
+            pass
+        try:
+            scout_promoted = promote_admitted_exprs(
+                session_dir=None,
+                admitted_exprs=admitted_exprs,
+                state=scout_state,
+                session=f"agent_{seed}",
+                full_start=full_start,
+                full_end=full_end,
+                freq=scout_freq,
+                base_dir=Path(scout_base_dir) if scout_base_dir is not None else None,
+                leaf_map=ctx.leaf_map,
+            )
+            if scout_promoted:
+                _step(f"Scout promote ▸ {scout_promoted}")
+        except Exception as exc:
+            _LOG.warning("scout promote 失败: %s: %s", type(exc).__name__, exc)
+            scout_promoted = []
+        scout_block = scout_manifest_block(scout_state, promoted=scout_promoted)
+
     return AgentResult(state=state, candidates=state.candidates, n_trials=ledger.n_trials,
-                       sharpe_variance=basis.sharpe_variance)
+                       sharpe_variance=basis.sharpe_variance,
+                       intraday_scout=scout_block)
 
 
 def _summarize_feedback(state: AgentState) -> str:

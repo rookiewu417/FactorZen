@@ -684,6 +684,12 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
+    # --intraday-scout 仅 ashare；隐含 --intraday-leaves（reference 需要 i_*）
+    if getattr(args, "intraday_scout", False):
+        if getattr(args, "market", "ashare") != "ashare":
+            print("[mine] --intraday-scout 仅 ashare 支持", file=sys.stderr)
+            return 2
+        args.intraday_leaves = True
     from factorzen.pipelines.factor_mine_agent import run_agent_mine
 
     daily, profile, prep_meta = _prepare_agent_mining_data(args)
@@ -700,7 +706,11 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
                          command=_command_line(args),
                          eval_start=args.start, profile=profile,
                          library_orthogonal=not getattr(args, "no_library_orthogonal", False),
-                         objective=getattr(args, "objective", "residual"))
+                         objective=getattr(args, "objective", "residual"),
+                         intraday_scout=bool(getattr(args, "intraday_scout", False)),
+                         scout_k=int(getattr(args, "scout_k", 4) or 4),
+                         scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
+                         scout_freq=getattr(args, "intraday_freq", "5min") or "5min")
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -709,6 +719,12 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
+    # --intraday-scout 仅 ashare；隐含 --intraday-leaves（reference 需要 i_*）
+    if getattr(args, "intraday_scout", False):
+        if getattr(args, "market", "ashare") != "ashare":
+            print("[mine] --intraday-scout 仅 ashare 支持", file=sys.stderr)
+            return 2
+        args.intraday_leaves = True
     import factorzen.pipelines.factor_mine_team as pmt
 
     # 数据装配与 agent 路径共用 `_prepare_agent_mining_data`（ashare=A 股 loader，
@@ -735,6 +751,10 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         lift_se_mult=float(getattr(args, "lift_se_mult", 1.0)),
         lift_workers=getattr(args, "lift_workers", None),  # None→自适应(按可用内存)
         campaign_prior_enabled=not bool(getattr(args, "no_campaign_prior", False)),
+        intraday_scout=bool(getattr(args, "intraday_scout", False)),
+        scout_k=int(getattr(args, "scout_k", 4) or 4),
+        scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
+        scout_freq=getattr(args, "intraday_freq", "5min") or "5min",
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0

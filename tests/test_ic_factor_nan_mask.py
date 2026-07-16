@@ -1,8 +1,8 @@
 """Rank IC 有效掩码必须同时过滤因子列的 NaN/inf（D1）。
 
-根因：_rank_ic_by_date（及 advanced/_common、sector_ic、size_ic 的同款掩码）对因子列
-只有 is_not_null()，缺 is_finite()——polars 中 NaN 不是 null，rank 把 NaN 排为最大值，
-NaN 因子行以最高秩参与 Rank IC，污染结果。剔除 NaN 行后 IC 应不变。
+根因：``_rank_ic_by_date`` 对因子列只有 is_not_null() 会漏 NaN——polars 中 NaN 不是 null，
+rank 把 NaN 排为最大值，NaN 因子行以最高秩参与 Rank IC，污染结果。
+剔除 NaN 行后 IC 应不变。
 """
 from __future__ import annotations
 
@@ -52,4 +52,3 @@ def test_factor_nan_row_equivalent_to_dropped_row():
         f"NaN 因子行应等价于删除该行，nan_ic={nan_ic:.6f} vs drop_ic={drop_ic:.6f}"
         "（修复前 NaN 被 rank 排最大参与 IC，两者不等）"
     )
-

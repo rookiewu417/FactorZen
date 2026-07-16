@@ -11,7 +11,6 @@ import httpx
 from openai import APIError, APIStatusError, OpenAI
 
 from factorzen.llm.config import LLMConfig
-from factorzen.llm.schema import LLMExplanation, parse_llm_explanation
 
 _LOG = logging.getLogger(__name__)
 
@@ -278,21 +277,6 @@ def _stream_content(
         raise LLMClientError(f"HTTP {exc.status_code}: {_error_body(exc)}") from exc
     except APIError as exc:
         raise LLMClientError(f"LLM SDK 请求失败: {type(exc).__name__}: {exc}") from exc
-
-
-def request_llm_explanation(
-    config: LLMConfig,
-    messages: list[dict[str, str]],
-) -> LLMExplanation:
-    """Generate and validate one structured factor explanation."""
-    if not config.is_ready:
-        raise LLMClientError("LLM config is not ready")
-
-    content = _stream_content(config, messages, include_response_format=True)
-    explanation = parse_llm_explanation(content)
-    if explanation is None:
-        raise LLMClientError("LLM response is not a valid explanation JSON")
-    return explanation
 
 
 def request_chat(config: LLMConfig, messages: list[dict[str, str]]) -> str:

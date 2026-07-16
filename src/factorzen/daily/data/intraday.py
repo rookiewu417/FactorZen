@@ -8,6 +8,9 @@
 （由 ``fz data intraday-features build`` 物化）。
 
 叶子名单单源：``core.feature_schema.INTRADAY_FEATURES``（core 不依赖 intraday 层）。
+
+``ix_*`` 表达式叶子由 ``discovery.intraday_expr.attach_expr_leaves`` 负责，
+本模块只处理 builtin 17 个 ``i_*``。
 """
 from __future__ import annotations
 

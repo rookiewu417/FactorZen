@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 import polars as pl
 
@@ -33,9 +33,10 @@ def expressions_need_intraday(
     exprs: Iterable[str],
     leaf_map: dict[str, str] | None = None,
 ) -> bool:
-    """任一表达式引用 ``INTRADAY_FEATURES`` 叶子 → True。
+    """任一表达式引用 ``INTRADAY_FEATURES`` 或 ``ix_*`` 叶子 → True。
 
     parse 失败的表达式跳过（不抛），避免畸形候选阻塞装帧。
+    ``ix_*`` 在默认 leaf_map 中不可 parse 时，用词法前缀回退识别。
     """
     from factorzen.core.feature_schema import INTRADAY_FEATURES
     from factorzen.discovery.expression import feature_names, parse_expr
@@ -43,13 +44,51 @@ def expressions_need_intraday(
     for e in exprs:
         if not e:
             continue
+        s = str(e)
+        # ix_* 可能不在默认 LEAF_FEATURES 中 → parse 失败；词法回退
+        if "ix_" in s:
+            return True
         try:
-            node = parse_expr(str(e), leaf_map)
+            node = parse_expr(s, leaf_map)
         except Exception:
             continue
         if feature_names(node) & INTRADAY_FEATURES:
             return True
     return False
+
+
+def intraday_expr_leaf_names(
+    exprs: Iterable[str],
+    leaf_map: dict[str, str] | None = None,
+) -> list[str]:
+    """收集表达式引用的 ``ix_*`` 叶名（稳定去重顺序）；parse 失败则跳过。"""
+    from factorzen.discovery.expression import feature_names, parse_expr
+    from factorzen.discovery.intraday_expr import load_expr_registry
+    from factorzen.discovery.operators import LEAF_FEATURES
+
+    # 扩展 leaf_map：合并已注册 ix 名，便于 parse
+    lm = dict(leaf_map) if leaf_map is not None else None
+    if lm is None:
+        try:
+            reg = load_expr_registry()
+            lm = {**LEAF_FEATURES, **{n: n for n in reg}}
+        except Exception:
+            lm = None
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for e in exprs:
+        if not e:
+            continue
+        try:
+            node = parse_expr(str(e), lm)
+        except Exception:
+            continue
+        for name in sorted(feature_names(node)):
+            if name.startswith("ix_") and name not in seen:
+                seen.add(name)
+                found.append(name)
+    return found
 
 
 def prepare_mining_daily(
@@ -62,6 +101,7 @@ def prepare_mining_daily(
     intraday: bool = False,
     intraday_freq: str = "5min",
     intraday_version: str = "v1",
+    intraday_expr_leaves: Sequence[str] | None = None,
 ) -> pl.DataFrame:
     """Build the canonical A-share frame used by every discovery path.
 
@@ -165,6 +205,13 @@ def prepare_mining_daily(
                     f"{exp_start}；短历史叶子由 leaf 预算/warmup 门自然处理。",
                     stacklevel=2,
                 )
+
+    if intraday_expr_leaves:
+        from factorzen.discovery.intraday_expr import attach_expr_leaves
+
+        daily = attach_expr_leaves(
+            daily, list(intraday_expr_leaves), require=True,
+        )
 
     if membership is not None:
         daily = _attach_in_universe(daily, membership)

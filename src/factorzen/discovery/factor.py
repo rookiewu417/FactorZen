@@ -1,6 +1,7 @@
 """把表达式包装成标准 DailyFactor，可被 registry/评估管线无缝消费。"""
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import ClassVar
 
@@ -9,16 +10,28 @@ import polars as pl
 from factorzen.daily.factors.base import DailyFactor
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import evaluate_materialized, feature_names, parse_expr
+from factorzen.discovery.intraday_expr import attach_expr_leaves, load_expr_registry
 from factorzen.discovery.operators import (
     BASIC_FEATURES,
     FLOW_FEATURES,
     FUNDAMENTAL_FEATURES,
     HOLDER_FEATURES,
+    LEAF_FEATURES,
     MARGIN_FEATURES,
 )
 
 _PRICE_COLS = ["open", "high", "low", "close", "open_adj", "high_adj",
                "low_adj", "close_adj", "vol", "amount"]
+
+_IX_TOKEN = re.compile(r"\bix_[A-Za-z0-9_]+\b")
+
+
+def _parse_leaf_map_for_expression(expression: str) -> dict[str, str] | None:
+    """若表达式含 ``ix_*`` 名，合并 registry 进解析 leaf_map（不污染全局 LEAF_FEATURES）。"""
+    if not _IX_TOKEN.search(expression):
+        return None
+    reg = load_expr_registry()
+    return {**LEAF_FEATURES, **{n: n for n in reg}}
 
 
 class ExpressionFactor(DailyFactor):
@@ -40,11 +53,13 @@ class ExpressionFactor(DailyFactor):
             self.lookback_days = lookback_days
         if not self.expression:
             raise ValueError("ExpressionFactor 需要非空 expression")
-        self.node = parse_expr(self.expression)
+        self._leaf_map = _parse_leaf_map_for_expression(self.expression)
+        self.node = parse_expr(self.expression, self._leaf_map)
         if not getattr(self, "name", ""):
             self.name = self.mined_name or f"mined_{abs(hash(self.expression)) % (10**8)}"
         self.description = f"mined: {self.expression}"
         self._feats = feature_names(self.node)
+        self._ix_leaves = sorted(n for n in self._feats if n.startswith("ix_"))
 
     def compute(self, ctx) -> pl.DataFrame:
         daily = ctx.daily.collect()
@@ -77,17 +92,23 @@ class ExpressionFactor(DailyFactor):
                     daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
             from factorzen.daily.data.flows import attach_flows
             daily = attach_flows(daily)
-        # 仅在引用日内特征叶子时 attach（与挖掘路径共用 attach_intraday，防漂移）
+        # builtin i_*：与挖掘路径共用 attach_intraday
         from factorzen.core.feature_schema import INTRADAY_FEATURES
         if self._feats & INTRADAY_FEATURES:
             from factorzen.daily.data.intraday import attach_intraday
             daily = attach_intraday(daily, require=True)
+        # ix_*：本包 attach_expr_leaves（不经 daily，避免 daily→discovery 环）
+        if self._ix_leaves:
+            daily = attach_expr_leaves(daily, self._ix_leaves, require=True)
         # 排序必须在依赖行序的派生列（shift/over）之前完成，否则 ret_1d 等会用到
         # 乱序的「上一行」当成「前一交易日」算出错误结果（与 mining_session.py 保持一致）
         df = daily.sort(["ts_code", "trade_date"])
         # 派生列（与 mining_session.py 共用 add_derived_columns，消除双路径漂移）
         df = add_derived_columns(df)
-        df = df.with_columns(evaluate_materialized(self.node, df).alias("factor_value"))
+        eval_map = self._leaf_map
+        df = df.with_columns(
+            evaluate_materialized(self.node, df, eval_map).alias("factor_value")
+        )
         start = datetime.strptime(ctx.start, "%Y%m%d").date()
         return (
             df.filter(pl.col("trade_date") >= start)

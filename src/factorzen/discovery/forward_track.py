@@ -180,15 +180,21 @@ def _assemble_daily(
             f"forward-track 暂未接入 {market} 的 profile/provider/leaf-map；"
             f"非 A 股入口 fail closed，勿用 A 股数据求值非 A 股因子。"
         )
-    from factorzen.discovery.preparation import expressions_need_intraday
+    from factorzen.discovery.preparation import (
+        expressions_need_intraday,
+        intraday_expr_leaf_names,
+    )
 
-    need_intraday = expressions_need_intraday(expressions or [])
+    exprs = expressions or []
+    need_intraday = expressions_need_intraday(exprs)
+    ix_leaves = intraday_expr_leaf_names(exprs)
     # start=end=as_of：评分只覆盖确认日；FactorDataContext 再往前拉 lookback 交易日预热，
     # 从而 t-1 落在帧内（因子滞后截面 + 收益分母）。
     return prepare_mining_daily(
         as_of, as_of, universe=universe,
         lookback_days=lookback_days,
-        intraday=need_intraday,
+        intraday=need_intraday or bool(ix_leaves),
+        intraday_expr_leaves=ix_leaves or None,
     )
 
 

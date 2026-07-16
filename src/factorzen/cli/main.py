@@ -672,6 +672,7 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
         out_meta=prep_meta,
         intraday=bool(getattr(args, "intraday_leaves", False)),
         intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
+        intraday_expr_leaves=getattr(args, "intraday_expr_leaves", None),
     )
     if not prep_meta:
         # 替身实现可能不填 out_meta：补占位，调用方仍能稳定解包
@@ -1204,7 +1205,10 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     # 语义漂移 → 候选近乎全空 → build_panel「行因子齐全」暴跌、lift 成噪声。
     # 自动置位：lift 队列 ∪ 库内 active 任一表达式引用 i_* → 装日内面板（堵死缺列静默失败）。
     lib_root = getattr(args, "library_root", None) or fl.DEFAULT_ROOT
-    from factorzen.discovery.preparation import expressions_need_intraday
+    from factorzen.discovery.preparation import (
+        expressions_need_intraday,
+        intraday_expr_leaf_names,
+    )
     all_exprs: list[str] = []
     for _gs, _ge, cands in groups:
         for c in cands:
@@ -1221,6 +1225,11 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         all_exprs
     )
     if need_intraday:
+        args.intraday_leaves = True
+    # ix_* 表达式叶子透传 prepare → attach_intraday
+    ix_leaves = intraday_expr_leaf_names(all_exprs)
+    if ix_leaves:
+        args.intraday_expr_leaves = ix_leaves
         args.intraday_leaves = True
 
     daily, profile, _prep_meta = _prepare_agent_mining_data(args)

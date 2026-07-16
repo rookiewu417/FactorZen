@@ -280,11 +280,6 @@ def test_daily_single_filters_eval_cross_section_by_membership(
         frequency="daily",
         benchmark=None,
         seed=None,
-        ic_method="rank",
-        neutralized_ic=False,
-        event_study=False,
-        llm_explain=False,
-        llm_refresh=False,
         metrics_out=None,
     )
     cfg = RunConfig(factor="dummy_pit", start="20240102", end="20240205")
@@ -503,18 +498,15 @@ def test_generate_report_filters_by_membership(monkeypatch, tmp_path):
     _uni_meta = pl.DataFrame(
         {"ts_code": ["B.SZ", "C.SZ"], "industry": ["银行", "科技"]}
     )
-    monkeypatch.setattr(gr, "get_universe", lambda d, u: _uni_meta)
     monkeypatch.setattr(
         "factorzen.pipelines.daily_single.get_universe", lambda d, u: _uni_meta
     )
     monkeypatch.setattr(gr, "FactorDataContext", FakeCtx)
     monkeypatch.setattr(
         gr,
-        "build_preprocessing_pipeline",
-        lambda cfg: SimpleNamespace(
-            run=lambda df, col="factor_value", **kw: df.with_columns(
-                pl.col(col).alias("factor_clean")
-            )
+        "_preprocess_factor",
+        lambda df, cfg, **kw: df.with_columns(
+            pl.col("factor_value").alias("factor_clean")
         ),
     )
     monkeypatch.setattr(
@@ -551,11 +543,6 @@ def test_generate_report_filters_by_membership(monkeypatch, tmp_path):
         frequency="daily",
         benchmark=None,
         reuse=False,
-        ic_method="rank",
-        neutralized_ic=False,
-        event_study=False,
-        llm_explain=False,
-        llm_refresh=False,
     )
     cfg = RunConfig(factor="dummy_pit", start="20240102", end="20240205")
     cfg.walk_forward.enabled = False

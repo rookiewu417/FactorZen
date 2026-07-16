@@ -124,7 +124,7 @@ graph TD
 | 多 Agent 团队 | `agents/roles/` `agents/team_orchestrator.py` `agents/experiment_index.py` | 4 角色 Agent（Hypothesis/Coder/Critic/Librarian）+ Evaluator 评估环节 + 跨轮否决 + 跨 session 长期记忆（`ExperimentIndex`） |
 | 模拟交易 | `sim/` | 组合权重回测：对齐行情、扣换手成本、净值序列、夏普、最大回撤 |
 | 成果展示 | `reports/portfolio_report.py` | 组合 HTML Dashboard：指标卡 + 净值曲线 + 月度热图 + 归因 + 风险摘要 |
-| 基础 | `reports/` | 单因子 Tear Sheet 报告引擎、图表、评分、摘要与模板 |
+| 基础 | `reports/` | 单因子 Tear Sheet 报告引擎（单页极简）、图表与模板 |
 | 基础 | `pipelines/` | 端到端流程编排：`daily_single` / `generate_report` / `factor_mine*` / `risk_build` / `portfolio_build` |
 | 基础 | `cli/` | 统一 `fz` 命令行入口 |
 

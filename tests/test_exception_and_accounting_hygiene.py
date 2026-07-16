@@ -1,33 +1,27 @@
 # tests/test_exception_and_accounting_hygiene.py
 """异常契约 + 记账卫生：静默吞异常、静默丢记录、静默多记 N。
 
-五项独立但同源的缺陷——**都在「悄悄发生、看不出来」这条线上**：
+独立但同源的缺陷——**都在「悄悄发生、看不出来」这条线上**：
 
 1. `node_guardrails` / `evaluate_expressions` 的裸 `except Exception: continue`
    吞掉一切，无日志无计数。一个候选的 holdout 求值炸了，你永远不会知道。
 2. `node_critic` 用裸 `json.loads` 而非容错的 `_extract_json`（`roles/critic.py` 用后者）。
    `request_chat` 显式关掉 json_object 模式且不剥围栏，LLM 加 markdown 围栏时解析必抛，
    被 `except Exception` 降级为 `"keep"`。双路径漂移。
-3. `llm/cache.py::cache_key` 漏 `provider` / `max_tokens` / `thinking`。换 provider
-   但 model 名不变 → 同键命中旧解读（缓存串味）。
-4. `librarian.record()` 跳过编译失败的 attempt → 坏表达式**永不进长期记忆** →
+3. `librarian.record()` 跳过编译失败的 attempt → 坏表达式**永不进长期记忆** →
    `seen_expressions()` 看不到它们 → 跨 session 反复生成同一语法坑，白烧 LLM 调用与自愈轮次。
-5. team 的 `_evaluate_and_record` 的 `fresh` 列表**内部不去重**。`heal_rounds=0` 时（heal 的
+4. team 的 `_evaluate_and_record` 的 `fresh` 列表**内部不去重**。`heal_rounds=0` 时（heal 的
    去重不生效）多个 task 翻译出同一表达式 → 评估两次 → N over-count。
 """
 from __future__ import annotations
 
-import ast
 import datetime as dt
 import json
 import logging
-from pathlib import Path
 
 import numpy as np
 import polars as pl
 import pytest
-
-_SRC = Path(__file__).resolve().parents[1] / "src" / "factorzen"
 
 
 def _daily(n_stocks: int = 40, n_days: int = 200, seed: int = 3) -> pl.DataFrame:
@@ -131,46 +125,7 @@ def test_json_loads_would_have_raised_on_fenced_input():
         json.loads('```json\n{"verdict": "drop"}\n```')
 
 
-# ── 3. 缓存键完整性 ─────────────────────────────────────────────────────────
-
-
-def test_cache_key_covers_every_parameter_that_changes_the_output():
-    """换 provider / max_tokens / thinking 但 model 名不变 → 不得命中同一缓存键。"""
-    from factorzen.llm.cache import cache_key
-
-    base = {"factor_name": "f", "start": "20220101", "end": "20231229",
-            "model": "DeepSeek-V4-Pro", "prompt_version": "v1", "snapshot": {"ic": 0.03}}
-    k0 = cache_key(**base, provider="DeepSeek", max_tokens=700, thinking=None)
-
-    assert cache_key(**base, provider="OpenAI", max_tokens=700, thinking=None) != k0
-    assert cache_key(**base, provider="DeepSeek", max_tokens=2000, thinking=None) != k0
-    assert cache_key(**base, provider="DeepSeek", max_tokens=700, thinking="enabled") != k0
-    assert cache_key(**base, provider="DeepSeek", max_tokens=700, thinking=None) == k0  # 幂等
-
-
-def test_every_cache_key_caller_passes_the_output_affecting_params():
-    """能力↔接线漂移守卫：给 `cache_key` 加了参数，调用方不传就等于没修（默认 None → 同旧键）。
-
-    用 ast 断言而非驱动 `generate_llm_explanation`——后者要构造 ic/bt/to 三套结果对象，
-    测试会脆弱且与本缺陷无关。
-    """
-    required = {"provider", "max_tokens", "thinking"}
-    offenders: list[str] = []
-    for path in _SRC.rglob("*.py"):
-        if path.name == "cache.py":
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-        for n in ast.walk(tree):
-            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                    and n.func.id == "cache_key"):
-                continue
-            if missing := required - {kw.arg for kw in n.keywords}:
-                offenders.append(f"{path.relative_to(_SRC).as_posix()}:{n.lineno} 缺 {missing}")
-
-    assert not offenders, f"cache_key 调用漏传影响输出的参数（会缓存串味）：{offenders}"
-
-
-# ── 4. 编译失败的表达式必须进长期记忆 ───────────────────────────────────────
+# ── 3. 编译失败的表达式必须进长期记忆 ───────────────────────────────────────
 
 
 def test_record_persists_compile_failures_so_they_are_not_retried(tmp_path):
@@ -219,7 +174,7 @@ def test_compile_failures_never_enter_the_deflation_pool(tmp_path):
     assert basis.n_trials == 2
 
 
-# ── 5. 同轮重复表达式的 N over-count ────────────────────────────────────────
+# ── 4. 同轮重复表达式的 N over-count ────────────────────────────────────────
 
 
 def test_team_evaluate_deduplicates_within_the_batch():

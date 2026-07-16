@@ -164,6 +164,16 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
         logger.info(f"[index_member] {index_code} {year_month} 缓存命中")
         cached_df = _read_index_member_cache(cache_file)
         members = _members_as_of(cached_df, date_str)
+        if not members:
+            # 与下方「当月拉取非空但 as-of 为空」分支同口径：月中查询日早于
+            # 当月首个调样 trade_date 时，须回退历史月份，不能缓存空列表
+            # （否则 membership 只剩月末快照日，日频 IC 塌缩为 ~月频）。
+            members = _load_latest_cached_index_members(index_code, date_str)
+            if members:
+                logger.debug(
+                    f"[index_member] {index_code} {year_month} 缓存无 "
+                    f"trade_date<={date_str} 的记录，使用最近可用成分股缓存"
+                )
         _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(members)
         return members
 

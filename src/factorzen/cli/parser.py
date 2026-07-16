@@ -43,23 +43,7 @@ def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="KEY=VALUE",
         help="Override any config field, repeatable: --set backtest.top_n=30",
     )
-    parser.add_argument("--all", action="store_true", help="Enable deep evaluation preset")
     parser.add_argument("--dry-run", action="store_true", help="Print effective config without running")
-    parser.add_argument(
-        "--ic-method",
-        default=None,
-        choices=["rank", "pearson", "both"],
-        dest="ic_method",
-        help="IC method",
-    )
-    parser.add_argument("--neutralized-ic", action="store_true", dest="neutralized_ic")
-    parser.add_argument("--event-study", action="store_true", dest="event_study")
-    parser.add_argument(
-        "--llm-explain",
-        action="store_true",
-        help="Enable LLM explanation; no-config daily runs enable this by default",
-    )
-    parser.add_argument("--llm-refresh", action="store_true")
 
 
 def _add_report_build_arguments(parser: argparse.ArgumentParser) -> None:
@@ -77,20 +61,8 @@ def _add_report_build_arguments(parser: argparse.ArgumentParser) -> None:
         help="Factor frequency",
     )
     parser.add_argument("--reuse", action="store_true", help="Reuse existing artifacts")
-    parser.add_argument("--all", action="store_true", help="Enable deep report preset")
     parser.add_argument("--benchmark", default=None, help="Benchmark index code")
     parser.add_argument("--config", default=None, help="YAML run config path")
-    parser.add_argument(
-        "--ic-method",
-        default=None,
-        choices=["rank", "pearson", "both"],
-        dest="ic_method",
-        help="IC method",
-    )
-    parser.add_argument("--neutralized-ic", action="store_true", dest="neutralized_ic")
-    parser.add_argument("--event-study", action="store_true", dest="event_study")
-    parser.add_argument("--llm-explain", action="store_true")
-    parser.add_argument("--llm-refresh", action="store_true")
 
 
 def _add_freq_arg(p: argparse.ArgumentParser) -> None:

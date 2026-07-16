@@ -11,14 +11,13 @@
 import argparse
 import json
 import sys
-from typing import Any, cast
+from typing import Any
 
 import polars as pl
 
 from factorzen.config.research import RunConfig, load_run_config
 from factorzen.config.settings import (
     daily_report_output_dir,
-    daily_result_output_dir,
 )
 from factorzen.core.calendar import get_trade_dates
 from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
@@ -32,29 +31,22 @@ from factorzen.core.logger import get_logger, setup_logging
 from factorzen.core.progress import OverallProgress
 from factorzen.core.storage import load_parquet
 from factorzen.core.timing import StageTimer
-from factorzen.core.universe import get_universe
 from factorzen.daily.data.context import FactorDataContext
 from factorzen.daily.evaluation.backtest import (
     BacktestResult,
     run_strategy_backtest,
     trim_backtest_to_first_trade,
 )
-from factorzen.daily.evaluation.ic_analysis import (
-    BothIcResult,
-    IcStats,
-    compute_rank_ic,
-)
+from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
 from factorzen.daily.evaluation.turnover import compute_turnover
 from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 from factorzen.daily.factors.registry import get_factor
 from factorzen.daily.runtime import (
     build_backtest_strategies,
     build_cost_model,
-    build_preprocessing_pipeline,
     build_runtime_backtest_config,
 )
 from factorzen.experiments.run_paths import copy_outputs_to_run_dir
-from factorzen.llm import generate_llm_explanation
 from factorzen.pipelines._report_config import (
     _effective_report_config,
     _merge_report_config_args,
@@ -75,6 +67,9 @@ from factorzen.pipelines._report_persistence import (
 )
 from factorzen.pipelines.daily_single import (
     _build_forward_return_frame,
+    _compute_monotonicity_result,
+    _load_daily_basic_for_neutralization,
+    _preprocess_factor,
     filter_frame_by_membership,
     load_pit_membership,
 )
@@ -163,233 +158,21 @@ def _run_backtest_strategies(
 # ---------------------------------------------------------------------------
 
 
-def _run_advanced_evaluation(clean_df, ret_df, frequency, start: str = "", end: str = ""):
-    """运行高级评价模块，各模块互不依赖，单个失败不影响整体。"""
-    advanced: dict = {}
-
-    try:
-        from factorzen.daily.evaluation.advanced import compute_ic_decay
-
-        advanced["decay_results"] = compute_ic_decay(clean_df, ret_df, factor_col="factor_clean")
-        logger.info(f"IC Decay: {len(advanced['decay_results'])} horizons")
-    except ImportError as e:
-        logger.warning(f"IC Decay 模块不可用: {e}")
-    except Exception as e:
-        logger.warning(f"IC Decay 失败: {e}")
-
-    try:
-        from factorzen.daily.evaluation.advanced import compute_monotonicity
-
-        mono_df = clean_df.join(
-            ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]),
-            on=["trade_date", "ts_code"],
-            how="inner",
-        )
-        advanced["mono"] = compute_monotonicity(
-            mono_df, factor_col="factor_clean", ret_col="fwd_ret_1d"
-        )
-        logger.info(f"单调性: score={advanced['mono'].monotonicity_score:.3f}")
-    except ImportError as e:
-        logger.warning(f"Monotonicity 模块不可用: {e}")
-    except Exception as e:
-        logger.warning(f"单调性分析失败: {e}")
-
-    try:
-        from factorzen.daily.evaluation.advanced import compute_rank_autocorr
-
-        advanced["autocorr"] = compute_rank_autocorr(
-            clean_df, factor_col="factor_clean", lags=[1, 5, 10]
-        )
-        logger.info(
-            f"排名自相关: mean={advanced['autocorr'].mean_autocorr:.3f}, "
-            f"half_life={advanced['autocorr'].half_life_est:.1f}"
-        )
-    except ImportError as e:
-        logger.warning(f"Rank Autocorr 模块不可用: {e}")
-    except Exception as e:
-        logger.warning(f"排名自相关失败: {e}")
-
-    try:
-        from factorzen.daily.evaluation.advanced import compute_market_regime_ic
-
-        advanced["regime"] = compute_market_regime_ic(
-            clean_df.join(
-                ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]),
-                on=["trade_date", "ts_code"],
-                how="inner",
-            ),
-            factor_col="factor_clean",
-            ret_col="fwd_ret_1d",
-            regime_type="direction",
-            return_object=True,
-        )
-        logger.info(f"市场状态 IC: {advanced['regime'].regime_type}")
-    except ImportError as e:
-        logger.warning(f"Market Regime 模块不可用: {e}")
-    except Exception as e:
-        logger.warning(f"市场状态 IC 失败: {e}")
-
-    # ── 行业分层 IC ──
-    try:
-        from factorzen.core.loader import fetch_stock_basic
-        from factorzen.daily.evaluation.advanced import compute_sector_ic
-
-        stock_basic = (
-            fetch_stock_basic().select(["ts_code", "industry"]).rename({"industry": "sector"})
-        )
-        sector_df = (
-            clean_df.join(stock_basic, on="ts_code", how="left")
-            .join(
-                ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]),
-                on=["trade_date", "ts_code"],
-                how="inner",
-            )
-            .filter(pl.col("sector").is_not_null() & (pl.col("sector") != ""))
-        )
-        if not sector_df.is_empty():
-            advanced["sector"] = compute_sector_ic(
-                sector_df,
-                factor_col="factor_clean",
-                ret_col="fwd_ret_1d",
-                sector_col="sector",
-                return_object=True,
-            )
-            logger.info(f"行业 IC: {advanced['sector'].sector_ic_df.height} 个行业")
-    except Exception as e:
-        logger.warning(f"行业分层 IC 失败: {e}")
-
-    # ── 市值分层 IC ──
-    try:
-        from factorzen.daily.evaluation.advanced import compute_size_ic
-
-        if start and end:
-            db = load_parquet("daily_basic", start=start, end=end).collect()
-        else:
-            db = load_parquet("daily_basic").collect()
-        if db.is_empty() and start and end:
-            db = load_parquet("daily_basic").collect()
-        cap_df = (
-            clean_df.join(
-                db.select(["trade_date", "ts_code", "total_mv"]),
-                on=["trade_date", "ts_code"],
-                how="left",
-            )
-            .join(
-                ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]),
-                on=["trade_date", "ts_code"],
-                how="inner",
-            )
-            .filter(pl.col("total_mv").is_not_null())
-        )
-        if not cap_df.is_empty():
-            advanced["size"] = compute_size_ic(
-                cap_df,
-                factor_col="factor_clean",
-                ret_col="fwd_ret_1d",
-                cap_col="total_mv",
-                n_buckets=3,
-                return_object=True,
-            )
-            logger.info(f"市值分层 IC: {advanced['size'].buckets}")
-    except Exception as e:
-        logger.warning(f"市值分层 IC 失败: {e}")
-
-    return advanced if advanced else None
-
-
-def _build_report_deep_results(
-    clean_df: pl.DataFrame,
+def _run_advanced_evaluation(
+    backtest_df: pl.DataFrame,
     ret_df: pl.DataFrame,
-    args: argparse.Namespace,
-) -> tuple[Any | None, Any | None, Any | None]:
-    """Compute optional deep report outputs controlled by report CLI flags."""
-    pearson_ic_result: IcStats | None = None
-    neutralized_ic_result = None
-    event_study_result = None
+    frequency: str = "daily",
+    start: str = "",
+    end: str = "",
+    *,
+    n_groups: int = 5,
+):
+    """只算单调性；单一实现在 daily_single._compute_monotonicity_result（双路径共用）。
 
-    if args.ic_method in ("pearson", "both"):
-        try:
-            from factorzen.daily.evaluation.ic_analysis import compute_ic
-
-            merged_simple = clean_df.join(
-                ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename(
-                    {"fwd_ret_1d": "ret_1d"}
-                ),
-                on=["trade_date", "ts_code"],
-                how="inner",
-            )
-            if args.ic_method == "both":
-                both_ic = compute_ic(
-                    merged_simple,
-                    factor_col="factor_clean",
-                    ret_col="ret_1d",
-                    method="both",
-                )
-                # method="both" 返回 BothIcResult(TypedDict)；取 pearson 分量为 IcStats
-                pearson_ic_result = cast(BothIcResult, both_ic)["pearson"]
-            else:
-                pearson_ic_result = cast(
-                    IcStats,
-                    compute_ic(
-                        merged_simple,
-                        factor_col="factor_clean",
-                        ret_col="ret_1d",
-                        method="pearson",
-                    ),
-                )
-            logger.info(
-                f"Pearson IC Mean: {pearson_ic_result.ic_mean:.4f}, IR: {pearson_ic_result.ir:.2f}"
-            )
-        except Exception as e:
-            logger.warning(f"Pearson IC 计算失败（跳过）: {e}")
-
-    if args.neutralized_ic:
-        try:
-            from factorzen.daily.evaluation.advanced import compute_neutralized_ic
-
-            neutral_frame = clean_df.join(
-                ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename(
-                    {"fwd_ret_1d": "ret_1d"}
-                ),
-                on=["trade_date", "ts_code"],
-                how="inner",
-            )
-            universe = get_universe(args.end, args.universe)
-            if not universe.is_empty() and {"ts_code", "industry"}.issubset(set(universe.columns)):
-                neutral_frame = neutral_frame.join(
-                    universe.select(["ts_code", "industry"]).unique(subset=["ts_code"]),
-                    on="ts_code",
-                    how="left",
-                )
-            try:
-                daily_basic = load_parquet("daily_basic", start=args.start, end=args.end).collect()
-                if not daily_basic.is_empty() and "total_mv" in daily_basic.columns:
-                    neutral_frame = neutral_frame.join(
-                        daily_basic.select(["trade_date", "ts_code", "total_mv"]),
-                        on=["trade_date", "ts_code"],
-                        how="left",
-                    )
-            except Exception as e:
-                logger.warning(f"daily_basic 缓存加载失败，中性化 IC 将使用可用暴露: {e}")
-            neutralized_ic_result = compute_neutralized_ic(neutral_frame, ret_col="ret_1d")
-            logger.info(f"Neutralized IC Mean: {neutralized_ic_result.ic_mean:.4f}")
-        except Exception as e:
-            logger.warning(f"中性化 IC 计算失败（跳过）: {e}")
-
-    if args.event_study:
-        try:
-            from factorzen.daily.evaluation.advanced import compute_event_study
-
-            factor_simple = clean_df.select(["trade_date", "ts_code", "factor_clean"])
-            ret_simple = ret_df.select(["trade_date", "ts_code", "fwd_ret_1d"]).rename(
-                {"fwd_ret_1d": "ret_1d"}
-            )
-            event_study_result = compute_event_study(factor_simple, ret_simple)
-            logger.info(f"事件研究完成: {event_study_result.n_events} 个事件")
-        except Exception as e:
-            logger.warning(f"事件研究计算失败（跳过）: {e}")
-
-    return pearson_ic_result, neutralized_ic_result, event_study_result
+    frequency/start/end 保留形参以兼容调用方；失败返回 None。
+    """
+    del frequency, start, end  # 单调性不依赖这些参数
+    return _compute_monotonicity_result(backtest_df, ret_df, n_groups=n_groups)
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +186,7 @@ def _run(
     timer: StageTimer | None = None,
 ) -> dict[str, str]:
     timer = timer or StageTimer()
-    progress = OverallProgress(5, label="Report run").start()
+    progress = OverallProgress(4, label="Report run").start()
     logger.info(f"──── 因子报告生成: {args.factor} | {args.start} ~ {args.end} ────")
 
     # ── 1. 获取因子类 ──
@@ -417,12 +200,9 @@ def _run(
     logger.info(f"因子: {factor.name} | {factor.description}")
 
     walk_forward_summary: dict | None = None
-    walk_forward_result = None
     backtest_direction: dict[str, Any] | None = None
-    pearson_ic_result = None
-    neutralized_ic_result = None
-    event_study_result = None
-    strategy_results: dict[str, BacktestResult] | None = None
+    mono_result = None
+    quality_report: dict[str, Any] | None = None
 
     # ── --reuse 路径 ──
     reused = None
@@ -451,27 +231,21 @@ def _run(
         daily = _load_daily_with_close_adj(args.start, args.end)
         if not daily.is_empty():
             ret_df = _build_forward_return_frame(daily)
+            backtest_df = _apply_backtest_direction(clean_df, backtest_direction)
             if len(effective_config.backtest.strategy_specs) > 1:
-                backtest_df = _apply_backtest_direction(clean_df, backtest_direction)
-                bt_result, strategy_results = _run_backtest_strategies(
+                bt_result, _ = _run_backtest_strategies(
                     effective_config,
                     backtest_df,
                     daily,
                     factor_name=factor.name,
                     frequency=args.frequency,
                 )
-            else:
-                strategy_results = {bt_result.strategy_name: bt_result}
-            advanced_results = _run_advanced_evaluation(
-                clean_df, ret_df, args.frequency, args.start, args.end
-            )
-            pearson_ic_result, neutralized_ic_result, event_study_result = (
-                _build_report_deep_results(clean_df, ret_df, args)
+            mono_result = _run_advanced_evaluation(
+                backtest_df, ret_df, args.frequency, args.start, args.end, n_groups=5
             )
         else:
-            strategy_results = {bt_result.strategy_name: bt_result}
-            logger.warning("日线数据为空，跳过高级评价")
-            advanced_results = None
+            logger.warning("日线数据为空，跳过单调性")
+            mono_result = None
         progress.advance("results")
     else:
         if args.reuse:
@@ -491,7 +265,7 @@ def _run(
 
         # ── 3. 股票池（逐日 PIT membership；union 拉取 + 评估截面按日过滤）──
         try:
-            membership, ts_codes, _universe_meta = load_pit_membership(
+            membership, ts_codes, universe_meta = load_pit_membership(
                 args.start, args.end, args.universe
             )
         except (ValueError, RuntimeError) as e:
@@ -528,8 +302,29 @@ def _run(
         if validation.get("coverage", 0) < 0.5:
             logger.warning("因子覆盖率不足 50%，结果可能不可靠")
 
-        # ── 5. 预处理 + 逐日 PIT 过滤评估截面 ──
-        clean_df = build_preprocessing_pipeline(effective_config).run(factor_df, col="factor_value")
+        # ── 5. 预处理（与 daily_single 同口径：中性化 side data 齐备）+ 逐日 PIT 过滤 ──
+        # 不带 side data 直调 pipeline 会让 industry+size 中性化静默跳过（仅 warning），
+        # 与 fz factor run 的因子值口径漂移——双路径登记簿。
+        daily_basic_for_neutralize = None
+        if (
+            effective_config.preprocessing.neutralize
+            and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
+        ):
+            try:
+                daily_basic_for_neutralize = _load_daily_basic_for_neutralization(
+                    args.start, args.end
+                )
+            except Exception as e:
+                logger.error(f"daily_basic 本地缓存读取失败，无法执行市值中性化: {e}")
+                raise RuntimeError(
+                    f"load daily_basic cache failed for neutralization: {e}"
+                ) from e
+        clean_df = _preprocess_factor(
+            factor_df,
+            effective_config,
+            universe=universe_meta,
+            daily_basic=daily_basic_for_neutralize,
+        )
         clean_df = filter_frame_by_membership(clean_df, membership)
         if clean_df.is_empty():
             logger.error("PIT membership 过滤后因子截面为空")
@@ -575,7 +370,7 @@ def _run(
 
         # ── 8. 策略回测 ──
         with timer.stage("策略回测"):
-            bt_result, strategy_results = _run_backtest_strategies(
+            bt_result, _ = _run_backtest_strategies(
                 effective_config,
                 backtest_df,
                 daily,
@@ -592,7 +387,7 @@ def _run(
         # ── 10. Walk-forward / OOS 摘要 ──
         if effective_config.walk_forward.enabled:
             try:
-                walk_forward_summary, walk_forward_result = run_quantile_walk_forward_summary(
+                walk_forward_summary, _ = run_quantile_walk_forward_summary(
                     backtest_df,
                     daily,
                     effective_config,
@@ -602,21 +397,14 @@ def _run(
                 logger.info(f"Walk-forward 摘要: {walk_forward_summary}")
             except Exception as e:
                 walk_forward_summary = {"status": "error", "n_folds": 0, "error": str(e)}
-                walk_forward_result = None
                 logger.warning(f"Walk-forward 计算失败（跳过）: {e}")
         else:
             walk_forward_summary = {"status": "disabled", "n_folds": 0}
-            walk_forward_result = None
             logger.info("Walk-forward 已关闭，跳过")
 
-        # ── 11. 高级评价 ──
-        # 传 start/end：否则 _run_advanced_evaluation 内 load_parquet("daily_basic") 无日期
-        # 过滤会把全部年份 daily_basic 拉进内存（与 reuse 路径行为不一致、大缓存下撑爆内存）。
-        advanced_results = _run_advanced_evaluation(
-            clean_df, ret_df, args.frequency, args.start, args.end
-        )
-        pearson_ic_result, neutralized_ic_result, event_study_result = _build_report_deep_results(
-            clean_df, ret_df, args
+        # ── 11. 单调性（与回测同一信号口径）──
+        mono_result = _run_advanced_evaluation(
+            backtest_df, ret_df, args.frequency, args.start, args.end, n_groups=5
         )
 
         # ── 持久化中间结果 ──
@@ -648,57 +436,31 @@ def _run(
         except Exception as e:
             logger.warning(f"Benchmark 计算失败（跳过）: {e}")
 
-    # ── 11. 生成 HTML 报告 ──
+    # ── 生成 HTML 报告 ──
     progress.advance("benchmark")
     date_range = f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ {args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
-    quality_report_for_llm: dict[str, Any] | None = None
-    quality_report_path = _quality_path(args.factor, args.start, args.end)
-    if quality_report_path.exists():
-        try:
-            quality_report_for_llm = json.loads(quality_report_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            quality_report_for_llm = None
-    llm_explanation, llm_explanation_path = generate_llm_explanation(
-        enabled=args.llm_explain,
-        refresh=args.llm_refresh,
-        cache_dir=daily_result_output_dir(factor.name),
-        factor_name=factor.name,
-        factor_description=getattr(factor, "description", ""),
-        start=args.start,
-        end=args.end,
-        frequency=args.frequency,
-        date_range=date_range,
-        universe=args.universe,
-        ic_result=ic_result,
-        bt_result=bt_result,
-        to_result=to_result,
-        walk_forward_summary=walk_forward_summary,
-        quality_report=quality_report_for_llm,
-        backtest_direction=backtest_direction,
-    )
-    progress.advance("llm")
+    if quality_report is None:
+        # reuse 路径本轮未计算质量报告 → 从上次 fz factor run 落盘的 JSON 读取
+        quality_report_path = _quality_path(args.factor, args.start, args.end)
+        if quality_report_path.exists():
+            try:
+                quality_report = json.loads(quality_report_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                quality_report = None
     with timer.stage("报告生成"):
         html = generate_tear_sheet(
-            factor_name=factor.name,
-            ic_result=ic_result,
-            bt_result=bt_result,
-            to_result=to_result,
+            factor.name,
+            ic_result,
+            bt_result,
+            to_result,
             frequency=args.frequency,
             date_range=date_range,
-            advanced_results=advanced_results,
             universe=args.universe,
+            mono_result=mono_result,
             benchmark_result=benchmark_result,
-            attribution_result=None,  # Brinson requires index constituent data; deferred
             backtest_direction=backtest_direction,
-            walk_forward_result=walk_forward_result,
             walk_forward_summary=walk_forward_summary,
-            event_study_result=event_study_result,
-            pearson_ic_result=pearson_ic_result if args.ic_method in ("pearson", "both") else None,
-            neutralized_ic_result=neutralized_ic_result if args.neutralized_ic else None,
-            llm_explanation=llm_explanation.to_dict() if llm_explanation is not None else None,
-            strategy_results=strategy_results,
-            primary_strategy=effective_config.backtest.primary,
-            quality_report=quality_report_for_llm,
+            quality_report=quality_report,
         )
 
     # ── 12. 落盘 HTML ──
@@ -716,8 +478,6 @@ def _run(
     quality_report_path = _quality_path(args.factor, args.start, args.end)
     if quality_report_path.exists():
         outputs["quality_report"] = str(quality_report_path)
-    if llm_explanation_path is not None:
-        outputs["llm_explanation"] = str(llm_explanation_path)
     progress.close()
     return outputs
 
@@ -735,50 +495,11 @@ def main():
         "--reuse", action="store_true", help="复用已有 parquet 结果，跳过重新计算（需先跑过一次）"
     )
     parser.add_argument(
-        "--all",
-        action="store_true",
-        help=(
-            "启用报告深度预设：reuse、both IC、中性化 IC、事件研究、"
-            "按 universe 匹配 benchmark、LLM 解读"
-        ),
-    )
-    parser.add_argument(
         "--benchmark",
         default=None,
         help="基准指数代码（如 000300.SH），若指定则计算超额收益与 benchmark 对比",
     )
     parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
-    parser.add_argument(
-        "--ic-method",
-        default=None,
-        choices=["rank", "pearson", "both"],
-        dest="ic_method",
-        help="IC 计算方法：rank（Spearman，默认）/ pearson / both",
-    )
-    parser.add_argument(
-        "--neutralized-ic",
-        action="store_true",
-        dest="neutralized_ic",
-        default=None,
-        help="是否计算中性化后的 Rank IC",
-    )
-    parser.add_argument(
-        "--event-study",
-        action="store_true",
-        dest="event_study",
-        default=None,
-        help="是否执行事件研究分析（选 Top 5%% 分位股票为事件）",
-    )
-    parser.add_argument(
-        "--llm-explain",
-        action="store_true",
-        help="显式启用大模型因子解读；默认关闭，缺少 FACTORZEN_LLM_* 配置时跳过",
-    )
-    parser.add_argument(
-        "--llm-refresh",
-        action="store_true",
-        help="启用 --llm-explain 时忽略已有 LLM 解读缓存并重新生成",
-    )
     args = parser.parse_args()
 
     run_config = load_run_config(args.config) if args.config else None

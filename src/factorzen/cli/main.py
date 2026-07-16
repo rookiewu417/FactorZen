@@ -105,18 +105,6 @@ def _cmd_factor_test(args: argparse.Namespace) -> int:
         forwarded.extend(["--seed", str(args.seed)])
     if args.benchmark:
         forwarded.extend(["--benchmark", args.benchmark])
-    if args.ic_method:
-        forwarded.extend(["--ic-method", args.ic_method])
-    if args.neutralized_ic:
-        forwarded.append("--neutralized-ic")
-    if args.event_study:
-        forwarded.append("--event-study")
-    if args.llm_explain:
-        forwarded.append("--llm-explain")
-    if args.llm_refresh:
-        forwarded.append("--llm-refresh")
-    if args.all:
-        forwarded.append("--all")
     if args.dry_run:
         forwarded.append("--dry-run")
     for override in getattr(args, "set_overrides", None) or []:
@@ -203,18 +191,6 @@ def _cmd_report_build(args: argparse.Namespace) -> int:
         forwarded.extend(["--config", args.config])
     if args.reuse:
         forwarded.append("--reuse")
-    if args.ic_method:
-        forwarded.extend(["--ic-method", args.ic_method])
-    if args.neutralized_ic:
-        forwarded.append("--neutralized-ic")
-    if args.event_study:
-        forwarded.append("--event-study")
-    if args.llm_explain:
-        forwarded.append("--llm-explain")
-    if args.llm_refresh:
-        forwarded.append("--llm-refresh")
-    if args.all:
-        forwarded.append("--all")
 
     old_argv = sys.argv
     try:

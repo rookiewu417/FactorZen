@@ -56,7 +56,7 @@ cp .env.example .env
 pixi run smoke
 ```
 
-`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；LLM 挖掘功能（单 / 多 Agent，`fz mine agent` / `fz mine team`）需要显式配置 `FACTORZEN_LLM_*`，缺失会直接报错退出（不会自动跳过）；仅报告的可选 LLM 解读功能在缺失配置时才会自动跳过。
+`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；LLM 挖掘功能（单 / 多 Agent，`fz mine agent` / `fz mine team`）需要显式配置 `FACTORZEN_LLM_*`，缺失会直接报错退出（不会自动跳过）；单因子评估与报告不依赖 LLM。
 
 ---
 
@@ -206,7 +206,7 @@ docs/                     架构、运行手册、因子编写指南
 
 **不覆盖 / MVP 限制**
 
-- **不接实盘 OMS/不做实盘下单**：FactorZen 提供组合优化与模拟交易闭环，但不接 OMS/EMS，不做实盘撮合与风控执行。
+- **实盘执行为分阶段路线目标**（见 [路线图](docs/evolution-plan-2026.md)）：向前执行引擎（纸面 live-forward）→ miniQMT 实盘分阶段推进；当前处于纸面模拟/设计阶段，真实下单（Gate 3）尚未实现，未接入前不做任何实盘下单。
 - **行业中性是相对等权基准**（MVP 限制）：`--industry-neutral` 约束基于等权行业基准，不等同于市场加权中性。
 - **收益归因需持仓期收益**（MVP 限制）：Brinson 归因要求提供持仓期区间收益，不支持日内高频归因。
 - `intraday/` 当前非主线；Tick 级研究与生产组合执行不纳入本框架。

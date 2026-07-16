@@ -1,1518 +1,182 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ factor_name }} — 因子研究报告</title>
+<title>{{ factor_name }} — 因子 Tear Sheet</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --paper: #f6f1e8;
-    --paper-strong: #fffaf0;
-    --panel: rgba(255,250,240,0.96);
-    --ink: #1f2a2e;
-    --muted: #52615c;
-    --line: #d8ccba;
-    --line-strong: #b7aa97;
-    --teal: #2f625f;
-    --teal-dark: #173d3b;
-    --amber: #b8893b;
-    --red: #9f3a2f;
-    --green: #3f7d55;
-    --shadow: 0 4px 8px rgba(40, 34, 24, 0.08);
-  }
   body {
-    font-family: "Aptos", "Segoe UI", "Microsoft YaHei", sans-serif;
-    background:
-      linear-gradient(rgba(63, 82, 71, 0.022) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(63, 82, 71, 0.018) 1px, transparent 1px),
-      var(--paper);
-    background-size: 32px 32px;
-    color: var(--ink);
-    line-height: 1.62;
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #1a1a1a;
+    line-height: 1.55;
+    background: #fff;
+    padding: 24px 16px 40px;
   }
-  .container { max-width: 1280px; margin: 0 auto; padding: 26px; }
-  .hero {
-    position: relative;
-    overflow: hidden;
-    color: #fff;
-    border: 1px solid rgba(255,255,255,0.18);
-    border-radius: 8px;
-    padding: 30px 32px;
-    margin-bottom: 18px;
-    background: linear-gradient(135deg, #152f32 0%, #274e4b 45%, #8a6f3c 100%);
-    box-shadow: var(--shadow);
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 6px; }
+  h2 { font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  .meta { color: #555; font-size: 0.88rem; margin-bottom: 10px; }
+  .badge {
+    display: inline-block;
+    font-size: 0.85rem;
+    padding: 4px 10px;
+    border: 1px solid #c44;
+    background: #fff0f0;
+    color: #a22;
+    border-radius: 3px;
+    margin-bottom: 8px;
   }
-  .hero:after {
-    content: "";
-    position: absolute;
-    inset: auto 28px 0 auto;
-    width: 260px;
-    height: 5px;
-    background: linear-gradient(90deg, var(--amber), #efe0b5, rgba(255,255,255,0));
+  .dir-normal { color: #555; font-size: 0.88rem; margin-bottom: 8px; }
+  .dir-reason { color: #666; font-size: 0.82rem; margin-top: 4px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    margin: 8px 0 4px;
   }
-  .hero-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 420px); gap: 24px; align-items: end; z-index: 1; }
-  .hero-kicker { color: rgba(255,255,255,0.78); font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 6px; }
-  .hero h1 { color: #fff; font-family: Georgia, "Times New Roman", serif; font-size: 38px; line-height: 1.06; margin-bottom: 10px; letter-spacing: 0; }
-  .hero .meta { color: rgba(255,255,255,0.88); margin-bottom: 0; }
-  .hero-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .hero-fact { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 9px 10px; }
-  .hero-fact span { display: block; color: rgba(255,255,255,0.74); font-size: 11px; }
-  .hero-fact strong { display: block; color: #fff; font-size: 13px; overflow-wrap: anywhere; }
-  .report-layout { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 20px; align-items: start; }
-  .toc { position: sticky; top: 16px; background: rgba(255,250,240,0.92); border: 1px solid var(--line); border-radius: 8px; padding: 14px; box-shadow: 0 4px 8px rgba(40,34,24,0.06); max-height: calc(100vh - 32px); overflow-y: auto; }
-  .toc-title { font-size: 12px; font-weight: 800; color: var(--teal-dark); letter-spacing: .10em; text-transform: uppercase; margin-bottom: 9px; }
-  .toc a { display: block; color: #384644; text-decoration: none; font-size: 13px; padding: 7px 8px; border-left: 3px solid transparent; border-radius: 4px; }
-  .toc a:hover, .toc a:focus-visible { background: #eee6d7; border-left-color: var(--teal); color: var(--teal-dark); outline: none; }
-  .report-main { min-width: 0; }
-  h1 { font-family: Georgia, "Times New Roman", serif; font-size: 27px; color: var(--ink); margin-bottom: 5px; letter-spacing: 0; }
-  h2 { font-size: 17px; color: var(--ink); margin: 24px 0 12px 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
-  h2:before { content: ""; display: inline-block; width: 7px; height: 18px; margin-right: 8px; vertical-align: -3px; background: var(--teal); border-radius: 2px; }
-  .meta { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
-  .panel { background: var(--panel); border-radius: 8px; border: 1px solid var(--line); box-shadow: var(--shadow); padding: 24px; margin-bottom: 20px; }
-  #overview { border-top: 5px solid var(--ink); }
-  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; background: rgba(255,255,255,0.48); }
-  th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid #e8ddcc; vertical-align: top; }
-  th { background: #e9dfcf; font-weight: 700; color: #263431; }
-  tr:hover { background: rgba(47,98,95,0.055); }
-  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-  .metric-card { background: #fffaf2; padding: 12px 13px; border-radius: 6px; border: 1px solid var(--line); border-top: 3px solid rgba(47,98,95,0.62); box-shadow: 0 3px 6px rgba(40,34,24,0.04); }
-  .metric-card .label { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  .metric-card .value { font-family: Georgia, "Times New Roman", serif; font-size: 24px; line-height: 1.16; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
-  .overview-metrics { margin: 14px 0 6px; }
-  .warning { background: #fff1d6; border: 1px solid #ddb66d; padding: 10px 12px; border-radius: 6px; margin: 8px 0; font-size: 13px; color: #76500f; }
-  .chart-img { width: 100%; margin: 12px 0; border-radius: 6px; border: 1px solid var(--line); background: #fff; box-shadow: 0 3px 6px rgba(40,34,24,0.05); }
-  .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-top: 12px; }
-  .chart-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fffaf2; }
-  .chart-card h3 { font-size: 14px; color: var(--ink); margin-bottom: 6px; }
-  .stars { font-size: 24px; color: var(--amber); letter-spacing: 3px; }
-  .footer { text-align: center; color: #9b9285; font-size: 12px; margin-top: 30px; padding: 15px; border-top: 1px solid var(--line); }
-  .no-data { color: #5c645f; background: #f8f3ea; border: 1px dashed #cbd5e1; border-color: var(--line-strong); border-radius: 6px; padding: 16px 18px; text-align: left; }
-  .note { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 4px 0 8px 0; }
-  .summary-note { margin: 8px 0; }
-  .rating-caps { background: #fff1d6; border: 1px solid #ddb66d; border-radius: 6px; padding: 12px 14px; margin: 12px 0; }
-  .rating-caps-title { font-weight: 700; color: #76500f; margin-bottom: 8px; }
-  .rating-cap-item { background: rgba(255,255,255,0.70); border: 1px solid #ead29f; border-radius: 4px; padding: 7px 9px; margin-top: 6px; color: #6d480c; }
-  .decision-panel { border: 1px solid #254a47; background: linear-gradient(135deg, var(--teal-dark), var(--teal)); color: #f7f1e8; border-radius: 8px; padding: 18px 18px; margin: 16px 0; box-shadow: 0 4px 8px rgba(23,61,59,0.14); }
-  .decision-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.18); }
-  .decision-title { font-size: 12px; font-weight: 800; color: #d9c58e; letter-spacing: .10em; text-transform: uppercase; margin-bottom: 4px; }
-  .decision-verdict { font-family: Georgia, "Times New Roman", serif; font-size: 34px; line-height: 1.08; font-weight: 800; color: #fff; }
-  .decision-score { color: rgba(255,255,255,0.84); font-size: 13px; text-align: right; min-width: 190px; }
-  .decision-metric-row { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.12); }
-  .decision-metric { display: inline-flex; gap: 6px; align-items: baseline; min-width: 128px; }
-  .decision-metric span { color: rgba(255,255,255,0.74); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  .decision-metric strong { color: #fff; font-family: Georgia, "Times New Roman", serif; font-size: 20px; line-height: 1.2; }
-  .decision-grid { display: grid; gap: 10px; align-items: start; }
-  .decision-support-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-  .decision-card { background: rgba(255,255,255,0.09); border: 1px solid rgba(255,255,255,0.16); border-radius: 6px; padding: 11px 12px; }
-  .decision-primary { background: rgba(255,255,255,0.12); }
-  .decision-card strong { display: block; color: #f4df9f; font-size: 13px; margin-bottom: 5px; }
-  .decision-card .note { color: rgba(255,255,255,0.82); }
-  .decision-card ul { margin-left: 18px; color: rgba(255,255,255,0.86); font-size: 13px; }
-  .supporting-metrics { margin: 12px 0 16px; }
-  .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 12px 0 16px; }
-  .dashboard-card { background: #fffaf2; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
-  .dashboard-card .label { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  .dashboard-card .value { font-family: Georgia, "Times New Roman", serif; font-size: 22px; font-weight: 700; color: var(--ink); margin-top: 3px; overflow-wrap: anywhere; }
-  .dashboard-card .value-small { font-size: 14px; line-height: 1.4; }
-  .dashboard-card .subvalue { color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .badge { display: inline-flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 999px; padding: 2px 9px; font-size: 12px; color: #33413d; background: #fffaf2; }
-  .badge-primary { color: #fff; background: var(--teal); border-color: var(--teal); }
-  .status-callout { border: 1px solid rgba(47,98,95,0.28); background: #f8f3ea; border-radius: 6px; padding: 11px 13px; margin: 10px 0; color: #4c5651; }
-  .strategy-header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin: 14px 0 10px; }
-  .strategy-header h3 { font-size: 16px; color: var(--ink); margin: 0 0 4px; }
-  .strategy-badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-  .table-wrap { overflow-x: auto; margin: 10px 0; }
-  .table-wrap table { min-width: 720px; }
-  .definition-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin: 10px 0 14px; }
-  .definition-item { background: #fffaf2; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
-  .definition-item strong { display: block; color: var(--ink); font-size: 13px; margin-bottom: 3px; }
-  .definition-item span { display: block; color: var(--muted); font-size: 12px; line-height: 1.5; }
-  .button { border: 1px solid var(--line-strong); background: #fffaf2; color: var(--ink); border-radius: 6px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
-  .button:hover, .button:focus-visible { background: #eee6d7; outline: 2px solid rgba(47,98,95,0.32); outline-offset: 2px; }
-  .sector-ic-table.is-collapsed tr:nth-child(n+8) { display: none; }
-  .strategy-tabs { position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: nowrap; gap: 8px; margin: 12px 0 14px; padding: 8px 0; overflow-x: auto; background: linear-gradient(90deg, var(--panel), rgba(255,250,242,0.94)); border-bottom: 1px solid rgba(47,98,95,0.12); scrollbar-width: thin; }
-  .strategy-tab { flex: 0 0 auto; max-width: min(520px, 82vw); border: 1px solid var(--line-strong); background: #fffaf2; color: #33413d; border-radius: 6px; padding: 7px 11px; font-size: 13px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
-  .strategy-tab.is-active { background: var(--teal); border-color: var(--teal); color: #fff; }
-  .strategy-tab:focus-visible { outline: 2px solid rgba(47,98,95,0.32); outline-offset: 2px; }
-  .strategy-tab .tab-kind { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; opacity: .78; }
-  .strategy-code { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; margin-top: 2px; }
-  .strategy-page[hidden] { display: none; }
-  @media (max-width: 900px) {
-    .container { padding: 14px; }
-    .hero { padding: 20px; }
-    .hero-grid { grid-template-columns: 1fr; }
-    .hero h1 { font-size: 30px; }
-    .report-layout { grid-template-columns: 1fr; }
-    .toc { position: static; max-height: none; }
-    .panel { padding: 16px; }
-    .decision-head { flex-direction: column; }
-    .decision-score { min-width: 0; text-align: left; }
-    .decision-support-grid { grid-template-columns: 1fr; }
-    .strategy-header { flex-direction: column; }
-    .strategy-badges { justify-content: flex-start; }
+  th, td {
+    border: 1px solid #ccc;
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
   }
+  th { background: #f5f5f5; font-weight: 600; }
+  td.group { background: #fafafa; font-weight: 600; white-space: nowrap; width: 4.5em; }
+  td.label { color: #444; width: 40%; }
+  td.value { font-variant-numeric: tabular-nums; }
+  .chart { margin: 12px 0; text-align: center; }
+  .chart img { max-width: 100%; height: auto; border: 1px solid #e0e0e0; }
+  .muted { color: #888; font-size: 0.88rem; }
+  .warnings {
+    margin-top: 22px;
+    border: 1px solid #e0c080;
+    background: #fffbeb;
+    padding: 12px 14px;
+  }
+  .warnings h2 { margin-top: 0; border: none; color: #8a5a00; }
+  .warnings ul { margin: 6px 0 0 1.2em; }
+  .warnings li { margin: 3px 0; font-size: 0.9rem; }
 </style>
 </head>
 <body>
-<div class="container">
+<div class="wrap">
 
-<div class="hero">
-  <div class="hero-grid">
-    <div>
-      <div class="hero-kicker">FactorZen Daily Research Report</div>
-      <h1>{{ factor_name }}</h1>
-      <div class="meta">
-        日频因子研究报告
-        {% if date_range %}| 日期范围：{{ date_range }}{% endif %}
-        {% if metrics.effective_start %}| 真实评估区间：{{ metrics.effective_start }} ~ {{ metrics.effective_end }}{% endif %}
-      </div>
-    </div>
-    <div class="hero-facts" aria-label="报告元信息">
-      <div class="hero-fact"><span>频率</span><strong>{{ frequency }}</strong></div>
-      <div class="hero-fact"><span>股票池</span><strong>{{ universe }}</strong></div>
-      <div class="hero-fact"><span>主回测策略</span><strong>{{ dashboard.primary_strategy }}{% if backtest_direction and backtest_direction.direction == 'reversed' %}（反向）{% endif %}</strong></div>
-      <div class="hero-fact"><span>生成时间</span><strong>{{ generated_at }}</strong></div>
-    </div>
-  </div>
-</div>
-
-<div class="report-layout">
-<nav class="toc" aria-label="报告目录">
-  <div class="toc-title">报告目录</div>
-  <a href="#overview">01 综合结论</a>
-  <a href="#returns">02 收益表现</a>
-  <a href="#predictive-power">03 预测能力</a>
-  <a href="#structure-checks">04 结构检验</a>
-  <a href="#tradability">05 交易可行性</a>
-  <a href="#robustness">06 稳健性验证</a>
-  <a href="#risk-attribution">07 风险归因</a>
-  <a href="#appendix">08 附录</a>
-</nav>
-
-<main class="report-main">
-
-<!-- 1. 综合结论 -->
-<div class="panel" id="overview">
+  <!-- 1. 标题区 -->
   <h1>{{ factor_name }}</h1>
-  <div class="meta">
-    频率：{{ frequency }} | 股票池：{{ universe }} | 生成时间：{{ generated_at }}
-    {% if date_range %}| 日期范围：{{ date_range }}{% endif %}
-    {% if metrics.effective_start %}| 真实评估区间：{{ metrics.effective_start }} ~ {{ metrics.effective_end }}{% endif %}
-    | 主回测策略：{{ dashboard.primary_strategy }}{% if dashboard.primary_strategy_code and dashboard.primary_strategy_code != dashboard.primary_strategy %}（代码：{{ dashboard.primary_strategy_code }}{% if backtest_direction and backtest_direction.direction == 'reversed' %}，反向因子{% endif %}）{% elif backtest_direction and backtest_direction.direction == 'reversed' %}（反向因子）{% endif %}
-  </div>
-
-  {% if metrics.effective_start and date_range %}
-  <p class="note">
-    回测和超额收益从首个可执行信号日开始统计；此前交易日仅用于因子预热，不纳入回测曲线和绩效指标。
-  </p>
+  <p class="meta">{{ meta_line }}</p>
+  {% if direction.is_reversed %}
+  <div class="badge">{{ direction.label }}</div>
+  {% if direction.reason %}<p class="dir-reason">{{ direction.reason }}</p>{% endif %}
+  {% else %}
+  <p class="dir-normal">{{ direction.label }}</p>
   {% endif %}
 
-  {% if backtest_direction and backtest_direction.direction == 'reversed' %}
-  <p class="note">已自动反向回测：{{ backtest_direction.reason }}</p>
-  {% elif backtest_direction %}
-  <p class="note">{{ backtest_direction.reason }}</p>
+  <!-- 2. 核心指标表 -->
+  <h2>核心指标</h2>
+  <table>
+    <thead>
+      <tr><th>组别</th><th>指标</th><th>数值</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="group" rowspan="6">预测</td><td class="label">IC 均值</td><td class="value">{{ metrics.ic_mean }}</td></tr>
+      <tr><td class="label">ICIR</td><td class="value">{{ metrics.ir }}</td></tr>
+      <tr><td class="label">t 值</td><td class="value">{{ metrics.ic_tstat }}</td></tr>
+      <tr><td class="label">p 值</td><td class="value">{{ metrics.ic_pvalue }}</td></tr>
+      <tr><td class="label">IC&gt;0 占比</td><td class="value">{{ metrics.ic_positive_ratio }}</td></tr>
+      <tr><td class="label">样本期数 N</td><td class="value">{{ metrics.n_periods }}</td></tr>
+
+      <tr>
+        <td class="group" rowspan="{{ 4 if metrics.has_excess else 3 }}">收益</td>
+        <td class="label">年化收益</td><td class="value">{{ metrics.ann_ret }}</td>
+      </tr>
+      <tr><td class="label">Sharpe</td><td class="value">{{ metrics.sharpe }}</td></tr>
+      <tr><td class="label">最大回撤</td><td class="value">{{ metrics.max_dd }}</td></tr>
+      {% if metrics.has_excess %}
+      <tr><td class="label">超额年化</td><td class="value">{{ metrics.ann_excess_ret }}</td></tr>
+      {% endif %}
+
+      <tr><td class="group">交易</td><td class="label">平均换手率</td><td class="value">{{ metrics.avg_turnover }}</td></tr>
+
+      <tr>
+        <td class="group" rowspan="{{ 3 if metrics.wf_ok else 1 }}">稳健</td>
+        <td class="label">Walk-Forward status</td><td class="value">{{ metrics.wf_status }}</td>
+      </tr>
+      {% if metrics.wf_ok %}
+      <tr><td class="label">OOS Sharpe 均值</td><td class="value">{{ metrics.wf_oos_sharpe }}</td></tr>
+      <tr><td class="label">稳定率</td><td class="value">{{ metrics.wf_stability }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  <!-- 3. 分层净值 -->
+  <h2>分层净值</h2>
+  {% if charts.get('returns_chart') %}
+  <div class="chart"><img src="data:image/png;base64,{{ charts.returns_chart }}" alt="分层净值"></div>
+  {% else %}
+  <p class="muted">未计算</p>
   {% endif %}
 
+  <!-- 4. IC 序列（复用 _make_ic_chart：IC 棒图 + 滚动均值） -->
+  <h2>IC 序列</h2>
+  {% if charts.get('ic_chart') %}
+  <div class="chart"><img src="data:image/png;base64,{{ charts.ic_chart }}" alt="IC 时序"></div>
+  {% else %}
+  <p class="muted">未计算</p>
+  {% endif %}
+
+  <!-- 5. IC 衰减表 -->
+  <h2>IC 衰减</h2>
+  {% if decay_table %}
+  <table>
+    <thead><tr><th>Horizon</th><th>IC 均值</th><th>ICIR</th></tr></thead>
+    <tbody>
+      {% for row in decay_table %}
+      <tr>
+        <td>{{ row.horizon }}</td>
+        <td class="value">{{ row.ic_mean }}</td>
+        <td class="value">{{ row.ir }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">未计算</p>
+  {% endif %}
+
+  <!-- 6. 单调性表 -->
+  <h2>单调性</h2>
+  {% if mono_table %}
+  <table>
+    <thead><tr><th>分组</th><th>平均收益</th></tr></thead>
+    <tbody>
+      {% for row in mono_table.rows %}
+      <tr><td>{{ row.group }}</td><td class="value">{{ row.mean_ret }}</td></tr>
+      {% endfor %}
+      <tr>
+        <td colspan="2">
+          Spearman = {{ mono_table.spearman }}；结论：{{ mono_table.conclusion }}
+          {% if mono_table.score != '未计算' %}（score={{ mono_table.score }}）{% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">未计算</p>
+  {% endif %}
+
+  <!-- 7. 警告区 -->
   {% if warnings %}
-  {% for w in warnings %}
-  <div class="warning">{{ w }}</div>
-  {% endfor %}
-  {% endif %}
-
-  {% if research_decision %}
-  <div class="decision-panel">
-    <div class="decision-head">
-      <div>
-        <div class="decision-title">最终研究决策</div>
-        <div class="decision-verdict">{{ research_decision.verdict }}</div>
-      </div>
-      <div class="decision-score">
-        评分 {{ "%.1f"|format(research_decision.score) }}/100<br>
-        {{ research_decision.stars }} 星 | 证据强度：{{ research_decision.evidence_strength }}
-        {% if research_decision.rating_caps %}<br>评级上限：{{ research_decision.rating_caps|join("；") }}{% endif %}
-      </div>
-    </div>
-    <div class="decision-metric-row" aria-label="核心研究指标">
-      <div class="decision-metric"><span>IC 均值</span><strong>{{ metrics.get('ic_mean')|metric_number(4) }}</strong></div>
-      <div class="decision-metric"><span>信息比率</span><strong>{{ metrics.get('ir')|metric_number(2) }}</strong></div>
-      <div class="decision-metric"><span>多空 Sharpe</span><strong>{{ metrics.get('ls_sharpe')|metric_number(2) }}</strong></div>
-      <div class="decision-metric"><span>平均换手</span><strong>{{ metrics.get('avg_turnover')|metric_percent(1) }}</strong></div>
-    </div>
-    <div class="decision-grid">
-      <div class="decision-card decision-primary"><strong>当前结论</strong><span class="note">建议动作：</span>{{ research_decision.action }}</div>
-      <div class="decision-support-grid">
-        <div class="decision-card">
-          <strong>主要证据</strong>
-          <ul>{% for item in research_decision.evidence[:3] %}<li>{{ item }}</li>{% endfor %}</ul>
-        </div>
-        <div class="decision-card">
-          <strong>关键缺口</strong>
-          <ul>{% for item in research_decision.gaps[:3] %}<li>{{ item }}</li>{% endfor %}</ul>
-        </div>
-        <div class="decision-card">
-          <strong>下一步</strong>
-          <ul>{% for item in research_decision.next_steps[:3] %}<li>{{ item }}</li>{% endfor %}</ul>
-        </div>
-      </div>
-    </div>
-  </div>
-  {% endif %}
-</div>
-
-<!-- 1b. 研究摘要 -->
-<div class="panel" id="research-summary">
-  <!-- 综合评估 -->
-  <div style="margin-top:16px">
-    <h2>研究仪表盘</h2>
-    <div class="dashboard-grid">
-      <div class="dashboard-card"><div class="label">主策略</div><div class="value">{{ dashboard.primary_strategy }}</div><div class="subvalue">代码：{{ dashboard.primary_strategy_code }} | 方向：{{ dashboard.primary_exposure }}{% if dashboard.primary_signal_label %} | 信号口径：{{ dashboard.primary_signal_label }}{% endif %}</div></div>
-      <div class="dashboard-card"><div class="label">策略覆盖</div><div class="value">{{ strategy_pages|length }} 个</div><div class="subvalue">{{ strategy_pages|selectattr('is_long_short')|list|length }} 个多空策略</div></div>
-      <div class="dashboard-card"><div class="label">有效区间</div><div class="value value-small">{{ dashboard.effective_range }}</div></div>
-      <div class="dashboard-card"><div class="label">样本期数</div><div class="value">{{ dashboard.sample_periods }}</div></div>
-      <div class="dashboard-card"><div class="label">数据质量</div><div class="value">{{ dashboard.data_quality }}</div></div>
-    </div>
-    <div class="metric-grid supporting-metrics">
-      <div class="metric-card"><div class="label">IC 标准差</div><div class="value">{{ metrics.ic_std|metric_number(4) }}</div></div>
-      <div class="metric-card"><div class="label">IC 胜率</div><div class="value">{{ metrics.ic_positive_ratio|metric_percent(1) }}</div></div>
-      <div class="metric-card"><div class="label">t 统计量</div><div class="value">{% if metrics.ic_tstat is not none %}{{ metrics.ic_tstat|metric_number(2) }}{% if metrics.ic_pvalue is not none and metrics.ic_pvalue < 0.01 %}<span style="color:#9f3a2f;font-size:14px">***</span>{% elif metrics.ic_pvalue is not none and metrics.ic_pvalue < 0.05 %}<span style="color:#b8893b;font-size:14px">**</span>{% elif metrics.ic_pvalue is not none and metrics.ic_pvalue < 0.1 %}<span style="color:#b8893b;font-size:14px">*</span>{% endif %}{% else %}样本不足{% endif %}</div></div>
-      <div class="metric-card"><div class="label">样本期数</div><div class="value">{{ metrics.n_periods or 0 }}</div></div>
-    </div>
-    {% if research_decision and research_decision.gaps|length > 3 %}
-    <div class="status-callout">
-      <strong>其他关键缺口：</strong>{{ research_decision.gaps[3:]|join("；") }}
-    </div>
-    {% endif %}
-    <h2>综合评估</h2>
-    {{ summary_html | safe }}
-    {% if metrics.get('rank_autocorr') is not none %}
-    <p>排名自相关：{{ metrics.rank_autocorr|metric_number(3) }} | 半衰期：{% if metrics.half_life is not none and metrics.half_life == metrics.half_life %}{{ metrics.half_life|metric_number(1) }} 期{% else %}样本不足{% endif %}</p>
-    {% elif metrics.get('rank_autocorr_available') %}
-    <p>排名自相关样本不足，暂不判断信号持续性；下一步检查连续调仓期数量、股票覆盖率和排名序列。</p>
-    {% endif %}
-  </div>
-
-  <!-- 大模型研究解读 -->
-  {% if llm_explanation is not none %}
-  <div style="margin-top:16px">
-    <h2>大模型研究解读</h2>
-    <div class="metric-grid" style="margin-bottom:12px">
-      <div class="metric-card"><div class="label">结论标签</div><div class="value">{{ llm_explanation.rating_display }}</div></div>
-      <div class="metric-card"><div class="label">置信度</div><div class="value">{{ llm_explanation.confidence_display }}</div></div>
-    </div>
-    <p><strong>因子直觉：</strong>{{ llm_explanation.factor_intuition }}</p>
-    <p><strong>证据评价：</strong>{{ llm_explanation.evidence_assessment }}</p>
-    {% if llm_explanation.risk_flags %}
-    <table>
-      <tr><th>风险提示</th></tr>
-      {% for item in llm_explanation.risk_flags %}
-      <tr><td>{{ item }}</td></tr>
+  <div class="warnings">
+    <h2>警告</h2>
+    <ul>
+      {% for w in warnings %}
+      <li>{{ w }}</li>
       {% endfor %}
-    </table>
-    {% endif %}
-    <p><strong>使用建议：</strong>{{ llm_explanation.usage_suggestion }}</p>
-    {% if llm_explanation.next_steps %}
-    <table>
-      <tr><th>下一步研究动作</th></tr>
-      {% for item in llm_explanation.next_steps %}
-      <tr><td>{{ item }}</td></tr>
-      {% endfor %}
-    </table>
-    {% endif %}
-    <p style="color:#7f8c8d;font-size:13px;margin-top:8px">该解读由大模型基于本报告指标生成，不替代统计检验。</p>
+    </ul>
   </div>
   {% endif %}
-
-  {% if strategy_pages|length > 1 %}
-  <h2>跨策略对比</h2>
-  <div class="status-callout">
-    本报告共运行 {{ strategy_pages|length }} 个策略；
-    其中 {{ strategy_pages|selectattr('is_long_short')|list|length }} 个为多空策略。
-    分页按钮会标明策略方向，策略页和对比表会标明收益口径。
-  </div>
-  {% set cmp = namespace(best_ret_name="", best_ret=none, best_sharpe_name="", best_sharpe=none, best_dd_name="", best_dd=none, high_turnover=0, high_cost=0) %}
-  {% for strategy in strategy_pages %}
-    {% set ann_ret = strategy.portfolio_metrics.ann_ret %}
-    {% set sharpe = strategy.portfolio_metrics.sharpe %}
-    {% set max_dd = strategy.portfolio_metrics.max_dd %}
-    {% if ann_ret is not none and (cmp.best_ret is none or ann_ret > cmp.best_ret) %}
-      {% set cmp.best_ret = ann_ret %}
-      {% set cmp.best_ret_name = strategy.display_name %}
-    {% endif %}
-    {% if sharpe is not none and (cmp.best_sharpe is none or sharpe > cmp.best_sharpe) %}
-      {% set cmp.best_sharpe = sharpe %}
-      {% set cmp.best_sharpe_name = strategy.display_name %}
-    {% endif %}
-    {% if max_dd is not none and (cmp.best_dd is none or max_dd > cmp.best_dd) %}
-      {% set cmp.best_dd = max_dd %}
-      {% set cmp.best_dd_name = strategy.display_name %}
-    {% endif %}
-    {% if strategy.avg_turnover is not none and strategy.avg_turnover >= 0.80 %}
-      {% set cmp.high_turnover = cmp.high_turnover + 1 %}
-    {% endif %}
-    {% if strategy.total_cost is not none and strategy.total_cost >= 0.02 %}
-      {% set cmp.high_cost = cmp.high_cost + 1 %}
-    {% endif %}
-  {% endfor %}
-  <div class="status-callout">
-    <strong>跨策略选择摘要：</strong>
-    {% if cmp.best_ret_name %}年化收益最高：{{ cmp.best_ret_name }}（{{ cmp.best_ret|metric_percent(2) }}）{% else %}年化收益暂无可比数据{% endif %}，
-    {% if cmp.best_sharpe_name %}Sharpe 最高：{{ cmp.best_sharpe_name }}（{{ cmp.best_sharpe|metric_number(2) }}）{% else %}Sharpe 暂无可比数据{% endif %}，
-    {% if cmp.best_dd_name %}回撤控制最好：{{ cmp.best_dd_name }}（最大回撤 {{ cmp.best_dd|metric_percent(2) }}）{% else %}回撤暂无可比数据{% endif %}。
-    {% if cmp.high_turnover > 0 or cmp.high_cost > 0 %}
-      其中 {{ cmp.high_turnover }} 个策略平均换手较高，{{ cmp.high_cost }} 个策略交易成本较高；优先比较净收益和执行约束后的表现。
-    {% else %}
-      当前策略组未显示明显的高换手或高成本集中风险。
-    {% endif %}
-  </div>
-  <div class="table-wrap">
-  <table>
-    <tr><th>策略</th><th>策略方向</th><th>收益口径</th><th>关键参数</th><th>年化收益</th><th>年化波动</th><th>Sharpe</th><th>最大回撤</th><th>平均换手</th><th>交易成本</th><th>成本模型</th></tr>
-    {% for strategy in strategy_pages %}
-    <tr>
-      <td>{{ strategy.display_name }}{% if strategy.is_primary %}（主策略）{% endif %}<span class="strategy-code">代码：{{ strategy.name }}</span></td>
-      <td>{{ strategy.exposure_label }}{% if strategy.signal_label %}<span class="strategy-code">信号口径：{{ strategy.signal_label }}</span>{% endif %}</td>
-      <td>{{ strategy.return_label }}</td>
-      <td>{{ strategy.params_summary }}</td>
-      <td>{{ strategy.portfolio_metrics.ann_ret|metric_percent(2) }}</td>
-      <td>{{ strategy.portfolio_metrics.ann_vol|metric_percent(2) }}</td>
-      <td>{{ strategy.portfolio_metrics.sharpe|metric_number(2) }}</td>
-      <td>{{ strategy.portfolio_metrics.max_dd|metric_percent(2) }}</td>
-      <td>{{ strategy.avg_turnover|metric_percent(1) }}</td>
-      <td>{{ strategy.total_cost|metric_percent(2) }}</td>
-      <td>{{ strategy.cost_model }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  </div>
-  {% endif %}
-</div>
-
-<!-- 2. 收益表现 -->
-<div class="panel" id="returns">
-  <h2>收益表现</h2>
-  {% if (metrics.n_periods or 0) < 60 %}
-  <div class="status-callout">
-    <strong>短样本年化提示：</strong>当前有效样本仅 {{ metrics.n_periods or 0 }} 期，年化收益、年化波动、Sharpe、最大回撤和基准超额主要用于横向比较策略口径，
-    不应视作可外推的长期业绩估计；需结合更长区间和滚动样本外结果确认。
-  </div>
-  {% endif %}
-  {% if strategy_pages|length > 0 %}
-  {% if strategy_pages|length > 1 %}
-  <div class="strategy-tabs" role="tablist" aria-label="策略回测结果">
-    {% for strategy in strategy_pages %}
-    <button
-      class="strategy-tab{% if strategy.is_primary %} is-active{% endif %}"
-      type="button"
-      role="tab"
-      aria-selected="{{ 'true' if strategy.is_primary else 'false' }}"
-      aria-controls="strategy-page-{{ strategy.slug }}"
-      data-target="strategy-page-{{ strategy.slug }}"
-    ><span>{{ strategy.display_name }}</span><span class="tab-kind">代码：{{ strategy.name }} | 方向：{{ strategy.exposure_label }}{% if strategy.signal_label %} | 信号口径：{{ strategy.signal_label }}{% endif %}</span></button>
-    {% endfor %}
-  </div>
-  {% endif %}
-  {% for strategy in strategy_pages %}
-  <section
-    id="strategy-page-{{ strategy.slug }}"
-    class="strategy-page"
-    role="tabpanel"
-    {% if not strategy.is_primary %}hidden{% endif %}
-  >
-    <div class="strategy-header">
-      <div>
-        <h3>{{ strategy.display_name }}</h3>
-        <p class="note">策略代码：{{ strategy.name }} | 方向：{{ strategy.exposure_label }}{% if strategy.signal_label %} | 信号口径：{{ strategy.signal_label }}{% endif %} | 收益口径：{{ strategy.return_label }}</p>
-      </div>
-      <div class="strategy-badges">
-        {% if strategy.is_primary %}<span class="badge badge-primary">主策略</span>{% endif %}
-        <span class="badge">{{ strategy.exposure_label }}</span>
-        {% if strategy.signal_label %}<span class="badge">{{ strategy.signal_label }}：已按 IC 方向自动反向回测</span>{% endif %}
-      </div>
-    </div>
-    {% if strategy.charts.returns_chart %}
-    <img class="chart-img" src="data:image/png;base64,{{ strategy.charts.returns_chart }}" alt="{{ strategy.display_name }} 净值曲线">
-    {% elif strategy.bt_stats %}
-    <div class="no-data">净值曲线未生成：已生成回测指标，但缺少可绘图的日度收益或净值序列。下一步：检查该策略的 returns 表、trade_date、net_return/ret/return 或 nav 列。</div>
-    {% else %}
-    <div class="no-data">无回测数据：该策略未产生净值曲线，可能是样本为空、策略未运行，或回测入口未传入该策略结果。下一步：补齐策略回测结果后复跑，并检查策略配置、股票池和可交易样本是否为空。</div>
-    {% endif %}
-
-    {% if strategy.quality_summary %}
-    <div class="status-callout">
-      <strong>收益质量摘要：</strong>{{ strategy.quality_summary.conclusion }}
-      <span class="strategy-code">{{ strategy.quality_summary.labels|join("；") }}。</span>
-    </div>
-    {% endif %}
-
-    {% if strategy.bt_stats %}
-    <div class="table-wrap">
-    <table>
-      <tr><th>收益口径</th><th>年化收益</th><th>年化波动</th><th>夏普比率</th><th>最大回撤</th></tr>
-      {% for row in strategy.bt_stats %}
-      <tr>
-        <td>{{ row.group }}</td>
-        <td>{{ row.ann_ret }}</td>
-        <td>{{ row.ann_vol }}</td>
-        <td>{{ row.sharpe }}</td>
-        <td>{{ row.max_dd }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-    </div>
-    {% endif %}
-
-    <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">交易执行摘要</h3>
-    <div class="metric-grid" style="margin-bottom:10px">
-      <div class="metric-card"><div class="label">交易记录数</div><div class="value">{{ strategy.trade_summary.trade_count }}</div></div>
-      <div class="metric-card"><div class="label">受约束交易</div><div class="value">{{ strategy.trade_summary.constrained_count }}</div></div>
-      <div class="metric-card"><div class="label">约束占比</div><div class="value">{{ strategy.trade_summary.constraint_rate|metric_percent(1) }}</div></div>
-      <div class="metric-card"><div class="label">年化换手</div><div class="value">{{ strategy.portfolio_metrics.ann_turnover|metric_percent(1) }}</div></div>
-    </div>
-    {% if strategy.trade_summary.constraint_reasons %}
-    <div class="table-wrap">
-      <table>
-        <tr><th>约束原因</th><th>次数</th></tr>
-        {% for item in strategy.trade_summary.constraint_reasons %}
-        <tr><td>{{ item.reason }}</td><td>{{ item.count }}</td></tr>
-        {% endfor %}
-      </table>
-    </div>
-    {% else %}
-    <div class="status-callout">未发现停牌、涨跌停或容量约束导致的未完全成交记录。</div>
-    {% endif %}
-
-    {% if strategy.is_primary and charts.quantile_spread_chart %}
-    <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">分位价差（Quantile Spread）</h3>
-    <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">最高分位 - 最低分位的每日价差及累计价差。价差为正表示最高分位跑赢最低分位；价差为负表示反向分层更强；重点看方向是否稳定、是否能覆盖成本。</p>
-    <img class="chart-img" src="data:image/png;base64,{{ charts.quantile_spread_chart }}" alt="分位价差图">
-    {% elif strategy.is_primary and quantile_spread_notice %}
-    <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">分位价差（Quantile Spread）</h3>
-    <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">最高分位 - 最低分位的每日价差及累计价差。价差为正表示最高分位跑赢最低分位；价差为负表示反向分层更强；重点看方向是否稳定、是否能覆盖成本。</p>
-    <div class="no-data">{{ quantile_spread_notice }}</div>
-    {% endif %}
-
-    {% if strategy.monthly_return_summary or strategy.charts.monthly_return_chart %}
-    <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">月度收益分析</h3>
-    <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">按自然月聚合{{ strategy.return_label }}，便于观察收益是否集中在少数月份。</p>
-    {% if strategy.monthly_return_summary %}
-    <div class="status-callout">
-      <strong>月度收益摘要：</strong>{{ strategy.monthly_return_summary.positive }}；
-      {{ strategy.monthly_return_summary.best }}；
-      {{ strategy.monthly_return_summary.worst }}。
-      {{ strategy.monthly_return_summary.concentration }}
-    </div>
-    {% endif %}
-    {% if strategy.charts.monthly_return_chart %}
-    <img class="chart-img" src="data:image/png;base64,{{ strategy.charts.monthly_return_chart }}" alt="月度收益热力图">
-    {% elif strategy.monthly_return_summary %}
-    <div class="no-data">月度收益热力图未生成：已生成月度收益摘要，但缺少可绘图的月度收益矩阵。下一步：检查回测收益日期、收益列和图表生成日志。</div>
-    {% endif %}
-    {% endif %}
-  </section>
-  {% endfor %}
-  {% else %}
-  {% if charts.returns_chart %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.returns_chart }}" alt="净值曲线">
-  {% else %}
-  <div class="no-data">无回测数据：当前流程未提供回测结果，或当前样本未形成可回测组合。下一步：补齐策略回测结果后复跑，并确认策略注册表、主策略配置和收益序列均已生成。</div>
-  {% endif %}
-
-  {% if metrics.bt_stats %}
-  <div class="table-wrap">
-  <table>
-    <tr><th>收益口径</th><th>年化收益</th><th>年化波动</th><th>夏普比率</th><th>最大回撤</th></tr>
-    {% for row in metrics.bt_stats %}
-    <tr>
-      <td>{{ row.group }}</td>
-      <td>{{ row.ann_ret }}</td>
-      <td>{{ row.ann_vol }}</td>
-      <td>{{ row.sharpe }}</td>
-      <td>{{ row.max_dd }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% endif %}
-
-  {% if charts.quantile_spread_chart %}
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">分位价差（Quantile Spread）</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">最高分位 - 最低分位的每日价差及累计价差。价差为正表示最高分位跑赢最低分位；价差为负表示反向分层更强；重点看方向是否稳定、是否能覆盖成本。</p>
-  <img class="chart-img" src="data:image/png;base64,{{ charts.quantile_spread_chart }}" alt="分位价差图">
-  {% elif quantile_spread_notice %}
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">分位价差（Quantile Spread）</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">最高分位 - 最低分位的每日价差及累计价差。价差为正表示最高分位跑赢最低分位；价差为负表示反向分层更强；重点看方向是否稳定、是否能覆盖成本。</p>
-  <div class="no-data">{{ quantile_spread_notice }}</div>
-  {% endif %}
-
-  {% if charts.monthly_return_chart %}
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">月度收益热力图</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">按自然月聚合当前回测组合收益，便于观察收益是否集中在少数月份。</p>
-  <img class="chart-img" src="data:image/png;base64,{{ charts.monthly_return_chart }}" alt="月度收益热力图">
-  {% endif %}
-  {% endif %}
-
-  {% if benchmark_result is not none %}
-  <h3 id="benchmark" style="font-size:15px;color:#34495e;margin:20px 0 8px 0">基准对比 - {{ benchmark_result.benchmark_name }}</h3>
-  {% if benchmark_summary %}
-  <div class="status-callout">
-    <strong>基准相对结论：</strong>{{ benchmark_summary.direction }}。{{ benchmark_summary.efficiency }}
-    {{ benchmark_summary.risk }} {{ benchmark_summary.drawdown }}
-  </div>
-  {% endif %}
-  <div class="metric-grid" style="margin-bottom:10px">
-    <div class="metric-card">
-      <div class="label">年化超额收益</div>
-      <div class="value">{{ benchmark_result.ann_excess_ret|metric_percent(2) }}</div>
-    </div>
-    <div class="metric-card">
-      <div class="label">信息比率 (IR)</div>
-      <div class="value">{{ benchmark_result.information_ratio|metric_number(2) }}</div>
-    </div>
-    <div class="metric-card">
-      <div class="label">跟踪误差</div>
-      <div class="value">{{ benchmark_result.tracking_error|metric_percent(2) }}</div>
-    </div>
-    <div class="metric-card">
-      <div class="label">超额最大回撤</div>
-      <div class="value">{{ benchmark_result.excess_max_dd|metric_percent(2) }}</div>
-    </div>
-  </div>
-  {% if charts.benchmark_chart %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.benchmark_chart }}" alt="基准对比图">
-  {% elif benchmark_notice %}
-  <div class="no-data">{{ benchmark_notice }}</div>
-  {% endif %}
-  {% endif %}
-</div>
-
-<!-- 3. 预测能力 -->
-<div class="panel" id="predictive-power">
-  <h2>预测能力</h2>
-  {% if predictive_summary %}
-  <div class="status-callout">
-    <strong>预测能力总览：</strong>{{ predictive_summary.headline }}
-    {% for item in predictive_summary.details %}
-      {{ item }}
-    {% endfor %}
-    <span class="strategy-code">{{ predictive_summary.next_steps|join(" ") }}</span>
-  </div>
-  {% endif %}
-  {% if charts.ic_chart %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.ic_chart }}" alt="IC 时序图">
-  {% elif metrics.ic_mean is not none and metrics.ic_mean == metrics.ic_mean %}
-  <div class="no-data">IC 时序图未生成：已生成 Rank IC 指标，但缺少可绘图的逐期 IC 序列。下一步：检查 ic_result.ic_series、trade_date 和 ic 列。</div>
-  {% else %}
-  <div class="no-data">无 IC 数据：未传入 IC 时序，或样本不足以计算有效截面相关性。下一步：先生成 Rank IC 时序和 IC 分布，再判断方向、稳定性和极端日期影响。</div>
-  {% endif %}
-
-  {% if charts.ic_distribution_chart %}
-  <div class="chart-grid">
-    <div class="chart-card">
-      <h3>IC 分布</h3>
-      <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">检查 IC 是否主要由少数极端日期贡献。</p>
-      <img class="chart-img" src="data:image/png;base64,{{ charts.ic_distribution_chart }}" alt="IC 分布图">
-    </div>
-  </div>
-  {% elif metrics.ic_mean is not none and metrics.ic_mean == metrics.ic_mean %}
-  <div class="no-data">IC 分布图未生成：已生成 Rank IC 指标，但缺少可绘制分布的有效 IC 样本。下一步：检查 IC 序列中是否存在非有限值、空值或样本过少。</div>
-  {% endif %}
-
-  {% if metrics.get('decay_table') %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">IC 衰减</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">观察持有期拉长后预测能力是否保留。方向一致说明信号在不同调仓周期下含义稳定；长端明显变弱则更适合短持有期使用。</p>
-  {% set decay = namespace(pos=0, neg=0, flat=0, valid=0, first_horizon=none, first_ic=none, last_horizon=none, last_ic=none) %}
-  {% for d in metrics.decay_table %}
-    {% if loop.first %}
-      {% set decay.first_horizon = d.horizon %}
-      {% set decay.first_ic = d.ic_mean %}
-    {% endif %}
-    {% if loop.last %}
-      {% set decay.last_horizon = d.horizon %}
-      {% set decay.last_ic = d.ic_mean %}
-    {% endif %}
-    {% if d.ic_mean is not none and d.ic_mean == d.ic_mean %}
-      {% set decay.valid = decay.valid + 1 %}
-      {% if d.ic_mean > 0.005 %}
-        {% set decay.pos = decay.pos + 1 %}
-      {% elif d.ic_mean < -0.005 %}
-        {% set decay.neg = decay.neg + 1 %}
-      {% else %}
-        {% set decay.flat = decay.flat + 1 %}
-      {% endif %}
-    {% endif %}
-  {% endfor %}
-  <div class="status-callout">
-    <strong>IC 衰减摘要：</strong>
-    {% if decay.valid == 0 %}
-      IC 衰减关键指标样本不足，暂不判断不同持有期的预测方向和强度保留。
-    {% elif decay.pos > 0 and decay.neg == 0 %}
-      各持有期 IC 均为正，预测方向一致；继续关注长端是否明显弱于短端。
-    {% elif decay.neg > 0 and decay.pos == 0 %}
-      各持有期 IC 均为负，方向一致但更适合按反向因子理解。
-    {% elif decay.pos > 0 and decay.neg > 0 %}
-      持有期之间 IC 正负切换，说明信号可能依赖特定持有周期。
-    {% else %}
-      各持有期 IC 接近 0，当前样本暂未显示稳定预测方向。
-    {% endif %}
-    短端 {{ decay.first_horizon }} 天 IC={{ decay.first_ic|metric_number(4) }}，长端 {{ decay.last_horizon }} 天 IC={{ decay.last_ic|metric_number(4) }}。
-  </div>
-  <table>
-    <tr><th>持有期</th><th>IC 均值</th><th>IC 标准差</th><th>方向读法</th></tr>
-    {% for d in metrics.decay_table %}
-    <tr>
-      <td>{{ d.horizon }}天</td>
-      <td>{{ d.ic_mean|metric_number(4) }}</td>
-      <td>{{ d.ic_std|metric_number(4) }}</td>
-      <td>{% if d.ic_mean is none or d.ic_mean != d.ic_mean %}样本不足{% elif d.ic_mean > 0.005 %}正向{% elif d.ic_mean < -0.005 %}反向{% else %}不明显{% endif %}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% endif %}
-  {% if metrics.get('pearson_ic_mean') is not none %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">Pearson IC vs Rank IC 对比</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">Rank IC（Spearman）对极端值更鲁棒；Pearson IC 对量纲敏感。两者差异大时需关注因子分布的尾部风险。</p>
-  <table>
-    <tr><th>指标</th><th>Rank IC（Spearman）</th><th>Pearson IC</th></tr>
-    <tr><td>IC 均值</td><td>{{ metrics.ic_mean|metric_number(4) }}</td><td>{{ metrics.pearson_ic_mean|metric_number(4) }}</td></tr>
-    <tr><td>IC 标准差</td><td>{{ metrics.ic_std|metric_number(4) }}</td><td>{{ metrics.pearson_ic_std|metric_number(4) }}</td></tr>
-    <tr><td>信息比率 (IR)</td><td>{{ metrics.ir|metric_number(2) }}</td><td>{{ metrics.pearson_ir|metric_number(2) }}</td></tr>
-    <tr><td>IC 胜率</td><td>{{ metrics.ic_positive_ratio|metric_percent(1) }}</td><td>{{ metrics.pearson_ic_positive_ratio|metric_percent(1) }}</td></tr>
-    <tr><td>t 统计量</td><td>{{ metrics.ic_tstat|metric_number(2) }}</td><td>{{ metrics.pearson_ic_tstat|metric_number(2) }}</td></tr>
-  </table>
-  {% endif %}
-</div>
-
-<!-- 4. 结构检验 -->
-<div class="panel" id="structure-checks">
-  <h2>结构检验</h2>
-
-{% if metrics.get('neutralized_ic_mean') is not none %}
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">中性化 IC</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">行业/市值中性化后重新计算 Rank IC，用于判断信号是否主要来自风格或行业暴露。</p>
-  {% if neutralized_summary %}
-  <div class="status-callout">
-    <strong>中性化结论：</strong>{{ neutralized_summary.headline }}
-    {% if neutralized_summary.retention is not none %}
-    中性化后保留率 {{ neutralized_summary.retention|metric_percent(1) }}。
-    {% endif %}
-    {{ neutralized_summary.detail }}
-  </div>
-  {% endif %}
-  <table>
-    <tr><th>指标</th><th>原始 Rank IC</th><th>中性化 Rank IC</th></tr>
-    <tr><td>IC 均值</td><td>{{ metrics.ic_mean|metric_number(4) }}</td><td>{{ metrics.neutralized_ic_mean|metric_number(4) }}</td></tr>
-    <tr><td>IC 标准差</td><td>{{ metrics.ic_std|metric_number(4) }}</td><td>{{ metrics.neutralized_ic_std|metric_number(4) }}</td></tr>
-    <tr><td>信息比率 (IR)</td><td>{{ metrics.ir|metric_number(2) }}</td><td>{{ metrics.neutralized_ir|metric_number(2) }}</td></tr>
-    <tr><td>IC 胜率</td><td>{{ metrics.ic_positive_ratio|metric_percent(1) }}</td><td>{{ metrics.neutralized_ic_positive_ratio|metric_percent(1) }}</td></tr>
-    <tr><td>t 统计量</td><td>{{ metrics.ic_tstat|metric_number(2) }}</td><td>{{ metrics.neutralized_ic_tstat|metric_number(2) }}</td></tr>
-  </table>
-{% endif %}
-
-<!-- 多持有期一致性 -->
-{% if metrics.get('multi_period_table') %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">多持有期一致性</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">跨持有期 IC —— 稳健因子在各持有期应保持方向一致。</p>
-  {% if holding_period_summary %}
-  <div class="status-callout">
-    <strong>持有期结论：</strong>{{ holding_period_summary.headline }}
-    {{ holding_period_summary.direction }}
-    {{ holding_period_summary.recommendation }}
-  </div>
-  {% endif %}
-  <table>
-    <tr><th>持有期</th><th>IC 均值</th><th>IC 标准差</th><th>信息比率</th><th>IC 胜率</th><th>t 统计量</th><th>p 值</th></tr>
-    {% for row in metrics.multi_period_table %}
-    <tr>
-      <td>{{ row.horizon }}</td>
-      <td>{{ row.ic_mean|metric_number(4) }}</td>
-      <td>{{ row.ic_std|metric_number(4) }}</td>
-      <td>{{ row.ir|metric_number(2) }}</td>
-      <td>{{ row.ic_pos|metric_percent(1) }}</td>
-      <td>{{ row.tstat|metric_number(2) }}{% if row.pvalue is not none and row.pvalue < 0.01 %}<span style="color:#e74c3c">***</span>{% elif row.pvalue is not none and row.pvalue < 0.05 %}<span style="color:#e67e22">**</span>{% elif row.pvalue is not none and row.pvalue < 0.1 %}<span style="color:#f39c12">*</span>{% endif %}</td>
-      <td>{{ row.pvalue|metric_number(4) }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-{% endif %}
-
-{% if metrics.get('monotonicity_score') is not none %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">分组单调性</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">按因子分组后的收益排序一致性。得分越接近 1，说明分组收益越符合因子排序；低分通常意味着信号只在局部分组有效，或受极端组影响较大。</p>
-  {% set mono_score = metrics.monotonicity_score %}
-  {% set has_mono_score = mono_score is not none and mono_score == mono_score %}
-  {% if not has_mono_score %}
-    {% set mono_level = "样本不足" %}
-    {% set mono_conclusion = "单调性指标样本不足，暂不判断分组收益排序是否清晰。" %}
-    {% set mono_action = "下一步应检查分组收益表、有效分组数量和每组样本覆盖率，再重新计算单调性。" %}
-  {% elif mono_score >= 0.80 %}
-    {% set mono_level = "强" %}
-    {% set mono_conclusion = "分组收益排序清晰，因子结构支持进一步进入组合检验。" %}
-    {% set mono_action = "可重点结合 IC 稳定性、换手成本和样本外结果判断是否投产。" %}
-  {% elif mono_score >= 0.60 %}
-    {% set mono_level = "中等" %}
-    {% set mono_conclusion = "分组排序大体成立，但中间组可能存在交叉或噪声。" %}
-    {% set mono_action = "建议优先使用头尾组合或更保守的分位数组合，并继续观察样本外表现。" %}
-  {% else %}
-    {% set mono_level = "弱" %}
-    {% set mono_conclusion = "分组排序不清晰，因子收益可能集中在少数组或不具备稳定梯度。" %}
-    {% set mono_action = "不宜只依据均值 IC 使用；应检查分组收益、行业/市值暴露和极端样本贡献。" %}
-  {% endif %}
-  <div class="status-callout">
-    <strong>单调性结论：</strong>{{ mono_level }}。{{ mono_conclusion }}
-  </div>
-  <table>
-    <tr><th>单调性得分</th><th>结构判断</th><th>使用建议</th></tr>
-    <tr>
-      <td>{{ mono_score|metric_number(3) }}</td>
-      <td>{{ mono_conclusion }}</td>
-      <td>{{ mono_action }}</td>
-    </tr>
-  </table>
-{% endif %}
-
-{% if metrics.get('rank_autocorr') is not none or metrics.get('rank_autocorr_available') %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">信号持续性</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">排名自相关衡量相邻调仓期因子排序的稳定程度；半衰期越短，信号衰减越快，组合通常需要更高换手来跟上信号变化。</p>
-  {% set autocorr = metrics.rank_autocorr %}
-  {% set half_life = metrics.half_life %}
-  {% set has_autocorr = autocorr is not none and autocorr == autocorr %}
-  {% if not has_autocorr %}
-    {% set persistence_level = "样本不足" %}
-    {% set persistence_conclusion = "持续性指标样本不足，暂不判断因子排序在相邻调仓期的稳定程度。" %}
-    {% set persistence_action = "下一步应检查连续调仓期数量、股票覆盖率和排名序列，再重新计算排名自相关。" %}
-  {% elif autocorr >= 0.70 %}
-    {% set persistence_level = "高" %}
-    {% set persistence_conclusion = "因子排序较稳定，信号不容易在相邻期大幅翻转。" %}
-    {% set persistence_action = "适合评估较低频调仓或更严格的换手控制。" %}
-  {% elif autocorr >= 0.40 %}
-    {% set persistence_level = "中等" %}
-    {% set persistence_conclusion = "因子排序有一定延续性，但仍可能带来明显调仓需求。" %}
-    {% set persistence_action = "应结合交易成本和调仓阈值决定可用频率。" %}
-  {% else %}
-    {% set persistence_level = "低" %}
-    {% set persistence_conclusion = "因子排序变化较快，信号生命周期偏短。" %}
-    {% set persistence_action = "需要重点检查换手、冲击成本和信号延迟，避免纸面收益被交易成本吞噬。" %}
-  {% endif %}
-  <div class="status-callout">
-    <strong>持续性结论：</strong>{{ persistence_level }}。{{ persistence_conclusion }}
-  </div>
-  <table>
-    <tr><th>排名自相关</th><th>半衰期</th><th>交易含义</th></tr>
-    <tr>
-      <td>{{ autocorr|metric_number(3) }}</td>
-      <td>{% if half_life is not none and half_life == half_life %}{{ half_life|metric_number(1) }} 期{% else %}样本不足{% endif %}</td>
-      <td>{{ persistence_action }}</td>
-    </tr>
-  </table>
-{% endif %}
-
-{% if charts.factor_corr_chart %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">因子相关性</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">多因子截面 Rank（Spearman）相关性均值矩阵。相关性越高，因子间信息重叠越多；对角线为 1。</p>
-  {% if factor_corr_summary %}
-  <div class="status-callout">
-    <strong>相关性结论：</strong>{{ factor_corr_summary.headline }} {{ factor_corr_summary.detail }}
-  </div>
-  {% endif %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.factor_corr_chart }}" alt="因子相关性热力图">
-{% elif factor_corr_summary %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">因子相关性</h3>
-  <div class="no-data">{{ factor_corr_summary.headline }} {{ factor_corr_summary.detail }} 暂不绘制因子相关性热力图。</div>
-{% endif %}
-
-{% if metrics.get('neutralized_ic_mean') is none and not metrics.get('multi_period_table') and metrics.get('monotonicity_score') is none and metrics.get('rank_autocorr') is none and not metrics.get('rank_autocorr_available') and not charts.factor_corr_chart %}
-  <div class="no-data">无结构检验数据：未生成中性化 IC、多持有期一致性、单调性或信号持续性结果。下一步：启用中性化 IC、多持有期一致性、单调性和信号持续性检查，确认信号不是单一风格暴露或偶然分层。</div>
-{% endif %}
-</div>
-
-<!-- 5. 交易可行性 -->
-<div class="panel" id="tradability">
-  <h2>交易可行性</h2>
-  <p class="note">本节观察调仓换手、成交约束和交易成本口径，用于判断因子收益是否可能被执行摩擦吞噬。</p>
-  {% if strategy_pages %}
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">交易可行性摘要</h3>
-  <p class="note">换手、成本和成交约束按策略回测结果汇总；受约束交易越多，说明信号越容易受容量、涨跌停或停牌等执行条件影响。</p>
-  {% if execution_summary %}
-  <div class="status-callout">
-    <strong>执行结论：</strong>{{ execution_summary.headline }}{{ execution_summary.risk }}{{ execution_summary.action }}
-  </div>
-  {% endif %}
-  <div class="table-wrap">
-    <table>
-      <tr><th>策略</th><th>策略方向</th><th>平均换手</th><th>年化换手</th><th>交易成本</th><th>受约束交易</th><th>约束占比</th><th>主要约束</th></tr>
-      {% for strategy in strategy_pages %}
-      <tr>
-        <td>{{ strategy.display_name }}{% if strategy.is_primary %}（主策略）{% endif %}<span class="strategy-code">代码：{{ strategy.name }}</span></td>
-        <td>{{ strategy.exposure_label }}{% if strategy.signal_label %}<span class="strategy-code">信号口径：{{ strategy.signal_label }}</span>{% endif %}</td>
-        <td>{{ strategy.avg_turnover|metric_percent(1) }}</td>
-        <td>{{ strategy.portfolio_metrics.ann_turnover|metric_percent(1) }}</td>
-        <td>{{ strategy.total_cost|metric_percent(2) }}</td>
-        <td>{{ strategy.trade_summary.constrained_count }} / {{ strategy.trade_summary.trade_count }}</td>
-        <td>{{ strategy.trade_summary.constraint_rate|metric_percent(1) }}</td>
-        <td>
-          {% if strategy.trade_summary.constraint_reasons %}
-            {% for item in strategy.trade_summary.constraint_reasons %}{{ item.reason }} {{ item.count }} 次{% if not loop.last %}；{% endif %}{% endfor %}
-          {% else %}
-            无
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
-  </div>
-  {% endif %}
-  {% if charts.turnover_chart %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.turnover_chart }}" alt="换手率图">
-  {% elif metrics.avg_turnover is not none and metrics.avg_turnover == metrics.avg_turnover %}
-  <div class="no-data">换手率曲线未生成：已生成平均换手率 {{ metrics.avg_turnover|metric_percent(1) }}，但缺少可绘图的逐期换手率序列。下一步：检查 turnover_result.daily_turnover、trade_date 和 turnover 列。</div>
-  {% else %}
-  <div class="no-data">无换手率数据：未传入调仓序列，或回测未产生可统计的组合换手。下一步：补齐调仓权重、成交记录或换手率序列，再评估交易成本和成交约束是否会吞噬收益。</div>
-  {% endif %}
-</div>
-
-<!-- 6. 稳健性验证 -->
-<div class="panel" id="robustness">
-  <h2>稳健性验证</h2>
-
-{% if metrics.get('oos_train_ic') is not none %}
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">样本外稳健性</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">前 70% 历史观察期与后 30% 样本外验证期的 IC 分割。固定因子不会在观察期重新拟合参数；这里用于检查历史结论能否延续到后续区间。</p>
-  {% set is_ic = metrics.oos_train_ic %}
-  {% set oos_ic = metrics.oos_test_ic %}
-  {% set is_abs = -is_ic if is_ic < 0 else is_ic %}
-  {% set oos_abs = -oos_ic if oos_ic < 0 else oos_ic %}
-  {% set oos_retention = (oos_abs / is_abs) if is_abs > 0.005 else none %}
-  <div class="status-callout">
-    <strong>样本外摘要：</strong>
-    {% if is_abs <= 0.005 or oos_abs <= 0.005 %}
-      历史观察期或样本外验证期 IC 接近 0，当前分割不足以证明方向延续。
-    {% elif (is_ic > 0 and oos_ic > 0) or (is_ic < 0 and oos_ic < 0) %}
-      历史观察期与样本外验证期 IC 方向一致，说明样本外方向有延续。
-    {% else %}
-      历史观察期与样本外验证期 IC 方向反转，说明样本外稳定性需要重点复核。
-    {% endif %}
-    {% if oos_retention is not none %}
-      样本外验证期强度约为历史观察期的 {{ oos_retention|metric_percent(1) }}。
-      {% if oos_retention >= 1.20 %}
-        样本外验证期强度高于历史观察期，但短样本下需警惕偶然放大。
-      {% elif oos_retention >= 0.80 %}
-        样本外强度保留较好。
-      {% elif oos_retention >= 0.50 %}
-        样本外强度有一定衰减。
-      {% else %}
-        样本外强度衰减明显。
-      {% endif %}
-    {% endif %}
-  </div>
-  <table>
-    <tr><th>区间</th><th>IC 均值</th></tr>
-    <tr><td>历史观察期（前 70%）</td><td>{{ metrics.oos_train_ic|metric_number(4) }}</td></tr>
-    <tr><td>样本外验证期（后 30%）</td><td>{{ metrics.oos_test_ic|metric_number(4) }}</td></tr>
-  </table>
-{% elif metrics.get('oos_split_incomplete_detail') is not none %}
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">样本外稳健性</h3>
-  <div class="no-data">样本外 IC 分割不完整：{{ metrics.oos_split_incomplete_detail }}，暂不判断历史观察期与样本外验证期方向延续。下一步：检查样本外切分后的日期覆盖、截面股票数量和 IC 序列生成结果。</div>
-{% endif %}
-
-<!-- 滚动样本外稳健性 -->
-{% if walk_forward_result is not none %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">滚动样本外稳健性（Walk-Forward）</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">每一折用过去的历史观察期作为参照，隔开 embargo 后，用后续样本外验证期计算样本外表现。固定因子主流程不在历史观察期拟合因子参数。</p>
-  <div class="status-callout">
-    <strong>滚动验证摘要：</strong>
-    {% set wf_oos_sharpe = walk_forward_result.oos_sharpe_mean %}
-    {% set wf_stability = walk_forward_result.stability_ratio %}
-    {% set has_wf_oos_sharpe = wf_oos_sharpe is not none and wf_oos_sharpe == wf_oos_sharpe %}
-    {% set has_wf_stability = wf_stability is not none and wf_stability == wf_stability %}
-    {% if not has_wf_oos_sharpe or not has_wf_stability %}
-      滚动样本外关键指标样本不足，暂不判断历史表现是否能延续到样本外验证期。
-    {% elif wf_oos_sharpe > 0 and wf_stability >= 0.60 %}
-      样本外验证期 Sharpe 为正且稳定性比率较高，滚动样本外表现较稳健。
-    {% elif wf_oos_sharpe > 0 and wf_stability >= 0.30 %}
-      样本外验证期 Sharpe 为正，但相对历史观察期已有衰减。
-    {% elif wf_oos_sharpe > 0 %}
-      样本外验证期 Sharpe 为正，但稳定性比率偏低，历史收益较难延续。
-    {% else %}
-      样本外验证期 Sharpe 不为正，滚动样本外未支持该策略表现。
-    {% endif %}
-    稳定性比率 = 样本外验证期 Sharpe 均值 / 历史观察期 Sharpe 均值，用于衡量历史表现向样本外验证期的保留程度。
-  </div>
-  <div class="metric-grid" style="margin-bottom:10px">
-    <div class="metric-card">
-      <div class="label">历史观察期 Sharpe 均值</div>
-      <div class="value">{{ walk_forward_result.is_sharpe_mean|metric_number(2) }}</div>
-    </div>
-    <div class="metric-card">
-      <div class="label">样本外验证期 Sharpe 均值</div>
-      <div class="value">{{ walk_forward_result.oos_sharpe_mean|metric_number(2) }}</div>
-    </div>
-    <div class="metric-card">
-      <div class="label">稳定性比率</div>
-      <div class="value">{{ walk_forward_result.stability_ratio|metric_number(2) }}</div>
-    </div>
-    <div class="metric-card">
-      <div class="label">样本外验证期最大回撤</div>
-      <div class="value">{{ walk_forward_result.oos_max_dd|metric_percent(2) }}</div>
-    </div>
-  </div>
-  {% if charts.walk_forward_chart %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.walk_forward_chart }}" alt="滚动样本外稳健性图">
-  {% endif %}
-  <table>
-    <tr><th>折</th><th>历史观察期 Sharpe</th><th>样本外验证期 Sharpe</th><th>样本外验证期年化收益</th><th>样本外验证期最大回撤</th></tr>
-    {% for fold in walk_forward_result.folds %}
-    {% set fold_oos_sharpe = fold.oos_sharpe %}
-    {% set has_fold_oos_sharpe = fold_oos_sharpe is not none and fold_oos_sharpe == fold_oos_sharpe %}
-    <tr>
-      <td>第 {{ fold.fold_id }} 折</td>
-      <td>{{ fold.is_sharpe|metric_number(2) }}</td>
-      <td style="color: {% if has_fold_oos_sharpe and fold_oos_sharpe > 0 %}#27ae60{% elif has_fold_oos_sharpe and fold_oos_sharpe < 0 %}#e74c3c{% else %}#7f8c8d{% endif %}">{{ fold_oos_sharpe|metric_number(2) }}</td>
-      <td>{{ fold.oos_ann_ret|metric_percent(1) }}</td>
-      <td>{{ fold.oos_max_dd|metric_percent(1) }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-{% elif walk_forward_summary is not none and walk_forward_summary.get('status') == 'insufficient_data' %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">滚动样本外稳健性（Walk-Forward）</h3>
-  <div class="no-data">样本不足，未生成滚动验证折数：当前区间无法满足滚动历史观察期、隔离期（embargo）和样本外验证期长度要求。隔离期用于防止历史观察期与样本外验证期信息泄漏。下一步：扩大回测区间，或缩短历史观察期或样本外验证期参数后重新运行。</div>
-{% endif %}
-
-<!-- 事件研究 -->
-{% if charts.event_study_chart %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">事件研究</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:12px">选取因子值 Top 分位的股票为事件，观察事件前后窗口的平均累计收益。阴影区域为 95% 置信区间。</p>
-  {% if event_study_result is not none and (event_study_result.n_events or 0) > 0 %}
-  {% set event = namespace(final_window=none, final_return=none, final_ci=none, event_day_return=none) %}
-  {% for window in event_study_result.windows %}
-    {% if window == 0 and event_study_result.avg_cumret is not none and event_study_result.avg_cumret|length > loop.index0 %}
-      {% set event.event_day_return = event_study_result.avg_cumret[loop.index0] %}
-    {% endif %}
-    {% if loop.last %}
-      {% set event.final_window = window %}
-      {% if event_study_result.avg_cumret is not none and event_study_result.avg_cumret|length > loop.index0 %}
-      {% set event.final_return = event_study_result.avg_cumret[loop.index0] %}
-      {% endif %}
-      {% if event_study_result.ci_95 is not none and event_study_result.ci_95|length > loop.index0 %}
-      {% set event.final_ci = event_study_result.ci_95[loop.index0] %}
-      {% endif %}
-    {% endif %}
-  {% endfor %}
-  {% if event.final_return is not none %}
-  <div class="status-callout">
-    <strong>事件研究摘要：</strong>
-    {% if event.final_return is finite_metric %}
-      因子 Top 分位事件数 {{ event_study_result.n_events }} 个，事件后 {{ event.final_window }} 期平均累计收益为 {{ event.final_return|metric_percent(2) }}。
-      {% if event.final_return > 0.02 %}
-        事件后收益为正，说明高分位信号在事件窗口内有正向延续。
-      {% elif event.final_return < -0.02 %}
-        事件后收益为负，说明高分位信号在事件窗口内未延续，需检查是否应反向使用。
-      {% else %}
-        事件后累计收益接近 0，当前事件窗口未显示明确方向。
-      {% endif %}
-    {% else %}
-      因子 Top 分位事件数 {{ event_study_result.n_events }} 个，事件后 {{ event.final_window }} 期平均累计收益样本不足。当前事件窗口存在缺失或非有限累计收益，暂不判断方向。
-    {% endif %}
-    {% if event.final_ci is finite_metric %}
-      95% 置信区间半宽约 {{ event.final_ci|metric_percent(2) }}；半宽越大，事件结论越依赖样本数量和极端事件。
-    {% else %}
-      95% 置信区间样本不足，暂不评估事件收益的不确定性半宽。
-    {% endif %}
-    {% if event_study_result.n_events < 30 %}
-      事件数量偏少，应将该结果视为辅助证据。
-    {% endif %}
-  </div>
-  {% endif %}
-  {% endif %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.event_study_chart }}" alt="事件研究图">
-  {% if event_study_result is not none %}
-  <p style="color:#7f8c8d;font-size:13px;margin-top:8px">事件数量: {{ event_study_result.n_events }}</p>
-  {% endif %}
-{% elif event_study_result is not none and (event_study_result.n_events or 0) <= 0 %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">事件研究</h3>
-  <div class="no-data">事件研究无有效事件：已运行事件筛选，但没有满足 Top 分位阈值和事件窗口要求的样本。下一步：放宽 Top 分位阈值、缩短事件窗口或扩大股票池后复跑。</div>
-{% elif event_study_result is not none %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">事件研究</h3>
-  <div class="no-data">事件研究样本不足：已找到 {{ event_study_result.n_events or 0 }} 个事件，但事件窗口收益序列为空或不完整，暂不判断事件后收益方向。下一步：检查事件窗口收益拼接、停牌过滤和事件窗口长度后复跑。</div>
-{% endif %}
-
-{% if metrics.get('regime_table') %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">市场状态适应性</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">按市场状态拆分 Rank IC，观察信号是否只在特定行情中有效。</p>
-  {% if regime_summary %}
-  <div class="status-callout">
-    <strong>市场状态结论：</strong>{{ regime_summary.headline }}{{ regime_summary.detail }}
-  </div>
-  {% endif %}
-  <table>
-    <tr><th>市场状态</th><th>IC</th><th>读法</th></tr>
-    {% for row in metrics.regime_table %}
-    {% set regime_ic = row.ic %}
-    {% set has_regime_ic_value = regime_ic is not none and regime_ic == regime_ic %}
-    <tr>
-      <td>{{ row.label }}</td>
-      <td>{{ regime_ic|metric_number(4) }}</td>
-      <td>{% if not has_regime_ic_value %}样本不足{% elif regime_ic > 0.005 %}正向{% elif regime_ic < -0.005 %}反向{% else %}不明显{% endif %}</td>
-    </tr>
-    {% endfor %}
-  </table>
-{% endif %}
-
-{% if metrics.get('oos_train_ic') is none and metrics.get('oos_split_incomplete_detail') is none and walk_forward_result is none and not (walk_forward_summary is not none and walk_forward_summary.get('status') == 'insufficient_data') and event_study_result is none and not metrics.get('regime_table') %}
-  <div class="no-data">无稳健性验证数据：未生成样本外分割、滚动样本外验证或事件研究结果。下一步：至少补齐样本外分割或滚动样本外验证，再用事件研究作为辅助证据。</div>
-{% endif %}
-</div>
-
-<!-- 7. 风险归因 -->
-<div class="panel" id="risk-attribution">
-  <h2>风险归因</h2>
-
-  {% if metrics.get('size_buckets') %}
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">市值分层 IC</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">因子在不同市值段的预测能力 —— 大小盘 IC 差异大说明因子有规模敞口。</p>
-  {% set size = namespace(max_label="", max_ic=none, min_label="", min_ic=none, abs_label="", abs_ic=none, abs_value=none) %}
-  {% for key, val in metrics.size_buckets.items() %}
-    {% set size_label = "大盘" if key == "Large" else ("中盘" if key == "Mid" else ("小盘" if key == "Small" else key)) %}
-    {% if val is not none and val == val %}
-      {% set abs_val = val|abs %}
-      {% if size.max_ic is none or val > size.max_ic %}
-        {% set size.max_ic = val %}
-        {% set size.max_label = size_label %}
-      {% endif %}
-      {% if size.min_ic is none or val < size.min_ic %}
-        {% set size.min_ic = val %}
-        {% set size.min_label = size_label %}
-      {% endif %}
-      {% if size.abs_value is none or abs_val > size.abs_value %}
-        {% set size.abs_value = abs_val %}
-        {% set size.abs_ic = val %}
-        {% set size.abs_label = size_label %}
-      {% endif %}
-    {% endif %}
-  {% endfor %}
-  {% if size.max_ic is not none and size.min_ic is not none %}
-  {% set size_spread = size.max_ic - size.min_ic %}
-  <div class="status-callout">
-    <strong>市值敞口摘要：</strong>
-    IC 数值最高的市值段是{{ size.max_label }}（IC={{ size.max_ic|metric_number(4) }}），IC 数值最低的是{{ size.min_label }}（IC={{ size.min_ic|metric_number(4) }}）。
-    {% if size.max_ic < 0 %}
-      按反向因子理解，绝对 IC 最大的市值段是{{ size.abs_label }}（|IC|={{ size.abs_value|metric_number(4) }}）。
-    {% elif size.abs_value is not none %}
-      绝对 IC 最大的市值段是{{ size.abs_label }}（IC={{ size.abs_ic|metric_number(4) }}），代表规模分层中信号强度最集中的位置。
-    {% endif %}
-    {% if size_spread >= 0.05 %}
-      大小盘差异明显，使用时应重点检查市值中性化和组合市值暴露。
-    {% elif size_spread >= 0.02 %}
-      市值段之间存在一定差异，建议结合行业/市值中性化结果判断是否为风格收益。
-    {% else %}
-      各市值段 IC 接近，当前样本未显示强烈规模敞口。
-    {% endif %}
-  </div>
-  {% else %}
-  <div class="status-callout">
-    <strong>市值敞口摘要：</strong>市值分层 IC 已传入，但有效 IC 样本不足，暂不判断大小盘强弱和规模敞口。下一步：检查市值分组样本数量、股票市值映射和分组 IC 计算输入。
-  </div>
-  {% endif %}
-  <table>
-    <tr><th>市值分组</th><th>IC 均值</th></tr>
-    {% for key, val in metrics.size_buckets.items() %}
-    <tr>
-      <td>{{ "大盘" if key == "Large" else ("中盘" if key == "Mid" else ("小盘" if key == "Small" else key)) }}</td>
-      {% set has_size_ic = val is not none and val == val %}
-      <td style="color: {% if has_size_ic and val > 0.02 %}#27ae60{% elif has_size_ic and val < -0.02 %}#e74c3c{% else %}#7f8c8d{% endif %}">
-        {{ val|metric_number(4) }}
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% endif %}
-
-  <!-- 风格/行业归因 -->
-  {% if charts.attribution_chart %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">风格/行业归因</h3>
-  {% if attribution_summary %}
-  <div class="status-callout">
-    <strong>归因结论：</strong>{{ attribution_summary.active }} {{ attribution_summary.driver }}
-    {% if attribution_summary.sector %}{{ attribution_summary.sector }}{% endif %}
-  </div>
-  {% endif %}
-  <img class="chart-img" src="data:image/png;base64,{{ charts.attribution_chart }}" alt="归因分析图">
-  {% if attribution_result is not none and 'brinson' in attribution_result and attribution_result['brinson'] is not none %}
-  <p style="color:#7f8c8d;font-size:13px;margin-top:8px">
-    年化超额: {{ attribution_result['brinson'].ann_active_return|metric_percent(2) }}
-    &nbsp;|&nbsp; 配置: {{ attribution_result['brinson'].ann_allocation|metric_percent(2) }}
-    &nbsp;|&nbsp; 选股: {{ attribution_result['brinson'].ann_selection|metric_percent(2) }}
-    &nbsp;|&nbsp; 交互: {{ attribution_result['brinson'].ann_interaction|metric_percent(2) }}
-  </p>
-  {% endif %}
-  {% elif attribution_summary %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">风格/行业归因</h3>
-  <div class="status-callout">
-    <strong>归因结论：</strong>{{ attribution_summary.active }} {{ attribution_summary.driver }}
-    {% if attribution_summary.sector %}{{ attribution_summary.sector }}{% endif %}
-  </div>
-  {% if attribution_notice %}
-  <div class="no-data">{{ attribution_notice }}</div>
-  {% endif %}
-  {% elif attribution_notice %}
-  <div class="status-callout">{{ attribution_notice }}</div>
-  {% endif %}
-
-  {% if metrics.get('sector_ic') is not none and metrics.sector_ic.height > 0 %}
-  <h3 style="font-size:15px;color:#34495e;margin:20px 0 8px 0">行业分层 IC</h3>
-  <p style="color:#7f8c8d;font-size:13px;margin-bottom:8px">各行业内部因子预测能力 —— IC 值接近的行业说明因子并非行业敞口伪装。</p>
-  {% set sector = namespace(pos=0, neg=0, flat=0, max_name="", max_ic=none, min_name="", min_ic=none, abs_name="", abs_ic=none, abs_value=none) %}
-  {% for row in metrics.sector_ic.iter_rows(named=True) %}
-    {% if row['ic'] is not none and row['ic'] == row['ic'] %}
-      {% set abs_ic = row['ic']|abs %}
-      {% if row['ic'] > 0.005 %}
-        {% set sector.pos = sector.pos + 1 %}
-      {% elif row['ic'] < -0.005 %}
-        {% set sector.neg = sector.neg + 1 %}
-      {% else %}
-        {% set sector.flat = sector.flat + 1 %}
-      {% endif %}
-      {% if sector.max_ic is none or row['ic'] > sector.max_ic %}
-        {% set sector.max_ic = row['ic'] %}
-        {% set sector.max_name = row['sector'] %}
-      {% endif %}
-      {% if sector.min_ic is none or row['ic'] < sector.min_ic %}
-        {% set sector.min_ic = row['ic'] %}
-        {% set sector.min_name = row['sector'] %}
-      {% endif %}
-      {% if sector.abs_value is none or abs_ic > sector.abs_value %}
-        {% set sector.abs_value = abs_ic %}
-        {% set sector.abs_ic = row['ic'] %}
-        {% set sector.abs_name = row['sector'] %}
-      {% endif %}
-    {% endif %}
-  {% endfor %}
-  {% if sector.max_ic is not none and sector.min_ic is not none %}
-  {% set sector_spread = sector.max_ic - sector.min_ic %}
-  <div class="status-callout">
-    <strong>行业一致性摘要：</strong>
-    {% if sector.pos > 0 and sector.neg == 0 %}
-      覆盖行业大多为正向 IC，行业内预测方向较一致。
-    {% elif sector.neg > 0 and sector.pos == 0 %}
-      覆盖行业大多为负向 IC，行业内方向一致但更适合按反向信号理解。
-    {% elif sector.pos > 0 and sector.neg > 0 %}
-      行业间 IC 正负分化，因子可能依赖行业环境或行业暴露。
-    {% else %}
-      各行业 IC 接近 0，当前样本暂未显示稳定行业内预测方向。
-    {% endif %}
-    IC 数值最高的行业是 {{ sector.max_name }}（IC={{ sector.max_ic|metric_number(4) }}），IC 数值最低的是 {{ sector.min_name }}（IC={{ sector.min_ic|metric_number(4) }}）。
-    {% if sector.max_ic < 0 %}
-      按反向因子理解，绝对 IC 最大的行业是 {{ sector.abs_name }}（|IC|={{ sector.abs_value|metric_number(4) }}）。
-    {% elif sector.abs_value is not none %}
-      绝对 IC 最大的行业是 {{ sector.abs_name }}（IC={{ sector.abs_ic|metric_number(4) }}），代表行业分层中信号强度最集中的位置。
-    {% endif %}
-    {% if sector_spread >= 0.08 %}
-      行业差异很大，应重点检查行业中性化、行业容量和行业轮动影响。
-    {% elif sector_spread >= 0.04 %}
-      行业差异较明显，建议结合行业中性化 IC 判断是否为行业暴露贡献。
-    {% else %}
-      行业间差异有限，当前样本未显示强烈行业依赖。
-    {% endif %}
-  </div>
-  {% endif %}
-  {% if metrics.sector_ic.height > 6 %}
-  <p class="note">默认只展示前 6 行，展开后显示全部行业。</p>
-  <button
-    id="sector-ic-toggle"
-    class="button"
-    type="button"
-    aria-controls="sector-ic-table"
-    aria-expanded="false"
-    data-expanded-label="收起全部"
-    data-collapsed-label="展开全部"
-  >展开全部</button>
-  {% endif %}
-  <table id="sector-ic-table" class="sector-ic-table{% if metrics.sector_ic.height > 6 %} is-collapsed{% endif %}">
-    <tr><th>行业</th><th>IC 均值</th><th>方向读法</th></tr>
-    {% for row in metrics.sector_ic.iter_rows(named=True) %}
-    {% set row_ic = row['ic'] %}
-    {% set has_row_ic = row_ic is not none and row_ic == row_ic %}
-    <tr>
-      <td>{{ row['sector'] }}</td>
-      <td style="color: {% if has_row_ic and row_ic > 0.02 %}#27ae60{% elif has_row_ic and row_ic < -0.02 %}#e74c3c{% else %}#7f8c8d{% endif %}">
-        {{ row_ic|metric_number(4) }}
-      </td>
-      <td>{% if not has_row_ic %}样本不足{% elif row_ic > 0.005 %}正向{% elif row_ic < -0.005 %}反向{% else %}不明显{% endif %}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% else %}
-  <div class="no-data" style="margin-bottom:12px">无行业分解数据：股票池未匹配到行业分类，或当前入口未传入行业 IC 结果。下一步：补齐股票行业分类、确认股票池与行业表可连接，并确认行业 IC 模块已启用后复跑。</div>
-  {% endif %}
-</div>
-
-<div class="panel" id="appendix">
-  <h2>附录</h2>
-  <p class="note">报告由 FactorZen 自动生成。完整复现实验配置、质量检查和产物路径以对应 run 目录中的 manifest、quality 和 meta 文件为准。</p>
-  <div class="status-callout">
-    <strong>阅读口径：</strong>预测能力优先看 IC 均值、IR、显著性和 IC 分布；收益表现看多策略净值、回撤和收益口径；
-    交易可行性看换手、成交约束和成本吞噬；稳健性看样本外验证期、事件研究和结构检验。
-    <strong>研究边界：</strong>本报告用于因子研究和策略筛选，不等同实盘组合建议；未生成模块会在附录列出状态和原因。
-  </div>
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">复现摘要</h3>
-  <div class="table-wrap">
-    <table>
-      <tr><th>条目</th><th>值</th></tr>
-      <tr><td>因子</td><td>{{ factor_name }}</td></tr>
-      <tr><td>频率</td><td>{{ frequency }}</td></tr>
-      <tr><td>股票池</td><td>{{ universe }}</td></tr>
-      <tr><td>日期范围</td><td>{{ date_range or '未指定' }}</td></tr>
-      <tr><td>真实评估区间</td><td>{{ dashboard.effective_range }}</td></tr>
-      <tr><td>主回测策略</td><td>{{ dashboard.primary_strategy }}{% if dashboard.primary_strategy_code and dashboard.primary_strategy_code != dashboard.primary_strategy %}<span class="strategy-code">代码：{{ dashboard.primary_strategy_code }}</span>{% endif %}</td></tr>
-    </table>
-  </div>
-
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">数据质量摘要</h3>
-  <div class="status-callout">
-    状态：{{ quality_summary.status }}。{{ quality_summary.detail }}
-    {% if quality_summary.warnings %} 警告：{{ quality_summary.warnings | join('；') }}。{% endif %}
-    {% if quality_summary.errors %} 错误：{{ quality_summary.errors | join('；') }}。{% endif %}
-  </div>
-  {% if quality_summary.checks %}
-  {% set quality = namespace(min_coverage=none, min_name="", null_total=0, inf_total=0) %}
-  {% for check in quality_summary.checks %}
-    {% if check.coverage is not none and (quality.min_coverage is none or check.coverage < quality.min_coverage) %}
-      {% set quality.min_coverage = check.coverage %}
-      {% set quality.min_name = check.name %}
-    {% endif %}
-    {% if check.null_count is not none %}
-      {% set quality.null_total = quality.null_total + check.null_count %}
-    {% endif %}
-    {% if check.inf_count is not none %}
-      {% set quality.inf_total = quality.inf_total + check.inf_count %}
-    {% endif %}
-  {% endfor %}
-  <div class="status-callout">
-    <strong>质量影响判断：</strong>
-    {% if quality.min_coverage is not none %}
-      覆盖率最低的检查项是{{ quality.min_name }}（{{ quality.min_coverage|metric_percent(1) }}）。
-      {% if quality.min_coverage >= 0.98 %}
-        数据覆盖充分，当前质量结果对报告结论的约束较小。
-      {% elif quality.min_coverage >= 0.90 %}
-        覆盖率存在缺口，结论仍可阅读，但应关注缺失是否集中在特定日期、行业或股票池。
-      {% else %}
-        覆盖率偏低，因子 IC、分组收益和回测结果的可信度需要降级。
-      {% endif %}
-    {% else %}
-      当前质量检查未提供覆盖率，需结合原始 quality 文件判断数据可信度。
-    {% endif %}
-    缺失值合计 {{ quality.null_total }} 个，无限值合计 {{ quality.inf_total }} 个。
-  </div>
-  <div class="table-wrap">
-    <table>
-      <tr><th>检查项</th><th>行数</th><th>覆盖率</th><th>有效值</th><th>缺失值</th><th>无限值</th><th>读法</th></tr>
-      {% for check in quality_summary.checks %}
-      <tr>
-        <td>{{ check.name }}</td>
-        <td>{{ check.rows if check.rows is not none else '-' }}</td>
-        <td>{% if check.coverage is not none %}{{ check.coverage|metric_percent(1) }}{% else %}-{% endif %}</td>
-        <td>{{ check.valid_count if check.valid_count is not none else '-' }}</td>
-        <td>{{ check.null_count if check.null_count is not none else '-' }}</td>
-        <td>{{ check.inf_count if check.inf_count is not none else '-' }}</td>
-        <td>
-          {% if check.inf_count is not none and check.inf_count > 0 %}
-            存在无限值，需优先复核清洗流程。
-          {% elif check.coverage is none %}
-            未提供覆盖率。
-          {% elif check.coverage >= 0.98 %}
-            覆盖充分。
-          {% elif check.coverage >= 0.90 %}
-            覆盖率需关注。
-          {% else %}
-            覆盖率偏低，结论需降级。
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
-  </div>
-  {% endif %}
-
-  {% if strategy_pages %}
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">策略配置清单</h3>
-  <p class="note">中文策略名用于阅读和横向比较；策略代码用于复现配置、定位日志和回测产物。</p>
-  <div class="table-wrap">
-    <table>
-      <tr><th>策略</th><th>策略代码</th><th>实现类型</th><th>策略方向</th><th>收益口径</th><th>关键参数</th><th>成本模型</th><th>权重上限</th><th>再平衡阈值</th></tr>
-      {% for strategy in strategy_pages %}
-      <tr>
-        <td>{{ strategy.display_name }}{% if strategy.is_primary %}（主策略）{% endif %}</td>
-        <td>{{ strategy.name }}</td>
-        <td>{{ strategy.strategy_type_label }}</td>
-        <td>{{ strategy.exposure_label }}{% if strategy.signal_label %}<span class="strategy-code">信号口径：{{ strategy.signal_label }}</span>{% endif %}</td>
-        <td>{{ strategy.return_label }}</td>
-        <td>{{ strategy.params_summary }}</td>
-        <td>{{ strategy.cost_model }}</td>
-        <td>{% if strategy.constraints.get('max_abs_weight') is not none %}{{ strategy.constraints.get('max_abs_weight')|metric_percent(2) }}{% else %}未指定{% endif %}</td>
-        <td>{% if strategy.constraints.get('rebalance_threshold') is not none %}{{ strategy.constraints.get('rebalance_threshold')|metric_percent(2) }}{% else %}每期调仓{% endif %}</td>
-      </tr>
-      {% endfor %}
-    </table>
-  </div>
-  {% endif %}
-
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">指标口径说明</h3>
-  <div class="definition-grid">
-    <div class="definition-item"><strong>Rank IC</strong><span>每日截面因子排序与未来收益排序的 Spearman 相关系数，衡量选股方向是否稳定。</span></div>
-    <div class="definition-item"><strong>信息比率 (IR)</strong><span>IC 均值除以 IC 标准差；越高说明预测能力越稳定。</span></div>
-    <div class="definition-item"><strong>IC 胜率</strong><span>IC 大于 0 的期数占比，用于观察正向预测是否经常出现。</span></div>
-    <div class="definition-item"><strong>排名自相关</strong><span>相邻调仓期因子排序的相关性，用于估计信号持续性和潜在换手压力。</span></div>
-    <div class="definition-item"><strong>半衰期</strong><span>因子排序相关性衰减到一半所需的期数；越短说明信号需要更快交易响应。</span></div>
-    <div class="definition-item"><strong>夏普比率</strong><span>组合年化收益除以年化波动，未额外扣除无风险利率。</span></div>
-    <div class="definition-item"><strong>短样本年化</strong><span>样本期数少于 60 时，年化收益、Sharpe 和基准超额只适合做同区间横向比较，不代表长期可外推表现。</span></div>
-    <div class="definition-item"><strong>滚动样本外验证</strong><span>将历史数据拆成多组历史观察期和样本外验证期，用于检查策略参数离开原样本后是否仍然有效。</span></div>
-    <div class="definition-item"><strong>隔离期（embargo）</strong><span>历史观察期与样本外验证期之间预留的空档，用于防止标签重叠、调仓滞后或价格信息造成样本泄漏。</span></div>
-    <div class="definition-item"><strong>最大回撤</strong><span>回测净值从历史高点到后续低点的最大跌幅，数值越接近 0 越好。</span></div>
-    <div class="definition-item"><strong>平均换手</strong><span>每次调仓的组合权重变化幅度；换手越高，对交易成本和容量越敏感。</span></div>
-    <div class="definition-item"><strong>交易成本</strong><span>按报告中成本模型估算的累计成本，已计入策略收益曲线。</span></div>
-    <div class="definition-item"><strong>市值分层 IC</strong><span>按市值段分别计算 Rank IC，用于识别因子是否主要来自规模风格暴露。</span></div>
-    <div class="definition-item"><strong>行业分层 IC</strong><span>在各行业内部单独计算 Rank IC，用于判断信号是否只在少数行业有效或受到行业暴露驱动。</span></div>
-    {% if strategy_pages|selectattr('is_long_short')|list|length > 0 %}
-    <div class="definition-item"><strong>多空组合</strong><span>同时持有多头和空头的收益口径，用于评估因子纯选股价差。</span></div>
-    {% endif %}
-  </div>
-
-  <h3 style="font-size:15px;color:#34495e;margin:16px 0 8px 0">模块状态</h3>
-  {% set module = namespace(generated=0, attention=0, missing=0) %}
-  {% for item in report_statuses %}
-    {% if item.status == "已生成" or item.status == "正常" %}
-      {% set module.generated = module.generated + 1 %}
-    {% elif item.status == "未启用或未生成" or item.status == "未生成" %}
-      {% set module.missing = module.missing + 1 %}
-    {% else %}
-      {% set module.attention = module.attention + 1 %}
-    {% endif %}
-  {% endfor %}
-  <div class="status-callout">
-    <strong>模块完整性总览：</strong>
-    已生成 {{ module.generated }} 项，需关注 {{ module.attention }} 项，未生成 {{ module.missing }} 项。
-    {% if module.missing > 0 %}
-      未生成模块不一定影响当前结论，但会限制对应维度的证据强度；优先补齐稳健性、归因和基准对比类模块。
-    {% elif module.attention > 0 %}
-      所有关键模块均有输出，但仍需处理需关注项后再提高结论置信度。
-    {% else %}
-      主要模块均已生成且状态正常，报告证据链较完整。
-    {% endif %}
-  </div>
-  <div class="table-wrap">
-    <table>
-      <tr><th>模块</th><th>状态</th><th>说明</th><th>读法 / 下一步</th></tr>
-      {% for item in report_statuses %}
-      <tr>
-        <td>{{ item.module }}</td>
-        <td>{{ item.status }}</td>
-        <td>{{ item.detail }}</td>
-        <td>
-          {% if item.status == "已生成" or item.status == "正常" %}
-            可作为当前报告证据。
-          {% elif item.status == "样本不足" %}
-            延长评估区间或降低验证窗口要求后复跑。
-          {% elif item.status == "无有效事件" %}
-            调整事件阈值、事件窗口或扩大股票池后复核。
-          {% elif item.status == "需关注" %}
-            {% if item.module == "基准超额" %}
-              补齐基准日度净值明细后复核超额曲线。
-            {% elif item.module == "组合归因（Brinson/Barra）" %}
-              补齐归因行业或风格明细后复核归因图。
-            {% elif item.module == "数据质量" %}
-              先处理质量警告，再提高结论置信度。
-            {% else %}
-              结合说明补齐缺失明细或图表，再提高结论置信度。
-            {% endif %}
-          {% elif item.status == "未启用或未生成" or item.status == "未生成" %}
-            若该维度影响结论，应补齐配置或输入数据后复跑。
-          {% else %}
-            结合说明检查该模块是否影响结论。
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
-  </div>
-</div>
-
-<div class="footer">
-  FactorZen &mdash; 生成时间 {{ generated_at }}
-</div>
-
-</main>
-</div>
 
 </div>
-<script>
-  (function () {
-    var button = document.getElementById("sector-ic-toggle");
-    var table = document.getElementById("sector-ic-table");
-    if (!button || !table) return;
-    button.addEventListener("click", function () {
-      var expanded = button.getAttribute("aria-expanded") === "true";
-      table.classList.toggle("is-collapsed", expanded);
-      button.setAttribute("aria-expanded", expanded ? "false" : "true");
-      button.textContent = expanded ? button.dataset.collapsedLabel : button.dataset.expandedLabel;
-    });
-  })();
-  (function () {
-    var tabs = Array.prototype.slice.call(document.querySelectorAll(".strategy-tab"));
-    var pages = Array.prototype.slice.call(document.querySelectorAll(".strategy-page"));
-    if (!tabs.length || !pages.length) return;
-
-    function findTabByTarget(targetId) {
-      for (var i = 0; i < tabs.length; i += 1) {
-        if (tabs[i].getAttribute("data-target") === targetId) return tabs[i];
-      }
-      return null;
-    }
-
-    function findActiveTab() {
-      for (var i = 0; i < tabs.length; i += 1) {
-        if (tabs[i].classList.contains("is-active")) return tabs[i];
-      }
-      return null;
-    }
-
-    function activateStrategyTab(tab, updateHash) {
-      if (!tab) return;
-      var targetId = tab.getAttribute("data-target");
-      var targetPage = document.getElementById(targetId);
-      if (!targetPage) return;
-
-      tabs.forEach(function (item) {
-        var active = item === tab;
-        item.classList.toggle("is-active", active);
-        item.setAttribute("aria-selected", active ? "true" : "false");
-        item.setAttribute("tabindex", active ? "0" : "-1");
-      });
-      pages.forEach(function (page) {
-        page.hidden = page !== targetPage;
-      });
-      if (updateHash && window.history && window.history.replaceState) {
-        window.history.replaceState(null, "", "#" + targetId);
-      }
-    }
-
-    tabs.forEach(function (tab) {
-      tab.addEventListener("click", function () {
-        activateStrategyTab(tab, true);
-      });
-      tab.addEventListener("keydown", function (event) {
-        if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-        event.preventDefault();
-        var currentIndex = tabs.indexOf(tab);
-        var nextIndex = event.key === "ArrowRight"
-          ? (currentIndex + 1) % tabs.length
-          : (currentIndex - 1 + tabs.length) % tabs.length;
-        tabs[nextIndex].focus();
-        activateStrategyTab(tabs[nextIndex], true);
-      });
-    });
-
-    var hashTarget = window.location.hash ? window.location.hash.slice(1) : "";
-    activateStrategyTab(findTabByTarget(hashTarget) || findActiveTab() || tabs[0], false);
-  })();
-</script>
 </body>
 </html>

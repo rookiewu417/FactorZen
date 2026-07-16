@@ -1,10 +1,10 @@
 """Brinson 归因（M4 版，股票级输入）：单期 Brinson-Fachler(BF)配置效应 + 选股效应(交互归入选股)。
 
 注意:这是 Brinson-Fachler 两项法(配置效应用 r_b_sector − r_b_total 做基准对比，
-交互项并入选股)，不是 Brinson-Hood-Beebower(BHB)三项法。仓库里另有
-`daily/evaluation/attribution.py::brinson_attribution` 是独立实现的真正 BHB
-三项法(allocation=(wp−wb)·rb、selection=wb·(rp−rb)、interaction 单独成项)，
-两者方法论/粒度不同，互不复用、不要合并。
+交互项并入选股)，不是 Brinson-Hood-Beebower(BHB)三项法。历史上
+`daily/evaluation/attribution.py` 曾有独立的单因子 BHB 三项法实现
+(allocation=(wp−wb)·rb、selection=wb·(rp−rb)、interaction 单独成项)，
+已随单因子评估精简摘除；如需三项法须另行实现，勿混入本模块。
 """
 from __future__ import annotations
 

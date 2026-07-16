@@ -46,7 +46,7 @@ cp .env.example .env          # 填入 TUSHARE_TOKEN
 pixi run smoke
 ```
 
-真实数据拉取需要在 `.env` 配置 `TUSHARE_TOKEN`。LLM 研究解读默认关闭；缺少 `FACTORZEN_LLM_*` 配置时自动跳过，不影响核心链路。
+真实数据拉取需要在 `.env` 配置 `TUSHARE_TOKEN`。LLM 仅用于因子挖掘（`fz mine agent` / `fz mine team`），需显式配置 `FACTORZEN_LLM_*`，缺失直接报错退出；单因子评估与报告不依赖 LLM。
 
 ```bash
 # 验证 Tushare 连通性 + 本地原始数据分区完整性（不进 CI）
@@ -115,7 +115,7 @@ pixi run fz factor run momentum_20d --start 20230101 --end 20241231 \
 
 **产物**：`workspace/factor_evaluations/{run_id}/`（`report.html` + `manifest.json` + 因子值 parquet）
 
-> 无 `--config` 时使用内置研究级默认配置：`csi500`、行业+市值中性化、IC/IR/分层四套策略。walk-forward 默认关闭，按需用 `--set walk_forward.enabled=true` 开启。
+> 无 `--config` 时使用内置研究级默认配置：`csi500`、行业+市值中性化、`quantile_ls_5` 分位多空单策略（单因子评估标准口径）。walk-forward 默认关闭，按需用 `--set walk_forward.enabled=true` 开启。
 
 ---
 

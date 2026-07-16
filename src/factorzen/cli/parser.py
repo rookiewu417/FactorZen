@@ -380,6 +380,19 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "--intraday-freq", dest="intraday_freq", default="5min",
         help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
     )
+    m_agent.add_argument(
+        "--intraday-scout", dest="intraday_scout", action="store_true",
+        help="启用日内 Feature Scout：每轮 LLM 提案 bar 表达式并注入 session（隐含 "
+             "--intraday-leaves；仅 ashare；默认关）",
+    )
+    m_agent.add_argument(
+        "--scout-k", dest="scout_k", type=int, default=4,
+        help="每轮 Scout 提案条数（默认 4；仅 --intraday-scout）",
+    )
+    m_agent.add_argument(
+        "--scout-max-leaves", dest="scout_max_leaves", type=int, default=12,
+        help="session 最多注入 ix_* 叶数（默认 12；仅 --intraday-scout）",
+    )
     _add_freq_arg(m_agent)
     m_agent.set_defaults(func=commands._cmd_mine_agent)
 
@@ -442,6 +455,19 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     m_team.add_argument(
         "--intraday-freq", dest="intraday_freq", default="5min",
         help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
+    )
+    m_team.add_argument(
+        "--intraday-scout", dest="intraday_scout", action="store_true",
+        help="启用日内 Feature Scout：每轮 LLM 提案 bar 表达式并注入 session（隐含 "
+             "--intraday-leaves；仅 ashare；默认关）",
+    )
+    m_team.add_argument(
+        "--scout-k", dest="scout_k", type=int, default=4,
+        help="每轮 Scout 提案条数（默认 4；仅 --intraday-scout）",
+    )
+    m_team.add_argument(
+        "--scout-max-leaves", dest="scout_max_leaves", type=int, default=12,
+        help="session 最多注入 ix_* 叶数（默认 12；仅 --intraday-scout）",
     )
     _add_freq_arg(m_team)
     m_team.set_defaults(func=commands._cmd_mine_team)

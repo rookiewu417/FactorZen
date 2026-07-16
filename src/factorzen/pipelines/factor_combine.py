@@ -248,12 +248,19 @@ def combine_from_session(
         raise ValueError(
             f"因子库不足 2 个（得 {len(rows)}），无法组合；放宽 passed_only 或多挖一些因子。")
 
-    # 库内/session 表达式若引用 i_*，自动装日内面板（否则物化静默全 null）
-    from factorzen.discovery.preparation import expressions_need_intraday
-    need_intraday = expressions_need_intraday(
-        [str(r.get("expression") or "") for r in rows]
+    # 库内/session 表达式若引用 i_* / ix_*，自动装日内面板（否则物化静默全 null）
+    from factorzen.discovery.preparation import (
+        expressions_need_intraday,
+        intraday_expr_leaf_names,
     )
-    daily = prepare_mining_daily(start, end, universe, intraday=need_intraday)
+    _exprs = [str(r.get("expression") or "") for r in rows]
+    need_intraday = expressions_need_intraday(_exprs)
+    ix_leaves = intraday_expr_leaf_names(_exprs)
+    daily = prepare_mining_daily(
+        start, end, universe,
+        intraday=need_intraday or bool(ix_leaves),
+        intraday_expr_leaves=ix_leaves or None,
+    )
     prepped = _preprocess_daily(daily)  # 预处理一次，逐因子复用
     start_date = datetime.strptime(start, "%Y%m%d").date()
 

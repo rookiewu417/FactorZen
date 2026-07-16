@@ -80,6 +80,9 @@ def write_session_manifest(
         "objective": getattr(state, "objective", None),
         "git_sha": get_git_sha(),
     }
+    scout_block = getattr(result, "intraday_scout", None)
+    if scout_block is not None:
+        manifest["intraday_scout"] = scout_block
     path = run_dir / "manifest.json"
     dump_manifest(manifest, path)
     return path

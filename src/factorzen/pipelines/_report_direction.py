@@ -11,11 +11,18 @@ from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
 from factorzen.pipelines._report_persistence import _meta_path
 
 
+def _as_float(value: Any, default: float) -> float:
+    """``None`` 用 default；保留 ``0.0``（不可用 ``x or default``，会把 p=0 吃掉）。"""
+    if value is None:
+        return default
+    return float(value)
+
+
 def _decide_backtest_direction(ic_result: ICAnalysisResult) -> dict[str, Any]:
     """Decide whether the report backtest should invert factor direction."""
-    ic_mean = float(getattr(ic_result, "ic_mean", 0.0) or 0.0)
-    ic_tstat = float(getattr(ic_result, "ic_tstat", 0.0) or 0.0)
-    ic_pvalue = float(getattr(ic_result, "ic_pvalue", 1.0) or 1.0)
+    ic_mean = _as_float(getattr(ic_result, "ic_mean", None), 0.0)
+    ic_tstat = _as_float(getattr(ic_result, "ic_tstat", None), 0.0)
+    ic_pvalue = _as_float(getattr(ic_result, "ic_pvalue", None), 1.0)
     oos_ic = getattr(ic_result, "oos_ic", {}) or {}
     oos_train = oos_ic.get("train")
     oos_test = oos_ic.get("test")

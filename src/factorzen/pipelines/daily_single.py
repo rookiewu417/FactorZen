@@ -47,6 +47,11 @@ from factorzen.daily.runtime import (
 )
 from factorzen.experiments.run_paths import copy_outputs_to_run_dir
 from factorzen.llm import generate_llm_explanation
+from factorzen.pipelines._report_direction import (
+    _apply_backtest_direction,
+    _decide_backtest_direction,
+)
+from factorzen.pipelines._report_persistence import _meta_path
 from factorzen.reports.tear_sheet import generate_tear_sheet
 
 setup_logging()
@@ -807,14 +812,22 @@ def _run(
     logger.info(f"数据质量报告已保存: {quality_path}")
     progress.advance("returns-quality")
 
-    # ── 7. IC 分析 ──
+    # ── 7. IC 分析（始终基于原始 factor_clean，不翻号）──
     with timer.stage("IC 分析"):
         ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
     ic_result.factor_name = factor.name
     logger.info(f"\n{ic_result.summary()}")
     progress.advance("ic")
 
-    # 可选：Pearson IC / Both IC
+    # 与 generate_report 对齐：显著负 IC 时回测用反向信号（做多低因子值）
+    backtest_direction = _decide_backtest_direction(ic_result)
+    logger.info(
+        f"回测方向判定: {backtest_direction.get('direction')} | "
+        f"{backtest_direction.get('reason')}"
+    )
+    backtest_df = _apply_backtest_direction(clean_df, backtest_direction)
+
+    # 可选：Pearson IC / Both IC（仍用原始 clean_df）
     pearson_ic_result = None
     if args.ic_method in ("pearson", "both"):
         from factorzen.daily.evaluation.ic_analysis import BothIcResult, IcStats, compute_ic
@@ -886,20 +899,20 @@ def _run(
             logger.warning(f"中性化 IC 计算失败（跳过）: {e}")
     progress.advance("optional-ic")
 
-    # ── 8. 策略回测 ──
+    # ── 8. 策略回测（IC 对齐方向后的信号）──
     with timer.stage("策略回测"):
         bt_result, strategy_results = _run_backtest_strategies(
             effective_config,
-            clean_df,
+            backtest_df,
             daily,
             factor_name=factor.name,
             frequency=args.frequency,
         )
     progress.advance("backtest")
 
-    # ── 9. 换手率 ──
+    # ── 9. 换手率（与回测同一信号口径）──
     with timer.stage("换手率"):
-        to_result = compute_turnover(clean_df, frequency=args.frequency)
+        to_result = compute_turnover(backtest_df, frequency=args.frequency)
     to_result.factor_name = factor.name
     logger.info(f"\n{to_result.summary()}")
     progress.advance("turnover")
@@ -907,6 +920,7 @@ def _run(
     factor_output_dir.mkdir(parents=True, exist_ok=True)
     result_output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 落盘原始因子值（语义定义，不翻号）；回测方向写入 meta 供 report --reuse
     factor_path = factor_output_dir / f"{factor.name}_{args.start}_{args.end}.parquet"
     clean_df.write_parquet(str(factor_path))
     logger.info(f"因子已保存: {factor_path}")
@@ -914,14 +928,39 @@ def _run(
     ic_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_ic.parquet"
     ic_result.ic_series.write_parquet(str(ic_path))
     logger.info(f"IC 序列已保存: {ic_path}")
+
+    meta_path = _meta_path(factor.name, args.start, args.end)
+    meta_payload: dict[str, Any] = {}
+    if meta_path.exists():
+        try:
+            meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta_payload = {}
+    meta_payload.update(
+        {
+            "factor_name": factor.name,
+            "start": args.start,
+            "end": args.end,
+            "ic_mean": ic_result.ic_mean,
+            "ic_tstat": ic_result.ic_tstat,
+            "ic_pvalue": ic_result.ic_pvalue,
+            "ir": ic_result.ir,
+            "n_periods": ic_result.n_periods,
+            "backtest_direction": backtest_direction,
+        }
+    )
+    meta_path.write_text(
+        json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    logger.info(f"回测方向已写入 meta: {meta_path}")
     progress.advance("save-core")
 
-    # ── 10. Walk-forward / OOS 摘要 ──
+    # ── 10. Walk-forward / OOS 摘要（与回测同一信号口径）──
     if effective_config.walk_forward.enabled:
         with timer.stage("Walk-forward"):
             try:
                 walk_forward_summary, walk_forward_result = run_quantile_walk_forward_summary(
-                    clean_df,
+                    backtest_df,
                     daily,
                     effective_config,
                     factor_name=factor.name,
@@ -961,6 +1000,15 @@ def _run(
         json.dumps(walk_forward_summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     logger.info(f"Walk-forward 摘要已保存: {walk_forward_path}")
+    # 回填 meta 中的 walk_forward（方向判定已先写入）
+    try:
+        meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta_payload["walk_forward_summary"] = walk_forward_summary
+        meta_path.write_text(
+            json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        logger.warning(f"更新 meta walk_forward 失败（跳过）: {e}")
 
     # ── 11b. 事件研究（可选）──
     event_study_result = None
@@ -1018,7 +1066,7 @@ def _run(
         to_result=to_result,
         walk_forward_summary=walk_forward_summary,
         quality_report=quality_report,
-        backtest_direction=None,
+        backtest_direction=backtest_direction,
     )
     progress.advance("llm")
     with timer.stage("报告生成"):
@@ -1033,6 +1081,7 @@ def _run(
             universe=args.universe,
             benchmark_result=benchmark_result,
             attribution_result=attribution_result,
+            backtest_direction=backtest_direction,
             event_study_result=event_study_result,
             walk_forward_result=walk_forward_result,
             walk_forward_summary=walk_forward_summary,
@@ -1056,6 +1105,7 @@ def _run(
         "walk_forward_summary": str(walk_forward_path),
         "universe_snapshot": str(universe_snapshot_path),
         "report": str(report_path),
+        "meta": str(meta_path),
     }
     if llm_explanation_path is not None:
         outputs["llm_explanation"] = str(llm_explanation_path)

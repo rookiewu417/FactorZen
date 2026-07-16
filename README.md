@@ -56,7 +56,7 @@ cp .env.example .env
 pixi run smoke
 ```
 
-`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；LLM 挖掘功能（单 / 多 Agent，`fz mine agent` / `fz mine team`）需要显式配置 `FACTORZEN_LLM_*`，缺失会直接报错退出（不会自动跳过）；仅报告的可选 LLM 解读功能在缺失配置时才会自动跳过。
+`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；LLM 挖掘功能（单 / 多 Agent，`fz mine agent` / `fz mine team`）需要显式配置 `FACTORZEN_LLM_*`，缺失会直接报错退出（不会自动跳过）；单因子评估与报告不依赖 LLM。
 
 ---
 

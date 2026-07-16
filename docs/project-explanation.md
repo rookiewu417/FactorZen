@@ -55,7 +55,7 @@ src/factorzen/
                   + benchmark.py（流水线步骤耗时/峰值内存的性能计时工具，与金融基准无关）
   daily/          低频主线：data(PIT)、preprocessing、factors、evaluation（含微观结构回测约束）、optimization
   intraday/       分钟线研究代码，当前非主线
-  llm/            可选 LLM 研究解读
+  llm/            LLM 客户端与挖掘提示词设施（服务 agents 挖掘）
   pipelines/      daily_single、generate_report 端到端流程
   reports/        Tear Sheet 报告引擎 + portfolio_report（组合 Dashboard）
   research/       实验性多因子合成（样本内工具）
@@ -135,7 +135,7 @@ data/                 本地数据缓存，不入库
 | `config/tushare_config.py` | 读取 `.env`，暴露 `TUSHARE_TOKEN` 与 `ensure_token()`；离线测试不因 import 失败 |
 | `core/config_loader.py` | Pydantic v2 校验 YAML 运行配置 |
 
-配置样例在 `workspace/configs/daily/daily_factor_template.yaml`。常用字段包括 `factor`、`universe`、`start`、`end`、`benchmark`、`seed`、`preprocessing`、`backtest`、`walk_forward`、`ic_method`、`event_study` 与 `neutralized_ic`。
+配置样例在 `workspace/configs/daily/daily_factor_template.yaml`。常用字段包括 `factor`、`universe`、`start`、`end`、`benchmark`、`seed`、`preprocessing`、`backtest` 与 `walk_forward`。
 
 ## 6. 数据流
 
@@ -191,12 +191,12 @@ reports/     → 组合绩效 HTML Dashboard
 
 ## 8. 评估与报告
 
-**单因子评估（基线 + 微观结构约束）**
+**单因子评估（核心指标集）**
 
-- Rank IC、Pearson IC、中性化 IC、多持有期一致性、HAC t 统计。
-- 分层回测、分位收益、多空 NAV、月度收益与分位价差。
-- 单调性、Rank 自相关、因子相关性、市值/行业/市场状态分层、事件研究、walk-forward。
-- 成本模型、容量约束与基准比较（策略 vs 真实指数超额收益，按股票池默认映射 HS300/CSI500/CSI800，`--benchmark` 可覆盖）。
+- Rank IC：均值、ICIR、HAC t 统计、胜率，以及多持有期（1/5/10/20d）IC 衰减。
+- 分位分层回测：分组净值、多空组合 Sharpe/年化/最大回撤；显著负 IC 自动反向对齐交易方向。
+- 单调性检验、换手率与成本模型、walk-forward 样本外摘要。
+- 基准比较（策略 vs 真实指数超额收益，按股票池默认映射 HS300/CSI500/CSI800，`--benchmark` 可覆盖）。
 
 **防过拟合护栏**
 
@@ -210,7 +210,7 @@ reports/     → 组合绩效 HTML Dashboard
 - 风险因子归因（持仓风格暴露 × 因子收益）。
 - 组合绩效 HTML Dashboard：指标卡 + 净值曲线 + 月度热图 + 归因条形图 + 风险摘要。
 
-报告引擎：`reports/tear_sheet.generate_tear_sheet`（单因子）、`reports/portfolio_report`（组合 Dashboard）。Tear Sheet 按职责拆为 `_formatting`/`_scoring`/`_charts`/`_strategy`/`_summaries`。
+报告引擎：`reports/tear_sheet.generate_tear_sheet`（单因子，单页极简：核心指标表 + 分层净值/IC 序列图 + IC 衰减与单调性表 + 警告区）、`reports/portfolio_report`（组合 Dashboard）。图表与格式化助手在 `_charts`/`_formatting`。
 
 ## 9. 可复现与可观测
 

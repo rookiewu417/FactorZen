@@ -504,11 +504,9 @@ def test_generate_report_filters_by_membership(monkeypatch, tmp_path):
     monkeypatch.setattr(gr, "FactorDataContext", FakeCtx)
     monkeypatch.setattr(
         gr,
-        "build_preprocessing_pipeline",
-        lambda cfg: SimpleNamespace(
-            run=lambda df, col="factor_value", **kw: df.with_columns(
-                pl.col(col).alias("factor_clean")
-            )
+        "_preprocess_factor",
+        lambda df, cfg, **kw: df.with_columns(
+            pl.col("factor_value").alias("factor_clean")
         ),
     )
     monkeypatch.setattr(

@@ -49,10 +49,11 @@ def test_set_override_preprocessing(monkeypatch, capsys):
 
 
 def test_no_set_no_config_keeps_default_suite(monkeypatch, capsys):
-    """对照：无 --set 无 --config 时维持现状（4 策略默认套件）。"""
+    """对照：无 --set 无 --config 时维持研究预设（quantile_ls_5 单策略）。"""
     _run_dry(monkeypatch, ["--factor", "f", "--start", "20230101", "--end", "20231231"])
     bt = json.loads(capsys.readouterr().out)["config"]["backtest"]
-    assert len(bt["strategies"]) == 4
+    assert [s["name"] for s in bt["strategies"]] == ["quantile_ls_5"]
+    assert bt["primary"] == "quantile_ls_5"
 
 
 def test_set_override_with_config(monkeypatch, capsys, tmp_path):

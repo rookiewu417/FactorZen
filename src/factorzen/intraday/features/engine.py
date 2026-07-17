@@ -14,7 +14,7 @@ from typing import Any
 import polars as pl
 
 from factorzen.config.settings import DATA_RAW, INTRADAY_FEATURES_DIR
-from factorzen.core.storage import load_parquet, save_parquet
+from factorzen.core.storage import load_parquet, partition_exists, save_parquet
 from factorzen.intraday.features.spec import (
     IntradayFeatureSpec,
     battery,
@@ -495,6 +495,39 @@ def _merge_coverage(
     }
 
 
+def _month_label_ym(label: str) -> tuple[int, int]:
+    """``YYYY-MM`` → (year, month)。"""
+    return int(label[:4]), int(label[5:7])
+
+
+def _should_skip_month(
+    label: str,
+    *,
+    data_type: str,
+    out_dir: Path,
+    existing: dict[str, Any] | None,
+    bhash: str,
+    force: bool,
+) -> bool:
+    """三条同时成立才跳过该月（缓存键完整性）。
+
+    ① derived 分区存在且非空；② manifest coverage 覆盖该月；
+    ③ manifest battery_hash 与当前电池一致。
+
+    ``force=True`` 时永不跳过。hash 不一致时由入口 fail-loudly / overwrite
+    处理，此处不跳过（与 overwrite 后全量重刷语义一致）。
+    """
+    if force:
+        return False
+    if existing is None or existing.get("battery_hash") != bhash:
+        return False
+    cov_months = list((existing.get("coverage") or {}).get("months") or [])
+    if label not in cov_months:
+        return False
+    y, m = _month_label_ym(label)
+    return partition_exists(data_type, y, m, base_dir=out_dir)
+
+
 def build_intraday_features(
     start: str,
     end: str,
@@ -505,6 +538,7 @@ def build_intraday_features(
     out_dir: Path | None = None,
     source_dir: Path | None = None,
     overwrite: bool = False,
+    force: bool = False,
     min_bar_coverage: float = 0.8,
 ) -> BuildReport:
     """逐月物化日内特征面板并写 manifest。
@@ -512,6 +546,12 @@ def build_intraday_features(
     对区间内每个自然月：
     ``load_parquet("minute_1min", ...)`` → ``compute_day_panel`` →
     ``save_parquet(..., mode="overwrite")``；大帧显式释放防 OOM。
+
+    **增量缺月跳过**（``force=False`` 时）：当 derived 分区非空、manifest
+    coverage 已覆盖该月、且 ``battery_hash`` 一致时跳过该月重算。
+    ``battery_hash`` 冲突时对齐既有语义：``overwrite=False`` fail-loudly；
+    ``overwrite=True`` 全量重刷并重置 coverage。``force=True`` 忽略跳过判据
+    全量重算（hash 守卫仍生效）。
 
     不用 ``IntradayDataContext``（其 ``max_bars`` / ``expanded_start`` 对全市场
     物化是错误口径）。
@@ -524,10 +564,11 @@ def build_intraday_features(
         out_dir: 输出根目录，默认 ``INTRADAY_FEATURES_DIR``。
         source_dir: 1min 源湖根，默认 ``DATA_RAW``。
         overwrite: battery_hash 冲突时是否强制重写。
+        force: 忽略增量跳过，全量重算已覆盖月。
         min_bar_coverage: 有效桶覆盖率门槛。
 
     Returns:
-        ``BuildReport`` 摘要。
+        ``BuildReport`` 摘要（``months`` 为本 run 实际重算的月）。
 
     Raises:
         ValueError: 已有 manifest 的 battery_hash 不匹配且 ``overwrite=False``。
@@ -547,12 +588,25 @@ def build_intraday_features(
             f"当前 {bhash!r}；请设 overwrite=True 以重写"
         )
 
+    hash_ok = existing is not None and existing.get("battery_hash") == bhash
     windows = _month_windows(start, end)
     processed_months: list[str] = []
+    skipped_months: list[str] = []
     rows_total = 0
     n_stocks = 0
 
     for label, m_start, m_end in windows:
+        if _should_skip_month(
+            label,
+            data_type=data_type,
+            out_dir=out,
+            existing=existing if hash_ok else None,
+            bhash=bhash,
+            force=force,
+        ):
+            skipped_months.append(label)
+            continue
+
         try:
             lf = load_parquet(
                 "minute_1min",
@@ -606,7 +660,7 @@ def build_intraday_features(
         gc.collect()
 
     coverage = _merge_coverage(
-        existing if (existing is not None and existing.get("battery_hash") == bhash) else None,
+        existing if hash_ok else None,
         start,
         end,
         processed_months,
@@ -619,11 +673,24 @@ def build_intraday_features(
             "months": sorted(processed_months),
         }
 
-    # 若本 build 无新月但 hash 匹配，保留旧 coverage 极值与 months，并仍更新 built_at
-    if not processed_months and existing is not None and existing.get("battery_hash") == bhash:
+    # 本 build 无新月但 hash 匹配（含全量跳过）：保留旧 coverage / rows / n_stocks
+    if not processed_months and hash_ok:
         coverage = _merge_coverage(existing, start, end, [])
-        rows_total = int(existing.get("rows_total") or 0)
-        n_stocks = int(existing.get("n_stocks_last_build") or 0)
+        rows_total = int(existing.get("rows_total") or 0)  # type: ignore[union-attr]
+        n_stocks = int(existing.get("n_stocks_last_build") or 0)  # type: ignore[union-attr]
+    elif processed_months and hash_ok and skipped_months:
+        # 部分补算：rows/n_stocks 在旧总量上叠加新月（新月此前不在 coverage）
+        old_cov = set((existing.get("coverage") or {}).get("months") or [])  # type: ignore[union-attr]
+        only_new = [m for m in processed_months if m not in old_cov]
+        if only_new and len(only_new) == len(processed_months):
+            rows_total = int(existing.get("rows_total") or 0) + rows_total  # type: ignore[union-attr]
+            n_stocks = max(n_stocks, int(existing.get("n_stocks_last_build") or 0))  # type: ignore[union-attr]
+        elif not only_new:
+            # 全是 force 式重算已覆盖月：用本 run 行数；若混有 skip 则保留旧 n 的 max
+            n_stocks = max(n_stocks, int(existing.get("n_stocks_last_build") or 0))  # type: ignore[union-attr]
+            if skipped_months:
+                # 重算子集 + 跳过其余：无法精确加总，保留 max(本 run, 旧)
+                rows_total = max(rows_total, int(existing.get("rows_total") or 0))  # type: ignore[union-attr]
 
     payload: dict[str, Any] = {
         "version": version,

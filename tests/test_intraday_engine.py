@@ -242,3 +242,157 @@ class TestBuildIntradayFeatures:
         assert "2024-01" in r.months
         assert "2024-02" not in r.months
         assert "2024-03" not in r.months
+
+    def test_covered_month_skipped_on_rerun(self, tmp_path: Path) -> None:
+        """已覆盖月（分区非空 + coverage + battery_hash）二次 build 跳过重算。"""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _build_mini_source(src)
+        r1 = build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        assert set(r1.months) == {"2024-01", "2024-02"}
+        m1 = read_manifest(version="v1", freq="5min", base_dir=out)
+        assert m1 is not None
+        built_at_1 = m1["built_at"]
+        rows_1 = m1["rows_total"]
+        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
+        jan_mtime_1 = jan_path.stat().st_mtime_ns
+        jan_bytes_1 = jan_path.read_bytes()
+
+        r2 = build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        # 全部跳过：本 run 未处理任何月
+        assert r2.months == []
+        m2 = read_manifest(version="v1", freq="5min", base_dir=out)
+        assert m2 is not None
+        # manifest 覆盖与行数不被破坏；built_at 可更新
+        assert set(m2["coverage"]["months"]) == {"2024-01", "2024-02"}
+        assert m2["rows_total"] == rows_1
+        assert m2["battery_hash"] == m1["battery_hash"]
+        assert m2["built_at"] != built_at_1 or m2["built_at"] == built_at_1
+        # 分区文件未重写
+        assert jan_path.stat().st_mtime_ns == jan_mtime_1
+        assert jan_path.read_bytes() == jan_bytes_1
+
+    def test_missing_month_still_computed(self, tmp_path: Path) -> None:
+        """coverage 缺月 → 仅补算缺月，已覆盖月跳过。"""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _build_mini_source(src)
+        build_intraday_features(
+            "20240101",
+            "20240131",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
+        jan_mtime = jan_path.stat().st_mtime_ns
+
+        r = build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        assert r.months == ["2024-02"]
+        assert jan_path.stat().st_mtime_ns == jan_mtime
+        m = read_manifest(version="v1", freq="5min", base_dir=out)
+        assert m is not None
+        assert set(m["coverage"]["months"]) == {"2024-01", "2024-02"}
+        assert partition_exists("v1/5min", 2024, 2, base_dir=out)
+
+    def test_partition_missing_recomputes_even_if_in_coverage(
+        self, tmp_path: Path
+    ) -> None:
+        """coverage 有月但分区文件缺失 → 不跳过，补算。"""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _build_mini_source(src)
+        build_intraday_features(
+            "20240101",
+            "20240131",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
+        jan_path.unlink()
+
+        r = build_intraday_features(
+            "20240101",
+            "20240131",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        assert r.months == ["2024-01"]
+        assert jan_path.exists()
+
+    def test_hash_mismatch_still_fail_loudly_without_overwrite(
+        self, tmp_path: Path
+    ) -> None:
+        """battery_hash 变更：overwrite=False 仍 fail-loudly（与既有语义一致）。"""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _build_mini_source(src)
+        build_intraday_features(
+            "20240101",
+            "20240131",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        mpath = out / "v1" / "5min" / "manifest.json"
+        payload = json.loads(mpath.read_text(encoding="utf-8"))
+        payload["battery_hash"] = "deadbeefdeadbeef"
+        mpath.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="battery_hash"):
+            build_intraday_features(
+                "20240101",
+                "20240131",
+                source_dir=src,
+                out_dir=out,
+                min_bar_coverage=0.0,
+                force=False,
+                overwrite=False,
+            )
+
+    def test_force_recomputes_all_covered_months(self, tmp_path: Path) -> None:
+        """--force 即使已覆盖也全量重算。"""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _build_mini_source(src)
+        build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
+        mtime_before = jan_path.stat().st_mtime_ns
+
+        r = build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+            force=True,
+        )
+        assert set(r.months) == {"2024-01", "2024-02"}
+        assert r.rows > 0
+        assert jan_path.stat().st_mtime_ns >= mtime_before

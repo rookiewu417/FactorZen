@@ -257,9 +257,10 @@ def test_dual_path_wires_library_corr_panel():
                     fname = n.func.id
                 elif isinstance(n.func, ast.Attribute):
                     fname = n.func.attr
-                if fname == "library_orthogonal_check":
-                    if any(kw.arg == "panel" for kw in n.keywords):
-                        has_panel_kw = True
+                if fname == "library_orthogonal_check" and any(
+                    kw.arg == "panel" for kw in n.keywords
+                ):
+                    has_panel_kw = True
         assert has_panel_kw, f"{rel} 的 library_orthogonal_check 未传 panel="
 
 

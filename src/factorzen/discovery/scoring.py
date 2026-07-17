@@ -108,6 +108,41 @@ def _factor_col_name(df: pl.DataFrame) -> str:
     )
 
 
+def _index_maps_from_keys(dates: tuple, stocks: tuple) -> tuple[dict, dict, pl.DataFrame, pl.DataFrame]:
+    date_idx = {d: i for i, d in enumerate(dates)}
+    stock_idx = {s: i for i, s in enumerate(stocks)}
+    date_map = pl.DataFrame({"trade_date": list(dates), "_di": list(range(len(dates)))})
+    stock_map = pl.DataFrame({"ts_code": list(stocks), "_si": list(range(len(stocks)))})
+    return date_idx, stock_idx, date_map, stock_map
+
+
+def _scatter_frame_to_slice(
+    sub: pl.DataFrame,
+    date_map: pl.DataFrame,
+    stock_map: pl.DataFrame,
+    n_d: int,
+    n_s: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """[trade_date, ts_code, _v] → (values, present) 二维切片。"""
+    vals = np.full((n_d, n_s), np.nan, dtype=np.float64)
+    pres = np.zeros((n_d, n_s), dtype=bool)
+    if sub.is_empty():
+        return vals, pres
+    joined = (
+        sub.join(date_map, on="trade_date", how="inner")
+        .join(stock_map, on="ts_code", how="inner")
+    )
+    if joined.is_empty():
+        return vals, pres
+    r = joined["_di"].to_numpy().astype(np.int64, copy=False)
+    c = joined["_si"].to_numpy().astype(np.int64, copy=False)
+    is_null = joined["_v"].is_null().to_numpy()
+    arr = joined["_v"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)
+    vals[r, c] = arr
+    pres[r, c] = ~is_null
+    return vals, pres
+
+
 def build_library_corr_panel(
     pool: dict[str, pl.DataFrame] | None,
 ) -> LibraryCorrPanel | None:
@@ -119,48 +154,36 @@ def build_library_corr_panel(
         return None
     names = tuple(pool.keys())
     prepared: list[pl.DataFrame] = []
-    all_dates: set = set()
-    all_stocks: set = set()
+    pieces: list[pl.DataFrame] = []
     for name in names:
         df = pool[name]
         col = _factor_col_name(df)
         sub = df.select(
             ["trade_date", "ts_code", pl.col(col).alias("_v")]
         )
-        all_dates.update(sub["trade_date"].to_list())
-        all_stocks.update(sub["ts_code"].to_list())
         prepared.append(sub)
+        if not sub.is_empty():
+            pieces.append(sub.select(["trade_date", "ts_code"]))
 
-    dates = tuple(sorted(all_dates))
-    stocks = tuple(sorted(all_stocks))
-    date_idx = {d: i for i, d in enumerate(dates)}
-    stock_idx = {s: i for i, s in enumerate(stocks)}
+    if not pieces:
+        dates: tuple = ()
+        stocks: tuple = ()
+    else:
+        keys = pl.concat(pieces).unique()
+        dates = tuple(sorted(keys["trade_date"].unique().to_list()))
+        stocks = tuple(sorted(keys["ts_code"].unique().to_list()))
+
+    date_idx, stock_idx, date_map, stock_map = _index_maps_from_keys(dates, stocks)
     n_d, n_s, n_f = len(dates), len(stocks), len(names)
     values = np.full((n_d, n_s, n_f), np.nan, dtype=np.float64)
     present = np.zeros((n_d, n_s, n_f), dtype=bool)
 
     for fi, sub in enumerate(prepared):
-        if sub.is_empty():
+        if sub.is_empty() or n_d == 0:
             continue
-        r = np.fromiter(
-            (date_idx.get(d, -1) for d in sub["trade_date"].to_list()),
-            dtype=np.int64,
-            count=sub.height,
-        )
-        c = np.fromiter(
-            (stock_idx.get(s, -1) for s in sub["ts_code"].to_list()),
-            dtype=np.int64,
-            count=sub.height,
-        )
-        # null → present False；float NaN → present True（毒化语义）
-        is_null = sub["_v"].is_null().to_numpy()
-        # to_numpy 把 null 也变成 NaN；用 fill_null 再取数，present 单独管
-        arr = sub["_v"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)
-        # 真正的 float NaN 在 fill_null 后仍在
-        keep = (r >= 0) & (c >= 0)
-        r_k, c_k = r[keep], c[keep]
-        values[r_k, c_k, fi] = arr[keep]
-        present[r_k, c_k, fi] = ~is_null[keep]
+        v_sl, p_sl = _scatter_frame_to_slice(sub, date_map, stock_map, n_d, n_s)
+        values[:, :, fi] = v_sl
+        present[:, :, fi] = p_sl
 
     return LibraryCorrPanel(
         names=names,
@@ -178,80 +201,50 @@ def _scatter_candidate_to_panel(
 ) -> tuple[np.ndarray, np.ndarray]:
     """候选散射到 panel 网格 → (values, present)，形状 (n_dates, n_stocks)。"""
     n_d, n_s = len(panel.dates), len(panel.stocks)
-    vals = np.full((n_d, n_s), np.nan, dtype=np.float64)
-    pres = np.zeros((n_d, n_s), dtype=bool)
-    if factor_df.is_empty():
-        return vals, pres
+    if factor_df.is_empty() or n_d == 0:
+        return (
+            np.full((n_d, n_s), np.nan, dtype=np.float64),
+            np.zeros((n_d, n_s), dtype=bool),
+        )
     col = _factor_col_name(factor_df)
     sub = factor_df.select(["trade_date", "ts_code", pl.col(col).alias("_v")])
-    r = np.fromiter(
-        (panel.date_idx.get(d, -1) for d in sub["trade_date"].to_list()),
-        dtype=np.int64,
-        count=sub.height,
-    )
-    c = np.fromiter(
-        (panel.stock_idx.get(s, -1) for s in sub["ts_code"].to_list()),
-        dtype=np.int64,
-        count=sub.height,
-    )
-    is_null = sub["_v"].is_null().to_numpy()
-    arr = sub["_v"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)
-    keep = (r >= 0) & (c >= 0)
-    r_k, c_k = r[keep], c[keep]
-    vals[r_k, c_k] = arr[keep]
-    pres[r_k, c_k] = ~is_null[keep]
-    return vals, pres
+    # 复用 panel 键序建临时 map（小表，join 比 Python dict fromiter 快）
+    date_map = pl.DataFrame({"trade_date": list(panel.dates), "_di": list(range(n_d))})
+    stock_map = pl.DataFrame({"ts_code": list(panel.stocks), "_si": list(range(n_s))})
+    return _scatter_frame_to_slice(sub, date_map, stock_map, n_d, n_s)
 
 
 def _max_corr_detail_panel(
     factor_df: pl.DataFrame, panel: LibraryCorrPanel,
 ) -> tuple[float, str | None]:
-    """矩阵化逐对相关：逐日向量化算全部库因子，语义对齐 compute_factor_correlation。"""
+    """矩阵化逐对相关：全日期×全库因子向量化，语义对齐 compute_factor_correlation。"""
     if not panel.names:
         return 0.0, None
     cand_v, cand_p = _scatter_candidate_to_panel(factor_df, panel)
-    n_d = len(panel.dates)
-    n_f = len(panel.names)
-    cum = np.zeros(n_f, dtype=np.float64)
-    cnt = np.zeros(n_f, dtype=np.int64)
-
-    for di in range(n_d):
-        cp = cand_p[di]
-        if not cp.any():
-            continue
-        c_row = cand_v[di]
-        lp = panel.present[di]  # (n_s, n_f)
-        lv = panel.values[di]  # (n_s, n_f)
-        valid = cp[:, None] & lp  # (n_s, n_f)
-        n = valid.sum(axis=0).astype(np.float64)  # (n_f,)
-        enough = n >= _MIN_CORR_CROSS
-        if not enough.any():
-            continue
-        # invalid → 0；valid 保留原值（含 NaN → 和式变 NaN → 该对日跳过）
-        c_m = np.where(valid, c_row[:, None], 0.0)
-        l_m = np.where(valid, lv, 0.0)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            sum_c = c_m.sum(axis=0)
-            sum_l = l_m.sum(axis=0)
-            sum_c2 = (c_m * c_m).sum(axis=0)
-            sum_l2 = (l_m * l_m).sum(axis=0)
-            sum_cl = (c_m * l_m).sum(axis=0)
-            # Pearson ≡ np.corrcoef：|mean corr| 用 (nΣxy−ΣxΣy)/√(...)
-            # std==0（ddof=0）⇔ n·Σx²−(Σx)² == 0
-            den_c = n * sum_c2 - sum_c * sum_c
-            den_l = n * sum_l2 - sum_l * sum_l
-            num = n * sum_cl - sum_c * sum_l
-            denom = np.sqrt(den_c * den_l)
-            corr = num / denom
-        # 幸存：样本够、方差非零、有限（NaN 毒化 / 0/0 均排除）
-        ok = enough & (den_c > 0) & (den_l > 0) & np.isfinite(corr)
-        cum[ok] += corr[ok]
-        cnt[ok] += 1
+    # (n_d, n_s, n_f)：逐对独立掩码（inner 语义），NaN 在 present 内保留以毒化该日
+    both = cand_p[:, :, None] & panel.present  # bool
+    n = both.sum(axis=1).astype(np.float64)  # (n_d, n_f)
+    c_m = np.where(both, cand_v[:, :, None], 0.0)
+    l_m = np.where(both, panel.values, 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sum_c = c_m.sum(axis=1)
+        sum_l = l_m.sum(axis=1)
+        sum_c2 = (c_m * c_m).sum(axis=1)
+        sum_l2 = (l_m * l_m).sum(axis=1)
+        sum_cl = (c_m * l_m).sum(axis=1)
+        # Pearson ≡ np.corrcoef；(std==0 ddof=0) ⇔ n·Σx²−(Σx)² == 0
+        den_c = n * sum_c2 - sum_c * sum_c
+        den_l = n * sum_l2 - sum_l * sum_l
+        num = n * sum_cl - sum_c * sum_l
+        corr = num / np.sqrt(den_c * den_l)
+    ok = (n >= _MIN_CORR_CROSS) & (den_c > 0) & (den_l > 0) & np.isfinite(corr)
+    cnt = ok.sum(axis=0)  # (n_f,)
+    cum = np.where(ok, corr, 0.0).sum(axis=0)
 
     best = 0.0
     nearest: str | None = None
     for fi, name in enumerate(panel.names):
-        if cnt[fi] <= 0:
+        if int(cnt[fi]) <= 0:
             c = 0.0
         else:
             c = abs(float(cum[fi] / cnt[fi]))

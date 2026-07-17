@@ -463,8 +463,13 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                          type(exc).__name__, exc)
             lib_pool, lib_pool_mining = {}, {}
 
-    lib_panel = build_library_panel(lib_pool)
-    eff_objective = resolve_objective(objective, lib_panel is not None)
+    # residual 面板仅 residual 目标需要；raw 跳过可省 ~数秒（z-score 全库矩阵）
+    if objective == "raw":
+        lib_panel = None
+        eff_objective = "raw"
+    else:
+        lib_panel = build_library_panel(lib_pool)
+        eff_objective = resolve_objective(objective, lib_panel is not None)
     # 库相关矩阵面板：mining 段池一次构建，整 session 选股循环复用（vs 逐对 join）
     _lib_for_corr = lib_pool_mining or lib_pool
     lib_corr_panel = build_library_corr_panel(_lib_for_corr) if _lib_for_corr else None
@@ -490,7 +495,9 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         if not ok_lib:
             n_library_correlated_rejects += 1
             continue
-        mc = max_correlation(fdf, selected_pool)
+        # selected_pool 小但帧大：逐对 join 仍贵；有成员时建临时 panel（k≤top_k）
+        sel_panel = build_library_corr_panel(selected_pool) if selected_pool else None
+        mc = max_correlation(fdf, selected_pool, panel=sel_panel)
         if mc < decorr_threshold:
             cand = {**cand, "max_corr": round(float(mc), 4)}
             if lib_pool:

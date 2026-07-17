@@ -66,6 +66,7 @@ def neutralize_ols(
     use_mv = daily_basic is not None
 
     if use_industry:
+        assert stock_basic is not None
         ind = (
             stock_basic.select(["ts_code", "industry"])
             .with_columns(
@@ -80,6 +81,7 @@ def neutralize_ols(
         work = work.with_columns(pl.col("_industry").fill_null("未知"))
 
     if use_mv:
+        assert daily_basic is not None
         mv = daily_basic.select(["trade_date", "ts_code", "total_mv"]).rename(
             {"total_mv": "_total_mv"}
         )

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from datetime import date
 
 import polars as pl
 import pytest

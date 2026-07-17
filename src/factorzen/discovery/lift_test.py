@@ -27,7 +27,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
+import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -38,6 +41,7 @@ import polars as pl
 from factorzen.config.settings import FACTOR_LIBRARY_DIR
 from factorzen.core.stats import spearman_avg_rank
 from factorzen.discovery.guardrails import (
+    DEFAULT_HOLDOUT_MIN_DAYS,
     DEFAULT_LIFT_THRESHOLD,
     REJECT_CATEGORY_GRAY_ZONE,
 )
@@ -95,6 +99,101 @@ def resolve_lift_workers(lift_workers: int | None) -> int:
         _LOG.info("lift_workers 自适应 → %d（%s）", w, reason)
         return w
     return int(lift_workers)
+
+
+def group_gate_ok(
+    group: dict,
+    *,
+    threshold: float,
+    lift_se_mult: float,
+) -> tuple[bool, float]:
+    """组门判定：SE 有限 + lift ≥ max(threshold, se_mult×SE) + 无 error。
+
+    返回 ``(ok, bar)``。SE 缺失/非有限 → 不过（与 lift_admission 同契约；
+    不再把「无 SE」当「零方差」把 bar 退化为裸 threshold）。
+    session 钩子与 CLI lift-test 共用本函数，单点语义。
+    """
+    g_lift = group.get("lift")
+    g_se = group.get("lift_se")
+    if isinstance(g_se, (int, float)) and math.isfinite(float(g_se)):
+        se_finite, se_val = True, float(g_se)
+    else:
+        se_finite, se_val = False, 0.0
+    bar = max(float(threshold), float(lift_se_mult) * se_val)
+    ok = (
+        se_finite
+        and g_lift is not None
+        and g_lift == g_lift
+        and float(g_lift) >= bar
+        and not group.get("error")
+    )
+    return ok, bar
+
+
+def filter_candidates_by_coverage(
+    candidates: list[dict],
+    *,
+    materialize_candidate: Callable[[str], Any],
+    holdout_start: Any = None,
+    min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
+) -> tuple[list[dict], list[dict]]:
+    """物化后按评分窗非空日数过滤低覆盖候选。
+
+    与 session 末钩子原 1086–1126 逻辑一致：materialize 失败 / 空帧 / OOS 日数
+    < ``min_days`` → dropped（带 expression + 原因码 + 实测日数）；其余进 kept。
+    CLI 与钩子共用，避免外部 lift-test 路径烧低覆盖 LGBM。
+    """
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for c in candidates:
+        expr = c.get("expression")
+        try:
+            cdf = materialize_candidate(expr) if expr else None
+        except Exception as exc:
+            dropped.append({
+                "expression": expr,
+                "n_oos_days": 0,
+                "error": f"materialize:{type(exc).__name__}",
+            })
+            continue
+        if cdf is None or (hasattr(cdf, "is_empty") and cdf.is_empty()):
+            dropped.append({
+                "expression": expr,
+                "n_oos_days": 0,
+                "error": "materialize_failed",
+            })
+            continue
+        try:
+            oos = cdf
+            if holdout_start is not None:
+                # Date / Utf8 / YYYY-MM-DD 统一到可比较字符串，避免 SchemaError
+                if oos.schema.get("trade_date") == pl.Date:
+                    oos = oos.with_columns(
+                        pl.col("trade_date").dt.strftime("%Y%m%d")
+                    )
+                else:
+                    oos = oos.with_columns(pl.col("trade_date").cast(pl.Utf8))
+                hs = holdout_start
+                if hasattr(hs, "strftime"):
+                    hs = hs.strftime("%Y%m%d")
+                else:
+                    hs = str(hs).replace("-", "")[:8]
+                oos = oos.filter(pl.col("trade_date") >= str(hs))
+            if "factor_value" in oos.columns:
+                oos = oos.filter(pl.col("factor_value").is_not_null())
+            n_oos = int(oos["trade_date"].n_unique()) if oos.height else 0
+        except Exception:
+            n_oos = 0
+        if n_oos < min_days:
+            dropped.append({
+                "expression": expr,
+                "n_oos_days": n_oos,
+                "error": "holdout_coverage",
+            })
+            continue
+        kept.append(c)
+    return kept, dropped
+
 
 # TODO: 后续由 guardrails.REJECT_CATEGORY_LIFT_QUEUE 收口；旧 manifest 仍用 gray_zone。
 LIFT_QUEUE_CATEGORY = "lift_queue"
@@ -712,8 +811,12 @@ def run_lift_tests(
             for c in selected
         ]
 
+    n_sel = len(selected)
+    done_i = {"n": 0}
+
     def _eval_one(c: dict) -> dict[str, Any]:
         expr = c.get("expression")
+        t0 = time.monotonic()
         row: dict[str, Any] = {
             "expression": expr,
             "lift": None,
@@ -721,6 +824,7 @@ def run_lift_tests(
             "candidate_rank_ic": None,
             "passed": False,
             "error": None,
+            "elapsed_s": None,
             **_empty_lift_fields(),
             **meta,
             **prov_empty,
@@ -785,6 +889,17 @@ def run_lift_tests(
                 expr, type(exc).__name__, exc,
             )
             row["error"] = f"{type(exc).__name__}:{exc}"
+        finally:
+            row["elapsed_s"] = float(time.monotonic() - t0)
+            done_i["n"] += 1
+            expr_s = (str(expr) if expr is not None else "")[:60]
+            lift_s = row.get("lift")
+            lift_fmt = f"{lift_s:.4f}" if isinstance(lift_s, (int, float)) and lift_s == lift_s else repr(lift_s)
+            print(
+                f"[lift {done_i['n']}/{n_sel}] {expr_s} "
+                f"lift={lift_fmt} elapsed={row['elapsed_s']:.2f}s",
+                flush=True,
+            )
         return row
 
     # workers<=1：纯串行列表推导，不实例化 ThreadPoolExecutor（零回归同 _llm_map）
@@ -1096,6 +1211,8 @@ __all__ = [
     "adaptive_lift_workers",
     "extract_gray_candidates_from_manifest",
     "extract_lift_queue_from_manifest",
+    "filter_candidates_by_coverage",
+    "group_gate_ok",
     "lift_admission",
     "make_lift_context",
     "paired_lift_stats",

@@ -20,7 +20,7 @@ from factorzen.discovery.guardrails import (
 
 def _base_residual(**kw):
     d = {
-        "residual_ic_train": 0.006,  # ≥ DEFAULT_GRAY_IC_FLOOR
+        "residual_ic_train": 0.009,  # ≥ DEFAULT_GRAY_IC_FLOOR (0.008)
         "n_residual_holdout_days": DEFAULT_HOLDOUT_MIN_DAYS,
         "ic_train": 0.02,
         "n_holdout_days": DEFAULT_HOLDOUT_MIN_DAYS,
@@ -31,7 +31,7 @@ def _base_residual(**kw):
 
 def _base_raw(**kw):
     d = {
-        "ic_train": 0.008,  # ≥ DEFAULT_RAW_GRAY_IC_FLOOR
+        "ic_train": 0.012,  # ≥ DEFAULT_RAW_GRAY_IC_FLOOR (0.010)
         "n_holdout_days": DEFAULT_HOLDOUT_MIN_DAYS,
     }
     d.update(kw)
@@ -47,7 +47,7 @@ def test_lift_queue_residual_at_and_above_floor():
         _base_residual(residual_ic_train=DEFAULT_GRAY_IC_FLOOR)
     )
     assert is_lift_queue_candidate(_base_residual(residual_ic_train=0.0099))
-    assert is_lift_queue_candidate(_base_residual(residual_ic_train=-0.007))
+    assert is_lift_queue_candidate(_base_residual(residual_ic_train=-0.009))
     # 过 residual floor / 更高：仍可入队（上界已取消）
     assert is_lift_queue_candidate(
         _base_residual(residual_ic_train=DEFAULT_RESIDUAL_IC_FLOOR)
@@ -74,7 +74,7 @@ def test_lift_queue_sign_flip_does_not_exclude():
     """弱因子 holdout 反号不在队列门重复征收——lift 实验本身是 OOS 裁决。"""
     assert is_lift_queue_candidate(
         _base_residual(
-            residual_ic_train=0.006,
+            residual_ic_train=0.009,
             residual_holdout_ic=-0.01,  # 反号
             holdout_ic=-0.02,
         )
@@ -101,7 +101,7 @@ def test_lift_queue_library_duplicate_excluded():
 def test_lift_queue_raw_floor_no_upper():
     assert is_lift_queue_candidate(_base_raw(ic_train=DEFAULT_RAW_GRAY_IC_FLOOR))
     assert is_lift_queue_candidate(_base_raw(ic_train=0.0149))
-    assert is_lift_queue_candidate(_base_raw(ic_train=-0.008))
+    assert is_lift_queue_candidate(_base_raw(ic_train=-0.012))
     assert is_lift_queue_candidate(_base_raw(ic_train=DEFAULT_IC_FLOOR))  # 无上界
     assert not is_lift_queue_candidate(
         _base_raw(ic_train=DEFAULT_RAW_GRAY_IC_FLOOR - 1e-4)
@@ -116,12 +116,12 @@ def test_lift_queue_raw_coverage():
 
 def test_lift_queue_objective_override():
     """显式 objective=raw 即使有 residual 字段也走 raw 下界。"""
-    # residual 字段 ≥0.003 但 raw ic=0.02 也 ≥ raw floor → 两口径均 True
-    c = _base_residual(ic_train=0.02, residual_ic_train=0.006)
+    # residual 字段 ≥0.008 且 raw ic=0.02 ≥ raw floor → 两口径均 True
+    c = _base_residual(ic_train=0.02, residual_ic_train=0.009)
     assert is_lift_queue_candidate(c)  # 默认 residual
     assert is_lift_queue_candidate(c, objective="raw")
     # raw ic 低于 raw floor
-    c2 = _base_residual(ic_train=0.004, residual_ic_train=0.006)
+    c2 = _base_residual(ic_train=0.004, residual_ic_train=0.009)
     assert is_lift_queue_candidate(c2)  # residual ok
     assert not is_lift_queue_candidate(c2, objective="raw")
 
@@ -129,12 +129,12 @@ def test_lift_queue_objective_override():
 def test_is_gray_zone_alias_equivalent():
     """is_gray_zone 薄别名 ≡ is_lift_queue_candidate（含无上界语义）。"""
     cases = [
-        _base_residual(residual_ic_train=0.006),
+        _base_residual(residual_ic_train=0.009),
         _base_residual(residual_ic_train=0.02),  # 过旧上界
         _base_residual(residual_ic_train=0.001),  # 低于 floor
         _base_residual(max_corr_library=0.85),
         _base_residual(max_corr_library=0.96),
-        _base_raw(ic_train=0.008),
+        _base_raw(ic_train=0.012),
         _base_raw(ic_train=0.02),
     ]
     for c in cases:
@@ -145,8 +145,9 @@ def test_is_gray_zone_alias_equivalent():
 
 
 def test_lift_queue_constants_documented():
-    assert DEFAULT_GRAY_IC_FLOOR == 0.003
+    assert DEFAULT_GRAY_IC_FLOOR == 0.008
     assert DEFAULT_GRAY_IC_FLOOR < DEFAULT_RESIDUAL_IC_FLOOR
-    assert DEFAULT_RAW_GRAY_IC_FLOOR == 0.005
+    assert DEFAULT_RAW_GRAY_IC_FLOOR == 0.010
+    assert DEFAULT_RAW_GRAY_IC_FLOOR < DEFAULT_IC_FLOOR
     assert DEFAULT_DUPLICATE_CORR == 0.95
     assert DEFAULT_IC_FLOOR > DEFAULT_RAW_GRAY_IC_FLOOR

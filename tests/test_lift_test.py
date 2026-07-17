@@ -796,7 +796,7 @@ def test_node_guardrails_marks_gray_zone():
     from factorzen.discovery.guardrails import is_lift_queue_candidate
 
     probe = {
-        "ic_train": 0.008, "n_holdout_days": 100,
+        "ic_train": 0.012, "n_holdout_days": 100,
         "residual_ic_train": None,
     }
     assert is_lift_queue_candidate(probe, objective="raw")
@@ -874,7 +874,7 @@ def test_cli_lift_test_parser_and_dry_run(tmp_path, monkeypatch):
     def fake_lift(gray, **kw):
         return [{
             "expression": "rank(close)", "lift": 0.005, "baseline": 0.02,
-            "passed": True, "candidate_rank_ic": 0.025,
+            "passed": True, "candidate_rank_ic": 0.025, "elapsed_s": 0.1,
         }]
 
     written = {"upsert": 0}
@@ -884,6 +884,18 @@ def test_cli_lift_test_parser_and_dry_run(tmp_path, monkeypatch):
         from factorzen.discovery.factor_library import UpsertResult
         return UpsertResult(added=1)
 
+    # W1c/W2b/W0-fix-2：CLI 现先 filter → 组门 → run_lift_tests
+    monkeypatch.setattr(
+        lt_mod, "filter_candidates_by_coverage",
+        lambda cands, **k: (list(cands), []),
+    )
+    monkeypatch.setattr(
+        lt_mod, "run_group_lift",
+        lambda queue, **k: {
+            "lift": 0.01, "lift_se": 0.001, "error": None, "base_daily": None,
+        },
+    )
+    monkeypatch.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
     # CLI 从 factor_library 模块调 upsert_probation
     monkeypatch.setattr(fl, "upsert_probation", fake_upsert)

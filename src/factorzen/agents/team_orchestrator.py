@@ -25,7 +25,7 @@ from factorzen.agents.roles.coder import (
     revise_from_error,
     write_expressions,
 )
-from factorzen.agents.roles.critic import critique
+from factorzen.agents.roles.critic import CriticVerdict, critique
 from factorzen.agents.roles.hypothesis import (
     format_structured,
     propose_hypotheses,
@@ -36,7 +36,7 @@ from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
 from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.evaluation import evaluate_expressions, make_health_check
-from factorzen.discovery.expression import parse_expr, to_expr_string
+from factorzen.discovery.expression import clamp_window_literals, parse_expr, to_expr_string
 from factorzen.discovery.scoring import DataBundle
 from factorzen.llm.client import LLMClientError
 from factorzen.llm.generation import LLMFn
@@ -177,7 +177,7 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
         fresh.append(e)
     results = (
         evaluate_expressions(fresh, daily, bundle, eval_start=eval_start, eval_end=eval_end,
-                             profile=profile)
+                             profile=profile, seen_fingerprints=state.seen_fingerprints)
         if fresh else []
     )
     for r in results:
@@ -319,23 +319,27 @@ def _run_one_round(
     if hyps:
         _step(f"  ③ Coder 翻译表达式（{len(hyps)} 假设"
               + (f" / {len(tasks)} 子任务" if tasks else "") + "）")
+    n_unknown_op_dropped = 0
     if heal_rounds > 0:
         from factorzen.agents.self_heal import heal_expressions
 
-        def _heal_one(item: tuple[str, list[str]]) -> tuple[str, list[str]]:
+        def _heal_one(item: tuple[str, list[str]]) -> tuple[str, list[str], int]:
             h, ex = item
-            return (
-                h,
-                heal_expressions(
-                    ex, h, llm_fn, max_rounds=heal_rounds, health_check=health,
-                    leaf_map=ctx.leaf_map, market=ctx.market, leaf_names=ctx.leaf_names,
-                ),
+            # 每批独立 stats，避免 llm_workers>1 时共享 dict 竞态丢计数
+            local_stats: dict[str, int] = {"n_unknown_op_dropped": 0}
+            healed = heal_expressions(
+                ex, h, llm_fn, max_rounds=heal_rounds, health_check=health,
+                leaf_map=ctx.leaf_map, market=ctx.market, leaf_names=ctx.leaf_names,
+                stats=local_stats,
             )
+            return h, healed, int(local_stats.get("n_unknown_op_dropped", 0))
 
-        def _mk_heal(batch: tuple[str, list[str]]) -> Callable[[], tuple[str, list[str]]]:
+        def _mk_heal(batch: tuple[str, list[str]]) -> Callable[[], tuple[str, list[str], int]]:
             return lambda: _heal_one(batch)
 
-        hyp_batches = _llm_map([_mk_heal(b) for b in hyp_batches], llm_workers)
+        heal_outs = _llm_map([_mk_heal(b) for b in hyp_batches], llm_workers)
+        hyp_batches = [(h, ex) for h, ex, _n in heal_outs]
+        n_unknown_op_dropped = sum(_n for _h, _ex, _n in heal_outs)
 
     # ③½ exhausted 叶子硬过滤（coder/heal 产出 → 进评估前；None/空 exhausted → 直通）
     # 配额 dict 本轮新建，跨 hyp_batches 共享（混族组合配额内放行）。
@@ -369,8 +373,18 @@ def _run_one_round(
     else:
         ev_daily, ev_end = mining_df, None
     results: list[dict] = []
+    n_window_clamped = 0
     warm_budget = 6   # 每轮预热回灌上限 6 条（跨假设共享），控 LLM 成本
     for h, h_exprs in hyp_batches:
+        # W5b：评估前按 leaf_budgets 钳制过大窗口字面量（显式；budgets 空/None → 不动）
+        if leaf_budgets:
+            clamped: list[str] = []
+            for e in h_exprs:
+                ce, did = clamp_window_literals(e, leaf_budgets, ctx.leaf_map)
+                if did:
+                    n_window_clamped += 1
+                clamped.append(ce)
+            h_exprs = clamped
         _step(f"  ④ Evaluator 评估 {len(h_exprs)} 个表达式")
         h_results = _evaluate_and_record(
             state, h_exprs, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
@@ -398,6 +412,14 @@ def _run_one_round(
             refed_lists = _llm_map([_mk_refeed(r, h) for r in warm_errs], llm_workers)
             refed = [e for xs in refed_lists for e in xs]
             if refed:
+                if leaf_budgets:
+                    clamped_ref: list[str] = []
+                    for e in refed:
+                        ce, did = clamp_window_literals(e, leaf_budgets, ctx.leaf_map)
+                        if did:
+                            n_window_clamped += 1
+                        clamped_ref.append(ce)
+                    refed = clamped_ref
                 # 预热回灌同样过 exhausted 硬闸（共享本轮配额）
                 if exh_set:
                     refed, n_ref_drop = filter_exhausted_expressions(
@@ -432,12 +454,16 @@ def _run_one_round(
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
 
     # ⑤ Critic：按 hypothesis 分组裁决（每假设一次 critique，控 LLM 成本）。
-    # Minor 2: 无本轮新增候选则构造 stub 一次 critique（不误杀、不取旧候选）。
+    # W5c：无本轮新增候选 → **不调** critique LLM，确定性 revise_hypothesis
+    # （陈旧 stub 指标裁决与本轮无关，浪费一次 LLM）。
     # 多假设时不得整轮连坐：verdict 只回填同组 attempts，drop 只移同组候选。
     # next_pending / rounds_log["verdict"|"reason"] 取最后一组（= 代表假设为最后批次，零回归）。
     _step("  ⑥ Critic 裁决")
     group_verdicts: list[dict] = []
+    critic_skipped = False
+    n_fingerprint_dup = sum(1 for r in results if r.get("error") == "duplicate_fingerprint")
     if not new_cands:
+        critic_skipped = True
         cand = {
             "expression": results[-1]["expression"] if results else (exprs[0] if exprs else ""),
             "hypothesis": hypothesis,
@@ -445,7 +471,20 @@ def _run_one_round(
             "ir_train": results[-1]["ir_train"] if results else None,
             "turnover": results[-1].get("turnover") if results else None,
         }
-        verdict = critique(cand, llm_fn, lift_rejected=rec.lift_rejected)
+        # 从 attempts 补正交字段（W6；有则填，无则缺省——空轮已跳 LLM，仅保留形态一致）
+        if results:
+            _rexpr = cand["expression"]
+            for a in reversed(state.attempts):
+                if a.iteration == state.iteration and a.expression == _rexpr:
+                    if getattr(a, "residual_ic_train", None) is not None:
+                        cand["residual_ic_train"] = a.residual_ic_train
+                    if getattr(a, "residual_holdout_ic", None) is not None:
+                        cand["residual_holdout_ic"] = a.residual_holdout_ic
+                    break
+        verdict = CriticVerdict(
+            "revise_hypothesis",
+            "本轮无新候选(去重/过滤/评估失败),建议换方向",
+        )
         round_expr = cand.get("expression", "")
         for a in state.attempts:
             if a.iteration == state.iteration and a.expression == round_expr:
@@ -466,6 +505,15 @@ def _run_one_round(
         drop_exprs: set[str] = set()
         for hyp_key, group_cands in groups.items():
             rep = group_cands[-1]   # 该组最后一个候选为代表
+            # W6：候选 dict 已由 node_guardrails 写入 residual_*/max_corr_library（有则保留）
+            # 若缺则从同 expression 的 AttemptRecord 回填
+            if "residual_ic_train" not in rep or "max_corr_library" not in rep:
+                for a in reversed(state.attempts):
+                    if a.iteration == state.iteration and a.expression == rep.get("expression"):
+                        if "residual_ic_train" not in rep and getattr(a, "residual_ic_train", None) is not None:
+                            rep = {**rep, "residual_ic_train": a.residual_ic_train,
+                                   "residual_holdout_ic": getattr(a, "residual_holdout_ic", None)}
+                        break
             v = critique(rep, llm_fn, lift_rejected=rec.lift_rejected)
             group_verdicts.append({
                 "hypothesis": hyp_key,
@@ -514,6 +562,10 @@ def _run_one_round(
         "verdicts": group_verdicts,           # 全组按组序，审计用
         "leaf_guidance": _lg_summary,
         "n_exhausted_filtered": n_exhausted_filtered,
+        "n_fingerprint_dup": n_fingerprint_dup,
+        "n_unknown_op_dropped": n_unknown_op_dropped,
+        "n_window_clamped": n_window_clamped,
+        "critic_skipped": critic_skipped,
     })
 
     # 最后一组 verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）

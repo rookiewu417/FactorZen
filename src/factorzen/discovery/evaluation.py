@@ -5,8 +5,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 
+import numpy as np
 import polars as pl
 
 from factorzen.discovery.derived import add_derived_columns
@@ -181,15 +183,44 @@ def _factor_turnover(factor_df: pl.DataFrame, quantile: float = 0.2) -> float | 
     return float(sum(turnovers) / len(turnovers))
 
 
+def _rank_fingerprint(fdf: pl.DataFrame, n_dates: int = 4) -> str | None:
+    """截面 rank 签名指纹(sha1)。单调(同向)变换的因子截面 rank 序完全一致 → 同指纹。
+
+    R5 去重用:字符串去重挡不住 neg(amount)/sub(2,amount)/neg(abs(amount)) 这类数学等价簇
+    (表达式串不同、rank IC 逐位相同)。对均匀取样的几个交易日取截面平均 rank(ties 稳健)哈希,
+    同时并入该日的 ts_code 成员集 → 不同 universe 不会误并。**不做符号规范化**:X 与 −X 是
+    相反方向的赌注,预打分阶段合并会有丢掉正确符号因子的风险;反向由 top-K 的 |corr| 门槛收尾。
+    样本日不足(<2)返回 None(不去重)。
+    """
+    dates = fdf.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
+    if len(dates) < 2:
+        return None
+    idx = sorted(set(np.linspace(0, len(dates) - 1, min(n_dates, len(dates))).round().astype(int).tolist()))
+    h = hashlib.sha1()
+    for i in idx:
+        cross = fdf.filter(pl.col("trade_date") == dates[i]).sort("ts_code")
+        h.update("|".join(cross["ts_code"].to_list()).encode())
+        ranks = cross["factor_value"].rank(method="average").to_list()
+        h.update((",".join(f"{float(x):.1f}" for x in ranks)).encode())
+        h.update(b";")
+    return h.hexdigest()
+
+
 def evaluate_expressions(
     expr_strs: list[str], daily: pl.DataFrame, bundle,
     *, eval_start=None, eval_end=None, profile=None,
+    seen_fingerprints: set[str] | None = None,
 ) -> list[dict]:
     """批量评估表达式集。非法表达式（parse_expr 抛 ValueError）记 compile_ok=False。
 
     ``profile``：市场 profile（默认 None → A 股，逐字节零回归）。非 None 时预处理走
     `profile.factors.derived_columns`、叶子集/映射取 `profile.factors.leaf_features()`，
     透传到 `parse_expr`/`warmup_shortfall`/求值——crypto 表达式（funding_rate 等）方能解析与求值。
+
+    ``seen_fingerprints``：截面 rank 指纹去重集合（默认 None → **完全不算指纹**，零回归）。
+    非 None 时由调用方持有跨轮持久 set：fdf 物化成功后、``quick_fitness`` 前算指纹；
+    已见 → ``error="duplicate_fingerprint"``、``ic_train=None``、``n_train=0``、
+    ``compile_ok=True``（与预热不足同形态：不进 N、进 attempts 审计）；新指纹加入 set。
 
     `daily` 是**含预热段的完整帧**；`eval_start`/`eval_end` 是 train 段边界。
     求值在整帧上做、再裁剪到该区间——与 holdout 段同一条路径（`nodes.py` 的
@@ -237,6 +268,18 @@ def evaluate_expressions(
 
         try:
             fdf = _factor_df_from_prepped(node, prepped, eval_start, eval_end, leaf_map)
+            # 语义去重：物化后、fitness 前；None-gating 完全跳过
+            if seen_fingerprints is not None:
+                fp = _rank_fingerprint(fdf)
+                if fp is not None:
+                    if fp in seen_fingerprints:
+                        results.append({
+                            "expression": to_expr_string(node), "node": node,
+                            "compile_ok": True,
+                            "ic_train": None, "ir_train": None, "turnover": None,
+                            "n_train": 0, "error": "duplicate_fingerprint"})
+                        continue
+                    seen_fingerprints.add(fp)
             fit = quick_fitness(fdf, bundle, segment="train")
             n_train = int(fit["n"])
             if n_train == 0:

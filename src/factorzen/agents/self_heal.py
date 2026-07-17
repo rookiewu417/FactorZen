@@ -26,6 +26,11 @@ from factorzen.llm.generation import LLMFn
 HealthCheck = Callable[[str], str | None]
 
 
+def _is_unknown_operator_error(msg: str) -> bool:
+    """parse_expr 对未知算子抛 ``ValueError(f"未知算子: {op}")``（expression.py）。"""
+    return "未知算子" in msg
+
+
 def heal_expressions(
     exprs: list[str],
     hypothesis: str,
@@ -36,6 +41,8 @@ def heal_expressions(
     leaf_map: dict[str, str] | None = None,
     market: str = "ashare",
     leaf_names: list[str] | None = None,
+    drop_unknown_ops: bool = True,
+    stats: dict | None = None,
 ) -> list[str]:
     """返回 exprs 中可解析（且通过 health_check）的归一化表达式；病态者回灌 LLM 修正。
 
@@ -48,6 +55,10 @@ def heal_expressions(
     crypto 必须传 ``leaf_map``，否则合法 crypto 叶子被 `parse_expr` 判为解析失败，健康的
     crypto 表达式被误当病态送修（浪费 LLM 调用 + 可能被改坏）；``market``/``leaf_names``
     透传给 `revise_from_error` 使修正 prompt 用对市场的约束与叶子清单。
+
+    ``drop_unknown_ops``（默认 True）：parse 报「未知算子」时**不进 heal**直接丢弃
+    （幻觉算子修不好，烧 2 轮 LLM 无益）。其它 parse 错误仍进 heal。
+    ``stats``：可选可变 dict，累计 ``n_unknown_op_dropped``。
     """
     healed: list[str] = []
     seen: set[str] = set()
@@ -59,9 +70,18 @@ def heal_expressions(
             try:
                 norm = to_expr_string(parse_expr(e, leaf_map))
             except ValueError as exc:
+                err = str(exc)
+                if drop_unknown_ops and _is_unknown_operator_error(err):
+                    if e not in tried:
+                        tried.add(e)
+                        if stats is not None:
+                            stats["n_unknown_op_dropped"] = (
+                                int(stats.get("n_unknown_op_dropped", 0)) + 1
+                            )
+                    continue  # 不进 failures → 不触发 revise LLM
                 if e not in tried:
                     tried.add(e)
-                    failures.append((e, str(exc)))
+                    failures.append((e, err))
                 continue
             if norm in seen or norm in tried:
                 continue

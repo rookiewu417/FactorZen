@@ -189,6 +189,57 @@ def feature_names(node: Node) -> set[str]:
     return out
 
 
+def clamp_window_literals(
+    expr_str: str,
+    budgets: dict[str, int],
+    leaf_map: dict[str, str] | set[str] | None = None,
+) -> tuple[str, bool]:
+    """把时序算子窗口字面量钳到「表达式所涉叶子」的最小可用预算。
+
+    预算语义 = 可用上限（与 ``leaf_budgets`` / ``leaf_warmup_budgets`` 一致）。
+    窗口参数识别口径同 ``required_lookback`` / ``leaf_lookbacks``：``OpNode.window``。
+    仅对 ``budgets`` 中有条目的叶子取 min 作为 cap；无约束叶子视作无限。
+    parse 失败 → ``(expr_str, False)`` 原样返回；预算充足或无窗口 → 不改写。
+
+    返回 ``(钳后表达式串, 是否发生钳制)``。
+    """
+    if not budgets:
+        return expr_str, False
+    try:
+        node = parse_expr(expr_str, leaf_map)
+    except ValueError:
+        return expr_str, False
+    leaves = feature_names(node)
+    constrained = [budgets[L] for L in leaves if L in budgets]
+    if not constrained:
+        return expr_str, False
+    cap = min(constrained)
+    if cap < 1:
+        return expr_str, False
+
+    changed = False
+
+    def walk(n: Node) -> Node:
+        nonlocal changed
+        if isinstance(n, (Feature, Constant)):
+            return n
+        if isinstance(n, OpNode):
+            new_children = [walk(c) for c in n.children]
+            new_window = n.window
+            if n.window is not None and n.window > cap:
+                new_window = cap
+                changed = True
+            if new_window == n.window and new_children == n.children:
+                return n
+            return OpNode(n.op, new_children, new_window)
+        return n
+
+    new_node = walk(node)
+    if not changed:
+        return expr_str, False
+    return to_expr_string(new_node), True
+
+
 def warmup_bars(node, prepped: pl.DataFrame, eval_start,
                 leaf_map: dict[str, str] | None = None) -> int:
     """表达式各叶子在 `eval_start` 之前的**非空且非 NaN 交易日数**的最小值 = 真实可用预热 bar 数。

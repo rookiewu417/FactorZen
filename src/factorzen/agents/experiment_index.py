@@ -196,6 +196,10 @@ class ExperimentIndex:
         排除 **组合层 lift 拒绝**（``reject_category=lift_rejected``）：
         组合层无增量 ≠ 单因子无信号，混入负例会误导 LLM 认为方向没信号；
         lift 拒绝走 ``known_lift_rejects`` 独立通道。
+
+        排除 **无 IC 的行**（``ic_train is None``：预热不足 / duplicate_fingerprint 等
+        评估未出值）：零方向信息，排序键 abs(None or 0)=0 会挤占 top-k——与排除
+        编译失败同理；它们的价值在 ``seen_expressions()`` 去重，不在负例库。
         """
         from factorzen.discovery.guardrails import (
             REJECT_CATEGORY_GRAY_ZONE,
@@ -223,6 +227,7 @@ class ExperimentIndex:
 
         recs = [r for r in self._scoped(data_window)
                 if not r.get("passed", False) and r.get("compile_ok", True)
+                and r.get("ic_train") is not None
                 and not is_lookahead_expr(r.get("expression") or "")
                 and not _is_coverage_fail(r)
                 and not _is_library_corr(r)

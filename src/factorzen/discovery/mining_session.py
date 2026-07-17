@@ -45,6 +45,7 @@ from factorzen.discovery.residual import (
 from factorzen.discovery.scoring import (
     DEFAULT_DECORR_THRESHOLD,
     DataBundle,
+    build_library_corr_panel,
     library_orthogonal_check,
     max_correlation,
     quick_fitness,
@@ -464,6 +465,9 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
 
     lib_panel = build_library_panel(lib_pool)
     eff_objective = resolve_objective(objective, lib_panel is not None)
+    # 库相关矩阵面板：mining 段池一次构建，整 session 选股循环复用（vs 逐对 join）
+    _lib_for_corr = lib_pool_mining or lib_pool
+    lib_corr_panel = build_library_corr_panel(_lib_for_corr) if _lib_for_corr else None
 
     # 贪心去相关选 top-K：先库**重复**硬门（corr>0.95），再与已选池去相关。
     # 库相关 (0.7, 0.95] 不硬拒——继续评估，由下方软 reason 挡快速通道、可入 lift 队列。
@@ -481,7 +485,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         except Exception:
             continue
         ok_lib, mc_lib, _nearest = library_orthogonal_check(
-            fdf, lib_pool_mining or lib_pool, threshold=DEFAULT_DUPLICATE_CORR,
+            fdf, _lib_for_corr, threshold=DEFAULT_DUPLICATE_CORR, panel=lib_corr_panel,
         )
         if not ok_lib:
             n_library_correlated_rejects += 1

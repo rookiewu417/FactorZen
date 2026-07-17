@@ -254,6 +254,7 @@ def node_guardrails(
     )
     from factorzen.discovery.scoring import (
         DEFAULT_DECORR_THRESHOLD,
+        build_library_corr_panel,
         library_orthogonal_check,
         max_correlation,
     )
@@ -294,6 +295,8 @@ def node_guardrails(
     lib_panel = build_library_panel(lib_pool)
     eff_objective = resolve_objective(objective, lib_panel is not None)
     state.objective = eff_objective
+    # 库相关矩阵面板：session 级构建一次，本轮全部候选复用
+    lib_corr_panel = build_library_corr_panel(lib_pool) if lib_pool else None
     # train 段因子值求值帧（残差 train IC）；与 holdout 共用 prepped 若同帧
     _prepped_train = (
         _prepped_hold if daily is _hold_frame
@@ -386,6 +389,7 @@ def node_guardrails(
                 # residual：仅 corr>0.95 硬拒（重复）；(0.7,0.95] 继续残差评估。
                 ok_lib, mc_lib, nearest = library_orthogonal_check(
                     fdf_hold, lib_pool, threshold=DEFAULT_DUPLICATE_CORR,
+                    panel=lib_corr_panel,
                 )
                 if not ok_lib:
                     a.passed_guardrails = True  # 方向重复非「无效」；known_invalid 排除
@@ -451,6 +455,7 @@ def node_guardrails(
                 if eff_objective != "residual":
                     ok_lib, mc_lib, nearest = library_orthogonal_check(
                         fdf_hold, lib_pool, threshold=DEFAULT_DUPLICATE_CORR,
+                        panel=lib_corr_panel,
                     )
                     if not ok_lib:
                         a.decorrelated = True

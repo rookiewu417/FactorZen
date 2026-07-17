@@ -89,7 +89,7 @@ def test_library_orthogonal_check_boundary(mc, expect_ok, monkeypatch):
 
     monkeypatch.setattr(
         scoring_mod, "max_correlation_detail",
-        lambda _f, _p: (mc, "pool_expr"),
+        lambda _f, _p, panel=None: (mc, "pool_expr"),
     )
     ok, got, nearest = scoring_mod.library_orthogonal_check(
         pl.DataFrame({"trade_date": ["d"], "ts_code": ["s"], "factor_value": [1.0]}),

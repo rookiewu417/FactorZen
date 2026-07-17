@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import gc
 import json
+import multiprocessing as mp
+import warnings
 from calendar import monthrange
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -528,6 +531,79 @@ def _should_skip_month(
     return partition_exists(data_type, y, m, base_dir=out_dir)
 
 
+def _process_one_month(
+    label: str,
+    m_start: str,
+    m_end: str,
+    *,
+    version: str,
+    freq_n: str,
+    source_dir: str,
+    out_dir: str,
+    data_type: str,
+    codes: list[str] | None,
+    min_bar_coverage: float,
+) -> tuple[str, int, int] | None:
+    """单月 load → compute → save。进程池 worker 入口（可 pickle）。
+
+    分区写入互不相交（``year=/month=`` 独立目录）。返回
+    ``(label, rows, n_stocks)``；空月 / 无源数据返回 ``None``。
+    """
+    src = Path(source_dir)
+    out = Path(out_dir)
+    specs = battery(version=version, freq=freq_n)
+    try:
+        lf = load_parquet(
+            "minute_1min",
+            start=m_start,
+            end=m_end,
+            date_col="trade_time",
+            base_dir=src,
+        )
+        minute = lf.collect()
+    except Exception:
+        return None
+
+    if minute.is_empty():
+        del minute
+        gc.collect()
+        return None
+
+    if codes is not None:
+        minute = minute.filter(pl.col("ts_code").is_in(codes))
+        if minute.is_empty():
+            del minute
+            gc.collect()
+            return None
+
+    panel = compute_day_panel(
+        minute,
+        specs,
+        freq_n,
+        min_bar_coverage=min_bar_coverage,
+    )
+    del minute
+    gc.collect()
+
+    if panel.is_empty():
+        del panel
+        gc.collect()
+        return None
+
+    save_parquet(
+        panel,
+        data_type=data_type,
+        date_col="trade_date",
+        base_dir=out,
+        mode="overwrite",
+    )
+    rows = panel.height
+    n_stocks = panel["ts_code"].n_unique()
+    del panel
+    gc.collect()
+    return (label, rows, int(n_stocks))
+
+
 def build_intraday_features(
     start: str,
     end: str,
@@ -539,6 +615,7 @@ def build_intraday_features(
     source_dir: Path | None = None,
     overwrite: bool = False,
     force: bool = False,
+    workers: int = 1,
     min_bar_coverage: float = 0.8,
 ) -> BuildReport:
     """逐月物化日内特征面板并写 manifest。
@@ -553,6 +630,9 @@ def build_intraday_features(
     ``overwrite=True`` 全量重刷并重置 coverage。``force=True`` 忽略跳过判据
     全量重算（hash 守卫仍生效）。
 
+    **月级并行**（``workers>1``）：``ProcessPoolExecutor`` 按月分发；分区
+    写入在 worker 内（路径互不相交）；**manifest 合并/写入仅主进程串行**。
+
     不用 ``IntradayDataContext``（其 ``max_bars`` / ``expanded_start`` 对全市场
     物化是错误口径）。
 
@@ -565,14 +645,26 @@ def build_intraday_features(
         source_dir: 1min 源湖根，默认 ``DATA_RAW``。
         overwrite: battery_hash 冲突时是否强制重写。
         force: 忽略增量跳过，全量重算已覆盖月。
+        workers: 月级进程并行度，默认 1。单月峰值约 7.6 GiB；
+            24 GiB 机器建议 2；``>2`` 会打警告。
         min_bar_coverage: 有效桶覆盖率门槛。
 
     Returns:
-        ``BuildReport`` 摘要（``months`` 为本 run 实际重算的月）。
+        ``BuildReport`` 摘要（``months`` 为本 run 实际重算的月，按标签排序）。
 
     Raises:
-        ValueError: 已有 manifest 的 battery_hash 不匹配且 ``overwrite=False``。
+        ValueError: 已有 manifest 的 battery_hash 不匹配且 ``overwrite=False``；
+            或 ``workers < 1``。
     """
+    if workers < 1:
+        raise ValueError(f"workers 必须 ≥ 1，得到 {workers}")
+    if workers > 2:
+        warnings.warn(
+            f"workers={workers}：单月峰值 ~7.6 GiB，并行度>2 在 24 GiB 机器上易 OOM",
+            UserWarning,
+            stacklevel=2,
+        )
+
     freq_n = normalize_freq(freq)
     specs = battery(version=version, freq=freq_n)
     bhash = battery_hash(specs)
@@ -590,10 +682,8 @@ def build_intraday_features(
 
     hash_ok = existing is not None and existing.get("battery_hash") == bhash
     windows = _month_windows(start, end)
-    processed_months: list[str] = []
+    jobs: list[tuple[str, str, str]] = []
     skipped_months: list[str] = []
-    rows_total = 0
-    n_stocks = 0
 
     for label, m_start, m_end in windows:
         if _should_skip_month(
@@ -606,58 +696,47 @@ def build_intraday_features(
         ):
             skipped_months.append(label)
             continue
+        jobs.append((label, m_start, m_end))
 
-        try:
-            lf = load_parquet(
-                "minute_1min",
-                start=m_start,
-                end=m_end,
-                date_col="trade_time",
-                base_dir=src,
-            )
-            minute = lf.collect()
-        except Exception:
-            # 无分区 / 扫描失败 → 空月跳过
-            continue
+    month_results: list[tuple[str, int, int]] = []
+    job_kw = dict(
+        version=version,
+        freq_n=freq_n,
+        source_dir=str(src),
+        out_dir=str(out),
+        data_type=data_type,
+        codes=codes,
+        min_bar_coverage=min_bar_coverage,
+    )
 
-        if minute.is_empty():
-            del minute
-            gc.collect()
-            continue
+    if workers <= 1 or len(jobs) <= 1:
+        for label, m_start, m_end in jobs:
+            got = _process_one_month(label, m_start, m_end, **job_kw)
+            if got is not None:
+                month_results.append(got)
+    else:
+        # spawn 避免 fork 后与 polars/OpenMP 线程死锁；manifest 仅主进程写
+        ctx = mp.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+            futs = {
+                pool.submit(
+                    _process_one_month,
+                    label,
+                    m_start,
+                    m_end,
+                    **job_kw,
+                ): label
+                for label, m_start, m_end in jobs
+            }
+            for fut in as_completed(futs):
+                got = fut.result()
+                if got is not None:
+                    month_results.append(got)
 
-        if codes is not None:
-            minute = minute.filter(pl.col("ts_code").is_in(codes))
-            if minute.is_empty():
-                del minute
-                gc.collect()
-                continue
-
-        panel = compute_day_panel(
-            minute,
-            specs,
-            freq_n,
-            min_bar_coverage=min_bar_coverage,
-        )
-        del minute
-        gc.collect()
-
-        if panel.is_empty():
-            del panel
-            gc.collect()
-            continue
-
-        save_parquet(
-            panel,
-            data_type=data_type,
-            date_col="trade_date",
-            base_dir=out,
-            mode="overwrite",
-        )
-        processed_months.append(label)
-        rows_total += panel.height
-        n_stocks = max(n_stocks, panel["ts_code"].n_unique())
-        del panel
-        gc.collect()
+    month_results.sort(key=lambda t: t[0])
+    processed_months = [t[0] for t in month_results]
+    rows_total = sum(t[1] for t in month_results)
+    n_stocks = max((t[2] for t in month_results), default=0)
 
     coverage = _merge_coverage(
         existing if hash_ok else None,

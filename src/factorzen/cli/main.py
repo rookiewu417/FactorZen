@@ -277,6 +277,7 @@ def _cmd_data_intraday_features_build(args: argparse.Namespace) -> int:
             codes=codes,
             overwrite=bool(getattr(args, "overwrite", False)),
             force=bool(getattr(args, "force", False)),
+            workers=int(getattr(args, "workers", 1) or 1),
         )
     except Exception as exc:
         print(f"[intraday-features] build 失败: {exc}", file=sys.stderr)

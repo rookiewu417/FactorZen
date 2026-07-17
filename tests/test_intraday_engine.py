@@ -396,3 +396,57 @@ class TestBuildIntradayFeatures:
         assert set(r.months) == {"2024-01", "2024-02"}
         assert r.rows > 0
         assert jan_path.stat().st_mtime_ns >= mtime_before
+
+    def test_workers_two_matches_serial(self, tmp_path: Path) -> None:
+        """workers=2 与 workers=1 对同两月输出逐值一致，manifest coverage 一致。"""
+        src = tmp_path / "src"
+        out1 = tmp_path / "out1"
+        out2 = tmp_path / "out2"
+        _build_mini_source(src)
+
+        r1 = build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out1,
+            min_bar_coverage=0.0,
+            workers=1,
+        )
+        r2 = build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out2,
+            min_bar_coverage=0.0,
+            workers=2,
+        )
+        assert r1.months == r2.months == ["2024-01", "2024-02"]
+        assert r1.rows == r2.rows
+        assert r1.n_stocks == r2.n_stocks
+
+        for month in ("01", "02"):
+            p1 = pl.read_parquet(
+                out1 / "v1" / "5min" / "year=2024" / f"month={month}" / "data.parquet"
+            ).sort(["trade_date", "ts_code"])
+            p2 = pl.read_parquet(
+                out2 / "v1" / "5min" / "year=2024" / f"month={month}" / "data.parquet"
+            ).sort(["trade_date", "ts_code"])
+            assert p1.columns == p2.columns
+            assert p1.shape == p2.shape
+            for col in p1.columns:
+                if p1[col].dtype == pl.Float64:
+                    a = p1[col].to_numpy()
+                    b = p2[col].to_numpy()
+                    # 允许两边同为 NaN
+                    import numpy as np
+
+                    assert np.allclose(a, b, equal_nan=True, atol=0.0, rtol=0.0), col
+                else:
+                    assert p1[col].to_list() == p2[col].to_list(), col
+
+        m1 = read_manifest(version="v1", freq="5min", base_dir=out1)
+        m2 = read_manifest(version="v1", freq="5min", base_dir=out2)
+        assert m1 is not None and m2 is not None
+        assert m1["coverage"]["months"] == m2["coverage"]["months"]
+        assert m1["battery_hash"] == m2["battery_hash"]
+        assert m1["rows_total"] == m2["rows_total"]

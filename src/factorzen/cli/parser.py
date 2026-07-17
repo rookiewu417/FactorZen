@@ -523,7 +523,8 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_lt_write = fl_lt.add_mutually_exclusive_group()
     fl_lt_write.add_argument(
         "--apply", dest="apply", action="store_true",
-        help="将通过的候选写入因子库（默认 dry-run 只打印）",
+        help="将通过的候选写入因子库，并将 lift 拒绝写回 experiment_index"
+             "（默认 dry-run 只打印、不写库也不写 index）",
     )
     fl_lt_write.add_argument(
         "--dry-run", dest="dry_run", action="store_true",

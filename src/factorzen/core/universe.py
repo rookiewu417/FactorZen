@@ -76,6 +76,8 @@ _INDEX_CODE_MAP: dict[str, str] = {
 }
 
 _INDEX_MEMBER_MEMORY_CACHE: dict[tuple[str, str, str], tuple[str, ...]] = {}
+# 月度 index_weight 原始表内存缓存：(DATA_CACHE, index_code, YYYYMM) → DataFrame
+_INDEX_WEIGHT_DF_CACHE: dict[tuple[str, str, str], pl.DataFrame] = {}
 
 
 # ══════════════════════════════════════════════════════════
@@ -157,12 +159,12 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
 
     cached_members = _INDEX_MEMBER_MEMORY_CACHE.get(memory_key)
     if cached_members is not None:
-        logger.info(f"[index_member] {index_code} {date_str} 内存缓存命中")
+        logger.debug(f"[index_member] {index_code} {date_str} 内存缓存命中")
         return list(cached_members)
 
     if cache_file.exists():
-        logger.info(f"[index_member] {index_code} {year_month} 缓存命中")
-        cached_df = _read_index_member_cache(cache_file)
+        logger.debug(f"[index_member] {index_code} {year_month} 缓存命中")
+        cached_df = _get_month_weight_df(index_code, year_month, cache_file)
         members = _members_as_of(cached_df, date_str)
         if not members:
             # 与下方「当月拉取非空但 as-of 为空」分支同口径：月中查询日早于
@@ -214,6 +216,7 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
     DATA_CACHE.mkdir(parents=True, exist_ok=True)
     df.write_parquet(str(cache_file))
     logger.info(f"[index_member] {index_code} {year_month}: {len(df)} 条原始记录，已缓存")
+    _INDEX_WEIGHT_DF_CACHE[(str(DATA_CACHE), index_code, year_month)] = df
 
     members = _members_as_of(df, date_str)
     if not members:
@@ -228,7 +231,7 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
             )
             _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(cached)
             return cached
-    logger.info(f"[index_member] {index_code} {date_str}: 截取 {len(members)} 只成分股")
+    logger.debug(f"[index_member] {index_code} {date_str}: 截取 {len(members)} 只成分股")
     _INDEX_MEMBER_MEMORY_CACHE[memory_key] = tuple(members)
     return members
 
@@ -236,6 +239,128 @@ def _load_index_members(index_code: str, date_str: str) -> list[str]:
 def _read_index_member_cache(cache_file: Path) -> pl.DataFrame:
     """读取月度成分股缓存文件的原始数据（含 trade_date，供按日精确截取复用）。"""
     return pl.read_parquet(cache_file)
+
+
+def _get_month_weight_df(
+    index_code: str,
+    year_month: str,
+    cache_file: Path | None = None,
+) -> pl.DataFrame:
+    """读取（并记忆）某指数某月的 index_weight 原始表。"""
+    key = (str(DATA_CACHE), index_code, year_month)
+    hit = _INDEX_WEIGHT_DF_CACHE.get(key)
+    if hit is not None:
+        return hit
+    path = cache_file
+    if path is None:
+        safe_name = index_code.replace(".", "_")
+        path = DATA_CACHE / f"index_member_{safe_name}_{year_month}.parquet"
+    df = _read_index_member_cache(path)
+    _INDEX_WEIGHT_DF_CACHE[key] = df
+    return df
+
+
+def _load_index_weights_upto(index_code: str, end_month: str) -> pl.DataFrame:
+    """加载 end_month（含）之前全部本地月度成分缓存，合并为一条历史权重表。
+
+    向量化 membership 用：全历史 as-of 与逐月回退语义一致（取
+    ``trade_date <= d`` 的最近一次调样）。
+    """
+    safe_name = index_code.replace(".", "_")
+    prefix = f"index_member_{safe_name}_"
+    frames: list[pl.DataFrame] = []
+    for path in DATA_CACHE.glob(f"{prefix}*.parquet"):
+        month = path.stem.removeprefix(prefix)
+        if len(month) == 6 and month.isdigit() and month <= end_month:
+            frames.append(_get_month_weight_df(index_code, month, path))
+    if not frames:
+        return pl.DataFrame(schema={"trade_date": pl.Utf8, "con_code": pl.Utf8})
+    df = pl.concat(frames, how="vertical_relaxed")
+    if "trade_date" not in df.columns or "con_code" not in df.columns:
+        return pl.DataFrame(schema={"trade_date": pl.Utf8, "con_code": pl.Utf8})
+    return (
+        df.select(
+            [
+                pl.col("trade_date").cast(pl.Utf8).alias("trade_date"),
+                pl.col("con_code").cast(pl.Utf8).alias("con_code"),
+            ]
+        )
+        .filter(pl.col("trade_date").is_not_null() & pl.col("con_code").is_not_null())
+        .unique()
+    )
+
+
+def _expand_index_weights_to_dates(
+    weights: pl.DataFrame,
+    day_strs: list[str],
+) -> pl.DataFrame:
+    """将调样快照权重表 as-of 展开到交易日长表 ``(trade_date, ts_code)``。
+
+    对每个交易日 ``d``：取 ``weights.trade_date <= d`` 中最大 ``trade_date``
+    对应的全部 ``con_code``——与 ``_members_as_of`` 逐日语义一致。
+    """
+    empty = pl.DataFrame(schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8})
+    if weights.is_empty() or not day_strs:
+        return empty
+
+    snaps = (
+        weights.select(pl.col("trade_date").alias("weight_date"))
+        .unique()
+        .sort("weight_date")
+    )
+    cal = pl.DataFrame({"trade_date": day_strs}).unique().sort("trade_date")
+    mapped = cal.join_asof(
+        snaps,
+        left_on="trade_date",
+        right_on="weight_date",
+        strategy="backward",
+        check_sortedness=False,
+    ).filter(pl.col("weight_date").is_not_null())
+    if mapped.is_empty():
+        return empty
+
+    members = weights.select(
+        [
+            pl.col("trade_date").alias("weight_date"),
+            pl.col("con_code").alias("ts_code"),
+        ]
+    ).unique()
+    return (
+        mapped.join(members, on="weight_date", how="inner")
+        .select(["trade_date", "ts_code"])
+        .unique()
+    )
+
+
+def _batch_index_membership(index_code: str, day_strs: list[str]) -> pl.DataFrame:
+    """批量求指数在多个交易日的 PIT 成分长表。
+
+    优先合并月度缓存后向量化 as-of；无本地缓存时回退逐日
+    ``_load_index_members``（兼容 mock / 需 API 拉取）。
+    """
+    empty = pl.DataFrame(schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8})
+    if not day_strs:
+        return empty
+
+    end_month = max(d[:6] for d in day_strs)
+    weights = _load_index_weights_upto(index_code, end_month)
+    if not weights.is_empty():
+        expanded = _expand_index_weights_to_dates(weights, day_strs)
+        if not expanded.is_empty():
+            logger.debug(
+                f"[index_member] {index_code} 向量化展开 "
+                f"{len(day_strs)} 日 → {expanded.height} 行"
+            )
+            return expanded
+
+    # 无缓存或 as-of 全空：逐日回退（保持可 mock）
+    rows: list[dict[str, str]] = []
+    for d in day_strs:
+        for code in _load_index_members(index_code, d):
+            rows.append({"trade_date": d, "ts_code": code})
+    if not rows:
+        return empty
+    return pl.DataFrame(rows).select(["trade_date", "ts_code"]).unique()
 
 
 def _load_latest_cached_index_members(index_code: str, date_str: str) -> list[str]:
@@ -254,12 +379,11 @@ def _load_latest_cached_index_members(index_code: str, date_str: str) -> list[st
             candidates.append((month, path))
 
     for month, path in sorted(candidates, reverse=True):
-        members = _members_as_of(_read_index_member_cache(path), date_str)
+        members = _members_as_of(_get_month_weight_df(index_code, month, path), date_str)
         if members:
-            logger.info(f"[index_member] {index_code} {year_month} 回退到 {month} 缓存")
+            logger.debug(f"[index_member] {index_code} {year_month} 回退到 {month} 缓存")
             return members
     return []
-
 
 def get_universe(
     date_str: str,
@@ -462,10 +586,9 @@ def get_universe_membership(
 def _membership_index(start: str, end: str, universe_name: str) -> pl.DataFrame:
     """指数池：逐交易日 as-of 成分（查询窗无关、月中调样当日切换）。
 
-    每个交易日 ``d`` 调用 ``_load_index_members(code, d)`` 求并集。
-    ``_load_index_members`` 已实现逐日 as-of（含跨月回退最近快照）并按
-    ``(DATA_CACHE, index_code, date_str)`` 记忆化，故同一 ``d`` 无论
-    ``[start, end]`` 如何截取，成分一致。
+    一次加载相关月份 index_weight 缓存，向量化 as-of 展开到交易日；
+    无缓存时回退逐日 ``_load_index_members``。同一 ``d`` 的成分与查询窗
+    ``[start, end]`` 无关（全历史 as-of 最近调样）。
     """
     from factorzen.core.calendar import get_trade_dates
 
@@ -475,26 +598,25 @@ def _membership_index(start: str, end: str, universe_name: str) -> pl.DataFrame:
             schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8}
         )
 
+    day_strs = [d.strftime("%Y%m%d") for d in trade_dates]
     index_names = (
         ("csi300", "csi500") if universe_name == "csi800" else (universe_name,)
     )
-    rows: list[dict[str, str]] = []
-    for d in trade_dates:
-        day_str = d.strftime("%Y%m%d")
-        members: set[str] = set()
-        for uname in index_names:
-            code = _INDEX_CODE_MAP[uname]
-            members.update(_load_index_members(code, day_str))
-        if not members:
-            continue
-        for code in members:
-            rows.append({"trade_date": day_str, "ts_code": code})
+    parts: list[pl.DataFrame] = []
+    for uname in index_names:
+        code = _INDEX_CODE_MAP[uname]
+        parts.append(_batch_index_membership(code, day_strs))
 
-    if not rows:
-        return pl.DataFrame(
-            schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8}
-        )
-    return pl.DataFrame(rows).select(["trade_date", "ts_code"]).unique()
+    nonempty = [p for p in parts if not p.is_empty()]
+    if not nonempty:
+        return pl.DataFrame(schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8})
+
+    out = pl.concat(nonempty, how="vertical").select(["trade_date", "ts_code"]).unique()
+    logger.info(
+        f"[universe] membership {universe_name} {start}~{end}: "
+        f"{len(day_strs)} 日, {out.height} 行"
+    )
+    return out
 
 
 def _membership_all_a(start: str, end: str) -> pl.DataFrame:

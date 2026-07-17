@@ -39,6 +39,21 @@ def _members_by_month(index_code: str, date_str: str) -> list[str]:
     return []
 
 
+def _batch_from_daily(member_fn):
+    """把逐日 mock 包装成 _batch_index_membership 接口。"""
+
+    def _batch(index_code: str, day_strs: list[str]) -> pl.DataFrame:
+        rows: list[dict[str, str]] = []
+        for d in day_strs:
+            for c in member_fn(index_code, d):
+                rows.append({"trade_date": d, "ts_code": c})
+        if not rows:
+            return pl.DataFrame(schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8})
+        return pl.DataFrame(rows)
+
+    return _batch
+
+
 @pytest.fixture
 def patch_calendar_and_members(monkeypatch):
     """mock 交易日历 + 指数成分加载。"""
@@ -47,6 +62,10 @@ def patch_calendar_and_members(monkeypatch):
     )
     monkeypatch.setattr(
         "factorzen.core.universe._load_index_members", _members_by_month
+    )
+    monkeypatch.setattr(
+        "factorzen.core.universe._batch_index_membership",
+        _batch_from_daily(_members_by_month),
     )
 
 
@@ -185,6 +204,10 @@ def test_membership_query_window_independent(monkeypatch):
     monkeypatch.setattr(
         "factorzen.core.universe._load_index_members", _members_midmonth_resample
     )
+    monkeypatch.setattr(
+        "factorzen.core.universe._batch_index_membership",
+        _batch_from_daily(_members_midmonth_resample),
+    )
     from factorzen.core.universe import get_universe_membership
 
     full = get_universe_membership("20240601", "20240630", "csi300")
@@ -204,6 +227,10 @@ def test_membership_midmonth_resample_switches_on_effective_date(monkeypatch):
     monkeypatch.setattr(
         "factorzen.core.universe._load_index_members", _members_midmonth_resample
     )
+    monkeypatch.setattr(
+        "factorzen.core.universe._batch_index_membership",
+        _batch_from_daily(_members_midmonth_resample),
+    )
     from factorzen.core.universe import get_universe_membership
 
     mem = get_universe_membership("20240601", "20240630", "csi300")
@@ -220,12 +247,15 @@ def test_membership_cross_month_inherits_prior_snapshot(monkeypatch):
         "factorzen.core.universe._load_index_members",
         _members_cross_month_inherit,
     )
+    monkeypatch.setattr(
+        "factorzen.core.universe._batch_index_membership",
+        _batch_from_daily(_members_cross_month_inherit),
+    )
     from factorzen.core.universe import get_universe_membership
 
     mem = get_universe_membership("20240501", "20240630", "csi300")
     for d in ("20240510", "20240531", "20240603", "20240620", "20240628"):
         assert _codes_on(mem, d) == set(_MAY_MEMBERS), f"empty or wrong on {d}"
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 6b. 动态池 ValueError
@@ -329,6 +359,10 @@ def _patch_prepare_stack(monkeypatch, daily: pl.DataFrame, *, end_universe=None)
     )
     monkeypatch.setattr(
         "factorzen.core.universe._load_index_members", _members_by_month
+    )
+    monkeypatch.setattr(
+        "factorzen.core.universe._batch_index_membership",
+        _batch_from_daily(_members_by_month),
     )
 
     class _FakeCtx:

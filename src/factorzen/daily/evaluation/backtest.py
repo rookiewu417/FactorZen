@@ -26,11 +26,15 @@ from factorzen.config.constants import (
     STAMP_TAX_RATE,
     TRADING_DAYS_PER_YEAR,
 )
-from factorzen.core.universe import _get_board_limit
 from factorzen.core.validation import require_columns
 from factorzen.daily.evaluation.cost_models import CostModelBase
 from factorzen.daily.evaluation.trade_constraints import (
-    apply_trade_constraints as _apply_trade_constraints,
+    BLOCK_REASON_STR,
+    apply_trade_constraints_batch,
+    board_limit_pct_for_codes,
+)
+from factorzen.daily.evaluation.trade_constraints import (
+    apply_trade_constraints as _apply_trade_constraints,  # noqa: F401 — 测试/外部兼容别名
 )
 
 
@@ -114,6 +118,10 @@ class Strategy(ABC):
     """策略抽象类。用户实现 generate_weights 返回目标权重。"""
 
     name: str = "strategy"
+    # 子类可声明不消费 context 字段，慢路径跳过对应物化（默认 True 保兼容）
+    uses_context_positions: bool = True
+    uses_context_adv: bool = True
+    uses_context_price_slice: bool = True
 
     @abstractmethod
     def generate_weights(self, context: BacktestContext) -> pl.DataFrame:
@@ -220,6 +228,10 @@ class QuantileLongShortStrategy(Strategy):
     """做多最高分组、做空最低分组。"""
 
     name = "quantile_long_short"
+    # generate_weights 只读 factor_slice；跳过昂贵 context 物化
+    uses_context_positions: bool = False
+    uses_context_adv: bool = False
+    uses_context_price_slice: bool = False
 
     def __init__(self, n_groups: int = 10, factor_col: str = "factor_clean") -> None:
         self.n_groups = n_groups
@@ -261,6 +273,9 @@ class TopNLongOnlyStrategy(Strategy):
     """做多因子值最高的 N 只股票。"""
 
     name = "topn_long_only"
+    uses_context_positions: bool = False
+    uses_context_adv: bool = False
+    uses_context_price_slice: bool = False
 
     def __init__(self, n: int = 50, factor_col: str = "factor_clean") -> None:
         self.n = n
@@ -282,6 +297,9 @@ class PrecomputedWeightsStrategy(Strategy):
     """Use target weights that were precomputed by signal date."""
 
     name = "precomputed_weights"
+    uses_context_positions: bool = False
+    uses_context_adv: bool = False
+    uses_context_price_slice: bool = False
 
     def __init__(self, weights_by_date: dict[date, pl.DataFrame]) -> None:
         self.weights_by_date = weights_by_date
@@ -301,6 +319,9 @@ class FactorWeightedStrategy(Strategy):
     """按因子强度生成权重。"""
 
     name = "factor_weighted"
+    uses_context_positions: bool = False
+    uses_context_adv: bool = False
+    uses_context_price_slice: bool = False
 
     def __init__(
         self,
@@ -534,30 +555,71 @@ def run_strategy_backtest(
             is_st_by_date=is_st_by_date,
         )
 
-    current_weights: dict[str, float] = {}
+    # 与快路径共享 (T×N) 价格/ADV 矩阵；日环内用向量约束核 + 列式明细缓冲。
+    (
+        codes,
+        code_to_idx,
+        _date_to_idx,
+        open_px,
+        pre_close_m,
+        vol_data,
+        overnight_ret,
+        intraday_ret,
+        adv_m,
+        adv_20d_by_date,
+    ) = _build_price_adv_matrices(
+        price,
+        trade_dates,
+        build_adv_dict=getattr(strategy, "uses_context_adv", True),
+    )
+    n_codes = len(codes)
+    code_arr = np.asarray(codes, dtype=object)
+    board_limits = board_limit_pct_for_codes(codes)
+    board_limits_st: np.ndarray | None = (
+        board_limit_pct_for_codes(codes, is_st=True) if is_st_by_date else None
+    )
+    reason_lut = np.asarray(BLOCK_REASON_STR, dtype=object)
+
+    weights = np.zeros(n_codes, dtype=np.float64)
     nav_value = 1.0
     has_started = False
     nav_rows: list[dict[str, Any]] = []
-    position_rows: list[dict[str, Any]] = []
-    trade_rows: list[dict[str, Any]] = []
 
-    price_by_date = _group_frames_by_date(price)
+    # 列式缓冲：循环结束一次成帧，避免 from_dicts×日 + 百万 dict append
+    pos_dates: list[date] = []
+    pos_codes: list[str] = []
+    pos_weights: list[float] = []
+    pos_mvs: list[float] = []
+    tr_dates: list[date] = []
+    tr_codes: list[str] = []
+    tr_prev: list[float] = []
+    tr_target: list[float] = []
+    tr_filled: list[float] = []
+    tr_turnover: list[float] = []
+    tr_cost: list[float] = []
+    tr_reason: list[str] = []
+
+    want_price_slice = getattr(strategy, "uses_context_price_slice", True)
+    price_by_date = _group_frames_by_date(price) if want_price_slice else {}
     factor_by_date = _group_frames_by_date(factor)
-    adv_20d_by_date = _precompute_adv_20d_by_date(price, trade_dates)
-
-    # Determine lookback for OptimizerStrategy
     _lookback = getattr(strategy, "lookback_days", 0)
+    _empty_price = pl.DataFrame(schema=price.schema)
 
     for i, execution_date in enumerate(trade_dates):
-        price_slice = price_by_date[execution_date]
-        price_map = _price_records(price_slice)
+        price_slice = price_by_date.get(execution_date, _empty_price) if want_price_slice else _empty_price
         signal_date = trade_dates[i - 1] if i > 0 else None
 
-        overnight_return = _weighted_return(current_weights, price_map, "overnight_ret")
-        open_weights = _drift_weights(current_weights, price_map, overnight_return)
+        overnight = overnight_ret[i]
+        overnight_return = float(np.dot(weights, overnight))
+        denom = 1.0 + overnight_return
+        if abs(denom) < 1e-12:
+            open_w = weights.copy()
+        else:
+            open_w = weights * (1.0 + overnight) / denom
+            open_w[np.abs(open_w) < 1e-12] = 0.0
         open_nav_value = nav_value * (1.0 + overnight_return)
 
-        target_weights: dict[str, float] = {}
+        target_w = open_w.copy()
         adv_20d: dict[str, float] = {}
         # signal_date 需在因子日历内，且策略确有该日调仓目标——否则（如
         # PrecomputedWeightsStrategy 无该日权重）落到 else 分支持有，不清仓，
@@ -568,111 +630,144 @@ def run_strategy_backtest(
             and strategy.has_target_for(signal_date)
         )
         if has_signal:
-            assert signal_date is not None  # has_signal 已蕴含
+            assert signal_date is not None
             has_started = True
-            adv_20d = adv_20d_by_date.get(execution_date, {})
+            # context 物化：仅当策略声明需要且调用方要求时才构建（Quantile/TopN 可跳过）
+            want_pos = include_context_positions and getattr(
+                strategy, "uses_context_positions", True
+            )
+            want_adv = getattr(strategy, "uses_context_adv", True)
+            adv_20d = (
+                adv_20d_by_date.get(execution_date, {}) if want_adv else {}
+            )
+            if want_pos:
+                pos_ctx = _positions_frame_from_dense(
+                    code_arr, open_w, open_nav_value, cfg.initial_capital
+                )
+            else:
+                pos_ctx = pl.DataFrame(schema=_positions_schema())
             context = BacktestContext(
                 signal_date=signal_date,
                 execution_date=execution_date,
                 factor_slice=factor_by_date[signal_date],
                 price_slice=price_slice,
-                current_positions=_positions_frame(
-                    open_weights, open_nav_value, cfg.initial_capital
-                )
-                if include_context_positions
-                else pl.DataFrame(schema=_positions_schema()),
+                current_positions=pos_ctx,
                 factor_col=cfg.factor_col,
                 price_history=_get_price_history(price, trade_dates, i, _lookback),
                 adv_20d=adv_20d,
             )
             target_df = _validate_target_weights(strategy.generate_weights(context), cfg)
-            target_weights = dict(
-                zip(target_df["ts_code"], target_df["target_weight"], strict=True)
-            )
+            target_w = np.zeros(n_codes, dtype=np.float64)
+            if not target_df.is_empty():
+                t_codes = target_df["ts_code"].to_list()
+                t_vals = target_df["target_weight"].to_numpy().astype(np.float64, copy=False)
+                for code, tw in zip(t_codes, t_vals, strict=True):
+                    idx = code_to_idx.get(code)
+                    if idx is not None:
+                        target_w[idx] = float(tw)
 
-            # 换手率低于阈值时跳过本次调仓
             if cfg.rebalance_threshold is not None:
-                all_proposed = set(open_weights) | set(target_weights)
-                proposed_turnover = sum(
-                    abs(target_weights.get(c, 0.0) - open_weights.get(c, 0.0)) for c in all_proposed
-                )
+                proposed_turnover = float(np.sum(np.abs(target_w - open_w)))
                 if proposed_turnover <= cfg.rebalance_threshold:
-                    target_weights = dict(open_weights)
-        else:
-            target_weights = dict(open_weights)
+                    target_w = open_w.copy()
 
-        all_codes = sorted(set(open_weights) | set(target_weights))
-        st_codes_today: set[str] = (
-            is_st_by_date.get(execution_date, set()) if is_st_by_date else set()
-        )
-        next_weights = dict(open_weights)
-        trade_cost = 0.0
-        turnover = 0.0
-        for code in all_codes:
-            prev_weight = open_weights.get(code, 0.0)
-            target_weight = target_weights.get(code, 0.0)
-            filled_delta, reason = _apply_trade_constraints(
-                code=code,
-                delta=target_weight - prev_weight,
-                price_map=price_map,
+        delta = target_w - open_w
+        active = np.abs(delta) > 1e-12
+        filled = np.zeros(n_codes, dtype=np.float64)
+        reasons = np.zeros(n_codes, dtype=np.int8)
+        if np.any(active):
+            # 当日有效涨跌停阈值（ST 日 where 切换）
+            effective_limits = board_limits
+            if is_st_by_date and board_limits_st is not None:
+                st_today = is_st_by_date.get(execution_date)
+                if st_today:
+                    st_mask = np.fromiter(
+                        (c in st_today for c in codes), dtype=bool, count=n_codes
+                    )
+                    effective_limits = np.where(st_mask, board_limits_st, board_limits)
+
+            # 仅对 active 子集跑 batch（quantile 全截面仍大，但避免全零股）
+            act_idx = np.flatnonzero(active)
+            filled_a, reasons_a = apply_trade_constraints_batch(
+                delta=delta[act_idx],
+                open_px=open_px[i, act_idx],
+                pre_close=pre_close_m[i, act_idx],
+                vol=vol_data[i, act_idx],
+                adv=adv_m[i, act_idx],
+                board_limits=effective_limits[act_idx],
                 portfolio_value=open_nav_value * cfg.initial_capital,
-                config=cfg,
-                adv=adv_20d.get(code),
-                is_st=code in st_codes_today,
+                max_participation_rate=cfg.max_participation_rate,
+                fallback_adv=cfg.fallback_adv,
             )
-            next_weight = prev_weight + filled_delta
-            if abs(next_weight) < 1e-12:
-                next_weights.pop(code, None)
-            else:
-                next_weights[code] = next_weight
-            cost = (
-                _trade_cost(cost_model, filled_delta, adv_20d.get(code))
-                if cost_model is not None
-                else 0.0
-            )
-            trade_cost += cost
-            turnover += abs(filled_delta)
-            if collect_trades and (
-                abs(filled_delta) > 0 or abs(target_weight - prev_weight) > 1e-12
-            ):
-                trade_rows.append(
-                    {
-                        "trade_date": execution_date,
-                        "ts_code": code,
-                        "prev_weight": prev_weight,
-                        "target_weight": target_weight,
-                        "filled_delta_weight": filled_delta,
-                        "turnover": abs(filled_delta),
-                        "cost": cost,
-                        "block_reason": reason,
-                    }
-                )
+            filled[act_idx] = filled_a
+            reasons[act_idx] = reasons_a
 
-        intraday_return = _weighted_return(next_weights, price_map, "intraday_ret")
-        borrow_cost = 0.0
-        if cost_model is not None:
-            short_exposure = sum(abs(w) for w in next_weights.values() if w < 0)
-            # 融券是每日持有成本：回测循环恒按日迭代（trade_dates=全量日线，从不按
-            # frequency 重采样），每次迭代=持有一个交易日，故必须按【日】费率计提。
-            # 传 cfg.frequency 会在 weekly/monthly 下每天多收 5/21 天利息（5x/21x 高估）。
+        next_w = open_w + filled
+        next_w[np.abs(next_w) < 1e-12] = 0.0
+
+        # 成本：旧 CostModel 可向量化；CostModelBase 保留 per-name 语义
+        if cost_model is None:
+            trade_costs = np.zeros(n_codes, dtype=np.float64)
+            trade_cost = 0.0
+            borrow_cost = 0.0
+        elif isinstance(cost_model, CostModel):
+            buy_c = np.where(filled > 0, np.abs(filled) * cost_model.one_way_cost(), 0.0)
+            sell_c = np.where(filled < 0, np.abs(filled) * cost_model.sell_cost(), 0.0)
+            trade_costs = buy_c + sell_c
+            trade_cost = float(np.sum(trade_costs))
+            short_exposure = float(np.sum(np.abs(next_w[next_w < 0])))
             borrow_cost = short_exposure * cost_model.borrow_rate_per_period("daily")
+        else:
+            trade_costs = np.zeros(n_codes, dtype=np.float64)
+            trade_cost = 0.0
+            if np.any(active):
+                act_idx = np.flatnonzero(active)
+                for j in act_idx:
+                    adv_j = adv_m[i, j]
+                    adv_arg = float(adv_j) if np.isfinite(adv_j) and adv_j > 0 else None
+                    c = _trade_cost(cost_model, float(filled[j]), adv_arg)
+                    trade_costs[j] = c
+                    trade_cost += c
+            short_exposure = float(np.sum(np.abs(next_w[next_w < 0])))
+            borrow_cost = short_exposure * cost_model.borrow_rate_per_period("daily")
+
+        turnover = float(np.sum(np.abs(filled)))
+
+        if collect_trades and np.any(active):
+            act_idx = np.flatnonzero(active)
+            n_act = int(act_idx.size)
+            tr_dates.extend([execution_date] * n_act)
+            tr_codes.extend(code_arr[act_idx].tolist())
+            tr_prev.extend(open_w[act_idx].tolist())
+            tr_target.extend(target_w[act_idx].tolist())
+            f_act = filled[act_idx]
+            tr_filled.extend(f_act.tolist())
+            tr_turnover.extend(np.abs(f_act).tolist())
+            tr_cost.extend(trade_costs[act_idx].tolist())
+            tr_reason.extend(reason_lut[reasons[act_idx]].tolist())
+
+        intraday = intraday_ret[i]
+        intraday_return = float(np.dot(next_w, intraday))
+        # 融券是每日持有成本：回测循环恒按日迭代，按【日】费率计提。
         gross_return = (1.0 + overnight_return) * (1.0 + intraday_return) - 1.0
         period_cost_scale = 1.0 + overnight_return
         period_trade_cost = trade_cost * period_cost_scale
         period_borrow_cost = borrow_cost * period_cost_scale
         net_return = gross_return - period_trade_cost - period_borrow_cost
         nav_value *= 1.0 + net_return
-        close_weights = _drift_weights(
-            next_weights, price_map, intraday_return, return_col="intraday_ret"
-        )
+
+        close_denom = 1.0 + intraday_return
+        if abs(close_denom) < 1e-12:
+            close_w = next_w.copy()
+        else:
+            close_w = next_w * (1.0 + intraday) / close_denom
+            close_w[np.abs(close_w) < 1e-12] = 0.0
         if 1.0 + net_return > 1e-12:
             cost_scale = (1.0 + gross_return) / (1.0 + net_return)
-            close_weights = {
-                code: weight * cost_scale
-                for code, weight in close_weights.items()
-                if abs(weight * cost_scale) >= 1e-12
-            }
-        cash_weight = 1.0 - sum(close_weights.values())
+            close_w = close_w * cost_scale
+            close_w[np.abs(close_w) < 1e-12] = 0.0
+        cash_weight = float(1.0 - np.sum(close_w))
+
         if has_started:
             nav_rows.append(
                 {
@@ -687,29 +782,47 @@ def run_strategy_backtest(
                 }
             )
             if collect_positions:
-                for code, weight in sorted(close_weights.items()):
-                    position_rows.append(
-                        {
-                            "trade_date": execution_date,
-                            "ts_code": code,
-                            "weight": weight,
-                            "market_value": weight * nav_value * cfg.initial_capital,
-                        }
-                    )
-        current_weights = close_weights
+                nz = np.flatnonzero(np.abs(close_w) >= 1e-12)
+                if nz.size:
+                    mv_scale = nav_value * cfg.initial_capital
+                    n_pos = int(nz.size)
+                    pos_dates.extend([execution_date] * n_pos)
+                    pos_codes.extend(code_arr[nz].tolist())
+                    w_act = close_w[nz]
+                    pos_weights.extend(w_act.tolist())
+                    pos_mvs.extend((w_act * mv_scale).tolist())
+        weights = close_w
 
     returns = pl.DataFrame(nav_rows, schema=_returns_schema())
     nav = _build_nav_frame(returns, trade_dates)
-    positions = (
-        pl.DataFrame(position_rows, schema=_positions_schema())
-        if collect_positions and position_rows
-        else pl.DataFrame(schema=_positions_schema())
-    )
-    trades = (
-        pl.DataFrame(trade_rows, schema=_trades_schema())
-        if collect_trades and trade_rows
-        else pl.DataFrame(schema=_trades_schema())
-    )
+    if collect_positions and pos_dates:
+        positions = pl.DataFrame(
+            {
+                "trade_date": pos_dates,
+                "ts_code": pos_codes,
+                "weight": pos_weights,
+                "market_value": pos_mvs,
+            },
+            schema=_positions_schema(),
+        )
+    else:
+        positions = pl.DataFrame(schema=_positions_schema())
+    if collect_trades and tr_dates:
+        trades = pl.DataFrame(
+            {
+                "trade_date": tr_dates,
+                "ts_code": tr_codes,
+                "prev_weight": tr_prev,
+                "target_weight": tr_target,
+                "filled_delta_weight": tr_filled,
+                "turnover": tr_turnover,
+                "cost": tr_cost,
+                "block_reason": tr_reason,
+            },
+            schema=_trades_schema(),
+        )
+    else:
+        trades = pl.DataFrame(schema=_trades_schema())
     summary = _summary_stats(returns, trades)
     n_groups = getattr(strategy, "n_groups", 1)
 
@@ -954,6 +1067,146 @@ def _can_use_precomputed_fast_path(
     )
 
 
+def _build_price_adv_matrices(
+    price: pl.DataFrame,
+    trade_dates: list[date],
+    *,
+    build_adv_dict: bool = True,
+) -> tuple[
+    list[str],
+    dict[str, int],
+    dict[date, int],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[date, dict[str, float]],
+]:
+    """一次装载 (T×N) 价格/收益/ADV 矩阵 + 可选 ADV 按日字典，快慢路径共用。
+
+    缺 open/pre_close/vol → NaN（对齐 missing_price）；
+    overnight/intraday null → 0.0（对齐旧 float(x or 0.0)）。
+    ``build_adv_dict=False`` 时跳过按日 dict（约束只用矩阵；Quantile/TopN 等不读 context.adv）。
+    """
+    codes = price.select("ts_code").unique().sort("ts_code")["ts_code"].to_list()
+    code_to_idx = {code: idx for idx, code in enumerate(codes)}
+    date_to_idx = {trade_date: idx for idx, trade_date in enumerate(trade_dates)}
+    shape = (len(trade_dates), len(codes))
+    open_px = np.full(shape, np.nan, dtype=float)
+    pre_close = np.full(shape, np.nan, dtype=float)
+    vol_data = np.full(shape, np.nan, dtype=float)
+    overnight_ret = np.zeros(shape, dtype=float)
+    intraday_ret = np.zeros(shape, dtype=float)
+
+    if not price.is_empty():
+        r_idx = np.fromiter(
+            (date_to_idx.get(d, -1) for d in price["trade_date"].to_list()),
+            dtype=np.int64,
+            count=price.height,
+        )
+        c_idx = np.fromiter(
+            (code_to_idx.get(s, -1) for s in price["ts_code"].to_list()),
+            dtype=np.int64,
+            count=price.height,
+        )
+        keep = (r_idx >= 0) & (c_idx >= 0)
+        r_k, c_k = r_idx[keep], c_idx[keep]
+        open_px[r_k, c_k] = price["open"].to_numpy().astype(np.float64, copy=False)[keep]
+        pre_close[r_k, c_k] = (
+            price["pre_close"].to_numpy().astype(np.float64, copy=False)[keep]
+        )
+        vol_data[r_k, c_k] = price["vol"].to_numpy().astype(np.float64, copy=False)[keep]
+        overnight_ret[r_k, c_k] = (
+            price["overnight_ret"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)[keep]
+        )
+        intraday_ret[r_k, c_k] = (
+            price["intraday_ret"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)[keep]
+        )
+
+    # ADV：rolling 一次 → 向量 scatter 到矩阵，并构建按日 dict（context 复用）
+    adv = np.full(shape, np.nan, dtype=float)
+    adv_by_date: dict[date, dict[str, float]] = {}
+    if trade_dates and "amount" in price.columns:
+        adv_frame = (
+            price.select(["trade_date", "ts_code", "amount"])
+            .sort(["ts_code", "trade_date"])
+            .with_columns(
+                pl.when(
+                    pl.col("amount").cast(pl.Float64).is_finite()
+                    & (pl.col("amount").cast(pl.Float64) > 0)
+                )
+                .then(pl.col("amount").cast(pl.Float64))
+                .otherwise(None)
+                .alias("_amount_for_adv")
+            )
+            .with_columns(
+                pl.col("_amount_for_adv")
+                .rolling_mean(20, min_samples=1)
+                .shift(1)
+                .over("ts_code")
+                .alias("adv_20d")
+            )
+            .filter(pl.col("trade_date").is_in(trade_dates))
+            .filter(pl.col("adv_20d").is_not_null() & pl.col("adv_20d").is_finite())
+            .select(["trade_date", "ts_code", "adv_20d"])
+        )
+        if not adv_frame.is_empty():
+            dates_l = adv_frame["trade_date"].to_list()
+            codes_l = adv_frame["ts_code"].to_list()
+            vals_l = adv_frame["adv_20d"].to_numpy().astype(np.float64, copy=False)
+            n_adv = len(dates_l)
+            r_idx = np.fromiter(
+                (date_to_idx.get(d, -1) for d in dates_l), dtype=np.int64, count=n_adv
+            )
+            c_idx = np.fromiter(
+                (code_to_idx.get(c, -1) for c in codes_l), dtype=np.int64, count=n_adv
+            )
+            keep = (r_idx >= 0) & (c_idx >= 0)
+            adv[r_idx[keep], c_idx[keep]] = vals_l[keep]
+            if build_adv_dict:
+                # context 字典：与 _precompute_adv_20d_by_date 同结构
+                for d, code, v in zip(dates_l, codes_l, vals_l, strict=True):
+                    adv_by_date.setdefault(d, {})[code] = float(v)
+
+    return (
+        codes,
+        code_to_idx,
+        date_to_idx,
+        open_px,
+        pre_close,
+        vol_data,
+        overnight_ret,
+        intraday_ret,
+        adv,
+        adv_by_date,
+    )
+
+
+def _positions_frame_from_dense(
+    code_arr: np.ndarray,
+    weights: np.ndarray,
+    nav_value: float,
+    initial_capital: float,
+) -> pl.DataFrame:
+    """Dense 权重 → context 持仓帧（列式，避免 list[dict]+from_dicts）。
+
+    与 ``_positions_frame`` 一致：非空帧无 trade_date 列（context 日持仓快照）。
+    """
+    nz = np.flatnonzero(np.abs(weights) >= 1e-12)
+    if nz.size == 0:
+        return pl.DataFrame(schema=_positions_schema())
+    w = weights[nz]
+    return pl.DataFrame(
+        {
+            "ts_code": code_arr[nz].tolist(),
+            "weight": w.tolist(),
+            "market_value": (w * nav_value * initial_capital).tolist(),
+        }
+    )
+
+
 def _build_nav_frame(returns: pl.DataFrame, trade_dates: list) -> pl.DataFrame:
     nav_cols = [
         "trade_date",
@@ -995,76 +1248,22 @@ def _run_precomputed_weights_backtest_fast(
     factor_name: str,
     is_st_by_date: dict[date, set[str]] | None = None,
 ) -> StrategyBacktestResult:
-    codes = price.select("ts_code").unique().sort("ts_code")["ts_code"].to_list()
-    code_to_idx = {code: idx for idx, code in enumerate(codes)}
-    date_to_idx = {trade_date: idx for idx, trade_date in enumerate(trade_dates)}
-    shape = (len(trade_dates), len(codes))
-    open_px = np.full(shape, np.nan, dtype=float)
-    pre_close = np.full(shape, np.nan, dtype=float)
-    vol_data = np.full(shape, np.nan, dtype=float)
-    overnight_ret = np.zeros(shape, dtype=float)
-    intraday_ret = np.zeros(shape, dtype=float)
+    (
+        codes,
+        code_to_idx,
+        _date_to_idx,
+        open_px,
+        pre_close,
+        vol_data,
+        overnight_ret,
+        intraday_ret,
+        adv,
+        _adv_by_date,
+    ) = _build_price_adv_matrices(price, trade_dates, build_adv_dict=False)
 
-    # 价格装载：index scatter 一次成型，替代 named iter_rows。
-    # 缺 open/pre_close/vol → 保持 NaN（对齐慢路径 missing_price）；
-    # overnight/intraday null → 0.0（对齐旧 float(x or 0.0)）。
-    if not price.is_empty():
-        r_idx = np.fromiter(
-            (date_to_idx.get(d, -1) for d in price["trade_date"].to_list()),
-            dtype=np.int64,
-            count=price.height,
-        )
-        c_idx = np.fromiter(
-            (code_to_idx.get(s, -1) for s in price["ts_code"].to_list()),
-            dtype=np.int64,
-            count=price.height,
-        )
-        keep = (r_idx >= 0) & (c_idx >= 0)
-        r_k, c_k = r_idx[keep], c_idx[keep]
-        # Float 列：null→NaN（to_numpy）；与「仅 non-None 写入」等价
-        open_px[r_k, c_k] = (
-            price["open"].to_numpy().astype(np.float64, copy=False)[keep]
-        )
-        pre_close[r_k, c_k] = (
-            price["pre_close"].to_numpy().astype(np.float64, copy=False)[keep]
-        )
-        vol_data[r_k, c_k] = (
-            price["vol"].to_numpy().astype(np.float64, copy=False)[keep]
-        )
-        overnight_ret[r_k, c_k] = (
-            price["overnight_ret"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)[keep]
-        )
-        intraday_ret[r_k, c_k] = (
-            price["intraday_ret"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)[keep]
-        )
-
-    adv_by_date = _precompute_adv_20d_by_date(price, trade_dates)
-    adv = np.full(shape, np.nan, dtype=float)
-    if adv_by_date:
-        # 二次 scatter：adv 字典 → 矩阵（避免双重 Python 嵌套热循环）
-        adv_rows: list[int] = []
-        adv_cols: list[int] = []
-        adv_vals: list[float] = []
-        for row_date, adv_values in adv_by_date.items():
-            date_idx = date_to_idx.get(row_date)
-            if date_idx is None:
-                continue
-            for code, value in adv_values.items():
-                code_idx = code_to_idx.get(code)
-                if code_idx is not None:
-                    adv_rows.append(date_idx)
-                    adv_cols.append(code_idx)
-                    adv_vals.append(float(value))
-        if adv_rows:
-            adv[np.asarray(adv_rows, dtype=np.int64), np.asarray(adv_cols, dtype=np.int64)] = (
-                np.asarray(adv_vals, dtype=float)
-            )
-
-    board_limits = np.array([_get_board_limit(code) * 100.0 for code in codes], dtype=float)
+    board_limits = board_limit_pct_for_codes(codes)
     board_limits_st: np.ndarray | None = (
-        np.array([_get_board_limit(code, is_st=True) * 100.0 for code in codes], dtype=float)
-        if is_st_by_date
-        else None
+        board_limit_pct_for_codes(codes, is_st=True) if is_st_by_date else None
     )
     # 凡 weights_by_date 中存在的 sig_date 一律记录（含空权重表 = 显式空仓）。
     # 旧实现 ``if indices:`` 会把显式空仓当成「无信号」carry 前仓；
@@ -1129,66 +1328,24 @@ def _run_precomputed_weights_backtest_fast(
         active = np.abs(delta) > 1e-12
         filled = np.zeros(len(codes), dtype=float)
         if np.any(active):
-            open_today = open_px[i]
-            pre_close_today = pre_close[i]
-            vol_today = vol_data[i]
-            valid_price = (
-                np.isfinite(open_today)
-                & np.isfinite(pre_close_today)
-                & (open_today > 0)
-                & (pre_close_today > 0)
-            )
-            # Suspended stocks have vol == 0; block both buy and sell.
-            # vol is None/NaN (missing data, distinct from a whole-column-missing
-            # default of 1.0 in _prepare_price_df) is NOT treated as suspended —
-            # 与慢路径 _apply_trade_constraints 语义一致：仅
-            # ``vol is not None and float(vol) == 0.0`` 才判停牌。
-            not_suspended = ~(np.isfinite(vol_today) & (vol_today == 0.0))
-            opening_pct = np.zeros(len(codes), dtype=float)
-            opening_pct[valid_price] = (
-                open_today[valid_price] / pre_close_today[valid_price] - 1.0
-            ) * 100.0
-            # ST 股票主板涨跌停阈值收窄（4.8% 而非 9.8%）：按 execution_date 当天
-            # 的 ST 集合逐日选择有效阈值，is_st_by_date 为 None 时与未引入该参数
-            # 前行为完全一致（始终用 board_limits）。
+            # ST 股票主板涨跌停阈值收窄：与慢路径共用 apply_trade_constraints_batch。
             effective_board_limits = board_limits
             if is_st_by_date and board_limits_st is not None:
                 st_today = is_st_by_date.get(execution_date)
                 if st_today:
                     st_mask = np.array([c in st_today for c in codes], dtype=bool)
                     effective_board_limits = np.where(st_mask, board_limits_st, board_limits)
-            tradable = (
-                active
-                & valid_price
-                & not_suspended
-                # 浮点容差与慢路径 _apply_trade_constraints 保持一致：
-                # 创业板 open=11.98/pre_close=10.0 → opening_pct=19.7999...，
-                # 若不减 1e-9 则 19.7999... >= 19.8 为 False，涨停买单被漏判。
-                & ~((delta > 0) & (opening_pct >= effective_board_limits - 1e-9))
-                & ~((delta < 0) & (opening_pct <= -effective_board_limits + 1e-9))
+            filled, _reasons = apply_trade_constraints_batch(
+                delta=delta,
+                open_px=open_px[i],
+                pre_close=pre_close[i],
+                vol=vol_data[i],
+                adv=adv[i],
+                board_limits=effective_board_limits,
+                portfolio_value=open_nav_value * config.initial_capital,
+                max_participation_rate=config.max_participation_rate,
+                fallback_adv=config.fallback_adv,
             )
-            filled[tradable] = delta[tradable]
-
-            portfolio_value = open_nav_value * config.initial_capital
-            if portfolio_value <= 0:
-                filled[:] = 0.0
-            else:
-                adv_eff = adv[i].copy()
-                valid_adv = np.isfinite(adv_eff) & (adv_eff > 0)
-                fallback_adv = config.fallback_adv
-                if (
-                    fallback_adv is not None
-                    and np.isfinite(float(fallback_adv))
-                    and float(fallback_adv) > 0
-                ):
-                    adv_eff[~valid_adv] = float(fallback_adv)
-                    valid_adv = np.isfinite(adv_eff) & (adv_eff > 0)
-                capped = tradable & valid_adv
-                if np.any(capped):
-                    max_delta = adv_eff[capped] * config.max_participation_rate / portfolio_value
-                    filled[capped] = np.sign(filled[capped]) * np.minimum(
-                        np.abs(filled[capped]), max_delta
-                    )
 
         next_weights = open_weights + filled
         next_weights[np.abs(next_weights) < 1e-12] = 0.0

@@ -219,6 +219,20 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         action="store_true",
         help="Rewrite when battery_hash mismatches existing manifest",
     )
+    if_build.add_argument(
+        "--force",
+        action="store_true",
+        help="Force recompute all months (ignore incremental skip of covered months)",
+    )
+    if_build.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help=(
+            "Month-level process parallelism (default 1). "
+            "Peak ~7.6GiB per month; on 24GiB RAM prefer 2; >2 warns"
+        ),
+    )
     if_build.set_defaults(func=commands._cmd_data_intraday_features_build)
 
     if_status = ifeat_sub.add_parser("status", help="Show intraday feature manifest and partitions")

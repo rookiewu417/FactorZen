@@ -285,7 +285,7 @@ class TestResample1min:
                 "amount": [float(v) for v in vols],
             }
         )
-        out = resample_intraday(df, "1min")
+        out = resample_intraday(df, "1min").sort(["ts_code", "trade_time"])
         assert out.height == 240
         # 首 bar 应为 09:31，vol = 竞价 1000 + 09:31 的 1 = 1001
         first = out.row(0, named=True)

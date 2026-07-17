@@ -145,7 +145,7 @@ def test_node_guardrails_session_decorr_boundary(
     monkeypatch.setattr(gmod, "acceptance_reasons", lambda **_kw: [])
 
     # 第一个候选入池时 pool 空 → max_corr=0；第二个起返回受控 corr
-    def _fake_max_corr(fdf, pool):
+    def _fake_max_corr(fdf, pool, panel=None):
         if not pool:
             return 0.0
         return float(corr_value)
@@ -216,7 +216,7 @@ def test_m1_greedy_boundary_via_max_correlation_mock(tmp_path, monkeypatch):
         "factorzen.discovery.mining_session.RandomSearcher", _FakeSearcher,
     )
 
-    def _fake_max_corr(fdf, pool):
+    def _fake_max_corr(fdf, pool, panel=None):
         if not pool:
             return 0.0
         return float(DEFAULT_DECORR_THRESHOLD)  # 恰阈值 → 应拒

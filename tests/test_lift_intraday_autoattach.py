@@ -117,6 +117,14 @@ def test_combine_auto_intraday_detection(monkeypatch):
 
     # combine 从 factor_mine 导入 prepare_mining_daily（函数内局部 import）
     # 我们在入口处 patch discovery.preparation 并让 factor_mine 同指
+    #
+    # ⚠️ 必须先显式 import factor_mine 再 patch：若本进程从未导入过它，
+    # 下面第二个 string-target setattr 解析路径时才首次 import，其模块级
+    # `from preparation import prepare_mining_daily` 拿到的已是 fake，
+    # monkeypatch 捕获的"原值"= fake → teardown 还原成 fake，跨测试永久污染
+    # （xdist 同 worker 后续用到 prepare_mining_daily 的测试全部拿到本 fake）。
+    import factorzen.pipelines.factor_mine  # noqa: F401
+
     monkeypatch.setattr(
         "factorzen.discovery.preparation.prepare_mining_daily", _fake_prepare,
     )

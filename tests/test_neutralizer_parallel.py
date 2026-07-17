@@ -127,10 +127,11 @@ def test_neutralize_ols_regression_failure_returns_nan(monkeypatch):
         "industry": ["银行" if i % 2 else "医药" for i in range(n)],
     })
 
-    def _boom_ols(*args, **kwargs):
+    def _boom_fwl(*args, **kwargs):
         raise RuntimeError("singular design matrix")
 
-    monkeypatch.setattr(neut, "_ols_residuals", _boom_ols)
+    # FWL 路径走 _fwl_attach_residuals；失败时整表标 NaN（与旧 lstsq 失败语义一致）
+    monkeypatch.setattr(neut, "_fwl_attach_residuals", _boom_fwl)
     result = neutralize_ols(df, col="factor", stock_basic=stock_basic)
 
     assert result["factor_neutral"].null_count() == result.height, (

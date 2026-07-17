@@ -323,3 +323,38 @@ def test_neutralize_ols_no_side_data_returns_original():
     )
     out = neutralize_ols(df, col="factor_value", stock_basic=None, daily_basic=None)
     assert out["factor_value_neutral"].to_list() == [1.0, 2.0, 3.0]
+
+
+def test_neutralize_ols_fwl_large_panel_matches_statsmodels():
+    """更大截面（模拟全 A 量级的行业数）：FWL 与 statsmodels 仍 atol=1e-8。"""
+    from factorzen.daily.preprocessing.neutralizer import neutralize_ols
+
+    df, stock_basic, daily_basic = _make_panel(
+        n_dates=15, n_stocks=120, n_industries=25, seed=99
+    )
+    got = neutralize_ols(
+        df, col="factor_value", stock_basic=stock_basic, daily_basic=daily_basic
+    )
+    expected = _sm_ols_residuals_per_day(df, "factor_value", stock_basic, daily_basic)
+    g = got.sort(["trade_date", "ts_code"])
+    e = expected.sort(["trade_date", "ts_code"])
+    np.testing.assert_allclose(
+        g["factor_value_neutral"].to_numpy(),
+        e["factor_value_neutral"].to_numpy(),
+        atol=1e-8,
+        rtol=0,
+        equal_nan=True,
+    )
+
+
+def test_neutralize_ols_preserves_row_count_and_keys():
+    from factorzen.daily.preprocessing.neutralizer import neutralize_ols
+
+    df, stock_basic, daily_basic = _make_panel(n_dates=4, n_stocks=40)
+    out = neutralize_ols(
+        df, col="factor_value", stock_basic=stock_basic, daily_basic=daily_basic
+    )
+    assert out.height == df.height
+    assert out["trade_date"].to_list() == df["trade_date"].to_list()
+    assert out["ts_code"].to_list() == df["ts_code"].to_list()
+

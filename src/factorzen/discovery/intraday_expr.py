@@ -30,6 +30,7 @@ from factorzen.discovery.expression import (
     to_expr_string,
 )
 from factorzen.discovery.operators import OPERATORS
+from factorzen.intraday.bars_cache import load_or_build_bars
 from factorzen.intraday.sessions import (
     ASHARE_BAR_FREQS,
     canonicalize_minute,
@@ -193,12 +194,14 @@ def materialize_expr_features(
     freq: str = "5min",
     source_dir: Path | None = None,
     min_bar_coverage: float = 0.8,
+    bars_cache_dir: Path | None = None,
+    use_bars_cache: bool = True,
 ) -> pl.DataFrame:
     """逐月物化 bar 表达式特征为日频面板。
 
-    流程：``load_parquet(minute_1min)`` → canonicalize → resample → 时间轴改名
-    ``trade_date`` → 派生 ``bar_ret`` → 全 specs 求值 → 按日聚合 → 覆盖守卫 →
-    ``fill_nan(None)``。
+    流程：``load_parquet(minute_1min)`` → bars 缓存读穿（canonicalize+resample）→
+    时间轴改名 ``trade_date`` → 派生 ``bar_ret`` → 全 specs 求值 → 按日聚合 →
+    覆盖守卫 → ``fill_nan(None)``。
 
     Args:
         specs: 表达式规格列表；**全部 freq 必须一致**。
@@ -206,6 +209,8 @@ def materialize_expr_features(
         freq: 默认频率（与 specs 对齐校验）。
         source_dir: 1min 源湖根，默认 ``DATA_RAW``。
         min_bar_coverage: 有效 bar 覆盖率门槛。
+        bars_cache_dir: bars 中间层缓存根（默认 ``DATA_DERIVED``）。
+        use_bars_cache: 是否走 ``load_or_build_bars``（默认 True）。
 
     Returns:
         ``[trade_date(Date), ts_code, ix_*...]``，按 (trade_date, ts_code) 排序。
@@ -227,10 +232,14 @@ def materialize_expr_features(
     names = [s.name for s in specs]
     n_bars = ASHARE_BAR_FREQS[freq_n].bars_per_day
     src = DATA_RAW if source_dir is None else Path(source_dir)
+    # 自定义源湖且未显式指定 bars_cache_dir 时，不写共享 DATA_DERIVED（避免测试污染/脏命中）
+    effective_use_cache = use_bars_cache
+    if bars_cache_dir is None and source_dir is not None and Path(source_dir).resolve() != DATA_RAW.resolve():
+        effective_use_cache = False
     windows = _month_windows(start, end)
     parts: list[pl.DataFrame] = []
 
-    for _label, m_start, m_end in windows:
+    for label, m_start, m_end in windows:
         try:
             lf = load_parquet(
                 "minute_1min",
@@ -248,7 +257,18 @@ def materialize_expr_features(
             gc.collect()
             continue
 
-        panel = _materialize_month(minute, specs, freq_n, min_bar_coverage, n_bars, names)
+        panel = _materialize_month(
+            minute,
+            specs,
+            freq_n,
+            min_bar_coverage,
+            n_bars,
+            names,
+            month_label=label,
+            source_dir=src,
+            bars_cache_dir=bars_cache_dir,
+            use_bars_cache=effective_use_cache,
+        )
         del minute
         gc.collect()
         if not panel.is_empty():
@@ -270,13 +290,27 @@ def _materialize_month(
     min_bar_coverage: float,
     n_bars: int,
     names: Sequence[str],
+    *,
+    month_label: str | None = None,
+    source_dir: Path | None = None,
+    bars_cache_dir: Path | None = None,
+    use_bars_cache: bool = True,
 ) -> pl.DataFrame:
     """单月 1min 帧 → 日频 ix 面板。"""
-    canon = canonicalize_minute(minute.lazy()).collect()
-    if canon.is_empty():
-        return _empty_ix_panel(names)
+    if use_bars_cache and month_label is not None:
+        bars = load_or_build_bars(
+            month_label,
+            freq_n,
+            source_dir=source_dir,
+            cache_dir=bars_cache_dir,
+            minute=minute,
+        )
+    else:
+        canon = canonicalize_minute(minute.lazy()).collect()
+        if canon.is_empty():
+            return _empty_ix_panel(names)
+        bars = resample_intraday(canon, freq_n, already_canonical=True)
 
-    bars = resample_intraday(canon, freq_n, already_canonical=True)
     if bars.is_empty():
         return _empty_ix_panel(names)
 

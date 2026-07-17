@@ -925,9 +925,15 @@ def _precompute_adv_20d_by_date(
         .select(["trade_date", "ts_code", "adv_20d"])
     )
 
+    # 机械向量化装载：避免 named iter_rows；语义仍是 date → {ts_code: adv}
+    if adv_frame.is_empty():
+        return {}
     result: dict[date, dict[str, float]] = {}
-    for row in adv_frame.iter_rows(named=True):
-        result.setdefault(row["trade_date"], {})[row["ts_code"]] = row["adv_20d"]
+    dates = adv_frame["trade_date"].to_list()
+    codes = adv_frame["ts_code"].to_list()
+    vals = adv_frame["adv_20d"].to_list()
+    for d, code, v in zip(dates, codes, vals, strict=True):
+        result.setdefault(d, {})[code] = v
     return result
 
 
@@ -999,38 +1005,60 @@ def _run_precomputed_weights_backtest_fast(
     overnight_ret = np.zeros(shape, dtype=float)
     intraday_ret = np.zeros(shape, dtype=float)
 
-    for row in price.iter_rows(named=True):
-        row_date = row["trade_date"]
-        code = row["ts_code"]
-        date_idx = date_to_idx.get(row_date)
-        code_idx = code_to_idx.get(code)
-        if date_idx is None or code_idx is None:
-            continue
-        # 缺价格保护：open/pre_close 为 None 时保持数组默认的 NaN，下游
-        # valid_price 掩码会据此把该股票该日判定为不可交易（对齐慢路径
-        # _apply_trade_constraints 的 "missing_price" 语义），而不是让
-        # float(None) 抛 TypeError 崩掉整个回测。
-        open_value = row["open"]
-        pre_close_value = row["pre_close"]
-        if open_value is not None:
-            open_px[date_idx, code_idx] = float(open_value)
-        if pre_close_value is not None:
-            pre_close[date_idx, code_idx] = float(pre_close_value)
-        vol_value = row["vol"]
-        vol_data[date_idx, code_idx] = float(vol_value) if vol_value is not None else np.nan
-        overnight_ret[date_idx, code_idx] = float(row["overnight_ret"] or 0.0)
-        intraday_ret[date_idx, code_idx] = float(row["intraday_ret"] or 0.0)
+    # 价格装载：index scatter 一次成型，替代 named iter_rows。
+    # 缺 open/pre_close/vol → 保持 NaN（对齐慢路径 missing_price）；
+    # overnight/intraday null → 0.0（对齐旧 float(x or 0.0)）。
+    if not price.is_empty():
+        r_idx = np.fromiter(
+            (date_to_idx.get(d, -1) for d in price["trade_date"].to_list()),
+            dtype=np.int64,
+            count=price.height,
+        )
+        c_idx = np.fromiter(
+            (code_to_idx.get(s, -1) for s in price["ts_code"].to_list()),
+            dtype=np.int64,
+            count=price.height,
+        )
+        keep = (r_idx >= 0) & (c_idx >= 0)
+        r_k, c_k = r_idx[keep], c_idx[keep]
+        # Float 列：null→NaN（to_numpy）；与「仅 non-None 写入」等价
+        open_px[r_k, c_k] = (
+            price["open"].to_numpy().astype(np.float64, copy=False)[keep]
+        )
+        pre_close[r_k, c_k] = (
+            price["pre_close"].to_numpy().astype(np.float64, copy=False)[keep]
+        )
+        vol_data[r_k, c_k] = (
+            price["vol"].to_numpy().astype(np.float64, copy=False)[keep]
+        )
+        overnight_ret[r_k, c_k] = (
+            price["overnight_ret"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)[keep]
+        )
+        intraday_ret[r_k, c_k] = (
+            price["intraday_ret"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)[keep]
+        )
 
     adv_by_date = _precompute_adv_20d_by_date(price, trade_dates)
     adv = np.full(shape, np.nan, dtype=float)
-    for row_date, adv_values in adv_by_date.items():
-        date_idx = date_to_idx.get(row_date)
-        if date_idx is None:
-            continue
-        for code, value in adv_values.items():
-            code_idx = code_to_idx.get(code)
-            if code_idx is not None:
-                adv[date_idx, code_idx] = float(value)
+    if adv_by_date:
+        # 二次 scatter：adv 字典 → 矩阵（避免双重 Python 嵌套热循环）
+        adv_rows: list[int] = []
+        adv_cols: list[int] = []
+        adv_vals: list[float] = []
+        for row_date, adv_values in adv_by_date.items():
+            date_idx = date_to_idx.get(row_date)
+            if date_idx is None:
+                continue
+            for code, value in adv_values.items():
+                code_idx = code_to_idx.get(code)
+                if code_idx is not None:
+                    adv_rows.append(date_idx)
+                    adv_cols.append(code_idx)
+                    adv_vals.append(float(value))
+        if adv_rows:
+            adv[np.asarray(adv_rows, dtype=np.int64), np.asarray(adv_cols, dtype=np.int64)] = (
+                np.asarray(adv_vals, dtype=float)
+            )
 
     board_limits = np.array([_get_board_limit(code) * 100.0 for code in codes], dtype=float)
     board_limits_st: np.ndarray | None = (
@@ -1049,16 +1077,24 @@ def _run_precomputed_weights_backtest_fast(
         # 非有限值 / 超 max_abs_weight / 超 max_gross_exposure 在此处直接抛
         # ValueError，而不是静默放行成垃圾 NAV。
         weight_df = _validate_target_weights(weight_df, config)
-        indices: list[int] = []
-        values: list[float] = []
-        for row in weight_df.iter_rows(named=True):
-            code_idx = code_to_idx.get(row["ts_code"])
+        if weight_df.is_empty():
+            target_by_signal_date[sig_date] = (
+                np.array([], dtype=int),
+                np.array([], dtype=float),
+            )
+            continue
+        w_codes = weight_df["ts_code"].to_list()
+        w_vals = weight_df["target_weight"].to_numpy().astype(np.float64, copy=False)
+        idx_buf: list[int] = []
+        val_buf: list[float] = []
+        for code, w in zip(w_codes, w_vals, strict=True):
+            code_idx = code_to_idx.get(code)
             if code_idx is not None:
-                indices.append(code_idx)
-                values.append(float(row["target_weight"]))
+                idx_buf.append(code_idx)
+                val_buf.append(float(w))
         target_by_signal_date[sig_date] = (
-            np.array(indices, dtype=int),
-            np.array(values, dtype=float),
+            np.asarray(idx_buf, dtype=int),
+            np.asarray(val_buf, dtype=float),
         )
 
     weights = np.zeros(len(codes), dtype=float)

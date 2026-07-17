@@ -332,15 +332,49 @@ def _expand_index_weights_to_dates(
     )
 
 
+def _ensure_window_month_caches(index_code: str, day_strs: list[str]) -> None:
+    """补齐查询窗内缺失的月度 index_member 缓存。
+
+    向量化 as-of 依赖「窗内每月快照真实在场」。仅有更早月缓存时若直接展开，
+    会静默用旧快照顶替缺月调样（文件存在 ≠ 窗内数据完整）。
+
+    对窗内每个缺月文件，取该月在窗口内的最后一个交易日调用
+    ``_load_index_members``：成功则写月缓存；API 失败/空结果沿用其既有
+    回退（最近历史缓存 / 空列表）。异常不升级为整窗崩溃。
+
+    早于窗口首月的历史月份不要求在场（as-of 回退到更早快照是旧语义）。
+    """
+    needed_months = sorted({d[:6] for d in day_strs})
+    safe_name = index_code.replace(".", "_")
+    for month in needed_months:
+        cache_file = DATA_CACHE / f"index_member_{safe_name}_{month}.parquet"
+        if cache_file.exists():
+            continue
+        anchor = max(d for d in day_strs if d[:6] == month)
+        try:
+            _load_index_members(index_code, anchor)
+        except Exception as exc:
+            logger.warning(
+                f"[index_member] {index_code} {month} 窗内缺月补拉失败 "
+                f"(anchor={anchor}): {exc}；将用已有更早快照 as-of"
+            )
+
+
 def _batch_index_membership(index_code: str, day_strs: list[str]) -> pl.DataFrame:
     """批量求指数在多个交易日的 PIT 成分长表。
 
     优先合并月度缓存后向量化 as-of；无本地缓存时回退逐日
     ``_load_index_members``（兼容 mock / 需 API 拉取）。
+
+    向量化前会检查查询窗内月份缓存覆盖：缺月先走
+    ``_load_index_members`` 补拉，避免「任意更早缓存非空 → 静默 as-of 顶替」。
     """
     empty = pl.DataFrame(schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8})
     if not day_strs:
         return empty
+
+    # 窗内缺月先补齐（副作用写月缓存 + 内存缓存），再向量化
+    _ensure_window_month_caches(index_code, day_strs)
 
     end_month = max(d[:6] for d in day_strs)
     weights = _load_index_weights_upto(index_code, end_month)

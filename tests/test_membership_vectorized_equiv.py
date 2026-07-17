@@ -135,3 +135,98 @@ def test_membership_csi800_union_equiv():
     _INDEX_MEMBER_MEMORY_CACHE.clear()
     got = get_universe_membership(start, end, "csi800")
     _assert_membership_equal(got, expected)
+
+
+def test_batch_membership_fetches_missing_window_months(monkeypatch, tmp_path):
+    """窗口跨月、后月缓存缺失时，向量化路径须触发拉取，禁止用更早快照静默顶替。
+
+    回归：_batch_index_membership 只要 ≤end 任意月缓存非空就直接 as-of，
+    缺月不拉、不告警 → 成分调整丢失。
+    """
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    from factorzen.core import universe as U
+
+    monkeypatch.setattr(U, "DATA_CACHE", tmp_path)
+    U._INDEX_MEMBER_MEMORY_CACHE.clear()
+    U._INDEX_WEIGHT_DF_CACHE.clear()
+
+    index_code = "000300.SH"
+    # 仅 1 月本地缓存（旧成分）；2 月文件缺失，拉取应返回全新调样
+    pl.DataFrame(
+        {
+            "con_code": ["A.SZ", "B.SZ"],
+            "trade_date": ["20240115", "20240115"],
+        }
+    ).write_parquet(tmp_path / "index_member_000300_SH_202401.parquet")
+
+    fetch_months: list[str] = []
+
+    def _fake_retry(_fn, **kw):
+        start = str(kw.get("start_date", ""))
+        ym = start[:6]
+        fetch_months.append(ym)
+        if ym == "202402":
+            return pd.DataFrame(
+                {
+                    "con_code": ["C.SZ", "D.SZ"],
+                    "trade_date": ["20240215", "20240215"],
+                }
+            )
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        "factorzen.core.loader.init_tushare",
+        lambda: SimpleNamespace(index_weight=lambda **_kw: None),
+    )
+    monkeypatch.setattr("factorzen.core.loader._retry", _fake_retry)
+
+    day_strs = ["20240116", "20240117", "20240216", "20240217"]
+
+    def _setup_partial_cache() -> None:
+        feb = tmp_path / "index_member_000300_SH_202402.parquet"
+        if feb.exists():
+            feb.unlink()
+        U._INDEX_MEMBER_MEMORY_CACHE.clear()
+        U._INDEX_WEIGHT_DF_CACHE.clear()
+        fetch_months.clear()
+
+    # ── 向量化路径：须补拉 2 月，2 月交易日成分 = 新调样 ──────────────
+    _setup_partial_cache()
+    got = U._batch_index_membership(index_code, day_strs)
+
+    assert "202402" in fetch_months, (
+        f"缺月须触发 index_weight 拉取，实际 fetch_months={fetch_months}"
+    )
+    assert (tmp_path / "index_member_000300_SH_202402.parquet").exists(), (
+        "缺月拉取成功后应写入月缓存"
+    )
+
+    jan_codes = set(
+        got.filter(pl.col("trade_date").is_in(["20240116", "20240117"]))[
+            "ts_code"
+        ].to_list()
+    )
+    feb_codes = set(
+        got.filter(pl.col("trade_date").is_in(["20240216", "20240217"]))[
+            "ts_code"
+        ].to_list()
+    )
+    assert jan_codes == {"A.SZ", "B.SZ"}
+    assert feb_codes == {"C.SZ", "D.SZ"}, (
+        f"缺失月不得用旧快照顶替：期望 {{C.SZ, D.SZ}}，实际 {feb_codes}"
+    )
+
+    # ── 与逐日 _load_index_members 完全一致（独立从部分缓存起步）──
+    _setup_partial_cache()
+    ref_rows: list[dict[str, str]] = []
+    for d in day_strs:
+        for code in U._load_index_members(index_code, d):
+            ref_rows.append({"trade_date": d, "ts_code": code})
+    expected = pl.DataFrame(ref_rows).select(["trade_date", "ts_code"]).unique()
+
+    _setup_partial_cache()
+    got2 = U._batch_index_membership(index_code, day_strs)
+    _assert_membership_equal(got2, expected)

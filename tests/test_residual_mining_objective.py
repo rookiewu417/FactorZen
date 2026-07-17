@@ -471,7 +471,7 @@ def test_node_guardrails_rejects_redundant_with_residual_reason(tmp_path, monkey
     # 库相关固定 <0.7，迫使路径走到残差门
     monkeypatch.setattr(
         "factorzen.discovery.scoring.library_orthogonal_check",
-        lambda fdf, pool, threshold=0.7: (True, 0.45, "lib_signal"),
+        lambda fdf, pool, threshold=0.7, panel=None: (True, 0.45, "lib_signal"),
     )
     # 残差 IC 固定过弱（独立构造，防恒真）
     monkeypatch.setattr(

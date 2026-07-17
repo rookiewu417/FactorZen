@@ -188,6 +188,8 @@ def build_agent_messages(
     market: str = "ashare",
     leaf_guidance: dict[str, list[str]] | None = None,
     library_covered: list[str] | None = None,
+    lift_rejected: list[dict] | None = None,
+    library_crowded: list[tuple[str, int]] | None = None,
 ) -> list[dict[str, str]]:
     """构造生成 prompt：算子/特征清单 + 上轮反馈 + Negative RAG 负例 + 短历史叶子预热预算。
 
@@ -202,7 +204,15 @@ def build_agent_messages(
 
     ``library_covered``：库内 active 高 IC 表达式（与 team Hypothesis 共用
     ``format_library_covered``）；None → 不注入。
+
+    ``lift_rejected``：组合层 lift 拒绝（M5 预留，默认 None 不注入）。
+    ``library_crowded``：库内拥挤叶子；None → 不注入。
     """
+    from factorzen.llm.prompt_fragments import (
+        format_library_crowded,
+        format_lift_rejected,
+    )
+
     neg = negatives or []
     system = (
         "你是量化研究员，提出有经济直觉的假设并翻译成因子表达式。\n"
@@ -238,4 +248,10 @@ def build_agent_messages(
     lc = format_library_covered(library_covered)
     if lc:
         user += "\n" + lc
+    lr = format_lift_rejected(lift_rejected)
+    if lr:
+        user += "\n" + lr
+    lcr = format_library_crowded(library_crowded)
+    if lcr:
+        user += "\n" + lcr
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

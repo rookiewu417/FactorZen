@@ -111,6 +111,45 @@ def format_library_covered(library_covered: list[str] | None) -> str:
     return "库内已有(追求与其正交,换方向): " + "；".join(library_covered)
 
 
+def format_library_crowded(crowded: list[tuple[str, int]] | None) -> str:
+    """库内拥挤叶子提示。None/[] → \"\"（零回归）。"""
+    if not crowded:
+        return ""
+    body = "、".join(f"{name}({n})" for name, n in crowded)
+    return (
+        f"库内拥挤叶子(active 数):{body}"
+        "——这些方向已充分开采,除非机制明显不同否则避开"
+    )
+
+
+def format_lift_rejected(items: list[dict] | None) -> str:
+    """组合层 lift 拒绝方向提示。None/[] → \"\"（零回归）。"""
+    if not items:
+        return ""
+    _REASON_ZH = {
+        "below_bar": "组合增量不足",
+        "group_gate_fail": "组门整体无增量",
+    }
+    lines = [
+        "以下方向已在组合层证明对当前因子库无增量(lift 拒绝),"
+        "避开这些思路及其同源变体(换窗口/换包装的衰减变体同样无增量):"
+    ]
+    for it in items:
+        expr = it.get("expression") or ""
+        lift = it.get("lift")
+        reason = it.get("lift_reason") or ""
+        reason_zh = _REASON_ZH.get(str(reason), str(reason) if reason else "未知")
+        if lift is None:
+            lift_s = "null"
+        else:
+            try:
+                lift_s = f"{float(lift):g}"
+            except (TypeError, ValueError):
+                lift_s = str(lift)
+        lines.append(f"- {expr}(lift={lift_s}, {reason_zh})")
+    return "\n".join(lines)
+
+
 def format_leaf_guidance(leaf_guidance: dict[str, list[str]] | None) -> str:
     """Render shared exhausted/unexplored leaf guidance for LLM prompts."""
     if not leaf_guidance:

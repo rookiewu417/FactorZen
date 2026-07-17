@@ -25,12 +25,16 @@ class Recall:
 
     ``leaf_guidance``：叶子级挖穿/未探索指导；``leaf_names`` 未传入时为 None（零回归）。
     ``library_covered``：库内 active 高 |IC| 表达式（供 Hypothesis 追求正交）；None → 不注入。
+    ``lift_rejected``：组合层 lift 拒绝方向（``known_lift_rejects``）；空列表落 None。
+    ``exhausted_leaves``：原始挖穿叶名列表（硬过滤用，非格式化文案）；无 dig 时 None。
     """
     seen: set[str]
     known_invalid: list[str]
     known_valid: list[str]
     leaf_guidance: dict[str, list[str]] | None = None
     library_covered: list[str] | None = None
+    lift_rejected: list[dict] | None = None
+    exhausted_leaves: list[str] | None = None
 
 
 # 向后兼容别名（任务文档称 LibrarianBriefing）
@@ -76,6 +80,29 @@ def build_leaf_guidance(
     return {"exhausted": exhausted, "unexplored": unexplored}
 
 
+def raw_exhausted_leaves(
+    stats: dict[str, dict],
+    leaf_names: list[str],
+    *,
+    exhausted_min: int | None = None,
+) -> list[str]:
+    """挖穿叶的**裸名**列表（硬过滤用；口径与 ``build_leaf_guidance`` 一致）。"""
+    if exhausted_min is None:
+        exhausted_min = EXHAUSTED_MIN_TRIES
+    out: list[str] = []
+    for name in leaf_names:
+        st = stats.get(name) or {
+            "n_exprs": 0, "n_passed": 0, "best_abs_ic": 0.0, "n_coverage_fail": 0,
+        }
+        n_exprs = int(st.get("n_exprs") or 0)
+        n_passed = int(st.get("n_passed") or 0)
+        n_cov = int(st.get("n_coverage_fail") or 0)
+        direction_tries = n_exprs - n_cov
+        if direction_tries >= exhausted_min and n_passed == 0:
+            out.append(name)
+    return out
+
+
 def recall(
     index,
     *,
@@ -95,15 +122,21 @@ def recall(
     ``library_covered``：库内 active 高 IC 表达式列表（预构建）；None → 不注入（零回归）。
     """
     leaf_guidance = None
+    exhausted_leaves: list[str] | None = None
     if leaf_names is not None:
         stats = index.leaf_stats(leaf_names, data_window=data_window)
         leaf_guidance = build_leaf_guidance(stats, list(leaf_names))
+        raw = raw_exhausted_leaves(stats, list(leaf_names))
+        exhausted_leaves = raw or None
+    lift_rej = index.known_lift_rejects(k=k, data_window=data_window)
     return Recall(
         seen=index.seen_expressions(data_window=data_window),
         known_invalid=index.known_invalid(k=k, data_window=data_window),
         known_valid=index.known_valid(k=k, data_window=data_window),
         leaf_guidance=leaf_guidance,
         library_covered=library_covered,
+        lift_rejected=lift_rej or None,
+        exhausted_leaves=exhausted_leaves,
     )
 
 

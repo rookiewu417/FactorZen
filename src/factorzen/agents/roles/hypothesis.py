@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from factorzen.llm.generation import LLMFn, extract_json_items
-from factorzen.llm.prompt_fragments import format_leaf_guidance, format_library_covered
+from factorzen.llm.prompt_fragments import (
+    format_leaf_guidance,
+    format_library_covered,
+    format_library_crowded,
+    format_lift_rejected,
+)
 
 # 可用信号族——中性列举；具体方向优先/避开由动态 leaf_guidance（挖穿/未探索）引导。
 _SIGNAL_FAMILIES = (
@@ -70,12 +75,16 @@ def propose_hypotheses(
     market: str = "ashare",
     leaf_guidance: dict[str, list[str]] | None = None,
     library_covered: list[str] | None = None,
+    lift_rejected: list[dict] | None = None,
+    library_crowded: list[tuple[str, int]] | None = None,
 ) -> list[str]:
     """提 n 个经济直觉方向（自然语言）。解析失败 → 空列表。
 
     ``market``：信号族与市场约束按市场注入（默认 ashare）。
     ``leaf_guidance``：Librarian 叶子级挖穿/未探索指导；None → 不注入（零回归）。
-    ``library_covered``：库内 active 高 IC 表达式；None → 不注入（零回归）。"""
+    ``library_covered``：库内 active 高 IC 表达式；None → 不注入（零回归）。
+    ``lift_rejected``：组合层 lift 拒绝方向；None → 不注入（零回归）。
+    ``library_crowded``：库内拥挤叶子；None → 不注入（零回归）。"""
     sys = (
         "你是量化研究员，提出有经济直觉的选股方向（自然语言，不写公式）。"
         '只输出 JSON: {"hypotheses": ["方向1", "方向2"]}。'
@@ -99,6 +108,12 @@ def propose_hypotheses(
     lc = format_library_covered(library_covered)
     if lc:
         user += "\n" + lc
+    lr = format_lift_rejected(lift_rejected)
+    if lr:
+        user += "\n" + lr
+    lcr = format_library_crowded(library_crowded)
+    if lcr:
+        user += "\n" + lcr
     # extract_json_items 兼容包装对象与裸顶层数组两种真实形状（crypto smoke 实测后者常见）。
     hyps = extract_json_items(
         llm_fn([{"role": "system", "content": sys}, {"role": "user", "content": user}]),
@@ -117,12 +132,16 @@ def propose_structured(
     market: str = "ashare",
     leaf_guidance: dict[str, list[str]] | None = None,
     library_covered: list[str] | None = None,
+    lift_rejected: list[dict] | None = None,
+    library_crowded: list[tuple[str, int]] | None = None,
 ) -> list[dict]:
     """结构化假设（RD-Agent 步1）：每个含 direction/mechanism/expected_sign/falsification。
 
     ``market``：信号族与市场约束按市场注入（默认 ashare）。
     ``leaf_guidance``：Librarian 叶子级挖穿/未探索指导；None → 不注入（零回归）。
-    ``library_covered``：库内 active 高 IC 表达式；None → 不注入（零回归）。"""
+    ``library_covered``：库内 active 高 IC 表达式；None → 不注入（零回归）。
+    ``lift_rejected``：组合层 lift 拒绝方向；None → 不注入（零回归）。
+    ``library_crowded``：库内拥挤叶子；None → 不注入（零回归）。"""
     from factorzen.llm.prompt_fragments import market_caveats
     sys = (
         "你是量化研究员，提出结构化选股假设。每个假设含四要素："
@@ -144,6 +163,12 @@ def propose_structured(
     lc = format_library_covered(library_covered)
     if lc:
         user += "\n" + lc
+    lr = format_lift_rejected(lift_rejected)
+    if lr:
+        user += "\n" + lr
+    lcr = format_library_crowded(library_crowded)
+    if lcr:
+        user += "\n" + lcr
     # extract_json_items 兼容包装对象与裸顶层数组两种真实形状（crypto smoke 实测后者常见）。
     hyps = extract_json_items(
         llm_fn([{"role": "system", "content": sys}, {"role": "user", "content": user}]),

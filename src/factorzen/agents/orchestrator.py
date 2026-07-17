@@ -129,6 +129,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     # 空库 → objective 自动退化 raw，零回归。
     lib_pool: dict = {}
     library_covered: list[str] | None = None
+    library_crowded: list[tuple[str, int]] | None = None
     if library_orthogonal:
         try:
 
@@ -136,7 +137,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             from factorzen.discovery.factor_library import (
                 DEFAULT_ROOT,
                 build_library_pool,
-                library_covered_expressions,
+                library_covered_by_family,
             )
             market = getattr(profile, "name", None) or "ashare"
             lib_root = library_root or DEFAULT_ROOT
@@ -144,15 +145,18 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             lib_pool = build_library_pool(
                 market, _prepped, ctx.leaf_map, root=lib_root,
             )
-            covered = library_covered_expressions(market, k=10, root=lib_root)
+            covered, crowded = library_covered_by_family(
+                market, per_family=2, max_total=12, root=lib_root,
+            )
             library_covered = covered or None
+            library_crowded = crowded or None
             state.library_pool_size = len(lib_pool)
             if lib_pool:
                 _step(f"库级正交 ▸ 物化 {len(lib_pool)} 个 active 库因子")
         except Exception as exc:
             _LOG.warning("库池物化失败，本 session 跳过库级正交: %s: %s",
                          type(exc).__name__, exc)
-            lib_pool, library_covered = {}, None
+            lib_pool, library_covered, library_crowded = {}, None, None
     state.objective = objective  # type: ignore[attr-defined]
 
     # 日内 Feature Scout：仅 flag-on 建状态（flag-off 零开销）
@@ -211,10 +215,13 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             _step("  ① 生成假设 + 表达式")
             # leaf_guidance=None：M5 无跨 session index；注入函数与 team 共用，
             # 有 guidance 时由调用方/扩展接线传入。ctx 透传以尊重开局摘死叶。
+            # lift_rejected=None：M5 无 experiment_index，参数为对齐预留（接线待引入 index）
             state = node_generate(state, llm_fn, daily=mining_df, bundle=bundle,
                                   feedback=feedback, heal_rounds=heal_rounds,
                                   leaf_budgets=leaf_budgets, profile=profile,
-                                  library_covered=library_covered, ctx=ctx)
+                                  library_covered=library_covered,
+                                  library_crowded=library_crowded,
+                                  lift_rejected=None, ctx=ctx)
             _step(f"  ② 评估 {len(getattr(state, '_pending', []))} 个候选表达式")
             # None-gating：eval_start=None（旧调用方默认）时 daily/eval_start/eval_end
             # 的组合与之前逐字节相同的裸调用；非 None 时在完整帧 daily 上求值，裁剪到

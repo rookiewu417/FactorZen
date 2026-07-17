@@ -146,15 +146,36 @@ def run_risk_build(daily, daily_basic, stocks, start, end, *, out_dir=str(RISK_M
                     "cov_half_life": cov_half_life, "nw_lags": nw_lags,
                     "spec_half_life": spec_half_life, "spec_shrinkage": spec_shrinkage}
     manifest = build_manifest_base(command if command is not None else list(sys.argv), build_config)
+    n_valid = getattr(result, "n_valid_dates", 0)
+    n_mismatch = getattr(result, "n_factor_mismatch", result.n_dropped_dates)
+    n_dropped = result.n_dropped_dates
+    # 退化可见性：因子集不一致丢日必须醒目（不许静默）
+    if n_mismatch > 0:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"[DEGRADED] n_factor_mismatch={n_mismatch} n_dropped_dates={n_dropped} "
+            f"n_valid_dates={n_valid} — 因子集漂移仍在丢日，请检查行业并集/reindex"
+        )
+
     manifest.update({
         "run_id": rid, "start": start, "end": end, "universe_size": exp.n_stocks,
         "cov_half_life": cov_half_life, "nw_lags": nw_lags,
         "spec_half_life": spec_half_life, "spec_shrinkage": spec_shrinkage,
         "r_squared": result.r_squared, "factor_names": names,
+        "n_valid_dates": n_valid,
+        "n_dropped_dates": n_dropped,
+        "n_factor_mismatch": n_mismatch,
         "specific_risk_mean": float(sr.mean()) if sr.size else 0.0,
         "equal_weight_decomp": {k: round(v, 6) for k, v in decomp.items()},
         "duration_seconds": round(time.perf_counter() - t0, 3),
     })
     (run_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
 
-    return {"run_dir": str(run_dir), "r_squared": result.r_squared, "factor_names": names}
+    return {
+        "run_dir": str(run_dir),
+        "r_squared": result.r_squared,
+        "factor_names": names,
+        "n_valid_dates": n_valid,
+        "n_dropped_dates": n_dropped,
+        "n_factor_mismatch": n_mismatch,
+    }

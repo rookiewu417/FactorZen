@@ -229,7 +229,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             # eval_start，不能拿它的起点当判据——见 task-1.4 CORRECTION）。
             state = node_evaluate(state, daily=mining_df, bundle=bundle,
                                   eval_start=_eval_start_date, eval_end=_eval_end_date,
-                                  warmup_daily=daily, profile=profile)
+                                  warmup_daily=daily, profile=profile,
+                                  leaf_budgets=leaf_budgets)
             _step("  ③ 防过拟合护栏（DSR / holdout / CI / 去相关 / 库级正交）")
             state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
                                     bundle=bundle, ledger=ledger, top_k=top_k,

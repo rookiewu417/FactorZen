@@ -152,15 +152,21 @@ def _mock_daily_with_north_ratio(n_days=250, n_stocks=20, eval_start_idx=60, see
 
 def test_warmup_error_refeed_one_round(tmp_path: Path):
     """预热不足的表达式经 revise_from_error 回灌 → 修正版被评估；且**只回灌一轮**：
-    修正版仍预热不足时不再二次回灌。"""
+    修正版仍预热不足时不再二次回灌。
+
+    W5b 后单个超预算窗口字面量会被 clamp_window_literals 钳掉、不再触发预热错误——
+    refeed 的存量场景是**嵌套窗口叠加**超预算（单个字面量都 ≤ 预算,
+    required_lookback 沿最深路径累加后仍超),钳制治不了,故用嵌套表达式构造。"""
     from factorzen.agents.team_orchestrator import run_team_agent
 
     daily, eval_start = _mock_daily_with_north_ratio()
     calls: list[str] = []
 
     hyp = json.dumps({"hypotheses": ["北向持股占比高的股票未来收益更高"]})
-    bad = json.dumps({"expressions": ["ts_mean(north_ratio, 999)"]})   # 必预热不足
-    revised = json.dumps({"expressions": ["ts_mean(north_ratio, 888)"]})  # 仍预热不足
+    # 预热 ~60 根：50+50=100 > 60 必预热不足；单字面量 50 ≤ 预算不被钳
+    bad = json.dumps({"expressions": ["ts_mean(ts_mean(north_ratio, 50), 50)"]})
+    # 修正版 45+45=90 > 60 仍预热不足
+    revised = json.dumps({"expressions": ["ts_mean(ts_mean(north_ratio, 45), 45)"]})
     keep = json.dumps({"verdict": "keep", "reason": "ok"})
 
     def fn(messages):
@@ -180,8 +186,39 @@ def test_warmup_error_refeed_one_round(tmp_path: Path):
     refeed_calls = [t for t in calls if "诊断信息" in t]
     assert len(refeed_calls) == 1, f"应恰好回灌一轮，实得 {len(refeed_calls)} 次"
     exprs_seen = {a.expression for a in res.state.attempts}
-    assert "ts_mean(north_ratio, 999)" in exprs_seen, "原始预热不足表达式应被评估并落 attempt"
-    assert "ts_mean(north_ratio, 888)" in exprs_seen, "修正版应被评估（回灌一轮）"
+    assert "ts_mean(ts_mean(north_ratio, 50), 50)" in exprs_seen, \
+        "原始预热不足表达式应被评估并落 attempt"
+    assert "ts_mean(ts_mean(north_ratio, 45), 45)" in exprs_seen, "修正版应被评估（回灌一轮）"
     # 只回灌一轮：修正版仍预热不足，但不再触发第二次 revise_from_error（上面已断言 ==1）
-    warm_errs = [a for a in res.state.attempts if a.error and "预热不足" in a.error]
-    assert any(a.expression == "ts_mean(north_ratio, 888)" for a in warm_errs)
+
+
+def test_oversized_window_literal_clamped_no_refeed(tmp_path: Path):
+    """W5b：单个超预算窗口字面量被本地钳制 → 评估正常、不触发 refeed LLM。"""
+    from factorzen.agents.team_orchestrator import run_team_agent
+
+    daily, eval_start = _mock_daily_with_north_ratio()
+    calls: list[str] = []
+
+    hyp = json.dumps({"hypotheses": ["北向"]})
+    bad = json.dumps({"expressions": ["ts_mean(north_ratio, 999)"]})  # 超预算 → 被钳
+    keep = json.dumps({"verdict": "keep", "reason": "ok"})
+
+    def fn(messages):
+        text = "\n".join(m["content"] for m in messages)
+        calls.append(text)
+        if "诊断信息" in text:
+            return json.dumps({"expressions": []})
+        if "翻译成" in text:
+            return bad
+        if "风控审计员" in text:
+            return keep
+        return hyp
+
+    res = run_team_agent(daily, fn, n_rounds=1, seed=7, heal_rounds=0,
+                         index_path=str(tmp_path / "e.jsonl"), eval_start=eval_start)
+
+    assert not [t for t in calls if "诊断信息" in t], "钳制后不该再触发 refeed"
+    assert res.rounds_log[0].get("n_window_clamped", 0) >= 1, "rounds_log 应记钳制次数"
+    exprs_seen = {a.expression for a in res.state.attempts}
+    assert any(e.startswith("ts_mean(north_ratio, ") and "999" not in e for e in exprs_seen), \
+        f"应评估钳后表达式(窗口<999): {exprs_seen}"

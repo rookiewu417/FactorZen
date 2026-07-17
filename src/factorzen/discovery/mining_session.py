@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import gc
-import hashlib
 import json
 import logging
 import time
@@ -14,6 +13,7 @@ import polars as pl
 from factorzen.config.settings import DAILY_FACTORS_DIR, MINING_SESSIONS_DIR
 from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.derived import add_derived_columns
+from factorzen.discovery.evaluation import _rank_fingerprint  # 公共指纹；M1 原名 re-export 兼容
 from factorzen.discovery.expression import (
     evaluate_materialized,
     parse_expr,
@@ -168,29 +168,6 @@ def _cross_section_variability(fdf: pl.DataFrame) -> float:
     g = fdf.group_by("trade_date").agg(pl.col("factor_value").std().alias("s"))
     s = g["s"].fill_null(0.0).to_numpy()
     return float(np.mean(s > 1e-12)) if s.size else 0.0
-
-
-def _rank_fingerprint(fdf: pl.DataFrame, n_dates: int = 4) -> str | None:
-    """截面 rank 签名指纹(sha1)。单调(同向)变换的因子截面 rank 序完全一致 → 同指纹。
-
-    R5 去重用:字符串去重挡不住 neg(amount)/sub(2,amount)/neg(abs(amount)) 这类数学等价簇
-    (表达式串不同、rank IC 逐位相同)。对均匀取样的几个交易日取截面平均 rank(ties 稳健)哈希,
-    同时并入该日的 ts_code 成员集 → 不同 universe 不会误并。**不做符号规范化**:X 与 −X 是
-    相反方向的赌注,预打分阶段合并会有丢掉正确符号因子的风险;反向由 top-K 的 |corr| 门槛收尾。
-    样本日不足(<2)返回 None(不去重)。
-    """
-    dates = fdf.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
-    if len(dates) < 2:
-        return None
-    idx = sorted(set(np.linspace(0, len(dates) - 1, min(n_dates, len(dates))).round().astype(int).tolist()))
-    h = hashlib.sha1()
-    for i in idx:
-        cross = fdf.filter(pl.col("trade_date") == dates[i]).sort("ts_code")
-        h.update("|".join(cross["ts_code"].to_list()).encode())
-        ranks = cross["factor_value"].rank(method="average").to_list()
-        h.update((",".join(f"{float(x):.1f}" for x in ranks)).encode())
-        h.update(b";")
-    return h.hexdigest()
 
 
 def _pool_pbo(scored: list, daily: pl.DataFrame, bundle, eval_start=None, leaf_map=None) -> float:

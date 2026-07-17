@@ -54,8 +54,35 @@ def test_run_team_closes_loop(tmp_path: Path):
     assert len(res.rounds_log) >= 1     # 角色决策可审计
 
 
+def _inject_cands_for_critic(state, *, ledger, **_kw):
+    """把本轮 attempts 注入 candidates，使 Critic 走「有新候选」路径（非 W5c 空轮跳过）。
+
+    真实护栏在 mock 日线上常因 IC 弱/holdout 覆盖拒光 → new_cands=[] → W5c 确定性
+    revise_hypothesis、不调 LLM。本测关注的是 revise_expr 跨轮反馈，需强制有候选。
+    """
+    n = 0
+    for a in state.attempts:
+        if a.iteration != state.iteration or a.ic_train is None:
+            continue
+        a.passed_guardrails = True
+        state.candidates.append({
+            "expression": a.expression, "hypothesis": a.hypothesis,
+            "ic_train": a.ic_train or 0.05, "ir_train": a.ir_train or 0.4,
+            "turnover": a.turnover or 0.1, "holdout_ic": 0.04, "holdout_ir": 0.3,
+            "dsr": 0.7, "dsr_pvalue": 0.05,
+            "n_train": a.n_train if a.n_train is not None else 100,
+            "n_holdout_days": 80, "ic_ci_low": 0.01, "ic_ci_high": 0.08,
+        })
+        n += 1
+    if n:
+        ledger.record(n)
+    return state
+
+
 def test_run_team_revise_loop_counts_n(tmp_path: Path):
     """轮1 Critic revise_expr → 轮2 Coder 改写（跨轮 feedback），两表达式都评估、都计入 N。"""
+    from unittest.mock import patch
+
     hyp = json.dumps({"hypotheses": ["动量"]})
     code1 = json.dumps({"expressions": ["ts_mean(close,5)"]})
     crit_revise = json.dumps({"verdict": "revise_expr", "reason": "窗口太短"})
@@ -71,7 +98,9 @@ def test_run_team_revise_loop_counts_n(tmp_path: Path):
         return v
 
     daily = _mock_daily()
-    res = run_team_agent(daily, fn, n_rounds=2, seed=1, index_path=str(tmp_path / "e.jsonl"))
+    with patch("factorzen.agents.team_orchestrator.node_guardrails",
+               side_effect=_inject_cands_for_critic):
+        res = run_team_agent(daily, fn, n_rounds=2, seed=1, index_path=str(tmp_path / "e.jsonl"))
     assert res.n_trials >= 2     # 两轮各评估一个表达式(原始 + 改写)，都计入 N
     assert any("ts_mean(close, 20)" in r["expressions"] for r in res.rounds_log)  # 轮2 是改写产物
 
@@ -240,7 +269,11 @@ def test_revise_runs_alongside_new_hypotheses(tmp_path: Path):
     修复动机：GPT 类引擎的候选常被 Critic 判 revise_expr，纯修订轮会把吞吐
     塌缩（实测 19→3→2）——修订价值保留，但不得挤占新假设配额。
     路由用独特假设名 HYPMOM/HYPREV（样板文案不可能含它们，防误触发假绿）。
+
+    W5c：空轮跳 critic；本测需强制 new_cands 非空才能让 scripted critic 出 revise_expr。
     """
+    from unittest.mock import patch
+
     state = {"crit": 0, "prop": 0}
 
     def fn(messages):
@@ -259,8 +292,10 @@ def test_revise_runs_alongside_new_hypotheses(tmp_path: Path):
         return json.dumps({"hypotheses": ["HYPMOM" if state["prop"] == 1 else "HYPREV"]})
 
     daily = _mock_daily()
-    res = run_team_agent(daily, fn, n_rounds=2, seed=1, heal_rounds=0,
-                         index_path=str(tmp_path / "e.jsonl"))
+    with patch("factorzen.agents.team_orchestrator.node_guardrails",
+               side_effect=_inject_cands_for_critic):
+        res = run_team_agent(daily, fn, n_rounds=2, seed=1, heal_rounds=0,
+                             index_path=str(tmp_path / "e.jsonl"))
     exprs = {a.expression for a in res.state.attempts}
     assert "ts_mean(close, 20)" in exprs, f"轮2 应有修订产物: {exprs}"
     assert "ts_std(close, 10)" in exprs, f"轮2 还应有新假设产物(修订不得挤占): {exprs}"

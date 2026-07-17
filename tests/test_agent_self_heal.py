@@ -9,14 +9,17 @@ from factorzen.discovery.expression import parse_expr
 
 
 def test_heal_fixes_parse_error():
-    """非法表达式 → 报错回灌 LLM 修正 → 产出可解析表达式。"""
+    """语法错（非未知算子）→ 报错回灌 LLM 修正 → 产出可解析表达式。
+
+    W5a：``not_a_func(`` 实际是未知算子，默认直接丢弃不进 heal；
+    本测改用 ``ts_mean()``（缺窗口参数）作为可修语法错。
+    """
     def fake(_msgs):
         return json.dumps({"expressions": ["ts_mean(close, 5)"]})
-    healed = heal_expressions(["not_a_func("], "动量", fake, max_rounds=2)
+    healed = heal_expressions(["ts_mean()"], "动量", fake, max_rounds=2)
     assert len(healed) >= 1
     for h in healed:
         parse_expr(h)  # 全部可解析
-    assert all("not_a_func" not in h for h in healed)
 
 
 def test_heal_valid_expr_no_llm_call():
@@ -29,18 +32,21 @@ def test_heal_valid_expr_no_llm_call():
 
 
 def test_heal_gives_up_after_max_rounds():
-    """LLM 持续产非法 → max_rounds 耗尽后丢弃（不死循环）。"""
+    """LLM 持续产语法错 → max_rounds 耗尽后丢弃（不死循环）。
+
+    用 ``add(close)``（arity 错）而非未知算子，确保走 heal 路径。
+    """
     def fake(_msgs):
-        return json.dumps({"expressions": ["still_bad("]})
-    healed = heal_expressions(["bad("], "h", fake, max_rounds=2)
+        return json.dumps({"expressions": ["add(close)"]})
+    healed = heal_expressions(["add(close)"], "h", fake, max_rounds=2)
     assert healed == []
 
 
 def test_heal_dedup_and_mixed():
-    """有效 + 无效混合：有效直通，无效修正，结果去重。"""
+    """有效 + 语法错混合：有效直通，语法错修正，结果去重。"""
     def fake(_msgs):
         return json.dumps({"expressions": ["rank(vol)"]})
-    healed = heal_expressions(["ts_mean(close, 5)", "bad("], "h", fake, max_rounds=2)
+    healed = heal_expressions(["ts_mean(close, 5)", "ts_mean()"], "h", fake, max_rounds=2)
     assert len(healed) == len(set(healed))
     for h in healed:
         parse_expr(h)

@@ -42,6 +42,8 @@ class AgentState:
     attempts: list[AttemptRecord] = field(default_factory=list)
     candidates: list[dict] = field(default_factory=list)
     seen_expressions: set[str] = field(default_factory=set)
+    # 截面 rank 指纹去重（W4；session 级持久 set，evaluate_expressions 就地更新）
+    seen_fingerprints: set[str] = field(default_factory=set)
     negative_examples: list[str] = field(default_factory=list)
     pbo: float | None = None
     # 库级正交：session 开始物化的库池大小 + 因 library_correlated 被拒的累计数（manifest 用）

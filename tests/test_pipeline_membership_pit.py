@@ -366,7 +366,7 @@ def test_research_run_uses_membership_union(monkeypatch, tmp_path):
         )
 
     class FakeRisk:
-        def build(self, daily, daily_basic, stocks, start, end):
+        def build(self, daily, daily_basic, stocks, start, end, **_panels):
             codes = stocks["ts_code"].to_list()
             return SimpleNamespace(
                 factor_exposures=SimpleNamespace(codes=codes),

@@ -226,3 +226,28 @@ def test_team_drop_does_not_mutate_passed_guardrails_fact(tmp_path):
     assert stored["passed"] is True, "事实不得被 drop 决策改写"
     assert stored["verdict"] == "drop"
     assert "x" not in idx.known_valid(k=5), "但它不该被借鉴"
+
+
+# ── 无 IC 的行不配当负例（预热不足 / duplicate_fingerprint 挤占 top-k）────────
+
+
+def test_known_invalid_excludes_rows_without_ic(tmp_path):
+    """ic_train=None 的行（预热不足 / duplicate_fingerprint 等评估未出值）零方向信息，
+    排序键 abs(None or 0)=0 会挤占 known_invalid top-k——与编译失败被排除同理。
+    seen_expressions 的跨 session 去重价值不受影响。"""
+    idx = _idx(tmp_path)
+    r_warm = _rec("warmup_short", passed=False)
+    r_warm["ic_train"] = None
+    r_warm["error"] = "预热不足: 叶 roe 需要 504 根历史，可用 400 根"
+    r_dup = _rec("dup_fp", passed=False)
+    r_dup["ic_train"] = None
+    r_dup["error"] = "duplicate_fingerprint"
+    idx.append([r_warm, r_dup, _rec("weak_real", passed=False, ic_train=0.002)])
+
+    inv = idx.known_invalid(k=3)
+    assert "warmup_short" not in inv, "无 IC 的预热不足行不该进负例"
+    assert "dup_fp" not in inv, "指纹重复行不该进负例"
+    assert inv == ["weak_real"], f"仅真实弱 IC 行可当负例: {inv}"
+    # 去重集合仍见它们
+    seen = idx.seen_expressions()
+    assert "warmup_short" in seen and "dup_fp" in seen

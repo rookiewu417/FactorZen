@@ -700,19 +700,23 @@ def build_intraday_features(
         jobs.append((label, m_start, m_end))
 
     month_results: list[tuple[str, int, int]] = []
-    job_kw = dict(
-        version=version,
-        freq_n=freq_n,
-        source_dir=str(src),
-        out_dir=str(out),
-        data_type=data_type,
-        codes=codes,
-        min_bar_coverage=min_bar_coverage,
-    )
+    src_s = str(src)
+    out_s = str(out)
 
     if workers <= 1 or len(jobs) <= 1:
         for label, m_start, m_end in jobs:
-            got = _process_one_month(label, m_start, m_end, **job_kw)
+            got = _process_one_month(
+                label,
+                m_start,
+                m_end,
+                version=version,
+                freq_n=freq_n,
+                source_dir=src_s,
+                out_dir=out_s,
+                data_type=data_type,
+                codes=codes,
+                min_bar_coverage=min_bar_coverage,
+            )
             if got is not None:
                 month_results.append(got)
     else:
@@ -725,7 +729,13 @@ def build_intraday_features(
                     label,
                     m_start,
                     m_end,
-                    **job_kw,
+                    version=version,
+                    freq_n=freq_n,
+                    source_dir=src_s,
+                    out_dir=out_s,
+                    data_type=data_type,
+                    codes=codes,
+                    min_bar_coverage=min_bar_coverage,
                 ): label
                 for label, m_start, m_end in jobs
             }

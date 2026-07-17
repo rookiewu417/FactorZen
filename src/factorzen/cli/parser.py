@@ -511,8 +511,9 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_lt.add_argument("--end", required=True, help="评估窗口终点 YYYYMMDD")
     fl_lt.add_argument("--universe", default=None, help="A股 universe 名（如 csi300）")
     fl_lt.add_argument(
-        "--top-m", dest="top_m", type=int, default=None,
-        help="按 |residual_ic_train| 取 top-M 控成本（默认全测；显式截断会打印警告）",
+        "--top-m", dest="top_m", type=int, default=20,
+        help="按 |residual_ic_train| 取 top-M 控成本（默认 20；--top-m 0=全测逃生口；"
+             "截断会 stderr 大声打印并记 truncated_from）",
     )
     fl_lt.add_argument("--threshold", type=float, default=None,
                        help="RankIC lift 阈值（默认 DEFAULT_LIFT_THRESHOLD=0.001）")

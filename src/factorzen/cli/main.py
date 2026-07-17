@@ -1112,8 +1112,13 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     from factorzen.discovery.lift_test import (
         DEFAULT_HORIZON,
         LiftEvalContext,
+        _rank_ic_key,
         extract_gray_candidates_from_manifest,
+        filter_candidates_by_coverage,
+        group_gate_ok,
         make_lift_context,
+        resolve_lift_workers,
+        run_group_lift,
         run_lift_tests,
     )
 
@@ -1238,15 +1243,14 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     threshold = getattr(args, "threshold", None)
     if threshold is None:
         threshold = DEFAULT_LIFT_THRESHOLD
-    # top_m=None → 全测（与 session 末钩子一致）；仅显式 --top-m 截断，并告警（no silent caps）
-    top_m = getattr(args, "top_m", None)
-    if top_m is not None:
-        print(
-            f"[factor-library lift-test] 警告：--top-m={top_m} 将截断候选 "
-            f"（输入 {n_gray} 个，每组仅测 top-{int(top_m)}）",
-            file=sys.stderr,
-        )
+    # 默认 top_m=20；--top-m 0 → 全测逃生口（no silent caps：截断必 stderr + manifest 记账）
+    top_m_raw = getattr(args, "top_m", 20)
+    if top_m_raw is None or int(top_m_raw) == 0:
+        top_m: int | None = None  # 全测
+    else:
+        top_m = int(top_m_raw)
     seed = getattr(args, "seed", 0) or 0
+    se_mult = float(getattr(args, "se_mult", 1.0) or 1.0)
 
     # base_ctx：prep 一次；admission 窗 per-group replace（不改 horizon）
     try:
@@ -1275,24 +1279,139 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             profile_name=getattr(profile, "name", None) if profile is not None else None,
         )
 
-    lift_workers = getattr(args, "lift_workers", None)  # None→自适应(按可用内存)
+    lift_workers_arg = getattr(args, "lift_workers", None)  # None→自适应(按可用内存)
+    workers_resolved = resolve_lift_workers(lift_workers_arg)
+    print(
+        f"[factor-library lift-test] lift_workers={workers_resolved}"
+        + ("（自适应）" if lift_workers_arg is None else f"（显式 --lift-workers={lift_workers_arg}）"),
+        flush=True,
+    )
+    if lift_workers_arg == 1 and n_gray > 10:
+        print(
+            "[factor-library lift-test] 警告：--lift-workers 1 且候选 "
+            f">{n_gray} 个，串行将极慢，建议留空走自适应",
+            file=sys.stderr,
+        )
+
+    # 物化 memo：filter 与 run_lift_tests 共用，避免二次物化
+    from factorzen.discovery.lift_test import _materializer_from_prepped
+
+    mat_base = _materializer_from_prepped(base_ctx.prepped, leaf_map)
+    mat_cache: dict[str, object] = {}
+
+    def memo_mat(expr: str):
+        if expr in mat_cache:
+            return mat_cache[expr]
+        out = mat_base(expr)
+        mat_cache[expr] = out
+        return out
+
     results: list[dict] = []
+    all_dropped: list[dict] = []
+    lift_groups_meta: list[dict] = []
+    truncated_from: int | None = None
+    n_lift_evaluated = 0
+
     for g_start, g_end, cands in groups:
+        n_in = len(cands)
+        ordered = sorted(cands, key=_rank_ic_key, reverse=True)
+        if top_m is not None and n_in > top_m:
+            selected = ordered[:top_m]
+            truncated_from = (truncated_from or 0) + n_in
+            print(
+                f"[factor-library lift-test] 警告：--top-m={top_m} 将截断候选 "
+                f"（输入 {n_in} 个,按 |residual_ic_train| 排序截前 top_m={top_m}, "
+                f"被截 truncated_from={n_in}）",
+                file=sys.stderr,
+            )
+        else:
+            selected = ordered
+            if top_m is not None:
+                # 未截断：不累加 truncated_from（顶层可省略或 =n）
+                pass
+
+        # holdout_start：admission 起点字符串可与 Date 比较时用 g_start；None 不裁
+        holdout_start = g_start
+        kept, dropped = filter_candidates_by_coverage(
+            selected,
+            materialize_candidate=memo_mat,
+            holdout_start=holdout_start,
+        )
+        all_dropped.extend(dropped)
+        if dropped:
+            print(
+                f"[factor-library lift-test] 覆盖剔除 {len(dropped)} 个"
+                f"（组 {g_start or '—'}~{g_end or '—'}）",
+                file=sys.stderr,
+            )
+        if not kept:
+            lift_groups_meta.append({
+                "admission_start": g_start,
+                "admission_end": g_end,
+                "skipped": "empty_after_coverage",
+            })
+            continue
+
         grp_ctx = dataclasses.replace(
             base_ctx, admission_start=g_start, admission_end=g_end,
         )
-        rows = run_lift_tests(
-            cands,
+        group = run_group_lift(
+            kept,
             market=market,
             daily=daily,
             leaf_map=leaf_map,
             library_root=lib_root,
-            top_m=top_m,
+            seed=seed,
+            threshold=threshold,
+            materialize_candidate=memo_mat,
+            ctx=grp_ctx,
+        )
+        shared_base_daily = group.get("base_daily")
+        group_view = {k: v for k, v in group.items() if k != "base_daily"}
+        lift_groups_meta.append(group_view)
+        n_lift_evaluated += 1  # 组门计 1 次
+
+        group_ok, bar = group_gate_ok(
+            group, threshold=float(threshold), lift_se_mult=se_mult,
+        )
+        g_lift, g_se = group.get("lift"), group.get("lift_se")
+        print(
+            f"[factor-library lift-test] 组门 lift={g_lift!r} se={g_se!r} "
+            f"bar={bar:.4f} → {'过' if group_ok else '拒'}",
+            flush=True,
+        )
+        if not group_ok:
+            # 组门不过：全体 skip 逐候选；结果行记 reject 原因
+            reason = (
+                f"group_gate_fail(lift={g_lift!r},se={g_se!r},bar={bar:.4f})"
+            )
+            for c in kept:
+                results.append({
+                    "expression": c.get("expression"),
+                    "lift": None,
+                    "baseline": None,
+                    "passed": False,
+                    "error": reason,
+                    "admission_start": g_start,
+                    "admission_end": g_end,
+                })
+            continue
+
+        rows = run_lift_tests(
+            kept,
+            market=market,
+            daily=daily,
+            leaf_map=leaf_map,
+            library_root=lib_root,
+            top_m=None,  # CLI 已截断；此处全测 kept
             threshold=threshold,
             seed=seed,
             ctx=grp_ctx,
-            lift_workers=lift_workers,
+            lift_workers=lift_workers_arg,
+            materialize_candidate=memo_mat,
+            base_daily=shared_base_daily,
         )
+        n_lift_evaluated += len(rows)
         for r in rows:
             r = dict(r)
             r.setdefault("admission_start", g_start)
@@ -1325,12 +1444,14 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     # 默认 dry-run；仅 --apply 才写库（--dry-run 为兼容旗标，与 --apply 互斥）
     dry_run = not bool(getattr(args, "apply", False))
     admissions = None
-    if results and not dry_run:
+    # 仅对真正跑过 lift 且非 group_gate_fail 的行入库
+    scored = [r for r in results if not str(r.get("error") or "").startswith("group_gate")]
+    if scored and not dry_run:
         # apply 路径：lift_admission + upsert_lift_admissions（延迟导入，契约同任务 D）
         from factorzen.discovery.factor_library import upsert_lift_admissions
 
         admissions = upsert_lift_admissions(
-            results,
+            scored,
             market=market,
             root=lib_root,
             meta={
@@ -1345,7 +1466,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 "leaf_map": leaf_map,
             },
             threshold=threshold,
-            se_mult=float(getattr(args, "se_mult", 1.0) or 1.0),
+            se_mult=se_mult,
             allow_active=bool(getattr(args, "allow_active", False)),
         )
         print(
@@ -1378,13 +1499,21 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     # 单组时顶层 admission_* 与组一致（单 session 零回归）；多组不写并集
     top_adm_start = groups[0][0] if len(groups) == 1 else None
     top_adm_end = groups[0][1] if len(groups) == 1 else None
+    # 单组 lift_group 顶层；多组放 list
+    lift_group_field: dict | list | None
+    if len(lift_groups_meta) == 1:
+        lift_group_field = lift_groups_meta[0]
+    elif lift_groups_meta:
+        lift_group_field = lift_groups_meta
+    else:
+        lift_group_field = None
     lift_manifest = {
         "market": market,
         "start": args.start,
         "end": args.end,
         "universe": getattr(args, "universe", None),
         "threshold": threshold,
-        "top_m": top_m,
+        "top_m": top_m if top_m is not None else 0,
         "seed": seed,
         "admission_start": top_adm_start,
         "admission_end": top_adm_end,
@@ -1393,13 +1522,18 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         "n_gray_input": n_gray,
         "n_tested": len(results),
         "n_passed": sum(1 for r in results if r.get("passed")),
+        "n_lift_evaluated": n_lift_evaluated,
         "dry_run": dry_run,
         "baseline": results[0].get("baseline") if results else None,
         "results": results,
         "sessions": sessions,
         "git_sha": get_git_sha(),
         "admissions": admissions,
+        "lift_dropped_coverage": all_dropped,
+        "lift_group": lift_group_field,
     }
+    if truncated_from is not None:
+        lift_manifest["truncated_from"] = truncated_from
     out_man = Path(sessions[0]) / "lift_test_manifest.json"
     out_man.write_text(
         json.dumps(lift_manifest, ensure_ascii=False, indent=2), encoding="utf-8",

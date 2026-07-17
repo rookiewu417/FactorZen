@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -1087,42 +1086,18 @@ def _session_end_auto_lift(
             from factorzen.discovery.lift_test import _materializer_from_prepped
             mat = _materializer_from_prepped(lift_ctx.prepped, leaf_map)
 
-        kept: list[dict] = []
-        dropped: list[dict] = []
-        for c in queue:
-            expr = c.get("expression")
-            try:
-                cdf = mat(expr) if expr else None
-            except Exception as exc:
-                dropped.append({
-                    "expression": expr,
-                    "n_oos_days": 0,
-                    "error": f"materialize:{type(exc).__name__}",
-                })
-                continue
-            if cdf is None or (hasattr(cdf, "is_empty") and cdf.is_empty()):
-                dropped.append({
-                    "expression": expr,
-                    "n_oos_days": 0,
-                    "error": "materialize_failed",
-                })
-                continue
-            try:
-                oos = cdf.filter(pl.col("trade_date") >= holdout_start)
-                if "factor_value" in oos.columns:
-                    oos = oos.filter(pl.col("factor_value").is_not_null())
-                n_oos = int(oos["trade_date"].n_unique()) if oos.height else 0
-            except Exception:
-                n_oos = 0
-            if n_oos < DEFAULT_HOLDOUT_MIN_DAYS:
-                dropped.append({
-                    "expression": expr,
-                    "n_oos_days": n_oos,
-                    "error": "holdout_coverage",
-                })
-                continue
-            kept.append(c)
-
+        # 覆盖门：W1b 旁路已前置 holdout 残差覆盖；此处双保险（物化后评分窗日数）。
+        # filter_candidates_by_coverage 与 CLI lift-test 共用，语义零变化。
+        from factorzen.discovery.lift_test import (
+            filter_candidates_by_coverage,
+            group_gate_ok,
+        )
+        kept, dropped = filter_candidates_by_coverage(
+            queue,
+            materialize_candidate=mat,
+            holdout_start=holdout_start,
+            min_days=DEFAULT_HOLDOUT_MIN_DAYS,
+        )
         meta["lift_dropped_coverage"] = dropped
         if dropped:
             _step(f"lift 钩子 ▸ 覆盖剔除 {len(dropped)} 个（OOS < {DEFAULT_HOLDOUT_MIN_DAYS} 天）")
@@ -1152,22 +1127,11 @@ def _session_end_auto_lift(
         }
         meta["n_lift_evaluated"] = 1  # 组门计 1 次（多重检验 N 记账）
 
+        group_ok, bar = group_gate_ok(
+            group, threshold=float(DEFAULT_LIFT_THRESHOLD), lift_se_mult=float(lift_se_mult),
+        )
         g_lift = group.get("lift")
         g_se = group.get("lift_se")
-        # SE 缺失/非有限 = 区间证据不完整 → 组门不过（与 lift_admission 同契约，
-        # 不再按 0 处理——那会把「无 SE」当「零方差」，bar 退化为裸 threshold 偏宽）
-        if isinstance(g_se, (int, float)) and math.isfinite(float(g_se)):
-            se_finite, se_val = True, float(g_se)
-        else:
-            se_finite, se_val = False, 0.0
-        bar = max(float(DEFAULT_LIFT_THRESHOLD), float(lift_se_mult) * se_val)
-        group_ok = (
-            se_finite
-            and g_lift is not None
-            and g_lift == g_lift
-            and float(g_lift) >= bar
-            and not group.get("error")
-        )
         _step(
             f"lift 钩子 ▸ 组 lift={g_lift!r} se={g_se!r} bar={bar:.4f} "
             f"→ {'过' if group_ok else '拒'}"

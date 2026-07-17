@@ -255,7 +255,7 @@ def test_team_hook_default_cap_writes_probation(monkeypatch, tmp_path):
         critic_verdict=None, error=None, ir_train=1.0, n_train=100,
         residual_ic_train=0.01,
         reject_category=REJECT_CATEGORY_LIFT_QUEUE,
-        reject_reason="x(lift队列,覆盖待lift验)",
+        reject_reason="x(lift队列,待组合裁决)",
     ))
     state.n_gray_zone = 1
 
@@ -381,6 +381,8 @@ def test_cli_allow_active_forwarded(tmp_path, monkeypatch):
             {},
         ),
     )
+    from tests._cli_lift_mocks import patch_cli_lift_pre_gates
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(
         lt_mod,
         "run_lift_tests",
@@ -449,6 +451,8 @@ def test_cli_apply_default_allow_active_false(tmp_path, monkeypatch):
             {},
         ),
     )
+    from tests._cli_lift_mocks import patch_cli_lift_pre_gates
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(
         lt_mod,
         "run_lift_tests",

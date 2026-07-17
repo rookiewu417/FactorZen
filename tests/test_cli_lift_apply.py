@@ -49,12 +49,14 @@ def _patch_lift_deps(monkeypatch, *, upsert_calls: list | None = None):
     import factorzen.cli.main as cli_main
     import factorzen.discovery.factor_library as fl
     import factorzen.discovery.lift_test as lt_mod
+    from tests._cli_lift_mocks import patch_cli_lift_pre_gates
 
     monkeypatch.setattr(
         cli_main,
         "_prepare_agent_mining_data",
         lambda args: (_fake_daily(), None, {}),
     )
+    patch_cli_lift_pre_gates(monkeypatch)
 
     def fake_lift(gray, **kw):
         return [

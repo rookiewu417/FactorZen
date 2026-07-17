@@ -151,6 +151,8 @@ def test_cli_lift_sparse_event_panel_matches_mining_path(tmp_path, monkeypatch, 
             "n_selected": len(gray),
         }]
 
+    from tests._cli_lift_mocks import patch_cli_lift_pre_gates
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", capturing_run_lift_tests)
 
     # parser 最外层（禁止 inspect.signature）
@@ -163,9 +165,10 @@ def test_cli_lift_sparse_event_panel_matches_mining_path(tmp_path, monkeypatch, 
         "--universe", "csi300",
         "--dry-run",
         "--library-root", str(tmp_path / "lib"),
+        "--top-m", "0",  # 全测逃生口（默认 20）
     ])
     assert args.func.__name__ == "_cmd_factor_library_lift_test"
-    assert args.top_m is None  # 默认全测
+    assert args.top_m == 0
 
     rc = cli_main._cmd_factor_library_lift_test(args)
     assert rc == 0
@@ -198,7 +201,9 @@ def test_cli_and_mine_team_share_prepare_fn(monkeypatch, tmp_path):
     # lift-test
     run_dir = _write_lift_queue_session(tmp_path, ["rank(close)"])
     import factorzen.discovery.lift_test as lt_mod
+    from tests._cli_lift_mocks import patch_cli_lift_pre_gates
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(
         lt_mod, "run_lift_tests",
         lambda gray, **kw: [{
@@ -228,14 +233,15 @@ def test_cli_and_mine_team_share_prepare_fn(monkeypatch, tmp_path):
     assert len(hits) == 2, f"两条路径都应调用同源 prepare，got {hits}"
 
 
-# ── b. top_m 默认 None 全测 + 显式 --top-m 截断告警 ──────────────────────────
+# ── b. top_m 默认 20 截断 + --top-m 0 全测 + 显式截断告警 ────────────────────
 
 
-def test_cli_lift_top_m_default_none_tests_all(tmp_path, monkeypatch, capsys):
-    """默认 top_m=None：38 候选全进 run_lift_tests（无静默截断）。"""
+def test_cli_lift_top_m_default_truncates_to_20(tmp_path, monkeypatch, capsys):
+    """默认 top_m=20：38 候选截到 20 进 run_lift_tests，stderr 截断告警。"""
     import factorzen.cli.main as cli_main
     import factorzen.discovery.lift_test as lt_mod
     from factorzen.cli.main import build_parser
+    from tests._cli_lift_mocks import patch_cli_lift_pre_gates
 
     # 唯一 expression 串（去重后仍 38 个）；mock lift 不物化
     exprs = [f"add(rank(close), {i}.0)" for i in range(38)]
@@ -245,6 +251,7 @@ def test_cli_lift_top_m_default_none_tests_all(tmp_path, monkeypatch, capsys):
         cli_main, "_prepare_agent_mining_data",
         lambda args: (_sparse_event_daily(n_days=5, n_stocks=2), None, {}),
     )
+    patch_cli_lift_pre_gates(monkeypatch)
     seen: dict = {}
 
     def fake_lift(gray, **kw):
@@ -254,15 +261,9 @@ def test_cli_lift_top_m_default_none_tests_all(tmp_path, monkeypatch, capsys):
             {
                 "expression": g["expression"], "lift": -0.0001, "baseline": 0.01,
                 "passed": False, "n_input": len(gray),
-                "n_selected": len(gray) if kw.get("top_m") is None else min(
-                    len(gray), int(kw["top_m"]),
-                ),
+                "n_selected": len(gray),
             }
-            for g in (
-                gray if kw.get("top_m") is None
-                else sorted(gray, key=lambda c: abs(c.get("residual_ic_train") or 0),
-                            reverse=True)[: int(kw["top_m"])]
-            )
+            for g in gray
         ]
 
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
@@ -274,14 +275,15 @@ def test_cli_lift_top_m_default_none_tests_all(tmp_path, monkeypatch, capsys):
         "--library-root", str(tmp_path / "lib"),
         "--dry-run",
     ])
-    assert args.top_m is None
+    assert args.top_m == 20
     rc = cli_main._cmd_factor_library_lift_test(args)
     assert rc == 0
-    assert seen["top_m"] is None
-    assert seen["n"] == 38
+    assert seen["top_m"] is None  # CLI 已截断
+    assert seen["n"] == 20
 
     err = capsys.readouterr().err
-    assert "--top-m=" not in err  # 默认全测不告警截断
+    assert "--top-m=20" in err
+    assert "truncated_from=38" in err
 
 
 def test_cli_lift_top_m_explicit_truncates_with_warning(tmp_path, monkeypatch, capsys):
@@ -289,6 +291,7 @@ def test_cli_lift_top_m_explicit_truncates_with_warning(tmp_path, monkeypatch, c
     import factorzen.cli.main as cli_main
     import factorzen.discovery.lift_test as lt_mod
     from factorzen.cli.main import build_parser
+    from tests._cli_lift_mocks import patch_cli_lift_pre_gates
 
     exprs = [f"add(rank(close), {i}.0)" for i in range(38)]
     run_dir = _write_lift_queue_session(tmp_path, exprs)
@@ -297,20 +300,18 @@ def test_cli_lift_top_m_explicit_truncates_with_warning(tmp_path, monkeypatch, c
         cli_main, "_prepare_agent_mining_data",
         lambda args: (_sparse_event_daily(n_days=5, n_stocks=2), None, {}),
     )
+    patch_cli_lift_pre_gates(monkeypatch)
     seen: dict = {}
 
     def fake_lift(gray, **kw):
         seen["top_m"] = kw.get("top_m")
         seen["n_input"] = len(gray)
-        selected = sorted(
-            gray, key=lambda c: abs(c.get("residual_ic_train") or 0), reverse=True,
-        )[: int(kw["top_m"])]
         return [
             {
                 "expression": g["expression"], "lift": -0.0001, "baseline": 0.01,
-                "passed": False, "n_input": len(gray), "n_selected": len(selected),
+                "passed": False, "n_input": len(gray), "n_selected": len(gray),
             }
-            for g in selected
+            for g in gray
         ]
 
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
@@ -326,17 +327,17 @@ def test_cli_lift_top_m_explicit_truncates_with_warning(tmp_path, monkeypatch, c
     assert args.top_m == 10
     rc = cli_main._cmd_factor_library_lift_test(args)
     assert rc == 0
-    assert seen["top_m"] == 10
-    assert seen["n_input"] == 38
+    assert seen["top_m"] is None  # CLI 已截断，run_lift_tests 收 kept
+    assert seen["n_input"] == 10
 
     err = capsys.readouterr().err
     assert "--top-m=10" in err
     assert "截断" in err
-    assert "38" in err
+    assert "truncated_from=38" in err
 
 
-def test_cli_lift_parser_top_m_default_is_none():
-    """parser 契约：不传 --top-m → args.top_m is None（不是 10）。"""
+def test_cli_lift_parser_top_m_default_is_20():
+    """parser 契约：不传 --top-m → args.top_m == 20；--top-m 0 为全测逃生口。"""
     from factorzen.cli.main import build_parser
 
     args = build_parser().parse_args([
@@ -344,4 +345,11 @@ def test_cli_lift_parser_top_m_default_is_none():
         "--session", "workspace/x",
         "--start", "20200101", "--end", "20201231",
     ])
-    assert args.top_m is None
+    assert args.top_m == 20
+    args0 = build_parser().parse_args([
+        "factor-library", "lift-test",
+        "--session", "workspace/x",
+        "--start", "20200101", "--end", "20201231",
+        "--top-m", "0",
+    ])
+    assert args0.top_m == 0

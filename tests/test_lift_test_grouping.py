@@ -8,6 +8,8 @@ from pathlib import Path
 
 import polars as pl
 
+from tests._cli_lift_mocks import patch_cli_lift_pre_gates
+
 # ── 纯函数单测 ───────────────────────────────────────────────────────────────
 
 
@@ -249,6 +251,7 @@ def test_cli_lift_test_multi_session_calls_per_admission_window(
             for g in gray
         ]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
 
     args = build_parser().parse_args(
@@ -339,6 +342,7 @@ def test_cli_lift_test_flag_admission_forces_single_group(tmp_path, monkeypatch)
             for g in gray
         ]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
 
     args = build_parser().parse_args(
@@ -408,6 +412,7 @@ def test_cli_lift_test_single_session_one_group(tmp_path, monkeypatch):
             }
         ]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
 
     args = build_parser().parse_args(
@@ -485,6 +490,7 @@ def test_cli_lift_test_horizon_from_manifest(tmp_path, monkeypatch):
             for g in gray
         ]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
 
     args = build_parser().parse_args(
@@ -544,6 +550,7 @@ def test_cli_lift_test_horizon_flag_overrides_manifest(tmp_path, monkeypatch):
             for g in gray
         ]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
 
     args = build_parser().parse_args(
@@ -603,6 +610,7 @@ def test_cli_lift_test_horizon_params_key(tmp_path, monkeypatch):
             for g in gray
         ]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
 
     args = build_parser().parse_args(
@@ -658,6 +666,7 @@ def test_cli_lift_test_multi_session_horizon_mismatch_warns(
             for g in gray
         ]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
 
     args = build_parser().parse_args(

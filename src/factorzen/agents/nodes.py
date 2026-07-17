@@ -545,16 +545,12 @@ def node_guardrails(
                          a.expression, type(exc).__name__, exc)
             continue
 
-    # ── 非 top-K 全量残差 → lift 队列（覆盖待 session 末 lift 钩子把关）────────
-    # 与 top-K 内 is_lift_queue_candidate 路径的差异：
-    # - top-K：已跑 holdout 残差/覆盖，is_lift_queue_candidate 要求
-    #   n_residual_holdout_days ≥ DEFAULT_HOLDOUT_MIN_DAYS 且 |residual|≥gray floor；
-    #   reason 后缀「(lift队列,待组合裁决)」。
-    # - 非 top-K：未做 holdout 验收（控成本）；仅用全量 residual_ic_train ≥ gray floor
-    #   且未判 library_correlated 入队；reason 后缀「(lift队列,覆盖待lift验)」——
-    #   覆盖由 session 末 lift 钩子物化后剔除（lift_dropped_coverage），不静默 cap。
-    # 两路径并存：top-K 弱正交/主门不过仍可入队；非 top-K 高残差弱裸 IC 不丢增量。
-    if eff_objective == "residual":
+    # ── 非 top-K 全量残差 → lift 队列（与 top-K 统一 is_lift_queue_candidate 门）──
+    # 控成本：先按 train residual ≥ gray floor 过滤，再对幸存者补算 holdout 残差/覆盖
+    # （与 top-K 同函数同参数：_holdout_values + compute_residual_ic），统一走
+    # is_lift_queue_candidate；reason 后缀一律「(lift队列,待组合裁决)」。
+    # session 末 lift_dropped_coverage 机制保留（旁路已前置覆盖门；双保险）。
+    if eff_objective == "residual" and lib_panel is not None:
         for a in passed[top_k:]:
             if getattr(a, "passed_guardrails", False):
                 continue
@@ -567,10 +563,45 @@ def node_guardrails(
                 continue
             if abs(float(ric_nk)) < DEFAULT_GRAY_IC_FLOOR:
                 continue
-            a.reject_category = REJECT_CATEGORY_LIFT_QUEUE
-            suffix = "(lift队列,覆盖待lift验)"
-            a.reject_reason = ((a.reject_reason or "") + suffix) if a.reject_reason else suffix
-            state.n_gray_zone = getattr(state, "n_gray_zone", 0) + 1
+            # 幸存者：补算 holdout 残差（与 top-K 路径同一计算）
+            try:
+                node_nk = parse_expr(a.expression, leaf_map)
+                fdf_hold_nk = _holdout_values(node_nk)
+                if _hold_fwd is None:
+                    from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
+                    _pc = ("close_adj" if "close_adj" in holdout_df.columns
+                           else "close")
+                    _hold_fwd = compute_fwd_returns(
+                        holdout_df.sort(["ts_code", "trade_date"]), price_col=_pc,
+                    )
+                r_h_nk = compute_residual_ic(
+                    fdf_hold_nk, lib_panel, _hold_fwd, projector=projector,
+                )
+                residual_ic_h_nk = r_h_nk.ic_mean
+                n_residual_h_nk = r_h_nk.n_days
+                a.residual_holdout_ic = residual_ic_h_nk  # type: ignore[attr-defined]
+                a.n_residual_holdout_days = n_residual_h_nk  # type: ignore[attr-defined]
+            except Exception as exc:
+                _LOG.debug(
+                    "非 top-K holdout 残差失败 %s: %s: %s",
+                    a.expression, type(exc).__name__, exc,
+                )
+                continue
+            lift_probe = {
+                "ic_train": a.ic_train,
+                "n_holdout_days": getattr(a, "n_holdout_days", None),
+                "residual_ic_train": ric_nk,
+                "n_residual_holdout_days": n_residual_h_nk,
+                "reject_category": a.reject_category,
+                "max_corr_library": getattr(a, "max_corr_library", None),
+            }
+            if is_lift_queue_candidate(lift_probe, objective="residual"):
+                a.reject_category = REJECT_CATEGORY_LIFT_QUEUE
+                suffix = "(lift队列,待组合裁决)"
+                a.reject_reason = (
+                    ((a.reject_reason or "") + suffix) if a.reject_reason else suffix
+                )
+                state.n_gray_zone = getattr(state, "n_gray_zone", 0) + 1
 
     try:
         # None-gating：eval_start 是 None（旧调用方默认）时裸求值，与之前逐字节相同；

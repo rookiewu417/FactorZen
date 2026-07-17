@@ -347,7 +347,10 @@ def test_ctx_none_zero_regression_same_inputs():
     b = run_lift_tests(**kwargs, ctx=None)
     assert len(a) == len(b) == 2
     for ra, rb in zip(a, b, strict=True):
-        assert ra == rb
+        # elapsed_s 是墙钟遥测,两次调用必然不同;零回归只比结果字段
+        assert {k: v for k, v in ra.items() if k != "elapsed_s"} == {
+            k: v for k, v in rb.items() if k != "elapsed_s"
+        }
     # provenance 存在（ctx=None 时 admission 不裁）
     for r in a:
         assert r["admission_start"] is None

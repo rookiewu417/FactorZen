@@ -10,6 +10,8 @@ from pathlib import Path
 
 import polars as pl
 
+from tests._cli_lift_mocks import patch_cli_lift_pre_gates
+
 
 def _dates(n_days: int):
     days, d = [], date(2024, 1, 2)
@@ -349,6 +351,7 @@ def test_cli_lift_workers_from_outer_parser(tmp_path, monkeypatch):
             "passed": False,
         }]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
 
     args = build_parser().parse_args([

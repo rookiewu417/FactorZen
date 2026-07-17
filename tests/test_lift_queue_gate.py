@@ -238,3 +238,42 @@ def test_soft_reason_does_not_classify_as_coverage():
 
     reasons = ["库相关持保留(corr=0.72)"]
     assert classify_reject_category(reasons) is None
+
+
+# ── W1a/W1b：阈值收紧 + 非 top-K 统一门语义 ──────────────────────────────────
+
+
+def test_old_noise_band_residual_no_longer_queued():
+    """train residual 在 (0.003, 0.008) 旧噪声区 → 新 floor 下不入队（W1a 收紧）。"""
+    from factorzen.discovery.guardrails import DEFAULT_GRAY_IC_FLOOR
+
+    assert DEFAULT_GRAY_IC_FLOOR == 0.008
+    for ric in (0.0035, 0.005, 0.0079):
+        assert not is_lift_queue_candidate(
+            {
+                "residual_ic_train": ric,
+                "n_residual_holdout_days": DEFAULT_HOLDOUT_MIN_DAYS,
+            },
+            objective="residual",
+        )
+
+
+def test_nontopk_holdout_coverage_gate_semantics():
+    """W1b 统一门语义：train ≥ floor 但 holdout 覆盖不足 → 不入队；覆盖够 → 入队。
+
+    非 top-K 旁路补算 holdout 后同样走 is_lift_queue_candidate，故此处用门函数
+    直接验证两侧判别力（与 nodes 旁路契约对齐）。
+    """
+    from factorzen.discovery.guardrails import DEFAULT_GRAY_IC_FLOOR
+
+    floor_ok = {
+        "residual_ic_train": DEFAULT_GRAY_IC_FLOOR,
+        "n_residual_holdout_days": 30,  # <60
+    }
+    assert not is_lift_queue_candidate(floor_ok, objective="residual")
+
+    floor_and_cov = {
+        "residual_ic_train": DEFAULT_GRAY_IC_FLOOR,
+        "n_residual_holdout_days": DEFAULT_HOLDOUT_MIN_DAYS,
+    }
+    assert is_lift_queue_candidate(floor_and_cov, objective="residual") is True

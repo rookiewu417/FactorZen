@@ -115,8 +115,9 @@ def test_full_residual_marks_nontopk_lift_queue(monkeypatch):
         ))
 
     call_i = {"n": 0}
-    # 全量 train 三次均 ≥ DEFAULT_GRAY_IC_FLOOR(0.003)
-    order_ric = [0.004, 0.02, 0.008]
+    # 全量 train 三次均 ≥ DEFAULT_GRAY_IC_FLOOR(0.008)；按 |residual| 排序后
+    # top_k=1 取 0.02，非 top-K 为 0.009 / 0.0085（均过 train floor，需补 holdout）
+    order_ric = [0.009, 0.02, 0.0085]
 
     def fake_ric(candidate, lib_panel, fwd_returns, *, ret_col="fwd_ret_1d",
                  projector=None):
@@ -124,6 +125,7 @@ def test_full_residual_marks_nontopk_lift_queue(monkeypatch):
         call_i["n"] += 1
         if i < 3:
             return ResidualICResult(order_ric[i], n_days=80)
+        # holdout 残差补算：覆盖充足
         return ResidualICResult(0.01, n_days=80)
 
     monkeypatch.setattr(
@@ -139,7 +141,7 @@ def test_full_residual_marks_nontopk_lift_queue(monkeypatch):
         "factorzen.discovery.scoring.library_orthogonal_check",
         lambda *a, **k: (True, 0.1, None),
     )
-    # 主门一律不过 → top-K 走 is_lift_queue；非 top-K 走覆盖待lift验
+    # 主门一律不过 → top-K 与非 top-K 均走 is_lift_queue（统一后缀待组合裁决）
     monkeypatch.setattr(
         "factorzen.discovery.guardrails.acceptance_reasons",
         lambda **kw: ["残差IC太弱"],
@@ -160,11 +162,82 @@ def test_full_residual_marks_nontopk_lift_queue(monkeypatch):
         a for a in state.attempts
         if a.reject_category == REJECT_CATEGORY_LIFT_QUEUE
         and a.reject_reason
-        and "覆盖待lift验" in a.reject_reason
+        and "待组合裁决" in a.reject_reason
     ]
     assert len(nontop_marks) >= 2, (
-        f"非 top-K 应≥2 个覆盖待lift验: "
+        f"非 top-K 应≥2 个 lift 队列(待组合裁决): "
         f"{[(a.expression, a.reject_category, a.reject_reason) for a in state.attempts]}"
+    )
+    assert all(
+        "覆盖待lift验" not in (a.reject_reason or "")
+        for a in state.attempts
+    )
+
+
+def test_nontopk_holdout_coverage_shortfall_not_queued(monkeypatch):
+    """W1b：非 top-K train residual ≥ floor 但 holdout 覆盖 <60 天 → 不入队。"""
+    from factorzen.agents.nodes import node_guardrails
+    from factorzen.discovery.residual import ResidualICResult
+    from factorzen.discovery.scoring import DataBundle
+    from factorzen.validation.holdout import split_holdout
+    from factorzen.validation.multiple_testing import TrialLedger
+
+    daily = _mock_daily()
+    mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=0.2)
+    bundle = DataBundle.build(mining_df)
+    state = AgentState(seed=1, iteration=0)
+    rows = [
+        ("ts_mean(close, 5)", 0.08),
+        ("ts_mean(close, 10)", 0.02),
+    ]
+    for expr, ic in rows:
+        state.attempts.append(AttemptRecord(
+            iteration=0, hypothesis="h", expression=expr,
+            compile_ok=True, ic_train=ic, passed_guardrails=False,
+            critic_verdict=None, error=None, ir_train=ic * 10, n_train=100,
+        ))
+
+    call_i = {"n": 0}
+
+    def fake_ric(candidate, lib_panel, fwd_returns, *, ret_col="fwd_ret_1d",
+                 projector=None):
+        i = call_i["n"]
+        call_i["n"] += 1
+        if i < 2:
+            # train：均 ≥ floor
+            return ResidualICResult(0.009 if i == 0 else 0.02, n_days=80)
+        # holdout 补算：覆盖不足
+        return ResidualICResult(0.01, n_days=30)
+
+    monkeypatch.setattr(
+        "factorzen.discovery.residual.compute_residual_ic", fake_ric,
+    )
+    monkeypatch.setattr(
+        "factorzen.validation.holdout.holdout_ic_result",
+        lambda *a, **k: type("H", (), {
+            "ic_mean": 0.01, "ir": 0.5, "ci": (0.0, 0.02), "n_days": 80,
+        })(),
+    )
+    monkeypatch.setattr(
+        "factorzen.discovery.scoring.library_orthogonal_check",
+        lambda *a, **k: (True, 0.1, None),
+    )
+    monkeypatch.setattr(
+        "factorzen.discovery.guardrails.acceptance_reasons",
+        lambda **kw: ["残差IC太弱"],
+    )
+
+    lib_pool = {"lib_f": _panel(120)}
+    ledger = TrialLedger()
+    node_guardrails(
+        state, daily=mining_df, holdout_df=holdout_df, bundle=bundle,
+        ledger=ledger, top_k=1, lib_pool=lib_pool, objective="residual",
+    )
+
+    # 排序后 top 是 0.02（ts_mean close 10）；非 top 是 0.009（close 5）
+    low = next(a for a in state.attempts if a.expression == "ts_mean(close, 5)")
+    assert low.reject_category != REJECT_CATEGORY_LIFT_QUEUE, (
+        f"覆盖不足应不入队: {low.reject_category=} {low.reject_reason=}"
     )
 
 
@@ -286,7 +359,7 @@ def _state_with_lift_queue(exprs: list[str]) -> AgentState:
             critic_verdict=None, error=None, ir_train=1.0, n_train=100,
             residual_ic_train=0.01,
             reject_category=REJECT_CATEGORY_LIFT_QUEUE,
-            reject_reason="x(lift队列,覆盖待lift验)",
+            reject_reason="x(lift队列,待组合裁决)",
         ))
     st.n_gray_zone = len(exprs)
     return st

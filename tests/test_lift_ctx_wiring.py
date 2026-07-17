@@ -10,6 +10,8 @@ from pathlib import Path
 
 import polars as pl
 
+from tests._cli_lift_mocks import patch_cli_lift_pre_gates
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -290,6 +292,7 @@ def test_cli_rebuild_wires_daily_and_record_horizon(tmp_path, monkeypatch):
             "lift_second_half": 0.003, "baseline": 0.05, "passed": True,
         }]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
     monkeypatch.setattr(
         cli_main, "_prepare_agent_mining_data",
@@ -370,6 +373,7 @@ def _patch_lift_test_capture(monkeypatch, captured: list):
             "candidate_rank_ic": 0.025,
         }]
 
+    patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
 
 

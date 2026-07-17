@@ -27,12 +27,14 @@ DEFAULT_RESIDUAL_IC_FLOOR = 0.010
 # 空/稀疏 holdout 的 ic_mean 哨兵 0.0 曾被同号门误杀（train>0）或假过关（train<0）。
 DEFAULT_HOLDOUT_MIN_DAYS = 60
 
-# lift 队列 |IC| 下界（≈1 个标准误）。~1160 个交易日日 IC 均值的 SE≈0.003–0.0045
-# （SE≈σ/√n，日 IC 的 σ 典型 0.1–0.15），再低纯属噪声、不值得做 lift 实验。
+# lift 队列 |IC| 下界。噪声地板 ≈1SE（0.003–0.0045；SE≈σ/√n，日 IC σ 典型 0.1–0.15）；
+# 新值 ≈2SE。依据 = 2026-07-16 战役实证（69 条队列 abs mean 0.0051、43 条落 [0.003,0.005)
+# 噪声区、两次实弹 20 测 0 过）。若放行过松/过紧，只改这一处。
 # 命名保留 GRAY：旧 manifest / 调用方兼容；语义上是 lift_queue 下界，**无上界**。
-DEFAULT_GRAY_IC_FLOOR = 0.003
-# raw 模式 lift 队列下界（裸 IC 噪声地板略高于残差；≥ 此值即可入队，无上界）。
-DEFAULT_RAW_GRAY_IC_FLOOR = 0.005
+DEFAULT_GRAY_IC_FLOOR = 0.008
+# raw 模式 lift 队列下界（裸 IC 噪声地板略高于残差；仍 < DEFAULT_IC_FLOOR 0.015；无上界）。
+# 若放行过松/过紧，只改这一处。
+DEFAULT_RAW_GRAY_IC_FLOOR = 0.010
 # 组合增量 RankIC 阈值（初值待校准，lift 噪声地板需实测标定）。
 DEFAULT_LIFT_THRESHOLD = 0.001
 # 与库内因子「重复」硬拒阈值：corr > 此值 → library_correlated 一票否决。

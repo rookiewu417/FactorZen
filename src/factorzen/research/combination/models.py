@@ -12,6 +12,7 @@ train 折 fit、test 折 predict,与线性方法共用同一防泄漏骨架。
 """
 from __future__ import annotations
 
+import logging
 import warnings
 from typing import Any
 
@@ -25,6 +26,12 @@ from factorzen.research.combination.oos import drop_degenerate_factors, for_each
 _warned_empty_fold = False
 
 _META_COLS = frozenset({"trade_date", "ts_code", "ret"})
+
+# 逐特征列非空率警告门槛：异质 full join 下行齐全率恒低(0.43%@87 因子)，
+# 改看单列覆盖——仅当存在列 < 此阈值时 warn（W0-fix-1，2026-07-17 诊断）。
+LOW_FEATURE_COVERAGE_WARN = 0.30
+
+_LOG = logging.getLogger(__name__)
 
 
 def _warn_empty_fold_once() -> None:
@@ -80,15 +87,40 @@ def _join_ret(feat: pl.DataFrame, ret_df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _warn_incomplete(panel: pl.DataFrame) -> None:
+    """覆盖健康度：主通道=逐列非空率；行齐全率仅 debug（异质 full join 下恒低）。"""
     names = _feature_names(panel)
-    if panel.height > 0 and names:
-        complete = panel.drop_nulls(subset=names).height
-        if complete / panel.height < 0.7:
-            warnings.warn(
-                f"build_panel: 仅 {complete / panel.height:.0%} 行因子齐全,"
-                "其余按缺失喂入(因子覆盖异质)",
-                stacklevel=3,
-            )
+    if panel.height <= 0 or not names:
+        return
+    n = panel.height
+    # 行齐全率：异质因子 full join 下常 <70% 且无判别力 → 降级 debug
+    complete = panel.drop_nulls(subset=names).height
+    row_pct = complete / n
+    if row_pct < 0.7:
+        _LOG.debug(
+            "build_panel: 行齐全率 %.1f%%（%d/%d），异质 full join 下常见，不作主警告",
+            100.0 * row_pct, complete, n,
+        )
+    # 主通道：逐特征列非空率；存在列 < LOW_FEATURE_COVERAGE_WARN 才 warn
+    col_rates: list[tuple[str, float]] = []
+    for name in names:
+        try:
+            nn = int(panel[name].is_not_null().sum())
+        except Exception:
+            nn = 0
+        col_rates.append((name, nn / n))
+    low = [(nm, r) for nm, r in col_rates if r < LOW_FEATURE_COVERAGE_WARN]
+    if not low:
+        return
+    rates = [r for _, r in col_rates]
+    rates_sorted = sorted(rates)
+    mid = rates_sorted[len(rates_sorted) // 2]
+    worst = sorted(low, key=lambda x: x[1])[:5]
+    worst_s = ", ".join(f"{nm}={r:.0%}" for nm, r in worst)
+    warnings.warn(
+        f"build_panel: {len(low)}/{len(names)} 列非空率 < {LOW_FEATURE_COVERAGE_WARN:.0%}"
+        f"（min={min(rates):.0%} median={mid:.0%}）；最差: {worst_s}",
+        stacklevel=3,
+    )
 
 
 def _extend_feat_from_base(

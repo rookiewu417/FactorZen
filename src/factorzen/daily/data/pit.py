@@ -16,6 +16,12 @@ def pit_align(
     对每个月频快照日期，找出每只股票「最新已公告」的财务报告——
     即 ann_date <= snapshot_date 中 end_date 最大的那条。
 
+    同 ts_code 同 end_date 多条（更正公告）时的 tie-break：与旧实现一致——
+    按 ``["ts_code", "end_date"]`` 降序 end_date 后 ``group_by().first()``，
+    polars 稳定排序下同 end_date 取原相对顺序第一条。实现上以
+    ``(end_date desc, 原行序 asc)`` 为优劣键，按 ann_date 做 running-best
+    状态转移后 ``join_asof``，与逐快照日循环语义等价。
+
     Args:
         fina_df: 财务数据，必须含 ts_code, end_date(Date), ann_date(Date) 及指标列
         snapshot_dates: 月频快照日列表(升序)
@@ -34,29 +40,63 @@ def pit_align(
 
     # 过滤掉 ann_date 为 null 的记录（未公告的财报）
     fina_df = fina_df.filter(pl.col("ann_date").is_not_null())
-
-    # 按 ts_code + end_date 降序预排序，后续 group_by().first() 即可取到 max end_date
-    fina_sorted = fina_df.sort(["ts_code", "end_date"], descending=[False, True])
-
-    results: list[pl.DataFrame] = []
-    for sd in snapshot_dates:
-        # 只保留快照日之前（含当天）已公告的财报
-        valid = fina_sorted.filter(pl.col("ann_date") <= sd)
-        if valid.is_empty():
-            continue
-
-        # 每个 ts_code 取 end_date 最大的那条（已排好序，first() 即是）
-        best = (
-            valid.group_by("ts_code")
-            .first()
-            .with_columns(pl.lit(sd).cast(pl.Date).alias("snapshot_date"))
-        )
-        results.append(best)
-
-    if not results:
+    if fina_df.is_empty():
         return pl.DataFrame()
 
-    return pl.concat(results, how="vertical")
+    # 原相对顺序：稳定排序 + group_by.first 的 tie-break 键
+    fina = fina_df.with_row_index("_ord")
+
+    # 优劣秩：end_date 越大越好，同 end_date 原行序越靠前越好 → rank 越小越好
+    ranked = (
+        fina.sort(["ts_code", "end_date", "_ord"], descending=[False, True, False])
+        .with_columns(pl.int_range(pl.len()).over("ts_code").alias("_rank"))
+    )
+
+    # 按公告日推进 running-best：每当出现更优秩时记录一次状态转移
+    events = ranked.sort(["ts_code", "ann_date", "_ord"]).with_columns(
+        pl.col("_rank").cum_min().over("ts_code").alias("_best_rank")
+    )
+    states = events.filter(pl.col("_rank") == pl.col("_best_rank")).drop(
+        ["_ord", "_rank", "_best_rank"]
+    )
+    if states.is_empty():
+        return pl.DataFrame()
+
+    # 快照 × 股票，一次 join_asof(ann_date <= snapshot_date) 取当前 best 行
+    snaps = pl.DataFrame(
+        {"snapshot_date": snapshot_dates},
+        schema={"snapshot_date": pl.Date},
+    )
+    left = (
+        states.select("ts_code")
+        .unique()
+        .join(snaps, how="cross")
+        .sort(["ts_code", "snapshot_date"])
+    )
+    right = states.sort(["ts_code", "ann_date"])
+
+    aligned = left.join_asof(
+        right,
+        left_on="snapshot_date",
+        right_on="ann_date",
+        by="ts_code",
+        strategy="backward",
+        check_sortedness=False,  # by 分组时 polars 无法校验 sortedness
+    )
+    # 无任何 ann_date <= snapshot 的股票-日 → 该日不输出
+    aligned = aligned.filter(pl.col("ann_date").is_not_null())
+    if aligned.is_empty():
+        return pl.DataFrame()
+
+    # 列序与旧实现大致一致：指标列在前，snapshot_date 在后（下游按名取值）
+    out_cols = [c for c in fina_df.columns if c in aligned.columns]
+    if "snapshot_date" not in out_cols:
+        out_cols.append("snapshot_date")
+    # 补齐 join 可能带出的其余列
+    for c in aligned.columns:
+        if c not in out_cols and c not in ("_ord", "_rank", "_best_rank"):
+            out_cols.append(c)
+    return aligned.select(out_cols)
 
 
 # 挖掘/物化路径共用的基本面叶子——单一真源在 operators.FUNDAMENTAL_FEATURES，此处只排序取用

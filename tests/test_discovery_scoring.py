@@ -133,3 +133,32 @@ def test_score_penalizes_complexity():
     complex_score = score_candidate(fac, parse_expr("ts_mean(close, 5)"), b, pool={}, gamma=0.01)
     assert complex_score["complexity"] > simple["complexity"]
     assert complex_score["fitness"] < simple["fitness"]
+
+
+def test_quick_fitness_uses_horizon_1_only(monkeypatch):
+    """挖掘 quick_fitness 只算 1d IC；5/10/20d 无人消费（审计 Wave2 项 3）。"""
+    from factorzen.discovery import scoring as scoring_mod
+    from factorzen.discovery.scoring import DataBundle, quick_fitness
+
+    daily = _daily()
+    b = DataBundle.build(daily)
+    fac = _signal_factor_df(daily)
+
+    seen: list = []
+    _orig = scoring_mod.compute_rank_ic
+
+    def _wrap(*args, **kwargs):
+        seen.append(kwargs.get("horizons"))
+        return _orig(*args, **kwargs)
+
+    monkeypatch.setattr(scoring_mod, "compute_rank_ic", _wrap)
+    res = quick_fitness(fac, b, segment="train")
+    assert seen == [[1]]
+    assert res["n"] > 0
+    # 与显式 1d 主 IC 一致：再跑无 mock 对照
+    monkeypatch.setattr(scoring_mod, "compute_rank_ic", _orig)
+    res2 = quick_fitness(fac, b, segment="train")
+    assert res["ic_mean"] == pytest.approx(res2["ic_mean"], abs=1e-12)
+    assert res["ir"] == pytest.approx(res2["ir"], abs=1e-12)
+    assert res["tstat"] == pytest.approx(res2["tstat"], abs=1e-12)
+    assert res["n"] == res2["n"]

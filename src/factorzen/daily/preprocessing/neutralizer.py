@@ -1,14 +1,19 @@
-﻿"""行业+市值中性化。截面 OLS 回归取残差。"""
+"""行业+市值中性化。截面 OLS 回归取残差。"""
 
 from __future__ import annotations
 
 import numpy as np
 import polars as pl
-import statsmodels.api as sm
 
 from factorzen.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _ols_residuals(y: np.ndarray, X: np.ndarray) -> np.ndarray:
+    """numpy lstsq 残差：y - X @ beta（与 statsmodels OLS 数值对齐）。"""
+    beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    return y - X @ beta
 
 
 def neutralize_ols(
@@ -55,62 +60,66 @@ def neutralize_ols(
         logger.warning("neutralize_ols: 无行业/市值数据，跳过中性化")
         return df.with_columns(pl.col(col).alias(out_col))
 
-    # 构建行业映射
-    industry_map: dict[str, str] = {}
-    if stock_basic is not None:
-        industry_map = dict(
-            zip(
-                stock_basic["ts_code"].to_list(),
-                [
-                    industry if industry is not None and industry != "" else "未知"
-                    for industry in stock_basic["industry"].to_list()
-                ],
-                strict=False,
-            )
-        )
+    # 一次 join 行业/市值，避免逐日 filter 扫描
+    work = df
+    use_industry = stock_basic is not None
+    use_mv = daily_basic is not None
 
-    dates = df["trade_date"].unique().sort().to_list()
+    if use_industry:
+        assert stock_basic is not None
+        ind = (
+            stock_basic.select(["ts_code", "industry"])
+            .with_columns(
+                pl.when(pl.col("industry").is_null() | (pl.col("industry") == ""))
+                .then(pl.lit("未知"))
+                .otherwise(pl.col("industry"))
+                .alias("_industry")
+            )
+            .select(["ts_code", "_industry"])
+        )
+        work = work.join(ind, on="ts_code", how="left")
+        work = work.with_columns(pl.col("_industry").fill_null("未知"))
+
+    if use_mv:
+        assert daily_basic is not None
+        mv = daily_basic.select(["trade_date", "ts_code", "total_mv"]).rename(
+            {"total_mv": "_total_mv"}
+        )
+        work = work.join(mv, on=["trade_date", "ts_code"], how="left")
+
+    dates = work["trade_date"].unique().sort().to_list()
 
     def _process_date(d: object) -> pl.DataFrame:
-        cross = df.filter(pl.col("trade_date") == d)
-        codes = cross["ts_code"].to_list()
-        y = cross[col].to_numpy()
-        valid = ~np.isnan(y)
+        cross = work.filter(pl.col("trade_date") == d)
+        y = cross[col].to_numpy().astype(float)
+        n = len(y)
+        valid = np.isfinite(y)
 
-        # 市值回归列：total_mv(万元)取 log。log 对尺度不敏感（万元/元的常数差被截距吸收），
-        # 唯一要防的是 log(非正)。缺失/非正市值 → NaN 并入 valid 掩码从回归中剔除，
-        # 不再用 1e6 下限把 <100亿元 的股票夹成常数（会使 size 列退化、中性化失效），
-        # 也不再用 1e8 巨常数冒充缺失值。
         log_mv: np.ndarray | None = None
-        if daily_basic is not None:
-            mv_cross = daily_basic.filter(pl.col("trade_date") == d).select(["ts_code", "total_mv"])
-            mv_map = dict(
-                zip(mv_cross["ts_code"].to_list(), mv_cross["total_mv"].to_list(), strict=False)
-            )
-            mv_arr = np.array([mv_map.get(c, np.nan) for c in codes], dtype=float)
+        if use_mv:
+            mv_arr = cross["_total_mv"].to_numpy().astype(float)
             with np.errstate(invalid="ignore", divide="ignore"):
                 log_mv = np.where(mv_arr > 0, np.log(mv_arr), np.nan)
-            valid = valid & ~np.isnan(log_mv)
+            valid = valid & np.isfinite(log_mv)
 
-        if valid.sum() < 30:
+        if int(valid.sum()) < 30:
             logger.warning(f"neutralize_ols: {d} 有效样本数 {valid.sum()} < 30，跳过")
-            return cross.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
+            # 去掉辅助列，与输入 schema 对齐
+            base = cross.select([c for c in df.columns])
+            return base.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
 
-        # 构建设计矩阵
-        X_parts: list[np.ndarray] = [np.ones((len(codes), 1), dtype=float)]
+        X_parts: list[np.ndarray] = [np.ones((n, 1), dtype=float)]
 
-        if industry_map:
-            industries = [
-                industry if (industry := industry_map.get(c)) is not None and industry != "" else "未知"
-                for c in codes
-            ]
+        if use_industry:
+            industries = cross["_industry"].to_list()
             unique_ind = sorted(set(industries))
             ind_to_idx = {ind: i for i, ind in enumerate(unique_ind)}
-            ind_dummies = np.zeros((len(codes), len(unique_ind) - 1))
-            for i, ind in enumerate(industries):
-                if ind_to_idx[ind] > 0:
-                    ind_dummies[i, ind_to_idx[ind] - 1] = 1
-            X_parts.append(ind_dummies)
+            if len(unique_ind) > 1:
+                ind_dummies = np.zeros((n, len(unique_ind) - 1), dtype=float)
+                for i, ind in enumerate(industries):
+                    if ind_to_idx[ind] > 0:
+                        ind_dummies[i, ind_to_idx[ind] - 1] = 1.0
+                X_parts.append(ind_dummies)
 
         if log_mv is not None:
             # 无效行(被 valid 剔除)填 0 仅占位、不参与拟合/预测，不影响结果。
@@ -119,19 +128,18 @@ def neutralize_ols(
         X = np.hstack(X_parts)
 
         try:
-            model = sm.OLS(y[valid], X[valid]).fit()
+            resid_valid = _ols_residuals(y[valid], X[valid])
         except Exception as e:
-            # 回归失败必须标 NaN（与 docstring 承诺、<30 样本分支一致）：返回原值 y
-            # 会让该日因子带满行业/市值暴露漏到下游，下游却以为已中性化（研究可信度隐患）。
+            # 回归失败必须标 NaN（与 docstring 承诺、<30 样本分支一致）
             logger.warning(f"neutralize_ols: {d} 回归失败 ({e})，标记为 NaN")
-            return cross.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
+            base = cross.select([c for c in df.columns])
+            return base.with_columns(pl.lit(None).cast(pl.Float64).alias(out_col))
 
-        # 只对参与回归的有效行输出残差；缺失 y/市值的行标 NaN（被剔除）。
-        residuals = np.full(len(y), np.nan)
-        residuals[valid] = y[valid] - model.predict(X[valid])
-        return cross.with_columns(pl.Series(out_col, residuals))
+        residuals = np.full(n, np.nan, dtype=float)
+        residuals[valid] = resid_valid
+        base = cross.select([c for c in df.columns])
+        return base.with_columns(pl.Series(out_col, residuals))
 
-    # 对每个日期做截面回归（支持并行）
     if n_jobs == 1:
         results = [_process_date(d) for d in dates]
     else:
@@ -221,8 +229,8 @@ def neutralize_by_styles(
         residuals = y.copy()
 
         try:
-            model = sm.OLS(y[valid_mask], X[valid_mask]).fit()
-            residuals[valid_mask] = y[valid_mask] - model.predict(X[valid_mask])
+            resid_valid = _ols_residuals(y[valid_mask], X[valid_mask])
+            residuals[valid_mask] = resid_valid
             residuals[~valid_mask] = np.nan
         except Exception as e:
             logger.warning(f"neutralize_by_styles: {d} 回归失败 ({e})，使用原值")

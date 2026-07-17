@@ -69,6 +69,19 @@ def _patch_prepare_stack(monkeypatch, daily: pl.DataFrame, *, end_universe=None)
         "factorzen.core.universe._load_index_members", _members_by_month
     )
 
+    def _batch(index_code: str, day_strs: list[str]) -> pl.DataFrame:
+        rows: list[dict[str, str]] = []
+        for d in day_strs:
+            for c in _members_by_month(index_code, d):
+                rows.append({"trade_date": d, "ts_code": c})
+        if not rows:
+            return pl.DataFrame(schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8})
+        return pl.DataFrame(rows)
+
+    monkeypatch.setattr(
+        "factorzen.core.universe._batch_index_membership", _batch
+    )
+
     class _FakeCtx:
         def __init__(self, **kw):
             self.kw = kw

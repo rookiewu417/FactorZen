@@ -144,6 +144,19 @@ def test_node_guardrails_rejects_library_correlated(tmp_path, monkeypatch):
         lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
     )
 
+    # nodes 在函数内 from scoring import——patch 源模块即可在 import 时拿到 wrap
+    seen_panel = {"n": 0, "with_panel": 0}
+    import factorzen.discovery.scoring as scoring_mod
+    _orig = scoring_mod.library_orthogonal_check
+
+    def _wrap(factor_df, lib_pool, *, threshold=0.7, panel=None):
+        seen_panel["n"] += 1
+        if panel is not None:
+            seen_panel["with_panel"] += 1
+        return _orig(factor_df, lib_pool, threshold=threshold, panel=panel)
+
+    monkeypatch.setattr(scoring_mod, "library_orthogonal_check", _wrap)
+
     state = AgentState(seed=1)
     _seed_attempt(state, "rank(close)")          # 与库等价 → 应拒
     _seed_attempt(state, "rank(vol)", ic=0.04)   # 与库近似正交 → 应入池
@@ -163,6 +176,8 @@ def test_node_guardrails_rejects_library_correlated(tmp_path, monkeypatch):
     assert len(kept) == 1
     assert "max_corr_library" in kept[0]
     assert kept[0]["max_corr_library"] < 0.7
+    assert seen_panel["n"] >= 1
+    assert seen_panel["with_panel"] == seen_panel["n"], "nodes 须把 LibraryCorrPanel 传入库相关检查"
 
 
 def test_node_guardrails_library_reject_frees_slot_for_orthogonal(tmp_path, monkeypatch):
@@ -216,6 +231,37 @@ def test_library_corr_shared_function_architecture_guard():
         assert called & shared_names, (
             f"{rel} 未调用共享库相关函数 {shared_names}；实得 calls∩={called & shared_names}"
         )
+
+
+def test_dual_path_wires_library_corr_panel():
+    """M1 与 nodes 都必须构建 LibraryCorrPanel 并传给 library_orthogonal_check。"""
+    for rel in ("agents/nodes.py", "discovery/mining_session.py"):
+        src = (_SRC / rel).read_text(encoding="utf-8-sig")
+        assert "build_library_corr_panel" in src, f"{rel} 未构建 corr panel"
+        assert "panel=" in src or "panel =" in src, f"{rel} 未把 panel 传给库相关检查"
+        tree = ast.parse(src)
+        called = set()
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call):
+                if isinstance(n.func, ast.Name):
+                    called.add(n.func.id)
+                elif isinstance(n.func, ast.Attribute):
+                    called.add(n.func.attr)
+        assert "build_library_corr_panel" in called, f"{rel} 未调用 build_library_corr_panel"
+        # 至少一次 library_orthogonal_check 带 panel 关键字
+        has_panel_kw = False
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call):
+                fname = None
+                if isinstance(n.func, ast.Name):
+                    fname = n.func.id
+                elif isinstance(n.func, ast.Attribute):
+                    fname = n.func.attr
+                if fname == "library_orthogonal_check" and any(
+                    kw.arg == "panel" for kw in n.keywords
+                ):
+                    has_panel_kw = True
+        assert has_panel_kw, f"{rel} 的 library_orthogonal_check 未传 panel="
 
 
 def test_m1_greedy_skips_library_correlated(tmp_path, monkeypatch):

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+import numpy as np
 import polars as pl
 
 from factorzen.daily.evaluation.correlation import compute_factor_correlation
@@ -61,16 +62,202 @@ def quick_fitness(factor_df: pl.DataFrame, bundle: DataBundle,
     # 截面 zscore（cross_sectional_zscore 新增列 factor_value_z）
     clean = cross_sectional_zscore(seg, col="factor_value").rename({"factor_value_z": "factor_clean"})
     ret = bundle._segment_mask(bundle.fwd_returns, segment)
-    res = compute_rank_ic(clean.select(["trade_date", "ts_code", "factor_clean"]),
-                          ret, factor_col="factor_clean", frequency="daily")
+    # 挖掘路径只消费 1d Rank IC/IR/tstat（candidates.csv / score / 护栏均不读
+    # ic_decay 5/10/20d）。显式 horizons=[1]，避免默认 [1,5,10,20] 重复截面相关。
+    # 正式 factor run / ic_overfit_report 仍走 compute_rank_ic 默认多 horizon。
+    res = compute_rank_ic(
+        clean.select(["trade_date", "ts_code", "factor_clean"]),
+        ret, factor_col="factor_clean", frequency="daily", horizons=[1],
+    )
     return {"ic_mean": res.ic_mean, "ir": res.ir, "tstat": res.ic_tstat, "n": res.n_periods}
 
 
 # 去相关 |corr| 门槛的单一真源——session 池去相关、库级正交、upsert 默认共用。
 DEFAULT_DECORR_THRESHOLD = 0.7
 
+# 与 compute_factor_correlation 逐日门槛一致
+_MIN_CORR_CROSS = 30
 
-def max_correlation(factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame]) -> float:
+
+@dataclass(frozen=True)
+class LibraryCorrPanel:
+    """库池一次对齐的宽面板，供候选 vs 库逐对相关向量化。
+
+    语义与 ``compute_factor_correlation`` 逐对路径一致（见 ``max_correlation_detail``）：
+    - ``present``：polars 非 null（**含 float NaN**——NaN 会毒化该日 corrcoef）
+    - 缺行 / null → ``present=False``（该 (date,stock) 不参与该对）
+    - ``names`` 保持 pool 插入序（并列 max|corr| 取后出现者）
+    """
+
+    names: tuple[str, ...]
+    dates: tuple  # sorted unique trade_date
+    stocks: tuple  # sorted unique ts_code
+    date_idx: dict
+    stock_idx: dict
+    values: np.ndarray  # (n_dates, n_stocks, n_factors) float64
+    present: np.ndarray  # (n_dates, n_stocks, n_factors) bool
+
+
+def _factor_col_name(df: pl.DataFrame) -> str:
+    if "factor_value" in df.columns:
+        return "factor_value"
+    if "factor_clean" in df.columns:
+        return "factor_clean"
+    raise ValueError(
+        f"因子帧须含 factor_value 或 factor_clean，实得列={list(df.columns)}"
+    )
+
+
+def _index_maps_from_keys(dates: tuple, stocks: tuple) -> tuple[dict, dict, pl.DataFrame, pl.DataFrame]:
+    date_idx = {d: i for i, d in enumerate(dates)}
+    stock_idx = {s: i for i, s in enumerate(stocks)}
+    date_map = pl.DataFrame({"trade_date": list(dates), "_di": list(range(len(dates)))})
+    stock_map = pl.DataFrame({"ts_code": list(stocks), "_si": list(range(len(stocks)))})
+    return date_idx, stock_idx, date_map, stock_map
+
+
+def _scatter_frame_to_slice(
+    sub: pl.DataFrame,
+    date_map: pl.DataFrame,
+    stock_map: pl.DataFrame,
+    n_d: int,
+    n_s: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """[trade_date, ts_code, _v] → (values, present) 二维切片。"""
+    vals = np.full((n_d, n_s), np.nan, dtype=np.float64)
+    pres = np.zeros((n_d, n_s), dtype=bool)
+    if sub.is_empty():
+        return vals, pres
+    joined = (
+        sub.join(date_map, on="trade_date", how="inner")
+        .join(stock_map, on="ts_code", how="inner")
+    )
+    if joined.is_empty():
+        return vals, pres
+    r = joined["_di"].to_numpy().astype(np.int64, copy=False)
+    c = joined["_si"].to_numpy().astype(np.int64, copy=False)
+    is_null = joined["_v"].is_null().to_numpy()
+    arr = joined["_v"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)
+    vals[r, c] = arr
+    pres[r, c] = ~is_null
+    return vals, pres
+
+
+def build_library_corr_panel(
+    pool: dict[str, pl.DataFrame] | None,
+) -> LibraryCorrPanel | None:
+    """把库池对齐成 (date × stock × k) 矩阵 + present 掩码；空/None → None。
+
+    Session 级构建一次、整 session 复用。不改池因子数值，只做散射对齐。
+    """
+    if not pool:
+        return None
+    names = tuple(pool.keys())
+    prepared: list[pl.DataFrame] = []
+    pieces: list[pl.DataFrame] = []
+    for name in names:
+        df = pool[name]
+        col = _factor_col_name(df)
+        sub = df.select(
+            ["trade_date", "ts_code", pl.col(col).alias("_v")]
+        )
+        prepared.append(sub)
+        if not sub.is_empty():
+            pieces.append(sub.select(["trade_date", "ts_code"]))
+
+    if not pieces:
+        dates: tuple = ()
+        stocks: tuple = ()
+    else:
+        keys = pl.concat(pieces).unique()
+        dates = tuple(sorted(keys["trade_date"].unique().to_list()))
+        stocks = tuple(sorted(keys["ts_code"].unique().to_list()))
+
+    date_idx, stock_idx, date_map, stock_map = _index_maps_from_keys(dates, stocks)
+    n_d, n_s, n_f = len(dates), len(stocks), len(names)
+    values = np.full((n_d, n_s, n_f), np.nan, dtype=np.float64)
+    present = np.zeros((n_d, n_s, n_f), dtype=bool)
+
+    for fi, sub in enumerate(prepared):
+        if sub.is_empty() or n_d == 0:
+            continue
+        v_sl, p_sl = _scatter_frame_to_slice(sub, date_map, stock_map, n_d, n_s)
+        values[:, :, fi] = v_sl
+        present[:, :, fi] = p_sl
+
+    return LibraryCorrPanel(
+        names=names,
+        dates=dates,
+        stocks=stocks,
+        date_idx=date_idx,
+        stock_idx=stock_idx,
+        values=values,
+        present=present,
+    )
+
+
+def _scatter_candidate_to_panel(
+    factor_df: pl.DataFrame, panel: LibraryCorrPanel,
+) -> tuple[np.ndarray, np.ndarray]:
+    """候选散射到 panel 网格 → (values, present)，形状 (n_dates, n_stocks)。"""
+    n_d, n_s = len(panel.dates), len(panel.stocks)
+    if factor_df.is_empty() or n_d == 0:
+        return (
+            np.full((n_d, n_s), np.nan, dtype=np.float64),
+            np.zeros((n_d, n_s), dtype=bool),
+        )
+    col = _factor_col_name(factor_df)
+    sub = factor_df.select(["trade_date", "ts_code", pl.col(col).alias("_v")])
+    # 复用 panel 键序建临时 map（小表，join 比 Python dict fromiter 快）
+    date_map = pl.DataFrame({"trade_date": list(panel.dates), "_di": list(range(n_d))})
+    stock_map = pl.DataFrame({"ts_code": list(panel.stocks), "_si": list(range(n_s))})
+    return _scatter_frame_to_slice(sub, date_map, stock_map, n_d, n_s)
+
+
+def _max_corr_detail_panel(
+    factor_df: pl.DataFrame, panel: LibraryCorrPanel,
+) -> tuple[float, str | None]:
+    """矩阵化逐对相关：全日期×全库因子向量化，语义对齐 compute_factor_correlation。"""
+    if not panel.names:
+        return 0.0, None
+    cand_v, cand_p = _scatter_candidate_to_panel(factor_df, panel)
+    # (n_d, n_s, n_f)：逐对独立掩码（inner 语义），NaN 在 present 内保留以毒化该日
+    both = cand_p[:, :, None] & panel.present  # bool
+    n = both.sum(axis=1).astype(np.float64)  # (n_d, n_f)
+    c_m = np.where(both, cand_v[:, :, None], 0.0)
+    l_m = np.where(both, panel.values, 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sum_c = c_m.sum(axis=1)
+        sum_l = l_m.sum(axis=1)
+        sum_c2 = (c_m * c_m).sum(axis=1)
+        sum_l2 = (l_m * l_m).sum(axis=1)
+        sum_cl = (c_m * l_m).sum(axis=1)
+        # Pearson ≡ np.corrcoef；(std==0 ddof=0) ⇔ n·Σx²−(Σx)² == 0
+        den_c = n * sum_c2 - sum_c * sum_c
+        den_l = n * sum_l2 - sum_l * sum_l
+        num = n * sum_cl - sum_c * sum_l
+        corr = num / np.sqrt(den_c * den_l)
+    ok = (n >= _MIN_CORR_CROSS) & (den_c > 0) & (den_l > 0) & np.isfinite(corr)
+    cnt = ok.sum(axis=0)  # (n_f,)
+    cum = np.where(ok, corr, 0.0).sum(axis=0)
+
+    best = 0.0
+    nearest: str | None = None
+    for fi, name in enumerate(panel.names):
+        if int(cnt[fi]) <= 0:
+            c = 0.0
+        else:
+            c = abs(float(cum[fi] / cnt[fi]))
+        if c == c and c >= best:
+            best, nearest = c, name
+    return best, nearest
+
+
+def max_correlation(
+    factor_df: pl.DataFrame,
+    pool: dict[str, pl.DataFrame],
+    panel: LibraryCorrPanel | None = None,
+) -> float:
     """factor_df 与 pool 中每个因子的截面相关性绝对值的最大值。pool 为空时返回 0。
 
     逐对(pairwise)计算：候选与池中**每个**因子单独算相关。这样一个退化的池因子
@@ -78,16 +265,25 @@ def max_correlation(factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame]) -> f
     历史 bug：把候选 + 全池一次性 inner-join 交给 compute_factor_correlation，任一
     池因子退化就 continue 丢整条截面 → count=0 → 所有真实高相关一起被抹成 0.0，
     数学等价簇因此逃过 0.7 去重门槛。不动 compute_factor_correlation（daily 报告仍用其语义）。
+
+    ``panel``：可选预构建库面板；传入时走矩阵化路径（与逐对数值等价）。
     """
-    return max_correlation_detail(factor_df, pool)[0]
+    return max_correlation_detail(factor_df, pool, panel=panel)[0]
 
 
 def max_correlation_detail(
-    factor_df: pl.DataFrame, pool: dict[str, pl.DataFrame],
+    factor_df: pl.DataFrame,
+    pool: dict[str, pl.DataFrame],
+    panel: LibraryCorrPanel | None = None,
 ) -> tuple[float, str | None]:
-    """同 ``max_correlation``，额外返回最相近的 pool key（表达式）。pool 空 → (0.0, None)。"""
+    """同 ``max_correlation``，额外返回最相近的 pool key（表达式）。pool 空 → (0.0, None)。
+
+    ``panel`` 非 None 时走矩阵化路径，须由同一 ``pool`` 经 ``build_library_corr_panel`` 构建。
+    """
     if not pool:
         return 0.0, None
+    if panel is not None:
+        return _max_corr_detail_panel(factor_df, panel)
     cand = (factor_df.rename({"factor_value": "factor_clean"})
             if "factor_value" in factor_df.columns else factor_df)
     best = 0.0
@@ -108,6 +304,7 @@ def library_orthogonal_check(
     lib_pool: dict[str, pl.DataFrame] | None,
     *,
     threshold: float = DEFAULT_DECORR_THRESHOLD,
+    panel: LibraryCorrPanel | None = None,
 ) -> tuple[bool, float, str | None]:
     """库相关度量：与库池 max|corr| 是否 ``>= threshold``。
 
@@ -118,10 +315,12 @@ def library_orthogonal_check(
     - 硬拒重复：``threshold=DEFAULT_DUPLICATE_CORR``（0.95）
     - 快速通道/旧默认：``threshold=DEFAULT_DECORR_THRESHOLD``（0.7，向后兼容）
     M1 与 team/agent 双路径必须调本函数，禁止各自内联相关计算（架构守卫锁死）。
+
+    ``panel``：可选 ``LibraryCorrPanel``（session 级构建一次）；不传则逐对原路径。
     """
     if not lib_pool:
         return True, 0.0, None
-    mc, nearest = max_correlation_detail(factor_df, lib_pool)
+    mc, nearest = max_correlation_detail(factor_df, lib_pool, panel=panel)
     if mc >= threshold:
         return False, mc, nearest
     return True, mc, nearest

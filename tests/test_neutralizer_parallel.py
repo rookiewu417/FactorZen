@@ -127,13 +127,10 @@ def test_neutralize_ols_regression_failure_returns_nan(monkeypatch):
         "industry": ["银行" if i % 2 else "医药" for i in range(n)],
     })
 
-    class _BoomOLS:
-        def __init__(self, *args, **kwargs) -> None: ...
+    def _boom_ols(*args, **kwargs):
+        raise RuntimeError("singular design matrix")
 
-        def fit(self):
-            raise RuntimeError("singular design matrix")
-
-    monkeypatch.setattr(neut.sm, "OLS", _BoomOLS)
+    monkeypatch.setattr(neut, "_ols_residuals", _boom_ols)
     result = neutralize_ols(df, col="factor", stock_basic=stock_basic)
 
     assert result["factor_neutral"].null_count() == result.height, (

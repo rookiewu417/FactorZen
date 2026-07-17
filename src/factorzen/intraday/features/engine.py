@@ -23,6 +23,7 @@ from factorzen.intraday.features.spec import (
     battery,
     battery_hash,
 )
+from factorzen.intraday.bars_cache import load_or_build_bars
 from factorzen.intraday.sessions import (
     ASHARE_BAR_FREQS,
     BAR_LABEL_CONVENTION,
@@ -134,19 +135,22 @@ def compute_day_panel(
     freq: str,
     *,
     min_bar_coverage: float = 0.8,
+    bars: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """纯函数：1min 帧 → 每股每日一行的日频特征面板。
+    """纯函数：1min 帧（或预物化 bars）→ 每股每日一行的日频特征面板。
 
     流程：``canonicalize_minute`` → ``resample_intraday(freq)`` → 特征计算。
+    若传入 ``bars`` 则跳过前两步（供 bars 缓存命中路径）。
 
     覆盖守卫：当日有效桶数 < ``min_bar_coverage × bars_per_day`` 时，该
     ``(ts_code, 日)`` 全部特征置 null（行保留）。返回前 ``fill_nan(None)``。
 
     Args:
-        minute: 原始 1 分钟 OHLCV 帧。
+        minute: 原始 1 分钟 OHLCV 帧（``bars`` 给定时可传空帧）。
         specs: 特征规格（决定输出列名顺序）。
         freq: 计算频率。
         min_bar_coverage: 有效桶覆盖率门槛。
+        bars: 可选预 resample 的 bar 帧（与 ``resample_intraday`` schema 一致）。
 
     Returns:
         列 ``[trade_date, ts_code, i_*×len(specs)]``，按 ``(trade_date, ts_code)`` 排序。
@@ -157,15 +161,15 @@ def compute_day_panel(
     k30 = 30 // k
     feature_names = [s.name for s in specs]
 
-    if minute.is_empty():
-        return _empty_panel(feature_names)
+    if bars is None:
+        if minute.is_empty():
+            return _empty_panel(feature_names)
+        # canonicalize 一次；resample 跳过重复过滤
+        canon = canonicalize_minute(minute.lazy()).collect()
+        if canon.is_empty():
+            return _empty_panel(feature_names)
+        bars = resample_intraday(canon, freq_n, already_canonical=True)
 
-    # canonicalize 一次；resample 跳过重复过滤
-    canon = canonicalize_minute(minute.lazy()).collect()
-    if canon.is_empty():
-        return _empty_panel(feature_names)
-
-    bars = resample_intraday(canon, freq_n, already_canonical=True)
     if bars.is_empty():
         return _empty_panel(feature_names)
 
@@ -544,11 +548,15 @@ def _process_one_month(
     data_type: str,
     codes: list[str] | None,
     min_bar_coverage: float,
+    bars_cache_dir: str | None = None,
+    use_bars_cache: bool = True,
 ) -> tuple[str, int, int] | None:
     """单月 load → compute → save。进程池 worker 入口（可 pickle）。
 
     分区写入互不相交（``year=/month=`` 独立目录）。返回
     ``(label, rows, n_stocks)``；空月 / 无源数据返回 ``None``。
+
+    bars 层经 ``load_or_build_bars`` 读穿缓存（双消费方共享中间层）。
     """
     src = Path(source_dir)
     out = Path(out_dir)
@@ -570,20 +578,38 @@ def _process_one_month(
         gc.collect()
         return None
 
+    # 全市场 bars 缓存（codes 过滤在 resample 之后，避免污染共享中间层）
+    cache_path = Path(bars_cache_dir) if bars_cache_dir else None
+    if use_bars_cache:
+        bars = load_or_build_bars(
+            label,
+            freq_n,
+            source_dir=src,
+            cache_dir=cache_path,
+            minute=minute,
+        )
+    else:
+        from factorzen.intraday.bars_cache import build_bars_from_minute
+
+        bars = build_bars_from_minute(minute, freq_n)
+    del minute
+    gc.collect()
+
     if codes is not None:
-        minute = minute.filter(pl.col("ts_code").is_in(codes))
-        if minute.is_empty():
-            del minute
+        bars = bars.filter(pl.col("ts_code").is_in(codes))
+        if bars.is_empty():
+            del bars
             gc.collect()
             return None
 
     panel = compute_day_panel(
-        minute,
+        pl.DataFrame(schema={"ts_code": pl.String}),  # unused when bars given
         specs,
         freq_n,
         min_bar_coverage=min_bar_coverage,
+        bars=bars,
     )
-    del minute
+    del bars
     gc.collect()
 
     if panel.is_empty():
@@ -618,11 +644,13 @@ def build_intraday_features(
     force: bool = False,
     workers: int = 1,
     min_bar_coverage: float = 0.8,
+    bars_cache_dir: Path | None = None,
+    use_bars_cache: bool = True,
 ) -> BuildReport:
     """逐月物化日内特征面板并写 manifest。
 
     对区间内每个自然月：
-    ``load_parquet("minute_1min", ...)`` → ``compute_day_panel`` →
+    ``load_parquet("minute_1min", ...)`` → bars 缓存读穿 → ``compute_day_panel`` →
     ``save_parquet(..., mode="overwrite")``；大帧显式释放防 OOM。
 
     **增量缺月跳过**（``force=False`` 时）：当 derived 分区非空、manifest
@@ -649,6 +677,8 @@ def build_intraday_features(
         workers: 月级进程并行度，默认 1。单月峰值约 7.6 GiB；
             24 GiB 机器建议 2；``>2`` 会打警告。
         min_bar_coverage: 有效桶覆盖率门槛。
+        bars_cache_dir: bars 中间层缓存根（默认 ``DATA_DERIVED``）。
+        use_bars_cache: 是否走 ``load_or_build_bars``（默认 True）。
 
     Returns:
         ``BuildReport`` 摘要（``months`` 为本 run 实际重算的月，按标签排序）。
@@ -671,6 +701,14 @@ def build_intraday_features(
     bhash = battery_hash(specs)
     out = INTRADAY_FEATURES_DIR if out_dir is None else Path(out_dir)
     src = DATA_RAW if source_dir is None else Path(source_dir)
+    # 自定义源湖且未显式指定 bars_cache_dir 时，不写共享 DATA_DERIVED
+    if (
+        use_bars_cache
+        and bars_cache_dir is None
+        and source_dir is not None
+        and Path(source_dir).resolve() != DATA_RAW.resolve()
+    ):
+        use_bars_cache = False
     data_type = f"{version}/{freq_n}"
     mpath = _manifest_path(out, version, freq_n)
 
@@ -702,6 +740,7 @@ def build_intraday_features(
     month_results: list[tuple[str, int, int]] = []
     src_s = str(src)
     out_s = str(out)
+    bars_cache_s = str(bars_cache_dir) if bars_cache_dir is not None else None
 
     if workers <= 1 or len(jobs) <= 1:
         for label, m_start, m_end in jobs:
@@ -716,6 +755,8 @@ def build_intraday_features(
                 data_type=data_type,
                 codes=codes,
                 min_bar_coverage=min_bar_coverage,
+                bars_cache_dir=bars_cache_s,
+                use_bars_cache=use_bars_cache,
             )
             if got is not None:
                 month_results.append(got)
@@ -736,6 +777,8 @@ def build_intraday_features(
                     data_type=data_type,
                     codes=codes,
                     min_bar_coverage=min_bar_coverage,
+                    bars_cache_dir=bars_cache_s,
+                    use_bars_cache=use_bars_cache,
                 ): label
                 for label, m_start, m_end in jobs
             }

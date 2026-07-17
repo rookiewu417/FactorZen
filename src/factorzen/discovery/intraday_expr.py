@@ -276,7 +276,7 @@ def _materialize_month(
     if canon.is_empty():
         return _empty_ix_panel(names)
 
-    bars = resample_intraday(canon, freq_n)
+    bars = resample_intraday(canon, freq_n, already_canonical=True)
     if bars.is_empty():
         return _empty_ix_panel(names)
 

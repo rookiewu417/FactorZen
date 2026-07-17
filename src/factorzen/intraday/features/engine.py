@@ -160,15 +160,16 @@ def compute_day_panel(
     if minute.is_empty():
         return _empty_panel(feature_names)
 
-    # canonicalize 防御；resample 内部也会再滤一次
+    # canonicalize 一次；resample 跳过重复过滤
     canon = canonicalize_minute(minute.lazy()).collect()
     if canon.is_empty():
         return _empty_panel(feature_names)
 
-    bars = resample_intraday(canon, freq_n)
+    bars = resample_intraday(canon, freq_n, already_canonical=True)
     if bars.is_empty():
         return _empty_panel(feature_names)
 
+    # resample 行序无契约 → 此处 sort 一次供 shift/first/last
     work = (
         bars.with_columns(
             pl.col("trade_time").dt.date().alias("trade_date"),

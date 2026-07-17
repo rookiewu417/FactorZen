@@ -138,18 +138,22 @@ def resample_intraday(
     freq: str,
     *,
     time_col: str = "trade_time",
+    already_canonical: bool = False,
 ) -> pl.DataFrame:
     """将 1min bars 重采样为指定频率（bar-end 标签，不跨午休）。
 
     语义：
-    1. ``normalize_freq``；``k = minutes``；先做 canonicalize 同款过滤（防御性）。
+    1. ``normalize_freq``；``k = minutes``；默认做 canonicalize 同款过滤（防御性）；
+       若调用方已 canonicalize，传 ``already_canonical=True`` 跳过重复过滤。
     2. ``idx = session_bar_index()``；``bucket = 0 if idx==0 else (idx-1)//k``。
-    3. 按 ``(ts_code, trade_time.dt.date(), bucket)`` 分组聚合（组内按 time 排序）：
-       open=first, high=max, low=min, close=last, vol=sum, amount=sum。
+    3. 按 ``(ts_code, trade_time.dt.date(), bucket)`` 分组聚合：
+       open=时间最早 bar 的 open，high=max，low=min，close=时间最晚 bar 的 close，
+       vol=sum，amount=sum（``arg_min``/``arg_max``，**不依赖输入行序**）。
     4. 输出标签 = 桶末 bar-end：``end_idx=(bucket+1)*k``；
        ``end_idx<=120`` → 09:30+end_idx 分钟；否则 13:00+(end_idx-120) 分钟。
-    5. 输出 schema：ts_code, trade_time, open/high/low/close, vol(Int64), amount(Float64)，
-       按 (ts_code, trade_time) 排序。``freq="1min"`` 时竞价 bar 并入 09:31 桶，每日恰 240 根。
+    5. 输出 schema：ts_code, trade_time, open/high/low/close, vol(Int64), amount(Float64)。
+       **行序无契约**（调用方需序时自行 ``sort(["ts_code", time_col])``）；
+       引擎 / discovery 下游均会再 sort。``freq="1min"`` 时竞价 bar 并入 09:31 桶。
     6. 空帧返回空帧（schema 正确）；某桶只有部分 bar（临停/缺数据）也正常聚合。
     """
     freq = normalize_freq(freq)
@@ -158,58 +162,73 @@ def resample_intraday(
     if bars.is_empty():
         return _empty_bars()
 
-    filtered = bars.filter(_canonical_mask(time_col))
+    # 调用方已 canonicalize 时跳过全表再滤（引擎/discovery 主路径）
+    filtered = bars if already_canonical else bars.filter(_canonical_mask(time_col))
     if filtered.is_empty():
         return _empty_bars()
 
-    idx = session_bar_index(time_col)
-    work = (
-        filtered.sort([time_col])
+    # 无预排序：open/close 用 arg_min/arg_max，避免 DataFrame.sort 热点
+    tod = (
+        pl.col(time_col).dt.hour().cast(pl.Int32) * 60
+        + pl.col(time_col).dt.minute().cast(pl.Int32)
+    )
+    idx = (
+        pl.when(tod == 570)
+        .then(pl.lit(0, dtype=pl.Int32))
+        .when((tod >= 571) & (tod <= 690))
+        .then((tod - 570).cast(pl.Int32))
+        .when((tod >= 781) & (tod <= 900))
+        .then((120 + (tod - 780)).cast(pl.Int32))
+        .otherwise(None)
+    )
+    bucket = (
+        pl.when(idx == 0)
+        .then(pl.lit(0, dtype=pl.Int32))
+        .otherwise(((idx - 1) // k).cast(pl.Int32))
+    )
+    end_min = _bucket_end_minutes((pl.col("_bucket") + 1) * k)
+
+    lf = (
+        filtered.lazy()
+        .select(
+            [
+                "ts_code",
+                time_col,
+                "open",
+                "high",
+                "low",
+                "close",
+                "vol",
+                "amount",
+            ]
+        )
         .with_columns(
             idx.alias("_idx"),
-            pl.col(time_col).dt.date().alias("_date"),
-        )
-        .with_columns(
-            pl.when(pl.col("_idx") == 0)
-            .then(pl.lit(0, dtype=pl.Int32))
-            .otherwise(((pl.col("_idx") - 1) // k).cast(pl.Int32))
-            .alias("_bucket")
+            pl.col(time_col).cast(pl.Date).alias("_date"),
+            bucket.alias("_bucket"),
         )
         .filter(pl.col("_idx").is_not_null())
-    )
-
-    if work.is_empty():
-        return _empty_bars()
-
-    agg = (
-        work.group_by(["ts_code", "_date", "_bucket"], maintain_order=True)
+        .group_by(["ts_code", "_date", "_bucket"])
         .agg(
-            pl.col("open").first().alias("open"),
+            pl.col("open").get(pl.col(time_col).arg_min()).alias("open"),
             pl.col("high").max().alias("high"),
             pl.col("low").min().alias("low"),
-            pl.col("close").last().alias("close"),
+            pl.col("close").get(pl.col(time_col).arg_max()).alias("close"),
             pl.col("vol").sum().cast(pl.Int64).alias("vol"),
             pl.col("amount").sum().cast(pl.Float64).alias("amount"),
         )
         .with_columns(
-            ((pl.col("_bucket") + 1) * k).alias("_end_idx"),
-        )
-        .with_columns(
             (
                 pl.col("_date").cast(pl.Datetime("us"))
-                + pl.duration(minutes=_bucket_end_minutes(pl.col("_end_idx")))
+                + pl.duration(minutes=end_min)
             ).alias(time_col)
         )
-        .select(
-            pl.col("ts_code").cast(pl.String),
-            pl.col(time_col).cast(pl.Datetime("us")),
-            pl.col("open").cast(pl.Float64),
-            pl.col("high").cast(pl.Float64),
-            pl.col("low").cast(pl.Float64),
-            pl.col("close").cast(pl.Float64),
-            pl.col("vol").cast(pl.Int64),
-            pl.col("amount").cast(pl.Float64),
-        )
-        .sort(["ts_code", time_col])
+        .select(["ts_code", time_col, "open", "high", "low", "close", "vol", "amount"])
     )
-    return agg
+    # streaming 在整月 ~24M 行 group_by 上更快；不支持时回退
+    try:
+        return lf.collect(engine="streaming")
+    except TypeError:
+        return lf.collect()
+    except pl.exceptions.InvalidOperationError:
+        return lf.collect()

@@ -12,6 +12,7 @@ logger = get_logger(__name__)
 def get_industry_dummies(
     stocks: pl.DataFrame,
     industry_col: str = "industry",
+    industries: list[str] | None = None,
 ) -> pl.DataFrame:
     """生成行业哑变量矩阵（One-Hot 编码）。
 
@@ -20,6 +21,9 @@ def get_industry_dummies(
                 若含 trade_date 列，则按 (trade_date, ts_code) 维度输出；
                 否则仅按 ts_code 维度输出。
         industry_col: 行业列名，默认 "industry"。
+        industries: 固定行业全集（裸名，不含 ind_ 前缀）。若给定，即使当日/本批
+            未出现某行业也输出该列（全 0），用于全窗并集稳定化（W2）。
+            None 时用本批数据中出现的行业。
 
     Returns:
         DataFrame，含 ts_code（及 trade_date，若输入有）+ ind_XXX 列（每个行业一列，值为 0/1）。
@@ -34,20 +38,27 @@ def get_industry_dummies(
         logger.warning("过滤行业空值后无剩余数据")
         return df
 
-    # 获取所有唯一行业并排序
-    industries = sorted(df[industry_col].unique().to_list())
+    # 行业列集：固定全集或本批出现
+    if industries is None:
+        ind_list = sorted(df[industry_col].unique().to_list())
+    else:
+        ind_list = list(industries)
+
+    if not ind_list:
+        logger.warning("行业列表为空")
+        return df.clear()
 
     # 确定 key 列
     has_trade_date = "trade_date" in df.columns
     key_cols = ["trade_date", "ts_code"] if has_trade_date else ["ts_code"]
 
-    # 构建哑变量列
+    # 构建哑变量列（固定全集中未出现的行业 → 全 0）
     dummy_exprs = [
         pl.when(pl.col(industry_col) == ind)
         .then(pl.lit(1.0))
         .otherwise(pl.lit(0.0))
         .alias(f"ind_{ind}")
-        for ind in industries
+        for ind in ind_list
     ]
 
     result = df.select([*key_cols, pl.col(industry_col)]).with_columns(dummy_exprs)

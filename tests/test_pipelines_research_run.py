@@ -111,7 +111,8 @@ def patched_stages(monkeypatch, tmp_path):
         return pl.DataFrame({"trade_date": [tdates[0]], "ts_code": [codes[0]]})
 
     class FakeRiskModel:
-        def build(self, daily, daily_basic, stocks, start, end):
+        def build(self, daily, daily_basic, stocks, start, end, **kwargs):
+            # kwargs: style_panel / industry_panel / industry_names（W3 复用）
             return SimpleNamespace(
                 factor_exposures=SimpleNamespace(codes=codes),
                 factor_names=["size", "ind_银行", "ind_地产"])

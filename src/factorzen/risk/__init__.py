@@ -10,7 +10,14 @@ from factorzen.risk.covariance import (
     estimate_factor_covariance,
     estimate_specific_risk,
 )
-from factorzen.risk.exposures import ExposureMatrix, compute_exposures
+from factorzen.risk.exposures import (
+    ExposureMatrix,
+    compute_exposures,
+    materialize_industry_panel,
+    materialize_style_panel,
+    reindex_exposure,
+    standardize_style_panel,
+)
 from factorzen.risk.industry_factors import get_industry_dummies
 from factorzen.risk.model import RiskModel, RiskModelResult
 from factorzen.risk.style_factors import (
@@ -31,4 +38,8 @@ __all__ = [
     "estimate_factor_covariance",
     "estimate_specific_risk",
     "get_industry_dummies",
+    "materialize_industry_panel",
+    "materialize_style_panel",
+    "reindex_exposure",
+    "standardize_style_panel",
 ]

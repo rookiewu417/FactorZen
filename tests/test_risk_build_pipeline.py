@@ -188,20 +188,20 @@ def test_load_risk_inputs_fetches_lookback_so_build_keeps_all_style_factors():
     assert res.n_dropped_dates == 0, "窗口内因子集应稳定，不应有交易日被跳过"
 
 
-def test_build_flags_degradation_when_lookback_missing():
-    """无 lookback（只喂 [start,end]）时 build 会退化：静默 continue 掩盖了退化，
-    修复后 n_dropped_dates 应暴露被跳过的交易日，风格因子亦不足 8 个。"""
+def test_build_no_lookback_still_runs_with_union_styles():
+    """无 lookback 时：W1 一次物化后滚动因子在窗口后段出现，W2 并集固定列集不再因
+    因子名漂移丢日。factor_names 会含后期出现的滚动因子；早期日对应列填 0。
+    正确的 lookback 仍由 load_risk_inputs 保障（见上一测）。"""
     from factorzen.risk import RiskModel
 
-    # 用整段数据作回归窗、且首日无更早历史 → 模拟 CLI fetch_daily(start,end) 无 lookback。
-    # 窗口够长（~290 交易日），volatility(60)/momentum(252) 随窗口推进才逐步出现，
-    # 使因子集与首个有效截面（仅 4 个非滚动风格因子）不一致。
     daily_all, db_all, stocks, _, _ = _mock(n_days=290)
     all_days = daily_all.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
     start, end = all_days[0].strftime("%Y%m%d"), all_days[-1].strftime("%Y%m%d")
 
     res = RiskModel().build(daily_all, db_all, stocks, start, end)
-    assert res.n_dropped_dates > 0, "无 lookback 时因子集中途变化，被跳过的交易日应可见而非静默"
+    # W2 后不应因风格列中途出现而 mismatch 丢日
+    assert res.n_factor_mismatch == 0
+    assert res.n_valid_dates > 0
     names = set(res.factor_names)
-    rolling = {"momentum", "volatility", "growth"}
-    assert not (rolling & names), f"无 lookback 时长窗滚动因子应缺席，却出现 {rolling & names}"
+    # 窗口够长时后段滚动因子会进入并集
+    assert "size" in names and "value" in names

@@ -165,6 +165,12 @@ def run_research(*, start: str, end: str, universe: str | None = None,
     # 同口径，消除双路径漂移）——否则每个调仓日 RiskModel.build 的窗口首日滚动风格因子
     # 全空、因子集钉死在退化截面、静默退化，且与 portfolio build 产出不同风险模型。
     from factorzen.pipelines.risk_build import load_risk_inputs
+    from factorzen.risk.exposures import (
+        materialize_industry_panel,
+        materialize_style_panel,
+        standardize_style_panel,
+    )
+
     risk_daily_full, risk_db_full = load_risk_inputs(loader, start, end, uni_full)
     trade_dates = sorted(daily_full["trade_date"].unique().to_list())
     rb_dates = _rebalance_dates(trade_dates, rebalance_days, warmup)
@@ -173,6 +179,22 @@ def run_research(*, start: str, end: str, universe: str | None = None,
             f"research run: [{start},{end}] 交易日({len(trade_dates)})不足以产出调仓日"
             f"（warmup={warmup} + rebalance_days={rebalance_days}）。请扩大区间或调小 warmup/步长。"
         )
+
+    # ── 3b) 风格/行业暴露全窗一次物化（W3）──────────────────────────────────
+    # 风格 raw：滚动窗只看历史 → PIT 安全；每调仓日按当日 universe 再 CS 标准化。
+    # 行业：PIT 按日归属一次物化；每调仓日切片 ≤d + uni_d，行业名只用 ≤d 出现过的
+    # （禁止把未来行业列带进早期调仓，否则与 standalone build(start,d) 不等价）。
+    # 协方差/特质风险仍在 build 内用 ≤d 暴露重估（NW ~0.03s，近零成本）。
+    # 禁止「全窗建一次协方差供所有调仓日」——那会让早期调仓吃到未来数据。
+    raw_style_panel = materialize_style_panel(
+        risk_daily_full, risk_db_full, standardize=False
+    )
+    # 行业 fallback 骨架：各调仓日 universe 并集（含 industry），避免早期调入股在期末快照缺失
+    _ind_frames = [get_universe(_to_yyyymmdd(d), uni_name) for d in rb_dates]
+    stocks_for_ind = pl.concat(_ind_frames, how="diagonal_relaxed").unique(subset=["ts_code"])
+    industry_panel_full, industry_names_full = materialize_industry_panel(
+        stocks_for_ind, trade_dates
+    )
 
     # ── 4) 按调仓日循环 build（**直调 run_portfolio**：CLI 无法设 run_id、会覆盖同一目录）──
     # 调仓日成分：get_universe(d) 已是 as-of 当日 PIT（含 industry，供 RiskModel）；
@@ -189,7 +211,34 @@ def run_research(*, start: str, end: str, universe: str | None = None,
         # 风险模型用带 lookback 预热的历史（含调仓日之前的滚动窗口数据）
         daily_d = risk_daily_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
         db_d = risk_db_full.filter((pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d))
-        risk_result = RiskModel().build(daily_d, db_d, stocks_d, start, d_str)
+        # 复用 raw 风格面板：≤d + 当日 universe 过滤后 CS 标准化（与 standalone 等价）
+        style_d = standardize_style_panel(
+            raw_style_panel.filter(
+                (pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d)
+            )
+        )
+        # 行业切片：仅 ≤d；行业名 = 切片内出现过的列（PIT，不含未来行业）
+        if industry_panel_full.height:
+            ind_d = industry_panel_full.filter(
+                (pl.col("trade_date") <= d) & pl.col("ts_code").is_in(uni_d)
+            )
+            ind_names_d = [
+                c for c in industry_names_full
+                if c in ind_d.columns and ind_d[c].sum() > 0
+            ]
+        else:
+            ind_d = industry_panel_full
+            ind_names_d = industry_names_full
+        risk_result = RiskModel().build(
+            daily_d,
+            db_d,
+            stocks_d,
+            start,
+            d_str,
+            style_panel=style_d,
+            industry_panel=ind_d,
+            industry_names=ind_names_d or None,
+        )
         codes = risk_result.factor_exposures.codes
         alpha_file = _alpha_file_for_date(panel, d, alpha_tmp / f"{d_str}.parquet")
         adf = pl.read_parquet(alpha_file)

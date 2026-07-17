@@ -7,11 +7,15 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import polars as pl
-import statsmodels.api as sm
 
 from factorzen.core.logger import get_logger
 from factorzen.risk.covariance import estimate_factor_covariance, estimate_specific_risk
-from factorzen.risk.exposures import ExposureMatrix, compute_exposures
+from factorzen.risk.exposures import (
+    ExposureMatrix,
+    materialize_industry_panel,
+    materialize_style_panel,
+)
+from factorzen.risk.style_factors import STYLE_FACTOR_NAMES
 
 logger = get_logger(__name__)
 
@@ -27,6 +31,9 @@ class RiskModelResult:
         factor_returns: 因子收益时间序列 DataFrame。
         r_squared: 截面回归平均 R²。
         factor_names: 因子名称列表。
+        n_dropped_dates: 因因子集不一致等原因被跳过的交易日数（退化可见性）。
+        n_valid_dates: 成功完成截面回归的交易日数。
+        n_factor_mismatch: 因子集与全局固定集不一致被跳过的日数（应≈0，W2 后）。
     """
 
     factor_exposures: ExposureMatrix = field(
@@ -37,9 +44,10 @@ class RiskModelResult:
     factor_returns: pl.DataFrame = field(default_factory=pl.DataFrame)
     r_squared: float = 0.0
     factor_names: list[str] = field(default_factory=list)
-    # 因因子集与首个有效截面不一致而被跳过的交易日数（>0 通常表示窗口早期滚动风格
-    # 因子数据不足、模型退化；见 build 内告警与 pipelines.risk_build.load_risk_inputs）。
+    # 因因子集与固定全集不一致而被跳过的交易日数（>0 须醒目暴露，不许静默）。
     n_dropped_dates: int = 0
+    n_valid_dates: int = 0
+    n_factor_mismatch: int = 0
 
 
 class RiskModel:
@@ -89,15 +97,20 @@ class RiskModel:
         style_names: list[str] | None = None,
         ret_col: str = "pct_chg",
         ret_is_pct: bool = True,
+        *,
+        style_panel: pl.DataFrame | None = None,
+        industry_panel: pl.DataFrame | None = None,
+        industry_names: list[str] | None = None,
     ) -> RiskModelResult:
         """构建风险模型。
 
         流程：
         1. 获取日期区间内所有交易日
-        2. 每个交易日计算暴露矩阵，运行截面回归: ret_i = X_i @ f + eps_i
-        3. 收集因子收益 f_t 序列
-        4. 估计因子协方差矩阵
-        5. 估计特质风险
+        2. **一次**物化风格面板 + 行业面板（全窗并集行业列，缺列 0）
+        3. 每个交易日切片暴露，运行截面回归: ret_i = X_i @ f + eps_i
+        4. 收集因子收益 f_t 序列
+        5. 估计因子协方差矩阵
+        6. 估计特质风险
 
         Args:
             daily_data: 日线行情 DataFrame。
@@ -105,6 +118,8 @@ class RiskModel:
             stocks: 股票基本信息 DataFrame。
             start_date: 起始日期 "YYYYMMDD" 或 "YYYY-MM-DD"。
             end_date: 截止日期 "YYYYMMDD" 或 "YYYY-MM-DD"。
+            style_panel: 预物化风格面板（research 跨调仓复用，须已按目标 universe 标准化）。
+            industry_panel / industry_names: 预物化行业面板或固定行业全集。
 
         Returns:
             RiskModelResult
@@ -112,9 +127,9 @@ class RiskModel:
         # ── 1. 解析日期 ──────────────────────────────────────────────────────
         start_dt = _parse_date(start_date)
         end_dt = _parse_date(end_date)
+        names = STYLE_FACTOR_NAMES if style_names is None else style_names
 
         # ── 2. 获取交易日列表 ────────────────────────────────────────────────
-        # 从 daily_data 中提取在日期区间内的唯一交易日
         if daily_data["trade_date"].dtype == pl.Date:
             trade_dates = (
                 daily_data.filter(
@@ -139,124 +154,160 @@ class RiskModel:
 
         logger.info(f"风险模型构建：{len(trade_dates)} 个交易日 [{start_date} ~ {end_date}]")
 
-        # ── 3. 准备收益率数据 ────────────────────────────────────────────────
-        scale = 100.0 if ret_is_pct else 1.0  # A 股 pct_chg 是百分比；crypto ret_1d 已是小数
+        # ── 3. 一次物化风格 + 行业（W1/W2）──────────────────────────────────
+        if style_panel is None:
+            style_panel = materialize_style_panel(
+                daily_data, daily_basic, style_registry, names, standardize=True
+            )
+        # 风格列：面板中实际存在的（全程空的因子不会出现）
+        style_cols = [n for n in names if n in style_panel.columns]
+
+        if industry_panel is None:
+            industry_panel, ind_cols = materialize_industry_panel(
+                stocks, trade_dates, industry_names=industry_names
+            )
+        else:
+            ind_cols = (
+                _normalize_ind_cols(industry_names)
+                if industry_names is not None
+                else [c for c in industry_panel.columns if c.startswith("ind_")]
+            )
+
+        # 全局固定因子名 = 风格 + 行业并集（W2：任何日不再因 ind 漂移丢弃）
+        factor_names: list[str] = style_cols + ind_cols
+        k_factors = len(factor_names)
+
+        # ── 4. 合并暴露面板 + 收益，按日分区（避免 484× filter 全窗）────────
+        scale = 100.0 if ret_is_pct else 1.0
         ret_df = daily_data.select(["trade_date", "ts_code", ret_col]).with_columns(
             (pl.col(ret_col) / scale).alias("ret")
         )
 
-        # ── 4. 逐日截面回归 ─────────────────────────────────────────────────
+        # 风格 fill 0 + 对齐行业
+        exp_panel = style_panel
+        if style_cols:
+            exp_panel = exp_panel.with_columns(
+                [pl.col(c).fill_null(0.0) for c in style_cols]
+            )
+        if ind_cols and industry_panel is not None and not industry_panel.is_empty():
+            ind_sel = industry_panel
+            for c in ind_cols:
+                if c not in ind_sel.columns:
+                    ind_sel = ind_sel.with_columns(pl.lit(0.0).alias(c))
+            exp_panel = exp_panel.join(
+                ind_sel.select(["trade_date", "ts_code", *ind_cols]),
+                on=["trade_date", "ts_code"],
+                how="left",
+            ).with_columns([pl.col(c).fill_null(0.0) for c in ind_cols])
+        elif ind_cols:
+            exp_panel = exp_panel.with_columns([pl.lit(0.0).alias(c) for c in ind_cols])
+
+        # 只保留回归窗 + 内连接收益
+        exp_panel = exp_panel.filter(
+            (pl.col("trade_date") >= start_dt) & (pl.col("trade_date") <= end_dt)
+        )
+        # 丢掉首风格全 null 的行（style 已 fill 0，用是否在 style_panel 原始有值不太方便；
+        # 至少要求 ts_code 非空且有收益）
+        joined = exp_panel.join(
+            ret_df.select(["trade_date", "ts_code", "ret"]),
+            on=["trade_date", "ts_code"],
+            how="inner",
+        ).filter(pl.col("ret").is_not_null() & pl.col("ret").is_finite())
+
+        # 按日分区：dict[date] -> DataFrame 切片（一次 partition，O(N)）
+        day_tables: dict[dt.date, pl.DataFrame] = {}
+        if not joined.is_empty():
+            for td, grp in joined.group_by("trade_date", maintain_order=True):
+                # group_by key: polars 返回 (date,) 或 date 视版本
+                key = td[0] if isinstance(td, tuple) else td
+                if isinstance(key, dt.datetime):
+                    key = key.date()
+                day_tables[key] = grp
+
+        # ── 5. 逐日截面回归（numpy lstsq，避免 statsmodels 开销）────────────
         factor_return_rows: list[dict] = []
-        # ts_code -> [(trade_date, residual), ...]：连同交易日一起记录，重建矩阵时
-        # 按真实交易日对齐（而非"取最后 N 个右对齐"），避免窗口中途缺口错位。
         residual_dict: dict[str, list[tuple[dt.date, float]]] = {}
         r_squared_list: list[float] = []
         last_exposure: ExposureMatrix | None = None
-        factor_names: list[str] | None = None
-        n_factor_mismatch = 0  # 因子集与首个有效截面不一致被跳过的交易日数（退化可见性）
+        n_factor_mismatch = 0
+        n_skipped_other = 0
 
         for trade_date_val in trade_dates:
-            # 计算暴露
-            exposure = compute_exposures(
-                daily_data, daily_basic, stocks, trade_date_val, style_registry, style_names
-            )
-
-            if exposure.n_stocks == 0 or exposure.n_factors == 0:
-                continue
-
-            # 如果是第一次，记住因子名
-            if factor_names is None:
-                factor_names = exposure.factor_names
-
-            # 获取当日收益率
-            if isinstance(trade_date_val, dt.date):
-                day_ret = ret_df.filter(pl.col("trade_date") == trade_date_val)
+            if isinstance(trade_date_val, dt.datetime):
+                d_key = trade_date_val.date()
+            elif isinstance(trade_date_val, dt.date):
+                d_key = trade_date_val
             else:
-                day_ret = ret_df.filter(pl.col("trade_date") == pl.lit(trade_date_val))
+                d_key = _parse_date(str(trade_date_val))
 
-            if day_ret.is_empty():
+            day = day_tables.get(d_key)
+            if day is None or day.is_empty():
+                n_skipped_other += 1
                 continue
 
-            # 匹配暴露矩阵中的股票
-            code_to_idx = {c: i for i, c in enumerate(exposure.codes)}
-            matched_codes: list[str] = []
-            matched_rets: list[float] = []
-            matched_rows: list[int] = []
+            codes = day["ts_code"].to_list()
+            y = day["ret"].to_numpy().astype(np.float64)
+            # 因子矩阵：按固定 factor_names 列序
+            X_cols = [day[c].to_numpy().astype(np.float64) for c in factor_names]
+            X = np.column_stack(X_cols) if X_cols else np.empty((len(codes), 0))
 
-            for row in day_ret.iter_rows(named=True):
-                code = row["ts_code"]
-                ret_val = row["ret"]
-                if code in code_to_idx and ret_val is not None and np.isfinite(ret_val):
-                    matched_codes.append(code)
-                    matched_rets.append(ret_val)
-                    matched_rows.append(code_to_idx[code])
-
-            if len(matched_codes) < exposure.n_factors + 1:
-                # 样本数不足以运行回归
+            if len(codes) < k_factors + 1 or k_factors == 0:
+                n_skipped_other += 1
                 continue
 
-            y = np.array(matched_rets)
-            X = exposure.matrix[matched_rows, :]
-
-            # 确保 factor_names 与当前暴露一致。比较因子**名字序列**而非仅列数——
-            # 行业成分漂移会使某日因子集「名字不同但个数相同」（如 ind_B 调出、ind_C
-            # 调入），只比列数会让该日回归系数被错标到别的因子名下，污染因子收益→协方差→
-            # 归因。因子数不同通常源于窗口早期滚动风格因子数据不足。两种不一致都跳过并计数。
-            if exposure.factor_names != factor_names:
-                n_factor_mismatch += 1
-                continue
-
-            # ── 截面 OLS 回归（不加截距，行业哑变量已包含）──────────────────
             try:
-                model = sm.OLS(y, X).fit()
-                f_t = model.params  # 因子收益 shape (K,)
-                eps_t = model.resid  # 残差 shape (N_matched,)
-                r2 = float(model.rsquared)
+                f_t, eps_t, r2 = _ols_numpy(y, X)
             except Exception as e:
                 logger.warning(f"截面回归失败 ({trade_date_val}): {e}")
+                n_skipped_other += 1
                 continue
 
-            # 记录因子收益
+            exposure = ExposureMatrix(
+                codes=list(codes),
+                factor_names=list(factor_names),
+                matrix=X,
+            )
+
             row_dict: dict[str, object] = {"trade_date": trade_date_val}
             for i, name in enumerate(factor_names):
                 row_dict[name] = float(f_t[i])
             factor_return_rows.append(row_dict)
 
-            # 记录残差（连同交易日一起追加）
-            for i, code in enumerate(matched_codes):
+            for i, code in enumerate(codes):
                 residual_dict.setdefault(code, []).append((trade_date_val, float(eps_t[i])))
 
             r_squared_list.append(r2)
             last_exposure = exposure
 
-        # ── 5. 处理结果 ─────────────────────────────────────────────────────
-        if not factor_return_rows or factor_names is None or last_exposure is None:
+        n_dropped = n_factor_mismatch  # 兼容字段：因子集不一致丢日
+        n_valid = len(factor_return_rows)
+
+        # ── 6. 处理结果 ─────────────────────────────────────────────────────
+        if not factor_return_rows or last_exposure is None:
             logger.warning("风险模型构建失败：无有效截面回归结果")
-            return RiskModelResult()
+            return RiskModelResult(
+                n_dropped_dates=n_dropped,
+                n_valid_dates=0,
+                n_factor_mismatch=n_factor_mismatch,
+            )
 
-        # 因子收益 DataFrame
         factor_returns_df = pl.DataFrame(factor_return_rows)
-
-        # 因子收益矩阵 shape (T_valid, K)
         fr_matrix = np.column_stack(
             [factor_returns_df[name].to_numpy().astype(np.float64) for name in factor_names]
         )
 
-        # ── 6. 因子协方差估计 ────────────────────────────────────────────────
+        # ── 7. 因子协方差估计 ────────────────────────────────────────────────
         factor_cov = estimate_factor_covariance(
             fr_matrix, half_life=self.cov_half_life, nw_lags=self.nw_lags
         )
 
-        # ── 7. 特质风险估计 ──────────────────────────────────────────────────
-        # 构建残差矩阵 (T_valid, N_last)：按真实交易日索引对齐放置，而非
-        # "取最后 N 个右对齐"（窗口中途缺口会被错位推后，见 _build_residual_matrix）
+        # ── 8. 特质风险估计 ──────────────────────────────────────────────────
         last_codes = last_exposure.codes
         valid_trade_dates = [row["trade_date"] for row in factor_return_rows]
         N_last = len(last_codes)
 
         residual_matrix = _build_residual_matrix(residual_dict, last_codes, valid_trade_dates)
 
-        # 用列均值填充 NaN
         col_means = np.nanmean(residual_matrix, axis=0)
         col_means = np.where(np.isnan(col_means), 0.0, col_means)
         for j in range(N_last):
@@ -267,15 +318,20 @@ class RiskModel:
             residual_matrix, half_life=self.spec_half_life, shrinkage=self.spec_shrinkage
         )
 
-        # ── 8. 汇总 ─────────────────────────────────────────────────────────
+        # ── 9. 汇总 + 退化可见性 ─────────────────────────────────────────────
         avg_r2 = float(np.mean(r_squared_list)) if r_squared_list else 0.0
 
         if n_factor_mismatch > 0:
             logger.warning(
-                f"风险模型：{n_factor_mismatch}/{len(trade_dates)} 个交易日因因子集与首个"
-                "有效截面不一致被跳过——通常是窗口早期滚动风格因子（momentum/volatility/"
-                "growth 等 252/60 日窗）数据不足所致；请确保输入 daily/daily_basic 含足够"
-                " lookback 历史，否则因子协方差仅由少数退化截面估计。"
+                f"[n_factor_mismatch={n_factor_mismatch}] 风险模型：{n_factor_mismatch}/"
+                f"{len(trade_dates)} 个交易日因因子集与全局固定集不一致被跳过——"
+                "W2 后这不应发生；请检查 reindex_exposure / 行业并集逻辑。"
+            )
+        skipped_total = n_factor_mismatch + n_skipped_other
+        if skipped_total > 0 and n_valid < len(trade_dates):
+            logger.info(
+                f"风险模型有效截面 {n_valid}/{len(trade_dates)} 日"
+                f"（factor_mismatch={n_factor_mismatch}, other_skip={n_skipped_other}）"
             )
 
         return RiskModelResult(
@@ -285,7 +341,9 @@ class RiskModel:
             factor_returns=factor_returns_df,
             r_squared=avg_r2,
             factor_names=factor_names,
-            n_dropped_dates=n_factor_mismatch,
+            n_dropped_dates=n_dropped,
+            n_valid_dates=n_valid,
+            n_factor_mismatch=n_factor_mismatch,
         )
 
     def predict_risk(
@@ -296,34 +354,17 @@ class RiskModel:
         """预测组合总风险（年化波动率）。
 
         σ² = w' X F X' w + w' D² w
-
-        其中：
-        - X: 因子暴露 (n × k)
-        - F: 因子协方差 (k × k)
-        - D: 特质风险对角阵 (n × n)
-
-        Args:
-            weights: 组合权重向量，shape (n_stocks,)。
-            result: build() 返回的 RiskModelResult。
-
-        Returns:
-            组合年化波动率（日度 σ × √252）。
         """
         X = result.factor_exposures.matrix
         F = result.factor_covariance
         D = result.specific_risk
 
-        # 因子风险
-        Xw = X.T @ weights  # shape (K,)
+        Xw = X.T @ weights
         factor_var = float(Xw @ F @ Xw)
-
-        # 特质风险
         specific_var = float(np.sum((D * weights) ** 2))
 
         total_var = factor_var + specific_var
         total_std = np.sqrt(max(total_var, 0.0))
-
-        # 年化（A 股日频 √252，crypto √365）
         return float(total_std * np.sqrt(self.periods_per_year))
 
     def decompose_risk(
@@ -333,55 +374,30 @@ class RiskModel:
     ) -> dict[str, float]:
         """风险分解：将组合风险拆分为各因子贡献与特质贡献。
 
-        Args:
-            weights: 组合权重向量，shape (n_stocks,)。
-            result: build() 返回的 RiskModelResult。
-
-        Returns:
-            dict，包含两套**不同口径、不可混用相加**的量：
-
-            - "total_risk"/"factor_risk"/"specific_risk"：各自独立的标准差口径
-              （``sqrt(var)*sqrt(252)``）。三者满足方差可加（
-              ``factor_var + specific_var = total_var``），但标准差本身不可加——
-              ``factor_risk + specific_risk != total_risk`` 是预期行为，不是 bug。
-            - 各因子名称（如 "size"）：该因子按边际贡献（MCR）分摊到 total_risk 的
-              份额，即 ``Xw_k*(F@Xw)_k / total_var * total_std * sqrt(252)``。这套值
-              **彼此可加**，Σ(各因子份额) = ``factor_risk**2 / total_risk``（而非
-              ``factor_risk`` 本身）——这是加权 MCR 分解，不是把 factor_risk 欧拉
-              分解到各因子（详见 tests/test_risk_model.py 对应测试的注释）。
-              "specific_risk" 键**没有**对应的份额口径镜像字段；下游消费方
-              （如 attribution/risk_attribution.py）如需把「可加的各因子份额」和
-              「不可加的 specific_risk」放进同一个结果里，必须自己注明两者口径不同，
-              不能直接相加/相除。
+        返回口径说明见历史 docstring：total/factor/specific 为标准差口径；
+        各因子名为 MCR 份额口径，不可与 specific_risk 直接相加。
         """
         X = result.factor_exposures.matrix
         F = result.factor_covariance
         D = result.specific_risk
 
-        # 组合因子暴露
-        Xw = X.T @ weights  # shape (K,)
-
-        # 因子方差
+        Xw = X.T @ weights
         factor_var = float(Xw @ F @ Xw)
-
-        # 特质方差
         specific_var = float(np.sum((D * weights) ** 2))
 
         total_var = factor_var + specific_var
         total_std = np.sqrt(max(total_var, 0.0))
 
-        ann = np.sqrt(self.periods_per_year)  # A 股 √252，crypto √365
+        ann = np.sqrt(self.periods_per_year)
         decomp: dict[str, float] = {
             "total_risk": float(total_std * ann),
             "factor_risk": float(np.sqrt(max(factor_var, 0.0)) * ann),
             "specific_risk": float(np.sqrt(max(specific_var, 0.0)) * ann),
         }
 
-        # 边际因子贡献：MCR_k = (F @ Xw)_k * Xw_k / total_var
         if total_var > 1e-15:
             F_Xw = F @ Xw
             for i, name in enumerate(result.factor_names):
-                # 因子 k 的方差贡献 = Xw_k * (F @ Xw)_k
                 var_contrib = float(Xw[i] * F_Xw[i])
                 risk_contrib = var_contrib / total_var * total_std * ann
                 decomp[name] = float(risk_contrib)
@@ -390,6 +406,29 @@ class RiskModel:
                 decomp[name] = 0.0
 
         return decomp
+
+
+def _normalize_ind_cols(industry_names: list[str]) -> list[str]:
+    return [n if n.startswith("ind_") else f"ind_{n}" for n in industry_names]
+
+
+def _ols_numpy(y: np.ndarray, X: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """截面 OLS：numpy lstsq + 残差 R²（与 statsmodels OLS 数值对齐，快一个数量级）。
+
+    不加截距（行业哑变量已吸收）。
+    """
+    # rcond=None 用默认截断
+    beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    fitted = X @ beta
+    resid = y - fitted
+    ss_res = float(np.dot(resid, resid))
+    y_mean = float(np.mean(y))
+    ss_tot = float(np.dot(y - y_mean, y - y_mean))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-15 else 0.0
+    # 数值保护
+    if not np.isfinite(r2):
+        r2 = 0.0
+    return beta.astype(np.float64), resid.astype(np.float64), float(r2)
 
 
 def _parse_date(date_str: str) -> dt.date:
@@ -407,20 +446,8 @@ def _build_residual_matrix(
     """按真实交易日索引对齐重建残差矩阵。
 
     ``residual_dict[code]`` 按交易日顺序追加 ``(trade_date, residual)``，但仅在该
-    股票当天参与截面回归时才有记录——窗口中途停牌/缺数据会造成中间缺口（非仅
-    起点）。若简单地"取最后 N 个右对齐"拼接（历史实现的 bug），缺口前的残差会
-    被整体推后一位，错位进入 EWMA 衰减下权重更高的"近因"位置，而真正的缺口
-    （应为 NaN）反而被推到矩阵最前面、被列均值填充逻辑悄悄抹平。这里改为显式
-    按交易日索引定位，缺失日期保持 NaN。
-
-    Args:
-        residual_dict: ts_code -> [(trade_date, residual), ...]。
-        codes: 矩阵列顺序对应的股票代码列表。
-        trade_dates: 矩阵行顺序对应的交易日列表（升序，长度 = 矩阵行数）。
-
-    Returns:
-        残差矩阵，shape (len(trade_dates), len(codes))；该股票当天缺席的位置
-        显式为 NaN（按真实交易日对齐，不做位置无关的右对齐拼接）。
+    股票当天参与截面回归时才有记录——窗口中途停牌/缺数据会造成中间缺口。
+    显式按交易日索引定位，缺失日期保持 NaN。
     """
     date_to_row = {d: i for i, d in enumerate(trade_dates)}
     matrix = np.full((len(trade_dates), len(codes)), np.nan)

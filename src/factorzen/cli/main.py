@@ -1744,7 +1744,12 @@ def _cmd_risk_build(args: argparse.Namespace) -> int:
         spec_half_life=args.spec_half_life,
         spec_shrinkage=args.spec_shrinkage,
     )
-    print(f"[risk] factors={len(res['factor_names'])} R2={res['r_squared']:.4f} → {res['run_dir']}")
+    n_valid = res.get("n_valid_dates", "?")
+    n_mis = res.get("n_factor_mismatch", res.get("n_dropped_dates", "?"))
+    print(
+        f"[risk] factors={len(res['factor_names'])} R2={res['r_squared']:.4f} "
+        f"valid_days={n_valid} n_factor_mismatch={n_mis} → {res['run_dir']}"
+    )
     return 0
 
 

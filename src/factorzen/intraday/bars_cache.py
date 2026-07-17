@@ -37,7 +37,7 @@ from factorzen.intraday.sessions import (
 # 算法语义版本：resample_intraday 行为变更时必须 bump，触发缓存失效。
 _RESAMPLE_ALGO_VERSION: str = "bucket_argminmax_v1"
 
-_BARS_SCHEMA = {
+_BARS_SCHEMA: dict[str, Any] = {
     "ts_code": pl.String,
     "trade_time": pl.Datetime("us"),
     "open": pl.Float64,
@@ -221,7 +221,7 @@ def _read_month_bars(
     *,
     cache_dir: Path | None,
 ) -> pl.DataFrame:
-    y, m, m_start, m_end = _parse_month_label(month)
+    _y, _m, m_start, m_end = _parse_month_label(month)
     root = DATA_DERIVED if cache_dir is None else Path(cache_dir)
     try:
         lf = load_parquet(

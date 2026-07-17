@@ -18,12 +18,12 @@ import polars as pl
 
 from factorzen.config.settings import DATA_RAW, INTRADAY_FEATURES_DIR
 from factorzen.core.storage import load_parquet, partition_exists, save_parquet
+from factorzen.intraday.bars_cache import load_or_build_bars
 from factorzen.intraday.features.spec import (
     IntradayFeatureSpec,
     battery,
     battery_hash,
 )
-from factorzen.intraday.bars_cache import load_or_build_bars
 from factorzen.intraday.sessions import (
     ASHARE_BAR_FREQS,
     BAR_LABEL_CONVENTION,

@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 import polars as pl
-import pytest
 from polars.testing import assert_frame_equal
 
 from factorzen.core.storage import save_parquet

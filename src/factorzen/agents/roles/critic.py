@@ -14,11 +14,33 @@ class CriticVerdict:
     reason: str
 
 
-def critique(candidate: dict, llm_fn: LLMFn) -> CriticVerdict:
-    """读候选多维指标，判 keep/revise_expr/revise_hypothesis/drop。解析失败/非法 → keep（不误杀）。"""
+def critique(
+    candidate: dict,
+    llm_fn: LLMFn,
+    *,
+    lift_rejected: list[dict] | None = None,
+) -> CriticVerdict:
+    """读候选多维指标，判 keep/revise_expr/revise_hypothesis/drop。解析失败/非法 → keep（不误杀）。
+
+    ``lift_rejected``：组合层已证无增量的方向列表；None → 不注入（零回归）。
+    """
     icir = candidate.get("holdout_ir")
     if icir is None:
         icir = candidate.get("ir_train")
+    user_content = (
+        f"表达式: {candidate.get('expression')}\n假设: {candidate.get('hypothesis')}\n"
+        f"train_IC: {candidate.get('ic_train')}\nholdout_IC: {candidate.get('holdout_ic')}\n"
+        f"n_holdout_days(holdout 有效天数): {candidate.get('n_holdout_days')}\n"
+        f"ICIR: {icir}\n换手率(单边,成本代理): {candidate.get('turnover')}\n"
+        f"DSR: {candidate.get('dsr')} (p={candidate.get('dsr_pvalue')})\n"
+        "提示: n_holdout_days 过低表示 holdout 缺数据（非方向错误）；"
+        "勿把覆盖不足误判为经济直觉失败。"
+    )
+    if lift_rejected:
+        from factorzen.llm.prompt_fragments import format_lift_rejected
+        frag = format_lift_rejected(lift_rejected)
+        if frag:
+            user_content = user_content + "\n" + frag
     msgs = [
         {"role": "system", "content": (
             "你是量化风控审计员。读因子候选的多维指标（train IC / holdout IC / DSR / "
@@ -27,14 +49,7 @@ def critique(candidate: dict, llm_fn: LLMFn) -> CriticVerdict:
             "ICIR（信息比率）越高越稳定。只输出 JSON: "
             '{"verdict": "keep"|"revise_expr"|"revise_hypothesis"|"drop", "reason": "..."}。'
             "keep=可入库；revise_expr=方向对但表达式需改；revise_hypothesis=方向需换；drop=丢弃。")},
-        {"role": "user", "content": (
-            f"表达式: {candidate.get('expression')}\n假设: {candidate.get('hypothesis')}\n"
-            f"train_IC: {candidate.get('ic_train')}\nholdout_IC: {candidate.get('holdout_ic')}\n"
-            f"n_holdout_days(holdout 有效天数): {candidate.get('n_holdout_days')}\n"
-            f"ICIR: {icir}\n换手率(单边,成本代理): {candidate.get('turnover')}\n"
-            f"DSR: {candidate.get('dsr')} (p={candidate.get('dsr_pvalue')})\n"
-            "提示: n_holdout_days 过低表示 holdout 缺数据（非方向错误）；"
-            "勿把覆盖不足误判为经济直觉失败。")},
+        {"role": "user", "content": user_content},
     ]
     obj = _extract_json(llm_fn(msgs))
     if not obj or obj.get("verdict") not in _VALID_VERDICTS:

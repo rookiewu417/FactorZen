@@ -54,6 +54,9 @@ REJECT_CATEGORY_LIBRARY_CORRELATED = "library_correlated"
 REJECT_CATEGORY_GRAY_ZONE = "gray_zone"
 # 单因子主门不过但 |IC|≥下界、非重复 → 等待 session 末组合 lift 裁决（非 known_invalid）。
 REJECT_CATEGORY_LIFT_QUEUE = "lift_queue"
+# 组合层 lift 裁决 reject（组门不过 / 单候选 below_bar）→ 写回 experiment_index；
+# 不进 known_invalid（组合无增量 ≠ 单因子无信号），走 known_lift_rejects 独立通道。
+REJECT_CATEGORY_LIFT_REJECTED = "lift_rejected"
 
 
 def _holdout_direction_reasons(

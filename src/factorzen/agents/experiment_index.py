@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -34,6 +35,47 @@ def _normalize(expr: str) -> str:
         return to_expr_string(parse_expr(expr))
     except ValueError:
         return expr
+
+
+def build_lift_reject_record(
+    *,
+    expression: str,
+    data_window: dict | None,
+    lift: float | None,
+    lift_se: float | None,
+    lift_reason: str,
+    source: str,
+    ic_train: float | None = None,
+    residual_ic_train: float | None = None,
+    baseline_rank_ic: float | None = None,
+    admission_start: str | None = None,
+    admission_end: str | None = None,
+    ts: str | None = None,
+) -> dict:
+    """构造 ``lift_rejected`` 附加事件记录（session 钩子 / CLI --apply 共用）。
+
+    只写 reject；active/probation 走既有入库，不经此通道。
+    ``data_window`` 必须用**来源 session 的窗口**，以便同族 recall 命中。
+    """
+    from factorzen.discovery.guardrails import REJECT_CATEGORY_LIFT_REJECTED
+
+    return {
+        "expression": expression,
+        "data_window": data_window,
+        "reject_category": REJECT_CATEGORY_LIFT_REJECTED,
+        "passed": False,
+        "compile_ok": True,
+        "ic_train": ic_train,
+        "residual_ic_train": residual_ic_train,
+        "lift": lift,
+        "lift_se": lift_se,
+        "lift_reason": lift_reason,
+        "baseline_rank_ic": baseline_rank_ic,
+        "admission_start": admission_start,
+        "admission_end": admission_end,
+        "source": source,
+        "ts": ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+    }
 
 
 def window_key(window: dict | None) -> str | None:
@@ -150,12 +192,17 @@ class ExperimentIndex:
 
         排除 **灰区 / lift 队列**（``reject_category=gray_zone|lift_queue``）：
         单因子弱但待组合 lift 裁决，不是「已验证无效」——混进负例会误杀试用通道方向。
+
+        排除 **组合层 lift 拒绝**（``reject_category=lift_rejected``）：
+        组合层无增量 ≠ 单因子无信号，混入负例会误导 LLM 认为方向没信号；
+        lift 拒绝走 ``known_lift_rejects`` 独立通道。
         """
         from factorzen.discovery.guardrails import (
             REJECT_CATEGORY_GRAY_ZONE,
             REJECT_CATEGORY_HOLDOUT_COVERAGE,
             REJECT_CATEGORY_LIBRARY_CORRELATED,
             REJECT_CATEGORY_LIFT_QUEUE,
+            REJECT_CATEGORY_LIFT_REJECTED,
         )
 
         def _is_coverage_fail(r: dict) -> bool:
@@ -171,14 +218,55 @@ class ExperimentIndex:
             cat = r.get("reject_category")
             return cat in (REJECT_CATEGORY_GRAY_ZONE, REJECT_CATEGORY_LIFT_QUEUE)
 
+        def _is_lift_rejected(r: dict) -> bool:
+            return r.get("reject_category") == REJECT_CATEGORY_LIFT_REJECTED
+
         recs = [r for r in self._scoped(data_window)
                 if not r.get("passed", False) and r.get("compile_ok", True)
                 and not is_lookahead_expr(r.get("expression") or "")
                 and not _is_coverage_fail(r)
                 and not _is_library_corr(r)
-                and not _is_lift_queue_or_gray(r)]
+                and not _is_lift_queue_or_gray(r)
+                and not _is_lift_rejected(r)]
         recs.sort(key=lambda r: abs(r.get("ic_train") or 0.0))  # 最没用的优先
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]
+
+    def known_lift_rejects(
+        self, k: int = 5, *, data_window: dict | None = None,
+    ) -> list[dict]:
+        """组合层 lift 拒绝记录（``reject_category=lift_rejected``）。
+
+        走 ``_scoped`` 同语义（窗口分族 + last-wins）；按 ``ts`` 降序取前 k
+        （缺 ``ts`` 按文件序末尾优先）。返回
+        ``[{"expression", "lift", "lift_reason"}]``。
+        """
+        from factorzen.discovery.guardrails import REJECT_CATEGORY_LIFT_REJECTED
+
+        recs = [
+            r for r in self._scoped(data_window)
+            if r.get("reject_category") == REJECT_CATEGORY_LIFT_REJECTED
+            and r.get("expression")
+        ]
+        # 带索引：缺 ts 时文件序末尾优先（_scoped/_last_wins 后序 = 末次写入序）
+        indexed = list(enumerate(recs))
+
+        def _key(item: tuple[int, dict]) -> tuple:
+            i, r = item
+            ts = r.get("ts")
+            if ts is None or ts == "":
+                # 无 ts：用索引当次序，reverse 后末尾优先
+                return (0, "", i)
+            return (1, str(ts), i)
+
+        indexed.sort(key=_key, reverse=True)
+        out: list[dict] = []
+        for _, r in indexed[:k]:
+            out.append({
+                "expression": r["expression"],
+                "lift": r.get("lift"),
+                "lift_reason": r.get("lift_reason"),
+            })
+        return out
 
     def known_valid(self, k: int = 5, *, data_window: dict | None = None) -> list[str]:
         """「可供借鉴」是一个**决策**，由事实（passed）与两类否决共同推出，此处集中判定。

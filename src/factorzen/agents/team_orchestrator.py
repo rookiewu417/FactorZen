@@ -194,7 +194,7 @@ def _run_one_round(
     state, llm_fn, *, index, ledger, rounds_log, mining_df, holdout_df, bundle,
     pending, seed, top_k, heal_rounds, structured, health, data_window, warmup_daily,
     eval_start=None, leaf_budgets=None, hypotheses_per_round=1, profile=None, ctx=None,
-    lib_pool=None, library_covered=None, objective: str = "residual",
+    lib_pool=None, library_covered=None, library_crowded=None, objective: str = "residual",
     llm_workers: int = 1, residual_projector=None,
     run_id: str | None = None, campaign_id: str | None = None,
 ) -> dict | None:
@@ -253,12 +253,14 @@ def _run_one_round(
                 llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
                 feedback=fb, n=hypotheses_per_round, market=ctx.market,
                 leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
+                lift_rejected=rec.lift_rejected, library_crowded=library_crowded,
             )
             return [format_structured(h) for h in shyps]
         return propose_hypotheses(
             llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
             feedback=fb, n=hypotheses_per_round, market=ctx.market,
             leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
+            lift_rejected=rec.lift_rejected, library_crowded=library_crowded,
         )
 
     # 修订批 ∥ propose（互相独立）；提交序：revise（若有）→ propose
@@ -335,6 +337,28 @@ def _run_one_round(
 
         hyp_batches = _llm_map([_mk_heal(b) for b in hyp_batches], llm_workers)
 
+    # ③½ exhausted 叶子硬过滤（coder/heal 产出 → 进评估前；None/空 exhausted → 直通）
+    # 配额 dict 本轮新建，跨 hyp_batches 共享（混族组合配额内放行）。
+    from factorzen.agents.scout_support import filter_exhausted_expressions
+
+    exh_set = set(rec.exhausted_leaves or []) if rec.exhausted_leaves else None
+    quota_used: dict[str, int] = {}
+    n_exhausted_filtered = 0
+    if exh_set:
+        filtered_batches: list[tuple[str, list[str]]] = []
+        for h, h_exprs in hyp_batches:
+            kept_e, n_d = filter_exhausted_expressions(
+                h_exprs,
+                exhausted=exh_set,
+                leaf_map=ctx.leaf_map,
+                quota_used=quota_used,
+            )
+            n_exhausted_filtered += n_d
+            filtered_batches.append((h, kept_e))
+        hyp_batches = filtered_batches
+        if n_exhausted_filtered:
+            _step(f"  ③½ exhausted 硬过滤 ▸ 丢弃 {n_exhausted_filtered} 条纯重挖/超配额")
+
     # ④ Evaluator：逐假设评估（跨 session + session 内去重）+ 预热错误回灌（只一轮，B3）
     # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）。
     # None-gating（非 None 才切到 warmup_daily + 段边界，None 时裸调用 mining_df，
@@ -374,11 +398,20 @@ def _run_one_round(
             refed_lists = _llm_map([_mk_refeed(r, h) for r in warm_errs], llm_workers)
             refed = [e for xs in refed_lists for e in xs]
             if refed:
-                _step(f"  ④+ 预热错误回灌 revise（{len(warm_errs)} 条 → {len(refed)} 修正）")
-                results += _evaluate_and_record(
-                    state, refed, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
-                    eval_start=eval_start, eval_end=ev_end, profile=profile, leaf_map=ctx.leaf_map,
-                )
+                # 预热回灌同样过 exhausted 硬闸（共享本轮配额）
+                if exh_set:
+                    refed, n_ref_drop = filter_exhausted_expressions(
+                        refed, exhausted=exh_set, leaf_map=ctx.leaf_map,
+                        quota_used=quota_used,
+                    )
+                    n_exhausted_filtered += n_ref_drop
+                if refed:
+                    _step(f"  ④+ 预热错误回灌 revise（{len(warm_errs)} 条 → {len(refed)} 修正）")
+                    results += _evaluate_and_record(
+                        state, refed, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
+                        eval_start=eval_start, eval_end=ev_end, profile=profile,
+                        leaf_map=ctx.leaf_map,
+                    )
     # 代表假设/表达式：供 Critic stub 与 revise pending（多假设时取最后一个批次，同现状语义；
     # 纯修订轮——新假设为空但修订批次在——回退到修订批次的假设，不许空串）
     hypothesis = hyps[-1] if hyps else (hyp_batches[-1][0] if hyp_batches else "")
@@ -412,7 +445,7 @@ def _run_one_round(
             "ir_train": results[-1]["ir_train"] if results else None,
             "turnover": results[-1].get("turnover") if results else None,
         }
-        verdict = critique(cand, llm_fn)
+        verdict = critique(cand, llm_fn, lift_rejected=rec.lift_rejected)
         round_expr = cand.get("expression", "")
         for a in state.attempts:
             if a.iteration == state.iteration and a.expression == round_expr:
@@ -433,7 +466,7 @@ def _run_one_round(
         drop_exprs: set[str] = set()
         for hyp_key, group_cands in groups.items():
             rep = group_cands[-1]   # 该组最后一个候选为代表
-            v = critique(rep, llm_fn)
+            v = critique(rep, llm_fn, lift_rejected=rec.lift_rejected)
             group_verdicts.append({
                 "hypothesis": hyp_key,
                 "verdict": v.verdict,
@@ -480,6 +513,7 @@ def _run_one_round(
         "reason": verdict.reason,
         "verdicts": group_verdicts,           # 全组按组序，审计用
         "leaf_guidance": _lg_summary,
+        "n_exhausted_filtered": n_exhausted_filtered,
     })
 
     # 最后一组 verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
@@ -649,6 +683,7 @@ def run_team_agent(
     # 空库/关开关 → lib_pool={}、library_covered=None，objective 退化 raw，行为与旧一致。
     lib_pool: dict = {}
     library_covered: list[str] | None = None
+    library_crowded: list[tuple[str, int]] | None = None
     market = getattr(profile, "name", None) or (
         (data_window or {}).get("market")) or "ashare"
     lib_root = library_root or str(Path(index_path).parent / "factor_library")
@@ -657,21 +692,24 @@ def run_team_agent(
             from factorzen.discovery.evaluation import _preprocess_daily
             from factorzen.discovery.factor_library import (
                 build_library_pool,
-                library_covered_expressions,
+                library_covered_by_family,
             )
             _prepped = _preprocess_daily(daily, profile)
             lib_pool = build_library_pool(
                 market, _prepped, ctx.leaf_map, root=lib_root,
             )
-            covered = library_covered_expressions(market, k=10, root=lib_root)
+            covered, crowded = library_covered_by_family(
+                market, per_family=2, max_total=12, root=lib_root,
+            )
             library_covered = covered or None
+            library_crowded = crowded or None
             state.library_pool_size = len(lib_pool)
             if lib_pool:
                 _step(f"库级正交 ▸ 物化 {len(lib_pool)} 个 active 库因子（root={lib_root}）")
         except Exception as exc:
             _LOG.warning("库池物化失败，本 session 跳过库级正交: %s: %s",
                          type(exc).__name__, exc)
-            lib_pool, library_covered = {}, None
+            lib_pool, library_covered, library_crowded = {}, None, None
     state.objective = objective  # type: ignore[attr-defined]
 
     # residual 模式 + 库非空：session 开始建一次 ResidualProjector，整 session 复用
@@ -771,6 +809,7 @@ def run_team_agent(
                 eval_start=_eval_start_date, leaf_budgets=leaf_budgets,
                 hypotheses_per_round=hypotheses_per_round, profile=profile, ctx=ctx,
                 lib_pool=lib_pool, library_covered=library_covered,
+                library_crowded=library_crowded,
                 objective=objective, llm_workers=llm_workers,
                 residual_projector=residual_projector,
                 run_id=session_run_id, campaign_id=session_campaign_id,
@@ -882,6 +921,7 @@ def run_team_agent(
         ret_df=lift_ret_df,
         run_id=session_run_id,
         horizon=horizon,
+        index=index,  # lift 拒绝写回 experiment_index（None-gating 在钩子内）
     )
 
     # ── session 末：被准入/probation 因子引用的 ix_* 永久化 ─────────────────
@@ -1029,6 +1069,7 @@ def _session_end_auto_lift(
     active_factor_dfs: dict | None = None,
     ret_df=None,
     run_id: str | None = None,
+    index=None,
 ) -> dict:
     """session 末：lift 队列 → 覆盖把关 → 组门 → 逐候选 → upsert。
 
@@ -1038,6 +1079,9 @@ def _session_end_auto_lift(
     （禁止再吃 ``DEFAULT_HORIZON`` 隐式默认，避免 single 评估与 lift 入库漂移）。
 
     整块 try/except：lift 失败绝不杀死已完成的挖掘 session。
+
+    ``index``：可选 ExperimentIndex；非 None 时把 lift 拒绝（组门 / below_bar）
+    追加写回 experiment_index（``reject_category=lift_rejected``）。None → 零写入（零回归）。
     """
     queue = _collect_lift_queue(state)
     if not queue:
@@ -1137,7 +1181,19 @@ def _session_end_auto_lift(
             f"→ {'过' if group_ok else '拒'}"
         )
         if not group_ok:
-            # 组门不过：全体 reject，不跑逐候选（省 n 次 lgbm）
+            # 组门不过：全体 reject，不跑逐候选（省 n 次 lgbm）；写回 experiment_index
+            _append_lift_rejects_to_index(
+                index,
+                kept,
+                lift=g_lift,
+                lift_se=g_se,
+                lift_reason="group_gate_fail",
+                data_window=data_window,
+                admission_start=adm_start,
+                admission_end=adm_end,
+                baseline_rank_ic=group.get("baseline"),
+                source="session_auto_lift",
+            )
             return meta
 
         results = run_lift_tests(
@@ -1162,6 +1218,7 @@ def _session_end_auto_lift(
 
         # 延迟导入：任务 D 契约；测试 monkeypatch factor_library.upsert_lift_admissions
         from factorzen.discovery.factor_library import upsert_lift_admissions
+        from factorzen.discovery.lift_test import lift_admission
 
         dw = data_window or {}
         # session 自动路径一律 cap（不传 allow_active → 默认 False）：
@@ -1192,6 +1249,42 @@ def _session_end_auto_lift(
             f"lift 钩子 ▸ 准入 active={meta['lift_admissions']['added_active']} "
             f"probation={meta['lift_admissions']['added_probation']}"
         )
+        # 逐候选 admission reject → 写回 index（active/probation 不写）
+        cand_by_expr = {c.get("expression"): c for c in kept if c.get("expression")}
+        reject_rows: list[dict] = []
+        for row in results:
+            if lift_admission(
+                row,
+                threshold=float(DEFAULT_LIFT_THRESHOLD),
+                se_mult=float(lift_se_mult),
+            ) != "reject":
+                continue
+            expr = row.get("expression")
+            if not expr:
+                continue
+            src = cand_by_expr.get(expr) or {}
+            reject_rows.append({
+                "expression": expr,
+                "ic_train": src.get("ic_train"),
+                "residual_ic_train": src.get("residual_ic_train"),
+                "lift": row.get("lift"),
+                "lift_se": row.get("lift_se"),
+                "baseline": row.get("baseline"),
+            })
+        if reject_rows:
+            _append_lift_rejects_to_index(
+                index,
+                reject_rows,
+                lift=None,  # per-row
+                lift_se=None,
+                lift_reason="below_bar",
+                data_window=data_window,
+                admission_start=adm_start,
+                admission_end=adm_end,
+                baseline_rank_ic=None,
+                source="session_auto_lift",
+                per_row_lift=True,
+            )
         return meta
     except Exception as exc:
         msg = f"{type(exc).__name__}: {exc}"
@@ -1199,6 +1292,57 @@ def _session_end_auto_lift(
         _LOG.warning("session 末 lift 钩子失败（不影响挖掘产出）: %s", msg)
         _step(f"lift 钩子 ▸ 失败（已记 lift_error）: {msg}")
         return meta
+
+
+def _append_lift_rejects_to_index(
+    index,
+    candidates: list[dict],
+    *,
+    lift,
+    lift_se,
+    lift_reason: str,
+    data_window: dict | None,
+    admission_start,
+    admission_end,
+    baseline_rank_ic,
+    source: str,
+    per_row_lift: bool = False,
+) -> None:
+    """把 lift 拒绝行追加到 experiment_index。``index is None`` → 零行为。"""
+    if index is None or not candidates:
+        return
+    from factorzen.agents.experiment_index import build_lift_reject_record
+
+    records: list[dict] = []
+    for c in candidates:
+        expr = c.get("expression") if isinstance(c, dict) else None
+        if not expr:
+            continue
+        if per_row_lift:
+            row_lift = c.get("lift")
+            row_se = c.get("lift_se")
+            row_base = c.get("baseline")
+        else:
+            row_lift = lift
+            row_se = lift_se
+            row_base = baseline_rank_ic
+        records.append(build_lift_reject_record(
+            expression=str(expr),
+            data_window=data_window,
+            lift=row_lift,
+            lift_se=row_se,
+            lift_reason=lift_reason,
+            source=source,
+            ic_train=c.get("ic_train") if isinstance(c, dict) else None,
+            residual_ic_train=(
+                c.get("residual_ic_train") if isinstance(c, dict) else None
+            ),
+            baseline_rank_ic=row_base,
+            admission_start=admission_start,
+            admission_end=admission_end,
+        ))
+    if records:
+        index.append(records)
 
 
 def _library_upsert_team(candidates, *, seed, mining_df, ctx, profile, data_window,

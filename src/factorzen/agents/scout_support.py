@@ -447,3 +447,52 @@ def scout_manifest_block(
         "promoted": list(promoted or []),
         "audit": list(state.audit),
     }
+
+
+def filter_exhausted_expressions(
+    exprs: list[str],
+    *,
+    exhausted: set[str] | list[str] | None,
+    leaf_map: dict[str, str] | set[str] | None,
+    quota_used: dict[str, int],
+    per_leaf_quota: int = 2,
+) -> tuple[list[str], int]:
+    """硬过滤：纯 exhausted 叶表达式丢弃；混族按轮内配额。
+
+    规则（按序）：
+    1. parse 失败 → 保留（语法坑归自愈，不在这里杀）；
+    2. 叶集合非空且 **全部 ∈ exhausted** → 丢弃（纯重挖死方向）；
+    3. 否则对表达式中每个 exhausted 叶查 ``quota_used``：
+       任一叶已达 ``per_leaf_quota`` → 丢弃；未达则全部计数 +1、保留。
+
+    ``exhausted`` 为 None/空 → 直通零回归。``quota_used`` 由调用方持有，跨假设共享。
+    返回 ``(保留列表, 丢弃数)``。
+    """
+    if not exprs:
+        return [], 0
+    if not exhausted:
+        return list(exprs), 0
+
+    from factorzen.discovery.expression import feature_names, parse_expr
+
+    exh = set(exhausted)
+    kept: list[str] = []
+    n_drop = 0
+    for e in exprs:
+        try:
+            node = parse_expr(e, leaf_map)
+            leaves = feature_names(node)
+        except (ValueError, TypeError, IndexError):
+            kept.append(e)
+            continue
+        if leaves and leaves <= exh:
+            n_drop += 1
+            continue
+        exh_in = leaves & exh
+        if exh_in and any(quota_used.get(leaf, 0) >= per_leaf_quota for leaf in exh_in):
+            n_drop += 1
+            continue
+        for leaf in exh_in:
+            quota_used[leaf] = quota_used.get(leaf, 0) + 1
+        kept.append(e)
+    return kept, n_drop

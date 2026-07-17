@@ -73,6 +73,8 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
                   leaf_budgets: dict[str, int] | None = None, profile=None,
                   leaf_guidance: dict[str, list[str]] | None = None,
                   library_covered: list[str] | None = None,
+                  lift_rejected: list[dict] | None = None,
+                  library_crowded: list[tuple[str, int]] | None = None,
                   ctx: AgentContext | None = None) -> AgentState:
     """生成假设+表达式 → 语义对齐自检 → 暂存待评估（compile/eval 在 node_evaluate）。
 
@@ -84,6 +86,11 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
 
     ``library_covered``：库内 active 高 IC 表达式，与 team Hypothesis 共用
     ``format_library_covered`` 注入（默认 None → 不注入）。
+
+    ``lift_rejected``：组合层 lift 拒绝方向。参数为 M5/M6 对齐预留，接线待
+    M5 引入 experiment_index；默认 None → 不注入（零回归）。
+
+    ``library_crowded``：库内拥挤叶子；None → 不注入（零回归）。
 
     ``ctx``：调用方已构造的市场上下文（含 leaf_health 摘除后的存活叶）。默认 None 时
     从 ``profile`` 重建（旧调用方零回归）。**注意**：``run_llm_agent`` 开局摘叶后须
@@ -99,7 +106,9 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
     msgs = build_agent_messages(ctx.op_names, ctx.leaf_names, feedback,
                                 state.negative_examples, leaf_budgets=leaf_budgets,
                                 market=ctx.market, leaf_guidance=leaf_guidance,
-                                library_covered=library_covered)
+                                library_covered=library_covered,
+                                lift_rejected=lift_rejected,
+                                library_crowded=library_crowded)
     proposals = generate_factor_proposal(msgs, llm_fn, n_hypotheses=n_hypotheses)
     pending: list[_PendingExpr] = []
     # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销

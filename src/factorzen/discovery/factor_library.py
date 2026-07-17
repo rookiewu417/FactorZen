@@ -264,6 +264,68 @@ def library_covered_expressions(
     return [r.expression for r in recs[:k]]
 
 
+def library_covered_by_family(
+    market: str,
+    *,
+    per_family: int = 2,
+    max_total: int = 12,
+    statuses: tuple[str, ...] = ("active",),
+    crowded_min: int = 3,
+    root: str = DEFAULT_ROOT,
+) -> tuple[list[str], list[tuple[str, int]]]:
+    """库内因子按叶子族聚类后取代表作 + 拥挤叶统计。
+
+    - 族键 = ``frozenset(feature_names(parse_expr(expression)))``
+      （parse 失败的记录单独成族，键用原串）；
+    - 族内按 |ic_train| 降序取 ``per_family`` 条；
+    - 族间按族内最佳 |ic_train| 排序，总数截 ``max_total``；
+    - 第二返回值 = 拥挤叶列表：叶 → 含它的 active 数，仅保留 ≥ ``crowded_min``，
+      按数量降序。
+
+    旧 ``library_covered_expressions`` 原样保留。
+    """
+    from factorzen.discovery.expression import feature_names, parse_expr
+
+    recs = [r for r in load_library(market, root=root) if r.status in statuses]
+    # leaf → count（全体 active，不按族截断）
+    leaf_counts: dict[str, int] = {}
+    families: dict[object, list] = {}
+    for r in recs:
+        try:
+            feats = frozenset(feature_names(parse_expr(r.expression)))
+            fam_key: object = feats
+        except (ValueError, TypeError, IndexError):
+            fam_key = r.expression  # parse 失败：单独成族
+            feats = frozenset()
+        for leaf in feats:
+            leaf_counts[leaf] = leaf_counts.get(leaf, 0) + 1
+        families.setdefault(fam_key, []).append(r)
+
+    # 族内排序 + 截断；族间按最佳 |ic|
+    family_blocks: list[tuple[float, list[str]]] = []
+    for _key, members in families.items():
+        members.sort(key=lambda x: (-abs(x.ic_train or 0.0), x.expression))
+        best = abs(members[0].ic_train or 0.0) if members else 0.0
+        picked = [m.expression for m in members[:per_family]]
+        family_blocks.append((best, picked))
+    family_blocks.sort(key=lambda t: -t[0])
+
+    covered: list[str] = []
+    for _best, exprs in family_blocks:
+        for e in exprs:
+            if len(covered) >= max_total:
+                break
+            covered.append(e)
+        if len(covered) >= max_total:
+            break
+
+    crowded = [
+        (name, n) for name, n in leaf_counts.items() if n >= crowded_min
+    ]
+    crowded.sort(key=lambda t: (-t[1], t[0]))
+    return covered, crowded
+
+
 def build_library_pool(
     market: str,
     daily: pl.DataFrame,

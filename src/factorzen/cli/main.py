@@ -1100,6 +1100,136 @@ def _group_lift_candidates_by_admission(
     return [(s, e, groups[(s, e)]) for s, e in group_order]
 
 
+def _resolve_session_index_path(session_dir: str, man: dict):
+    """优先 manifest ``params.index_path``（存在才用）；否则回退 session 父目录下
+    ``experiment_index.jsonl``（常见：manifest 记的是临时 worktree 绝对路径）。"""
+    from pathlib import Path as _P
+
+    params = man.get("params") or {}
+    ip = params.get("index_path")
+    if ip:
+        p = _P(ip)
+        if p.exists():
+            return p
+    return _P(session_dir).parent / "experiment_index.jsonl"
+
+
+def _data_window_from_session_manifest(man: dict) -> dict:
+    """从 session manifest params 取 data_window（分族召回用）。"""
+    params = man.get("params") or {}
+    return {
+        "start": params.get("start"),
+        "end": params.get("end"),
+        "universe": params.get("universe"),
+        "market": params.get("market") or man.get("market"),
+    }
+
+
+def _session_lift_queue_norm_set(man: dict) -> set[str]:
+    """session manifest 的 lift 队列表达式集合（归一化，供候选归属）。"""
+    from factorzen.agents.experiment_index import _normalize
+    from factorzen.discovery.lift_test import extract_gray_candidates_from_manifest
+
+    out: set[str] = set()
+    for c in extract_gray_candidates_from_manifest(man):
+        expr = c.get("expression")
+        if expr:
+            out.add(_normalize(str(expr)))
+    return out
+
+
+def _write_cli_lift_rejects_to_index(
+    *,
+    results: list[dict],
+    session_items: list[dict],
+    session_manifests: dict[str, dict],
+    threshold: float,
+    se_mult: float,
+) -> int:
+    """--apply 时把本批 lift 拒绝写回各来源 session 的 experiment_index。
+
+    含 group_gate_fail 行与 lift_admission==reject 行。返回写入条数。
+    """
+    from factorzen.agents.experiment_index import (
+        ExperimentIndex,
+        _normalize,
+        build_lift_reject_record,
+    )
+    from factorzen.discovery.lift_test import lift_admission
+
+    # expression(norm) → 首个归属 session
+    expr_to_session: dict[str, str] = {}
+    session_cand_meta: dict[str, dict[str, dict]] = {}  # sess → norm_expr → cand
+    for item in session_items:
+        sess = str(item.get("session") or "")
+        man = session_manifests.get(sess) or {}
+        queue_set = _session_lift_queue_norm_set(man)
+        for c in item.get("candidates") or []:
+            expr = c.get("expression")
+            if not expr:
+                continue
+            ne = _normalize(str(expr))
+            # 归属：优先本 session 队列命中；否则首次见到的 session
+            if ne not in expr_to_session and (not queue_set or ne in queue_set):
+                expr_to_session[ne] = sess
+            session_cand_meta.setdefault(sess, {})[ne] = c
+
+    # 按 session 聚合待写记录
+    by_session: dict[str, list[dict]] = {}
+    for row in results:
+        expr = row.get("expression")
+        if not expr:
+            continue
+        err = str(row.get("error") or "")
+        is_gg = err.startswith("group_gate_fail")
+        if is_gg:
+            reason = "group_gate_fail"
+        elif lift_admission(row, threshold=float(threshold), se_mult=float(se_mult)) == "reject":
+            reason = "below_bar"
+        else:
+            continue  # active/probation 不写回
+        ne = _normalize(str(expr))
+        owner: str | None = expr_to_session.get(ne)
+        if owner is None:
+            # 回退：扫各 session 队列
+            for item in session_items:
+                s = str(item.get("session") or "")
+                man = session_manifests.get(s) or {}
+                if ne in _session_lift_queue_norm_set(man):
+                    owner = s
+                    break
+        if owner is None:
+            continue
+        src = (session_cand_meta.get(owner) or {}).get(ne) or {}
+        by_session.setdefault(owner, []).append(
+            build_lift_reject_record(
+                expression=str(expr),
+                data_window=_data_window_from_session_manifest(
+                    session_manifests.get(owner) or {},
+                ),
+                lift=row.get("lift"),
+                lift_se=row.get("lift_se"),
+                lift_reason=reason,
+                source="cli_lift_test",
+                ic_train=src.get("ic_train") if isinstance(src, dict) else None,
+                residual_ic_train=(
+                    src.get("residual_ic_train") if isinstance(src, dict) else None
+                ),
+                baseline_rank_ic=row.get("baseline"),
+                admission_start=row.get("admission_start"),
+                admission_end=row.get("admission_end"),
+            )
+        )
+
+    n_written = 0
+    for sess, recs in by_session.items():
+        man = session_manifests.get(sess) or {}
+        ip = _resolve_session_index_path(sess, man)
+        ExperimentIndex(str(ip)).append(recs)
+        n_written += len(recs)
+    return n_written
+
+
 def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     """灰区/lift 队列候选 → 组合 OOS lift 实验；默认 dry-run，--apply 才入库。"""
     import json
@@ -1136,6 +1266,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     args_end = _lift_admission_str(getattr(args, "end", None))
 
     session_items: list[dict] = []
+    session_manifests: dict[str, dict] = {}  # session_dir → manifest（--apply 写回 index 用）
     manifest_horizons: list[int] = []
     for s in sessions:
         man_path = Path(s) / "manifest.json"
@@ -1147,6 +1278,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         except Exception as exc:
             print(f"[factor-library lift-test] 读 manifest 失败 {s}: {exc}", file=sys.stderr)
             continue
+        session_manifests[str(s)] = man
         gray_s = extract_gray_candidates_from_manifest(man)
         hs, he = _holdout_bounds_from_manifest(man)
         man_h = _horizon_from_manifest(man)
@@ -1381,19 +1513,22 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             flush=True,
         )
         if not group_ok:
-            # 组门不过：全体 skip 逐候选；结果行记 reject 原因
+            # 组门不过：全体 skip 逐候选；结果行记 reject 原因（lift/se 取组门值供 index 写回）
             reason = (
                 f"group_gate_fail(lift={g_lift!r},se={g_se!r},bar={bar:.4f})"
             )
             for c in kept:
                 results.append({
                     "expression": c.get("expression"),
-                    "lift": None,
-                    "baseline": None,
+                    "lift": g_lift,
+                    "lift_se": g_se,
+                    "baseline": group.get("baseline"),
                     "passed": False,
                     "error": reason,
                     "admission_start": g_start,
                     "admission_end": g_end,
+                    "ic_train": c.get("ic_train"),
+                    "residual_ic_train": c.get("residual_ic_train"),
                 })
             continue
 
@@ -1441,7 +1576,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             f"{expr:40s}  {ls:>8s}  {ses:>8s}  {shs:>8s}  {bs:>8s}  {r.get('passed')}"
         )
 
-    # 默认 dry-run；仅 --apply 才写库（--dry-run 为兼容旗标，与 --apply 互斥）
+    # 默认 dry-run；仅 --apply 才写库 + 写回 lift 拒绝到 experiment_index
+    # （--dry-run 为兼容旗标，与 --apply 互斥；dry-run 保持纯只读）
     dry_run = not bool(getattr(args, "apply", False))
     admissions = None
     # 仅对真正跑过 lift 且非 group_gate_fail 的行入库
@@ -1486,6 +1622,27 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         )
     else:
         print("[factor-library lift-test] 无结果行")
+
+    # --apply：lift 拒绝写回 experiment_index（group_gate_fail + below_bar；dry-run 零写入）
+    if not dry_run and results:
+        try:
+            n_idx = _write_cli_lift_rejects_to_index(
+                results=results,
+                session_items=session_items,
+                session_manifests=session_manifests,
+                threshold=float(threshold),
+                se_mult=float(se_mult),
+            )
+            if n_idx:
+                print(
+                    f"[factor-library lift-test] experiment_index 写回 lift_rejected {n_idx} 条"
+                )
+        except Exception as exc:
+            print(
+                f"[factor-library lift-test] 警告：lift 拒绝写回 index 失败: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
 
     # 落 lift manifest 到第一个 session（可审计）
     admission_groups = [

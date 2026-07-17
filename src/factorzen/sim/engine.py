@@ -150,8 +150,8 @@ def _load_weights_by_date(
 def _build_dummy_factor_df(weights_by_date: dict[date, pl.DataFrame]) -> pl.DataFrame:
     """构造最简 factor_df（每个信号日取第一只股票 + 哑元值），仅用于通过 _prepare_factor_df 校验。
 
-    PrecomputedWeightsStrategy 走快速路径时 factor 数据不被访问，
-    但 run_strategy_backtest 仍会对 factor_df 做列校验，故须提供合法 DataFrame。
+    PrecomputedWeightsStrategy 不消费 factor 内容，但 run_strategy_backtest
+    仍会对 factor_df 做列校验，故须提供合法 DataFrame。
     """
     rows = []
     for sig_date, weight_df in weights_by_date.items():
@@ -205,12 +205,9 @@ def run_portfolio_simulation(
     if not weights_by_date:
         raise ValueError("no portfolio weights with signal_date found in any run_dir")
 
-    # PrecomputedWeightsStrategy 走快速路径：
-    #   collect_positions=False, collect_trades=False, include_context_positions=False
-    # factor_df 仍须满足列校验，但实际值不影响回测结果。
-    # cost_model 必须是 None 或 CostModel（dataclass）才能走快路径，见
-    # backtest.py::_can_use_precomputed_fast_path；传 CostModelBase
-    # 子类（LinearCostModel/SquareRootImpactCostModel）会被退回慢路径。
+    # PrecomputedWeightsStrategy：统一日环内预填 target 矩阵，不依赖 factor 内容。
+    # collect_*=False → 不写明细；factor_df 仅满足列校验（dummy）。
+    # CostModel / CostModelBase 均走同一日环；CostModelBase 在日环内 per-name 计费。
     factor_df = _build_dummy_factor_df(weights_by_date)
     strategy = PrecomputedWeightsStrategy(weights_by_date)
     effective_cost_model: CostModel | CostModelBase = (

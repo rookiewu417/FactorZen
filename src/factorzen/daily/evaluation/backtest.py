@@ -129,9 +129,10 @@ class Strategy(ABC):
 
     def has_target_for(self, signal_date: date) -> bool:
         """该策略在 ``signal_date`` 是否有明确调仓目标。默认 True（每个信号日都调仓）。
-        PrecomputedWeightsStrategy 覆盖为『仅在有预计算权重的日期调仓，其余日持有』，
-        使慢路径与快路径 ``_run_precomputed_weights_backtest_fast`` 语义一致——
-        否则 signal 日在因子日历内但无权重时，慢路径清仓、快路径持有，两路径分叉。"""
+
+        PrecomputedWeightsStrategy 覆盖为『仅在有预计算权重的日期调仓，其余日持有』。
+        统一日环引擎：缺权日 carry，显式空权表 flat（与历史快路径语义一致）。
+        """
         return True
 
 
@@ -522,7 +523,12 @@ def run_strategy_backtest(
     include_context_positions: bool = True,
     is_st_by_date: dict[date, set[str]] | None = None,
 ) -> StrategyBacktestResult:
-    """运行策略回测。
+    """运行策略回测（统一日环引擎）。
+
+    单一实现：numpy 日状态机 + 向量约束核；``collect_*`` 仅控制是否写出明细，
+    不再切换慢/快两套实现。``PrecomputedWeightsStrategy`` 启动时预填 target；
+    其它策略在调仓日调用 ``generate_weights``（Optimizer 的 ``price_history`` 等
+    最小上下文仍在日环内供给）。
 
     Parameters
     ----------
@@ -531,313 +537,23 @@ def run_strategy_backtest(
         用于 PIT 正确地收窄主板 ST 股票的涨跌停阈值（4.8% 而非 9.8%，参见
         ``factorzen.core.universe._get_board_limit``）。为 ``None``（默认）
         时行为与未引入此参数前完全一致：一律按非 ST 板块阈值判断涨跌停。
-        慢路径、快路径（``_run_precomputed_weights_backtest_fast``）均消费
-        此参数。
     """
     cfg = config or BacktestConfig()
     factor = _prepare_factor_df(factor_df, cfg.factor_col)
     price = _prepare_price_df(price_df)
     trade_dates = price.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
-    if _can_use_precomputed_fast_path(
-        strategy,
-        cost_model,
+    return _run_day_loop_engine(
+        strategy=strategy,
+        factor=factor,
+        price=price,
+        trade_dates=trade_dates,
+        config=cfg,
+        cost_model=cost_model,
+        factor_name=factor_name,
         collect_positions=collect_positions,
         collect_trades=collect_trades,
         include_context_positions=include_context_positions,
-    ):
-        return _run_precomputed_weights_backtest_fast(
-            strategy=cast(PrecomputedWeightsStrategy, strategy),
-            price=price,
-            trade_dates=trade_dates,
-            config=cfg,
-            cost_model=cast(CostModel | None, cost_model),
-            factor_name=factor_name,
-            is_st_by_date=is_st_by_date,
-        )
-
-    # 与快路径共享 (T×N) 价格/ADV 矩阵；日环内用向量约束核 + 列式明细缓冲。
-    (
-        codes,
-        code_to_idx,
-        _date_to_idx,
-        open_px,
-        pre_close_m,
-        vol_data,
-        overnight_ret,
-        intraday_ret,
-        adv_m,
-        adv_20d_by_date,
-    ) = _build_price_adv_matrices(
-        price,
-        trade_dates,
-        build_adv_dict=getattr(strategy, "uses_context_adv", True),
-    )
-    n_codes = len(codes)
-    code_arr = np.asarray(codes, dtype=object)
-    board_limits = board_limit_pct_for_codes(codes)
-    board_limits_st: np.ndarray | None = (
-        board_limit_pct_for_codes(codes, is_st=True) if is_st_by_date else None
-    )
-    reason_lut = np.asarray(BLOCK_REASON_STR, dtype=object)
-
-    weights = np.zeros(n_codes, dtype=np.float64)
-    nav_value = 1.0
-    has_started = False
-    nav_rows: list[dict[str, Any]] = []
-
-    # 列式缓冲：循环结束一次成帧，避免 from_dicts×日 + 百万 dict append
-    pos_dates: list[date] = []
-    pos_codes: list[str] = []
-    pos_weights: list[float] = []
-    pos_mvs: list[float] = []
-    tr_dates: list[date] = []
-    tr_codes: list[str] = []
-    tr_prev: list[float] = []
-    tr_target: list[float] = []
-    tr_filled: list[float] = []
-    tr_turnover: list[float] = []
-    tr_cost: list[float] = []
-    tr_reason: list[str] = []
-
-    want_price_slice = getattr(strategy, "uses_context_price_slice", True)
-    price_by_date = _group_frames_by_date(price) if want_price_slice else {}
-    factor_by_date = _group_frames_by_date(factor)
-    _lookback = getattr(strategy, "lookback_days", 0)
-    _empty_price = pl.DataFrame(schema=price.schema)
-
-    for i, execution_date in enumerate(trade_dates):
-        price_slice = price_by_date.get(execution_date, _empty_price) if want_price_slice else _empty_price
-        signal_date = trade_dates[i - 1] if i > 0 else None
-
-        overnight = overnight_ret[i]
-        overnight_return = float(np.dot(weights, overnight))
-        denom = 1.0 + overnight_return
-        if abs(denom) < 1e-12:
-            open_w = weights.copy()
-        else:
-            open_w = weights * (1.0 + overnight) / denom
-            open_w[np.abs(open_w) < 1e-12] = 0.0
-        open_nav_value = nav_value * (1.0 + overnight_return)
-
-        target_w = open_w.copy()
-        adv_20d: dict[str, float] = {}
-        # signal_date 需在因子日历内，且策略确有该日调仓目标——否则（如
-        # PrecomputedWeightsStrategy 无该日权重）落到 else 分支持有，不清仓，
-        # 与快路径 _run_precomputed_weights_backtest_fast 语义一致。
-        has_signal = (
-            signal_date is not None
-            and signal_date in factor_by_date
-            and strategy.has_target_for(signal_date)
-        )
-        if has_signal:
-            assert signal_date is not None
-            has_started = True
-            # context 物化：仅当策略声明需要且调用方要求时才构建（Quantile/TopN 可跳过）
-            want_pos = include_context_positions and getattr(
-                strategy, "uses_context_positions", True
-            )
-            want_adv = getattr(strategy, "uses_context_adv", True)
-            adv_20d = (
-                adv_20d_by_date.get(execution_date, {}) if want_adv else {}
-            )
-            if want_pos:
-                pos_ctx = _positions_frame_from_dense(
-                    code_arr, open_w, open_nav_value, cfg.initial_capital
-                )
-            else:
-                pos_ctx = pl.DataFrame(schema=_positions_schema())
-            context = BacktestContext(
-                signal_date=signal_date,
-                execution_date=execution_date,
-                factor_slice=factor_by_date[signal_date],
-                price_slice=price_slice,
-                current_positions=pos_ctx,
-                factor_col=cfg.factor_col,
-                price_history=_get_price_history(price, trade_dates, i, _lookback),
-                adv_20d=adv_20d,
-            )
-            target_df = _validate_target_weights(strategy.generate_weights(context), cfg)
-            target_w = np.zeros(n_codes, dtype=np.float64)
-            if not target_df.is_empty():
-                t_codes = target_df["ts_code"].to_list()
-                t_vals = target_df["target_weight"].to_numpy().astype(np.float64, copy=False)
-                for code, tw in zip(t_codes, t_vals, strict=True):
-                    idx = code_to_idx.get(code)
-                    if idx is not None:
-                        target_w[idx] = float(tw)
-
-            if cfg.rebalance_threshold is not None:
-                proposed_turnover = float(np.sum(np.abs(target_w - open_w)))
-                if proposed_turnover <= cfg.rebalance_threshold:
-                    target_w = open_w.copy()
-
-        delta = target_w - open_w
-        active = np.abs(delta) > 1e-12
-        filled = np.zeros(n_codes, dtype=np.float64)
-        reasons = np.zeros(n_codes, dtype=np.int8)
-        if np.any(active):
-            # 当日有效涨跌停阈值（ST 日 where 切换）
-            effective_limits = board_limits
-            if is_st_by_date and board_limits_st is not None:
-                st_today = is_st_by_date.get(execution_date)
-                if st_today:
-                    st_mask = np.fromiter(
-                        (c in st_today for c in codes), dtype=bool, count=n_codes
-                    )
-                    effective_limits = np.where(st_mask, board_limits_st, board_limits)
-
-            # 仅对 active 子集跑 batch（quantile 全截面仍大，但避免全零股）
-            act_idx = np.flatnonzero(active)
-            filled_a, reasons_a = apply_trade_constraints_batch(
-                delta=delta[act_idx],
-                open_px=open_px[i, act_idx],
-                pre_close=pre_close_m[i, act_idx],
-                vol=vol_data[i, act_idx],
-                adv=adv_m[i, act_idx],
-                board_limits=effective_limits[act_idx],
-                portfolio_value=open_nav_value * cfg.initial_capital,
-                max_participation_rate=cfg.max_participation_rate,
-                fallback_adv=cfg.fallback_adv,
-            )
-            filled[act_idx] = filled_a
-            reasons[act_idx] = reasons_a
-
-        next_w = open_w + filled
-        next_w[np.abs(next_w) < 1e-12] = 0.0
-
-        # 成本：旧 CostModel 可向量化；CostModelBase 保留 per-name 语义
-        if cost_model is None:
-            trade_costs = np.zeros(n_codes, dtype=np.float64)
-            trade_cost = 0.0
-            borrow_cost = 0.0
-        elif isinstance(cost_model, CostModel):
-            buy_c = np.where(filled > 0, np.abs(filled) * cost_model.one_way_cost(), 0.0)
-            sell_c = np.where(filled < 0, np.abs(filled) * cost_model.sell_cost(), 0.0)
-            trade_costs = buy_c + sell_c
-            trade_cost = float(np.sum(trade_costs))
-            short_exposure = float(np.sum(np.abs(next_w[next_w < 0])))
-            borrow_cost = short_exposure * cost_model.borrow_rate_per_period("daily")
-        else:
-            trade_costs = np.zeros(n_codes, dtype=np.float64)
-            trade_cost = 0.0
-            if np.any(active):
-                act_idx = np.flatnonzero(active)
-                for j in act_idx:
-                    adv_j = adv_m[i, j]
-                    adv_arg = float(adv_j) if np.isfinite(adv_j) and adv_j > 0 else None
-                    c = _trade_cost(cost_model, float(filled[j]), adv_arg)
-                    trade_costs[j] = c
-                    trade_cost += c
-            short_exposure = float(np.sum(np.abs(next_w[next_w < 0])))
-            borrow_cost = short_exposure * cost_model.borrow_rate_per_period("daily")
-
-        turnover = float(np.sum(np.abs(filled)))
-
-        if collect_trades and np.any(active):
-            act_idx = np.flatnonzero(active)
-            n_act = int(act_idx.size)
-            tr_dates.extend([execution_date] * n_act)
-            tr_codes.extend(code_arr[act_idx].tolist())
-            tr_prev.extend(open_w[act_idx].tolist())
-            tr_target.extend(target_w[act_idx].tolist())
-            f_act = filled[act_idx]
-            tr_filled.extend(f_act.tolist())
-            tr_turnover.extend(np.abs(f_act).tolist())
-            tr_cost.extend(trade_costs[act_idx].tolist())
-            tr_reason.extend(reason_lut[reasons[act_idx]].tolist())
-
-        intraday = intraday_ret[i]
-        intraday_return = float(np.dot(next_w, intraday))
-        # 融券是每日持有成本：回测循环恒按日迭代，按【日】费率计提。
-        gross_return = (1.0 + overnight_return) * (1.0 + intraday_return) - 1.0
-        period_cost_scale = 1.0 + overnight_return
-        period_trade_cost = trade_cost * period_cost_scale
-        period_borrow_cost = borrow_cost * period_cost_scale
-        net_return = gross_return - period_trade_cost - period_borrow_cost
-        nav_value *= 1.0 + net_return
-
-        close_denom = 1.0 + intraday_return
-        if abs(close_denom) < 1e-12:
-            close_w = next_w.copy()
-        else:
-            close_w = next_w * (1.0 + intraday) / close_denom
-            close_w[np.abs(close_w) < 1e-12] = 0.0
-        if 1.0 + net_return > 1e-12:
-            cost_scale = (1.0 + gross_return) / (1.0 + net_return)
-            close_w = close_w * cost_scale
-            close_w[np.abs(close_w) < 1e-12] = 0.0
-        cash_weight = float(1.0 - np.sum(close_w))
-
-        if has_started:
-            nav_rows.append(
-                {
-                    "trade_date": execution_date,
-                    "gross_return": gross_return,
-                    "cost": period_trade_cost,
-                    "borrow_cost": period_borrow_cost,
-                    "net_return": net_return,
-                    "nav": nav_value,
-                    "cash_weight": cash_weight,
-                    "turnover": turnover,
-                }
-            )
-            if collect_positions:
-                nz = np.flatnonzero(np.abs(close_w) >= 1e-12)
-                if nz.size:
-                    mv_scale = nav_value * cfg.initial_capital
-                    n_pos = int(nz.size)
-                    pos_dates.extend([execution_date] * n_pos)
-                    pos_codes.extend(code_arr[nz].tolist())
-                    w_act = close_w[nz]
-                    pos_weights.extend(w_act.tolist())
-                    pos_mvs.extend((w_act * mv_scale).tolist())
-        weights = close_w
-
-    returns = pl.DataFrame(nav_rows, schema=_returns_schema())
-    nav = _build_nav_frame(returns, trade_dates)
-    if collect_positions and pos_dates:
-        positions = pl.DataFrame(
-            {
-                "trade_date": pos_dates,
-                "ts_code": pos_codes,
-                "weight": pos_weights,
-                "market_value": pos_mvs,
-            },
-            schema=_positions_schema(),
-        )
-    else:
-        positions = pl.DataFrame(schema=_positions_schema())
-    if collect_trades and tr_dates:
-        trades = pl.DataFrame(
-            {
-                "trade_date": tr_dates,
-                "ts_code": tr_codes,
-                "prev_weight": tr_prev,
-                "target_weight": tr_target,
-                "filled_delta_weight": tr_filled,
-                "turnover": tr_turnover,
-                "cost": tr_cost,
-                "block_reason": tr_reason,
-            },
-            schema=_trades_schema(),
-        )
-    else:
-        trades = pl.DataFrame(schema=_trades_schema())
-    summary = _summary_stats(returns, trades)
-    n_groups = getattr(strategy, "n_groups", 1)
-
-    return StrategyBacktestResult(
-        factor_name=factor_name,
-        strategy_name=strategy.name,
-        n_groups=n_groups,
-        returns=returns,
-        nav=nav,
-        positions=positions,
-        trades=trades,
-        summary_stats=summary,
-        config=asdict(cfg),
-        frequency=cfg.frequency,
-        ret_definition=cfg.ret_definition,
+        is_st_by_date=is_st_by_date,
     )
 
 
@@ -1050,23 +766,6 @@ def _precompute_adv_20d_by_date(
     return result
 
 
-def _can_use_precomputed_fast_path(
-    strategy: Strategy,
-    cost_model: CostModel | CostModelBase | None,
-    *,
-    collect_positions: bool,
-    collect_trades: bool,
-    include_context_positions: bool,
-) -> bool:
-    return (
-        isinstance(strategy, PrecomputedWeightsStrategy)
-        and not collect_positions
-        and not collect_trades
-        and not include_context_positions
-        and (cost_model is None or isinstance(cost_model, CostModel))
-    )
-
-
 def _build_price_adv_matrices(
     price: pl.DataFrame,
     trade_dates: list[date],
@@ -1238,43 +937,19 @@ def _build_nav_frame(returns: pl.DataFrame, trade_dates: list) -> pl.DataFrame:
     return pl.concat([base_nav, sorted_returns.select(nav_cols)])
 
 
-def _run_precomputed_weights_backtest_fast(
-    *,
+def _prefill_precomputed_targets(
     strategy: PrecomputedWeightsStrategy,
-    price: pl.DataFrame,
-    trade_dates: list[date],
+    code_to_idx: dict[str, int],
     config: BacktestConfig,
-    cost_model: CostModel | None,
-    factor_name: str,
-    is_st_by_date: dict[date, set[str]] | None = None,
-) -> StrategyBacktestResult:
-    (
-        codes,
-        code_to_idx,
-        _date_to_idx,
-        open_px,
-        pre_close,
-        vol_data,
-        overnight_ret,
-        intraday_ret,
-        adv,
-        _adv_by_date,
-    ) = _build_price_adv_matrices(price, trade_dates, build_adv_dict=False)
+) -> dict[date, tuple[np.ndarray, np.ndarray]]:
+    """启动时校验并稀疏化 PrecomputedWeightsStrategy 目标权重。
 
-    board_limits = board_limit_pct_for_codes(codes)
-    board_limits_st: np.ndarray | None = (
-        board_limit_pct_for_codes(codes, is_st=True) if is_st_by_date else None
-    )
-    # 凡 weights_by_date 中存在的 sig_date 一律记录（含空权重表 = 显式空仓）。
-    # 旧实现 ``if indices:`` 会把显式空仓当成「无信号」carry 前仓；
-    # 与慢路径 has_target_for + generate_weights→空表→平仓 对齐：
-    #   - 日期在表中且权重空 → flat
-    #   - 日期不在表中 → carry（消费处 signal_date not in dict）
+    凡 ``weights_by_date`` 中存在的 sig_date 一律记录（含空权重表 = 显式空仓）：
+      - 日期在表中且权重空 → flat
+      - 日期不在表中 → carry（消费处 signal_date not in dict）
+    """
     target_by_signal_date: dict[date, tuple[np.ndarray, np.ndarray]] = {}
     for sig_date, weight_df in strategy.weights_by_date.items():
-        # 与慢路径每次 generate_weights() 后都过 _validate_target_weights 对齐：
-        # 非有限值 / 超 max_abs_weight / 超 max_gross_exposure 在此处直接抛
-        # ValueError，而不是静默放行成垃圾 NAV。
         weight_df = _validate_target_weights(weight_df, config)
         if weight_df.is_empty():
             target_by_signal_date[sig_date] = (
@@ -1295,76 +970,240 @@ def _run_precomputed_weights_backtest_fast(
             np.asarray(idx_buf, dtype=int),
             np.asarray(val_buf, dtype=float),
         )
+    return target_by_signal_date
 
-    weights = np.zeros(len(codes), dtype=float)
+
+def _run_day_loop_engine(
+    *,
+    strategy: Strategy,
+    factor: pl.DataFrame,
+    price: pl.DataFrame,
+    trade_dates: list[date],
+    config: BacktestConfig,
+    cost_model: CostModel | CostModelBase | None,
+    factor_name: str,
+    collect_positions: bool,
+    collect_trades: bool,
+    include_context_positions: bool,
+    is_st_by_date: dict[date, set[str]] | None,
+) -> StrategyBacktestResult:
+    """唯一日环实现（方案 B）：numpy 状态机 + 向量约束 + 可选列式明细。
+
+    - PrecomputedWeightsStrategy：预填稀疏 target，调仓日判定 = 权重表键
+    - 其它 Strategy：调仓日调用 generate_weights（factor 日历 ∩ has_target_for）
+    - CostModel 向量化；CostModelBase 保留 per-name 语义
+    - collect_* 仅控制明细缓冲，不切换实现
+    """
+    is_precomputed = isinstance(strategy, PrecomputedWeightsStrategy)
+    need_adv_dict = (not is_precomputed) and getattr(strategy, "uses_context_adv", True)
+    (
+        codes,
+        code_to_idx,
+        _date_to_idx,
+        open_px,
+        pre_close_m,
+        vol_data,
+        overnight_ret,
+        intraday_ret,
+        adv_m,
+        adv_20d_by_date,
+    ) = _build_price_adv_matrices(
+        price,
+        trade_dates,
+        build_adv_dict=need_adv_dict,
+    )
+    n_codes = len(codes)
+    code_arr = np.asarray(codes, dtype=object)
+    board_limits = board_limit_pct_for_codes(codes)
+    board_limits_st: np.ndarray | None = (
+        board_limit_pct_for_codes(codes, is_st=True) if is_st_by_date else None
+    )
+    reason_lut = np.asarray(BLOCK_REASON_STR, dtype=object)
+
+    target_by_signal_date: dict[date, tuple[np.ndarray, np.ndarray]] | None = None
+    factor_by_date: dict[date, pl.DataFrame] = {}
+    price_by_date: dict[date, pl.DataFrame] = {}
+    _lookback = 0
+    _empty_price = pl.DataFrame(schema=price.schema)
+    want_price_slice = False
+
+    if is_precomputed:
+        target_by_signal_date = _prefill_precomputed_targets(
+            cast(PrecomputedWeightsStrategy, strategy), code_to_idx, config
+        )
+    else:
+        want_price_slice = getattr(strategy, "uses_context_price_slice", True)
+        price_by_date = _group_frames_by_date(price) if want_price_slice else {}
+        factor_by_date = _group_frames_by_date(factor)
+        _lookback = int(getattr(strategy, "lookback_days", 0) or 0)
+
+    weights = np.zeros(n_codes, dtype=np.float64)
     nav_value = 1.0
     has_started = False
     nav_rows: list[dict[str, Any]] = []
 
+    pos_dates: list[date] = []
+    pos_codes: list[str] = []
+    pos_weights: list[float] = []
+    pos_mvs: list[float] = []
+    tr_dates: list[date] = []
+    tr_codes: list[str] = []
+    tr_prev: list[float] = []
+    tr_target: list[float] = []
+    tr_filled: list[float] = []
+    tr_turnover: list[float] = []
+    tr_cost: list[float] = []
+    tr_reason: list[str] = []
+
     for i, execution_date in enumerate(trade_dates):
+        signal_date = trade_dates[i - 1] if i > 0 else None
+
         overnight = overnight_ret[i]
         overnight_return = float(np.dot(weights, overnight))
         denom = 1.0 + overnight_return
         if abs(denom) < 1e-12:
-            open_weights = weights.copy()
+            open_w = weights.copy()
         else:
-            open_weights = weights * (1.0 + overnight) / denom
-            open_weights[np.abs(open_weights) < 1e-12] = 0.0
+            open_w = weights * (1.0 + overnight) / denom
+            open_w[np.abs(open_w) < 1e-12] = 0.0
         open_nav_value = nav_value * (1.0 + overnight_return)
 
-        signal_date = trade_dates[i - 1] if i > 0 else None
-        target_weights = open_weights.copy()
-        if signal_date is not None and signal_date in target_by_signal_date:
-            has_started = True
-            target_weights = np.zeros(len(codes), dtype=float)
-            idx, vals = target_by_signal_date[signal_date]
-            target_weights[idx] = vals
-            if config.rebalance_threshold is not None:
-                proposed_turnover = float(np.sum(np.abs(target_weights - open_weights)))
-                if proposed_turnover <= config.rebalance_threshold:
-                    target_weights = open_weights.copy()
+        target_w = open_w.copy()
+        if is_precomputed:
+            assert target_by_signal_date is not None
+            has_signal = signal_date is not None and signal_date in target_by_signal_date
+        else:
+            has_signal = (
+                signal_date is not None
+                and signal_date in factor_by_date
+                and strategy.has_target_for(signal_date)
+            )
 
-        delta = target_weights - open_weights
+        if has_signal:
+            assert signal_date is not None
+            has_started = True
+            if is_precomputed:
+                assert target_by_signal_date is not None
+                target_w = np.zeros(n_codes, dtype=np.float64)
+                idx, vals = target_by_signal_date[signal_date]
+                if idx.size:
+                    target_w[idx] = vals
+            else:
+                want_pos = include_context_positions and getattr(
+                    strategy, "uses_context_positions", True
+                )
+                want_adv = getattr(strategy, "uses_context_adv", True)
+                adv_20d = adv_20d_by_date.get(execution_date, {}) if want_adv else {}
+                if want_pos:
+                    pos_ctx = _positions_frame_from_dense(
+                        code_arr, open_w, open_nav_value, config.initial_capital
+                    )
+                else:
+                    pos_ctx = pl.DataFrame(schema=_positions_schema())
+                price_slice = (
+                    price_by_date.get(execution_date, _empty_price)
+                    if want_price_slice
+                    else _empty_price
+                )
+                context = BacktestContext(
+                    signal_date=signal_date,
+                    execution_date=execution_date,
+                    factor_slice=factor_by_date[signal_date],
+                    price_slice=price_slice,
+                    current_positions=pos_ctx,
+                    factor_col=config.factor_col,
+                    price_history=_get_price_history(price, trade_dates, i, _lookback),
+                    adv_20d=adv_20d,
+                )
+                target_df = _validate_target_weights(strategy.generate_weights(context), config)
+                target_w = np.zeros(n_codes, dtype=np.float64)
+                if not target_df.is_empty():
+                    t_codes = target_df["ts_code"].to_list()
+                    t_vals = target_df["target_weight"].to_numpy().astype(np.float64, copy=False)
+                    for code, tw in zip(t_codes, t_vals, strict=True):
+                        c_idx = code_to_idx.get(code)
+                        if c_idx is not None:
+                            target_w[c_idx] = float(tw)
+
+            if config.rebalance_threshold is not None:
+                proposed_turnover = float(np.sum(np.abs(target_w - open_w)))
+                if proposed_turnover <= config.rebalance_threshold:
+                    target_w = open_w.copy()
+
+        delta = target_w - open_w
         active = np.abs(delta) > 1e-12
-        filled = np.zeros(len(codes), dtype=float)
+        filled = np.zeros(n_codes, dtype=np.float64)
+        reasons = np.zeros(n_codes, dtype=np.int8)
         if np.any(active):
-            # ST 股票主板涨跌停阈值收窄：与慢路径共用 apply_trade_constraints_batch。
-            effective_board_limits = board_limits
+            effective_limits = board_limits
             if is_st_by_date and board_limits_st is not None:
                 st_today = is_st_by_date.get(execution_date)
                 if st_today:
-                    st_mask = np.array([c in st_today for c in codes], dtype=bool)
-                    effective_board_limits = np.where(st_mask, board_limits_st, board_limits)
-            filled, _reasons = apply_trade_constraints_batch(
+                    st_mask = np.fromiter(
+                        (c in st_today for c in codes), dtype=bool, count=n_codes
+                    )
+                    effective_limits = np.where(st_mask, board_limits_st, board_limits)
+
+            # 与历史快路径一致：全截面 batch（inactive Δ≈0 被核内短路为 0）
+            filled, reasons = apply_trade_constraints_batch(
                 delta=delta,
                 open_px=open_px[i],
-                pre_close=pre_close[i],
+                pre_close=pre_close_m[i],
                 vol=vol_data[i],
-                adv=adv[i],
-                board_limits=effective_board_limits,
+                adv=adv_m[i],
+                board_limits=effective_limits,
                 portfolio_value=open_nav_value * config.initial_capital,
                 max_participation_rate=config.max_participation_rate,
                 fallback_adv=config.fallback_adv,
             )
 
-        next_weights = open_weights + filled
-        next_weights[np.abs(next_weights) < 1e-12] = 0.0
+        next_w = open_w + filled
+        next_w[np.abs(next_w) < 1e-12] = 0.0
+
+        # 成本：旧 CostModel 向量化；CostModelBase 保留 per-name 语义
         if cost_model is None:
+            trade_costs = np.zeros(n_codes, dtype=np.float64)
             trade_cost = 0.0
             borrow_cost = 0.0
-        else:
-            buy_cost = np.where(filled > 0, np.abs(filled) * cost_model.one_way_cost(), 0.0)
-            sell_cost = np.where(filled < 0, np.abs(filled) * cost_model.sell_cost(), 0.0)
-            trade_cost = float(np.sum(buy_cost + sell_cost))
-            # 融券成本：与慢路径一致，按本期（约束/容量过滤后）空头敞口逐日计提，
-            # 不止首次建仓那一天（持有空头期间每个交易日都收费）。循环恒按日迭代，
-            # 故按【日】费率计提，不随 frequency 放大（见 run_strategy_backtest 注释）。
-            short_exposure = float(np.sum(np.abs(next_weights[next_weights < 0])))
+        elif isinstance(cost_model, CostModel):
+            buy_c = np.where(filled > 0, np.abs(filled) * cost_model.one_way_cost(), 0.0)
+            sell_c = np.where(filled < 0, np.abs(filled) * cost_model.sell_cost(), 0.0)
+            trade_costs = buy_c + sell_c
+            trade_cost = float(np.sum(trade_costs))
+            short_exposure = float(np.sum(np.abs(next_w[next_w < 0])))
             borrow_cost = short_exposure * cost_model.borrow_rate_per_period("daily")
+        else:
+            trade_costs = np.zeros(n_codes, dtype=np.float64)
+            trade_cost = 0.0
+            if np.any(active):
+                act_idx = np.flatnonzero(active)
+                for j in act_idx:
+                    adv_j = adv_m[i, j]
+                    adv_arg = float(adv_j) if np.isfinite(adv_j) and adv_j > 0 else None
+                    c = _trade_cost(cost_model, float(filled[j]), adv_arg)
+                    trade_costs[j] = c
+                    trade_cost += c
+            short_exposure = float(np.sum(np.abs(next_w[next_w < 0])))
+            borrow_cost = short_exposure * cost_model.borrow_rate_per_period("daily")
+
         turnover = float(np.sum(np.abs(filled)))
 
+        if collect_trades and np.any(active):
+            act_idx = np.flatnonzero(active)
+            n_act = int(act_idx.size)
+            tr_dates.extend([execution_date] * n_act)
+            tr_codes.extend(code_arr[act_idx].tolist())
+            tr_prev.extend(open_w[act_idx].tolist())
+            tr_target.extend(target_w[act_idx].tolist())
+            f_act = filled[act_idx]
+            tr_filled.extend(f_act.tolist())
+            tr_turnover.extend(np.abs(f_act).tolist())
+            tr_cost.extend(trade_costs[act_idx].tolist())
+            tr_reason.extend(reason_lut[reasons[act_idx]].tolist())
+
         intraday = intraday_ret[i]
-        intraday_return = float(np.dot(next_weights, intraday))
+        intraday_return = float(np.dot(next_w, intraday))
+        # 融券是每日持有成本：回测循环恒按日迭代，按【日】费率计提。
         gross_return = (1.0 + overnight_return) * (1.0 + intraday_return) - 1.0
         period_cost_scale = 1.0 + overnight_return
         period_trade_cost = trade_cost * period_cost_scale
@@ -1374,15 +1213,15 @@ def _run_precomputed_weights_backtest_fast(
 
         close_denom = 1.0 + intraday_return
         if abs(close_denom) < 1e-12:
-            close_weights = next_weights.copy()
+            close_w = next_w.copy()
         else:
-            close_weights = next_weights * (1.0 + intraday) / close_denom
-            close_weights[np.abs(close_weights) < 1e-12] = 0.0
+            close_w = next_w * (1.0 + intraday) / close_denom
+            close_w[np.abs(close_w) < 1e-12] = 0.0
         if 1.0 + net_return > 1e-12:
             cost_scale = (1.0 + gross_return) / (1.0 + net_return)
-            close_weights *= cost_scale
-            close_weights[np.abs(close_weights) < 1e-12] = 0.0
-        cash_weight = float(1.0 - np.sum(close_weights))
+            close_w = close_w * cost_scale
+            close_w[np.abs(close_w) < 1e-12] = 0.0
+        cash_weight = float(1.0 - np.sum(close_w))
 
         if has_started:
             nav_rows.append(
@@ -1397,17 +1236,55 @@ def _run_precomputed_weights_backtest_fast(
                     "turnover": turnover,
                 }
             )
-        weights = close_weights
+            if collect_positions:
+                nz = np.flatnonzero(np.abs(close_w) >= 1e-12)
+                if nz.size:
+                    mv_scale = nav_value * config.initial_capital
+                    n_pos = int(nz.size)
+                    pos_dates.extend([execution_date] * n_pos)
+                    pos_codes.extend(code_arr[nz].tolist())
+                    w_act = close_w[nz]
+                    pos_weights.extend(w_act.tolist())
+                    pos_mvs.extend((w_act * mv_scale).tolist())
+        weights = close_w
 
     returns = pl.DataFrame(nav_rows, schema=_returns_schema())
     nav = _build_nav_frame(returns, trade_dates)
-    positions = pl.DataFrame(schema=_positions_schema())
-    trades = pl.DataFrame(schema=_trades_schema())
+    if collect_positions and pos_dates:
+        positions = pl.DataFrame(
+            {
+                "trade_date": pos_dates,
+                "ts_code": pos_codes,
+                "weight": pos_weights,
+                "market_value": pos_mvs,
+            },
+            schema=_positions_schema(),
+        )
+    else:
+        positions = pl.DataFrame(schema=_positions_schema())
+    if collect_trades and tr_dates:
+        trades = pl.DataFrame(
+            {
+                "trade_date": tr_dates,
+                "ts_code": tr_codes,
+                "prev_weight": tr_prev,
+                "target_weight": tr_target,
+                "filled_delta_weight": tr_filled,
+                "turnover": tr_turnover,
+                "cost": tr_cost,
+                "block_reason": tr_reason,
+            },
+            schema=_trades_schema(),
+        )
+    else:
+        trades = pl.DataFrame(schema=_trades_schema())
     summary = _summary_stats(returns, trades)
+    n_groups = getattr(strategy, "n_groups", 1)
+
     return StrategyBacktestResult(
         factor_name=factor_name,
         strategy_name=strategy.name,
-        n_groups=1,
+        n_groups=n_groups,
         returns=returns,
         nav=nav,
         positions=positions,
@@ -1416,6 +1293,38 @@ def _run_precomputed_weights_backtest_fast(
         config=asdict(config),
         frequency=config.frequency,
         ret_definition=config.ret_definition,
+    )
+
+
+def _run_precomputed_weights_backtest_fast(
+    *,
+    strategy: PrecomputedWeightsStrategy,
+    price: pl.DataFrame,
+    trade_dates: list[date],
+    config: BacktestConfig,
+    cost_model: CostModel | None,
+    factor_name: str,
+    is_st_by_date: dict[date, set[str]] | None = None,
+) -> StrategyBacktestResult:
+    """兼容薄包装：直调统一日环（测试可绕过 ``_prepare_price_df`` 注入矩阵）。
+
+    历史名保留；新代码请走 ``run_strategy_backtest``。
+    """
+    empty_factor = pl.DataFrame(
+        schema={"trade_date": pl.Date, "ts_code": pl.Utf8, config.factor_col: pl.Float64}
+    )
+    return _run_day_loop_engine(
+        strategy=strategy,
+        factor=empty_factor,
+        price=price,
+        trade_dates=trade_dates,
+        config=config,
+        cost_model=cost_model,
+        factor_name=factor_name,
+        collect_positions=False,
+        collect_trades=False,
+        include_context_positions=False,
+        is_st_by_date=is_st_by_date,
     )
 
 

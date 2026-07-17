@@ -1,6 +1,6 @@
 """交易约束内核。
 
-慢路径（``run_strategy_backtest``）、快路径（``_run_precomputed_weights_backtest_fast``）
+统一日环引擎（``run_strategy_backtest`` / ``_run_day_loop_engine``）
 与 ``execution/brokers/paper.py::PaperBroker`` 共用同一套约束语义。
 
 向量化入口：``apply_trade_constraints_batch``（当日截面 numpy 数组 → filled_delta +

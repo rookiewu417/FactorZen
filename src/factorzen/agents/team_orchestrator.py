@@ -666,6 +666,7 @@ def run_team_agent(
     scout_max_leaves: int = 12,
     scout_freq: str = "5min",
     scout_base_dir: str | Path | None = None,  # 测试隔离 registry/缓存；生产 None
+    pool_cache_dir: str | None = None,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -691,6 +692,9 @@ def run_team_agent(
     ``llm_workers``：轮内彼此独立的 LLM 调用并发度。``1``（API 缺省）纯串行、不进
     ``ThreadPoolExecutor``——既有有状态 scripted ``llm_fn`` 零回归。``>1`` 时 futures
     按提交序装配，同 seed 产物与完成序无关。CLI ``fz mine team`` 缺省 4。
+
+    ``pool_cache_dir``：可选库池 parquet 缓存目录（CLI ``pool-prebuild`` / ``--pool-subproc``）；
+    传给 ``build_library_pool(cache_dir=...)``；命中则跳过进程内物化。默认 None 零回归。
     """
     # 峰值重排(v16 侦破):池构建前只算 holdout 边界日期(无帧),mining/holdout/bundle
     # 的物化挪到库池之后——池尾期(值列累积+分配器滞留)净省 ~3G(死点只差 1.5-2G)。
@@ -772,9 +776,12 @@ def run_team_agent(
             # eval_start:求值后裁掉 504 天预热前缀(库因子自身滚动窗在完整帧上算,
             # 裁剪只去掉无消费的前缀行;train/holdout 残差与 lift 全在 eval 窗内)。
             # 全 A 9.57M 行时池行数 -24%(≈-1.6G),None 时不裁零回归。
+            # cache_dir:CLI pool-prebuild 子进程产物;命中/未命中日志在 build_library_pool 内。
+            # 池前序列(prep→剪叶→build_library_pool)与 _cmd_pool_prebuild 同源——改一侧必查另一侧。
             lib_pool = build_library_pool(
                 market, session_prepped, ctx.leaf_map, root=lib_root,
                 eval_start=_eval_start_date,
+                cache_dir=pool_cache_dir,
             )
             covered, crowded = library_covered_by_family(
                 market, per_family=2, max_total=12, root=lib_root,

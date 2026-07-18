@@ -413,3 +413,329 @@ def test_from_parquet_missing_factor_names_invalidates(tmp_path, capsys):
     )
     assert result is None
     assert "池缓存失效" in capsys.readouterr().out
+
+
+# ── 9+. CLI: pool-prebuild + mine team --pool-subproc ───────────────────────
+
+
+def _iso_start_end(daily: pl.DataFrame) -> tuple[str, str]:
+    dmin = daily["trade_date"].min()
+    dmax = daily["trade_date"].max()
+    return dmin.strftime("%Y%m%d"), dmax.strftime("%Y%m%d")
+
+
+def test_cmd_pool_prebuild_e2e_and_dual_path(tmp_path, monkeypatch):
+    """_cmd_pool_prebuild 端到端 + 双路径一致性(cache 装载 vs 进程内 compact)。"""
+    from factorzen.cli import main as cli
+    from factorzen.discovery.evaluation import _preprocess_daily
+    from factorzen.discovery.factor_library import (
+        CompactLibraryPool,
+        build_library_pool,
+        library_file_hash,
+    )
+
+    daily = _mk_daily(n_days=30, n_stocks=8)
+    root = str(_seed_lib(tmp_path / "lib"))
+    start, end = _iso_start_end(daily)
+    out = tmp_path / "pool_out"
+    prepped_holder: dict = {}
+
+    def fake_prepare(args):
+        return daily, None, {
+            "membership_hash": "mh1",
+            "membership_mode": "test",
+            "membership_n_rows": daily.height,
+            "universe": None,
+        }
+
+    real_preprocess = _preprocess_daily
+
+    def capture_preprocess(frame, profile=None):
+        out_df = real_preprocess(frame, profile)
+        prepped_holder["df"] = out_df
+        return out_df
+
+    monkeypatch.setattr(cli, "_prepare_agent_mining_data", fake_prepare)
+    monkeypatch.setattr(
+        "factorzen.discovery.evaluation._preprocess_daily", capture_preprocess,
+    )
+    # _cmd_pool_prebuild 从 evaluation 本地 import,需 patch 调用点所在名
+    # 因函数内 from-import,patch 源模块即可在 import 时取到
+    import factorzen.discovery.evaluation as eval_mod
+    monkeypatch.setattr(eval_mod, "_preprocess_daily", capture_preprocess)
+
+    rc = cli.main([
+        "pool-prebuild",
+        "--start", start,
+        "--end", end,
+        "--library-root", root,
+        "--out", str(out),
+    ])
+    assert rc == 0
+    assert (out / "pool_meta.json").exists()
+    assert (out / "pool_wide.parquet").exists()
+
+    meta = json.loads((out / "pool_meta.json").read_text(encoding="utf-8"))
+    assert meta["market"] == "ashare"
+    assert meta["library_hash"] == library_file_hash("ashare", root)
+    assert meta["prepped_height"] == prepped_holder["df"].height
+    # ISO date 格式(str(date)),不是 YYYYMMDD
+    assert meta["eval_start"] == f"{start[:4]}-{start[4:6]}-{start[6:]}"
+    assert "-" in meta["prepped_date_min"]
+
+    prepped = prepped_holder["df"]
+    import datetime as _dt
+    eval_start = _dt.datetime.strptime(start, "%Y%m%d").date()
+
+    loaded = build_library_pool(
+        "ashare", prepped, root=root, compact=True,
+        eval_start=eval_start, cache_dir=out,
+    )
+    built = build_library_pool(
+        "ashare", prepped, root=root, compact=True,
+        eval_start=eval_start,
+    )
+    assert isinstance(loaded, CompactLibraryPool)
+    assert isinstance(built, CompactLibraryPool)
+    assert loaded.factor_names == built.factor_names
+    _assert_pool_wide_equal(
+        loaded.wide.with_columns(pl.col("ts_code").cast(pl.Utf8)),
+        built.wide.with_columns(pl.col("ts_code").cast(pl.Utf8)),
+    )
+
+
+def _mine_team_base_argv(*, start="20210104", end="20210331", extra=None):
+    argv = [
+        "mine", "team",
+        "--start", start,
+        "--end", end,
+        "--iterations", "1",
+        "--seed", "1",
+        "--index-path", "workspace/mine_team/custom_index.jsonl",
+    ]
+    if extra:
+        argv.extend(extra)
+    return argv
+
+
+def _patch_mine_team_data_and_run(monkeypatch, cli, *, captured: dict):
+    import polars as pl
+
+    fake_daily = pl.DataFrame({"ts_code": ["600000.SH"], "trade_date": ["2021-01-04"]})
+
+    def fake_prepare(args):
+        return fake_daily, None, {
+            "membership_hash": "mh1",
+            "membership_mode": None,
+            "membership_n_rows": 1,
+            "universe": None,
+        }
+
+    def fake_run_team_mine(daily, **kwargs):
+        captured["kwargs"] = kwargs
+        captured["daily"] = daily
+        return {"n_candidates": 0, "n_trials": 0, "run_dir": "workspace/mine_team/x"}
+
+    monkeypatch.setattr(cli, "_prepare_agent_mining_data", fake_prepare)
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine_team.run_team_mine", fake_run_team_mine,
+    )
+
+
+def test_cmd_mine_team_pool_subproc_success(monkeypatch, tmp_path):
+    """--pool-subproc 成功路:subprocess 被调,pool_cache_dir 透传,argv 含 pool-prebuild。"""
+    import subprocess as sp
+
+    from factorzen.cli import main as cli
+    from factorzen.config import settings as settings_mod
+
+    mine_dir = tmp_path / "mine_team"
+    mine_dir.mkdir()
+    monkeypatch.setattr(settings_mod, "MINE_TEAM_DIR", mine_dir)
+    # MINE_TEAM_DIR.parent / factor_library → tmp_path/factor_library
+    (tmp_path / "factor_library").mkdir(exist_ok=True)
+
+    captured: dict = {}
+    sub_calls: list = []
+
+    def fake_run(cmd, **kw):
+        sub_calls.append(list(cmd))
+        # --out 位置
+        out = Path(cmd[cmd.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "pool_meta.json").write_text(
+            json.dumps({"n_factors": 0, "market": "ashare"}), encoding="utf-8",
+        )
+        return sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    _patch_mine_team_data_and_run(monkeypatch, cli, captured=captured)
+
+    rc = cli.main(_mine_team_base_argv(extra=["--pool-subproc"]))
+    assert rc == 0
+    assert len(sub_calls) == 1
+    argv = sub_calls[0]
+    assert "pool-prebuild" in argv
+    assert "--start" in argv and "20210104" in argv
+    assert "--end" in argv and "20210331" in argv
+    assert captured["kwargs"].get("pool_cache_dir") is not None
+    assert Path(captured["kwargs"]["pool_cache_dir"]).name  # non-empty key dir
+    assert (Path(captured["kwargs"]["pool_cache_dir"]) / "pool_meta.json").exists()
+
+
+def test_cmd_mine_team_pool_subproc_failure_fallback(monkeypatch, tmp_path, capsys):
+    """子进程失败 → pool_cache_dir=None + stderr 警告。"""
+    import subprocess as sp
+
+    from factorzen.cli import main as cli
+    from factorzen.config import settings as settings_mod
+
+    mine_dir = tmp_path / "mine_team"
+    mine_dir.mkdir()
+    monkeypatch.setattr(settings_mod, "MINE_TEAM_DIR", mine_dir)
+    (tmp_path / "factor_library").mkdir(exist_ok=True)
+
+    captured: dict = {}
+    sub_calls: list = []
+
+    def fake_run(cmd, **kw):
+        sub_calls.append(list(cmd))
+        return sp.CompletedProcess(cmd, 1)
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    _patch_mine_team_data_and_run(monkeypatch, cli, captured=captured)
+
+    rc = cli.main(_mine_team_base_argv(extra=["--pool-subproc"]))
+    assert rc == 0
+    assert len(sub_calls) == 1
+    assert captured["kwargs"].get("pool_cache_dir") is None
+    err = capsys.readouterr().err
+    assert "警告" in err and "回退进程内构建" in err
+
+
+def test_cmd_mine_team_pool_subproc_env(monkeypatch, tmp_path):
+    """FACTORZEN_POOL_SUBPROC=1 等效 --pool-subproc。"""
+    import subprocess as sp
+
+    from factorzen.cli import main as cli
+    from factorzen.config import settings as settings_mod
+
+    mine_dir = tmp_path / "mine_team"
+    mine_dir.mkdir()
+    monkeypatch.setattr(settings_mod, "MINE_TEAM_DIR", mine_dir)
+    (tmp_path / "factor_library").mkdir(exist_ok=True)
+    monkeypatch.setenv("FACTORZEN_POOL_SUBPROC", "1")
+
+    captured: dict = {}
+    sub_calls: list = []
+
+    def fake_run(cmd, **kw):
+        sub_calls.append(list(cmd))
+        out = Path(cmd[cmd.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "pool_meta.json").write_text("{}", encoding="utf-8")
+        return sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    _patch_mine_team_data_and_run(monkeypatch, cli, captured=captured)
+
+    rc = cli.main(_mine_team_base_argv())  # 不带 --pool-subproc
+    assert rc == 0
+    assert len(sub_calls) == 1
+    assert captured["kwargs"].get("pool_cache_dir") is not None
+
+
+def test_cmd_mine_team_pool_cache_reuse(monkeypatch, tmp_path):
+    """预置 cache_dir(meta 存在) → subprocess.run 不被调用。"""
+    import hashlib
+    import subprocess as sp
+
+    from factorzen.cli import main as cli
+    from factorzen.config import settings as settings_mod
+    from factorzen.discovery.factor_library import library_file_hash
+
+    mine_dir = tmp_path / "mine_team"
+    mine_dir.mkdir()
+    monkeypatch.setattr(settings_mod, "MINE_TEAM_DIR", mine_dir)
+    (tmp_path / "factor_library").mkdir(exist_ok=True)
+
+    lib_root = str(tmp_path / "factor_library")
+    market = "ashare"
+    lib_hash = library_file_hash(market, lib_root) or "nolib"
+    key_src = "|".join([
+        lib_hash, "20210104", "20210331", "None", market, "0.2", "False", "5min",
+    ])
+    key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
+    cache_dir = mine_dir / "_pool_cache" / key
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "pool_meta.json").write_text(
+        json.dumps({"n_factors": 0}), encoding="utf-8",
+    )
+
+    captured: dict = {}
+    sub_calls: list = []
+
+    def fake_run(cmd, **kw):
+        sub_calls.append(list(cmd))
+        return sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    _patch_mine_team_data_and_run(monkeypatch, cli, captured=captured)
+
+    rc = cli.main(_mine_team_base_argv(extra=["--pool-subproc"]))
+    assert rc == 0
+    assert sub_calls == []
+    assert captured["kwargs"].get("pool_cache_dir") == str(cache_dir)
+
+
+def test_cmd_mine_team_no_pool_subproc_zero_regression(monkeypatch, tmp_path):
+    """不带旗标、无 env → subprocess 不调,pool_cache_dir=None。"""
+    import subprocess as sp
+
+    from factorzen.cli import main as cli
+    from factorzen.config import settings as settings_mod
+
+    mine_dir = tmp_path / "mine_team"
+    mine_dir.mkdir()
+    monkeypatch.setattr(settings_mod, "MINE_TEAM_DIR", mine_dir)
+    monkeypatch.delenv("FACTORZEN_POOL_SUBPROC", raising=False)
+
+    captured: dict = {}
+    sub_calls: list = []
+
+    def fake_run(cmd, **kw):
+        sub_calls.append(list(cmd))
+        return sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    _patch_mine_team_data_and_run(monkeypatch, cli, captured=captured)
+
+    rc = cli.main(_mine_team_base_argv())
+    assert rc == 0
+    assert sub_calls == []
+    assert captured["kwargs"].get("pool_cache_dir") is None
+
+
+def test_parser_pool_prebuild_and_pool_subproc_flag():
+    from factorzen.cli.main import build_parser
+
+    p = build_parser()
+    args = p.parse_args([
+        "pool-prebuild",
+        "--start", "20220101",
+        "--end", "20231231",
+        "--out", "/tmp/pool",
+    ])
+    assert args.command == "pool-prebuild"
+    assert args.start == "20220101"
+    assert args.out == "/tmp/pool"
+    assert args.holdout_ratio == 0.2
+    assert callable(args.func)
+
+    team = p.parse_args([
+        "mine", "team",
+        "--start", "20220101",
+        "--end", "20231231",
+        "--pool-subproc",
+    ])
+    assert team.pool_subproc is True

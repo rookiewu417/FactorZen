@@ -841,3 +841,162 @@ def test_session_end_auto_lift_uses_explicit_horizon(monkeypatch):
         horizon=3,
     )
     assert meta3.get("horizon") == 3
+
+
+def _lift_baseline_spy_meta() -> dict:
+    return {
+        "n_lift_queue": 0, "lift_group": None, "lift_results": [],
+        "lift_admissions": {"added_active": 0, "added_probation": 0},
+        "n_lift_evaluated": 0, "lift_dropped_coverage": [],
+        "lift_error": None,
+    }
+
+
+def test_lift_baseline_reuses_session_pool_when_active_set_unchanged(
+    monkeypatch, tmp_path: Path,
+):
+    """库 active 集与 session lib_pool 键集一致 → 钩子收到 lib_pool（免重物化）。"""
+    from tests.test_library_pool_compact import _write_lib
+
+    lib_root = tmp_path / "lib"
+    _write_lib(lib_root, "ashare", [
+        {"expression": "rank(close)", "market": "ashare", "status": "active",
+         "ic_train": 0.05},
+    ])
+
+    captured: dict = {}
+
+    def spy_hook(*a, **k):
+        captured.update(k)
+        return _lift_baseline_spy_meta()
+
+    monkeypatch.setattr(
+        "factorzen.agents.team_orchestrator._session_end_auto_lift", spy_hook,
+    )
+
+    hyp = json.dumps({"hypotheses": ["动量"]})
+    code = json.dumps({"expressions": ["ts_mean(close,5)"]})
+    crit = json.dumps({"verdict": "keep", "reason": "ok"})
+    seq = [hyp, code, crit] * 10
+    i = {"k": 0}
+
+    def fn(messages):
+        v = seq[i["k"] % len(seq)]
+        i["k"] += 1
+        return v
+
+    run_team_agent(
+        _mock_daily(), fn, n_rounds=1, seed=1,
+        index_path=str(tmp_path / "e.jsonl"), heal_rounds=0,
+        auto_lift=True, update_library=False,
+        library_root=str(lib_root),
+    )
+    baseline = captured.get("active_factor_dfs")
+    assert baseline is not None, "库 active 集未变时应复用 session lib_pool"
+    assert set(baseline.keys()) == {"rank(close)"}
+
+
+def test_lift_baseline_reuses_even_with_unmaterializable_active(
+    monkeypatch, tmp_path: Path,
+):
+    """库含无法物化的 active(记录 87→物化 84 类比)且文件未变 → 仍复用。
+
+    判据是库文件 hash 而非记录级键集:lift 自建走同函数同库,skip 相同,
+    自建结果 ≡ lib_pool。键集比较在真实库上恒不成立(v25 探针实证)。
+    """
+    from tests.test_library_pool_compact import _write_lib
+
+    lib_root = tmp_path / "lib"
+    _write_lib(lib_root, "ashare", [
+        {"expression": "rank(close)", "market": "ashare", "status": "active",
+         "ic_train": 0.05},
+        {"expression": "rank(bogus_leaf_xyz)", "market": "ashare",
+         "status": "active", "ic_train": 0.04},
+    ])
+
+    captured: dict = {}
+
+    def spy_hook(*a, **k):
+        captured.update(k)
+        return _lift_baseline_spy_meta()
+
+    monkeypatch.setattr(
+        "factorzen.agents.team_orchestrator._session_end_auto_lift", spy_hook,
+    )
+
+    hyp = json.dumps({"hypotheses": ["动量"]})
+    code = json.dumps({"expressions": ["ts_mean(close,5)"]})
+    crit = json.dumps({"verdict": "keep", "reason": "ok"})
+    seq = [hyp, code, crit] * 10
+    i = {"k": 0}
+
+    def fn(messages):
+        v = seq[i["k"] % len(seq)]
+        i["k"] += 1
+        return v
+
+    run_team_agent(
+        _mock_daily(), fn, n_rounds=1, seed=1,
+        index_path=str(tmp_path / "e.jsonl"), heal_rounds=0,
+        auto_lift=True, update_library=False,
+        library_root=str(lib_root),
+    )
+    baseline = captured.get("active_factor_dfs")
+    assert baseline is not None, "库文件未变时应复用(skip 因子 lift 自建同样 skip)"
+    assert set(baseline.keys()) == {"rank(close)"}
+
+
+def test_lift_baseline_rebuilds_when_library_file_changed(
+    monkeypatch, tmp_path: Path,
+):
+    """本 session upsert 改了库文件(hash 变)→ 钩子收到 None(基线须含新 active)。"""
+    from tests.test_library_pool_compact import _write_lib
+
+    lib_root = tmp_path / "lib"
+    _write_lib(lib_root, "ashare", [
+        {"expression": "rank(close)", "market": "ashare", "status": "active",
+         "ic_train": 0.05},
+    ])
+
+    captured: dict = {}
+
+    def spy_hook(*a, **k):
+        captured.update(k)
+        return _lift_baseline_spy_meta()
+
+    def fake_upsert(*a, **k):
+        # 模拟收尾 upsert 新增一条 active(改库文件内容 → hash 变)
+        lib_path = lib_root / "ashare.jsonl"
+        with lib_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "expression": "rank(vol)", "market": "ashare",
+                "status": "active", "ic_train": 0.06,
+            }, ensure_ascii=False) + "\n")
+
+    monkeypatch.setattr(
+        "factorzen.agents.team_orchestrator._session_end_auto_lift", spy_hook,
+    )
+    monkeypatch.setattr(
+        "factorzen.agents.team_orchestrator._library_upsert_team", fake_upsert,
+    )
+
+    hyp = json.dumps({"hypotheses": ["动量"]})
+    code = json.dumps({"expressions": ["ts_mean(close,5)"]})
+    crit = json.dumps({"verdict": "keep", "reason": "ok"})
+    seq = [hyp, code, crit] * 10
+    i = {"k": 0}
+
+    def fn(messages):
+        v = seq[i["k"] % len(seq)]
+        i["k"] += 1
+        return v
+
+    run_team_agent(
+        _mock_daily(), fn, n_rounds=1, seed=1,
+        index_path=str(tmp_path / "e.jsonl"), heal_rounds=0,
+        auto_lift=True, update_library=True,
+        library_root=str(lib_root),
+    )
+    assert captured.get("active_factor_dfs") is None, (
+        "库文件已变(upsert 新增 active)时必须回退 lift 自建基线"
+    )

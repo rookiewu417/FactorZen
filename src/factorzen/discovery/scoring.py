@@ -92,7 +92,13 @@ _MIN_CORR_CROSS = 30
 # corr panel values f32 阈值: n_d×n_s×n_f×8B ≥ 此值时 values 存 float32。
 # 全 A ~2055×5776×84×8 ≈ 8G 必触发;csi800 级 ~1.1G 不触发,f64 零回归。
 # 计算侧 (_max_corr_detail_panel) 仍升 f64,与残差 X/Q 的 f32 存储风格一致。
+# 仅 legacy dict 构建路径使用;compact 路径同量级优先 lazy-wide(见下)。
 CORR_PANEL_F32_BYTES_THRESHOLD = 2 * 1024**3  # 2 GiB
+
+# compact 超阈值免物化: n_d×n_s×n_f×8B ≥ 此值时返回 LazyWideCorrGrid。
+# 与 f32 阈值同值 → 全 A 走 lazy 优先,不再物化 (n_d,n_s,n_f) 网格;
+# csi800 级 ~1.1G 不触发,f64 物化零回归。
+CORR_PANEL_LAZY_BYTES_THRESHOLD = 2 * 1024**3  # 2 GiB
 
 # 分块归约预算:块内 f64 临时 (c_m/l_m/乘积等 ~5 份) 约此字节上限。
 # 按日独立 sum → 分块不改变任一日浮点求和顺序,f64 下与整面板逐位等价。
@@ -127,6 +133,90 @@ class LibraryCorrPanel:
         if self.present is None:
             return ~np.isnan(self.values[d0:d1])
         return self.present[d0:d1]
+
+    def block(self, d0: int, d1: int) -> tuple[np.ndarray, np.ndarray]:
+        """日期切片 [d0:d1] → (vals_f64, present_bool)，形状 (d1-d0, n_s, n_f)。"""
+        vals = self.values[d0:d1]
+        if vals.dtype != np.float64:
+            vals = vals.astype(np.float64)
+        return vals, self.present_block(d0, d1)
+
+
+class LazyWideCorrGrid:
+    """超阈值 compact 库池：免物化 (n_d,n_s,n_f) 网格，按日块从 wide 散射。
+
+    与 ``LibraryCorrPanel`` duck-type 兼容字段：``names/dates/stocks/date_idx/
+    stock_idx``、``present is None``。无 ``values`` 大网格；``block(d0,d1)``
+    用 polars gather 按块散射后即弃。散射语义与物化面板逐位等价（同 f32/f64
+    源值、计算同升 f64）。
+    """
+
+    __slots__ = (
+        "_day_starts",
+        "_di_by_day",
+        "_row_by_day",
+        "_si_by_day",
+        "_wide",
+        "date_idx",
+        "dates",
+        "names",
+        "present",
+        "stock_idx",
+        "stocks",
+    )
+
+    def __init__(
+        self,
+        *,
+        names: tuple[str, ...],
+        dates: tuple,
+        stocks: tuple,
+        date_idx: dict,
+        stock_idx: dict,
+        wide: pl.DataFrame,
+        row_by_day: np.ndarray,
+        si_by_day: np.ndarray,
+        di_by_day: np.ndarray,
+    ) -> None:
+        self.names = names
+        self.dates = dates
+        self.stocks = stocks
+        self.date_idx = date_idx
+        self.stock_idx = stock_idx
+        self.present = None
+        self._wide = wide  # 引用 CompactLibraryPool.wide，不复制
+        self._row_by_day = row_by_day
+        self._si_by_day = si_by_day
+        self._di_by_day = di_by_day
+        n_d = len(dates)
+        self._day_starts = np.searchsorted(di_by_day, np.arange(n_d + 1))
+
+    def block(self, d0: int, d1: int) -> tuple[np.ndarray, np.ndarray]:
+        """日期切片 [d0:d1] → (vals_f64, present_bool)，形状 (d1-d0, n_s, n_f)。
+
+        每块**一次**整行 take(84 列小帧)→ to_numpy 单矩阵 → 一次 3D scatter。
+        逐因子逐块 gather 曾是 v25 探针死因:每候选 ~13k 次小分配的碎片/滞留
+        在全 A 把 WSL VM 顶穿;单次 take 把分配次数降两个量级。
+        绝不整列 ``to_numpy()``(含 null 的 f32 列整列转换物化 10.9M NaN 副本)。
+        """
+        n_s = len(self.stocks)
+        n_f = len(self.names)
+        a = int(self._day_starts[d0])
+        b = int(self._day_starts[d1])
+        rows = self._row_by_day[a:b]
+        sis = self._si_by_day[a:b]
+        dis = self._di_by_day[a:b] - d0
+        vals = np.full((d1 - d0, n_s, n_f), np.nan, dtype=np.float64)
+        if a < b:
+            # 值列全同 dtype(f32 或 f64)→ to_numpy 单矩阵零逐列对象;null→NaN 天然
+            sub = self._wide.select(list(self.names))[rows]
+            m = sub.to_numpy()
+            vals[dis, sis, :] = m  # f32→f64 赋值自动升位
+        return vals, ~np.isnan(vals)
+
+    def present_block(self, d0: int, d1: int) -> np.ndarray:
+        """日期切片 present；热路径请用 ``block`` 一次取 vals+pres。"""
+        return self.block(d0, d1)[1]
 
 
 def _corr_panel_value_dtype(n_d: int, n_s: int, n_f: int) -> np.dtype:
@@ -209,13 +299,15 @@ def _scatter_frame_to_slice(
 
 def build_library_corr_panel(
     pool: Mapping[str, pl.DataFrame] | None,
-) -> LibraryCorrPanel | None:
+) -> LibraryCorrPanel | LazyWideCorrGrid | None:
     """把库池对齐成 (date × stock × k) 矩阵；空/None → None。
 
     Session 级构建一次、整 session 复用。不改池因子数值，只做散射对齐。
     识别 ``CompactLibraryPool``：从单骨架宽表散射，避免 dict-of-frames 键副本。
 
-    ``present`` 恒为 ``None``（由 values 的 NaN 推导）；超阈值时 values 存 float32。
+    ``present`` 恒为 ``None``（由 values 的 NaN 推导）；legacy dict 超阈值时
+    values 存 float32；compact 超 ``CORR_PANEL_LAZY_BYTES_THRESHOLD`` 时返回
+    ``LazyWideCorrGrid``（免物化大网格）。
     """
     if not pool:
         return None
@@ -274,8 +366,39 @@ def build_library_corr_panel(
     )
 
 
-def _build_library_corr_panel_from_wide(pool: object) -> LibraryCorrPanel | None:
-    """CompactLibraryPool.wide → LibraryCorrPanel（逐因子散射，无 84 列 join 大帧）。"""
+def _wide_panel_key_index(
+    wide: pl.DataFrame,
+    date_map: pl.DataFrame,
+    stock_map: pl.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """键窄 join + ``_ri`` 钉序 → ``(di_all, si_all, ri_all)`` 与 ``wide`` 行对齐。
+
+    物化与 lazy-wide 共用，避免双路径漂移。只 join 键两列 + 行号，
+    不触碰值列（避免 84 列 join 复制大帧）。
+    """
+    wide_keys = wide.select(["trade_date", "ts_code"]).with_row_index("_ri")
+    date_map = _align_join_key(date_map, "trade_date", wide_keys)
+    stock_map = _align_join_key(stock_map, "ts_code", wide_keys)
+    indexed = (
+        wide_keys
+        .join(date_map, on="trade_date", how="inner")
+        .join(stock_map, on="ts_code", how="inner")
+        .sort("_ri")  # 钉回原 wide 行序，使 ri 与 wide[name] 对齐
+    )
+    di_all = indexed["_di"].to_numpy().astype(np.int32, copy=False)
+    si_all = indexed["_si"].to_numpy().astype(np.int32, copy=False)
+    ri_all = indexed["_ri"].to_numpy().astype(np.int64, copy=False)
+    return di_all, si_all, ri_all
+
+
+def _build_library_corr_panel_from_wide(
+    pool: object,
+) -> LibraryCorrPanel | LazyWideCorrGrid | None:
+    """CompactLibraryPool.wide → 物化 ``LibraryCorrPanel`` 或 ``LazyWideCorrGrid``。
+
+    超 ``CORR_PANEL_LAZY_BYTES_THRESHOLD`` 时免物化大网格；否则逐因子散射
+    （无 84 列 join 大帧）。键窄 join / ``_ri`` 钉序经 ``_wide_panel_key_index`` 共享。
+    """
     from factorzen.discovery.factor_library import CompactLibraryPool
 
     assert isinstance(pool, CompactLibraryPool)
@@ -296,32 +419,44 @@ def _build_library_corr_panel_from_wide(pool: object) -> LibraryCorrPanel | None
 
     date_idx, stock_idx, date_map, stock_map = _index_maps_from_keys(dates, stocks)
     n_d, n_s, n_f = len(dates), len(stocks), len(names)
-    dtype = _corr_panel_value_dtype(n_d, n_s, n_f)
-    values = np.full((n_d, n_s, n_f), np.nan, dtype=dtype)
+    est = int(n_d) * int(n_s) * int(n_f) * 8
+
     if n_d == 0:
         return LibraryCorrPanel(
             names=names, dates=dates, stocks=stocks,
             date_idx=date_idx, stock_idx=stock_idx,
-            values=values, present=None,
+            values=np.full((0, n_s, n_f), np.nan, dtype=np.float64),
+            present=None,
         )
 
-    # 只 join 键两列 + 行号；避免 84 值列 join 复制大帧（全 A ~3.7G）
-    wide_keys = wide.select(["trade_date", "ts_code"]).with_row_index("_ri")
-    date_map = _align_join_key(date_map, "trade_date", wide_keys)
-    stock_map = _align_join_key(stock_map, "ts_code", wide_keys)
-    indexed = (
-        wide_keys
-        .join(date_map, on="trade_date", how="inner")
-        .join(stock_map, on="ts_code", how="inner")
-        .sort("_ri")  # 钉回原 wide 行序，使 ri 与 wide[name] 对齐
-    )
-    r = indexed["_di"].to_numpy().astype(np.int64, copy=False)
-    c = indexed["_si"].to_numpy().astype(np.int64, copy=False)
-    ri = indexed["_ri"].to_numpy().astype(np.int64, copy=False)
+    di_all, si_all, ri_all = _wide_panel_key_index(wide, date_map, stock_map)
+
+    if est >= CORR_PANEL_LAZY_BYTES_THRESHOLD:
+        print(
+            f"[corr-panel] lazy-wide 模式(估算 {est / (1024**3):.1f}G"
+            f"≥阈值 {CORR_PANEL_LAZY_BYTES_THRESHOLD / (1024**3):.0f}G,免物化)",
+            flush=True,
+        )
+        order = np.argsort(di_all, kind="stable")
+        return LazyWideCorrGrid(
+            names=names,
+            dates=dates,
+            stocks=stocks,
+            date_idx=date_idx,
+            stock_idx=stock_idx,
+            wide=wide,
+            row_by_day=ri_all[order],
+            si_by_day=si_all[order],
+            di_by_day=di_all[order],
+        )
+
+    # 低于 lazy 阈值：物化；dtype 仍走 f32 阈值（测试/边界；生产同量级已 lazy）
+    dtype = _corr_panel_value_dtype(n_d, n_s, n_f)
+    values = np.full((n_d, n_s, n_f), np.nan, dtype=dtype)
     for fi, name in enumerate(names):
         # polars null→NaN 天然；f32 列保持 f32。逐因子散射后即弃，无宽值帧。
         arr = wide[name].to_numpy()
-        values[r, c, fi] = arr[ri]
+        values[di_all, si_all, fi] = arr[ri_all]
 
     return LibraryCorrPanel(
         names=names,
@@ -335,11 +470,12 @@ def _build_library_corr_panel_from_wide(pool: object) -> LibraryCorrPanel | None
 
 
 def _scatter_candidate_to_panel(
-    factor_df: pl.DataFrame, panel: LibraryCorrPanel,
+    factor_df: pl.DataFrame, panel: LibraryCorrPanel | LazyWideCorrGrid,
 ) -> tuple[np.ndarray, np.ndarray]:
     """候选散射到 panel 网格 → (values, present)，形状 (n_dates, n_stocks)。
 
     候选帧可能含真实 NaN 值（非 null）：present 内保留 NaN 以毒化该日——不能用 isnan 推导。
+    只消费 ``dates/stocks`` 键序，``LibraryCorrPanel`` / ``LazyWideCorrGrid`` 均兼容。
     """
     n_d, n_s = len(panel.dates), len(panel.stocks)
     if factor_df.is_empty() or n_d == 0:
@@ -357,18 +493,21 @@ def _scatter_candidate_to_panel(
 
 
 def _max_corr_detail_panel(
-    factor_df: pl.DataFrame, panel: LibraryCorrPanel,
+    factor_df: pl.DataFrame, panel: LibraryCorrPanel | LazyWideCorrGrid,
 ) -> tuple[float, str | None]:
     """矩阵化逐对相关：按日期块流式归约，语义对齐 compute_factor_correlation。
 
     只驻留 6 个 (n_d, n_f) 归约量；块内 both/c_m/l_m 用完即弃。
     按日独立 ⇒ f64 下与整面板实现逐位等价；f32 存储时计算仍升 f64。
     候选 NaN（cand_p=True）→ c_m 含 NaN → 该日 sums NaN → corr NaN → ok=False。
+    ``panel.block`` 统一物化/lazy 接口。
     """
     if not panel.names:
         return 0.0, None
     cand_v, cand_p = _scatter_candidate_to_panel(factor_df, panel)
-    n_d, n_s, n_f = panel.values.shape
+    n_d = len(panel.dates)
+    n_s = len(panel.stocks)
+    n_f = len(panel.names)
     # 块大小:块内 f64 临时(c_m/l_m/乘积 ~5 份)预算 CORR_PANEL_CHUNK_BYTES
     rows_per_day = n_s * n_f
     blk = max(1, int(CORR_PANEL_CHUNK_BYTES / max(1, rows_per_day * 8 * 5)))
@@ -382,10 +521,7 @@ def _max_corr_detail_panel(
 
     for d0 in range(0, n_d, blk):
         d1 = min(d0 + blk, n_d)
-        vals = panel.values[d0:d1]
-        if vals.dtype != np.float64:
-            vals = vals.astype(np.float64)
-        pres = panel.present_block(d0, d1)
+        vals, pres = panel.block(d0, d1)
         both = cand_p[d0:d1, :, None] & pres
         c_m = np.where(both, cand_v[d0:d1, :, None], 0.0)
         l_m = np.where(both, vals, 0.0)
@@ -395,7 +531,7 @@ def _max_corr_detail_panel(
         sum_c2[d0:d1] = (c_m * c_m).sum(axis=1)
         sum_l2[d0:d1] = (l_m * l_m).sum(axis=1)
         sum_cl[d0:d1] = (c_m * l_m).sum(axis=1)
-        del c_m, l_m, both
+        del c_m, l_m, both, vals, pres
 
     with np.errstate(invalid="ignore", divide="ignore"):
         # Pearson ≡ np.corrcoef；(std==0 ddof=0) ⇔ n·Σx²−(Σx)² == 0
@@ -422,7 +558,7 @@ def _max_corr_detail_panel(
 def max_correlation(
     factor_df: pl.DataFrame,
     pool: Mapping[str, pl.DataFrame],
-    panel: LibraryCorrPanel | None = None,
+    panel: LibraryCorrPanel | LazyWideCorrGrid | None = None,
 ) -> float:
     """factor_df 与 pool 中每个因子的截面相关性绝对值的最大值。pool 为空时返回 0。
 
@@ -432,7 +568,8 @@ def max_correlation(
     池因子退化就 continue 丢整条截面 → count=0 → 所有真实高相关一起被抹成 0.0，
     数学等价簇因此逃过 0.7 去重门槛。不动 compute_factor_correlation（daily 报告仍用其语义）。
 
-    ``panel``：可选预构建库面板；传入时走矩阵化路径（与逐对数值等价）。
+    ``panel``：可选预构建库面板（``LibraryCorrPanel`` 或 ``LazyWideCorrGrid``）；
+    传入时走矩阵化路径（与逐对数值等价）。
     """
     return max_correlation_detail(factor_df, pool, panel=panel)[0]
 
@@ -440,11 +577,12 @@ def max_correlation(
 def max_correlation_detail(
     factor_df: pl.DataFrame,
     pool: Mapping[str, pl.DataFrame],
-    panel: LibraryCorrPanel | None = None,
+    panel: LibraryCorrPanel | LazyWideCorrGrid | None = None,
 ) -> tuple[float, str | None]:
     """同 ``max_correlation``，额外返回最相近的 pool key（表达式）。pool 空 → (0.0, None)。
 
-    ``panel`` 非 None 时走矩阵化路径，须由同一 ``pool`` 经 ``build_library_corr_panel`` 构建。
+    ``panel`` 非 None 时走矩阵化路径，须由同一 ``pool`` 经 ``build_library_corr_panel``
+    构建（物化 ``LibraryCorrPanel`` 或超阈值 ``LazyWideCorrGrid``）。
     """
     if not pool:
         return 0.0, None
@@ -470,7 +608,7 @@ def library_orthogonal_check(
     lib_pool: Mapping[str, pl.DataFrame] | None,
     *,
     threshold: float = DEFAULT_DECORR_THRESHOLD,
-    panel: LibraryCorrPanel | None = None,
+    panel: LibraryCorrPanel | LazyWideCorrGrid | None = None,
 ) -> tuple[bool, float, str | None]:
     """库相关度量：与库池 max|corr| 是否 ``>= threshold``。
 
@@ -482,7 +620,8 @@ def library_orthogonal_check(
     - 快速通道/旧默认：``threshold=DEFAULT_DECORR_THRESHOLD``（0.7，向后兼容）
     M1 与 team/agent 双路径必须调本函数，禁止各自内联相关计算（架构守卫锁死）。
 
-    ``panel``：可选 ``LibraryCorrPanel``（session 级构建一次）；不传则逐对原路径。
+    ``panel``：可选 ``LibraryCorrPanel`` / ``LazyWideCorrGrid``（session 级构建一次）；
+    不传则逐对原路径。
     """
     if not lib_pool:
         return True, 0.0, None

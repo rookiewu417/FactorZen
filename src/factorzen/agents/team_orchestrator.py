@@ -762,6 +762,7 @@ def run_team_agent(
     # 残差目标需要 train∪holdout → 在完整 prepped 帧上物化（不再只裁 holdout）。
     # 空库/关开关 → lib_pool={}、library_covered=None，objective 退化 raw，行为与旧一致。
     lib_pool: Any = {}
+    _lib_hash_at_pool: str | None = None  # lift 基线复用判据(池构建时的库文件 hash)
     library_covered: list[str] | None = None
     library_crowded: list[tuple[str, int]] | None = None
     market = getattr(profile, "name", None) or (
@@ -785,6 +786,11 @@ def run_team_agent(
                 # 库含 python 记录时物化必需；与 _cmd_pool_prebuild 同口径
                 universe=(data_window or {}).get("universe"),
             )
+            # lift 基线复用判据(session 末):库文件内容 hash。记录级键集比较
+            # 不可用——active 记录中恒有少数物化 skip(87 记录→84 物化),
+            # 键集恒不等;而 lift 自建走同函数同库,skip 相同 → 文件未变即等价。
+            from factorzen.discovery.factor_library import library_file_hash
+            _lib_hash_at_pool = library_file_hash(market, lib_root)
             covered, crowded = library_covered_by_family(
                 market, per_family=2, max_total=12, root=lib_root,
             )
@@ -1018,6 +1024,26 @@ def run_team_agent(
             data_window=data_window, eval_start=eval_start, index_path=index_path,
             library_root=library_root, top_k=top_k, horizon=horizon,
             run_id=session_run_id)
+
+    # ── lift 基线复用 session 库池(v25 探针死点:lift 内部 build_library_pool
+    # 在父进程重新逐因子求值 87 库因子,全 A 在 ⑤ 后余量上直接 OOM)────────────
+    # 语义守卫:upsert(上方)在 lift 前,基线须含本 session 新升 active 的因子。
+    # 仅当「upsert 后库 active 键集 == session lib_pool 键集」(0 新增,探针/收敛
+    # 期常态)才传 lib_pool——此时两者仅差 eval_start 预热前缀裁剪,而 lift 评分
+    # /build_panel 全在 admission 窗(⊆ 裁剪后窗)、baseline_hash 只依赖键集,
+    # 逐值等价。键集有变 → 保持 None 让 lift 自建(语义正确优先,内存回退现状)。
+    if lift_active_factor_dfs is None and lib_pool:
+        try:
+            from factorzen.discovery.factor_library import library_file_hash
+            _lib_hash_now = library_file_hash(market, lib_root)
+            if _lib_hash_now == _lib_hash_at_pool:
+                lift_active_factor_dfs = lib_pool
+                _step("lift 基线 ▸ 复用 session 库池(库文件未变,免重物化)")
+            else:
+                _step("lift 基线 ▸ 库文件已变(本 session upsert),重新物化")
+        except Exception as exc:
+            _LOG.warning("lift 基线复用检查失败,回退重物化: %s: %s",
+                         type(exc).__name__, exc)
 
     # ── session 末自动 lift 钩子（写 manifest 前；失败不杀死挖掘 session）────
     lift_meta = _session_end_auto_lift(

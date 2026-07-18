@@ -558,7 +558,8 @@ def test_p4c_scatter_join_with_categorical_keys():
     pool = {"lib_a": fac}
     panel = build_library_corr_panel(pool)
     assert panel is not None
-    assert panel.present.sum() == fac.height  # 键全覆盖，无 join 丢失
+    # present=None 新契约（corr panel 瘦身）：掩码经 present_block 从 ~isnan 推导
+    assert panel.present_block(0, len(panel.dates)).sum() == fac.height  # 键全覆盖，无 join 丢失
     _cand_v, cand_p = _scatter_candidate_to_panel(fac, panel)
     assert int(cand_p.sum()) == fac.height
 

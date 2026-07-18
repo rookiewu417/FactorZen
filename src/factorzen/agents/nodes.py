@@ -333,7 +333,13 @@ def node_guardrails(
                                        leaf_map=leaf_map)
 
     # 残差目标：库面板 session 级物化一次（z-score+null→0）；空库 → objective 退化 raw。
-    lib_panel = build_library_panel(lib_pool)
+    # residual_projector 注入时复用其持有的同一 build_library_panel(lib_pool) 产物
+    # （ResidualProjector.__init__ 持 panel 引用）——每轮重建在全 A 是 ~3G 纯重复物化
+    # （探针 v23 ⑤ 护栏 OOM 三大头之一）。projector 缺席（M5/测试）时现建，零回归。
+    lib_panel = (
+        residual_projector.panel if residual_projector is not None
+        else build_library_panel(lib_pool)
+    )
     eff_objective = resolve_objective(objective, lib_panel is not None)
     state.objective = eff_objective
     # 库相关矩阵面板：session 级构建一次，本轮全部候选复用

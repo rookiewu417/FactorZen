@@ -100,11 +100,16 @@ def test_compact_legacy_corr_panel_and_max_corr_equal(tmp_path):
     assert p_leg.names == p_cmp.names
     assert p_leg.dates == p_cmp.dates
     assert p_leg.stocks == p_cmp.stocks
-    np.testing.assert_array_equal(p_leg.present, p_cmp.present)
+    # present=None 新契约:掩码经 present_block 推导(直接 np.where(None,...) 会把
+    # None 当 False 标量退化成恒真比较——陷阱#1)
+    pres_leg = p_leg.present_block(0, len(p_leg.dates))
+    pres_cmp = p_cmp.present_block(0, len(p_cmp.dates))
+    np.testing.assert_array_equal(pres_leg, pres_cmp)
+    assert pres_leg.any()  # 掩码非空,比较有判别力
     # 值：null 位已由 present 标；有限位须 bit-identical
     np.testing.assert_array_equal(
-        np.where(p_leg.present, p_leg.values, 0.0),
-        np.where(p_cmp.present, p_cmp.values, 0.0),
+        np.where(pres_leg, p_leg.values, 0.0),
+        np.where(pres_cmp, p_cmp.values, 0.0),
     )
 
     # 候选 = 库内第一因子

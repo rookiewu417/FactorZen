@@ -416,8 +416,10 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     # 残差目标需要 train+holdout 两段库因子 → 在完整 warmup 帧上物化；
     # 库相关门仍用 mining 段切片（selected 循环里用 mining fdf 对齐）。
     # 空库/关开关 → {}，行为与旧完全一致。
-    lib_pool: dict[str, pl.DataFrame] = {}
-    lib_pool_mining: dict[str, pl.DataFrame] = {}
+    from factorzen.discovery.factor_library import CompactLibraryPool
+
+    lib_pool: dict[str, pl.DataFrame] | CompactLibraryPool = {}
+    lib_pool_mining: dict[str, pl.DataFrame] | CompactLibraryPool = {}
     lib_root = library_root or str(Path(out_dir).parent / "factor_library")
     if library_orthogonal:
         try:
@@ -428,11 +430,17 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
             # 库相关检查与 session 去相关同帧（mining）：按 mining 日期过滤
             if lib_pool:
                 _mine_dates = set(daily["trade_date"].unique().to_list())
-                lib_pool_mining = {
-                    e: p.filter(pl.col("trade_date").is_in(list(_mine_dates)))
-                    for e, p in lib_pool.items()
-                }
-                lib_pool_mining = {e: p for e, p in lib_pool_mining.items() if not p.is_empty()}
+                if isinstance(lib_pool, CompactLibraryPool):
+                    # 单次 filter wide，禁止 dict 推导再复制 84 份键
+                    lib_pool_mining = lib_pool.filter_dates(_mine_dates)
+                else:
+                    lib_pool_mining = {
+                        e: p.filter(pl.col("trade_date").is_in(list(_mine_dates)))
+                        for e, p in lib_pool.items()
+                    }
+                    lib_pool_mining = {
+                        e: p for e, p in lib_pool_mining.items() if not p.is_empty()
+                    }
             else:
                 lib_pool_mining = {}
         except Exception as exc:

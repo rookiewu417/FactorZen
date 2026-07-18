@@ -5,6 +5,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -127,7 +128,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     # 库级正交 + 残差面板：session 开始物化一次。
     # 残差目标需要 train∪holdout 库因子 → 在完整 prepped 帧上物化（不再只裁 holdout）。
     # 空库 → objective 自动退化 raw，零回归。
-    lib_pool: dict = {}
+    lib_pool: Any = {}
     library_covered: list[str] | None = None
     library_crowded: list[tuple[str, int]] | None = None
     if library_orthogonal:

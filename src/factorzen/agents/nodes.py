@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from factorzen.agents.memory import negative_recall
 from factorzen.agents.state import AgentState, AttemptRecord
@@ -214,7 +215,7 @@ def node_guardrails(
     warmup_daily=None,
     eval_start=None,
     profile=None,
-    lib_pool: dict | None = None,
+    lib_pool: dict | Any | None = None,
     objective: str = "residual",
     residual_projector=None,
 ) -> AgentState:

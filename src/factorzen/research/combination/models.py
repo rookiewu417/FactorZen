@@ -50,12 +50,75 @@ def _feature_names(panel: pl.DataFrame) -> list[str]:
     return [c for c in panel.columns if c not in _META_COLS]
 
 
+def _fold_dfs_date_anchor(
+    wide: pl.DataFrame, anchor_name: str,
+) -> dict[str, pl.DataFrame]:
+    """for_each_fold 日期并集用的单锚点长表（避免 compact ×k 键副本）。"""
+    return {
+        anchor_name: wide.select(
+            [
+                "trade_date",
+                "ts_code",
+                pl.lit(1.0).alias("factor_value"),
+            ]
+        )
+    }
+
+
+def _fold_dfs_from_base_and_new(
+    base_panel: pl.DataFrame,
+    base_names: list[str],
+    new_dfs: dict[str, pl.DataFrame],
+) -> dict[str, pl.DataFrame]:
+    """base_panel 增量路径的 fold 日期源：锚点 + 新因子。"""
+    if base_names:
+        anchor = base_names[0]
+        fold_dfs: dict[str, pl.DataFrame] = {
+            anchor: base_panel.select(
+                [
+                    "trade_date",
+                    "ts_code",
+                    pl.col(anchor).alias("factor_value"),
+                ]
+            ),
+            **new_dfs,
+        }
+    else:
+        fold_dfs = dict(new_dfs)
+    if not fold_dfs and base_names:
+        fold_dfs = {
+            base_names[0]: base_panel.select(
+                [
+                    "trade_date",
+                    "ts_code",
+                    pl.col(base_names[0]).alias("factor_value"),
+                ]
+            )
+        }
+    return fold_dfs
+
+
 def _factor_panel(factor_dfs: dict[str, pl.DataFrame]) -> pl.DataFrame:
     """各因子 **outer join** 成宽表 [trade_date, ts_code, <name>...]。
 
     覆盖异质时 inner join 会把并集缩到交集甚至塌空;改外连接取并集,缺失特征留空
     (LGBM 原生把 null 当缺失处理,无需插补)。
+
+    ``CompactLibraryPool`` / ``HybridLibraryPool``：单骨架宽表路径，避免再复制键。
     """
+    from factorzen.research.combination.pool import CompactLibraryPool, HybridLibraryPool
+
+    if isinstance(factor_dfs, CompactLibraryPool):
+        return factor_dfs.to_feature_wide(cast_date_utf8=True)
+    if isinstance(factor_dfs, HybridLibraryPool):
+        base_w = factor_dfs.base.to_feature_wide(cast_date_utf8=True)
+        if not factor_dfs.extras:
+            return base_w
+        extra = _factor_panel(factor_dfs.extras)
+        return base_w.join(
+            extra, on=["trade_date", "ts_code"], how="full", coalesce=True,
+        )
+
     merged: pl.DataFrame | None = None
     for name, df in factor_dfs.items():
         d = (
@@ -156,6 +219,8 @@ def build_panel(
     新因子做 full join,再重新 join ret——与全量 ``_factor_panel`` + ret 逐值一致
     (含「候选行超出基线行集」:并集行 + ret 回填)。
     """
+    from factorzen.research.combination.pool import CompactLibraryPool, HybridLibraryPool
+
     if base_panel is None:
         if not factor_dfs:
             raise ValueError("factor_dfs 不能为空")
@@ -164,7 +229,14 @@ def build_panel(
         return panel
 
     base_feats = set(_feature_names(base_panel))
-    new_dfs = {k: v for k, v in factor_dfs.items() if k not in base_feats}
+    if isinstance(factor_dfs, HybridLibraryPool):
+        new_dfs = {k: v for k, v in factor_dfs.extras.items() if k not in base_feats}
+    elif isinstance(factor_dfs, CompactLibraryPool):
+        new_dfs = {
+            n: factor_dfs[n] for n in factor_dfs.factor_names if n not in base_feats
+        }
+    else:
+        new_dfs = {k: v for k, v in factor_dfs.items() if k not in base_feats}
     feat = _extend_feat_from_base(base_panel, new_dfs)
     panel = _join_ret(feat, ret_df)
     _warn_incomplete(panel)
@@ -248,7 +320,11 @@ def combine_lgbm(
     ``base_panel``: 已完成基线因子 join(+ret) 的宽面板。传入时跳过基线列重建,
     只对不在 base 中的新因子 full join。``factor_dfs`` 可只含新因子,也可含全量
     (基线键会被识别并跳过重建)。None → 与旧路径逐字节一致。
+
+    ``CompactLibraryPool`` / ``HybridLibraryPool``：宽表路径，禁止 ``dict(pool)`` 物化。
     """
+    from factorzen.research.combination.pool import CompactLibraryPool, HybridLibraryPool
+
     if base_panel is None:
         if not factor_dfs:
             raise ValueError("factor_dfs 不能为空")
@@ -256,62 +332,85 @@ def combine_lgbm(
         if not factor_dfs:
             raise ValueError("去除全缺因子后无有效因子,无法组合")
         names = list(factor_dfs.keys())
-        fold_dfs = factor_dfs
         full_feat = _factor_panel(factor_dfs)
         full_panel = build_panel(factor_dfs, ret_df)
+        # for_each_fold 只需日期并集；compact 用单锚点帧避免 ×k 键副本
+        if isinstance(factor_dfs, (CompactLibraryPool, HybridLibraryPool)):
+            fold_dfs = _fold_dfs_date_anchor(full_feat, names[0])
+        else:
+            fold_dfs = factor_dfs
     else:
         base_names = _feature_names(base_panel)
         base_set = set(base_names)
-        raw = dict(factor_dfs) if factor_dfs else {}
-        # drop 前锁定「意图新增」键：全被剔后必须显式失败，禁止静默 = 基线
-        raw_new = {k: v for k, v in raw.items() if k not in base_set}
-        factor_dfs = drop_degenerate_factors(raw) if raw else {}
-        if not base_names and not factor_dfs:
-            raise ValueError("base_panel 无因子列且 factor_dfs 为空,无法组合")
-        new_dfs = {k: v for k, v in factor_dfs.items() if k not in base_set}
-        if raw_new and not new_dfs:
-            raise ValueError(
-                "degenerate_new_factors: 新增因子均为空/全缺,"
-                "无法在 base_panel 上增量组合"
-            )
-        # 调用方传了基线键 → 按 factor_dfs 插入序;只传新因子 → base 列序 + 新键
-        if factor_dfs and any(k in base_set for k in factor_dfs):
-            names = list(factor_dfs.keys())
-            fold_dfs = factor_dfs
-        else:
+
+        if isinstance(factor_dfs, HybridLibraryPool):
+            # 基线在 base_panel；只处理 extras
+            raw_extras = dict(factor_dfs.extras)
+            raw_new = {k: v for k, v in raw_extras.items() if k not in base_set}
+            new_dfs = drop_degenerate_factors(raw_new) if raw_new else {}
+            if raw_new and not new_dfs:
+                raise ValueError(
+                    "degenerate_new_factors: 新增因子均为空/全缺,"
+                    "无法在 base_panel 上增量组合"
+                )
             names = list(base_names) + list(new_dfs.keys())
             if not names:
                 raise ValueError("去除全缺因子后无有效因子,无法组合")
-            # for_each_fold 日期并集须覆盖基线+新因子(候选行可超出基线)
-            if base_names:
-                anchor = base_names[0]
-                fold_dfs = {
-                    anchor: base_panel.select(
-                        [
-                            "trade_date",
-                            "ts_code",
-                            pl.col(anchor).alias("factor_value"),
-                        ]
-                    ),
-                    **new_dfs,
-                }
+            fold_dfs = _fold_dfs_from_base_and_new(base_panel, base_names, new_dfs)
+            full_feat = _extend_feat_from_base(base_panel, new_dfs)
+            full_panel = _join_ret(full_feat, ret_df)
+            _warn_incomplete(full_panel)
+        elif isinstance(factor_dfs, CompactLibraryPool):
+            # 全量 compact + base_panel：新因子 = compact 中不在 base 的列
+            kept = factor_dfs.drop_degenerate()
+            new_names = [n for n in kept.factor_names if n not in base_set]
+            raw_new_flag = bool(new_names)
+            new_dfs = {n: kept[n] for n in new_names} if new_names else {}
+            # materializing only NEW factors (few) is OK
+            if raw_new_flag and not new_dfs:
+                raise ValueError(
+                    "degenerate_new_factors: 新增因子均为空/全缺,"
+                    "无法在 base_panel 上增量组合"
+                )
+            if any(k in base_set for k in kept.factor_names) and new_dfs:
+                # 传了基线键+新键：names = compact 序
+                names = list(kept.factor_names)
             else:
-                fold_dfs = dict(new_dfs)
-            if not fold_dfs:
-                # 仅 base 且 base 有列但 new 空:用 anchor
-                fold_dfs = {
-                    base_names[0]: base_panel.select(
-                        [
-                            "trade_date",
-                            "ts_code",
-                            pl.col(base_names[0]).alias("factor_value"),
-                        ]
-                    )
-                }
+                names = list(base_names) + list(new_dfs.keys())
+            if not names:
+                raise ValueError("去除全缺因子后无有效因子,无法组合")
+            fold_dfs = _fold_dfs_from_base_and_new(base_panel, base_names, new_dfs)
+            full_feat = _extend_feat_from_base(base_panel, new_dfs)
+            full_panel = _join_ret(full_feat, ret_df)
+            _warn_incomplete(full_panel)
+        else:
+            raw = dict(factor_dfs) if factor_dfs else {}
+            # drop 前锁定「意图新增」键：全被剔后必须显式失败，禁止静默 = 基线
+            raw_new = {k: v for k, v in raw.items() if k not in base_set}
+            factor_dfs = drop_degenerate_factors(raw) if raw else {}
+            if not base_names and not factor_dfs:
+                raise ValueError("base_panel 无因子列且 factor_dfs 为空,无法组合")
+            new_dfs = {k: v for k, v in factor_dfs.items() if k not in base_set}
+            if raw_new and not new_dfs:
+                raise ValueError(
+                    "degenerate_new_factors: 新增因子均为空/全缺,"
+                    "无法在 base_panel 上增量组合"
+                )
+            # 调用方传了基线键 → 按 factor_dfs 插入序;只传新因子 → base 列序 + 新键
+            if factor_dfs and any(k in base_set for k in factor_dfs):
+                names = list(factor_dfs.keys())
+                fold_dfs = factor_dfs
+            else:
+                names = list(base_names) + list(new_dfs.keys())
+                if not names:
+                    raise ValueError("去除全缺因子后无有效因子,无法组合")
+                fold_dfs = _fold_dfs_from_base_and_new(
+                    base_panel, base_names, new_dfs,
+                )
 
-        full_feat = _extend_feat_from_base(base_panel, new_dfs)
-        full_panel = _join_ret(full_feat, ret_df)
-        _warn_incomplete(full_panel)
+            full_feat = _extend_feat_from_base(base_panel, new_dfs)
+            full_panel = _join_ret(full_feat, ret_df)
+            _warn_incomplete(full_panel)
 
     _empty = pl.DataFrame(
         schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8, "factor_value": pl.Float64}

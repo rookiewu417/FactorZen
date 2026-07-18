@@ -30,7 +30,7 @@ import logging
 import math
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -298,7 +298,7 @@ def _provenance_fields(
     }
 
 
-def _baseline_hash(active_factor_dfs: dict[str, Any] | None) -> str | None:
+def _baseline_hash(active_factor_dfs: Mapping[str, Any] | None) -> str | None:
     """active 表达式集合的稳定 hash（排序后 join；空池 → None）。"""
     if not active_factor_dfs:
         return None
@@ -555,13 +555,19 @@ def lift_admission(
     return "probation"
 
 
-def _with_safe_feature_names(factor_dfs: dict[str, pl.DataFrame]) -> dict[str, pl.DataFrame]:
+def _with_safe_feature_names(
+    factor_dfs: Mapping[str, pl.DataFrame] | Any,
+) -> dict[str, pl.DataFrame] | Any:
     """键映射为安全特征名 f{i}（按插入序，确定性）。
 
     lgbm 不接受特征名含特殊 JSON 字符（括号/逗号等）——因子键是**真实表达式**时
     直接进 combine 会炸 `LightGBMError: Do not support special JSON characters in
     feature name`（线上事故）。仅影响 lgbm 内部特征名；lift 报告仍用真实表达式
     （调用方持有原键，映射不外泄）。"""
+    from factorzen.discovery.factor_library import CompactLibraryPool
+
+    if isinstance(factor_dfs, CompactLibraryPool):
+        return factor_dfs.with_safe_feature_names()  # type: ignore[return-value]
     return {f"f{i:03d}": df for i, df in enumerate(factor_dfs.values())}
 
 
@@ -582,6 +588,15 @@ def _safe_pool_with_new_factors(
     得到与 base_panel **相同**的 f{{i}} 键集，共享路径 ``new_dfs`` 为空 →
     静默 lift=0（G2 全零行事故根因 b）。追加保证新列名永不落在 base 列集内。
     """
+    from factorzen.discovery.factor_library import CompactLibraryPool
+
+    if isinstance(safe_active, CompactLibraryPool):
+        extras: dict[str, pl.DataFrame] = {}
+        i = len(safe_active)
+        for df in new_factor_dfs.values():
+            extras[f"f{i:03d}"] = df
+            i += 1
+        return safe_active.with_extra_factors(extras)  # type: ignore[return-value]
     out = dict(safe_active)
     i = len(safe_active)
     for df in new_factor_dfs.values():
@@ -622,7 +637,7 @@ def run_lift_tests(
     top_m: int | None = None,
     threshold: float = DEFAULT_LIFT_THRESHOLD,
     seed: int = 0,
-    active_factor_dfs: dict[str, pl.DataFrame] | None = None,
+    active_factor_dfs: dict[str, pl.DataFrame] | Any | None = None,
     ret_df: pl.DataFrame | None = None,
     materialize_candidate=None,
     combine_fn=None,
@@ -861,9 +876,18 @@ def run_lift_tests(
                     safe_pool, ret_df, cv, base_panel=base_panel,
                 )
             else:
-                pool = dict(active_factor_dfs)
-                pool[str(expr)] = cand_sel
-                safe_pool = _with_safe_feature_names(pool)
+                from factorzen.discovery.factor_library import CompactLibraryPool
+
+                if isinstance(active_factor_dfs, CompactLibraryPool) or isinstance(
+                    safe_active, CompactLibraryPool,
+                ):
+                    safe_pool = _safe_pool_with_new_factors(
+                        safe_active, {str(expr): cand_sel},
+                    )
+                else:
+                    pool = dict(active_factor_dfs)
+                    pool[str(expr)] = cand_sel
+                    safe_pool = _with_safe_feature_names(pool)
                 cand_combined = _combine(safe_pool, ret_df, cv)
             cand_daily = _daily_oos_rank_ic(
                 cand_combined, ret_df, start=adm_start, end=adm_end,
@@ -922,7 +946,7 @@ def run_group_lift(
     top_m: int | None = None,  # 与 run_lift_tests 签名对齐；组测忽略截断
     threshold: float = DEFAULT_LIFT_THRESHOLD,
     seed: int = 0,
-    active_factor_dfs: dict[str, pl.DataFrame] | None = None,
+    active_factor_dfs: dict[str, pl.DataFrame] | Any | None = None,
     ret_df: pl.DataFrame | None = None,
     materialize_candidate=None,
     combine_fn=None,
@@ -1025,7 +1049,8 @@ def run_group_lift(
 
     skipped: list[dict[str, Any]] = []
     expressions: list[str] = []
-    pool = dict(active_factor_dfs)
+    # 新增长表因子（不 dict(compact) 以免复制键）
+    new_long: dict[str, pl.DataFrame] = {}
     for c in queue:
         expr = c.get("expression")
         if not expr:
@@ -1043,7 +1068,7 @@ def run_group_lift(
             if _is_degenerate_factor_df(cand_sel):
                 skipped.append({"expression": expr, "error": "degenerate_candidate"})
                 continue
-            pool[str(expr)] = cand_sel
+            new_long[str(expr)] = cand_sel
             expressions.append(str(expr))
         except Exception as exc:
             skipped.append({
@@ -1055,6 +1080,8 @@ def run_group_lift(
         return _err("all_candidates_materialize_failed", skipped=skipped)
 
     try:
+        from factorzen.discovery.factor_library import CompactLibraryPool
+
         safe_active = _with_safe_feature_names(active_factor_dfs)
         base_panel: pl.DataFrame | None = None
         if share_base_panel:
@@ -1079,14 +1106,21 @@ def run_group_lift(
             )
         baseline = _mean_ic(base_daily)
 
-        # 新候选按 expressions 序追加安全名（与 base 列集不交）
-        new_only = {e: pool[e] for e in expressions}
+        # 新候选按 expressions 序；安全名追加，避免 dict(compact) 复制键
+        new_only = {e: new_long[e] for e in expressions}
         if base_panel is not None:
             safe_pool = _safe_pool_with_new_factors(safe_active, new_only)
             group_combined = _combine(
                 safe_pool, ret_df, cv, base_panel=base_panel,
             )
+        elif isinstance(active_factor_dfs, CompactLibraryPool) or isinstance(
+            safe_active, CompactLibraryPool,
+        ):
+            safe_pool = _safe_pool_with_new_factors(safe_active, new_only)
+            group_combined = _combine(safe_pool, ret_df, cv)
         else:
+            pool = dict(active_factor_dfs)
+            pool.update(new_long)
             safe_pool = _with_safe_feature_names(pool)
             group_combined = _combine(safe_pool, ret_df, cv)
         group_daily = _daily_oos_rank_ic(

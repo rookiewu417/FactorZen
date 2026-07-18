@@ -21,6 +21,7 @@ PIT 安全契约
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -113,13 +114,21 @@ def _cs_zscore_null0(row: np.ndarray) -> np.ndarray:
     return out
 
 
-def build_library_panel(lib_pool: dict[str, pl.DataFrame] | None) -> LibraryPanel | None:
+def build_library_panel(
+    lib_pool: Mapping[str, pl.DataFrame] | None,
+) -> LibraryPanel | None:
     """把 ``build_library_pool`` 产物转紧凑矩阵并**一次性**做逐日 z-score + null→0。
 
     空/None → None（调用方据此把 objective 退化为 raw）。
+    识别 ``CompactLibraryPool``：从单骨架宽表一次散射，避免 dict-of-frames 键副本。
     """
     if not lib_pool:
         return None
+    from factorzen.discovery.factor_library import CompactLibraryPool
+
+    if isinstance(lib_pool, CompactLibraryPool):
+        return _build_library_panel_from_wide(lib_pool)
+
     names = tuple(lib_pool.keys())
     dates: set = set()
     stocks: set = set()
@@ -138,6 +147,57 @@ def build_library_panel(lib_pool: dict[str, pl.DataFrame] | None) -> LibraryPane
     X = np.zeros((d_n, s_n, k), dtype=np.float64)
     for j, name in enumerate(names):
         raw = _panel_to_matrix(lib_pool[name], date_idx, stock_idx, d_n, s_n)
+        for di in range(d_n):
+            X[di, :, j] = _cs_zscore_null0(raw[di])
+    return LibraryPanel(
+        dates=date_list, stocks=stock_list,
+        date_idx=date_idx, stock_idx=stock_idx,
+        X=X, factor_names=names,
+    )
+
+
+def _build_library_panel_from_wide(pool: object) -> LibraryPanel | None:
+    """CompactLibraryPool.wide → LibraryPanel（键并集=任因子有限值的行，对齐旧 filter 并集）。"""
+    from factorzen.discovery.factor_library import CompactLibraryPool
+
+    assert isinstance(pool, CompactLibraryPool)
+    names = pool.factor_names
+    if not names:
+        return None
+    wide = pool.wide
+    # 与旧路径「各因子 filter 后键并集」对齐：至少一列有限
+    any_finite = pl.any_horizontal(
+        [pl.col(n).is_not_null() & pl.col(n).is_finite() for n in names]
+    )
+    keys = wide.filter(any_finite).select(["trade_date", "ts_code"])
+    if keys.is_empty():
+        return None
+    date_list = tuple(sorted(keys["trade_date"].unique().to_list()))
+    stock_list = tuple(sorted(keys["ts_code"].unique().to_list()))
+    if not date_list or not stock_list:
+        return None
+    date_idx = {d: i for i, d in enumerate(date_list)}
+    stock_idx = {s: i for i, s in enumerate(stock_list)}
+    d_n, s_n, k = len(date_list), len(stock_list), len(names)
+    X = np.zeros((d_n, s_n, k), dtype=np.float64)
+
+    # 一次 join 索引，按列 scatter
+    date_map = pl.DataFrame({"trade_date": list(date_list), "_di": list(range(d_n))})
+    stock_map = pl.DataFrame({"ts_code": list(stock_list), "_si": list(range(s_n))})
+    indexed = (
+        wide.select(["trade_date", "ts_code", *names])
+        .join(date_map, on="trade_date", how="inner")
+        .join(stock_map, on="ts_code", how="inner")
+    )
+    r = indexed["_di"].to_numpy().astype(np.int64, copy=False)
+    c = indexed["_si"].to_numpy().astype(np.int64, copy=False)
+    for j, name in enumerate(names):
+        raw = np.full((d_n, s_n), np.nan, dtype=np.float64)
+        v = indexed[name].to_numpy()
+        # polars null → 可能是 None 在 object；统一 isfinite
+        v64 = np.asarray(v, dtype=np.float64)
+        keep = np.isfinite(v64)
+        raw[r[keep], c[keep]] = v64[keep]
         for di in range(d_n):
             X[di, :, j] = _cs_zscore_null0(raw[di])
     return LibraryPanel(

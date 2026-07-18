@@ -10,12 +10,18 @@ from factorzen.daily.preprocessing.normalizer import cross_sectional_zscore
 from factorzen.validation.bootstrap import block_bootstrap_ic_ci
 
 
+def holdout_boundary(dates: list, holdout_ratio: float = 0.2):
+    """holdout 起始日(仅日期计算,不物化帧)。与 ``split_holdout`` 单一口径——
+    峰值重排(池前只算边界、池后再切帧)依赖两者逐字节一致。"""
+    cut = int(len(dates) * (1.0 - holdout_ratio))
+    cut = min(max(cut, 1), len(dates) - 1)
+    return dates[cut]
+
+
 def split_holdout(daily: pl.DataFrame, holdout_ratio: float = 0.2):
     """按交易日时间序，最后 holdout_ratio 比例为 holdout；其余为 mining 段。"""
     dates = sorted(daily["trade_date"].unique().to_list())
-    cut = int(len(dates) * (1.0 - holdout_ratio))
-    cut = min(max(cut, 1), len(dates) - 1)
-    holdout_start = dates[cut]
+    holdout_start = holdout_boundary(dates, holdout_ratio)
     mining_df = daily.filter(pl.col("trade_date") < holdout_start)
     holdout_df = daily.filter(pl.col("trade_date") >= holdout_start)
     return mining_df, holdout_df, holdout_start

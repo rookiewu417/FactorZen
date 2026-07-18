@@ -40,7 +40,7 @@ from factorzen.discovery.expression import clamp_window_literals, parse_expr, to
 from factorzen.discovery.scoring import DataBundle
 from factorzen.llm.client import LLMClientError
 from factorzen.llm.generation import LLMFn
-from factorzen.validation.holdout import split_holdout
+from factorzen.validation.holdout import holdout_boundary, split_holdout
 from factorzen.validation.multiple_testing import TrialLedger
 
 _LOG = logging.getLogger(__name__)
@@ -692,23 +692,21 @@ def run_team_agent(
     ``ThreadPoolExecutor``——既有有状态 scripted ``llm_fn`` 零回归。``>1`` 时 futures
     按提交序装配，同 seed 产物与完成序无关。CLI ``fz mine team`` 缺省 4。
     """
-    mining_df, holdout_df, holdout_start = _prepare_segments(
-        daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
-    bundle = DataBundle.build(mining_df)
-    _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
-          f"holdout {holdout_df['trade_date'].n_unique()} 天")
-    # P5：holdout 长驻窄投影（键+价）；因子求值走 warmup/session_prepped。
-    holdout_df = _narrow_holdout_price_frame(holdout_df)
+    # 峰值重排(v16 侦破):池构建前只算 holdout 边界日期(无帧),mining/holdout/bundle
+    # 的物化挪到库池之后——池尾期(值列累积+分配器滞留)净省 ~3G(死点只差 1.5-2G)。
+    # 边界与 _prepare_segments→split_holdout 单一口径,池后切分处有响亮断言防漂移。
+    _dates_split = daily["trade_date"]
+    if eval_start is not None:
+        _dates_split = _dates_split.filter(_dates_split >= _to_date(eval_start))
+    holdout_start = holdout_boundary(
+        sorted(_dates_split.unique().to_list()), holdout_ratio)
+    del _dates_split
     # 市场上下文（profile=None → A 股默认）：叶子集/映射/市场名，供 budgets 与逐轮透传。
     ctx = AgentContext.from_profile(profile)
     # session 级单次 prep：leaf_health / leaf_budgets / lib_pool / health / 每轮 evaluate /
     # lift_ctx 全部复用。scout 注入新 ix_* 列后必须重建（见循环内失效逻辑）。
     from factorzen.discovery.evaluation import _preprocess_daily
     session_prepped = _preprocess_daily(daily, profile)
-    # P5：scout off 时 raw daily 无其它消费（evaluate/护栏/lift 均用 session_prepped）；
-    # 释放全宽 raw，warmup 槽位改持 prepped。scout on 时保留 daily 供注入后重建。
-    if not intraday_scout:
-        daily = session_prepped
     # 开局摘死叶：必须在与求值同一套 prep 帧上量覆盖（close→close_adj 别名 + 派生列），
     # 否则 ret_1d/vwap 等会被误判为「列不存在→覆盖 0」整批摘除。
     from factorzen.discovery.leaf_health import (
@@ -748,11 +746,7 @@ def run_team_agent(
     ledger = TrialLedger()
     state = AgentState(seed=seed)
     index = ExperimentIndex(index_path)
-    # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销
-    # 与求值同源 session_prepped（完整 daily prep），避免再 prep mining_df。
-    health = make_health_check(
-        mining_df, profile=profile, leaf_map=ctx.leaf_map, prepped=session_prepped,
-    ) if heal_rounds > 0 else None
+    # health 诊断器挪至池后切分处创建(峰值重排;用 session_prepped 同源)
     rounds_log: list[dict] = []
     # 上一轮 Critic 反馈：{"kind", "hypothesis", "exprs", "reason"}
     pending: dict | None = None
@@ -813,6 +807,26 @@ def run_team_agent(
             _LOG.warning("ResidualProjector 构建失败（本 session 残差走 lstsq）: %s: %s",
                          type(exc).__name__, exc)
             residual_projector = None
+
+    # ── 池后切分(峰值重排):现在才物化 mining/holdout/bundle ─────────────────
+    mining_df, holdout_df, _holdout_start2 = _prepare_segments(
+        daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
+    assert _holdout_start2 == holdout_start, (
+        f"holdout 边界漂移: 预池路径 {holdout_start} vs 切分 {_holdout_start2}"
+    )
+    bundle = DataBundle.build(mining_df)
+    _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
+          f"holdout {holdout_df['trade_date'].n_unique()} 天")
+    # P5：holdout 长驻窄投影（键+价）；因子求值走 warmup/session_prepped。
+    holdout_df = _narrow_holdout_price_frame(holdout_df)
+    # P5：scout off 时 raw daily 无其它消费（evaluate/护栏/lift 均用 session_prepped）；
+    # 释放全宽 raw。scout on 保留供注入后重建。
+    if not intraday_scout:
+        daily = session_prepped
+    # 求值层诊断器只建一次;与求值同源 session_prepped
+    health = make_health_check(
+        mining_df, profile=profile, leaf_map=ctx.leaf_map, prepped=session_prepped,
+    ) if heal_rounds > 0 else None
 
     # session 级唯一 run_id（同 seed 复用不再互斥排除历史）+ 完整统计问题 campaign_id
     session_run_id = run_id if run_id is not None else f"team_{seed}_{uuid.uuid4().hex[:8]}"

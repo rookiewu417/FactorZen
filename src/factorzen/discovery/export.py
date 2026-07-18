@@ -145,6 +145,9 @@ def export_alpha_cross_section(
 ) -> Path:
     """计算 ``date`` 当日截面 α 并落 ``[ts_code, alpha]`` 两列 parquet，返回输出路径。"""
     cross = alpha_cross_section(expression, ctx, date)
+    # 磁盘契约：ts_code 恒 Utf8（P4c 内存侧可为 Categorical）
+    if "ts_code" in cross.columns and cross.schema["ts_code"] == pl.Categorical:
+        cross = cross.with_columns(pl.col("ts_code").cast(pl.Utf8))
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     cross.write_parquet(out)

@@ -221,6 +221,7 @@ def node_guardrails(
     lib_pool: dict | Any | None = None,
     objective: str = "residual",
     residual_projector=None,
+    prepped=None,
 ) -> AgentState:
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
 
@@ -255,6 +256,11 @@ def node_guardrails(
     ``residual_projector``：可选 ``ResidualProjector``（session 级预计算 QR）。residual
     模式下对**全部**本轮候选算 train 残差 IC 并按 ``|residual_ic_train|`` 选 top-K 槽
     （修泄漏 A：槽位键与目标错位）；缺省时本函数现场从 ``lib_panel`` 建一次。
+
+    ``prepped``：session 级已 ``_preprocess_daily`` 的完整帧（可选）。非 None 时 holdout
+    扩窗 / 池级 PBO 复用该帧，跳过对 ``warmup_daily`` 的再 prep（P5 峰值省一份全帧）。
+    **契约**：须与 evaluate 同源、含预热前缀。train residual 仍对 ``daily``（mining 段）
+    单独 prep——mining-only 边界语义（``ret_1d`` 段首 null）与历史数值零回归。
 
     DSR 的三个入参都与 M1（mining_session.py:292-307）同口径，否则 deflation 基准不自洽：
     - ``sharpe_variance`` = trial 池 signed IR 的**经验方差**，而非 deflated_sharpe 的 H0
@@ -319,7 +325,8 @@ def node_guardrails(
         _hold_frame, _hold_start = holdout_df, None
     # 整帧预处理（add_derived_columns + 排序，较重）只做一次，循环内每个表达式复用
     # `_factor_df_from_prepped`——否则 all_a×多年帧上逐表达式重跑预处理，护栏这步会慢到像卡死。
-    _prepped_hold = _preprocess_daily(_hold_frame, profile)
+    # P5：session 注入 prepped 时跳过对 warmup 的再 prep（与 evaluate 同源）。
+    _prepped_hold = prepped if prepped is not None else _preprocess_daily(_hold_frame, profile)
 
     def _holdout_values(node):
         return _factor_df_from_prepped(node, _prepped_hold, eval_start=_hold_start,
@@ -331,7 +338,9 @@ def node_guardrails(
     state.objective = eff_objective
     # 库相关矩阵面板：session 级构建一次，本轮全部候选复用
     lib_corr_panel = build_library_corr_panel(lib_pool) if lib_pool else None
-    # train 段因子值求值帧（残差 train IC）；与 holdout 共用 prepped 若同帧
+    # train 段因子值求值帧（残差 train IC）。
+    # 注意：即使 hold 用了 session prepped，train 仍对 mining-only daily 单独 prep——
+    # 全帧 prepped 再 filter 会让段首 ret_1d 等与 mining-only prep 不一致（数值红线）。
     _prepped_train = (
         _prepped_hold if daily is _hold_frame
         else _preprocess_daily(daily, profile)
@@ -642,9 +651,13 @@ def node_guardrails(
         # 非 None 时在完整帧上求值、裁剪到 [eval_start, daily 的 train 段终点]。
         _pbo_bar = tqdm(state.candidates, desc="  ⑤ 护栏·池级PBO", leave=False, unit="因子")
         if eval_start is not None and warmup_daily is not None:
-            # warmup_daily is _hold_frame（此分支下 _hold_frame 恒为 warmup_daily）→ 复用预处理帧。
-            _pbo_prepped = _prepped_hold if warmup_daily is _hold_frame else _preprocess_daily(
-                warmup_daily, profile)
+            # session prepped 或 warmup 与 _hold_frame 同对象 → 复用；否则再 prep。
+            if prepped is not None:
+                _pbo_prepped = prepped
+            elif warmup_daily is _hold_frame:
+                _pbo_prepped = _prepped_hold
+            else:
+                _pbo_prepped = _preprocess_daily(warmup_daily, profile)
             _pbo_end = daily["trade_date"].max()
             cand_fdfs = [
                 _factor_df_from_prepped(parse_expr(c["expression"], leaf_map), _pbo_prepped,

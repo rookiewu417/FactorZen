@@ -99,6 +99,10 @@ _DAILY_BASIC_DEAD_COLS = frozenset({
 # daily raw 死重：挖掘 IC 链不消费；派生叶子要的是 OHLC+pre_close+vol+amount。
 _DAILY_RAW_DEAD_COLS = frozenset({"change", "pct_chg"})
 
+# P4c：全 A 级行数上 ts_code Utf8 每帧 ~0.3–0.5G；转 Categorical 显著省内存。
+# 与 compact 池同哲学——大帧自动开，小帧/测试默认 off 零回归。
+KEYS_CATEGORICAL_ROWS_THRESHOLD = 4_000_000
+
 
 def prepare_mining_daily(
     start: str,
@@ -112,6 +116,7 @@ def prepare_mining_daily(
     intraday_version: str = "v1",
     intraday_expr_leaves: Sequence[str] | None = None,
     slim: bool = True,
+    categorical_keys: bool | None = None,
 ) -> pl.DataFrame:
     """Build the canonical A-share frame used by every discovery path.
 
@@ -134,6 +139,12 @@ def prepare_mining_daily(
       amount，派生叶子 vwap/amplitude/… 依赖它们）。
     ``slim=False`` 逃生口：完整旧帧（全 basic + change/pct_chg），供对照/非挖掘复用。
     白名单依据：叶子 schema + 挖掘链 grep 消费面（见帧瘦身 mapping D2）。
+
+    ``categorical_keys``：出口将 ``ts_code`` cast 为 ``pl.Categorical``（P4c）。
+    - ``None``（默认）→ 仅当 ``slim`` 且 ``height >= KEYS_CATEGORICAL_ROWS_THRESHOLD`` 自动开；
+    - ``True`` / ``False`` 显式开关（测试与逃生）。
+    membership/basic join 在 cast **之前**完成（外部 Utf8 帧无需预先对齐）。
+    跨帧 join 消费点须对小帧 cast 对齐（见 scoring._align_join_key）；落盘再转回 Utf8。
     """
     from factorzen.core.feature_schema import BASIC_FEATURES
     from factorzen.core.universe import get_universe_membership, membership_hash
@@ -249,4 +260,13 @@ def prepare_mining_daily(
         drop += [c for c in _DAILY_BASIC_DEAD_COLS if c in daily.columns]
         if drop:
             daily = daily.drop(drop)
+
+    # P4c：键 Categorical（在全部 join 之后，避免 membership/basic Utf8 侧 SchemaError）
+    use_cat = (
+        bool(categorical_keys)
+        if categorical_keys is not None
+        else (slim and daily.height >= KEYS_CATEGORICAL_ROWS_THRESHOLD)
+    )
+    if use_cat and "ts_code" in daily.columns and daily.schema["ts_code"] != pl.Categorical:
+        daily = daily.with_columns(pl.col("ts_code").cast(pl.Categorical))
     return daily

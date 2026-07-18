@@ -47,7 +47,10 @@ class DataBundle:
         dates = sorted(daily["trade_date"].unique().to_list())
         cut = dates[min(int(len(dates) * train_ratio), len(dates) - 1)]
         train_end = cut.strftime("%Y%m%d") if hasattr(cut, "strftime") else str(cut)
-        return cls(daily=daily, fwd_returns=fwd, train_end=train_end)
+        # P5：全仓无 bundle.daily 读点（只写 train_end/fwd_returns）；长驻只留键列，
+        # 消灭 sort(mining) 全宽幽灵副本（全 A ~2.2G）。build 内部短暂全宽仅用于 fwd。
+        keys = daily.select(["trade_date", "ts_code"])
+        return cls(daily=keys, fwd_returns=fwd, train_end=train_end)
 
     def _segment_mask(self, df: pl.DataFrame, segment: str) -> pl.DataFrame:
         cut = _cut_literal(df, self.train_end)
@@ -124,6 +127,16 @@ def _index_maps_from_keys(dates: tuple, stocks: tuple) -> tuple[dict, dict, pl.D
     return date_idx, stock_idx, date_map, stock_map
 
 
+def _align_join_key(small: pl.DataFrame, col: str, like: pl.DataFrame) -> pl.DataFrame:
+    """把 small[col] cast 到 like[col] 的 dtype（Categorical↔Utf8 join 防 SchemaError）。"""
+    if col not in small.columns or col not in like.columns:
+        return small
+    tgt = like.schema[col]
+    if small.schema[col] != tgt:
+        return small.with_columns(pl.col(col).cast(tgt))
+    return small
+
+
 def _scatter_frame_to_slice(
     sub: pl.DataFrame,
     date_map: pl.DataFrame,
@@ -136,6 +149,8 @@ def _scatter_frame_to_slice(
     pres = np.zeros((n_d, n_s), dtype=bool)
     if sub.is_empty():
         return vals, pres
+    date_map = _align_join_key(date_map, "trade_date", sub)
+    stock_map = _align_join_key(stock_map, "ts_code", sub)
     joined = (
         sub.join(date_map, on="trade_date", how="inner")
         .join(stock_map, on="ts_code", how="inner")
@@ -241,8 +256,11 @@ def _build_library_corr_panel_from_wide(pool: object) -> LibraryCorrPanel | None
             values=values, present=present,
         )
 
+    wide_keys = wide.select(["trade_date", "ts_code", *names])
+    date_map = _align_join_key(date_map, "trade_date", wide_keys)
+    stock_map = _align_join_key(stock_map, "ts_code", wide_keys)
     indexed = (
-        wide.select(["trade_date", "ts_code", *names])
+        wide_keys
         .join(date_map, on="trade_date", how="inner")
         .join(stock_map, on="ts_code", how="inner")
     )
@@ -278,6 +296,7 @@ def _scatter_candidate_to_panel(
     col = _factor_col_name(factor_df)
     sub = factor_df.select(["trade_date", "ts_code", pl.col(col).alias("_v")])
     # 复用 panel 键序建临时 map（小表，join 比 Python dict fromiter 快）
+    # ts_code 可能是 Categorical（P4c）；map 由 str list 建 → 在 scatter 内 align
     date_map = pl.DataFrame({"trade_date": list(panel.dates), "_di": list(range(n_d))})
     stock_map = pl.DataFrame({"ts_code": list(panel.stocks), "_si": list(range(n_s))})
     return _scatter_frame_to_slice(sub, date_map, stock_map, n_d, n_s)

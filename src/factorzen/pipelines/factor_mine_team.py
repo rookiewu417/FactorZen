@@ -102,8 +102,13 @@ def run_team_mine(
         _print_round_progress(partial_result, label="mine-team")
 
     _print_startup(daily, params, label="mine-team", rid=rid)
+    # 所有权交接:本层不再持有 raw daily 引用——否则 run_team_agent 内
+    # 「scout off 时 daily = session_prepped」的释放对全 A 级帧(~3.5G)无效
+    # (调用栈每层的参数引用都会钉住它)。holder.pop() 后唯一引用在被调帧。
+    _daily_holder = [daily]
+    del daily
     result = run_team_agent(
-        daily, fn,
+        _daily_holder.pop(), fn,
         n_rounds=n_rounds,
         seed=seed,
         index_path=index_path,

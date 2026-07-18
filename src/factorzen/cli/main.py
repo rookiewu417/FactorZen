@@ -712,8 +712,11 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         print("[mine-team] crypto 挖掘帧为空（检查 --symbols 或数据湖覆盖）", file=sys.stderr)
         return 1
     # eval_start = 挖掘窗口 start（预热前缀边界），同 M1/agent 口径，见 _cmd_mine_agent。
+    # 所有权交接(P5):CLI 层不钉住 raw daily,使深层的释放真实生效(全 A ~3.5G)。
+    _daily_holder = [daily]
+    del daily
     res = pmt.run_team_mine(
-        daily, n_rounds=args.iterations, seed=args.seed,
+        _daily_holder.pop(), n_rounds=args.iterations, seed=args.seed,
         top_k=args.top_k, index_path=args.index_path,
         structured=args.structured, patience=args.patience,
         heal_rounds=args.heal_rounds,

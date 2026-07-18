@@ -36,7 +36,14 @@ class DataBundle:
     @classmethod
     def build(cls, daily: pl.DataFrame, train_ratio: float = 0.7) -> DataBundle:
         daily = daily.sort(["ts_code", "trade_date"])
-        fwd = compute_fwd_returns(daily, price_col="close_adj" if "close_adj" in daily.columns else "close")
+        # compute_fwd_returns 在整表 with_columns 后原样返回（正式 IC decay 仍需全列语义）；
+        # 挖掘 bundle 只消费键 + fwd_ret_*（quick_fitness / residual_ic / pool_pbo / ic_overfit），
+        # 在此 select 收窄，消灭一份近全宽 mining 副本。不动 compute_fwd_returns 本身。
+        fwd = compute_fwd_returns(
+            daily, price_col="close_adj" if "close_adj" in daily.columns else "close",
+        )
+        fwd_cols = [c for c in fwd.columns if c.startswith("fwd_ret_")]
+        fwd = fwd.select(["trade_date", "ts_code", *fwd_cols])
         dates = sorted(daily["trade_date"].unique().to_list())
         cut = dates[min(int(len(dates) * train_ratio), len(dates) - 1)]
         train_end = cut.strftime("%Y%m%d") if hasattr(cut, "strftime") else str(cut)

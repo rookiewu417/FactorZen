@@ -153,7 +153,8 @@ def _prepare_segments(daily: pl.DataFrame, *, eval_start: str | None, holdout_ra
 
 
 def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
-                         eval_start=None, eval_end=None, profile=None, leaf_map=None):
+                         eval_start=None, eval_end=None, profile=None, leaf_map=None,
+                         prepped=None):
     """评估一批表达式（跳过 mem_seen 去重），写 AttemptRecord，返回本批新评估的结果列表。
 
     灵魂约束：此函数不碰 ledger，N 诚实记账由外层 node_guardrails 统一负责（每轮恰好一次）。
@@ -163,6 +164,8 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
     调用方须传 ``daily`` 为含预热前缀的完整帧——裁剪与预热门在 `evaluate_expressions`
     内部完成。调用方负责按会话级 `eval_start` 是否为 None 选择正确的 `daily`
     （mining_df 还是 warmup_daily），本函数只透传，不做二次判断。
+
+    ``prepped``：session 级已 prep 帧（可选）；透传给 ``evaluate_expressions`` 避免重复 prep。
     """
     # **批内也要去重**：heal_rounds=0 时 heal_expressions 的去重不生效，多个 task 很容易
     # 翻译出同一表达式。重复评估会让 node_guardrails 把同一个 trial 记两次 → N over-count
@@ -177,7 +180,8 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
         fresh.append(e)
     results = (
         evaluate_expressions(fresh, daily, bundle, eval_start=eval_start, eval_end=eval_end,
-                             profile=profile, seen_fingerprints=state.seen_fingerprints)
+                             profile=profile, seen_fingerprints=state.seen_fingerprints,
+                             prepped=prepped)
         if fresh else []
     )
     for r in results:
@@ -197,6 +201,7 @@ def _run_one_round(
     lib_pool=None, library_covered=None, library_crowded=None, objective: str = "residual",
     llm_workers: int = 1, residual_projector=None,
     run_id: str | None = None, campaign_id: str | None = None,
+    prepped=None,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -389,6 +394,7 @@ def _run_one_round(
         h_results = _evaluate_and_record(
             state, h_exprs, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
             eval_start=eval_start, eval_end=ev_end, profile=profile, leaf_map=ctx.leaf_map,
+            prepped=prepped,
         )
         results += h_results
         # B3 预热错误回灌：把「预热不足」诊断（连同 leaf_budgets）回灌 Coder 修正，修正版
@@ -432,7 +438,7 @@ def _run_one_round(
                     results += _evaluate_and_record(
                         state, refed, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
                         eval_start=eval_start, eval_end=ev_end, profile=profile,
-                        leaf_map=ctx.leaf_map,
+                        leaf_map=ctx.leaf_map, prepped=prepped,
                     )
     # 代表假设/表达式：供 Critic stub 与 revise pending（多假设时取最后一个批次，同现状语义；
     # 纯修订轮——新假设为空但修订批次在——回退到修订批次的假设，不许空串）
@@ -679,16 +685,19 @@ def run_team_agent(
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
     # 市场上下文（profile=None → A 股默认）：叶子集/映射/市场名，供 budgets 与逐轮透传。
     ctx = AgentContext.from_profile(profile)
+    # session 级单次 prep：leaf_health / leaf_budgets / lib_pool / health / 每轮 evaluate /
+    # lift_ctx 全部复用。scout 注入新 ix_* 列后必须重建（见循环内失效逻辑）。
+    from factorzen.discovery.evaluation import _preprocess_daily
+    session_prepped = _preprocess_daily(daily, profile)
     # 开局摘死叶：必须在与求值同一套 prep 帧上量覆盖（close→close_adj 别名 + 派生列），
     # 否则 ret_1d/vwap 等会被误判为「列不存在→覆盖 0」整批摘除。
-    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.leaf_health import (
         apply_leaf_exclusion,
         filter_leaves_by_holdout_coverage,
         log_excluded_leaves,
     )
     _kept, excluded_leaves = filter_leaves_by_holdout_coverage(
-        _preprocess_daily(daily, profile), list(ctx.leaf_names), holdout_start,
+        session_prepped, list(ctx.leaf_names), holdout_start,
         leaf_map=ctx.leaf_map,
     )
     log_excluded_leaves(excluded_leaves, prefix="mine-team")
@@ -702,10 +711,9 @@ def run_team_agent(
     # 内部同一套 _preprocess_daily 帧算，才能与预热门判 have 逐值一致（见 leaf_warmup_budgets）。
     leaf_budgets: dict[str, int] | None = None
     if _eval_start_date is not None:
-        from factorzen.discovery.evaluation import _preprocess_daily
         from factorzen.discovery.expression import leaf_warmup_budgets
         _all_budgets = leaf_warmup_budgets(
-            _preprocess_daily(daily, profile), _eval_start_date, ctx.leaf_names,
+            session_prepped, _eval_start_date, ctx.leaf_names,
             leaf_map=ctx.leaf_map)
         leaf_budgets = {k: v for k, v in _all_budgets.items() if v < AGENT_WARMUP_LOOKBACK}
     # ── campaign trial family：跨 session DSR N 累计 ──────────────────────────
@@ -721,8 +729,10 @@ def run_team_agent(
     state = AgentState(seed=seed)
     index = ExperimentIndex(index_path)
     # 求值层诊断器只建一次（预处理较重）；heal_rounds=0 时不建，零开销
-    health = make_health_check(mining_df, profile=profile, leaf_map=ctx.leaf_map) \
-        if heal_rounds > 0 else None
+    # 与求值同源 session_prepped（完整 daily prep），避免再 prep mining_df。
+    health = make_health_check(
+        mining_df, profile=profile, leaf_map=ctx.leaf_map, prepped=session_prepped,
+    ) if heal_rounds > 0 else None
     rounds_log: list[dict] = []
     # 上一轮 Critic 反馈：{"kind", "hypothesis", "exprs", "reason"}
     pending: dict | None = None
@@ -741,14 +751,12 @@ def run_team_agent(
     lib_root = library_root or str(Path(index_path).parent / "factor_library")
     if library_orthogonal:
         try:
-            from factorzen.discovery.evaluation import _preprocess_daily
             from factorzen.discovery.factor_library import (
                 build_library_pool,
                 library_covered_by_family,
             )
-            _prepped = _preprocess_daily(daily, profile)
             lib_pool = build_library_pool(
-                market, _prepped, ctx.leaf_map, root=lib_root,
+                market, session_prepped, ctx.leaf_map, root=lib_root,
             )
             covered, crowded = library_covered_by_family(
                 market, per_family=2, max_total=12, root=lib_root,
@@ -846,6 +854,14 @@ def run_team_agent(
                 mining_df = _frames["mining"]
                 holdout_df = _frames["holdout"]
                 daily = _frames["daily"]
+                # scout 注入新 ix_* 列后，旧 session_prepped 缺列 → 必须重建
+                if any(c not in session_prepped.columns for c in daily.columns):
+                    session_prepped = _preprocess_daily(daily, profile)
+                    if heal_rounds > 0:
+                        health = make_health_check(
+                            mining_df, profile=profile, leaf_map=ctx.leaf_map,
+                            prepped=session_prepped,
+                        )
                 if scout_state.injected:
                     _step(f"  ⓪ Scout 注入叶: {scout_state.injected}")
             except Exception as exc:
@@ -865,6 +881,7 @@ def run_team_agent(
                 objective=objective, llm_workers=llm_workers,
                 residual_projector=residual_projector,
                 run_id=session_run_id, campaign_id=session_campaign_id,
+                prepped=session_prepped,
             )
         except LLMClientError as exc:
             llm_failures += 1
@@ -968,6 +985,7 @@ def run_team_agent(
         lift_workers=lift_workers,
         data_window=data_window,
         combine_fn=lift_combine_fn,
+        prepped=session_prepped,
         materialize_candidate=lift_materialize_candidate,
         active_factor_dfs=lift_active_factor_dfs,
         ret_df=lift_ret_df,
@@ -1117,6 +1135,7 @@ def _session_end_auto_lift(
     lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     data_window: dict | None = None,
     combine_fn=None,
+    prepped=None,
     materialize_candidate=None,
     active_factor_dfs: dict | None = None,
     ret_df=None,
@@ -1161,7 +1180,7 @@ def _session_end_auto_lift(
         adm_start = _lift_admission_str(holdout_start)
         adm_end = _lift_admission_str(holdout_end)
 
-        # 统一评估上下文：prep 一次；覆盖检查与评分共用同一 prepped materializer
+        # 统一评估上下文：优先复用 session 同源 prepped；否则内部 prep 一次。
         # horizon 跟随 mining session（run_team_agent 入参），禁止硬编码 DEFAULT_HORIZON
         lift_ctx = make_lift_context(
             market, daily,
@@ -1171,6 +1190,7 @@ def _session_end_auto_lift(
             admission_start=adm_start,
             admission_end=adm_end,
             library_root=library_root,
+            prepped=prepped,
         )
         meta["admission_start"] = adm_start
         meta["admission_end"] = adm_end

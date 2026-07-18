@@ -91,6 +91,15 @@ def intraday_expr_leaf_names(
     return found
 
 
+# daily_basic 死重列：源表有、但 BASIC_FEATURES 叶子不映射（挖掘链无消费）。
+# 正式回测/风控若需 pe/ps/… 请 slim=False 或走非 mining 装配路径。
+_DAILY_BASIC_DEAD_COLS = frozenset({
+    "pe", "ps", "dv_ratio", "total_share", "free_share",
+})
+# daily raw 死重：挖掘 IC 链不消费；派生叶子要的是 OHLC+pre_close+vol+amount。
+_DAILY_RAW_DEAD_COLS = frozenset({"change", "pct_chg"})
+
+
 def prepare_mining_daily(
     start: str,
     end: str,
@@ -102,6 +111,7 @@ def prepare_mining_daily(
     intraday_freq: str = "5min",
     intraday_version: str = "v1",
     intraday_expr_leaves: Sequence[str] | None = None,
+    slim: bool = True,
 ) -> pl.DataFrame:
     """Build the canonical A-share frame used by every discovery path.
 
@@ -114,7 +124,18 @@ def prepare_mining_daily(
 
     ``intraday=True`` 时在 attach 链末尾 join 日内特征面板（``require=True``）；
     默认 ``False`` 保持 A 股日频链路字节级零回归。
+
+    ``slim``（默认 ``True``）：挖掘帧列白名单裁剪——
+    - ``daily_basic`` join 前只 select 键 + ``BASIC_FEATURES`` 10 列
+      （``feature_schema.BASIC_FEATURES``：pe_ttm/pb/ps_ttm/dv_ttm/total_mv/circ_mv/
+      turnover_rate/turnover_rate_f/volume_ratio/float_share），剔除 pe/ps/dv_ratio/
+      total_share/free_share 死重；
+    - 出口 drop ``change``/``pct_chg``（daily raw 死重；保留 raw OHLC+pre_close+vol+
+      amount，派生叶子 vwap/amplitude/… 依赖它们）。
+    ``slim=False`` 逃生口：完整旧帧（全 basic + change/pct_chg），供对照/非挖掘复用。
+    白名单依据：叶子 schema + 挖掘链 grep 消费面（见帧瘦身 mapping D2）。
     """
+    from factorzen.core.feature_schema import BASIC_FEATURES
     from factorzen.core.universe import get_universe_membership, membership_hash
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.discovery.search.random_search import search_space_max_lookback
@@ -169,6 +190,12 @@ def prepare_mining_daily(
     daily = context.daily.collect()
     basic = context.daily_basic.collect()
     if not basic.is_empty():
+        if slim:
+            # 白名单：键 + BASIC 叶子列（以 schema 为准；源表缺列则跳过）
+            basic_keep = ["trade_date", "ts_code", *[
+                c for c in BASIC_FEATURES if c in basic.columns
+            ]]
+            basic = basic.select(basic_keep)
         daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
 
     # Mining and materialisation deliberately share these attach functions so the
@@ -215,4 +242,11 @@ def prepare_mining_daily(
 
     if membership is not None:
         daily = _attach_in_universe(daily, membership)
+
+    if slim:
+        drop = [c for c in _DAILY_RAW_DEAD_COLS if c in daily.columns]
+        # 双保险：若 slim=False 路径残留或上游误 join 了 basic 死重
+        drop += [c for c in _DAILY_BASIC_DEAD_COLS if c in daily.columns]
+        if drop:
+            daily = daily.drop(drop)
     return daily

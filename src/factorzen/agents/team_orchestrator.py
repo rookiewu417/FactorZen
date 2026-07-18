@@ -762,6 +762,7 @@ def run_team_agent(
     # 残差目标需要 train∪holdout → 在完整 prepped 帧上物化（不再只裁 holdout）。
     # 空库/关开关 → lib_pool={}、library_covered=None，objective 退化 raw，行为与旧一致。
     lib_pool: Any = {}
+    _lib_hash_at_pool: str | None = None  # lift 基线复用判据(池构建时的库文件 hash)
     library_covered: list[str] | None = None
     library_crowded: list[tuple[str, int]] | None = None
     market = getattr(profile, "name", None) or (
@@ -785,6 +786,11 @@ def run_team_agent(
                 # 库含 python 记录时物化必需；与 _cmd_pool_prebuild 同口径
                 universe=(data_window or {}).get("universe"),
             )
+            # lift 基线复用判据(session 末):库文件内容 hash。记录级键集比较
+            # 不可用——active 记录中恒有少数物化 skip(87 记录→84 物化),
+            # 键集恒不等;而 lift 自建走同函数同库,skip 相同 → 文件未变即等价。
+            from factorzen.discovery.factor_library import library_file_hash
+            _lib_hash_at_pool = library_file_hash(market, lib_root)
             covered, crowded = library_covered_by_family(
                 market, per_family=2, max_total=12, root=lib_root,
             )
@@ -1028,19 +1034,13 @@ def run_team_agent(
     # 逐值等价。键集有变 → 保持 None 让 lift 自建(语义正确优先,内存回退现状)。
     if lift_active_factor_dfs is None and lib_pool:
         try:
-            from factorzen.discovery.factor_library import load_library
-            _active_now = {
-                r.expression for r in load_library(market, root=lib_root)
-                if r.status == "active"
-            }
-            if _active_now == set(lib_pool.keys()):
+            from factorzen.discovery.factor_library import library_file_hash
+            _lib_hash_now = library_file_hash(market, lib_root)
+            if _lib_hash_now == _lib_hash_at_pool:
                 lift_active_factor_dfs = lib_pool
-                _step("lift 基线 ▸ 复用 session 库池(库 active 集未变,免重物化)")
+                _step("lift 基线 ▸ 复用 session 库池(库文件未变,免重物化)")
             else:
-                _step(
-                    f"lift 基线 ▸ 库 active 集已变({len(lib_pool)}→"
-                    f"{len(_active_now)}),重新物化"
-                )
+                _step("lift 基线 ▸ 库文件已变(本 session upsert),重新物化")
         except Exception as exc:
             _LOG.warning("lift 基线复用检查失败,回退重物化: %s: %s",
                          type(exc).__name__, exc)

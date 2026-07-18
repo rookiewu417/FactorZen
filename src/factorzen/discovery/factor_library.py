@@ -1366,6 +1366,17 @@ def upsert_lift_admissions(
             if not raw:
                 out["errors"].append({"index": i, "error": "missing expression"})
                 continue
+            # 一期守卫：python 型仅 ashare（逐行 try/except 契约内进 errors）
+            if is_python_identity(str(raw)) and market != "ashare":
+                out["errors"].append({
+                    "index": i,
+                    "expression": str(raw),
+                    "error": (
+                        "python factors only supported for market='ashare' "
+                        f"(phase 1); got market={market!r}"
+                    ),
+                })
+                continue
             # norm/prev 提前：reject 降级路径也要查既有 lift 轨记录
             norm = _normalize(str(raw), leaf_map if isinstance(leaf_map, dict) else None)
             prev = by_expr.get(norm)
@@ -1801,25 +1812,39 @@ def rebuild(
     """
     from factorzen.discovery.lift_test import lift_admission
 
-    # 保留：single 轨 probation + 全部 lift 轨（fresh 会清库，须先抽出）
+    # 保留：single 轨 probation + 全部 lift 轨 + 全部 python 记录
+    # （python 定义不在 collect_source_expressions 的任何源里，清库不保即丢数据）
     preserved_probation: list[FactorRecord] = []
     preserved_lift: list[FactorRecord] = []
+    n_preserved_python = 0
     if fresh:
         existing_pre = load_library(market, root=root)
         for r in existing_pre:
             track = r.admission_track or "single"
+            is_py = _is_python_record(r)
             if track == "lift":
+                # lift 轨（含 python lift）→ 复审；python 也计数
                 preserved_lift.append(r)
+                if is_py:
+                    n_preserved_python += 1
             elif r.status == "probation":
                 # single 轨（或旧无字段）probation：原样保留，不重算
                 preserved_probation.append(r)
+                if is_py:
+                    n_preserved_python += 1
+            elif is_py:
+                # 非 lift 的 python（active/correlated/…）：原样写回路径，不重算
+                preserved_probation.append(r)
+                n_preserved_python += 1
         library_path(market, root).unlink(missing_ok=True)  # 从零重建，清旧库（仅本 market）
     else:
         # 非 fresh：仍对库内 lift 轨做复审（不抽 single probation）
+        existing_pre = load_library(market, root=root)
         preserved_lift = [
-            r for r in load_library(market, root=root)
+            r for r in existing_pre
             if (r.admission_track or "single") == "lift"
         ]
+        n_preserved_python = sum(1 for r in existing_pre if _is_python_record(r))
 
     uniq: list[str] = []
     seen: set[str] = set()
@@ -1916,6 +1941,8 @@ def rebuild(
                             admission_end=admission_end,
                             library_root=root,
                             profile_name=profile_name,
+                            python_universe=universe,
+                            python_market=market,
                         )
                     return ctx_by_h[h]
 
@@ -2042,6 +2069,7 @@ def rebuild(
         "added": res.added, "updated": res.updated, "correlated": res.correlated,
         "skipped": res.skipped,
         "n_probation_preserved": len(preserved_probation),
+        "preserved_python": n_preserved_python,
         "n_lift_reviewed": n_lift_reviewed,
         "n_lift_active": n_lift_active,
         "n_lift_probation": n_lift_probation,

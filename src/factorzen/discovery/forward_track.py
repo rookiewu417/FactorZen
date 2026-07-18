@@ -220,11 +220,48 @@ def _materialize_panel(
     expr: str,
     prepped: pl.DataFrame,
     leaf_map: dict[str, str] | None,
+    *,
+    python_universe: str | None = None,
+    python_market: str = "ashare",
 ) -> pl.DataFrame | None:
-    """复用 factor_library 物化路径（evaluate_materialized + 面板装配），禁止内联新实现。"""
+    """复用 factor_library 物化路径；python 型走 ``_materialize_python_on_grid``。
+
+    expression 路径：``evaluate_materialized`` + 面板装配（行为不变）。
+    python 型（``py::``）：``materialize_python_panel`` + inner-join prepped 网格。
+    """
     from factorzen.discovery.expression import evaluate_materialized, parse_expr
+    from factorzen.discovery.factor_library import (
+        FactorRecord,
+        _materialize_python_on_grid,
+        _pool_date_bounds,
+        _python_name_from_expression,
+        is_python_identity,
+    )
 
     try:
+        if is_python_identity(expr):
+            if not python_universe:
+                return None
+            name = _python_name_from_expression(expr)
+            if not name:
+                return None
+            start, end = _pool_date_bounds(prepped)
+            rec = FactorRecord(
+                expression=expr,
+                market=python_market,
+                kind="python",
+                name=name,
+                impl=name,
+            )
+            return _materialize_python_on_grid(
+                rec,
+                prepped,
+                market=python_market,
+                universe=python_universe,
+                python_materializer=None,
+                start=start,
+                end=end,
+            )
         node = parse_expr(expr, leaf_map)
         series = evaluate_materialized(node, prepped, leaf_map)
         panel = (
@@ -343,7 +380,12 @@ def _eval_forward_on_frame(
     ret_df = _ret_on_as_of(prepped, as_of_s, prev)
     for r in to_eval:
         uni = _effective_universe(r, force_universe)
-        panel = _materialize_panel(r.expression, prepped, leaf_map)
+        rec_market = getattr(r, "market", None) or "ashare"
+        panel = _materialize_panel(
+            r.expression, prepped, leaf_map,
+            python_universe=uni,
+            python_market=str(rec_market),
+        )
         if panel is None:
             ic, n_stocks = None, 0
             failed += 1

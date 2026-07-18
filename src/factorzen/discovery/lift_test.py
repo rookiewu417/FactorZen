@@ -353,6 +353,8 @@ class LiftEvalContext:
     - ``prepped``：已预处理帧（可含预热前缀）；物化 / 建模用全帧。
     - ``admission_start`` / ``admission_end``：仅裁**评分**日 IC（None=不裁 / 至帧尾）。
     - ``profile_name``：provenance；profile 对象不进 ctx（防序列化坑）。
+    - ``python_universe`` / ``python_market``：python 型（``py::``）候选物化口径；
+      构建 materializer 时透传（expression 路径忽略）。
     """
 
     market: str
@@ -363,6 +365,8 @@ class LiftEvalContext:
     admission_end: str | None
     library_root: str = str(FACTOR_LIBRARY_DIR)
     profile_name: str | None = None
+    python_universe: str | None = None
+    python_market: str = "ashare"
 
 
 def make_lift_context(
@@ -376,6 +380,8 @@ def make_lift_context(
     admission_end: str | None = None,
     library_root: str = str(FACTOR_LIBRARY_DIR),
     prepped: pl.DataFrame | None = None,
+    python_universe: str | None = None,
+    python_market: str = "ashare",
 ) -> LiftEvalContext:
     """构造 ``LiftEvalContext``：``_preprocess_daily(daily, profile)`` 恰好一次并 sort。
 
@@ -384,6 +390,9 @@ def make_lift_context(
     ``prepped``：可选；session 已有同源 prep 帧时传入，跳过内部 ``_preprocess_daily``
     （须与 ``daily``/profile 同源——与 mine 评估帧同一契约；CLI 注释铁律）。
     传入帧会 sort(ts_code, trade_date) 以保证与默认路径一致。
+
+    ``python_universe`` / ``python_market``：写入 ctx，供
+    ``_materializer_from_prepped`` 在缺省 materializer 构建时透传。
     """
     from factorzen.discovery.evaluation import _preprocess_daily
 
@@ -401,6 +410,8 @@ def make_lift_context(
         admission_end=admission_end,
         library_root=library_root,
         profile_name=profile_name,
+        python_universe=python_universe,
+        python_market=python_market,
     )
 
 
@@ -794,6 +805,8 @@ def run_lift_tests(
         if ctx is not None:
             materialize_candidate = _materializer_from_prepped(
                 ctx.prepped, ctx.leaf_map,
+                python_universe=ctx.python_universe,
+                python_market=ctx.python_market,
             )
         else:
             materialize_candidate = _default_materializer(daily, leaf_map)
@@ -1059,6 +1072,8 @@ def run_group_lift(
         if ctx is not None:
             materialize_candidate = _materializer_from_prepped(
                 ctx.prepped, ctx.leaf_map,
+                python_universe=ctx.python_universe,
+                python_market=ctx.python_market,
             )
         else:
             materialize_candidate = _default_materializer(daily, leaf_map)
@@ -1187,14 +1202,62 @@ def _build_ret_panel(daily: pl.DataFrame, *, horizon: int = DEFAULT_HORIZON) -> 
 
 
 def _materializer_from_prepped(
-    prepped: pl.DataFrame, leaf_map: dict[str, str] | None,
+    prepped: pl.DataFrame,
+    leaf_map: dict[str, str] | None,
+    *,
+    python_universe: str | None = None,
+    python_market: str = "ashare",
 ):
-    """表达式 → 因子面板；接收**已 prep** 帧，不再二次预处理。"""
+    """表达式 → 因子面板；接收**已 prep** 帧，不再二次预处理。
+
+    python 型（``py::{name}``）复用 ``factor_library._materialize_python_on_grid``
+    （materialize_python_panel + inner-join 到 prepped 网格）；expression 路径
+    行为不变。坏候选 debug log + None，不崩整批。
+    """
     from factorzen.discovery.evaluation import _factor_df_from_prepped
     from factorzen.discovery.expression import parse_expr
+    from factorzen.discovery.factor_library import (
+        FactorRecord,
+        _materialize_python_on_grid,
+        _pool_date_bounds,
+        _python_name_from_expression,
+        is_python_identity,
+    )
+
+    _warned_no_universe = False
+    start, end = _pool_date_bounds(prepped)
 
     def _mat(expr: str) -> pl.DataFrame | None:
+        nonlocal _warned_no_universe
         try:
+            if is_python_identity(expr):
+                if not python_universe:
+                    if not _warned_no_universe:
+                        _LOG.warning(
+                            "python 候选物化需要 python_universe（如 csi300）；"
+                            "当前为空，跳过 py:: 候选",
+                        )
+                        _warned_no_universe = True
+                    return None
+                name = _python_name_from_expression(expr)
+                if not name:
+                    return None
+                rec = FactorRecord(
+                    expression=expr,
+                    market=python_market,
+                    kind="python",
+                    name=name,
+                    impl=name,
+                )
+                return _materialize_python_on_grid(
+                    rec,
+                    prepped,
+                    market=python_market,
+                    universe=python_universe,
+                    python_materializer=None,
+                    start=start,
+                    end=end,
+                )
             node = parse_expr(expr, leaf_map)
             return _factor_df_from_prepped(node, prepped, leaf_map=leaf_map).select(
                 ["trade_date", "ts_code", "factor_value"]
@@ -1206,15 +1269,26 @@ def _materializer_from_prepped(
     return _mat
 
 
-def _default_materializer(daily: pl.DataFrame, leaf_map: dict[str, str] | None):
+def _default_materializer(
+    daily: pl.DataFrame,
+    leaf_map: dict[str, str] | None,
+    *,
+    python_universe: str | None = None,
+    python_market: str = "ashare",
+):
     """表达式 → 因子面板（与 build_library_pool / _factor_df_from_prepped 同路径）。
 
     内部 prep 后委托 ``_materializer_from_prepped``；签名/行为零回归。
+    ``python_universe`` / ``python_market`` 透传到 python 分派。
     """
     from factorzen.discovery.evaluation import _preprocess_daily
 
     prepped = _preprocess_daily(daily).sort(["ts_code", "trade_date"])
-    return _materializer_from_prepped(prepped, leaf_map)
+    return _materializer_from_prepped(
+        prepped, leaf_map,
+        python_universe=python_universe,
+        python_market=python_market,
+    )
 
 
 def extract_gray_candidates_from_manifest(manifest: dict) -> list[dict]:

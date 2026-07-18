@@ -174,7 +174,7 @@ def test_make_lift_context_shared_prepped_for_pool_and_materializer(monkeypatch)
             }),
         }
 
-    def spy_mat_from_prepped(prepped, leaf_map):
+    def spy_mat_from_prepped(prepped, leaf_map, **_kw):
         captured["mat_id"] = id(prepped)
         captured["mat_has_probe"] = "probe_derived" in prepped.columns
 

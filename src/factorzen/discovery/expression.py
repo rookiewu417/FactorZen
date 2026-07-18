@@ -79,14 +79,24 @@ def _materialize_ts_chunked(
 
     峰值内存设计账：parts 累积 + 旧 work 共存 → 峰值 ≈ 2×work + 1 批内部分配
     （批间串行、无并行；concat 后旧 work/parts 由局部变量覆盖释放）。
-    批次取用 ``work.slice(offset, len)``（零拷贝视图）；``pl.concat(parts)``
+    批次取用 ``sub.slice(offset, len)``（零拷贝视图）；``pl.concat(parts)``
     保持原行序。
+
+    窄帧化(v18):ts 只需「引用列 + ts_code」——rolling 在已排序股内按位置滚,
+    select 保序;批/concat 都作用于 3-4 列窄帧,消灭每 ts 节点 2×全 work 的
+    concat 抖动(22 节点×15 列 work 是 #79 级因子的最后大头)。结果 Series
+    行序与 work 天然对齐,单列贴回。
     """
-    batches = _ts_stock_batches(work["ts_code"], _ts_chunk_target_rows(window))
-    parts: list[pl.DataFrame] = []
+    needed = set(expr.meta.root_names()) | {"ts_code"}
+    sub = work.select([c for c in work.columns if c in needed])
+    batches = _ts_stock_batches(sub["ts_code"], _ts_chunk_target_rows(window))
+    parts: list[pl.Series] = []
     for offset, length in batches:
-        parts.append(work.slice(offset, length).with_columns(expr.alias(name)))
-    return pl.concat(parts)
+        parts.append(
+            sub.slice(offset, length).with_columns(expr.alias(name))[name]
+        )
+    s = pl.concat(parts)
+    return work.with_columns(s.alias(name))
 
 
 class LookaheadWindowError(ValueError):

@@ -713,6 +713,7 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
     from factorzen.discovery.factor_library import (
         build_library_pool,
         library_file_hash,
+        python_pool_cache_key,
         write_pool_cache,
     )
     from factorzen.discovery.leaf_health import (
@@ -766,10 +767,13 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
             Path(args.index_path).parent / "factor_library"
         )
         # 强制 compact（与父进程装载 CompactLibraryPool 契约一致）
+        # universe：库含 python 记录时物化必需（与 run_team_agent 池调用同口径）
+        _pool_universe = getattr(args, "universe", None)
         lib_pool = build_library_pool(
             market, session_prepped, ctx.leaf_map,
             root=lib_root, eval_start=eval_start_date,
             compact=True,
+            universe=_pool_universe,
         )
 
         # meta 真实填：date 字段必须 str(date)=ISO（"2021-01-04"），与 load_pool_cache 校验同源
@@ -782,6 +786,10 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
                 "statuses": ["active"],
                 "eval_start": str(eval_start_date),
                 "library_hash": library_file_hash(market, lib_root),
+                "python_pool_key": python_pool_cache_key(
+                    market, root=lib_root, statuses=("active",),
+                    universe=_pool_universe,
+                ),
                 "prepped_height": session_prepped.height,
                 "prepped_date_min": str(session_prepped["trade_date"].min()),
                 "prepped_date_max": str(session_prepped["trade_date"].max()),

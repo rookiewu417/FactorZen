@@ -295,6 +295,28 @@ def library_file_hash(market: str, root: str = DEFAULT_ROOT) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
 
+def python_pool_cache_key(
+    market: str, *, root: str, statuses, universe: str | None,
+    injected: bool = False,
+) -> str | None:
+    """池缓存的 python 维度指纹。
+
+    库内（statuses 范围）无 python 记录 → None：纯 expression 池与 universe 无关，
+    不无谓失效。有 python 记录 → 物化口径进指纹：注入 materializer（测试）恒
+    "<injected>"（不可跨调用复用）；无 universe（python 被跳过）→ "<missing>"——
+    这样「先跳过建缓存、后带 universe 调用」会因键漂移而失效重建，堵死脏命中。
+    """
+    try:
+        recs = load_library(market, root=root)
+    except Exception:
+        return None
+    if not any(_is_python_record(r) and r.status in statuses for r in recs):
+        return None
+    if injected:
+        return "<injected>"
+    return universe or "<missing>"
+
+
 def write_pool_cache(pool, cache_dir, *, meta: dict) -> None:
     """把库池写到 cache_dir(parquet + meta.json)。
 
@@ -348,10 +370,12 @@ def load_pool_cache(
     expect_height: int,
     expect_date_min,
     expect_date_max,
+    python_key: str | None = None,
 ) -> CompactLibraryPool | dict | None:
     """装载并校验池缓存;失效返回 None(调用方回落进程内重建)。
 
-    校验项:market/statuses/library_hash/eval_start/prepped_height/date_min/max。
+    校验项:market/statuses/library_hash/eval_start/prepped_height/date_min/max/
+    python_pool_key(库含 python 记录时的物化口径,见 ``python_pool_cache_key``)。
     ``n_factors==0`` → 返回 ``{}``;否则 from_parquet(factor_names)。
     """
     cache_dir = Path(cache_dir)
@@ -408,6 +432,11 @@ def load_pool_cache(
         _invalidate(
             f"prepped_date_max {meta.get('prepped_date_max')!r}"
             f"≠{expect_date_max!r}",
+        )
+        return None
+    if _as_str(meta.get("python_pool_key")) != _as_str(python_key):
+        _invalidate(
+            f"python_pool_key {meta.get('python_pool_key')!r}≠{python_key!r}",
         )
         return None
 
@@ -559,7 +588,7 @@ def build_library_pool(
       ≥ ``compact_threshold`` 自动选择；``True`` 强制单骨架宽面板；``False`` 强制旧
       dict-of-frames（**零回归默认路径**，小帧/测试保持逐字节行为）。
     - ``cache_dir``：可选池缓存目录；非 None 时先试 ``load_pool_cache``（指纹含库 hash /
-      statuses / eval_start / prepped 窗），命中则跳过求值直接返回；默认 None 零回归。
+      statuses / eval_start / prepped 窗 / python 池键），命中则跳过求值直接返回；默认 None 零回归。
     - ``universe`` / ``python_materializer`` 皆空时 python 记录全部跳过（expression 不受影响）。
 
     调用方负责 ``daily`` 已与挖掘同 prep（派生列/停牌掩码等）；本函数不再二次预处理。
@@ -574,6 +603,11 @@ def build_library_pool(
             expect_height=daily.height,
             expect_date_min=daily["trade_date"].min(),
             expect_date_max=daily["trade_date"].max(),
+            python_key=python_pool_cache_key(
+                market, root=root, statuses=statuses,
+                universe=universe,
+                injected=python_materializer is not None,
+            ),
         )
         if cached is not None:
             return cached

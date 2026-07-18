@@ -782,6 +782,8 @@ def run_team_agent(
                 market, session_prepped, ctx.leaf_map, root=lib_root,
                 eval_start=_eval_start_date,
                 cache_dir=pool_cache_dir,
+                # 库含 python 记录时物化必需；与 _cmd_pool_prebuild 同口径
+                universe=(data_window or {}).get("universe"),
             )
             covered, crowded = library_covered_by_family(
                 market, per_family=2, max_total=12, root=lib_root,
@@ -1238,6 +1240,9 @@ def _session_end_auto_lift(
             admission_end=adm_end,
             library_root=library_root,
             prepped=prepped,
+            # python 型候选/基线物化口径（三 lift 消费方同口径，改一查三）
+            python_universe=(data_window or {}).get("universe"),
+            python_market=market,
         )
         meta["admission_start"] = adm_start
         meta["admission_end"] = adm_end
@@ -1247,7 +1252,11 @@ def _session_end_auto_lift(
         mat = materialize_candidate
         if mat is None:
             from factorzen.discovery.lift_test import _materializer_from_prepped
-            mat = _materializer_from_prepped(lift_ctx.prepped, leaf_map)
+            mat = _materializer_from_prepped(
+                lift_ctx.prepped, leaf_map,
+                python_universe=lift_ctx.python_universe,
+                python_market=lift_ctx.python_market,
+            )
 
         # 覆盖门：W1b 旁路已前置 holdout 残差覆盖；此处双保险（物化后评分窗日数）。
         # filter_candidates_by_coverage 与 CLI lift-test 共用，语义零变化。

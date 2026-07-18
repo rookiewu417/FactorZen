@@ -371,6 +371,69 @@ def test_build_library_pool_compact_python_dispatch(tmp_path):
     assert py_panel.height > 0
 
 
+def test_pool_cache_python_key_guards_stale_hit(tmp_path):
+    """脏缓存防线：先无 universe 建缓存（python 被跳过）→ 后带 universe 装载必须失效。
+
+    纯 expression 库键恒 None（universe 无关，不无谓失效）。
+    """
+    from factorzen.discovery.factor_library import (
+        load_pool_cache,
+        python_identity,
+        python_pool_cache_key,
+        write_pool_cache,
+    )
+
+    lib_root = tmp_path / "lib"
+    lib_root.mkdir()
+    # 纯 expression 库：键恒 None
+    _write_lib(lib_root, "ashare", [
+        {"expression": "rank(close)", "market": "ashare", "status": "active"},
+    ])
+    assert python_pool_cache_key(
+        "ashare", root=str(lib_root), statuses=("active",), universe="csi300",
+    ) is None
+    # 加入 python 记录后：无 universe → "<missing>"，有 → universe，注入 → "<injected>"
+    _write_lib(lib_root, "ashare", [
+        {"expression": "rank(close)", "market": "ashare", "status": "active"},
+        {"expression": python_identity("foo"), "market": "ashare",
+         "status": "active", "kind": "python", "name": "foo"},
+    ])
+    key_missing = python_pool_cache_key(
+        "ashare", root=str(lib_root), statuses=("active",), universe=None,
+    )
+    assert key_missing == "<missing>"
+    assert python_pool_cache_key(
+        "ashare", root=str(lib_root), statuses=("active",), universe="csi300",
+    ) == "csi300"
+    assert python_pool_cache_key(
+        "ashare", root=str(lib_root), statuses=("active",), universe=None,
+        injected=True,
+    ) == "<injected>"
+
+    # 空池缓存 + key="<missing>"：同键命中返回 {}，异键（补了 universe）失效
+    from factorzen.discovery.factor_library import library_file_hash
+
+    cache_dir = tmp_path / "cache"
+    meta = {
+        "market": "ashare",
+        "statuses": ["active"],
+        "eval_start": None,
+        "library_hash": library_file_hash("ashare", str(lib_root)),
+        "prepped_height": 12,
+        "prepped_date_min": "2024-01-02",
+        "prepped_date_max": "2024-01-05",
+        "python_pool_key": key_missing,
+    }
+    write_pool_cache({}, cache_dir, meta=meta)
+    common = dict(
+        market="ashare", root=str(lib_root), statuses=("active",),
+        eval_start=None, expect_height=12,
+        expect_date_min="2024-01-02", expect_date_max="2024-01-05",
+    )
+    assert load_pool_cache(cache_dir, **common, python_key="<missing>") == {}
+    assert load_pool_cache(cache_dir, **common, python_key="csi300") is None
+
+
 def test_build_library_pool_skips_python_panel_with_duplicate_keys(
     tmp_path, caplog,
 ):

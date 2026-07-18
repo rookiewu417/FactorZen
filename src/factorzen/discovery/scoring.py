@@ -194,7 +194,10 @@ class LazyWideCorrGrid:
     def block(self, d0: int, d1: int) -> tuple[np.ndarray, np.ndarray]:
         """日期切片 [d0:d1] → (vals_f64, present_bool)，形状 (d1-d0, n_s, n_f)。
 
-        逐因子 ``wide[name].gather`` 小块，绝不整列 ``to_numpy()``。
+        每块**一次**整行 take(84 列小帧)→ to_numpy 单矩阵 → 一次 3D scatter。
+        逐因子逐块 gather 曾是 v25 探针死因:每候选 ~13k 次小分配的碎片/滞留
+        在全 A 把 WSL VM 顶穿;单次 take 把分配次数降两个量级。
+        绝不整列 ``to_numpy()``(含 null 的 f32 列整列转换物化 10.9M NaN 副本)。
         """
         n_s = len(self.stocks)
         n_f = len(self.names)
@@ -205,10 +208,10 @@ class LazyWideCorrGrid:
         dis = self._di_by_day[a:b] - d0
         vals = np.full((d1 - d0, n_s, n_f), np.nan, dtype=np.float64)
         if a < b:
-            idx = pl.Series(rows)
-            for fi, name in enumerate(self.names):
-                col = self._wide[name].gather(idx).to_numpy()
-                vals[dis, sis, fi] = col  # f32→f64 赋值自动升位;null→NaN
+            # 值列全同 dtype(f32 或 f64)→ to_numpy 单矩阵零逐列对象;null→NaN 天然
+            sub = self._wide.select(list(self.names))[rows]
+            m = sub.to_numpy()
+            vals[dis, sis, :] = m  # f32→f64 赋值自动升位
         return vals, ~np.isnan(vals)
 
     def present_block(self, d0: int, d1: int) -> np.ndarray:

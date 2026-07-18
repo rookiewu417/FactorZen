@@ -1,6 +1,8 @@
 # 分钟频因子模板
 
-分钟频因子放在 `workspace/factors/intraday/{factor_name}.py`。分钟线当前不是 FactorZen 主线，但注册和验证接口已经独立存在。
+分钟频因子放在 `workspace/factors/intraday/{factor_name}.py`。
+
+> ℹ️ 如果你的目标是把日内信息用进日频挖掘，通常**不需要写分钟频因子**——平台已把分钟 bar 聚合成 17 个日频日内微观结构特征（`i_*` 叶子），可直接作为挖掘叶子使用，见[因子挖掘指南](../../../docs/guides/mining.md)。本模板适用于确实需要在分钟粒度上产出因子值的场景。
 
 ## 编写约定
 
@@ -74,3 +76,11 @@ pixi run fz factor list --frequency intraday
 - 日内累计量必须在每个交易日开盘后重新开始。
 - 因子计算不要跨午休、收盘后或不同股票直接滚动。
 - 分钟线数据量大，优先使用 LazyFrame 链式表达式，最后再 `.collect()`。
+
+---
+
+## 相关文档
+
+- [因子编写指南](../../../docs/guides/factor-authoring.md) —— 完整接口说明、如何让手写因子进因子库
+- [因子库与增量准入](../../../docs/concepts/factor-library.md) —— 因子入库的裁决机制
+- [CLI 参考](../../../docs/reference/cli.md) —— `fz factor` 全部参数

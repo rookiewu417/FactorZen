@@ -1,39 +1,66 @@
-# 文档索引
+# 文档
 
-> [FactorZen](../README.md) · **文档** · [架构](architecture.md) · [运行手册](runbook.md) · [路线图](evolution-plan-2026.md)
+> [FactorZen](../README.md) · **文档**
 
-本目录每份文档各司其职，边界清晰、互不复述。下表说明读者、职责与保留理由。
+按阅读路径分四层。每份文档职责单一、互不复述——需要交叉的内容用链接而不是复制。
 
-## 文档地图
+## 入门 · getting-started/
 
-| 文档 | 读者 | 职责 |
-|------|------|------|
-| [README](../README.md) | 新用户、开源访客 | 项目定位、安装、快速开始、核心结构 |
-| [project-explanation](project-explanation.md) | 维护者、自动化代理 | 系统事实、数据流、配置、质量门与边界 |
-| [architecture](architecture.md) | 维护者 | 平台分层架构、数据流、产物边界与关键设计原则（架构契约） |
-| [factor-authoring](factor-authoring.md) | 因子作者 | 新因子放哪里、实现什么接口、如何验证 |
-| [end-to-end-tutorial](end-to-end-tutorial.md) | 新用户、复核者 | 从拉数据到组合展示的完整链路逐步教程 |
-| [runbook](runbook.md) | 日常使用者、值守者 | 常用命令、报告入口、数据拉取、故障处理 |
-| [evolution-plan-2026](evolution-plan-2026.md) | 维护者 | 公开路线图与非目标 |
-| [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html) | 新用户、复核者 | 真实 tear sheet 示例 |
-| [release-notes/](release-notes/) | 发布使用者 | 已发布版本的历史说明（发布后不回写） |
+第一次接触平台，按顺序读。
 
----
+| 文档 | 内容 |
+|---|---|
+| [安装与环境](getting-started/installation.md) | pixi 环境、`.env` 凭据、可选依赖、装完怎么验证 |
+| [快速上手](getting-started/quickstart.md) | 5 分钟跑通核心闭环：挖掘 → 增量准入 → 组合 |
+| [端到端教程](getting-started/end-to-end-tutorial.md) | 完整链路逐步走：拉数据 → 挖掘 → 准入 → 风险 → 组合 → 模拟 → 报告 |
 
-## 早期计划（Plans Archive）
+## 原理 · concepts/
 
-`docs/plans/` 存放平台升级前的旧计划，供历史参考：
+理解平台为什么这样设计。改代码前建议先读。
 
-| 计划文件 | 说明 |
-|----------|------|
-| [2026-06-04-docs-polish-plan.md](plans/2026-06-04-docs-polish-plan.md) | 文档打磨计划（平台升级前） |
-| [2026-06-05-cli-set-override-and-sweep.md](plans/2026-06-05-cli-set-override-and-sweep.md) | CLI `--set` 覆盖与 `sweep` 参数扫描 |
+| 文档 | 内容 |
+|---|---|
+| [架构](concepts/architecture.md) | 分层结构、端到端数据流、模块职责与边界 |
+| [设计铁律](concepts/design-principles.md) | PIT 无未来函数、护栏咬合、可复现——三条原则的具体落地与已知例外 |
+| [因子库与增量准入](concepts/factor-library.md) | **平台核心机制**：lift 裁决、四态状态机、probation → 向前确认 → 转正 |
+| [防过拟合护栏](concepts/guardrails.md) | bootstrap IC CI、Deflated Sharpe、PBO/CSCV、holdout、空假设校准，以及它们如何咬合进筛选 |
+| [多市场适配](concepts/multi-market.md) | Ports & Adapters 结构、四市场的真实能力边界 |
 
----
+## 指南 · guides/
 
-## 局部 README
+按任务查。
 
-仓库内还有两份作用域明确的局部 README，**不并入根 README**：
+| 文档 | 内容 |
+|---|---|
+| [因子编写](guides/factor-authoring.md) | 手写因子放哪里、实现什么接口、如何入库与验证 |
+| [因子挖掘](guides/mining.md) | 表达式搜索、LLM 单 Agent 与团队挖掘、日内叶子与 scout |
+| [多因子组合](guides/combination.md) | 从因子库消费因子，四方法样本外对比 |
+| [风险与组合优化](guides/risk-and-portfolio.md) | Barra 风险模型、凸优化建仓、归因 |
+| [模拟与向前执行](guides/execution.md) | 模拟交易、向前执行引擎、分歧归因 |
+| [无人值守运营](guides/operations.md) | 8 阶段日链路、告警、失败恢复 |
+| [部署](guides/deployment.md) | Web 服务与定时任务部署 |
+| [性能与资源](guides/performance.md) | 耗时基准、内存占用、并行与子进程隔离 |
 
-- [`src/factorzen/builtin_factors/qlib/README.md`](../src/factorzen/builtin_factors/qlib/README.md) —— 只解释 qlib 因子与数据源。
-- [`src/factorzen/research/combination/README.md`](../src/factorzen/research/combination/README.md) —— 只解释实验性多因子合成。
+## 参考 · reference/
+
+查具体参数与字段。
+
+| 文档 | 内容 |
+|---|---|
+| [CLI 参考](reference/cli.md) | 16 个顶层命令 / 47 个叶子命令，含参数表与示例 |
+| [配置](reference/configuration.md) | 配置模型、YAML 模板、`--set` 覆盖机制 |
+| [产物布局](reference/artifacts.md) | `workspace/` 与 `data/` 目录结构、`manifest.json` 字段 |
+| [环境变量](reference/environment.md) | `TUSHARE_TOKEN`、`FACTORZEN_LLM_*` 全表与缺失行为 |
+| [数据源与口径](reference/data-sources.md) | 各市场数据源、**单位口径**、缓存键完整性 |
+
+## 其他
+
+| 位置 | 内容 |
+|---|---|
+| [release-notes/](release-notes/) | 已发布版本说明（发布后不回写） |
+| [../CHANGELOG.md](../CHANGELOG.md) | 变更日志 |
+| [../CONTRIBUTING.md](../CONTRIBUTING.md) | 开发流程、验证要求、提交规范 |
+| [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html) | 真实 Tear Sheet（GitHub Pages） |
+
+作用域限定的局部说明随代码放置，不并入本目录：
+[`tools/`](../tools/README.md) · [`builtin_factors/qlib/`](../src/factorzen/builtin_factors/qlib/README.md) · [`research/combination/`](../src/factorzen/research/combination/README.md)

@@ -4,97 +4,117 @@
 
 # FactorZen
 
-**端到端、可复现的 A 股量化研究平台**
+**以因子库准入为核心的多市场量化研究平台**
 
-把量化研究从「单因子 IC 检验」扩展为「因子挖掘 → 防过拟合 → 风险建模 → AI 智能挖掘 → 组合优化与归因 → 模拟交易 → 成果展示」的完整买方级链路，<br>
-每一步都落 manifest、可审计、可复现。
+因子挖掘 → 防过拟合护栏 → **增量准入进库** → 风险与组合 → 模拟与向前执行 → 无人值守运营 → 成果展示。<br>
+每一步落 `manifest.json`，可审计、可复现。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10--3.12-blue.svg)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
 
-[快速开始](#快速开始) · [文档](docs/README.md) · [架构](docs/architecture.md) · [运行手册](docs/runbook.md) · [路线图](docs/evolution-plan-2026.md) · [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html)
+[快速开始](#快速开始) · [文档](docs/README.md) · [核心机制](docs/concepts/factor-library.md) · [CLI 参考](docs/reference/cli.md) · [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html)
 
 </div>
 
 ---
 
-## 设计原则
+## 这是什么
 
-FactorZen 把研究可信度放在展示效果之前。三条原则贯穿数据、评估到报告：
+大多数因子平台回答的是「**这个因子好不好**」。FactorZen 回答的是一个更难、也更有用的问题：
 
-1. **数据 PIT 无未来函数** —— 停牌、涨跌停、ST、次新、T+1 等交易约束在口径层面就被约束，universe 快照全部 point-in-time，错误数据不进入下游。
-2. **评估带样本外/防过拟合护栏** —— holdout 段永久隔离、block bootstrap IC CI、Deflated Sharpe、PBO/CSCV，多重检验从入库起就记账；样本不足、OOS 不成立会被显式标注，而不是用漂亮图表掩盖。
-3. **一切产物落 manifest 可复现** —— 每次运行生成 `manifest.json`，记录配置、命令、git SHA、lockfile hash 与阶段耗时；种子/参数/数据版本全部固定，可任意重放。
+> **这个因子，对我已有的因子库还有没有增量？**
+
+单因子指标漂亮但与在库因子高度重合，是研究里最常见的自欺。FactorZen 把**增量检验（lift）作为入库的最终裁决**——候选因子必须在既有因子库的基础上跑出统计显著的增量，才能进库；单因子门槛降级为排序信号，硬门只剩数据质量。因子库因此是一份持续收敛、互相不冗余的资产，而不是一张越堆越长的候选表。
+
+围绕这个核心，平台提供从数据接入到无人值守运营的完整链路，覆盖 A 股日频、crypto USDT-M 永续（含分钟级）、期货与美股。
 
 ---
 
-## 核心能力矩阵
+## 三条设计铁律
 
-| 能力域 | 能力 | 模块路径 | 代表命令 |
-|------|------|----------|----------|
-| **基线** | 单因子研究链路：IC / 分层回测 / walk-forward / Tear Sheet | `daily/` `reports/` | `fz factor run <name>` |
-| **微观结构与交易约束** | 交易约束（停牌/涨跌停/ST/次新/T+1）+ universe 快照 | `core/` `daily/evaluation/` | （内嵌回测） |
-| **因子挖掘** | 算子库 + 表达式 AST↔字符串编译 + 随机/遗传搜索 + 贪心去相关 | `discovery/` | `fz mine search` |
-| **防过拟合** | block bootstrap IC CI + Deflated Sharpe + PBO/CSCV + holdout 永久隔离 | `validation/` | `fz validate overfit` |
-| **Barra 风险模型** | Barra 风格（8）+ 行业因子暴露 + Newey-West 协方差 + 特质风险收缩 + MCR 分解 | `risk/` | `fz risk build` |
-| **组合优化与归因** | cvxpy 因子形式 mean-variance QP + box/budget/行业风格中性/换手约束；Brinson + 风险因子归因 | `portfolio/` `attribution/` | `fz portfolio build` |
-| **单 Agent 挖掘** | LLM 闭环（假设→生成→护栏→critic→反思），零依赖自建 loop，Negative RAG | `agents/` | `fz mine agent` |
-| **多 Agent 团队** | 4 角色 Agent（Hypothesis/Coder/Critic/Librarian）+ Evaluator 评估环节 + 跨轮否决 + 跨 session 长期记忆 | `agents/roles/` `team_orchestrator.py` `experiment_index.py` | `fz mine team` |
-| **模拟交易** | 组合权重回测（对齐行情/扣换手成本/净值/夏普/最大回撤） | `sim/` | `fz sim run` |
-| **成果展示** | 组合绩效 HTML Dashboard（指标卡+净值曲线+月度热图+归因+风险摘要） | `reports/portfolio_report.py` | `fz report portfolio` |
+冲突时，以下三条是裁决依据。
+
+1. **PIT 无未来函数** —— t 日信号只用 ≤t 收盘可得的信息：universe 逐日快照，财务按公告日对齐，执行定价用 pre_close，滚动因子扩窗预热。停牌/涨跌停/ST/次新/T+1 在口径层就被约束。
+   > 已知例外：美股 universe 用的是静态成分快照，存在幸存者偏差，见[适用边界](#适用边界)。
+2. **护栏咬合** —— bootstrap IC 置信区间、Deflated Sharpe、PBO/CSCV、holdout 隔离**默认参与筛选**，不是「只算不判」。多重检验从挖掘起就记账。
+3. **可复现** —— 每次运行落 `manifest.json`（配置、命令、`git_sha`、seed、窗口、universe、依赖 lock hash）。因子库记录连评估窗口、CV 参数、阈值与基线 hash 一并存档，事后能重跑出同样结果。
+
+---
+
+## 核心能力
+
+| 能力域 | 内容 | 入口命令 |
+|---|---|---|
+| **数据接入** | A 股（Tushare）· crypto（Binance Vision 数据湖）· 期货（主力连续后复权）· 美股（Yahoo，MVP universe） | `fz data fetch` |
+| **日内微观结构** | 分钟 bar → 日频特征面板（17 特征电池），可直接作为挖掘叶子 | `fz data intraday-features build` |
+| **因子挖掘** | 算子库 + 表达式 AST 双向编译 + 随机/遗传搜索 | `fz mine search` |
+| **LLM 挖掘** | 单 Agent 闭环 · 4 角色团队（Hypothesis/Coder/Critic/Librarian）+ Evaluator + 跨轮否决 + 跨 session 记忆 | `fz mine agent` · `fz mine team` |
+| **因子库准入** | 唯一登记簿 + **lift 增量裁决** + 四态状态机 + 向前确认（probation → forward → promote） | `fz factor-library lift-test` |
+| **防过拟合** | block bootstrap IC CI · Deflated Sharpe · PBO/CSCV · holdout 隔离 · 空假设校准 | `fz validate overfit` |
+| **风险模型** | Barra 风格（8 因子）+ 行业暴露 + Newey-West 协方差 + 特质风险收缩 + MCR 分解（A 股） | `fz risk build` |
+| **组合优化与归因** | cvxpy 因子形式 mean-variance QP + 约束体系；Brinson-Fachler + 风险因子归因 | `fz portfolio build` |
+| **多因子组合研究** | 四方法样本外对比：等权 / IC 加权 / max_ir / LightGBM | `fz combine from-library` |
+| **模拟与向前执行** | 组合权重回测 · 向前执行引擎（纸面撮合）· A 类分歧归因 | `fz sim run` · `fz live step` |
+| **无人值守运营** | 8 阶段幂等日链路（守卫→取数→审计→日内特征→信号→执行→报告→发布）+ 失败告警 | `fz ops daily` |
+| **成果展示** | 单因子 Tear Sheet · 组合 Dashboard · 只读 REST API + Web 页 | `fz report portfolio` · `pixi run serve` |
+
+单因子研究链路（IC / 分层回测 / walk-forward / Tear Sheet）作为基础能力贯穿其中：`fz factor run`。
 
 ---
 
 ## 安装
 
-推荐使用 [pixi](https://pixi.sh/) 管理环境（Python ≥3.10 <3.13）。所有命令从仓库根目录执行。
+推荐 [pixi](https://pixi.sh/) 管理环境（Python ≥3.10 <3.13）。所有命令从仓库根目录执行。
 
 ```bash
 pixi install
-cp .env.example .env
+cp .env.example .env   # 填入 TUSHARE_TOKEN
 pixi run smoke
 ```
 
-`.env` 不入库。真实数据拉取需要配置 `TUSHARE_TOKEN`；LLM 挖掘功能（单 / 多 Agent，`fz mine agent` / `fz mine team`）需要显式配置 `FACTORZEN_LLM_*`，缺失会直接报错退出（不会自动跳过）；单因子评估与报告不依赖 LLM。
+- 真实数据拉取需 `TUSHARE_TOKEN`；crypto 走本地数据湖，无需 token。
+- LLM 挖掘（`fz mine agent` / `fz mine team`）需配置 `FACTORZEN_LLM_*`，**缺失会直接报错退出**，不会静默跳过。单因子评估与报告不依赖 LLM。
+- Web Dashboard 依赖 `fastapi`/`uvicorn`。pixi 默认环境已包含 dev feature，装完即可用；但二者在 `pyproject.toml` 里属 dev extras，绕开 pixi 用 `pip install factorzen` 的话需要自行补装。
+
+详见[安装与环境](docs/getting-started/installation.md)。
 
 ---
 
 ## 快速开始
 
-### 端到端链路（Step 0 前置数据 → 成果展示）
+平台的**核心闭环**是「挖掘 → 增量准入 → 组合」。最短路径：
 
 ```bash
-# 0. 拉数据（前置：Tushare → 本地 parquet 缓存）
+# 1. 拉数据（Tushare → 本地 parquet 缓存）
 pixi run fz data fetch daily --start 20200101 --end 20241231
 pixi run fz data fetch daily-basic --start 20200101 --end 20241231
 
-# 1. 挖因子（随机/遗传搜索 或 LLM Agent 团队）→ workspace/mining_sessions/session_<seed>_<method>/
-pixi run fz mine search --start 20200101 --end 20231231 --method genetic --trials 200 --top-k 10
-#   或: pixi run fz mine team --start 20200101 --end 20231231
+# 2. 挖因子（表达式搜索；或用 fz mine team 走 LLM 团队）
+pixi run fz mine search --start 20200101 --end 20231231 \
+  --method genetic --trials 200 --top-k 10
 
-# 2. 导出 α 截面（取候选榜第 1 名，在指定日生成 ts_code+alpha 两列 parquet）
-pixi run fz mine export-alpha \
-  --session workspace/mining_sessions/session_42_genetic --rank 1 \
-  --date 20231231 --universe all_a --lookback 60 --out alpha.parquet
+# 3. 增量准入 —— 平台的核心一步
+#    候选因子必须相对现有因子库跑出显著增量才进库
+pixi run fz factor-library lift-test --market ashare \
+  --session workspace/mining_sessions/session_42_genetic \
+  --start 20200101 --end 20231231                          # 默认 dry-run，只看裁决
 
-# 3. 防过拟合验收（对已注册因子：Deflated Sharpe + bootstrap IC CI；仅打印，不落盘）
-pixi run fz validate overfit <factor> --start 20200101 --end 20231231
+pixi run fz factor-library lift-test --market ashare \
+  --session workspace/mining_sessions/session_42_genetic \
+  --start 20200101 --end 20231231 --apply                  # 确认后才写库
 
-# 4. 建风险模型（Barra 因子暴露 + Newey-West 协方差）
-pixi run fz risk build --start 20200101 --end 20231231 --universe all_a
+# 4. 查看因子库现状
+pixi run fz factor-library list --market ashare
 
-# 5. 组合优化建仓（单截面：在 --end 当日解一次 QP → 目标权重 + 归因）
-pixi run fz portfolio build --start 20200101 --end 20231231 \
-  --alpha-file alpha.parquet --industry-neutral
-
-# 6. 模拟交易（组合权重 → 净值/夏普/最大回撤）
-pixi run fz sim run --portfolio-dir workspace/portfolios --start 20240101 --end 20241231
-
-# 7. 成果展示页（指标卡 + 净值曲线 + 归因 → HTML Dashboard）
-pixi run fz report portfolio \
-  --sim-dir workspace/sim/<run_id> --portfolio-dir workspace/portfolios/<run_id>
+# 5. 用库里的因子做多因子组合（四方法样本外对比）
+pixi run fz combine from-library --market ashare \
+  --start 20200101 --end 20231231
 ```
+
+> ⚠️ `lift-test` 与 `forward-review` **默认是 dry-run**，必须显式加 `--apply` 才会写入因子库。这是有意设计：准入是不可逆的库变更。
+
+完整链路（含风险模型、组合优化、模拟交易、报告）见[端到端教程](docs/getting-started/end-to-end-tutorial.md)。
 
 ### 单因子评估
 
@@ -105,50 +125,15 @@ pixi run fz factor run my_alpha --start 20230101 --end 20241231
 pixi run fz report path <run_id>
 ```
 
-无 `--config` 时使用内置研究级默认配置：`csi500`、匹配 benchmark、`seed=42`、行业+市值中性化。walk-forward 默认关闭，按需用 `--set walk_forward.enabled=true` 开启。
+无 `--config` 时使用内置研究级默认配置（`csi500`、匹配 benchmark、`seed=42`、行业+市值中性化、walk-forward 默认关闭）。
 
-**命令行调参，无需改 YAML**
+> ⚠️ 内置默认预设与 `workspace/configs/` 下的 YAML 模板对 `neutralize` 取值不同（预设 `true`，模板 `false`）。见[配置参考](docs/reference/configuration.md)。
 
-`--set key=value` 在校验前覆盖任意配置字段，可重复，且仍写入 `manifest.json` 保持可复现：
+`--set key=value` 可在校验前覆盖任意配置字段，可重复，且写入 `manifest.json` 保持可复现：
 
 ```bash
 pixi run fz factor run momentum_20d --start 20230101 --end 20241231 \
-  --set backtest.top_n=30 --set preprocessing.neutralize=true \
-  --set walk_forward.train_days=252
-```
-
-**参数网格扫描**
-
-```bash
-pixi run fz factor sweep --config workspace/configs/daily/daily_factor_template.yaml \
-  --grid backtest.top_n=30,50,100 --grid preprocessing.normalizer=zscore,rank_normal \
-  --sort-by ir
-```
-
----
-
-## 输出产物
-
-每次运行的产物写入独立目录，按类型分组：
-
-```text
-workspace/
-├── mining_sessions/session_<seed>_<method>/  因子挖掘候选
-│   ├── candidates.csv             候选排行（表达式 + IC）
-│   └── manifest.json              配置/命令/seed/git SHA
-├── factor_library/                入库因子登记簿（jsonl；可直接 fz factor run）
-├── factor_evaluations/{run_id}/   单因子评估
-│   ├── report.html                Tear Sheet 报告（含分层回测结果，无独立 backtest 文件）
-│   ├── manifest.json              配置/命令/git SHA/lockfile hash/阶段耗时
-│   ├── factor.parquet             因子值
-│   ├── ic.parquet                 IC 结果
-│   ├── universe.parquet           universe 快照
-│   ├── quality.json               数据质量报告
-│   └── walk_forward.json          walk-forward 摘要
-├── risk_models/{run_id}/          Barra 风险模型（exposures / factor_covariance / specific_risk + risk_summary.csv）
-├── portfolios/{run_id}/           组合权重 + 归因（weights.parquet + attribution.csv + risk_summary.csv）
-├── sim/{run_id}/                  模拟净值 + 绩效（nav.parquet + metrics.json）
-└── reports/portfolio_<run_id>.html  组合绩效 HTML Dashboard
+  --set backtest.top_n=30 --set walk_forward.train_days=252
 ```
 
 ---
@@ -156,29 +141,33 @@ workspace/
 ## 项目结构
 
 ```text
-src/factorzen/
-├── config/               路径、常量、Tushare 配置
-├── core/                 日历、universe、存储、实验元数据
-├── builtin_factors/      框架自带因子（daily/weekly/monthly/intraday/qlib），随包分发
-├── daily/                低频主线：数据、因子、预处理、评估与优化
-├── discovery/            因子挖掘：算子库 + 表达式 AST + 随机/遗传搜索
-├── validation/           防过拟合：bootstrap IC CI + Deflated Sharpe + PBO/CSCV
-├── risk/                 Barra 风险模型：因子暴露 + Newey-West 协方差
-├── portfolio/            组合优化：cvxpy mean-variance QP + 约束体系
-├── attribution/          绩效归因：Brinson + 风险因子归因
-├── agents/               LLM 挖掘：单 Agent 闭环 + 多 Agent 团队
-├── sim/                  模拟交易：组合权重净值回测
-├── reports/              Tear Sheet + 组合 Dashboard 报告引擎
-├── llm/                  可选 OpenAI-compatible 研究解读
-├── pipelines/            端到端流程编排
-├── intraday/             分钟线研究代码（当前非主线）
-└── cli/                  fz 命令行入口
-workspace/
-├── factors/              自定义因子（默认空，与框架自带分离）
-└── configs/              实验 YAML 配置
-tests/                    pytest 测试（1185 个）
-docs/                     架构、运行手册、因子编写指南
+src/factorzen/                  约 49,500 行
+├── discovery/      因子挖掘 + 因子库 + lift 准入（最大子包）
+├── daily/          A 股日频主干：PIT 数据、预处理、IC、回测、walk-forward
+├── core/           日历、universe 快照、Tushare 加载与缓存、叶子 schema 单一真源
+├── agents/         LLM 挖掘：单 Agent 闭环 + 4 角色团队 + 实验索引
+├── markets/        Ports & Adapters：ashare / crypto / futures / us
+├── pipelines/      端到端编排：单因子链路、组合、research run
+├── cli/            fz 命令行入口（16 个顶层命令）
+├── intraday/       分钟 bar → 日内微观结构特征面板
+├── risk/           Barra 风险模型（A 股）
+├── research/       多因子组合研究（四方法 OOS 对比）
+├── execution/      向前执行引擎（纸面撮合 + 分歧归因）
+├── reports/        Tear Sheet + 组合 Dashboard 渲染
+├── ops/            无人值守 8 阶段日链路
+├── llm/            LLM 客户端（双 profile）
+├── validation/     防过拟合统计原语
+├── portfolio/      组合优化（因子形式 QP）
+├── attribution/    Brinson-Fachler + 风险因子归因
+├── server/         只读 REST API + Web Dashboard（dev extras）
+└── builtin_factors/ 内置因子（daily/weekly/monthly/intraday/qlib）
+
+workspace/          研究产出（因子库、挖掘 session、评估、组合、报告）
+data/               行情数据与缓存（不入库）
+tests/              2,561 个 pytest 测试
 ```
+
+产物布局与 `manifest.json` 字段见[产物参考](docs/reference/artifacts.md)。
 
 ---
 
@@ -186,12 +175,13 @@ docs/                     架构、运行手册、因子编写指南
 
 - **Python** ≥3.10 <3.13，pixi 环境管理（conda-forge，win-64/linux-64）
 - **数值**：polars ≥1.0 / numpy / scipy / pandas
-- **优化**：cvxpy ≥1.4（CLARABEL solver）/ optuna
-- **数据**：tushare / pyarrow
 - **统计**：statsmodels
+- **ML**：lightgbm / scikit-learn / optuna
+- **优化**：cvxpy ≥1.4（CLARABEL solver）
+- **数据**：tushare（A 股）/ ccxt（crypto）/ pyarrow
+- **LLM**：openai SDK（OpenAI-compatible 网关）
 - **报告**：matplotlib / jinja2
-- **工程**：pydantic / pyyaml
-- **质量**：1185 pytest 测试 / ruff / mypy；CLI 入口 `pixi run fz`
+- **质量**：2,561 个 pytest 测试 / ruff / mypy（全包扫描）
 
 ---
 
@@ -199,61 +189,62 @@ docs/                     架构、运行手册、因子编写指南
 
 **适合**
 
-- 在 A 股日/周/月频数据上评估单因子的稳定预测能力（IC、HAC t 统计、分层收益、换手、成本、容量约束、walk-forward 样本外）。
-- 用表达式搜索或 LLM Agent 自动挖掘因子，并经防过拟合护栏验收。
-- 用 Barra 风险模型控制因子暴露，凸优化建仓，通过模拟交易评估组合绩效。
+- 在多市场行情上挖掘因子，并用**相对已有因子库的增量**而非孤立指标来决定是否采纳。
+- 用防过拟合护栏（bootstrap CI / DSR / PBO / holdout）对候选因子做严格验收。
+- 用 Barra 风险模型控制暴露、凸优化建仓、模拟交易评估组合绩效。
 - 产出可审计产物：`manifest.json`、universe 快照、parquet 结果、HTML 报告。
 
-**不覆盖 / MVP 限制**
+**已知限制**（均为当前实现的真实边界，非表述保守）
 
-- **实盘执行为分阶段路线目标**（见 [路线图](docs/evolution-plan-2026.md)）：向前执行引擎（纸面 live-forward）→ miniQMT 实盘分阶段推进；当前处于纸面模拟/设计阶段，真实下单（Gate 3）尚未实现，未接入前不做任何实盘下单。
-- **行业中性是相对等权基准**（MVP 限制）：`--industry-neutral` 约束基于等权行业基准，不等同于市场加权中性。
-- **收益归因需持仓期收益**（MVP 限制）：Brinson 归因要求提供持仓期区间收益，不支持日内高频归因。
-- `intraday/` 当前非主线；Tick 级研究与生产组合执行不纳入本框架。
+| 限制 | 说明 |
+|---|---|
+| **市场覆盖不均** | ashare / crypto 全链路可跑；**futures / us 只通到挖掘与因子库**，没有数据拉取子命令与组合优化接线。 |
+| **美股 PIT 打折** | universe 用约 2024 年的静态成分快照（约 490 支），**存在幸存者偏差**，非 PIT 历史成分。用它回看历史窗口需自行承担偏差。 |
+| **风险模型仅 A 股** | Barra 模型未接入多市场 Port；crypto 有独立的风险实现，futures / us 无风险模型。 |
+| **行业中性是等权基准** | `--industry-neutral` 约束相对**等权**行业基准，不等同市值加权中性。 |
+| **归因为两项法** | Brinson-Fachler 两项法，交互项并入选股；不提供 BHB 三项法，不支持日内高频归因。 |
+| **组合优化偏薄** | 组合优化与归因是平台当前最轻的能力，相对挖掘与因子库侧的成熟度有明显落差。 |
+| **research run 为单因子** | `fz research run` 目前是单因子 + in-sample 编排。 |
+| **实盘尚未接入** | 向前执行引擎跑的全部是纸面撮合（`PaperBroker`）；券商接口字段已按 miniQMT 形状预留，但**实盘下单未实现**。这是分阶段推进的路线目标，不是永久非目标。 |
+| **向前确认需手动** | `fz factor-library forward-track` 尚未接进无人值守日链路，probation 因子的每日确认目前需手动执行。 |
+| **Web 展示为 dev extras** | `server/` 只读、无鉴权、无分页；依赖不在运行时依赖集内。 |
 
 ---
 
-## 文档导航
+## 文档
 
-| 文档 | 内容 |
-|------|------|
-| [项目说明](docs/project-explanation.md) | 系统事实、数据流、配置、质量门与边界 |
-| [架构](docs/architecture.md) | 框架包、工作区、数据流与产物边界 |
-| [运行手册](docs/runbook.md) | 常用命令、报告入口、数据拉取、故障处理 |
-| [因子编写](docs/factor-authoring.md) | 因子放哪里、实现什么接口、如何验证 |
-| [路线图](docs/evolution-plan-2026.md) | 公开路线图与非目标 |
-| [发布记录 v0.3.0](docs/release-notes/v0.3.0.md) | 完整买方研究平台升级变更日志 |
-| [端到端教程](docs/end-to-end-tutorial.md) | 手把手走完：从拉数据到组合 Dashboard |
-| [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html) | 真实 Tear Sheet 示例（GitHub Pages） |
-
-文档索引见 [docs/README.md](docs/README.md)。
+| 入口 | 内容 |
+|---|---|
+| [文档索引](docs/README.md) | 全部文档导航 |
+| [快速上手](docs/getting-started/quickstart.md) | 5 分钟跑通核心闭环 |
+| [端到端教程](docs/getting-started/end-to-end-tutorial.md) | 从拉数据到组合 Dashboard |
+| [因子库与准入](docs/concepts/factor-library.md) | lift 裁决、状态机、向前确认 |
+| [架构](docs/concepts/architecture.md) | 分层结构、数据流、模块边界 |
+| [CLI 参考](docs/reference/cli.md) | 16 个顶层命令 / 47 个叶子命令全量 |
 
 ---
 
 ## 开发
 
 ```bash
-pixi run lint
-pixi run format
-pixi run typecheck
-pixi run test
-pixi run coverage
+pixi run lint        # ruff check
+pixi run typecheck   # mypy（全包）
+pixi run test        # pytest -n auto
+pixi run coverage    # 全量测试 + 覆盖率门槛
 ```
 
-如本机已安装 `pre-commit`，提交前可启用本地钩子：
+> ⚠️ **不要运行 `pixi run format`**。全仓 ruff format 会一次改动数百个文件、污染 diff；格式问题请按 lint 报错逐处修。
 
-```bash
-pre-commit install
-```
+贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
 ## 安全
 
-不要提交 `.env`、API token、商业行情数据或私有研究产物。安全策略与凭据轮换流程见 [SECURITY.md](SECURITY.md)。
+不要提交 `.env`、API token、商业行情数据或私有研究产物。安全策略与凭据轮换见 [SECURITY.md](SECURITY.md)。
 
 ---
 
 ## 许可
 
-本项目以 [MIT License](LICENSE) 开源。
+[MIT License](LICENSE)。

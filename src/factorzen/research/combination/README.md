@@ -38,11 +38,14 @@ print(res["comparison"])  # method × {rank_ic_mean, icir, top_bottom_spread, ma
 ## 命令行
 
 ```bash
-fz combine run --factor fa.parquet --factor fb.parquet --ret ret.parquet \
+pixi run fz combine run --factor fa.parquet --factor fb.parquet --ret ret.parquet \
   --train-days 120 --test-days 20 --purge-days 5 --methods all --seed 42 --run-id exp1
 ```
 
 因子 parquet 可来自因子评估产物或 `fz mine export-alpha` 导出的 α 截面。
+若因子已入因子库，直接用 `pixi run fz combine from-library` 更省事——它是登记簿的正式消费出口。
+
+面向使用者的完整说明见[多因子组合指南](../../../../docs/guides/combination.md)；本文件只讲本模块的内部实现与口径。
 
 ## 防泄漏保证
 

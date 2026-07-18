@@ -1,6 +1,7 @@
 # qlib 因子
 
 本包把 qlib 内置的 Alpha158 与 Alpha360 特征集，暴露为 FactorZen 的日频因子。
+自己写因子见[因子编写指南](../../../../docs/guides/factor-authoring.md)。
 
 每个 qlib 特征注册为**一个**独立的 FactorZen 因子，因为现有评估管线期望单列 `factor_value`。
 

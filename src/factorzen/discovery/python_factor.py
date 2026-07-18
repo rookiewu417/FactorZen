@@ -17,13 +17,31 @@ _LOG = get_logger(__name__)
 
 
 def _load_universe_codes(start: str, end: str, universe: str) -> list[str]:
-    """PIT membership 并集 ts_codes（与 fz factor run 同入口）。
+    """PIT membership 并集 ts_codes（与 fz factor run 的 load_pit_membership 同 core 入口）。
 
-    提取为模块级函数以便测试 monkeypatch，避免内联复制 daily_single 逻辑。
+    直连 ``core.universe``（discovery 不许依赖 pipelines——架构分层）；错误语义与
+    ``pipelines.daily_single.load_pit_membership`` 对齐：构造失败拒绝回退期末快照
+    （look-ahead+幸存偏差），非 all_a 空成分 fail-loudly。模块级函数便于测试 monkeypatch。
     """
-    from factorzen.pipelines.daily_single import load_pit_membership
+    from factorzen.core.universe import get_universe_membership
 
-    _membership, ts_codes, _meta = load_pit_membership(start, end, universe)
+    try:
+        membership = get_universe_membership(start, end, universe)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(
+            f"universe={universe!r} 的逐日 PIT membership 构造失败"
+            f"（{type(exc).__name__}: {exc}）；拒绝回退期末快照。"
+        ) from exc
+
+    ts_codes = (
+        membership["ts_code"].unique().to_list() if not membership.is_empty() else []
+    )
+    if not ts_codes and universe != "all_a":
+        raise ValueError(
+            f"universe={universe!r} 在 {start}~{end} 无 membership（成分未回补？）"
+        )
     return list(ts_codes)
 
 

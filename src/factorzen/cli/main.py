@@ -78,7 +78,8 @@ def _cmd_factor_list(args: argparse.Namespace) -> int:
     if args.freq == "intraday":
         from factorzen.intraday.factors.registry import list_factors
     else:
-        from factorzen.daily.factors.registry import list_factors, load_library_factors
+        from factorzen.daily.factors.registry import list_factors
+        from factorzen.discovery.library_provider import load_library_factors
 
         # 注入 factor_library expression 型；库损坏/缺失不崩 list
         try:
@@ -1000,16 +1001,42 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     )
     lift_adm_start = _lift_admission_str(holdout_start)
     lift_adm_end = _lift_admission_str(holdout_df["trade_date"].max())
-    # lift 复审 active 池物化：透传 python_universe（expression + py:: 统一入口）
-    from factorzen.discovery.evaluation import _preprocess_daily
-    from factorzen.discovery.lift_test import _materializer_from_prepped
+    # lift 复审 active 池物化：透传 python_universe（expression + py:: 统一入口）。
+    # 惰性构建：只有 rebuild 真调物化（存在 lift 轨复审 + active 记录）才 prep——
+    # ①无复审的 rebuild 不多付一次 prep；②退化帧（缺列的小样本/测试）prep 失败
+    # 降级为 materialize 恒 None（旧行为），不许在 CLI 层直接崩。
+    def _make_lazy_rebuild_materializer():
+        state: dict = {"mat": None, "failed": False}
 
-    prepped_mat = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
-    materialize = _materializer_from_prepped(
-        prepped_mat, leaf_map,
-        python_universe=args.universe,
-        python_market=market,
-    )
+        def _mat(expr: str):
+            if state["failed"]:
+                return None
+            if state["mat"] is None:
+                try:
+                    from factorzen.discovery.evaluation import _preprocess_daily
+                    from factorzen.discovery.lift_test import _materializer_from_prepped
+
+                    prepped_mat = _preprocess_daily(daily, profile).sort(
+                        ["ts_code", "trade_date"]
+                    )
+                    state["mat"] = _materializer_from_prepped(
+                        prepped_mat, leaf_map,
+                        python_universe=args.universe,
+                        python_market=market,
+                    )
+                except Exception as exc:
+                    print(
+                        f"[factor-library] rebuild 复审物化器构建失败"
+                        f"（{type(exc).__name__}: {exc}），active 基线池回退为空",
+                        file=sys.stderr,
+                    )
+                    state["failed"] = True
+                    return None
+            return state["mat"](expr)
+
+        return _mat
+
+    materialize = _make_lazy_rebuild_materializer()
     res = fl.rebuild(
         market, sources=sources, eval_window=(start, end), universe=args.universe,
         horizon=args.horizon, evaluate=evaluate,
@@ -2188,7 +2215,8 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") == "us":
         return _validate_overfit_us(args)
     from factorzen.daily.data.context import FactorDataContext
-    from factorzen.daily.factors.registry import get_factor, load_library_factors
+    from factorzen.daily.factors.registry import get_factor
+    from factorzen.discovery.library_provider import load_library_factors
     from factorzen.discovery.scoring import ic_overfit_report
 
     # factor 位置参数 nargs='?' 可缺省；缺省时给友好用法提示，而非 get_factor(None) 裸 KeyError

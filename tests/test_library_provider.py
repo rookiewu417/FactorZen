@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from factorzen.discovery.library_provider import load_library_factors
+
 
 def _write_lib(root: Path, market: str, records: list[dict]) -> None:
     path = root / f"{market}.jsonl"
@@ -23,11 +25,12 @@ def _default_name(expr: str) -> str:
 
 @pytest.fixture
 def reg_mod():
-    """daily registry 模块；每个用例后不强制 reset 全表（discover 成本高），
-    用例用唯一 name 避免互踩。"""
+    """daily registry 模块；teardown reset 全局单例——LibFactor 注入若滞留会
+    污染同进程后续测试文件（全量跑实锤过 test_daily_factors 次序失败）。"""
     import factorzen.daily.factors.registry as reg
 
-    return reg
+    yield reg
+    reg._registry.reset()
 
 
 # ── 1. 基本注入 ──────────────────────────────────────────────────────────────
@@ -58,7 +61,7 @@ def test_load_library_factors_registers_expression_records(tmp_path, reg_mod):
             },
         ],
     )
-    n = reg_mod.load_library_factors(market="ashare", root=str(tmp_path))
+    n = load_library_factors(market="ashare", root=str(tmp_path))
     assert n == 2
 
     cls_named = reg_mod.get_factor(named)
@@ -109,7 +112,7 @@ def test_load_library_factors_yields_to_existing(tmp_path, reg_mod, caplog):
         ],
     )
     with caplog.at_level("WARNING"):
-        n = reg_mod.load_library_factors(market="ashare", root=str(tmp_path))
+        n = load_library_factors(market="ashare", root=str(tmp_path))
     assert n == 0
     assert any("让位" in r.message or conflict in r.message for r in caplog.records)
     # 仍是假因子，非 LibFactor
@@ -142,7 +145,7 @@ def test_load_library_factors_skips_python_kind(tmp_path, reg_mod):
             },
         ],
     )
-    n = reg_mod.load_library_factors(market="ashare", root=str(tmp_path))
+    n = load_library_factors(market="ashare", root=str(tmp_path))
     assert n == 1
     reg_mod.get_factor("lib_prov_expr_ok")
     with pytest.raises(KeyError):
@@ -167,13 +170,13 @@ def test_load_library_factors_idempotent(tmp_path, reg_mod, caplog):
             }
         ],
     )
-    n1 = reg_mod.load_library_factors(market="ashare", root=str(tmp_path))
+    n1 = load_library_factors(market="ashare", root=str(tmp_path))
     assert n1 == 1
     names_after_1 = reg_mod.list_factors()
     assert names_after_1.count(name) == 1
 
     with caplog.at_level("WARNING"):
-        n2 = reg_mod.load_library_factors(market="ashare", root=str(tmp_path))
+        n2 = load_library_factors(market="ashare", root=str(tmp_path))
     assert n2 == 0
     names_after_2 = reg_mod.list_factors()
     assert names_after_2.count(name) == 1
@@ -192,7 +195,7 @@ def test_load_library_factors_tolerates_corrupt_jsonl(tmp_path, reg_mod):
         '{"expression":"neg(rank(low))","market":"ashare","kind":"expression","name":"lib_prov_ok2_corrupt","status":"correlated"}\n',
         encoding="utf-8",
     )
-    n = reg_mod.load_library_factors(market="ashare", root=str(tmp_path))
+    n = load_library_factors(market="ashare", root=str(tmp_path))
     assert n == 2
     reg_mod.get_factor("lib_prov_ok_corrupt")
     reg_mod.get_factor("lib_prov_ok2_corrupt")

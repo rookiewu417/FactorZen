@@ -42,6 +42,7 @@ from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD, acceptance_re
 from factorzen.research.combination.pool import (  # noqa: F401
     POOL_COMPACT_BYTES_THRESHOLD,
     POOL_KEY_BYTES_PER_ROW,
+    POOL_VALUE_F32_BYTES_THRESHOLD,
     CompactLibraryPool,
     HybridLibraryPool,
     estimate_library_pool_key_bytes,
@@ -456,6 +457,17 @@ def _build_library_pool_compact(
 
     求值在完整 ``df`` 上（滚动预热），``eval_start`` 只裁最终骨架与值列行。
     """
+    # 值列 f32(仅超阈值大池):87 因子×8.75M 行 f64 值列 ~5.8G 蚕食全 A 余量
+    # (v14 探针死于 #78 号因子时余量已被累积吃光)。f32 仅存储层——scatter/QR 在
+    # numpy 边界升回 f64,__getitem__ 出口升回 f64;csi800 级(估算 <2G)保持 f64
+    # 字节级零回归。1e-7 级舍入远低于一切裁决阈值(残差 floor 0.008/lift 0.001)。
+    _est_value_bytes = len(recs) * df.height * 8
+    _use_f32 = _est_value_bytes >= POOL_VALUE_F32_BYTES_THRESHOLD
+    if _use_f32:
+        print(
+            f"[library-pool] 值列 f32 模式(估算 {_est_value_bytes / (1024**3):.1f}G"
+            f"≥阈值 {POOL_VALUE_F32_BYTES_THRESHOLD / (1024**3):.0f}G)", flush=True,
+        )
     value_cols: list[pl.Series] = []
     names: list[str] = []
     n_skip = 0
@@ -487,6 +499,8 @@ def _build_library_pool_compact(
             if col.null_count() >= col.len():
                 n_skip += 1
                 continue
+            if _use_f32:
+                col = col.cast(pl.Float32)
             value_cols.append(col.alias(r.expression))
             names.append(r.expression)
         except Exception as exc:

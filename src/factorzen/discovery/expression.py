@@ -13,6 +13,17 @@ from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 # 测试用 monkeypatch 压低阈值激发分块路径——调用方无感知、无新参数。
 TS_CHUNK_ROWS_THRESHOLD: int = 3_000_000
 TS_CHUNK_TARGET_ROWS: int = 1_500_000
+# 大窗滚动算子(ts_median/ts_rank 等)内部分配 ∝ 行数×窗口——252 窗下 1.5M 行批
+# 仍要 ~3G(v12 探针 #59 号因子实锤)。批目标按窗口自适应:预算格数÷窗口,
+# 下限保批次不碎片化。
+TS_CHUNK_CELL_BUDGET: int = 150_000_000
+TS_CHUNK_MIN_ROWS: int = 100_000
+
+
+def _ts_chunk_target_rows(window: int | None) -> int:
+    """窗口自适应批目标:min(默认目标, max(下限, 预算格数÷窗口))。"""
+    w = max(int(window or 1), 1)
+    return min(TS_CHUNK_TARGET_ROWS, max(TS_CHUNK_MIN_ROWS, TS_CHUNK_CELL_BUDGET // w))
 
 
 def _ts_stock_batches(
@@ -46,7 +57,7 @@ def _ts_stock_batches(
 
 
 def _materialize_ts_chunked(
-    work: pl.DataFrame, expr: pl.Expr, name: str
+    work: pl.DataFrame, expr: pl.Expr, name: str, window: int | None = None
 ) -> pl.DataFrame:
     """按整股批次物化 ts 表达式列 ``name``。
 
@@ -55,7 +66,7 @@ def _materialize_ts_chunked(
     批次取用 ``work.slice(offset, len)``（零拷贝视图）；``pl.concat(parts)``
     保持原行序。
     """
-    batches = _ts_stock_batches(work["ts_code"], TS_CHUNK_TARGET_ROWS)
+    batches = _ts_stock_batches(work["ts_code"], _ts_chunk_target_rows(window))
     parts: list[pl.DataFrame] = []
     for offset, length in batches:
         parts.append(work.slice(offset, length).with_columns(expr.alias(name)))
@@ -448,7 +459,7 @@ def evaluate_materialized(
                     spec.category == "ts"
                     and work.height >= TS_CHUNK_ROWS_THRESHOLD
                 ):
-                    work = _materialize_ts_chunked(work, expr, name)
+                    work = _materialize_ts_chunked(work, expr, name, n.window)
                 else:
                     work = work.with_columns(expr.alias(name))
                 return pl.col(name)

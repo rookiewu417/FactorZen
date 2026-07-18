@@ -1025,7 +1025,9 @@ def test_run_lift_tests_admission_provenance_complete():
     assert r1["admission_end"] == "20240301"
     assert r1["scored_start"] is not None
     assert r1["scored_end"] is not None
-    assert r1["scored_start"] >= "20240115"
+    # 窗界入参可紧凑，但回填的 scored_* 一律 ISO（core.dates 单一形态）；
+    # 两侧必须同形态比较——混比会静默为真（"20240115" > "2024-01-15"）
+    assert r1["scored_start"] >= "2024-01-15"
     assert r1["block_days"] == 10
     assert r1["cv_train_days"] == 40
     assert r1["cv_test_days"] == 10

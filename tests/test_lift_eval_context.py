@@ -17,6 +17,16 @@ def _dates(n_days: int, start: date | None = None):
     return days
 
 
+def _iso(compact: str) -> str:
+    """``YYYYMMDD`` → ``YYYY-MM-DD``：生产 scored_* 的形态。
+
+    窗界入参可紧凑（生产内部规范化），但**回填的 provenance 一律 ISO**；
+    比较两侧必须同形态——混比会静默为真（``"20240209" > "2024-02-09"``），
+    正是 core.dates 要根治的坑，故此处显式转换而非放宽断言。
+    """
+    return f"{compact[0:4]}-{compact[4:6]}-{compact[6:8]}"
+
+
 def _panel_from_values(dates, n_stocks, value_fn, *, col="factor_value"):
     """value_fn(date, stock_idx) → float。"""
     rows = []
@@ -120,7 +130,7 @@ def test_admission_window_flips_lift_sign():
     assert windowed[0]["admission_end"] is None
     assert windowed[0]["scored_start"] is not None
     assert windowed[0]["scored_end"] is not None
-    assert windowed[0]["scored_start"] >= mid_late
+    assert windowed[0]["scored_start"] >= _iso(mid_late)
     assert windowed[0]["scored_end"] >= windowed[0]["scored_start"]
     assert windowed[0]["horizon"] == 5
 
@@ -465,5 +475,5 @@ def test_group_lift_admission_window_and_provenance():
     assert out["error"] is None
     assert out["lift"] is not None and out["lift"] < 0
     assert out["admission_start"] == mid_late
-    assert out["scored_start"] is not None and out["scored_start"] >= mid_late
+    assert out["scored_start"] is not None and out["scored_start"] >= _iso(mid_late)
     assert out["horizon"] == 5

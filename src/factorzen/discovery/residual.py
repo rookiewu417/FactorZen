@@ -14,6 +14,8 @@ PIT 安全契约
 日守卫：候选有效行 n_t < max(_MIN_CROSS_SAMPLES, k+10) → 跳过该日。
 全日跳过 → residual IC = NaN、n_days=0（走覆盖门语义）。
 
+残差逐日序列（``daily_residual_rank_ic``）供 lift 准入（residual_ic_v1 口径）消费。
+
 为何库 upsert/rebuild **不**用残差口径
 ------------------------------------
 因子库是参照系：对参照系自身做「对库残差化」是循环定义。库准入维持裸 IC + 覆盖门
@@ -27,6 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
+from factorzen.core.dates import iso_date_str
 from factorzen.core.stats import spearman_avg_rank as _spearman
 from factorzen.daily.evaluation.ic_analysis import _MIN_CROSS_SAMPLES
 
@@ -408,26 +411,39 @@ class ResidualProjector:
         })
 
 
-def compute_residual_ic(
+def _norm_trade_date_str(d: object) -> str:
+    """panel/候选日期 → ISO ``YYYY-MM-DD``（``core.dates`` 单一真源）。
+
+    与 ``lift_test._daily_oos_rank_ic`` 同形态：两处若不一致，窗过滤与
+    下游 join 会静默错行而不报错（见 ``core.dates`` 模块 docstring）。
+    """
+    return iso_date_str(d) or ""
+
+
+def daily_residual_rank_ic(
     candidate: pl.DataFrame,
     lib_panel: LibraryPanel,
     fwd_returns: pl.DataFrame,
     *,
     ret_col: str = "fwd_ret_1d",
     projector: ResidualProjector | None = None,
-) -> ResidualICResult:
-    """对候选面板逐日残差化后算 Rank IC 均值（与 ``compute_rank_ic`` 同口径：逐日 Spearman 均值）。
+    start: str | None = None,
+    end: str | None = None,
+) -> pl.DataFrame:
+    """对候选面板逐日残差化后返回 Rank IC 日序列。
 
-    ``candidate``: [trade_date, ts_code, factor_value]
-    ``fwd_returns``: 须含 trade_date, ts_code, ``ret_col``（通常由 ``compute_fwd_returns`` 产出）。
-    只在单日截面内 lstsq / QR 投影；无跨日状态。
+    返回 ``[trade_date (Utf8), ic (Float64)]``，按 trade_date 升序。
+    逐日循环体与 ``compute_residual_ic`` 同构（同对齐、同
+    ``max(30, k+10)`` 日守卫、同 fill_nan/有限过滤、同 projector 快路径）。
 
-    ``projector``: 可选；传入时走 ``ResidualProjector.project_day`` 快路径（语义不变）。
+    ``start`` / ``end``：对归一后 YYYYMMDD 字符串做闭区间过滤；None=不裁该端。
+    无有效日 → 空帧（schema 固定）。
     """
+    empty = pl.DataFrame(schema={"trade_date": pl.Utf8, "ic": pl.Float64})
     if lib_panel is None or lib_panel.k == 0:
-        return ResidualICResult(float("nan"), 0)
+        return empty
     if candidate is None or candidate.is_empty():
-        return ResidualICResult(float("nan"), 0)
+        return empty
     if ret_col not in fwd_returns.columns:
         raise ValueError(f"fwd_returns 缺列 {ret_col!r}")
 
@@ -436,7 +452,7 @@ def compute_residual_ic(
         pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite()
     )
     if cand.is_empty():
-        return ResidualICResult(float("nan"), 0)
+        return empty
 
     # 只 join 收益：残差在 numpy 侧做，避免把库矩阵拉回 polars
     # P4c：fwd 与 candidate 的 ts_code 可能一侧 Categorical、一侧 Utf8
@@ -448,11 +464,15 @@ def compute_residual_ic(
         fwd_sel, on=["trade_date", "ts_code"], how="inner",
     ).filter(pl.col(ret_col).is_not_null() & pl.col(ret_col).is_finite())
     if joined.is_empty():
-        return ResidualICResult(float("nan"), 0)
+        return empty
 
     k = lib_panel.k
     min_n = _day_min_samples(k)
-    ics: list[float] = []
+    out_dates: list[str] = []
+    out_ics: list[float] = []
+    # 窗界与日期串统一走 iso_date_str：调用方传紧凑 YYYYMMDD 时直接比会静默错行
+    start_iso = iso_date_str(start)
+    end_iso = iso_date_str(end)
 
     # 按日 group：Python 层循环保证「无跨日拟合」的可审计结构
     for date, day_df in joined.group_by("trade_date", maintain_order=True):
@@ -460,6 +480,11 @@ def compute_residual_ic(
         d = date[0] if isinstance(date, tuple) else date
         di = lib_panel.date_idx.get(d)
         if di is None:
+            continue
+        d_str = _norm_trade_date_str(d)
+        if start_iso is not None and d_str < start_iso:
+            continue
+        if end_iso is not None and d_str > end_iso:
             continue
         codes = day_df["ts_code"].to_list()
         y = day_df["factor_value"].to_numpy().astype(np.float64, copy=False)
@@ -485,11 +510,52 @@ def compute_residual_ic(
             resid = residualize_cross_section(y_v, X_day)
         ic = _spearman(resid, ret_v)
         if ic is not None:
-            ics.append(ic)
+            out_dates.append(d_str)
+            out_ics.append(float(ic))
 
-    if not ics:
+    if not out_ics:
+        return empty
+    return (
+        pl.DataFrame(
+            {"trade_date": out_dates, "ic": out_ics},
+            schema={"trade_date": pl.Utf8, "ic": pl.Float64},
+        )
+        .sort("trade_date")
+    )
+
+
+def compute_residual_ic(
+    candidate: pl.DataFrame,
+    lib_panel: LibraryPanel,
+    fwd_returns: pl.DataFrame,
+    *,
+    ret_col: str = "fwd_ret_1d",
+    projector: ResidualProjector | None = None,
+) -> ResidualICResult:
+    """对候选面板逐日残差化后算 Rank IC 均值（与 ``compute_rank_ic`` 同口径：逐日 Spearman 均值）。
+
+    ``candidate``: [trade_date, ts_code, factor_value]
+    ``fwd_returns``: 须含 trade_date, ts_code, ``ret_col``（通常由 ``compute_fwd_returns`` 产出）。
+    只在单日截面内 lstsq / QR 投影；无跨日状态。
+
+    ``projector``: 可选；传入时走 ``ResidualProjector.project_day`` 快路径（语义不变）。
+
+    实现：``daily_residual_rank_ic`` 后取均值；空帧 → NaN / n_days=0。
+    """
+    daily = daily_residual_rank_ic(
+        candidate,
+        lib_panel,
+        fwd_returns,
+        ret_col=ret_col,
+        projector=projector,
+    )
+    if daily.is_empty():
         return ResidualICResult(float("nan"), 0)
-    return ResidualICResult(float(np.mean(ics)), len(ics))
+    # np.mean 保持与旧 ics 列表路径一致；规避 Series.mean 宽 union（mypy）
+    return ResidualICResult(
+        float(np.mean(daily["ic"].to_numpy())),
+        int(daily.height),
+    )
 
 
 def resolve_objective(objective: str | None, lib_nonempty: bool) -> str:

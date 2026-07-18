@@ -39,6 +39,7 @@ import numpy as np
 import polars as pl
 
 from factorzen.config.settings import FACTOR_LIBRARY_DIR
+from factorzen.core.dates import iso_date_str, with_iso_date
 from factorzen.core.stats import spearman_avg_rank
 from factorzen.discovery.guardrails import (
     DEFAULT_HOLDOUT_MIN_DAYS,
@@ -227,18 +228,18 @@ def _daily_oos_rank_ic(
     - 日截面 len < n_groups*2 → 跳过
     - spearman_avg_rank 返回 None（n<2 / 常数列 / 非有限）→ 跳过
 
-    ``start`` / ``end``：评分窗闭区间裁剪（trade_date 字符串比较，YYYYMMDD 安全）；
+    ``start`` / ``end``：评分窗闭区间裁剪；两端与序列本身统一经
+    ``core.dates`` 规范成 ISO，故传紧凑 ``YYYYMMDD`` 或 ``YYYY-MM-DD`` 等价。
     None 表示不裁该端。模型层（combine/CV）不经此裁剪——只影响返回的日 IC 序列。
     """
-    # 两侧都 cast:candidate 物化面板 trade_date 可能是 pl.Date(prepped 帧原生),
-    # ret 侧 Utf8——单侧 cast 会 SchemaError(2026-07-15 apply 全灭事故:38/38
-    # "join keys don't match")。日期字符串 YYYYMMDD 序与 Date 序一致。
-    rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
-    m = combined.with_columns(
-        pl.col("trade_date").dt.strftime("%Y%m%d")
-        if combined.schema.get("trade_date") == pl.Date
-        else pl.col("trade_date").cast(pl.Utf8)
-    )
+    # 两侧都规范成 ISO 再 join:candidate 物化面板 trade_date 常是 pl.Date
+    # (prepped 帧原生),ret 侧被 _build_ret_panel cast 成 ISO Utf8。
+    # 旧实现对 Date 走 "%Y%m%d" 而对 Utf8 走 cast,两侧形态不同 → join 零命中、
+    # 不报错 → IC 序列静默变空 → _mean_ic 哨兵 0.0 写进库(2026-07-18 实证:
+    # 库内 2 条 lift 轨记录 admission_ic 全为 0.0,致 forward_track 永判
+    # missing_sign)。形态规范化收口到 core.dates 单一真源。
+    rdf = with_iso_date(ret_df)
+    m = with_iso_date(combined)
     # P4c：combined.ts_code 可能 Categorical，ret 侧常为 Utf8 → 小帧 align 再 join
     if (
         "ts_code" in m.columns
@@ -265,10 +266,14 @@ def _daily_oos_rank_ic(
         {"trade_date": [d for d, _ in day_rows], "ic": [ic for _, ic in day_rows]},
         schema={"trade_date": pl.Utf8, "ic": pl.Float64},
     )
-    if start is not None:
-        out = out.filter(pl.col("trade_date") >= start)
-    if end is not None:
-        out = out.filter(pl.col("trade_date") <= end)
+    # 窗界同样过 iso_date_str：调用方可能传紧凑 YYYYMMDD，而序列是 ISO——
+    # 直接比会静默错行（"20260405" > "2026-04-10" 逐字符为真）
+    start_iso = iso_date_str(start)
+    end_iso = iso_date_str(end)
+    if start_iso is not None:
+        out = out.filter(pl.col("trade_date") >= start_iso)
+    if end_iso is not None:
+        out = out.filter(pl.col("trade_date") <= end_iso)
     return out
 
 
@@ -428,17 +433,20 @@ def _oos_rank_ic(combined: pl.DataFrame, ret_df: pl.DataFrame) -> float:
     return _mean_ic(_daily_oos_rank_ic(combined, ret_df))
 
 
-def paired_lift_stats(
-    cand_daily: pl.DataFrame,
-    base_daily: pl.DataFrame,
+def series_lift_stats(
+    ic_daily: pl.DataFrame,
     block_days: int = DEFAULT_BLOCK_DAYS,
 ) -> dict[str, Any]:
-    """配对日 lift + 块 SE + 半段稳定性。
+    """单序列 lift 统计内核：均值 + 块 SE + 半段稳定性。
 
-    - 两序列按 trade_date inner join；diff = cand_ic − base_ic
-    - 按时间序切连续 block（每块 ``block_days`` 交易日，尾块不足也算一块）
+    输入 ``[trade_date (可 cast Utf8), ic (Float64)]`` 日序列；``lift`` = 序列均值。
+    块切法 / SE / 半段 / 全零守卫与 ``paired_lift_stats`` 的 diff 路径同构：
+
+    - 空帧 / None → 全 None、n_blocks=0、n_days=0
+    - 先 ``sort("trade_date")``（cast Utf8 后字符串序）
     - ``lift_se`` = std(块均值, ddof=1) / √n_blocks；n_blocks < 2 → None
     - 半段按**块数**二等分（奇数块中位块归前半）
+    - 全日 ic 全 0 → lift=0.0、SE=None、半段照算
     """
     empty: dict[str, Any] = {
         "lift": None,
@@ -448,24 +456,17 @@ def paired_lift_stats(
         "lift_first_half": None,
         "lift_second_half": None,
     }
-    if cand_daily is None or base_daily is None:
-        return empty
-    if cand_daily.is_empty() or base_daily.is_empty():
+    if ic_daily is None or ic_daily.is_empty():
         return empty
 
-    c = cand_daily.select(
+    df = ic_daily.select(
         pl.col("trade_date").cast(pl.Utf8),
-        pl.col("ic").alias("cand_ic"),
-    )
-    b = base_daily.select(
-        pl.col("trade_date").cast(pl.Utf8),
-        pl.col("ic").alias("base_ic"),
-    )
-    joined = c.join(b, on="trade_date", how="inner").sort("trade_date")
-    if joined.is_empty():
+        pl.col("ic"),
+    ).sort("trade_date")
+    if df.is_empty():
         return empty
 
-    diffs = (joined["cand_ic"] - joined["base_ic"]).to_numpy().astype(float)
+    diffs = df["ic"].to_numpy().astype(float)
     n_days = len(diffs)
     lift = float(np.mean(diffs))
 
@@ -478,8 +479,7 @@ def paired_lift_stats(
         block_slices.append(chunk)
     n_blocks = len(block_means)
 
-    # 日 diff 全零：候选 IC ≡ 基线（常见于候选列未进模型/全缺）。
-    # SE=0 会像「高确信度零增量」；无信息时 SE 置 None，准入走 reject。
+    # 日序列全零：无信息增量。SE=0 会像「高确信度零」；无信息时 SE 置 None。
     if n_days > 0 and bool(np.all(diffs == 0)):
         mid0 = (n_blocks + 1) // 2
         first0 = block_slices[:mid0]
@@ -527,6 +527,52 @@ def paired_lift_stats(
         "lift_first_half": lift_first_half,
         "lift_second_half": lift_second_half,
     }
+
+
+def paired_lift_stats(
+    cand_daily: pl.DataFrame,
+    base_daily: pl.DataFrame,
+    block_days: int = DEFAULT_BLOCK_DAYS,
+) -> dict[str, Any]:
+    """配对日 lift + 块 SE + 半段稳定性。
+
+    - 两序列按 trade_date inner join；diff = cand_ic − base_ic
+    - 按时间序切连续 block（每块 ``block_days`` 交易日，尾块不足也算一块）
+    - ``lift_se`` = std(块均值, ddof=1) / √n_blocks；n_blocks < 2 → None
+    - 半段按**块数**二等分（奇数块中位块归前半）
+
+    统计内核见 ``series_lift_stats``（对 diff 序列调用）。
+    """
+    empty: dict[str, Any] = {
+        "lift": None,
+        "lift_se": None,
+        "n_blocks": 0,
+        "n_days": 0,
+        "lift_first_half": None,
+        "lift_second_half": None,
+    }
+    if cand_daily is None or base_daily is None:
+        return empty
+    if cand_daily.is_empty() or base_daily.is_empty():
+        return empty
+
+    c = cand_daily.select(
+        pl.col("trade_date").cast(pl.Utf8),
+        pl.col("ic").alias("cand_ic"),
+    )
+    b = base_daily.select(
+        pl.col("trade_date").cast(pl.Utf8),
+        pl.col("ic").alias("base_ic"),
+    )
+    joined = c.join(b, on="trade_date", how="inner").sort("trade_date")
+    if joined.is_empty():
+        return empty
+
+    diff_df = joined.select(
+        pl.col("trade_date"),
+        (pl.col("cand_ic") - pl.col("base_ic")).alias("ic"),
+    )
+    return series_lift_stats(diff_df, block_days=block_days)
 
 
 def lift_admission(

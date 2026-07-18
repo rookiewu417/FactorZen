@@ -932,6 +932,49 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     cfs.add_argument("--out-dir", default=str(COMBINATIONS_DIR), dest="out_dir")
     cfs.set_defaults(func=commands._cmd_combine_from_session)
 
+    # combine from-library: 因子库登记簿选品 → 四方法组合 OOS
+    def _parse_combine_statuses(s: str) -> tuple[str, ...]:
+        allowed = {"active", "probation", "correlated", "no_lift"}
+        parts = tuple(p.strip() for p in str(s).split(",") if p.strip())
+        if not parts:
+            raise argparse.ArgumentTypeError("--statuses 不能为空")
+        bad = [p for p in parts if p not in allowed]
+        if bad:
+            raise argparse.ArgumentTypeError(
+                f"--statuses 非法值 {bad}；允许 {sorted(allowed)}"
+            )
+        return parts
+
+    cfl = combine_sub.add_parser(
+        "from-library",
+        help="因子库选品 → 四方法组合 OOS（库登记簿的消费入口）",
+    )
+    cfl.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    )
+    cfl.add_argument(
+        "--statuses", type=_parse_combine_statuses, default=("active",),
+        help="逗号分隔 status 过滤（默认 active；可选 active/probation/correlated/no_lift）",
+    )
+    cfl.add_argument("--library-root", dest="library_root", default=None,
+                     help="因子库根目录（默认 workspace/factor_library）")
+    cfl.add_argument("--start", required=True, help="物化窗口起 YYYYMMDD")
+    cfl.add_argument("--end", required=True, help="物化窗口止 YYYYMMDD")
+    cfl.add_argument("--universe", default=None, help="票池(默认全A；含 python 因子时必填)")
+    cfl.add_argument("--horizon", type=int, default=5, help="前向收益持有期(交易日,默认5)")
+    cfl.add_argument("--top-n", dest="top_n", type=int, default=None, help="只取库前 N 个因子")
+    cfl.add_argument("--decorr-threshold", dest="decorr_threshold", type=float, default=0.7,
+                     help="贪心去相关阈值(|corr|>阈值剔除近亲；1.0 关闭，默认0.7)")
+    cfl.add_argument("--train-days", type=int, default=120, dest="train_days")
+    cfl.add_argument("--test-days", type=int, default=20, dest="test_days")
+    cfl.add_argument("--purge-days", type=int, default=5, dest="purge_days")
+    cfl.add_argument("--embargo-days", type=int, default=0, dest="embargo_days")
+    cfl.add_argument("--methods", default="all", help="逗号分隔或 all")
+    cfl.add_argument("--seed", type=int, default=0)
+    cfl.add_argument("--run-id", default=None, dest="run_id")
+    cfl.add_argument("--out-dir", default=str(COMBINATIONS_DIR), dest="out_dir")
+    cfl.set_defaults(func=commands._cmd_combine_from_library)
+
     # ── ops:无人值守运营 ──
     ops = sub.add_parser("ops", help="无人值守运营(每日链路)")
     ops_sub = ops.add_subparsers(dest="ops_command", required=True)

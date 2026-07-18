@@ -239,8 +239,9 @@ def test_materialize_python_panel_offline(monkeypatch):
     )
 
     start, end = "20240110", "20240115"
+    # 显式关缓存：本测关注物化语义，避免写真实 DATA_CACHE
     out = materialize_python_panel(
-        "fake_py_factor", start, end, "csi300", market="ashare",
+        "fake_py_factor", start, end, "csi300", market="ashare", use_cache=False,
     )
     assert set(out.columns) == {"trade_date", "ts_code", "factor_value"}
     # 过滤后只剩 [start, end] 且无扩窗哨兵值
@@ -257,7 +258,9 @@ def test_materialize_python_panel_offline(monkeypatch):
 
     # 非 ashare
     with pytest.raises(ValueError, match=r"A股|ashare"):
-        materialize_python_panel("x", start, end, "csi300", market="crypto")
+        materialize_python_panel(
+            "x", start, end, "csi300", market="crypto", use_cache=False,
+        )
 
     # 未注册
     def _boom(name):
@@ -265,7 +268,9 @@ def test_materialize_python_panel_offline(monkeypatch):
 
     monkeypatch.setattr(reg_mod, "get_factor", _boom)
     with pytest.raises(ValueError, match=r"未注册|not registered|未知"):
-        materialize_python_panel("no_such", start, end, "csi300", market="ashare")
+        materialize_python_panel(
+            "no_such", start, end, "csi300", market="ashare", use_cache=False,
+        )
 
     # restore property ref unused
     _ = real_expanded

@@ -309,3 +309,209 @@ def combine_from_session(
     res["factors_used"] = [e for e, _ in kept]
     res["dropped_correlated"] = dropped
     return res
+
+
+def combine_from_library(
+    *,
+    market: str = "ashare",
+    statuses: tuple[str, ...] = ("active",),
+    library_root: str | None = None,
+    start: str,
+    end: str,
+    universe: str | None = None,
+    horizon: int = 5,
+    top_n: int | None = None,
+    decorr_threshold: float = 0.7,
+    out_dir: str = str(COMBINATIONS_DIR),
+    train_days: int = 120,
+    test_days: int = 20,
+    purge_days: int = 5,
+    embargo_days: int = 0,
+    methods: list[str] | None = None,
+    seed: int = 0,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """因子库登记簿 → 选品 → 物化 → 贪心去相关 → 四方法 OOS 组合。
+
+    与 ``combine_from_session`` 同构的消费闭环，但数据源是 ``factor_library``
+    （expression + python 统一登记簿），而非挖掘 session 的 candidates.csv。
+
+    约束：
+    - 选品按 ``|ic_train|`` 降序（与 ``build_library_pool`` 同序）；``top_n`` 截断
+      必须记 ``truncated_from``（禁止静默 cap）。
+    - python 型在组合路径 **fail-loudly**：``universe is None`` 且存在 python 记录
+      → ``ValueError``（与库池「跳过+告警」不同——组合少一条腿直接改实验结论）。
+    - 单记录物化失败跳过并记入 ``skipped_materialize``（与 from-session except-continue 同款）。
+    - 落盘/组合报告用可读 ``name``，不用 ``factor_{i}``。
+    """
+    import tempfile
+    from datetime import datetime
+    from pathlib import Path
+
+    from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
+    from factorzen.discovery.evaluation import _factor_df_from_prepped, _preprocess_daily
+    from factorzen.discovery.expression import parse_expr
+    from factorzen.discovery.factor_library import (
+        DEFAULT_ROOT,
+        _is_python_record,
+        _materialize_python_on_grid,
+        _normalize,
+        _pool_date_bounds,
+        _python_name_from_expression,
+        default_name_for_expression,
+        is_python_identity,
+        library_file_hash,
+        load_library,
+    )
+    from factorzen.discovery.preparation import (
+        expressions_need_intraday,
+        intraday_expr_leaf_names,
+    )
+    from factorzen.pipelines.factor_mine import prepare_mining_daily
+
+    root = library_root if library_root is not None else DEFAULT_ROOT
+    recs = [r for r in load_library(market, root=root) if r.status in statuses]
+    # 与 build_library_pool 同序：|ic_train| 降序，expression 作稳定 tie-break
+    recs.sort(key=lambda r: (-abs(r.ic_train or 0.0), r.expression))
+
+    truncated_from: int | None = None
+    if top_n is not None and len(recs) > top_n:
+        truncated_from = len(recs)
+        recs = recs[:top_n]
+
+    if len(recs) < 2:
+        raise ValueError(
+            f"因子库不足 2 个（得 {len(recs)}，statuses={statuses}）；"
+            f"放宽 statuses 或先挖矿/lift-test 入库。"
+        )
+
+    # 组合选品不许静默缺腿：有 python 记录就必须给 universe
+    if universe is None and any(_is_python_record(r) for r in recs):
+        raise ValueError(
+            "combine from-library：选品含 python 型因子时 universe 必填"
+            "（组合路径 fail-loudly，不同于库池的跳过+告警）。"
+        )
+
+    # 可读名：r.name 优先；expression 缺省 mined_sha；python 剥哨兵。同名防御追加 _2
+    used_names: set[str] = set()
+
+    def _resolve_name(r) -> str:
+        if _is_python_record(r):
+            base = r.name or _python_name_from_expression(r.expression) or "python_factor"
+        else:
+            base = r.name or default_name_for_expression(_normalize(r.expression))
+        if base not in used_names:
+            used_names.add(base)
+            return base
+        i = 2
+        while f"{base}_{i}" in used_names:
+            i += 1
+        n = f"{base}_{i}"
+        used_names.add(n)
+        return n
+
+    named_recs: list[tuple[str, Any]] = [(_resolve_name(r), r) for r in recs]
+    factors_status = {name: r.status for name, r in named_recs}
+
+    # 日内自动装帧：与 from-session 同款，但跳过 py:: 哨兵（词法 ix_ 假阳性；
+    # 一期 CLI lift-test 同款处理）
+    _exprs = [
+        str(r.expression or "")
+        for _n, r in named_recs
+        if not is_python_identity(str(r.expression or ""))
+    ]
+    need_intraday = expressions_need_intraday(_exprs)
+    ix_leaves = intraday_expr_leaf_names(_exprs)
+    daily = prepare_mining_daily(
+        start, end, universe,
+        intraday=need_intraday or bool(ix_leaves),
+        intraday_expr_leaves=ix_leaves or None,
+    )
+    prepped = _preprocess_daily(daily)  # 预处理一次，逐因子复用
+    start_date = datetime.strptime(start, "%Y%m%d").date()
+    pool_start, pool_end = _pool_date_bounds(prepped)
+
+    # 物化：expression → _factor_df_from_prepped；python → _materialize_python_on_grid
+    materialized: list[tuple[str, pl.DataFrame]] = []
+    skipped_materialize: list[str] = []
+    for name, r in named_recs:
+        identity = str(r.expression or name)
+        try:
+            if _is_python_record(r):
+                panel = _materialize_python_on_grid(
+                    r, prepped,
+                    market=market,
+                    universe=universe,
+                    python_materializer=None,
+                    start=pool_start,
+                    end=pool_end,
+                )
+                if panel is None:
+                    skipped_materialize.append(identity)
+                    continue
+                fdf = (
+                    panel.filter(pl.col("trade_date") >= start_date)
+                    .select(["trade_date", "ts_code", "factor_value"])
+                )
+                if fdf.is_empty():
+                    skipped_materialize.append(identity)
+                    continue
+            else:
+                fdf = _factor_df_from_prepped(
+                    parse_expr(r.expression), prepped, eval_start=start_date,
+                )
+                fdf = fdf.select(["trade_date", "ts_code", "factor_value"])
+        except Exception:
+            skipped_materialize.append(identity)
+            continue
+        materialized.append((name, fdf))
+
+    if len(materialized) < 2:
+        raise ValueError(
+            f"可物化的库因子不足 2 个（得 {len(materialized)}，"
+            f"跳过 {len(skipped_materialize)}）。"
+        )
+
+    kept, dropped = _greedy_decorrelate(materialized, decorr_threshold)
+    if len(kept) < 2:
+        raise ValueError(
+            f"去相关后库因子不足 2 个（得 {len(kept)}，剔除 {len(dropped)} 个高相关近亲）；"
+            f"放宽 decorr_threshold 或多挖正交因子。"
+        )
+
+    # 落盘：文件名 = 可读 name（组合报告里取代 factor_{i}）
+    work = Path(tempfile.mkdtemp(prefix="combine_lib_"))
+    factor_files: list[str] = []
+    for name, fdf in kept:
+        # 文件名安全：去掉路径分隔符
+        safe = name.replace("/", "_").replace("\\", "_")
+        p = work / f"{safe}.parquet"
+        fdf.write_parquet(p)
+        factor_files.append(str(p))
+
+    price_col = "close_adj" if "close_adj" in daily.columns else "close"
+    fwd = compute_fwd_returns(daily.sort(["ts_code", "trade_date"]), horizons=[horizon],
+                              price_col=price_col)
+    ret = (
+        fwd.filter(pl.col("trade_date") >= start_date)
+        .select(["trade_date", "ts_code", pl.col(f"fwd_ret_{horizon}d").alias("ret")])
+        .filter(pl.col("ret").is_not_null())
+    )
+    ret_file = work / "ret.parquet"
+    ret.write_parquet(ret_file)
+
+    res = run_factor_combination(
+        factor_files=factor_files, ret_file=str(ret_file),
+        train_days=train_days, test_days=test_days, purge_days=purge_days,
+        embargo_days=embargo_days, methods=methods, seed=seed,
+        out_dir=out_dir, run_id=run_id, command=["combine", "from-library"],
+    )
+    res["factors_used"] = [n for n, _ in kept]
+    res["factors_status"] = factors_status
+    res["dropped_correlated"] = dropped
+    res["skipped_materialize"] = skipped_materialize
+    res["library_hash"] = library_file_hash(market, root)
+    res["market"] = market
+    res["statuses"] = list(statuses)
+    res["truncated_from"] = truncated_from
+    return res

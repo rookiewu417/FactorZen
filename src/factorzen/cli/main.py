@@ -2690,6 +2690,57 @@ def _cmd_combine_from_session(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_combine_from_library(args: argparse.Namespace) -> int:
+    """因子库选品 → 物化 → 四方法 OOS；ValueError → stderr + exit 2。"""
+    from factorzen.pipelines.factor_combine import combine_from_library
+
+    methods = None if args.methods == "all" else args.methods.split(",")
+    statuses = args.statuses
+    if isinstance(statuses, str):
+        statuses = tuple(p.strip() for p in statuses.split(",") if p.strip())
+    try:
+        res = combine_from_library(
+            market=args.market,
+            statuses=tuple(statuses),
+            library_root=args.library_root,
+            start=args.start,
+            end=args.end,
+            universe=args.universe,
+            horizon=args.horizon,
+            top_n=args.top_n,
+            decorr_threshold=args.decorr_threshold,
+            methods=methods,
+            seed=args.seed,
+            out_dir=args.out_dir,
+            run_id=args.run_id,
+            train_days=args.train_days,
+            test_days=args.test_days,
+            purge_days=args.purge_days,
+            embargo_days=args.embargo_days,
+        )
+    except ValueError as exc:
+        print(f"[combine] {exc}", file=sys.stderr)
+        return 2
+
+    n_selected = len(res.get("factors_status") or {})
+    n_skipped = len(res.get("skipped_materialize") or [])
+    n_mat = n_selected - n_skipped
+    n_drop = len(res.get("dropped_correlated") or [])
+    print(f"[combine] 库→组合完成 → {res['run_dir']}")
+    print(
+        f"[combine] 选品 {n_selected}、物化成功 {n_mat}、"
+        f"去相关剔除 {n_drop}、纳入 {len(res['factors_used'])}"
+    )
+    if res.get("truncated_from") is not None:
+        print(f"[combine] top_n 截断自 {res['truncated_from']}")
+    for d in res.get("dropped_correlated") or []:
+        print(
+            f"[combine]   ✗ {d['expression']} → 与 {d['corr_with']} 相关 {d['corr']:.2f}"
+        )
+    print(res["comparison"])
+    return 0
+
+
 def _ops_as_of(date_arg: str | None):
     from datetime import date as _date
 

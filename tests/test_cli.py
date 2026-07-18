@@ -254,3 +254,28 @@ def test_data_fetch_margin_detail(monkeypatch):
         == 0
     )
     assert calls == [("20240101", "20240131")]
+
+
+def test_every_subparser_help_renders():
+    """argparse 对 help 串做 % 格式化——未转义的 % 会让 --help 直接崩。
+
+    遍历全部 subparser 递归 format_help()，任一节点抛异常即失败。
+    """
+    import argparse
+
+    from factorzen.cli.main import build_parser
+
+    def walk(parser: argparse.ArgumentParser, path: str) -> list[str]:
+        failures: list[str] = []
+        try:
+            parser.format_help()
+        except Exception as exc:  # noqa: BLE001 - 汇总全部失败点再报
+            failures.append(f"{path}: {type(exc).__name__}: {exc}")
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, sub in action.choices.items():
+                    failures.extend(walk(sub, f"{path} {name}"))
+        return failures
+
+    failures = walk(build_parser(), "fz")
+    assert not failures, "以下命令的 --help 无法渲染:\n" + "\n".join(failures)

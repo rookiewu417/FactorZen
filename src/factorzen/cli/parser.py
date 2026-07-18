@@ -700,7 +700,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     )
     fl_fr.add_argument(
         "--se-mult", dest="se_mult", type=float, default=1.645,
-        help="块 SE 乘数（默认 1.645≈单侧 95%）",
+        help="块 SE 乘数（默认 1.645≈单侧 95%%）",
     )
     fl_fr.add_argument(
         "--block-days", dest="block_days", type=int, default=20,

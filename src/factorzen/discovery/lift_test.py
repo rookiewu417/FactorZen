@@ -367,14 +367,22 @@ def make_lift_context(
     admission_start: str | None = None,
     admission_end: str | None = None,
     library_root: str = str(FACTOR_LIBRARY_DIR),
+    prepped: pl.DataFrame | None = None,
 ) -> LiftEvalContext:
     """构造 ``LiftEvalContext``：``_preprocess_daily(daily, profile)`` 恰好一次并 sort。
 
     baseline 与 candidate 此后共用同一 ``prepped``（对称性的根）。
+
+    ``prepped``：可选；session 已有同源 prep 帧时传入，跳过内部 ``_preprocess_daily``
+    （须与 ``daily``/profile 同源——与 mine 评估帧同一契约；CLI 注释铁律）。
+    传入帧会 sort(ts_code, trade_date) 以保证与默认路径一致。
     """
     from factorzen.discovery.evaluation import _preprocess_daily
 
-    prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
+    if prepped is None:
+        prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
+    else:
+        prepped = prepped.sort(["ts_code", "trade_date"])
     profile_name = getattr(profile, "name", None) if profile is not None else None
     return LiftEvalContext(
         market=market,

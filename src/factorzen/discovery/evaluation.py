@@ -108,7 +108,8 @@ def _node_to_factor_df(node, daily: pl.DataFrame,
 
 
 def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5,
-                      profile=None, leaf_map=None):
+                      profile=None, leaf_map=None,
+                      prepped: pl.DataFrame | None = None):
     """建一个「表达式 → 诊断信息 | None」的检查器，供自愈循环回灌 LLM。
 
     ``profile`` / ``leaf_map``：市场 profile 与叶子映射（默认 None → A 股，零回归）。crypto
@@ -121,8 +122,11 @@ def make_health_check(daily: pl.DataFrame, *, max_null_ratio: float = 0.5,
     表达式（PR #61 嵌套 .over() bug 同型），旧循环只查 parse，一次修正机会都不给。
 
     返回 None 表示健康。daily 只在建检查器时预处理一次（`add_derived_columns` 较重）。
+
+    ``prepped``：可选；非 None 时跳过内部 ``_preprocess_daily``，直接用调用方已 prep
+    的帧（须与求值同源、同 profile）。session 级复用时传入以避免重复全帧 prep。
     """
-    df = _preprocess_daily(daily, profile)
+    df = prepped if prepped is not None else _preprocess_daily(daily, profile)
 
     def check(expr: str) -> str | None:
         try:
@@ -210,6 +214,7 @@ def evaluate_expressions(
     expr_strs: list[str], daily: pl.DataFrame, bundle,
     *, eval_start=None, eval_end=None, profile=None,
     seen_fingerprints: set[str] | None = None,
+    prepped: pl.DataFrame | None = None,
 ) -> list[dict]:
     """批量评估表达式集。非法表达式（parse_expr 抛 ValueError）记 compile_ok=False。
 
@@ -221,6 +226,12 @@ def evaluate_expressions(
     非 None 时由调用方持有跨轮持久 set：fdf 物化成功后、``quick_fitness`` 前算指纹；
     已见 → ``error="duplicate_fingerprint"``、``ic_train=None``、``n_train=0``、
     ``compile_ok=True``（与预热不足同形态：不进 N、进 attempts 审计）；新指纹加入 set。
+
+    ``prepped``：可选已 ``_preprocess_daily`` 的帧。``None``（默认）→ 内部对 ``daily``
+    做 prep（零回归）；非 None → **跳过**内部 prep，直接用传入帧求值。
+    **契约**：``prepped`` 必须与 ``daily`` 同源（同一行集/键序语义）、且 profile 一致
+    （派生列与停牌掩码同口径）；调用方在 frames 变更（如 intraday scout 注入新 ix_* 列）
+    后必须重建 prepped，绝不可用缺列的旧缓存继续评估（会静默 compile 失败或全 null）。
 
     `daily` 是**含预热段的完整帧**；`eval_start`/`eval_end` 是 train 段边界。
     求值在整帧上做、再裁剪到该区间——与 holdout 段同一条路径（`nodes.py` 的
@@ -244,7 +255,8 @@ def evaluate_expressions(
             "预热噪声进 train IC 序列的 bug——两者必须同传或都不传。"
         )
 
-    prepped = _preprocess_daily(daily, profile)  # 整帧只预处理一次（add_derived_columns 较重）
+    if prepped is None:
+        prepped = _preprocess_daily(daily, profile)  # 整帧只预处理一次
     leaf_map = profile.factors.leaf_features() if profile is not None else None
     results: list[dict] = []
     for s in expr_strs:

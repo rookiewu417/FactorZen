@@ -95,15 +95,17 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     # 市场上下文（profile=None → A 股默认）：叶子集/映射/市场名，供 budgets 与各 node 透传。
     from factorzen.agents.nodes import AgentContext
     ctx = AgentContext.from_profile(profile)
-    # 开局摘死叶（与 team / M1 同口径；prep 帧与求值一致，避免派生列误摘）
+    # session 级单次 prep：leaf_health / budgets / lib_pool / 每轮 evaluate 共用；
+    # scout 注入新列后重建（见循环内）。
     from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.leaf_health import (
         apply_leaf_exclusion,
         filter_leaves_by_holdout_coverage,
         log_excluded_leaves,
     )
+    session_prepped = _preprocess_daily(daily, profile)
     _kept, excluded_leaves = filter_leaves_by_holdout_coverage(
-        _preprocess_daily(daily, profile), list(ctx.leaf_names), holdout_start,
+        session_prepped, list(ctx.leaf_names), holdout_start,
         leaf_map=ctx.leaf_map,
     )
     log_excluded_leaves(excluded_leaves, prefix="mine-agent")
@@ -112,10 +114,9 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     )
     leaf_budgets: dict[str, int] | None = None
     if _eval_start_date is not None:
-        from factorzen.discovery.evaluation import _preprocess_daily
         from factorzen.discovery.expression import leaf_warmup_budgets
         _all_budgets = leaf_warmup_budgets(
-            _preprocess_daily(daily, profile), _eval_start_date, ctx.leaf_names,
+            session_prepped, _eval_start_date, ctx.leaf_names,
             leaf_map=ctx.leaf_map)
         leaf_budgets = {k: v for k, v in _all_budgets.items() if v < AGENT_WARMUP_LOOKBACK}
     ledger = TrialLedger()
@@ -133,8 +134,6 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     library_crowded: list[tuple[str, int]] | None = None
     if library_orthogonal:
         try:
-
-            from factorzen.discovery.evaluation import _preprocess_daily
             from factorzen.discovery.factor_library import (
                 DEFAULT_ROOT,
                 build_library_pool,
@@ -142,9 +141,10 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             )
             market = getattr(profile, "name", None) or "ashare"
             lib_root = library_root or DEFAULT_ROOT
-            _prepped = _preprocess_daily(daily, profile)
+            # eval_start:裁预热前缀(与 team 同理;None 不裁零回归)
             lib_pool = build_library_pool(
-                market, _prepped, ctx.leaf_map, root=lib_root,
+                market, session_prepped, ctx.leaf_map, root=lib_root,
+                eval_start=_eval_start_date,
             )
             covered, crowded = library_covered_by_family(
                 market, per_family=2, max_total=12, root=lib_root,
@@ -207,6 +207,9 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                 mining_df = _frames["mining"]
                 holdout_df = _frames["holdout"]
                 daily = _frames["daily"]
+                # scout 注入新 ix_* 后，旧 session_prepped 缺列 → 重建
+                if any(c not in session_prepped.columns for c in daily.columns):
+                    session_prepped = _preprocess_daily(daily, profile)
                 if scout_state.injected:
                     _step(f"  ⓪ Scout 注入叶: {scout_state.injected}")
             except Exception as exc:
@@ -231,7 +234,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             state = node_evaluate(state, daily=mining_df, bundle=bundle,
                                   eval_start=_eval_start_date, eval_end=_eval_end_date,
                                   warmup_daily=daily, profile=profile,
-                                  leaf_budgets=leaf_budgets)
+                                  leaf_budgets=leaf_budgets, prepped=session_prepped)
             _step("  ③ 防过拟合护栏（DSR / holdout / CI / 去相关 / 库级正交）")
             state = node_guardrails(state, daily=mining_df, holdout_df=holdout_df,
                                     bundle=bundle, ledger=ledger, top_k=top_k,

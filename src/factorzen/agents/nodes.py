@@ -142,7 +142,8 @@ def node_generate(state: AgentState, llm_fn: LLMFn, *, daily, bundle,
 
 def node_evaluate(state: AgentState, *, daily, bundle,
                   eval_start=None, eval_end=None, warmup_daily=None, profile=None,
-                  leaf_budgets: dict[str, int] | None = None) -> AgentState:
+                  leaf_budgets: dict[str, int] | None = None,
+                  prepped=None) -> AgentState:
     """对暂存表达式批量评估，写 AttemptRecord + 更新 seen。
 
     ``eval_start``/``eval_end``：会话级 train 段边界（date，或 None）。**None-gating**：
@@ -159,6 +160,8 @@ def node_evaluate(state: AgentState, *, daily, bundle,
 
     ``leaf_budgets``：短历史叶子可用预热预算；非空时评估前 ``clamp_window_literals``（W5b）。
     指纹去重走 ``state.seen_fingerprints``（session 级，W4）。
+
+    ``prepped``：session 级已 prep 帧（可选）；透传 ``evaluate_expressions`` 跳过内部 prep。
     """
     pending = getattr(state, "_pending", [])
     exprs = [p.expression for p in pending]
@@ -184,12 +187,12 @@ def node_evaluate(state: AgentState, *, daily, bundle,
         results = evaluate_expressions(
             exprs, warmup_daily, bundle,
             eval_start=eval_start, eval_end=eval_end, profile=profile,
-            seen_fingerprints=state.seen_fingerprints,
+            seen_fingerprints=state.seen_fingerprints, prepped=prepped,
         )
     else:
         results = evaluate_expressions(
             exprs, daily, bundle, profile=profile,
-            seen_fingerprints=state.seen_fingerprints,
+            seen_fingerprints=state.seen_fingerprints, prepped=prepped,
         )
     for p, r in zip(pending, results, strict=True):
         state.attempts.append(AttemptRecord(

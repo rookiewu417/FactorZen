@@ -1019,6 +1019,32 @@ def run_team_agent(
             library_root=library_root, top_k=top_k, horizon=horizon,
             run_id=session_run_id)
 
+    # ── lift 基线复用 session 库池(v25 探针死点:lift 内部 build_library_pool
+    # 在父进程重新逐因子求值 87 库因子,全 A 在 ⑤ 后余量上直接 OOM)────────────
+    # 语义守卫:upsert(上方)在 lift 前,基线须含本 session 新升 active 的因子。
+    # 仅当「upsert 后库 active 键集 == session lib_pool 键集」(0 新增,探针/收敛
+    # 期常态)才传 lib_pool——此时两者仅差 eval_start 预热前缀裁剪,而 lift 评分
+    # /build_panel 全在 admission 窗(⊆ 裁剪后窗)、baseline_hash 只依赖键集,
+    # 逐值等价。键集有变 → 保持 None 让 lift 自建(语义正确优先,内存回退现状)。
+    if lift_active_factor_dfs is None and lib_pool:
+        try:
+            from factorzen.discovery.factor_library import load_library
+            _active_now = {
+                r.expression for r in load_library(market, root=lib_root)
+                if r.status == "active"
+            }
+            if _active_now == set(lib_pool.keys()):
+                lift_active_factor_dfs = lib_pool
+                _step("lift 基线 ▸ 复用 session 库池(库 active 集未变,免重物化)")
+            else:
+                _step(
+                    f"lift 基线 ▸ 库 active 集已变({len(lib_pool)}→"
+                    f"{len(_active_now)}),重新物化"
+                )
+        except Exception as exc:
+            _LOG.warning("lift 基线复用检查失败,回退重物化: %s: %s",
+                         type(exc).__name__, exc)
+
     # ── session 末自动 lift 钩子（写 manifest 前；失败不杀死挖掘 session）────
     lift_meta = _session_end_auto_lift(
         state,

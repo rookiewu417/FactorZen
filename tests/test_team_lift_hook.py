@@ -841,3 +841,103 @@ def test_session_end_auto_lift_uses_explicit_horizon(monkeypatch):
         horizon=3,
     )
     assert meta3.get("horizon") == 3
+
+
+def _lift_baseline_spy_meta() -> dict:
+    return {
+        "n_lift_queue": 0, "lift_group": None, "lift_results": [],
+        "lift_admissions": {"added_active": 0, "added_probation": 0},
+        "n_lift_evaluated": 0, "lift_dropped_coverage": [],
+        "lift_error": None,
+    }
+
+
+def test_lift_baseline_reuses_session_pool_when_active_set_unchanged(
+    monkeypatch, tmp_path: Path,
+):
+    """库 active 集与 session lib_pool 键集一致 → 钩子收到 lib_pool（免重物化）。"""
+    from tests.test_library_pool_compact import _write_lib
+
+    lib_root = tmp_path / "lib"
+    _write_lib(lib_root, "ashare", [
+        {"expression": "rank(close)", "market": "ashare", "status": "active",
+         "ic_train": 0.05},
+    ])
+
+    captured: dict = {}
+
+    def spy_hook(*a, **k):
+        captured.update(k)
+        return _lift_baseline_spy_meta()
+
+    monkeypatch.setattr(
+        "factorzen.agents.team_orchestrator._session_end_auto_lift", spy_hook,
+    )
+
+    hyp = json.dumps({"hypotheses": ["动量"]})
+    code = json.dumps({"expressions": ["ts_mean(close,5)"]})
+    crit = json.dumps({"verdict": "keep", "reason": "ok"})
+    seq = [hyp, code, crit] * 10
+    i = {"k": 0}
+
+    def fn(messages):
+        v = seq[i["k"] % len(seq)]
+        i["k"] += 1
+        return v
+
+    run_team_agent(
+        _mock_daily(), fn, n_rounds=1, seed=1,
+        index_path=str(tmp_path / "e.jsonl"), heal_rounds=0,
+        auto_lift=True, update_library=False,
+        library_root=str(lib_root),
+    )
+    baseline = captured.get("active_factor_dfs")
+    assert baseline is not None, "库 active 集未变时应复用 session lib_pool"
+    assert set(baseline.keys()) == {"rank(close)"}
+
+
+def test_lift_baseline_rebuilds_when_active_set_differs(
+    monkeypatch, tmp_path: Path,
+):
+    """库 active 集与 lib_pool 键集不一致（如库含无法物化的 active）→ 钩子收到 None。"""
+    from tests.test_library_pool_compact import _write_lib
+
+    lib_root = tmp_path / "lib"
+    # bogus 叶子无法物化 → build_library_pool skip → lib_pool 键集 ⊂ 库 active 集
+    _write_lib(lib_root, "ashare", [
+        {"expression": "rank(close)", "market": "ashare", "status": "active",
+         "ic_train": 0.05},
+        {"expression": "rank(bogus_leaf_xyz)", "market": "ashare",
+         "status": "active", "ic_train": 0.04},
+    ])
+
+    captured: dict = {}
+
+    def spy_hook(*a, **k):
+        captured.update(k)
+        return _lift_baseline_spy_meta()
+
+    monkeypatch.setattr(
+        "factorzen.agents.team_orchestrator._session_end_auto_lift", spy_hook,
+    )
+
+    hyp = json.dumps({"hypotheses": ["动量"]})
+    code = json.dumps({"expressions": ["ts_mean(close,5)"]})
+    crit = json.dumps({"verdict": "keep", "reason": "ok"})
+    seq = [hyp, code, crit] * 10
+    i = {"k": 0}
+
+    def fn(messages):
+        v = seq[i["k"] % len(seq)]
+        i["k"] += 1
+        return v
+
+    run_team_agent(
+        _mock_daily(), fn, n_rounds=1, seed=1,
+        index_path=str(tmp_path / "e.jsonl"), heal_rounds=0,
+        auto_lift=True, update_library=False,
+        library_root=str(lib_root),
+    )
+    assert captured.get("active_factor_dfs") is None, (
+        "库 active 集与 lib_pool 键集不一致时必须回退 lift 自建基线"
+    )

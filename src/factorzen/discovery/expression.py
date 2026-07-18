@@ -440,15 +440,24 @@ def evaluate_materialized(
     work = df.select([c for c in df.columns if c in _needed])
     counter = [0]
 
-    def rec(n: Node) -> pl.Expr:
+    # 消费即弃:AST 是树,每个 __mz 中间列恰被其父节点消费一次——父节点物化后
+    # 立即 drop 已消费的子 __mz 列(叶列可能被多分支复用,绝不 drop)。
+    # 否则深嵌套(如 11 物化节点)work 一路膨胀,每次 with_columns/concat 全列复制,
+    # 峰值 ≈ 3×膨胀后 work(隔离实验:单表达式增量峰值 4G,v13 探针 #59 号实锤)。
+    # rec 返回 (expr, 本 expr 携带的待消费 __mz 列名集)。
+    def rec(n: Node) -> tuple[pl.Expr, set[str]]:
         nonlocal work
         if isinstance(n, Feature):
-            return pl.col(lm[n.name])
+            return pl.col(lm[n.name]), set()
         if isinstance(n, Constant):
-            return pl.lit(float(n.value))
+            return pl.lit(float(n.value)), set()
         if isinstance(n, OpNode):
             spec = OPERATORS[n.op]
-            child_exprs = [rec(c) for c in n.children]
+            child_results = [rec(c) for c in n.children]
+            child_exprs = [e for e, _ in child_results]
+            pending: set[str] = set()
+            for _, deps in child_results:
+                pending |= deps
             expr = spec.build(child_exprs, n.window)
             if spec.category in ("ts", "cs"):
                 name = f"__mz{counter[0]}"
@@ -462,11 +471,13 @@ def evaluate_materialized(
                     work = _materialize_ts_chunked(work, expr, name, n.window)
                 else:
                     work = work.with_columns(expr.alias(name))
-                return pl.col(name)
-            return expr
+                if pending:
+                    work = work.drop(list(pending))
+                return pl.col(name), {name}
+            return expr, pending
         raise TypeError(f"无法求值节点: {n!r}")
 
-    final_expr = rec(node)
+    final_expr, _final_deps = rec(node)
     return work.with_columns(final_expr.alias("__f"))["__f"]
 
 

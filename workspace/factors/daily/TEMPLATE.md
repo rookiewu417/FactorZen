@@ -62,3 +62,11 @@ pixi run fz factor run my_daily_alpha --start 20230101 --end 20241231 --universe
 - 因子值只使用当前日期及以前可获得的数据。
 - 输出列名固定为 `factor_value`，不要输出多个因子列。
 - 如果公式依赖估值、市值或换手字段，先把对应数据类型加入 `required_data`。
+
+---
+
+## 相关文档
+
+- [因子编写指南](../../../docs/guides/factor-authoring.md) —— 完整接口说明、如何让手写因子进因子库
+- [因子库与增量准入](../../../docs/concepts/factor-library.md) —— 因子入库的裁决机制
+- [CLI 参考](../../../docs/reference/cli.md) —— `fz factor` 全部参数

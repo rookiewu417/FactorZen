@@ -55,3 +55,11 @@ pixi run fz factor run my_monthly_alpha --frequency monthly --start 20230101 --e
 - 月频信号不要输出日频全量结果，否则换手和 IC 会被按日频解释。
 - 如果使用 `daily_basic` 中的市值暴露，是否还需要中性化应交给 YAML 配置决定。
 - 财务字段必须有披露日或可得性约束，没有把握时不要把它当成月末已知。
+
+---
+
+## 相关文档
+
+- [因子编写指南](../../../docs/guides/factor-authoring.md) —— 完整接口说明、如何让手写因子进因子库
+- [因子库与增量准入](../../../docs/concepts/factor-library.md) —— 因子入库的裁决机制
+- [CLI 参考](../../../docs/reference/cli.md) —— `fz factor` 全部参数

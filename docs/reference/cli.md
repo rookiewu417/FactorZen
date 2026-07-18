@@ -1166,8 +1166,9 @@ pixi run -- fz ops status --config deploy/ops.example.yaml --date 20241231
 
 ## 相关文档
 
-- [架构说明](../architecture.md) — 各能力模块如何组织与衔接
-- [端到端教程](../end-to-end-tutorial.md) — 从零跑通一条完整研究链路
-- [运行手册](../runbook.md) — 日常操作与故障排查
-- [因子编写](../factor-authoring.md) — 自定义因子的写法
-- [日内特征](../intraday-features.md) — 日内特征面板的构建与消费
+- [架构](../concepts/architecture.md) — 各能力模块如何组织与衔接
+- [因子库与增量准入](../concepts/factor-library.md) — 平台核心裁决机制
+- [端到端教程](../getting-started/end-to-end-tutorial.md) — 从零跑通一条完整研究链路
+- [因子编写](../guides/factor-authoring.md) — 自定义因子的写法
+- [因子挖掘](../guides/mining.md) — 表达式搜索、LLM 挖掘、日内叶子
+- [配置参考](configuration.md) · [产物布局](artifacts.md) · [环境变量](environment.md) · [数据源与口径](data-sources.md)

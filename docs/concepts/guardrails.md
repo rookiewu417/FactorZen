@@ -62,7 +62,9 @@ holdout 段与训练/验证期严格分离，用于最终验收。
 
 > ℹ️ 这个模块有一条硬性架构守卫：**它必须调用生产环境的 `paired_lift_stats` 与 `lift_admission`，禁止自己重写一遍规则**（docstring 明确要求）。否则校准的是一套影子实现，与真正在跑的规则漂移，校准结果毫无意义。唯一允许的差异是校准层多一个 `min_blocks` 前置参数，代码里已标注。
 
-运行：`pixi run fz factor-library lift-null --market ashare`
+运行：`pixi run fz factor-library lift-null --n-sims 1000 --seed 42`
+
+> ℹ️ `lift-null` 是纯蒙特卡洛模拟，**没有 `--market` 参数**——它检验的是准入规则本身，与具体市场数据无关。参数是模拟规格（`--n-days`、`--daily-sigma`、`--ar1`、`--se-mults`、`--min-blocks`、`--n-sims`、`--seed`）。
 
 ---
 
@@ -120,8 +122,8 @@ holdout 段与训练/验证期严格分离，用于最终验收。
 # 对已注册因子跑防过拟合验收（DSR + bootstrap IC CI，仅打印）
 pixi run fz validate overfit <factor> --start 20200101 --end 20231231
 
-# 准入规则的空假设校准
-pixi run fz factor-library lift-null --market ashare
+# 准入规则的空假设校准（蒙特卡洛，无 --market）
+pixi run fz factor-library lift-null --n-sims 1000 --seed 42
 ```
 
 参数见 [CLI 参考](../reference/cli.md)。

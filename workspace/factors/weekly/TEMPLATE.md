@@ -66,3 +66,11 @@ pixi run fz factor run my_weekly_alpha --frequency weekly --start 20230101 --end
 - 使用 `ctx.snapshot_dates` 保持评估、换手和 IC 的频率一致。
 - 若使用 `ctx.weekly_basic`，声明 `required_data = ["daily_basic"]`。
 - 周频结果覆盖率低时，优先检查快照日期、停牌和 `lookback_days`。
+
+---
+
+## 相关文档
+
+- [因子编写指南](../../../docs/guides/factor-authoring.md) —— 完整接口说明、如何让手写因子进因子库
+- [因子库与增量准入](../../../docs/concepts/factor-library.md) —— 因子入库的裁决机制
+- [CLI 参考](../../../docs/reference/cli.md) —— `fz factor` 全部参数

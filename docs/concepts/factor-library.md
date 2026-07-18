@@ -159,11 +159,18 @@ fz factor-library forward-review --apply
 ```bash
 # 查看库现状
 pixi run fz factor-library list --market ashare
-pixi run fz factor-library show <expression> --market ashare
+pixi run fz factor-library show --market ashare --rank 1
+pixi run fz factor-library show --market ashare --expression "rank(ts_std(close,20))"
 
 # 增量准入（默认 dry-run，只打印裁决）
-pixi run fz factor-library lift-test --market ashare
-pixi run fz factor-library lift-test --market ashare --apply    # 确认后写库
+pixi run fz factor-library lift-test --market ashare \
+  --session workspace/mining_sessions/session_42_genetic \
+  --start 20200101 --end 20231231
+
+# 确认后写库
+pixi run fz factor-library lift-test --market ashare \
+  --session workspace/mining_sessions/session_42_genetic \
+  --start 20200101 --end 20231231 --apply
 
 # 向前确认（probation → active/no_lift）
 pixi run fz factor-library forward-track --market ashare
@@ -172,8 +179,8 @@ pixi run fz factor-library forward-review --market ashare --apply
 # 重建登记簿（含复审）
 pixi run fz factor-library rebuild --market ashare
 
-# 空假设校准：跑随机因子看准入规则的误报率
-pixi run fz factor-library lift-null --market ashare
+# 空假设校准：蒙特卡洛跑随机序列，看准入规则本身的误报率
+pixi run fz factor-library lift-null --n-sims 1000 --seed 42
 ```
 
 > ⚠️ `lift-test` 与 `forward-review` **默认 dry-run**，必须显式 `--apply` 才写库。准入是不可逆的库变更，这道确认是有意的。

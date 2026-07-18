@@ -75,7 +75,7 @@ pixi run smoke
 
 - 真实数据拉取需 `TUSHARE_TOKEN`；crypto 走本地数据湖，无需 token。
 - LLM 挖掘（`fz mine agent` / `fz mine team`）需配置 `FACTORZEN_LLM_*`，**缺失会直接报错退出**，不会静默跳过。单因子评估与报告不依赖 LLM。
-- Web Dashboard 依赖 `fastapi`/`uvicorn`，二者属 **dev extras 而非运行时依赖**；只装运行时依赖起不来 server。
+- Web Dashboard 依赖 `fastapi`/`uvicorn`。pixi 默认环境已包含 dev feature，装完即可用；但二者在 `pyproject.toml` 里属 dev extras，绕开 pixi 用 `pip install factorzen` 的话需要自行补装。
 
 详见[安装与环境](docs/getting-started/installation.md)。
 
@@ -96,8 +96,13 @@ pixi run fz mine search --start 20200101 --end 20231231 \
 
 # 3. 增量准入 —— 平台的核心一步
 #    候选因子必须相对现有因子库跑出显著增量才进库
-pixi run fz factor-library lift-test --market ashare      # 默认 dry-run，只看裁决
-pixi run fz factor-library lift-test --market ashare --apply   # 确认后才写库
+pixi run fz factor-library lift-test --market ashare \
+  --session workspace/mining_sessions/session_42_genetic \
+  --start 20200101 --end 20231231                          # 默认 dry-run，只看裁决
+
+pixi run fz factor-library lift-test --market ashare \
+  --session workspace/mining_sessions/session_42_genetic \
+  --start 20200101 --end 20231231 --apply                  # 确认后才写库
 
 # 4. 查看因子库现状
 pixi run fz factor-library list --market ashare

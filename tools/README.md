@@ -3,6 +3,10 @@
 这里仅放受版本控制、可从项目根通过 `pixi run` 执行的运维入口。生成数据始终写入
 `data/`，研究产物写入 `workspace/`；脚本自身不得放在这两个 gitignored 产物根下。
 
+> ℹ️ 本目录是**一次性数据搬运与修复工具**，与日常研究链路无关。日常取数用
+> `pixi run fz data fetch`，见 [CLI 参考](../docs/reference/cli.md)；数据源与单位口径见
+> [数据源与口径](../docs/reference/data-sources.md)。
+
 ## 分钟数据导入
 
 `ingest_minute.py` 通过 `factorzen.dataio.minute_ingest` 的统一接口接收两种历史布局：

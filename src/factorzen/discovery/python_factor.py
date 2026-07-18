@@ -89,7 +89,13 @@ def _panel_cache_path(market: str, name: str, key: str) -> Path:
 
 
 def _panel_cache_key(
-    market: str, name: str, start: str, end: str, universe: str, impl_sha: str,
+    market: str,
+    name: str,
+    start: str,
+    end: str,
+    universe: str,
+    impl_sha: str,
+    lookback_days: int,
 ) -> str:
     """缓存键 sha1 hexdigest[:24]。
 
@@ -99,8 +105,10 @@ def _panel_cache_key(
     - start/end：评估窗（裁窗后面板不同）
     - universe：PIT membership 并集（票池变 → 面板变）
     - impl_sha：实现源码指纹（改源必须失效；None 时调用方全程跳过缓存）
+    - lookback_days：预热窗口影响区间头部取值，必须入键
+      （基类 dataclass 修复曾使同 impl_sha 下有效 lookback 发生变化）
     """
-    payload = f"{market}|{name}|{start}|{end}|{universe}|{impl_sha}"
+    payload = f"{market}|{name}|{start}|{end}|{universe}|{impl_sha}|lb{lookback_days}"
     return hashlib.sha1(payload.encode()).hexdigest()[:24]
 
 
@@ -192,11 +200,21 @@ def materialize_python_panel(
     except Exception as exc:
         raise ValueError(f"python 因子查找失败: {name!r}: {exc}") from exc
 
+    # 先实例化：缓存键与 FactorDataContext 共用同一 factor.lookback_days（防双路径漂移）
+    try:
+        factor = factor_cls()
+    except Exception as exc:
+        raise ValueError(f"python 因子实例化失败: {name!r}: {exc}") from exc
+
+    lookback_days = int(getattr(factor, "lookback_days", 20) or 20)
+
     # 缓存：impl_sha None → 动态类不可指纹 → 全程跳过（不读不写）
     impl_sha = _impl_source_sha(factor_cls) if use_cache else None
     cache_path: Path | None = None
     if use_cache and impl_sha is not None:
-        key = _panel_cache_key(market, name, start, end, universe, impl_sha)
+        key = _panel_cache_key(
+            market, name, start, end, universe, impl_sha, lookback_days,
+        )
         try:
             cache_path = _panel_cache_path(market, name, key)
             hit = _try_read_panel_cache(cache_path)
@@ -206,11 +224,6 @@ def materialize_python_panel(
             # 缓存层任何异常不许影响计算结果
             _LOG.warning("python panel 缓存探测失败: %s", exc)
             cache_path = None
-
-    try:
-        factor = factor_cls()
-    except Exception as exc:
-        raise ValueError(f"python 因子实例化失败: {name!r}: {exc}") from exc
 
     try:
         ts_codes = _load_universe_codes(start, end, universe)
@@ -228,7 +241,7 @@ def materialize_python_panel(
             start=start,
             end=end,
             required_data=list(getattr(factor, "required_data", ["daily"])),
-            lookback_days=int(getattr(factor, "lookback_days", 20) or 20),
+            lookback_days=lookback_days,
             universe=ts_codes if ts_codes else None,
             snapshot_mode="daily",  # 一期仅 daily
         )

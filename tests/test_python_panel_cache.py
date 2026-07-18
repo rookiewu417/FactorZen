@@ -136,7 +136,9 @@ def test_panel_cache_source_change_busts_key(tmp_path, monkeypatch):
         "cached_factor", start, end, "csi300", market="ashare",
     )
     assert mod1._COMPUTE_COUNT == 1
-    key1 = _panel_cache_key("ashare", "cached_factor", start, end, "csi300", sha1)
+    key1 = _panel_cache_key(
+        "ashare", "cached_factor", start, end, "csi300", sha1, lookback_days=2,
+    )
 
     # 改源码：追加注释即可变 impl_sha（不依赖值断言）
     mod_path.write_text(
@@ -146,7 +148,9 @@ def test_panel_cache_source_change_busts_key(tmp_path, monkeypatch):
     mod2 = _load()
     sha2 = _impl_source_sha(mod2.CachedFactor)
     assert sha2 is not None and sha2 != sha1
-    key2 = _panel_cache_key("ashare", "cached_factor", start, end, "csi300", sha2)
+    key2 = _panel_cache_key(
+        "ashare", "cached_factor", start, end, "csi300", sha2, lookback_days=2,
+    )
     assert key2 != key1
 
     import factorzen.daily.factors.registry as reg_mod
@@ -308,3 +312,40 @@ def test_panel_cache_skips_empty_panel(tmp_path, monkeypatch):
     )
     assert out2.is_empty()
     assert mod._COMPUTE_COUNT == 2  # 无缓存可命中 → 重算
+
+
+def test_panel_cache_key_includes_lookback_days():
+    """其余参数相同、lookback 不同 → 缓存键必须不同。"""
+    from factorzen.discovery.python_factor import _panel_cache_key
+
+    common = ("ashare", "cached_factor", "20240110", "20240115", "csi300", "deadbeef")
+    key20 = _panel_cache_key(*common, lookback_days=20)
+    key40 = _panel_cache_key(*common, lookback_days=40)
+    assert key20 != key40
+
+
+def test_panel_cache_lookback_change_busts_key(tmp_path, monkeypatch):
+    """monkeypatch 类 lookback_days 后二次物化不得命中第一次写的缓存路径。"""
+    factor_cls = _install_factor_module(tmp_path, "lb_factor", _FACTOR_BODY)
+    # 源文件 lookback=2；先以 5 物化，再改成 40
+    factor_cls.lookback_days = 5
+    pyf = _patch_materialize_offline(monkeypatch, factor_cls, tmp_path)
+    mod = sys.modules[factor_cls.__module__]
+
+    start, end = "20240110", "20240115"
+    pyf.materialize_python_panel(
+        "cached_factor", start, end, "csi300", market="ashare", use_cache=True,
+    )
+    assert mod._COMPUTE_COUNT == 1
+    cache_root = tmp_path / "cache" / "python_factor_panels"
+    files_after_first = {p.resolve() for p in cache_root.rglob("*.parquet")}
+    assert files_after_first
+
+    factor_cls.lookback_days = 40
+    pyf.materialize_python_panel(
+        "cached_factor", start, end, "csi300", market="ashare", use_cache=True,
+    )
+    # lookback 入键 → 不命中旧文件，必须重算并写出新路径
+    assert mod._COMPUTE_COUNT == 2
+    files_after_second = {p.resolve() for p in cache_root.rglob("*.parquet")}
+    assert files_after_second - files_after_first

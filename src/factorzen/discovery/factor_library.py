@@ -199,6 +199,11 @@ class FactorRecord:
     git_sha: str | None = None
     added_at: str | None = None
     updated_at: str | None = None
+    # 因子形态：expression=DSL；python=手写 DailyFactor（expression 存 py::{name} 哨兵）
+    # 旧行 from_dict 缺字段 → 默认 expression，零迁移
+    kind: str = "expression"  # "expression" | "python"
+    name: str | None = None  # 业务名；python 型必填=registry 名；expression 型可空后回填
+    impl: str | None = None  # python 型实现引用（一期=registry 名；预留 import path）
     # 日内特征叶子溯源（旧 jsonl 无此字段 → from_dict 向前兼容读入不崩）
     intraday_leaves: list[str] | None = None
     intraday_panel: str | None = None
@@ -241,6 +246,41 @@ def _normalize(expr: str, leaf_map: dict[str, str] | None = None) -> str:
         return to_expr_string(parse_expr(expr, leaf_map))
     except ValueError:
         return expr
+
+
+# python 型身份哨兵：expression 存 "py::{name}"，by_expr / 池键 / 台账键零改动；
+# _normalize 对 parse 失败原样返回，天然兼容（禁止改 _normalize 容错语义）。
+PY_IDENTITY_PREFIX = "py::"
+
+
+def python_identity(name: str) -> str:
+    """python 型因子的 expression 哨兵串。"""
+    return f"{PY_IDENTITY_PREFIX}{name}"
+
+
+def is_python_identity(expr: str | None) -> bool:
+    """是否为 python 型身份哨兵（``py::{name}``）。"""
+    return isinstance(expr, str) and expr.startswith(PY_IDENTITY_PREFIX) and len(expr) > len(
+        PY_IDENTITY_PREFIX
+    )
+
+
+def default_name_for_expression(norm_expr: str) -> str:
+    """expression 型缺省业务名：确定性 mined_{sha1[:8]}（回填幂等）。"""
+    digest = hashlib.sha1(norm_expr.encode()).hexdigest()[:8]
+    return f"mined_{digest}"
+
+
+def _python_name_from_expression(expr: str) -> str | None:
+    """从 ``py::{name}`` 剥出 name；非哨兵 → None。"""
+    if not is_python_identity(expr):
+        return None
+    return expr[len(PY_IDENTITY_PREFIX) :]
+
+
+def _is_python_record(r: FactorRecord) -> bool:
+    """kind 显式 python，或 expression 为哨兵（旧行可能仅有哨兵）。"""
+    return r.kind == "python" or is_python_identity(r.expression)
 
 
 def library_path(market: str, root: str = DEFAULT_ROOT) -> Path:
@@ -499,14 +539,19 @@ def build_library_pool(
     compact: bool | None = None,
     compact_threshold: int = POOL_COMPACT_BYTES_THRESHOLD,
     cache_dir: str | Path | None = None,
+    universe: str | None = None,
+    python_materializer: Callable[[str], pl.DataFrame | None] | None = None,
 ) -> dict[str, pl.DataFrame] | CompactLibraryPool:
     """把库内因子物化为 mining/评估帧上的因子值面板，供搜索期库级正交去相关。
 
     - 取 status∈statuses 记录，按 |ic_train| 降序。
     - 默认只取 ``active``——**probation 不进挖掘正交参照系**（试用因子不该挡新候选；
       组合 staging 是否纳入由调用方在 staging csv 控制，本函数不替组合做决策）。
-    - 每条 expression 用 ``evaluate_materialized`` 在 ``daily`` 上算
+    - expression 型：``evaluate_materialized`` 在 ``daily`` 上算
       ``[trade_date, ts_code, factor_value]``（与挖掘物化路径一致）。
+    - python 型：``python_materializer(name)``（测试注入）或
+      ``materialize_python_panel(name, start, end, universe)``，再 inner-join 到
+      ``daily`` 的 (trade_date, ts_code) 网格；池键 = ``r.expression``（``py::`` 哨兵）。
     - 非法/求值失败/全 null 的表达式跳过并计数——一条坏记录不许崩整个 pool。
     - 库文件不存在/空 → {}。
     - ``eval_start``：可选，求值后裁到该日起（team holdout 口径扩窗预热时传入 holdout 起点）。
@@ -515,6 +560,7 @@ def build_library_pool(
       dict-of-frames（**零回归默认路径**，小帧/测试保持逐字节行为）。
     - ``cache_dir``：可选池缓存目录；非 None 时先试 ``load_pool_cache``（指纹含库 hash /
       statuses / eval_start / prepped 窗），命中则跳过求值直接返回；默认 None 零回归。
+    - ``universe`` / ``python_materializer`` 皆空时 python 记录全部跳过（expression 不受影响）。
 
     调用方负责 ``daily`` 已与挖掘同 prep（派生列/停牌掩码等）；本函数不再二次预处理。
     """
@@ -561,10 +607,128 @@ def build_library_pool(
         print(f"库池 compact 模式({reason})", flush=True)
         return _build_library_pool_compact(
             recs, df, leaf_map, eval_start=eval_start, market=market,
+            universe=universe, python_materializer=python_materializer,
         )
     return _build_library_pool_legacy(
         recs, df, leaf_map, eval_start=eval_start, market=market,
+        universe=universe, python_materializer=python_materializer,
     )
+
+
+def _pool_date_bounds(df: pl.DataFrame) -> tuple[str | None, str | None]:
+    """daily 帧 trade_date min/max → YYYYMMDD（供 python 物化窗）。"""
+    if df.is_empty() or "trade_date" not in df.columns:
+        return None, None
+    from factorzen.discovery.intraday_expr import _to_yyyymmdd
+
+    try:
+        return _to_yyyymmdd(df["trade_date"].min()), _to_yyyymmdd(df["trade_date"].max())
+    except Exception:
+        return None, None
+
+
+def _align_panel_trade_date(panel: pl.DataFrame, grid: pl.DataFrame) -> pl.DataFrame:
+    """面板 trade_date dtype 对齐到网格（复用日内 attach 同款）。"""
+    from factorzen.discovery.intraday_expr import _align_trade_date
+
+    return _align_trade_date(panel, grid)
+
+
+def _python_panel_aligned(
+    r: FactorRecord,
+    df: pl.DataFrame,
+    *,
+    market: str,
+    universe: str | None,
+    python_materializer: Callable[[str], pl.DataFrame | None] | None,
+    start: str | None,
+    end: str | None,
+) -> pl.DataFrame | None:
+    """python 型 → dtype 对齐、键唯一的三列面板；失败/空/重复键 → None。
+
+    重复 (trade_date, ts_code) 是因子作者 bug：join 会行数膨胀（legacy 面板失真、
+    compact 列错位），必须响亮跳过而非静默吞。
+    """
+    name = r.name or _python_name_from_expression(r.expression)
+    if not name:
+        return None
+    if python_materializer is not None:
+        raw = python_materializer(name)
+    elif universe and start and end:
+        from factorzen.discovery.python_factor import materialize_python_panel
+
+        raw = materialize_python_panel(name, start, end, universe, market=market)
+    else:
+        return None
+    if raw is None or raw.is_empty():
+        return None
+    need = {"trade_date", "ts_code", "factor_value"}
+    if not need.issubset(set(raw.columns)):
+        return None
+    panel = raw.select(["trade_date", "ts_code", "factor_value"])
+    n_keys = panel.select(["trade_date", "ts_code"]).unique().height
+    if n_keys != panel.height:
+        _LOG.warning(
+            "python 因子 %r 面板含重复 (trade_date, ts_code)（%d 行 / %d 唯一键），跳过",
+            name, panel.height, n_keys,
+        )
+        return None
+    return _align_panel_trade_date(panel, df)
+
+
+def _materialize_python_on_grid(
+    r: FactorRecord,
+    df: pl.DataFrame,
+    *,
+    market: str,
+    universe: str | None,
+    python_materializer: Callable[[str], pl.DataFrame | None] | None,
+    start: str | None,
+    end: str | None,
+) -> pl.DataFrame | None:
+    """python 型 → 对齐 daily 网格的因子面板；失败/空 → None（调用方计入 n_skip）。"""
+    panel = _python_panel_aligned(
+        r, df, market=market, universe=universe,
+        python_materializer=python_materializer, start=start, end=end,
+    )
+    if panel is None:
+        return None
+    # 池语义=同一网格：inner-join 限制到 daily 的 (trade_date, ts_code)
+    joined = (
+        df.select(["trade_date", "ts_code"])
+        .join(panel, on=["trade_date", "ts_code"], how="inner")
+        .filter(
+            pl.col("factor_value").is_not_null()
+            & pl.col("factor_value").is_finite()
+        )
+    )
+    return joined if not joined.is_empty() else None
+
+
+def _python_series_on_grid(
+    r: FactorRecord,
+    df: pl.DataFrame,
+    *,
+    market: str,
+    universe: str | None,
+    python_materializer: Callable[[str], pl.DataFrame | None] | None,
+    start: str | None,
+    end: str | None,
+) -> pl.Series | None:
+    """compact 路径：python 面板 left-join 到 df 行序，返回与 df 等长的 factor 列。"""
+    panel = _python_panel_aligned(
+        r, df, market=market, universe=universe,
+        python_materializer=python_materializer, start=start, end=end,
+    )
+    if panel is None:
+        return None
+    joined = df.select(["trade_date", "ts_code"]).join(
+        panel, on=["trade_date", "ts_code"], how="left",
+    )
+    if joined.height != df.height:
+        # 键已唯一仍长度漂移 = 网格自身异常；列错位比缺列危险，直接跳过
+        return None
+    return joined["factor_value"]
 
 
 def _build_library_pool_legacy(
@@ -574,12 +738,43 @@ def _build_library_pool_legacy(
     *,
     eval_start=None,
     market: str = "",
+    universe: str | None = None,
+    python_materializer: Callable[[str], pl.DataFrame | None] | None = None,
 ) -> dict[str, pl.DataFrame]:
     """旧路径：每因子独立 [trade_date, ts_code, factor_value] 帧（filter null/inf）。"""
     pool: dict[str, pl.DataFrame] = {}
     n_skip = 0
+    py_recs = [r for r in recs if _is_python_record(r)]
+    can_mat_py = python_materializer is not None or bool(universe)
+    if py_recs and not can_mat_py:
+        _LOG.warning(
+            "build_library_pool(%s): 跳过 %d 条 python 记录"
+            "（未提供 universe 或 python_materializer）",
+            market, len(py_recs),
+        )
+    start, end = _pool_date_bounds(df)
     for r in recs:
         try:
+            if _is_python_record(r):
+                if not can_mat_py:
+                    n_skip += 1
+                    continue
+                panel = _materialize_python_on_grid(
+                    r, df, market=market, universe=universe,
+                    python_materializer=python_materializer,
+                    start=start, end=end,
+                )
+                if panel is None:
+                    n_skip += 1
+                    continue
+                if eval_start is not None:
+                    panel = panel.filter(pl.col("trade_date") >= eval_start)
+                if panel.is_empty():
+                    n_skip += 1
+                    continue
+                pool[r.expression] = panel
+                continue
+            # expression 型：现状路径（逐字节语义）
             node = parse_expr(r.expression, leaf_map)
             series = evaluate_materialized(node, df, leaf_map)
             panel = (
@@ -618,6 +813,8 @@ def _build_library_pool_compact(
     *,
     eval_start=None,
     market: str = "",
+    universe: str | None = None,
+    python_materializer: Callable[[str], pl.DataFrame | None] | None = None,
 ) -> CompactLibraryPool | dict:
     """单骨架宽面板：键一份 + 每因子一列 f64；非有限→null（不丢行，消费方 scatter 处理）。
 
@@ -637,13 +834,35 @@ def _build_library_pool_compact(
     value_cols: list[pl.Series] = []
     names: list[str] = []
     n_skip = 0
+    py_recs = [r for r in recs if _is_python_record(r)]
+    can_mat_py = python_materializer is not None or bool(universe)
+    if py_recs and not can_mat_py:
+        _LOG.warning(
+            "build_library_pool(%s) compact: 跳过 %d 条 python 记录"
+            "（未提供 universe 或 python_materializer）",
+            market, len(py_recs),
+        )
+    start, end = _pool_date_bounds(df)
     for _fi, r in enumerate(recs, start=1):
         try:
             # 大帧逐因子进度(可观测性:OOM 时最后一行钉死凶手因子;小帧静默)
             if df.height >= 3_000_000:
                 print(f"[library-pool] [{_fi}/{len(recs)}] {r.expression[:70]}", flush=True)
-            node = parse_expr(r.expression, leaf_map)
-            series = evaluate_materialized(node, df, leaf_map)
+            if _is_python_record(r):
+                if not can_mat_py:
+                    n_skip += 1
+                    continue
+                series = _python_series_on_grid(
+                    r, df, market=market, universe=universe,
+                    python_materializer=python_materializer,
+                    start=start, end=end,
+                )
+                if series is None:
+                    n_skip += 1
+                    continue
+            else:
+                node = parse_expr(r.expression, leaf_map)
+                series = evaluate_materialized(node, df, leaf_map)
             # 非有限 → null（保留行；scatter/__getitem__ 与旧 filter 对齐）
             col = (
                 pl.DataFrame({"_v": series})
@@ -692,7 +911,37 @@ def _build_library_pool_compact(
     return CompactLibraryPool(wide, tuple(names))
 
 
+def _backfill_record_names(records: list[FactorRecord]) -> None:
+    """写盘前 name 回填（幂等、确定性）。冲突只 warning，不去重。"""
+    for r in records:
+        if r.name:
+            continue
+        if _is_python_record(r):
+            peeled = _python_name_from_expression(r.expression)
+            if peeled:
+                r.name = peeled
+            continue
+        # expression 型：规范形 hash（与 by_expr 主键同口径）
+        r.name = default_name_for_expression(_normalize(r.expression))
+
+    # 同批 name 冲突：不同 expression 撞 hash / 手写名 → 仅告警（registry 侧 Batch 2 处理）
+    by_name: dict[str, str] = {}
+    for r in records:
+        if not r.name:
+            continue
+        prev = by_name.get(r.name)
+        if prev is not None and prev != r.expression:
+            _LOG.warning(
+                "factor_library name 冲突: name=%r expression_a=%r expression_b=%r"
+                "（不去重，registry 冲突策略见 Batch 2）",
+                r.name, prev, r.expression,
+            )
+        else:
+            by_name[r.name] = r.expression
+
+
 def _save_library(market: str, records: list[FactorRecord], root: str = DEFAULT_ROOT) -> None:
+    _backfill_record_names(records)
     path = library_path(market, root)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = "".join(json.dumps(r.to_dict(), ensure_ascii=False) + "\n" for r in records)
@@ -747,6 +996,22 @@ def _record_from_candidate(
     except Exception:
         pass
 
+    # kind/name/impl：显式键优先于 py:: 推断（expression 型默认；旧调用方零改动）
+    inferred_python = is_python_identity(norm_expr)
+    kind_raw = g("kind")
+    if kind_raw in ("expression", "python"):
+        kind = str(kind_raw)
+    else:
+        kind = "python" if inferred_python else "expression"
+    name_raw = g("name")
+    impl_raw = g("impl")
+    if kind == "python":
+        name = name_raw if name_raw is not None else _python_name_from_expression(norm_expr)
+        impl = impl_raw if impl_raw is not None else name
+    else:
+        name = name_raw
+        impl = impl_raw
+
     return FactorRecord(
         expression=norm_expr,
         market=market,
@@ -794,6 +1059,9 @@ def _record_from_candidate(
         git_sha=git_sha,
         added_at=prev.added_at if prev is not None else now,   # 保留原入库日
         updated_at=now,
+        kind=kind,
+        name=name,
+        impl=impl,
         intraday_leaves=i_leaves,
         intraday_panel=i_panel,
     )

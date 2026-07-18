@@ -459,8 +459,11 @@ def _build_library_pool_compact(
     value_cols: list[pl.Series] = []
     names: list[str] = []
     n_skip = 0
-    for r in recs:
+    for _fi, r in enumerate(recs, start=1):
         try:
+            # 大帧逐因子进度(可观测性:OOM 时最后一行钉死凶手因子;小帧静默)
+            if df.height >= 3_000_000:
+                print(f"[library-pool] [{_fi}/{len(recs)}] {r.expression[:70]}", flush=True)
             node = parse_expr(r.expression, leaf_map)
             series = evaluate_materialized(node, df, leaf_map)
             # 非有限 → null（保留行；scatter/__getitem__ 与旧 filter 对齐）

@@ -89,15 +89,29 @@ DEFAULT_DECORR_THRESHOLD = 0.7
 # 与 compute_factor_correlation 逐日门槛一致
 _MIN_CORR_CROSS = 30
 
+# corr panel values f32 阈值: n_d×n_s×n_f×8B ≥ 此值时 values 存 float32。
+# 全 A ~2055×5776×84×8 ≈ 8G 必触发;csi800 级 ~1.1G 不触发,f64 零回归。
+# 计算侧 (_max_corr_detail_panel) 仍升 f64,与残差 X/Q 的 f32 存储风格一致。
+CORR_PANEL_F32_BYTES_THRESHOLD = 2 * 1024**3  # 2 GiB
+
+# 分块归约预算:块内 f64 临时 (c_m/l_m/乘积等 ~5 份) 约此字节上限。
+# 按日独立 sum → 分块不改变任一日浮点求和顺序,f64 下与整面板逐位等价。
+CORR_PANEL_CHUNK_BYTES = 256 * 1024**2  # 256 MiB
+
 
 @dataclass(frozen=True)
 class LibraryCorrPanel:
     """库池一次对齐的宽面板，供候选 vs 库逐对相关向量化。
 
     语义与 ``compute_factor_correlation`` 逐对路径一致（见 ``max_correlation_detail``）：
-    - ``present``：polars 非 null（**含 float NaN**——NaN 会毒化该日 corrcoef）
-    - 缺行 / null → ``present=False``（该 (date,stock) 不参与该对）
+    - ``present``：``None`` 时从 ``~np.isnan(values)`` 推导（**新契约: values 中 NaN ⇔ absent**）。
+      两条构建路径的输入都保证 present 位有限——compact 池 wide 列非有限已在构建时转 null,
+      legacy 池帧构建时已 filter finite; null → 散射为 NaN(不再 fill 0) → isnan 推导与旧
+      bool 掩码逐格等价。显式 bool 数组仍兼容(手工构造/测试)。
+    - 缺行 / null → values=NaN → present 推导为 False（该 (date,stock) 不参与该对）
+    - 候选侧 NaN 毒化由 ``_scatter_candidate_to_panel`` 的显式 present 保留（与库契约分离）
     - ``names`` 保持 pool 插入序（并列 max|corr| 取后出现者）
+    - ``values`` 可为 float64 或 float32（超 ``CORR_PANEL_F32_BYTES_THRESHOLD`` 时 f32 存储）
     """
 
     names: tuple[str, ...]
@@ -105,8 +119,27 @@ class LibraryCorrPanel:
     stocks: tuple  # sorted unique ts_code
     date_idx: dict
     stock_idx: dict
-    values: np.ndarray  # (n_dates, n_stocks, n_factors) float64
-    present: np.ndarray  # (n_dates, n_stocks, n_factors) bool
+    values: np.ndarray  # (n_dates, n_stocks, n_factors) float64|float32
+    present: np.ndarray | None  # (n_dates, n_stocks, n_factors) bool; None → ~isnan(values)
+
+    def present_block(self, d0: int, d1: int) -> np.ndarray:
+        """日期切片 [d0:d1] 的 present 掩码；``present is None`` 时由 values 推导。"""
+        if self.present is None:
+            return ~np.isnan(self.values[d0:d1])
+        return self.present[d0:d1]
+
+
+def _corr_panel_value_dtype(n_d: int, n_s: int, n_f: int) -> np.dtype:
+    """按估算字节数选 values dtype;超阈值时 print 一行(对齐 library-pool f32 提示)。"""
+    est = int(n_d) * int(n_s) * int(n_f) * 8
+    if est >= CORR_PANEL_F32_BYTES_THRESHOLD:
+        print(
+            f"[corr-panel] values f32 模式(估算 {est / (1024**3):.1f}G"
+            f"≥阈值 {CORR_PANEL_F32_BYTES_THRESHOLD / (1024**3):.0f}G)",
+            flush=True,
+        )
+        return np.dtype(np.float32)
+    return np.dtype(np.float64)
 
 
 def _factor_col_name(df: pl.DataFrame) -> str:
@@ -144,7 +177,12 @@ def _scatter_frame_to_slice(
     n_d: int,
     n_s: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """[trade_date, ts_code, _v] → (values, present) 二维切片。"""
+    """[trade_date, ts_code, _v] → (values, present) 二维切片。
+
+    null → values=NaN（to_numpy 天然;不再 fill 0）。present 仍由 ``~is_null`` 得到——
+    候选路径需要区分「null 缺席」与「非 null 的 float NaN 毒化」；库路径只消费 values,
+    present 由 ``LibraryCorrPanel.present is None`` 契约从 isnan 推导。
+    """
     vals = np.full((n_d, n_s), np.nan, dtype=np.float64)
     pres = np.zeros((n_d, n_s), dtype=bool)
     if sub.is_empty():
@@ -160,7 +198,10 @@ def _scatter_frame_to_slice(
     r = joined["_di"].to_numpy().astype(np.int64, copy=False)
     c = joined["_si"].to_numpy().astype(np.int64, copy=False)
     is_null = joined["_v"].is_null().to_numpy()
-    arr = joined["_v"].fill_null(0.0).to_numpy().astype(np.float64, copy=False)
+    # null → NaN；非 null 的 float NaN 原样保留（候选毒化语义）
+    arr = joined["_v"].to_numpy()
+    if arr.dtype != np.float64:
+        arr = arr.astype(np.float64, copy=False)
     vals[r, c] = arr
     pres[r, c] = ~is_null
     return vals, pres
@@ -169,10 +210,12 @@ def _scatter_frame_to_slice(
 def build_library_corr_panel(
     pool: Mapping[str, pl.DataFrame] | None,
 ) -> LibraryCorrPanel | None:
-    """把库池对齐成 (date × stock × k) 矩阵 + present 掩码；空/None → None。
+    """把库池对齐成 (date × stock × k) 矩阵；空/None → None。
 
     Session 级构建一次、整 session 复用。不改池因子数值，只做散射对齐。
     识别 ``CompactLibraryPool``：从单骨架宽表散射，避免 dict-of-frames 键副本。
+
+    ``present`` 恒为 ``None``（由 values 的 NaN 推导）；超阈值时 values 存 float32。
     """
     if not pool:
         return None
@@ -204,15 +247,21 @@ def build_library_corr_panel(
 
     date_idx, stock_idx, date_map, stock_map = _index_maps_from_keys(dates, stocks)
     n_d, n_s, n_f = len(dates), len(stocks), len(names)
-    values = np.full((n_d, n_s, n_f), np.nan, dtype=np.float64)
-    present = np.zeros((n_d, n_s, n_f), dtype=bool)
+    dtype = _corr_panel_value_dtype(n_d, n_s, n_f)
+    values = np.full((n_d, n_s, n_f), np.nan, dtype=dtype)
 
     for fi, sub in enumerate(prepared):
         if sub.is_empty() or n_d == 0:
             continue
         v_sl, p_sl = _scatter_frame_to_slice(sub, date_map, stock_map, n_d, n_s)
+        # 非 null 的 float NaN:与 compute_factor_correlation 一致,毒化该日整截面
+        # (corrcoef 遇 NaN → 跳过该日)。present=None 契约下 NaN⇔absent,故把毒化日
+        # 全日置 NaN → 该日 n=0,与逐对「整日跳过」等价。生产路径(finite filter)不触发。
+        poison_days = np.any(p_sl & np.isnan(v_sl), axis=1)
+        if np.any(poison_days):
+            v_sl = np.array(v_sl, copy=True, dtype=np.float64)
+            v_sl[poison_days, :] = np.nan
         values[:, :, fi] = v_sl
-        present[:, :, fi] = p_sl
 
     return LibraryCorrPanel(
         names=names,
@@ -221,12 +270,12 @@ def build_library_corr_panel(
         date_idx=date_idx,
         stock_idx=stock_idx,
         values=values,
-        present=present,
+        present=None,
     )
 
 
 def _build_library_corr_panel_from_wide(pool: object) -> LibraryCorrPanel | None:
-    """CompactLibraryPool.wide → LibraryCorrPanel。"""
+    """CompactLibraryPool.wide → LibraryCorrPanel（逐因子散射，无 84 列 join 大帧）。"""
     from factorzen.discovery.factor_library import CompactLibraryPool
 
     assert isinstance(pool, CompactLibraryPool)
@@ -247,30 +296,32 @@ def _build_library_corr_panel_from_wide(pool: object) -> LibraryCorrPanel | None
 
     date_idx, stock_idx, date_map, stock_map = _index_maps_from_keys(dates, stocks)
     n_d, n_s, n_f = len(dates), len(stocks), len(names)
-    values = np.full((n_d, n_s, n_f), np.nan, dtype=np.float64)
-    present = np.zeros((n_d, n_s, n_f), dtype=bool)
+    dtype = _corr_panel_value_dtype(n_d, n_s, n_f)
+    values = np.full((n_d, n_s, n_f), np.nan, dtype=dtype)
     if n_d == 0:
         return LibraryCorrPanel(
             names=names, dates=dates, stocks=stocks,
             date_idx=date_idx, stock_idx=stock_idx,
-            values=values, present=present,
+            values=values, present=None,
         )
 
-    wide_keys = wide.select(["trade_date", "ts_code", *names])
+    # 只 join 键两列 + 行号；避免 84 值列 join 复制大帧（全 A ~3.7G）
+    wide_keys = wide.select(["trade_date", "ts_code"]).with_row_index("_ri")
     date_map = _align_join_key(date_map, "trade_date", wide_keys)
     stock_map = _align_join_key(stock_map, "ts_code", wide_keys)
     indexed = (
         wide_keys
         .join(date_map, on="trade_date", how="inner")
         .join(stock_map, on="ts_code", how="inner")
+        .sort("_ri")  # 钉回原 wide 行序，使 ri 与 wide[name] 对齐
     )
     r = indexed["_di"].to_numpy().astype(np.int64, copy=False)
     c = indexed["_si"].to_numpy().astype(np.int64, copy=False)
+    ri = indexed["_ri"].to_numpy().astype(np.int64, copy=False)
     for fi, name in enumerate(names):
-        is_null = indexed[name].is_null().to_numpy()
-        arr = indexed[name].fill_null(0.0).to_numpy().astype(np.float64, copy=False)
-        values[r, c, fi] = arr
-        present[r, c, fi] = ~is_null
+        # polars null→NaN 天然；f32 列保持 f32。逐因子散射后即弃，无宽值帧。
+        arr = wide[name].to_numpy()
+        values[r, c, fi] = arr[ri]
 
     return LibraryCorrPanel(
         names=names,
@@ -279,14 +330,17 @@ def _build_library_corr_panel_from_wide(pool: object) -> LibraryCorrPanel | None
         date_idx=date_idx,
         stock_idx=stock_idx,
         values=values,
-        present=present,
+        present=None,
     )
 
 
 def _scatter_candidate_to_panel(
     factor_df: pl.DataFrame, panel: LibraryCorrPanel,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """候选散射到 panel 网格 → (values, present)，形状 (n_dates, n_stocks)。"""
+    """候选散射到 panel 网格 → (values, present)，形状 (n_dates, n_stocks)。
+
+    候选帧可能含真实 NaN 值（非 null）：present 内保留 NaN 以毒化该日——不能用 isnan 推导。
+    """
     n_d, n_s = len(panel.dates), len(panel.stocks)
     if factor_df.is_empty() or n_d == 0:
         return (
@@ -305,21 +359,45 @@ def _scatter_candidate_to_panel(
 def _max_corr_detail_panel(
     factor_df: pl.DataFrame, panel: LibraryCorrPanel,
 ) -> tuple[float, str | None]:
-    """矩阵化逐对相关：全日期×全库因子向量化，语义对齐 compute_factor_correlation。"""
+    """矩阵化逐对相关：按日期块流式归约，语义对齐 compute_factor_correlation。
+
+    只驻留 6 个 (n_d, n_f) 归约量；块内 both/c_m/l_m 用完即弃。
+    按日独立 ⇒ f64 下与整面板实现逐位等价；f32 存储时计算仍升 f64。
+    候选 NaN（cand_p=True）→ c_m 含 NaN → 该日 sums NaN → corr NaN → ok=False。
+    """
     if not panel.names:
         return 0.0, None
     cand_v, cand_p = _scatter_candidate_to_panel(factor_df, panel)
-    # (n_d, n_s, n_f)：逐对独立掩码（inner 语义），NaN 在 present 内保留以毒化该日
-    both = cand_p[:, :, None] & panel.present  # bool
-    n = both.sum(axis=1).astype(np.float64)  # (n_d, n_f)
-    c_m = np.where(both, cand_v[:, :, None], 0.0)
-    l_m = np.where(both, panel.values, 0.0)
+    n_d, n_s, n_f = panel.values.shape
+    # 块大小:块内 f64 临时(c_m/l_m/乘积 ~5 份)预算 CORR_PANEL_CHUNK_BYTES
+    rows_per_day = n_s * n_f
+    blk = max(1, int(CORR_PANEL_CHUNK_BYTES / max(1, rows_per_day * 8 * 5)))
+
+    n = np.zeros((n_d, n_f), dtype=np.float64)
+    sum_c = np.zeros((n_d, n_f), dtype=np.float64)
+    sum_l = np.zeros((n_d, n_f), dtype=np.float64)
+    sum_c2 = np.zeros((n_d, n_f), dtype=np.float64)
+    sum_l2 = np.zeros((n_d, n_f), dtype=np.float64)
+    sum_cl = np.zeros((n_d, n_f), dtype=np.float64)
+
+    for d0 in range(0, n_d, blk):
+        d1 = min(d0 + blk, n_d)
+        vals = panel.values[d0:d1]
+        if vals.dtype != np.float64:
+            vals = vals.astype(np.float64)
+        pres = panel.present_block(d0, d1)
+        both = cand_p[d0:d1, :, None] & pres
+        c_m = np.where(both, cand_v[d0:d1, :, None], 0.0)
+        l_m = np.where(both, vals, 0.0)
+        n[d0:d1] = both.sum(axis=1)
+        sum_c[d0:d1] = c_m.sum(axis=1)
+        sum_l[d0:d1] = l_m.sum(axis=1)
+        sum_c2[d0:d1] = (c_m * c_m).sum(axis=1)
+        sum_l2[d0:d1] = (l_m * l_m).sum(axis=1)
+        sum_cl[d0:d1] = (c_m * l_m).sum(axis=1)
+        del c_m, l_m, both
+
     with np.errstate(invalid="ignore", divide="ignore"):
-        sum_c = c_m.sum(axis=1)
-        sum_l = l_m.sum(axis=1)
-        sum_c2 = (c_m * c_m).sum(axis=1)
-        sum_l2 = (l_m * l_m).sum(axis=1)
-        sum_cl = (c_m * l_m).sum(axis=1)
         # Pearson ≡ np.corrcoef；(std==0 ddof=0) ⇔ n·Σx²−(Σx)² == 0
         den_c = n * sum_c2 - sum_c * sum_c
         den_l = n * sum_l2 - sum_l * sum_l

@@ -269,7 +269,7 @@ def test_every_subparser_help_renders():
         failures: list[str] = []
         try:
             parser.format_help()
-        except Exception as exc:  # noqa: BLE001 - 汇总全部失败点再报
+        except Exception as exc:  # 汇总全部失败点再报，不在首个失败处中断
             failures.append(f"{path}: {type(exc).__name__}: {exc}")
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction):

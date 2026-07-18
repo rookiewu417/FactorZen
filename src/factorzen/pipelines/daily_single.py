@@ -860,6 +860,28 @@ def main():
                 record_experiment_output(exp_dir, name, path)
             for name, path in copy_outputs_to_run_dir(outputs, exp_dir).items():
                 record_experiment_output(exp_dir, name, path)
+            # evidence 链接：评估成功后挂 run_id 到库（非裁决指标；失败只 warning）
+            try:
+                from datetime import datetime
+
+                from factorzen.discovery.factor_library import link_evaluation_to_library
+
+                linked = link_evaluation_to_library(
+                    args.factor,
+                    exp_dir.name,
+                    datetime.now().date().isoformat(),
+                    market="ashare",
+                )
+                if not linked:
+                    logger.warning(
+                        "link_evaluation_to_library 未挂上 name=%s run_id=%s",
+                        args.factor, exp_dir.name,
+                    )
+            except Exception as link_exc:
+                logger.warning(
+                    "link_evaluation_to_library 异常 name=%s: %s: %s",
+                    args.factor, type(link_exc).__name__, link_exc,
+                )
     except Exception as e:
         logger.error(str(e))
         sys.exit(1)

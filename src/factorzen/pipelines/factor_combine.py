@@ -117,7 +117,7 @@ def _greedy_decorrelate_reference(
                 c = max_correlation(fdf, {e: d})
                 if c > best:
                     best, partner = c, e
-            dropped.append({"expression": expr, "corr_with": partner, "corr": float(mc)})
+            dropped.append({"identity": expr, "corr_with": partner, "corr": float(mc)})
             continue
         kept.append((expr, fdf))
     return kept, dropped
@@ -183,7 +183,7 @@ def _greedy_decorrelate(
                 best, partner = c, e
         mc = float(best) if best >= 0.0 else 0.0
         if mc > threshold:
-            dropped.append({"expression": expr, "corr_with": partner, "corr": mc})
+            dropped.append({"identity": expr, "corr_with": partner, "corr": mc})
             continue
         kept.append((expr, fdf))
         kept_mats.append(mat)
@@ -282,10 +282,25 @@ def combine_from_session(
             f"去相关后库因子不足 2 个（得 {len(kept)}，剔除 {len(dropped)} 个高相关近亲）；"
             f"放宽 decorr_threshold 或多挖正交因子。")
 
+    # 落盘：可读名（与 from-library 同款 default_name_for_expression；冲突加 _2）
+    # factors_used 仍返回表达式列表（契约不变）
+    from factorzen.discovery.factor_library import _normalize, default_name_for_expression
+
     work = Path(tempfile.mkdtemp(prefix="combine_mat_"))
     factor_files: list[str] = []
-    for i, (_e, fdf) in enumerate(kept):
-        p = work / f"factor_{i}.parquet"
+    used_names: set[str] = set()
+    for e, fdf in kept:
+        base = default_name_for_expression(_normalize(e))
+        if base not in used_names:
+            fname = base
+        else:
+            i = 2
+            while f"{base}_{i}" in used_names:
+                i += 1
+            fname = f"{base}_{i}"
+        used_names.add(fname)
+        safe = fname.replace("/", "_").replace("\\", "_")
+        p = work / f"{safe}.parquet"
         fdf.write_parquet(p)
         factor_files.append(str(p))
 

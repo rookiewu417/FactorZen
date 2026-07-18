@@ -99,13 +99,13 @@ def _assert_decision_parity(new_kept, new_dropped, ref_kept, ref_dropped, *, ato
 
     assert len(new_dropped) == len(ref_dropped)
     for nd, rd in zip(new_dropped, ref_dropped, strict=False):
-        assert nd["expression"] == rd["expression"]
+        assert nd["identity"] == rd["identity"]
         assert nd["corr_with"] == rd["corr_with"], (
-            f"corr_with 不一致 for {nd['expression']}: "
+            f"corr_with 不一致 for {nd['identity']}: "
             f"new={nd['corr_with']} ref={rd['corr_with']}"
         )
         assert abs(float(nd["corr"]) - float(rd["corr"])) <= atol, (
-            f"corr 超容差 for {nd['expression']}: "
+            f"corr 超容差 for {nd['identity']}: "
             f"new={nd['corr']} ref={rd['corr']} |diff|={abs(float(nd['corr'])-float(rd['corr']))}"
         )
 

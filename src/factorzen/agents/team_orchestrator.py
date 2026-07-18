@@ -790,25 +790,9 @@ def run_team_agent(
             lib_pool, library_covered, library_crowded = {}, None, None
     state.objective = objective  # type: ignore[attr-defined]
 
-    # residual 模式 + 库非空：session 开始建一次 ResidualProjector，整 session 复用
-    # （多候选残差 train IC 近免费）。接线点在护栏前全量写 residual_ic_train / 选槽。
-    residual_projector = None
-    if objective == "residual" and lib_pool:
-        try:
-            from factorzen.discovery.residual import (
-                ResidualProjector,
-                build_library_panel,
-            )
-            _panel = build_library_panel(lib_pool)
-            if _panel is not None and _panel.k > 0:
-                residual_projector = ResidualProjector.from_panel(_panel)
-                _step(f"残差投影 ▸ ResidualProjector 就绪（k={_panel.k}）")
-        except Exception as exc:
-            _LOG.warning("ResidualProjector 构建失败（本 session 残差走 lstsq）: %s: %s",
-                         type(exc).__name__, exc)
-            residual_projector = None
-
-    # ── 池后切分(峰值重排):现在才物化 mining/holdout/bundle ─────────────────
+    # ── 池后切分(峰值错峰 v20):切分在 X+Q(各 ~4G)建成**之前**、池值列之后——
+    # 此刻基线无投影矩阵;切分完立即释放 raw daily,projector 期无 raw(-3.5G)。
+    # 顺序:pool → 切分+release raw → projector,两大块错峰,峰值 ≈-3.3G。
     mining_df, holdout_df, _holdout_start2 = _prepare_segments(
         daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
     assert _holdout_start2 == holdout_start, (
@@ -827,6 +811,24 @@ def run_team_agent(
     health = make_health_check(
         mining_df, profile=profile, leaf_map=ctx.leaf_map, prepped=session_prepped,
     ) if heal_rounds > 0 else None
+
+    # residual 模式 + 库非空：session 开始建一次 ResidualProjector，整 session 复用
+    # （多候选残差 train IC 近免费）。接线点在护栏前全量写 residual_ic_train / 选槽。
+    residual_projector = None
+    if objective == "residual" and lib_pool:
+        try:
+            from factorzen.discovery.residual import (
+                ResidualProjector,
+                build_library_panel,
+            )
+            _panel = build_library_panel(lib_pool)
+            if _panel is not None and _panel.k > 0:
+                residual_projector = ResidualProjector.from_panel(_panel)
+                _step(f"残差投影 ▸ ResidualProjector 就绪（k={_panel.k}）")
+        except Exception as exc:
+            _LOG.warning("ResidualProjector 构建失败（本 session 残差走 lstsq）: %s: %s",
+                         type(exc).__name__, exc)
+            residual_projector = None
 
     # session 级唯一 run_id（同 seed 复用不再互斥排除历史）+ 完整统计问题 campaign_id
     session_run_id = run_id if run_id is not None else f"team_{seed}_{uuid.uuid4().hex[:8]}"

@@ -455,8 +455,58 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "--scout-max-leaves", dest="scout_max_leaves", type=int, default=12,
         help="session 最多注入 ix_* 叶数（默认 12；仅 --intraday-scout）",
     )
+    m_team.add_argument(
+        "--pool-subproc", dest="pool_subproc", action="store_true",
+        help="池构建放子进程，退出全额归还内存；等效 env FACTORZEN_POOL_SUBPROC=1",
+    )
     _add_freq_arg(m_team)
     m_team.set_defaults(func=commands._cmd_mine_team)
+
+    # ── fz pool-prebuild ──（mine team 库池预构建；子进程内存隔离）
+    pool_pre = sub.add_parser(
+        "pool-prebuild",
+        help="mine team 库池预构建(子进程内存隔离;产物 parquet 供 --pool-subproc 装载)",
+    )
+    pool_pre.add_argument("--start", required=True)
+    pool_pre.add_argument("--end", required=True)
+    pool_pre.add_argument("--universe", default=None)
+    pool_pre.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+        help="Market profile (default ashare; 与 m_team 同源)",
+    )
+    pool_pre.add_argument(
+        "--symbols", default=None,
+        help="crypto/futures/us only: 逗号分隔 symbols；缺省=universe Top-N 快照",
+    )
+    pool_pre.add_argument(
+        "--top-n", dest="top_n", type=int, default=50,
+        help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)",
+    )
+    pool_pre.add_argument(
+        "--index-path", dest="index_path",
+        default=str(MINE_TEAM_DIR / "experiment_index.jsonl"),
+    )
+    pool_pre.add_argument(
+        "--library-root", dest="library_root", default=None,
+        help="因子库根目录（默认=index_path 同级 factor_library）",
+    )
+    pool_pre.add_argument(
+        "--holdout-ratio", dest="holdout_ratio", type=float, default=0.2,
+        help="holdout 比例（与 run_team_agent 默认同源）",
+    )
+    pool_pre.add_argument(
+        "--intraday-leaves", dest="intraday_leaves", action="store_true",
+        help="启用日内特征叶子 i_* 接入（仅 ashare；默认关）",
+    )
+    pool_pre.add_argument(
+        "--intraday-freq", dest="intraday_freq", default="5min",
+        help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
+    )
+    pool_pre.add_argument(
+        "--out", required=True,
+        help="池缓存输出目录（写 pool_wide.parquet + pool_meta.json）",
+    )
+    pool_pre.set_defaults(func=commands._cmd_pool_prebuild)
 
     # ── fz factor-library ──（分市场因子登记簿：rebuild / list / show / render）
     fl = sub.add_parser(

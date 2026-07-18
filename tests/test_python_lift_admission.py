@@ -184,6 +184,12 @@ def test_run_lift_tests_mixed_expression_and_python(monkeypatch):
     assert exprs == {expr_key, py_key}
     py_row = next(r for r in rows if r["expression"] == py_key)
     assert py_row["expression"] == py_key  # 哨兵保持
+    # W3：候选身份原样回传（有则拷入；expression 型无 kind/name/impl 则不加键）
+    assert py_row.get("kind") == "python"
+    assert py_row.get("name") == "hf_mock"
+    assert py_row.get("impl") == "hf_mock"
+    expr_row = next(r for r in rows if r["expression"] == expr_key)
+    assert "kind" not in expr_row and "name" not in expr_row and "impl" not in expr_row
 
 
 # ── 3. upsert_lift_admissions python + market 守卫 ───────────────────────────

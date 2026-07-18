@@ -642,6 +642,15 @@ def _empty_lift_fields() -> dict[str, Any]:
     }
 
 
+def _candidate_identity_fields(c: dict) -> dict[str, Any]:
+    """从候选 dict 透传 kind/name/impl（有则原样拷入，无则不加键）。"""
+    out: dict[str, Any] = {}
+    for k in ("kind", "name", "impl"):
+        if k in c:
+            out[k] = c[k]
+    return out
+
+
 def _lgbm_lift_params(*, lift_workers: int) -> dict[str, Any]:
     """生产路径 LGBM 线程/确定性参数：并行/串行 parity（同 seed 可复现）。"""
     workers = max(1, int(lift_workers))
@@ -793,6 +802,7 @@ def run_lift_tests(
                 **_empty_lift_fields(),
                 **meta,
                 **prov_empty,
+                **_candidate_identity_fields(c),
             }
             for c in selected
         ]
@@ -851,6 +861,7 @@ def run_lift_tests(
                 **{k: v for k, v in meta.items() if k != "threshold"},
                 "threshold": threshold,
                 **prov_empty,
+                **_candidate_identity_fields(c),
             }
             for c in selected
         ]
@@ -872,6 +883,7 @@ def run_lift_tests(
             **_empty_lift_fields(),
             **meta,
             **prov_empty,
+            **_candidate_identity_fields(c),
         }
         try:
             cand_df = materialize_candidate(expr) if expr else None

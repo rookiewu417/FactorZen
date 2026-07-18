@@ -2685,7 +2685,8 @@ def _cmd_combine_from_session(args: argparse.Namespace) -> int:
     print(f"[combine] 纳入 {len(res['factors_used'])} 个因子；"
           f"去相关剔除 {len(res['dropped_correlated'])} 个近亲")
     for d in res["dropped_correlated"]:
-        print(f"[combine]   ✗ {d['expression']} → 与 {d['corr_with']} 相关 {d['corr']:.2f}")
+        ident = d.get("identity", d.get("expression"))
+        print(f"[combine]   ✗ {ident} → 与 {d['corr_with']} 相关 {d['corr']:.2f}")
     print(res["comparison"])
     return 0
 
@@ -2734,8 +2735,9 @@ def _cmd_combine_from_library(args: argparse.Namespace) -> int:
     if res.get("truncated_from") is not None:
         print(f"[combine] top_n 截断自 {res['truncated_from']}")
     for d in res.get("dropped_correlated") or []:
+        ident = d.get("identity", d.get("expression"))
         print(
-            f"[combine]   ✗ {d['expression']} → 与 {d['corr_with']} 相关 {d['corr']:.2f}"
+            f"[combine]   ✗ {ident} → 与 {d['corr_with']} 相关 {d['corr']:.2f}"
         )
     print(res["comparison"])
     return 0

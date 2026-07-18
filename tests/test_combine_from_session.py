@@ -110,7 +110,7 @@ def test_combine_decorr_drops_near_duplicate(tmp_path, monkeypatch):
     res = factor_combine.combine_from_session(
         session_dirs=[sess], start="20230103", end="20231231", horizon=5,
         train_days=60, test_days=15, decorr_threshold=0.7, out_dir=str(tmp_path / "o"))
-    dropped = [d["expression"] for d in res["dropped_correlated"]]
+    dropped = [d["identity"] for d in res["dropped_correlated"]]
     assert "ts_mean(close, 21)" in dropped, f"高相关近亲未被剔: {res['dropped_correlated']}"
     assert "ts_mean(close, 20)" not in dropped, "|holdout_ic| 高者不应被剔"
     used = res["factors_used"]

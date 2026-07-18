@@ -204,6 +204,9 @@ class FactorRecord:
     kind: str = "expression"  # "expression" | "python"
     name: str | None = None  # 业务名；python 型必填=registry 名；expression 型可空后回填
     impl: str | None = None  # python 型实现引用（一期=registry 名；预留 import path）
+    # evidence 链接，非裁决指标（任意 CLI 评估的 run 指针；不覆盖 ic/lift/status）
+    last_eval_run_id: str | None = None  # 最近一次 fz factor run 的 run_id（factor_evaluations/{run_id}/）
+    last_eval_at: str | None = None  # ISO 日期
     # 日内特征叶子溯源（旧 jsonl 无此字段 → from_dict 向前兼容读入不崩）
     intraday_leaves: list[str] | None = None
     intraday_panel: str | None = None
@@ -980,6 +983,53 @@ def _save_library(market: str, records: list[FactorRecord], root: str = DEFAULT_
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = "".join(json.dumps(r.to_dict(), ensure_ascii=False) + "\n" for r in records)
     path.write_text(payload, encoding="utf-8")
+
+
+def link_evaluation_to_library(
+    factor_name: str,
+    run_id: str,
+    now: str,
+    *,
+    market: str = "ashare",
+    root: str = DEFAULT_ROOT,
+) -> bool:
+    """把一次 ``fz factor run`` 的 run_id 挂到库记录上（evidence 链接，非裁决指标）。
+
+    按 ``r.name == factor_name`` 查找（python / expression 型均可）。命中则写
+    ``last_eval_run_id`` / ``last_eval_at`` 并落盘 + 刷新 md；找不到或库损坏/写
+    失败 → warning 返回 False，**绝不抛**，以免拖垮评估主流程。
+    """
+    try:
+        records = load_library(market, root=root)
+    except Exception as exc:
+        _LOG.warning(
+            "link_evaluation_to_library: load_library 失败 market=%s: %s: %s",
+            market, type(exc).__name__, exc,
+        )
+        return False
+    hit: FactorRecord | None = None
+    for r in records:
+        if r.name == factor_name:
+            hit = r
+            break
+    if hit is None:
+        _LOG.warning(
+            "link_evaluation_to_library: 库中无 name=%r 的记录 market=%s",
+            factor_name, market,
+        )
+        return False
+    try:
+        hit.last_eval_run_id = run_id
+        hit.last_eval_at = now
+        _save_library(market, records, root=root)
+        render_markdown(market, root=root)
+    except Exception as exc:
+        _LOG.warning(
+            "link_evaluation_to_library: 写库失败 name=%r run_id=%r: %s: %s",
+            factor_name, run_id, type(exc).__name__, exc,
+        )
+        return False
+    return True
 
 
 # ── upsert ───────────────────────────────────────────────────────────────────

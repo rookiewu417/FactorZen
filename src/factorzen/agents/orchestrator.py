@@ -19,7 +19,11 @@ from factorzen.agents.nodes import (
     node_reflect,
 )
 from factorzen.agents.state import AgentState
-from factorzen.agents.team_orchestrator import _prepare_segments, _to_date
+from factorzen.agents.team_orchestrator import (
+    _narrow_holdout_price_frame,
+    _prepare_segments,
+    _to_date,
+)
 from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
 from factorzen.discovery.scoring import DataBundle
 from factorzen.llm.client import LLMClientError
@@ -87,6 +91,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     bundle = DataBundle.build(mining_df)        # Agent 只见 mining 段
     _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
+    # P5：holdout 长驻窄投影（与 team 路径一致）
+    holdout_df = _narrow_holdout_price_frame(holdout_df)
     _eval_start_date = _to_date(eval_start) if eval_start is not None else None
     _eval_end_date = mining_df["trade_date"].max() if eval_start is not None else None
     # 叶子历史预算（算一次，逐轮复用）：在含预热前缀的完整帧上算，只留短于预热前缀
@@ -104,6 +110,9 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
         log_excluded_leaves,
     )
     session_prepped = _preprocess_daily(daily, profile)
+    # P5：scout off 时释放 raw daily，warmup 改持 session_prepped
+    if not intraday_scout:
+        daily = session_prepped
     _kept, excluded_leaves = filter_leaves_by_holdout_coverage(
         session_prepped, list(ctx.leaf_names), holdout_start,
         leaf_map=ctx.leaf_map,
@@ -205,7 +214,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                     profile=profile,
                 )
                 mining_df = _frames["mining"]
-                holdout_df = _frames["holdout"]
+                holdout_df = _narrow_holdout_price_frame(_frames["holdout"])
                 daily = _frames["daily"]
                 # scout 注入新 ix_* 后，旧 session_prepped 缺列 → 重建
                 if any(c not in session_prepped.columns for c in daily.columns):
@@ -241,7 +250,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                                     warmup_daily=daily,   # holdout 扩窗预热用完整帧
                                     eval_start=_eval_start_date,  # 池级 PBO 的 None-gating
                                     profile=profile, lib_pool=lib_pool,
-                                    objective=objective)
+                                    objective=objective,
+                                    prepped=session_prepped)
             _print_rejections("mine-agent", state)
             _step("  ④ Critic 审计")
             state = node_critic(state, llm_fn)

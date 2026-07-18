@@ -373,3 +373,219 @@ def test_p3_make_lift_context_reuses_prepped(monkeypatch):
     # 不传 prepped 才 prep
     _ = make_lift_context("ashare", daily)
     assert calls["n"] == 1
+
+
+# ── P5: 单副本纪律 ─────────────────────────────────────────────────────────
+
+
+def test_p5_bundle_daily_is_keys_only():
+    """DataBundle.build 长驻 daily 仅键列（消灭 sort 全宽幽灵副本）。"""
+    from factorzen.discovery.scoring import DataBundle
+
+    daily = _mock_daily()
+    b = DataBundle.build(daily)
+    assert set(b.daily.columns) == {"trade_date", "ts_code"}
+    assert b.daily.height == daily.height
+    # fwd 仍完整可用
+    assert "fwd_ret_1d" in b.fwd_returns.columns
+    assert b.train_end is not None
+
+
+def test_p5_bundle_keys_only_quick_fitness_parity():
+    """键窄 daily 不改 quick_fitness 数值（消费面只读 fwd_returns）。"""
+    from factorzen.discovery.scoring import DataBundle, quick_fitness
+
+    daily = _mock_daily()
+    fac = _signal_factor_df(daily)
+    b = DataBundle.build(daily)
+    # 手工构造「旧」全宽 daily 字段的 bundle（仅测字段无关）
+    wide_daily = daily.sort(["ts_code", "trade_date"])
+    b_wide = DataBundle(
+        daily=wide_daily, fwd_returns=b.fwd_returns, train_end=b.train_end,
+    )
+    for seg in ("train", "valid"):
+        a = quick_fitness(fac, b, segment=seg)  # type: ignore[arg-type]
+        c = quick_fitness(fac, b_wide, segment=seg)  # type: ignore[arg-type]
+        assert a["ic_mean"] == pytest.approx(c["ic_mean"], abs=0.0, rel=0.0)
+        assert a["ir"] == pytest.approx(c["ir"], abs=0.0, rel=0.0)
+        assert a["n"] == c["n"]
+
+
+def test_p5_narrow_holdout_price_frame():
+    from factorzen.agents.team_orchestrator import _narrow_holdout_price_frame
+
+    daily = _mock_daily(n_stocks=4, n_days=10)
+    narrow = _narrow_holdout_price_frame(daily)
+    assert set(narrow.columns) == {"trade_date", "ts_code", "close_adj"}
+    assert narrow.height == daily.height
+
+
+def test_p5_guardrails_prepped_skips_warmup_reprep(monkeypatch):
+    """node_guardrails(prepped=) 不对 warmup 再调 _preprocess_daily。"""
+    from factorzen.agents.nodes import node_guardrails
+    from factorzen.agents.state import AgentState, AttemptRecord
+    from factorzen.agents.team_orchestrator import _narrow_holdout_price_frame
+    from factorzen.discovery.evaluation import _preprocess_daily
+    from factorzen.discovery.scoring import DataBundle
+    from factorzen.validation.holdout import split_holdout
+    from factorzen.validation.multiple_testing import TrialLedger
+
+    daily = _mock_daily(n_stocks=10, n_days=40)
+    mining_df, holdout_df, _ = split_holdout(daily, holdout_ratio=0.2)
+    holdout_n = _narrow_holdout_price_frame(holdout_df)
+    bundle = DataBundle.build(mining_df)
+    prepped = _preprocess_daily(daily)
+
+    state = AgentState(seed=1)
+    state.iteration = 0
+    state.attempts = [
+        AttemptRecord(
+            iteration=0, hypothesis="h", expression="rank(close)",
+            compile_ok=True, ic_train=0.05, passed_guardrails=False,
+            critic_verdict=None, error=None, ir_train=0.8, turnover=0.1, n_train=20,
+        )
+    ]
+    ledger = TrialLedger()
+
+    calls: list[int] = []
+    orig = _preprocess_daily
+
+    def counting(df, profile=None):
+        calls.append(df.height)
+        return orig(df, profile)
+
+    # node_guardrails 函数内 from-import：patch evaluation 模块即可
+    monkeypatch.setattr(
+        "factorzen.discovery.evaluation._preprocess_daily", counting,
+    )
+
+    node_guardrails(
+        state, daily=mining_df, holdout_df=holdout_n, bundle=bundle,
+        ledger=ledger, top_k=5, warmup_daily=prepped, prepped=prepped,
+        objective="raw", lib_pool={},
+    )
+    # hold/warmup 全帧高度不应出现在 prep 调用里（prepped 注入）
+    assert daily.height not in calls, f"warmup 被重复 prep: {calls}"
+    # 允许 mining 段 train residual 的 prep（height == mining）
+    assert all(h == mining_df.height for h in calls), calls
+
+
+# ── P4c: ts_code Categorical ────────────────────────────────────────────────
+
+
+def test_p4c_prepare_categorical_keys_explicit(monkeypatch):
+    import factorzen.daily.data.context as ctx_mod
+    import factorzen.discovery.preparation as prep
+
+    daily, basic = _prep_inputs()
+    monkeypatch.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
+    monkeypatch.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
+    monkeypatch.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
+    monkeypatch.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
+
+    on = prep.prepare_mining_daily("20240102", "20240104", slim=True, categorical_keys=True)
+    off = prep.prepare_mining_daily("20240102", "20240104", slim=True, categorical_keys=False)
+    assert on.schema["ts_code"] == pl.Categorical
+    assert off.schema["ts_code"] in (pl.Utf8, pl.String)
+
+
+def test_p4c_threshold_auto_off_for_small_frames(monkeypatch):
+    """默认 None + 小帧 → 不自动 Categorical（阈值 4M）。"""
+    import factorzen.daily.data.context as ctx_mod
+    import factorzen.discovery.preparation as prep
+
+    daily, basic = _prep_inputs()
+    monkeypatch.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
+    monkeypatch.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
+    monkeypatch.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
+    monkeypatch.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
+
+    out = prep.prepare_mining_daily("20240102", "20240104", slim=True, categorical_keys=None)
+    assert out.height < prep.KEYS_CATEGORICAL_ROWS_THRESHOLD
+    assert out.schema["ts_code"] in (pl.Utf8, pl.String)
+
+
+def test_p4c_categorical_factor_value_and_ic_parity():
+    """Categorical on/off 同表达式 factor_value 与 IC 逐值相等。"""
+    from factorzen.discovery.evaluation import (
+        _factor_df_from_prepped,
+        _preprocess_daily,
+        evaluate_expressions,
+    )
+    from factorzen.discovery.expression import parse_expr
+    from factorzen.discovery.scoring import DataBundle
+
+    daily_u = _mock_daily(n_stocks=12, n_days=50)
+    daily_c = daily_u.with_columns(pl.col("ts_code").cast(pl.Categorical))
+    bundle_u = DataBundle.build(daily_u)
+    bundle_c = DataBundle.build(daily_c)
+    expr = "ts_mean(close, 5)"
+
+    out_u = evaluate_expressions([expr], daily_u, bundle_u)
+    out_c = evaluate_expressions([expr], daily_c, bundle_c)
+    assert out_u[0]["compile_ok"] and out_c[0]["compile_ok"]
+    assert out_u[0]["ic_train"] == pytest.approx(out_c[0]["ic_train"], abs=0.0, rel=0.0)
+    assert out_u[0]["ir_train"] == pytest.approx(out_c[0]["ir_train"], abs=0.0, rel=0.0)
+    assert out_u[0]["n_train"] == out_c[0]["n_train"]
+
+    node = parse_expr(expr)
+    fu = _factor_df_from_prepped(node, _preprocess_daily(daily_u))
+    fc = _factor_df_from_prepped(node, _preprocess_daily(daily_c))
+    # join 前把 cat 侧对齐
+    fc_j = fc.with_columns(pl.col("ts_code").cast(pl.Utf8))
+    j = fu.join(fc_j, on=["trade_date", "ts_code"], suffix="_c")
+    assert j.height == fu.height
+    assert float((j["factor_value"] - j["factor_value_c"]).abs().max()) == 0.0
+
+
+def test_p4c_scatter_join_with_categorical_keys():
+    """库相关 scatter：因子帧 Categorical × stock_map Utf8 可 join 且 present 全覆盖。"""
+    from factorzen.discovery.scoring import (
+        _align_join_key,
+        _scatter_candidate_to_panel,
+        build_library_corr_panel,
+    )
+
+    daily = _mock_daily(n_stocks=8, n_days=30)
+    daily_c = daily.with_columns(pl.col("ts_code").cast(pl.Categorical))
+    fac = (
+        daily_c.sort(["ts_code", "trade_date"])
+        .select([
+            "trade_date", "ts_code",
+            pl.col("close_adj").alias("factor_value"),
+        ])
+    )
+    pool = {"lib_a": fac}
+    panel = build_library_corr_panel(pool)
+    assert panel is not None
+    assert panel.present.sum() == fac.height  # 键全覆盖，无 join 丢失
+    _cand_v, cand_p = _scatter_candidate_to_panel(fac, panel)
+    assert int(cand_p.sum()) == fac.height
+
+    # align helper：小 Utf8 帧 cast 到 Categorical
+    small = pl.DataFrame({"ts_code": ["000001.SZ"], "x": [1]})
+    aligned = _align_join_key(small, "ts_code", fac)
+    assert aligned.schema["ts_code"] == pl.Categorical
+    j = fac.select(["ts_code"]).unique().join(aligned, on="ts_code", how="inner")
+    assert j.height >= 1
+
+
+def test_p4c_export_alpha_casts_utf8(tmp_path, monkeypatch):
+    """落盘 alpha 截面 ts_code 仍为 Utf8。"""
+    from factorzen.discovery import export as export_mod
+
+    daily = _mock_daily(n_stocks=3, n_days=5).with_columns(
+        pl.col("ts_code").cast(pl.Categorical)
+    )
+    # stub alpha_cross_section
+    monkeypatch.setattr(
+        export_mod,
+        "alpha_cross_section",
+        lambda *a, **k: daily.select([
+            "ts_code", pl.lit(1.0).alias("alpha"),
+        ]).unique(subset=["ts_code"]),
+    )
+    out = tmp_path / "alpha.parquet"
+    export_mod.export_alpha_cross_section("rank(close)", object(), "20220103", str(out))
+    loaded = pl.read_parquet(out)
+    assert loaded.schema["ts_code"] in (pl.Utf8, pl.String)

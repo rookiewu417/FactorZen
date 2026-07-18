@@ -238,7 +238,15 @@ def _daily_oos_rank_ic(
         pl.col("trade_date").dt.strftime("%Y%m%d")
         if combined.schema.get("trade_date") == pl.Date
         else pl.col("trade_date").cast(pl.Utf8)
-    ).join(rdf, on=["trade_date", "ts_code"], how="inner")
+    )
+    # P4c：combined.ts_code 可能 Categorical，ret 侧常为 Utf8 → 小帧 align 再 join
+    if (
+        "ts_code" in m.columns
+        and "ts_code" in rdf.columns
+        and m.schema["ts_code"] != rdf.schema["ts_code"]
+    ):
+        rdf = rdf.with_columns(pl.col("ts_code").cast(m.schema["ts_code"]))
+    m = m.join(rdf, on=["trade_date", "ts_code"], how="inner")
     day_rows: list[tuple[str, float]] = []
     for _d, g in m.group_by("trade_date", maintain_order=True):
         if len(g) < n_groups * 2:

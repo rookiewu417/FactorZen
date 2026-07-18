@@ -152,6 +152,19 @@ def _prepare_segments(daily: pl.DataFrame, *, eval_start: str | None, holdout_ra
     return split_holdout(sample, holdout_ratio=holdout_ratio)
 
 
+def _narrow_holdout_price_frame(holdout_df: pl.DataFrame) -> pl.DataFrame:
+    """P5：长驻 holdout 只留键 + 价列（holdout_ic / residual hold_fwd 所需）。
+
+    因子值走 warmup/session_prepped 扩窗求值；护栏不再依赖 holdout 全宽叶子。
+    """
+    cols = ["trade_date", "ts_code"]
+    if "close_adj" in holdout_df.columns:
+        cols.append("close_adj")
+    elif "close" in holdout_df.columns:
+        cols.append("close")
+    return holdout_df.select([c for c in cols if c in holdout_df.columns])
+
+
 def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
                          eval_start=None, eval_end=None, profile=None, leaf_map=None,
                          prepped=None):
@@ -455,6 +468,7 @@ def _run_one_round(
         lib_pool=lib_pool,           # 库级正交 + 残差面板（全窗物化；None/空 → 零回归）
         objective=objective,
         residual_projector=residual_projector,  # session 级 QR，全量残差 train IC 快路径
+        prepped=prepped,             # P5：session 同源 prep，跳过护栏再 prep 全帧
     )
     _print_rejections("mine-team", state)
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
@@ -683,12 +697,18 @@ def run_team_agent(
     bundle = DataBundle.build(mining_df)
     _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
+    # P5：holdout 长驻窄投影（键+价）；因子求值走 warmup/session_prepped。
+    holdout_df = _narrow_holdout_price_frame(holdout_df)
     # 市场上下文（profile=None → A 股默认）：叶子集/映射/市场名，供 budgets 与逐轮透传。
     ctx = AgentContext.from_profile(profile)
     # session 级单次 prep：leaf_health / leaf_budgets / lib_pool / health / 每轮 evaluate /
     # lift_ctx 全部复用。scout 注入新 ix_* 列后必须重建（见循环内失效逻辑）。
     from factorzen.discovery.evaluation import _preprocess_daily
     session_prepped = _preprocess_daily(daily, profile)
+    # P5：scout off 时 raw daily 无其它消费（evaluate/护栏/lift 均用 session_prepped）；
+    # 释放全宽 raw，warmup 槽位改持 prepped。scout on 时保留 daily 供注入后重建。
+    if not intraday_scout:
+        daily = session_prepped
     # 开局摘死叶：必须在与求值同一套 prep 帧上量覆盖（close→close_adj 别名 + 派生列），
     # 否则 ret_1d/vwap 等会被误判为「列不存在→覆盖 0」整批摘除。
     from factorzen.discovery.leaf_health import (
@@ -856,7 +876,7 @@ def run_team_agent(
                     profile=profile,
                 )
                 mining_df = _frames["mining"]
-                holdout_df = _frames["holdout"]
+                holdout_df = _narrow_holdout_price_frame(_frames["holdout"])
                 daily = _frames["daily"]
                 # scout 注入新 ix_* 列后，旧 session_prepped 缺列 → 必须重建
                 if any(c not in session_prepped.columns for c in daily.columns):

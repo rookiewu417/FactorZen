@@ -181,11 +181,16 @@ def _build_library_panel_from_wide(pool: object) -> LibraryPanel | None:
     d_n, s_n, k = len(date_list), len(stock_list), len(names)
     X = np.zeros((d_n, s_n, k), dtype=np.float64)
 
-    # 一次 join 索引，按列 scatter
+    # 一次 join 索引，按列 scatter（P4c：ts_code 可能 Categorical，小帧 align）
+    from factorzen.discovery.scoring import _align_join_key
+
     date_map = pl.DataFrame({"trade_date": list(date_list), "_di": list(range(d_n))})
     stock_map = pl.DataFrame({"ts_code": list(stock_list), "_si": list(range(s_n))})
+    wide_sel = wide.select(["trade_date", "ts_code", *names])
+    date_map = _align_join_key(date_map, "trade_date", wide_sel)
+    stock_map = _align_join_key(stock_map, "ts_code", wide_sel)
     indexed = (
-        wide.select(["trade_date", "ts_code", *names])
+        wide_sel
         .join(date_map, on="trade_date", how="inner")
         .join(stock_map, on="ts_code", how="inner")
     )
@@ -415,9 +420,13 @@ def compute_residual_ic(
         return ResidualICResult(float("nan"), 0)
 
     # 只 join 收益：残差在 numpy 侧做，避免把库矩阵拉回 polars
+    # P4c：fwd 与 candidate 的 ts_code 可能一侧 Categorical、一侧 Utf8
+    from factorzen.discovery.scoring import _align_join_key
+
+    fwd_sel = fwd_returns.select(["trade_date", "ts_code", ret_col])
+    fwd_sel = _align_join_key(fwd_sel, "ts_code", cand)
     joined = cand.join(
-        fwd_returns.select(["trade_date", "ts_code", ret_col]),
-        on=["trade_date", "ts_code"], how="inner",
+        fwd_sel, on=["trade_date", "ts_code"], how="inner",
     ).filter(pl.col(ret_col).is_not_null() & pl.col(ret_col).is_finite())
     if joined.is_empty():
         return ResidualICResult(float("nan"), 0)

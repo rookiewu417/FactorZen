@@ -302,3 +302,35 @@ def test_ts_stock_batches_single_stock_over_target():
     s = pl.Series(["X"] * 100)
     batches = expression_mod._ts_stock_batches(s, target_rows=30)
     assert batches == [(0, 100)]
+
+
+def test_cs_chunked_parity(monkeypatch):
+    """cs 节点按日期段分块:分块 on/off 逐位相同,行序还原。"""
+    import datetime as dt
+
+    import numpy as np
+    import polars as pl
+
+    import factorzen.discovery.expression as ex
+
+    rng = np.random.default_rng(11)
+    days = [dt.date(2021, 1, 4) + dt.timedelta(days=i) for i in range(40)]
+    rows = []
+    for c in [f"{600000 + i:06d}.SH" for i in range(9)]:
+        for d in days:
+            rows.append({"trade_date": d, "ts_code": c,
+                         "close_adj": float(rng.uniform(5, 30)),
+                         "vol": float(rng.uniform(1e5, 1e6))})
+    df = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+
+    for expr_s in ["rank(ts_mean(close, 5))",
+                   "zscore(sub(rank(close), rank(vol)))",
+                   "ts_rank(rank(close), 5)"]:
+        node = ex.parse_expr(expr_s)
+        base = ex.evaluate_materialized(node, df)
+        monkeypatch.setattr(ex, "TS_CHUNK_ROWS_THRESHOLD", 50)
+        monkeypatch.setattr(ex, "TS_CHUNK_TARGET_ROWS", 60)
+        chunked = ex.evaluate_materialized(node, df)
+        monkeypatch.setattr(ex, "TS_CHUNK_ROWS_THRESHOLD", 3_000_000)
+        monkeypatch.setattr(ex, "TS_CHUNK_TARGET_ROWS", 1_500_000)
+        assert chunked.equals(base), f"cs 分块 parity 失败: {expr_s}"

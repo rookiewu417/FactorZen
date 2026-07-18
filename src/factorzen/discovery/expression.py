@@ -56,6 +56,29 @@ def _ts_stock_batches(
     return batches
 
 
+def _materialize_cs_chunked(
+    work: pl.DataFrame, expr: pl.Expr, name: str
+) -> pl.DataFrame:
+    """按日期段分块物化 cs 表达式列(截面组=trade_date,段间独立)。
+
+    行序恢复:临时 __ridx 行索引 → 日期范围 filter 分段求值 → concat 后按
+    __ridx sort 还原原行序(排序分配 ~work 字节级,有界)。段内
+    ``.over("trade_date")`` 组集与全帧一致 → 逐位相同。
+    """
+    dates = work["trade_date"].unique().sort()
+    n_dates = len(dates)
+    rows_per_date = max(work.height // max(n_dates, 1), 1)
+    dates_per_batch = max(TS_CHUNK_TARGET_ROWS // rows_per_date, 1)
+    idx = work.with_row_index("__ridx")
+    parts: list[pl.DataFrame] = []
+    for i in range(0, n_dates, dates_per_batch):
+        lo = dates[i]
+        hi = dates[min(i + dates_per_batch, n_dates) - 1]
+        sub = idx.filter(pl.col("trade_date").is_between(lo, hi))
+        parts.append(sub.with_columns(expr.alias(name)))
+    return pl.concat(parts).sort("__ridx").drop("__ridx")
+
+
 def _materialize_ts_chunked(
     work: pl.DataFrame, expr: pl.Expr, name: str, window: int | None = None
 ) -> pl.DataFrame:
@@ -464,11 +487,11 @@ def evaluate_materialized(
                 counter[0] += 1
                 # ts 且帧够大：按整股批次物化，内部分配缩到 ~1/B；cs 与小帧保持
                 # 全帧 with_columns（截面需全 trade_date 键；小帧字节级零回归）。
-                if (
-                    spec.category == "ts"
-                    and work.height >= TS_CHUNK_ROWS_THRESHOLD
-                ):
-                    work = _materialize_ts_chunked(work, expr, name, n.window)
+                if work.height >= TS_CHUNK_ROWS_THRESHOLD:
+                    if spec.category == "ts":
+                        work = _materialize_ts_chunked(work, expr, name, n.window)
+                    else:  # cs:按日期段分块(行序经 __ridx 还原)
+                        work = _materialize_cs_chunked(work, expr, name)
                 else:
                     work = work.with_columns(expr.alias(name))
                 if pending:

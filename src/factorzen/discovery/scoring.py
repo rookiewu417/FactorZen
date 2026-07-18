@@ -2,6 +2,7 @@
 """候选因子快速评估：两段式中的「内循环」——只算 Rank IC/IR，不跑回测。"""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -144,14 +145,20 @@ def _scatter_frame_to_slice(
 
 
 def build_library_corr_panel(
-    pool: dict[str, pl.DataFrame] | None,
+    pool: Mapping[str, pl.DataFrame] | None,
 ) -> LibraryCorrPanel | None:
     """把库池对齐成 (date × stock × k) 矩阵 + present 掩码；空/None → None。
 
     Session 级构建一次、整 session 复用。不改池因子数值，只做散射对齐。
+    识别 ``CompactLibraryPool``：从单骨架宽表散射，避免 dict-of-frames 键副本。
     """
     if not pool:
         return None
+    from factorzen.discovery.factor_library import CompactLibraryPool
+
+    if isinstance(pool, CompactLibraryPool):
+        return _build_library_corr_panel_from_wide(pool)
+
     names = tuple(pool.keys())
     prepared: list[pl.DataFrame] = []
     pieces: list[pl.DataFrame] = []
@@ -184,6 +191,61 @@ def build_library_corr_panel(
         v_sl, p_sl = _scatter_frame_to_slice(sub, date_map, stock_map, n_d, n_s)
         values[:, :, fi] = v_sl
         present[:, :, fi] = p_sl
+
+    return LibraryCorrPanel(
+        names=names,
+        dates=dates,
+        stocks=stocks,
+        date_idx=date_idx,
+        stock_idx=stock_idx,
+        values=values,
+        present=present,
+    )
+
+
+def _build_library_corr_panel_from_wide(pool: object) -> LibraryCorrPanel | None:
+    """CompactLibraryPool.wide → LibraryCorrPanel。"""
+    from factorzen.discovery.factor_library import CompactLibraryPool
+
+    assert isinstance(pool, CompactLibraryPool)
+    names = pool.factor_names
+    if not names:
+        return None
+    wide = pool.wide
+    any_present = pl.any_horizontal(
+        [pl.col(n).is_not_null() for n in names]
+    )
+    keys = wide.filter(any_present).select(["trade_date", "ts_code"])
+    if keys.is_empty():
+        dates: tuple = ()
+        stocks: tuple = ()
+    else:
+        dates = tuple(sorted(keys["trade_date"].unique().to_list()))
+        stocks = tuple(sorted(keys["ts_code"].unique().to_list()))
+
+    date_idx, stock_idx, date_map, stock_map = _index_maps_from_keys(dates, stocks)
+    n_d, n_s, n_f = len(dates), len(stocks), len(names)
+    values = np.full((n_d, n_s, n_f), np.nan, dtype=np.float64)
+    present = np.zeros((n_d, n_s, n_f), dtype=bool)
+    if n_d == 0:
+        return LibraryCorrPanel(
+            names=names, dates=dates, stocks=stocks,
+            date_idx=date_idx, stock_idx=stock_idx,
+            values=values, present=present,
+        )
+
+    indexed = (
+        wide.select(["trade_date", "ts_code", *names])
+        .join(date_map, on="trade_date", how="inner")
+        .join(stock_map, on="ts_code", how="inner")
+    )
+    r = indexed["_di"].to_numpy().astype(np.int64, copy=False)
+    c = indexed["_si"].to_numpy().astype(np.int64, copy=False)
+    for fi, name in enumerate(names):
+        is_null = indexed[name].is_null().to_numpy()
+        arr = indexed[name].fill_null(0.0).to_numpy().astype(np.float64, copy=False)
+        values[r, c, fi] = arr
+        present[r, c, fi] = ~is_null
 
     return LibraryCorrPanel(
         names=names,
@@ -255,7 +317,7 @@ def _max_corr_detail_panel(
 
 def max_correlation(
     factor_df: pl.DataFrame,
-    pool: dict[str, pl.DataFrame],
+    pool: Mapping[str, pl.DataFrame],
     panel: LibraryCorrPanel | None = None,
 ) -> float:
     """factor_df 与 pool 中每个因子的截面相关性绝对值的最大值。pool 为空时返回 0。
@@ -273,7 +335,7 @@ def max_correlation(
 
 def max_correlation_detail(
     factor_df: pl.DataFrame,
-    pool: dict[str, pl.DataFrame],
+    pool: Mapping[str, pl.DataFrame],
     panel: LibraryCorrPanel | None = None,
 ) -> tuple[float, str | None]:
     """同 ``max_correlation``，额外返回最相近的 pool key（表达式）。pool 空 → (0.0, None)。
@@ -301,7 +363,7 @@ def max_correlation_detail(
 
 def library_orthogonal_check(
     factor_df: pl.DataFrame,
-    lib_pool: dict[str, pl.DataFrame] | None,
+    lib_pool: Mapping[str, pl.DataFrame] | None,
     *,
     threshold: float = DEFAULT_DECORR_THRESHOLD,
     panel: LibraryCorrPanel | None = None,

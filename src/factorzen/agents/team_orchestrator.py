@@ -7,7 +7,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import polars as pl
 
@@ -733,7 +733,7 @@ def run_team_agent(
     # 库级正交 + 残差面板：session 开始物化一次。
     # 残差目标需要 train∪holdout → 在完整 prepped 帧上物化（不再只裁 holdout）。
     # 空库/关开关 → lib_pool={}、library_covered=None，objective 退化 raw，行为与旧一致。
-    lib_pool: dict = {}
+    lib_pool: Any = {}
     library_covered: list[str] | None = None
     library_crowded: list[tuple[str, int]] | None = None
     market = getattr(profile, "name", None) or (

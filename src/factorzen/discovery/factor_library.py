@@ -37,6 +37,18 @@ from factorzen.config.settings import (
 from factorzen.discovery.expression import evaluate_materialized, parse_expr, to_expr_string
 from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD, acceptance_reasons
 
+# 容器类落 research/combination/pool(被依赖侧,避免 discovery↔research 环);
+# 此处 re-export 保旧调用方 `from factorzen.discovery.factor_library import ...` 不变。
+from factorzen.research.combination.pool import (  # noqa: F401
+    POOL_COMPACT_BYTES_THRESHOLD,
+    POOL_KEY_BYTES_PER_ROW,
+    CompactLibraryPool,
+    HybridLibraryPool,
+    estimate_library_pool_key_bytes,
+    is_compact_pool,
+    should_use_compact_pool,
+)
+
 _LOG = logging.getLogger(__name__)
 
 DEFAULT_ROOT = str(FACTOR_LIBRARY_DIR)
@@ -334,7 +346,9 @@ def build_library_pool(
     statuses: tuple[str, ...] = ("active",),
     root: str = DEFAULT_ROOT,
     eval_start=None,
-) -> dict[str, pl.DataFrame]:
+    compact: bool | None = None,
+    compact_threshold: int = POOL_COMPACT_BYTES_THRESHOLD,
+) -> dict[str, pl.DataFrame] | CompactLibraryPool:
     """把库内因子物化为 mining/评估帧上的因子值面板，供搜索期库级正交去相关。
 
     - 取 status∈statuses 记录，按 |ic_train| 降序。
@@ -345,6 +359,9 @@ def build_library_pool(
     - 非法/求值失败/全 null 的表达式跳过并计数——一条坏记录不许崩整个 pool。
     - 库文件不存在/空 → {}。
     - ``eval_start``：可选，求值后裁到该日起（team holdout 口径扩窗预热时传入 holdout 起点）。
+    - ``compact``：``None``（默认）按 ``n_recs × n_rows × POOL_KEY_BYTES_PER_ROW`` 是否
+      ≥ ``compact_threshold`` 自动选择；``True`` 强制单骨架宽面板；``False`` 强制旧
+      dict-of-frames（**零回归默认路径**，小帧/测试保持逐字节行为）。
 
     调用方负责 ``daily`` 已与挖掘同 prep（派生列/停牌掩码等）；本函数不再二次预处理。
     """
@@ -354,6 +371,44 @@ def build_library_pool(
     recs.sort(key=lambda r: (-abs(r.ic_train or 0.0), r.expression))
 
     df = daily.sort(["ts_code", "trade_date"])
+    auto = compact is None
+    use_compact = (
+        should_use_compact_pool(
+            len(recs), df.height, threshold=compact_threshold,
+        )
+        if auto
+        else bool(compact)
+    )
+    if use_compact:
+        est = estimate_library_pool_key_bytes(len(recs), df.height)
+        thr = compact_threshold
+        reason = (
+            f"估算 {est / (1024**3):.2f}G>阈值 {thr / (1024**3):.2f}G"
+            if auto
+            else "compact=True"
+        )
+        _LOG.info(
+            "库池 compact 模式(%s, n_rec=%d, n_rows=%d)",
+            reason, len(recs), df.height,
+        )
+        print(f"库池 compact 模式({reason})", flush=True)
+        return _build_library_pool_compact(
+            recs, df, leaf_map, eval_start=eval_start, market=market,
+        )
+    return _build_library_pool_legacy(
+        recs, df, leaf_map, eval_start=eval_start, market=market,
+    )
+
+
+def _build_library_pool_legacy(
+    recs: list,
+    df: pl.DataFrame,
+    leaf_map: dict[str, str] | None,
+    *,
+    eval_start=None,
+    market: str = "",
+) -> dict[str, pl.DataFrame]:
+    """旧路径：每因子独立 [trade_date, ts_code, factor_value] 帧（filter null/inf）。"""
     pool: dict[str, pl.DataFrame] = {}
     n_skip = 0
     for r in recs:
@@ -363,7 +418,10 @@ def build_library_pool(
             panel = (
                 df.select(["trade_date", "ts_code"])
                 .with_columns(series.alias("factor_value"))
-                .filter(pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
+                .filter(
+                    pl.col("factor_value").is_not_null()
+                    & pl.col("factor_value").is_finite()
+                )
             )
             if eval_start is not None:
                 panel = panel.filter(pl.col("trade_date") >= eval_start)
@@ -373,13 +431,82 @@ def build_library_pool(
             pool[r.expression] = panel
         except Exception as exc:
             n_skip += 1
-            _LOG.debug("build_library_pool skip %r: %s: %s",
-                       r.expression, type(exc).__name__, exc)
+            _LOG.debug(
+                "build_library_pool skip %r: %s: %s",
+                r.expression, type(exc).__name__, exc,
+            )
             continue
     if n_skip:
-        _LOG.info("build_library_pool(%s): skipped %d / kept %d",
-                  market, n_skip, len(pool))
+        _LOG.info(
+            "build_library_pool(%s): skipped %d / kept %d",
+            market, n_skip, len(pool),
+        )
     return pool
+
+
+def _build_library_pool_compact(
+    recs: list,
+    df: pl.DataFrame,
+    leaf_map: dict[str, str] | None,
+    *,
+    eval_start=None,
+    market: str = "",
+) -> CompactLibraryPool | dict:
+    """单骨架宽面板：键一份 + 每因子一列 f64；非有限→null（不丢行，消费方 scatter 处理）。
+
+    求值在完整 ``df`` 上（滚动预热），``eval_start`` 只裁最终骨架与值列行。
+    """
+    value_cols: list[pl.Series] = []
+    names: list[str] = []
+    n_skip = 0
+    for r in recs:
+        try:
+            node = parse_expr(r.expression, leaf_map)
+            series = evaluate_materialized(node, df, leaf_map)
+            # 非有限 → null（保留行；scatter/__getitem__ 与旧 filter 对齐）
+            col = (
+                pl.DataFrame({"_v": series})
+                .select(
+                    pl.when(
+                        pl.col("_v").is_not_null() & pl.col("_v").is_finite()
+                    )
+                    .then(pl.col("_v"))
+                    .otherwise(None)
+                    .alias(r.expression)
+                )[r.expression]
+            )
+            if eval_start is not None:
+                col = (
+                    df.select(pl.col("trade_date"))
+                    .with_columns(col)
+                    .filter(pl.col("trade_date") >= eval_start)[r.expression]
+                )
+            if col.null_count() >= col.len():
+                n_skip += 1
+                continue
+            value_cols.append(col.alias(r.expression))
+            names.append(r.expression)
+        except Exception as exc:
+            n_skip += 1
+            _LOG.debug(
+                "build_library_pool compact skip %r: %s: %s",
+                r.expression, type(exc).__name__, exc,
+            )
+            continue
+
+    if n_skip:
+        _LOG.info(
+            "build_library_pool(%s) compact: skipped %d / kept %d",
+            market, n_skip, len(names),
+        )
+    if not names:
+        return {}
+
+    skeleton = df.select(["trade_date", "ts_code"])
+    if eval_start is not None:
+        skeleton = skeleton.filter(pl.col("trade_date") >= eval_start)
+    wide = skeleton.with_columns(value_cols)
+    return CompactLibraryPool(wide, tuple(names))
 
 
 def _save_library(market: str, records: list[FactorRecord], root: str = DEFAULT_ROOT) -> None:

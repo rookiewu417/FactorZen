@@ -51,7 +51,21 @@ def drop_degenerate_factors(
 
     因子库常混入这类因子(如陈旧基本面经 ``ts_skew`` 退化成全 NaN 空帧)。留着它们会
     在 inner join 时拖垮整个面板;组合器应丢弃后用其余因子继续,而非崩掉整个 OOS run。
+
+    ``CompactLibraryPool``：丢全 null 列，仍返回 compact（不物化 dict）。
+    ``HybridLibraryPool``：基线 drop + extras 按长表规则。
     """
+    from factorzen.research.combination.pool import CompactLibraryPool, HybridLibraryPool
+
+    if isinstance(factor_dfs, CompactLibraryPool):
+        return factor_dfs.drop_degenerate()  # type: ignore[return-value]
+    if isinstance(factor_dfs, HybridLibraryPool):
+        base = factor_dfs.base.drop_degenerate()
+        extras = drop_degenerate_factors(factor_dfs.extras)
+        if not extras:
+            return base  # type: ignore[return-value]
+        return base.with_extra_factors(extras)  # type: ignore[return-value]
+
     kept: dict[str, pl.DataFrame] = {}
     for name, df in factor_dfs.items():
         if df.height == 0 or "factor_value" not in df.columns:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import os
 import sys
 
 from factorzen.config.settings import (
@@ -698,18 +697,6 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
-    # 内存护栏(env 显式开启,默认零行为):RLIMIT_AS 软上限让超限分配抛 MemoryError
-    # (各求值路径逐表达式/逐因子 try 捕获 → 跳过计数,有界降级),
-    # 替代内核 OOM SIGKILL 杀死整个 session(全 A 怪兽因子单次求值 5G+ 实测)。
-    _mem_gb = os.environ.get("FACTORZEN_MEM_LIMIT_GB")
-    if _mem_gb:
-        try:
-            import resource
-            _cap = int(float(_mem_gb) * (1024**3))
-            resource.setrlimit(resource.RLIMIT_AS, (_cap, _cap))
-            print(f"[mine-team] 内存护栏 ▸ RLIMIT_AS={_mem_gb}G(超限求值抛 MemoryError 被跳过,不再 OOM 杀进程)")
-        except (ValueError, OSError, ImportError) as exc:
-            print(f"[mine-team] 内存护栏设置失败(忽略): {exc}", file=sys.stderr)
     # --intraday-scout 仅 ashare；隐含 --intraday-leaves（reference 需要 i_*）
     if getattr(args, "intraday_scout", False):
         if getattr(args, "market", "ashare") != "ashare":

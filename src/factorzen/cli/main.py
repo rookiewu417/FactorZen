@@ -1806,7 +1806,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             materialize_candidate=memo_mat,
             ctx=grp_ctx,
         )
-        shared_base_daily = group.get("base_daily")
+        # 防御性剥离：组结果本无 base_daily；若旧 mock 注入帧则不进 JSON manifest
         group_view = {k: v for k, v in group.items() if k != "base_daily"}
         lift_groups_meta.append(group_view)
         n_lift_evaluated += 1  # 组门计 1 次
@@ -1816,7 +1816,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         )
         g_lift, g_se = group.get("lift"), group.get("lift_se")
         print(
-            f"[factor-library lift-test] 组门 lift={g_lift!r} se={g_se!r} "
+            f"[factor-library lift-test] 组门(residual) lift={g_lift!r} se={g_se!r} "
             f"bar={bar:.4f} → {'过' if group_ok else '拒'}",
             flush=True,
         )
@@ -1852,7 +1852,6 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             ctx=grp_ctx,
             lift_workers=lift_workers_arg,
             materialize_candidate=memo_mat,
-            base_daily=shared_base_daily,
         )
         n_lift_evaluated += len(rows)
         for r in rows:

@@ -838,7 +838,8 @@ def test_cli_lift_test_parser_and_dry_run(tmp_path, monkeypatch):
     monkeypatch.setattr(
         lt_mod, "run_group_lift",
         lambda queue, **k: {
-            "lift": 0.01, "lift_se": 0.001, "error": None, "base_daily": None,
+            "lift": 0.01, "lift_se": 0.001, "error": None,
+            "lift_metric": "residual_ic_v1",
         },
     )
     monkeypatch.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)

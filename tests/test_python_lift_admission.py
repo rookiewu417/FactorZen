@@ -157,11 +157,6 @@ def test_run_lift_tests_mixed_expression_and_python(monkeypatch):
         "ret": [0.01 * ((i % 3) - 1) for i in range(daily.height)],
     })
 
-    def combine_fn(fds, rdf, cv, **kw):
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
-
     rows = run_lift_tests(
         [
             {"expression": expr_key, "residual_ic_train": 0.006, "ic_train": 0.02},
@@ -176,7 +171,6 @@ def test_run_lift_tests_mixed_expression_and_python(monkeypatch):
         active_factor_dfs=active,
         ret_df=ret_df,
         materialize_candidate=mat,
-        combine_fn=combine_fn,
         lift_workers=1,
     )
     assert len(rows) == 2
@@ -274,7 +268,7 @@ def test_rebuild_preserves_python_lift_and_single(tmp_path):
     def evaluate(exprs):
         return []  # sources 为空路径
 
-    def lift_runner(cands, *, active_factor_dfs=None, combine_fn=None, **kw):
+    def lift_runner(cands, *, active_factor_dfs=None, **kw):
         expr = cands[0]["expression"]
         # 维持 lift 轨
         return [_lift_row(expr, lift=0.006, lift_se=0.001, lift_second_half=0.003)]

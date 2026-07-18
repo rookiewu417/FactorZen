@@ -84,12 +84,12 @@ def test_cli_top_m_default_truncates_to_20(tmp_path, monkeypatch, capsys):
         lt_mod, "filter_candidates_by_coverage",
         lambda cands, **k: (list(cands), []),
     )
-    # 组门过
+    # 组门过（residual_ic_v1：无 base_daily）
     monkeypatch.setattr(
         lt_mod, "run_group_lift",
         lambda queue, **k: {
             "lift": 0.01, "lift_se": 0.001, "error": None,
-            "base_daily": pl.DataFrame({"trade_date": ["20200102"], "ic": [0.02]}),
+            "lift_metric": "residual_ic_v1",
         },
     )
     called = {"n": 0, "top_m": "unset", "n_cands": 0}
@@ -145,7 +145,8 @@ def test_cli_top_m_0_tests_all(tmp_path, monkeypatch):
     monkeypatch.setattr(
         lt_mod, "run_group_lift",
         lambda queue, **k: {
-            "lift": 0.01, "lift_se": 0.001, "error": None, "base_daily": None,
+            "lift": 0.01, "lift_se": 0.001, "error": None,
+            "lift_metric": "residual_ic_v1",
         },
     )
     called = {"n_cands": 0}
@@ -192,7 +193,8 @@ def test_cli_group_gate_fail_skips_run_lift_tests(tmp_path, monkeypatch):
     monkeypatch.setattr(
         lt_mod, "run_group_lift",
         lambda queue, **k: {
-            "lift": 0.0001, "lift_se": 0.01, "error": None, "base_daily": None,
+            "lift": 0.0001, "lift_se": 0.01, "error": None,
+            "lift_metric": "residual_ic_v1",
         },
     )
     # se_mult=1 → bar=max(0.001, 0.01)=0.01 > lift 0.0001 → 不过
@@ -278,7 +280,8 @@ def test_cli_coverage_filter_before_group_gate(tmp_path, monkeypatch):
     def fake_group(queue, **k):
         group_queues.append([c.get("expression") for c in queue])
         return {
-            "lift": 0.01, "lift_se": 0.001, "error": None, "base_daily": None,
+            "lift": 0.01, "lift_se": 0.001, "error": None,
+            "lift_metric": "residual_ic_v1",
         }
 
     monkeypatch.setattr(lt_mod, "run_group_lift", fake_group)
@@ -347,7 +350,7 @@ def test_filter_candidates_by_coverage_unit():
 
 
 def test_run_lift_tests_elapsed_s(monkeypatch):
-    """W2c：每候选结果含 elapsed_s（float 秒）。"""
+    """W2c：每候选结果含 elapsed_s（float 秒）。residual_ic_v1：无 combine_fn。"""
     from factorzen.discovery.lift_test import run_lift_tests
 
     ret = pl.DataFrame({
@@ -368,13 +371,6 @@ def test_run_lift_tests_elapsed_s(monkeypatch):
         "factor_value": [0.5, 1.5],
     })
 
-    def combine_fn(fds, rdf, c, **kw):
-        # 返回带 factor_value 的伪组合帧
-        any_df = next(iter(fds.values()))
-        return any_df.select(["trade_date", "ts_code"]).with_columns(
-            pl.lit(0.1).alias("factor_value")
-        )
-
     rows = run_lift_tests(
         [{"expression": "cand_a", "residual_ic_train": 0.02}],
         market="ashare",
@@ -382,7 +378,6 @@ def test_run_lift_tests_elapsed_s(monkeypatch):
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: cand,
-        combine_fn=combine_fn,
         lift_workers=1,
         top_m=None,
     )

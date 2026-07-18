@@ -337,7 +337,7 @@ def test_rebuild_lift_review_with_mock_runner(tmp_path):
 
     calls: list[str] = []
 
-    def lift_runner(cands, *, active_factor_dfs=None, combine_fn=None, **kw):
+    def lift_runner(cands, *, active_factor_dfs=None, **kw):
         expr = cands[0]["expression"]
         calls.append(expr)
         # 新池应含 single active

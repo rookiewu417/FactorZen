@@ -33,6 +33,10 @@ from factorzen.daily.evaluation.ic_analysis import _MIN_CROSS_SAMPLES
 # 与 ic_analysis 同门槛；日守卫再取 max(本值, k+10)
 MIN_CROSS_SAMPLES = _MIN_CROSS_SAMPLES
 
+# 残差面板 f32 阈值(格数 d×s×k):全 A ~997M 格时 f64 X+逐日 Q 各 ~8G;
+# f32 减半,数学处 numpy 自动升精度。csi800 ~163M 格不触发保 f64 零回归。
+RESIDUAL_PANEL_F32_CELLS = 500_000_000
+
 
 @dataclass(frozen=True)
 class ResidualICResult:
@@ -179,29 +183,41 @@ def _build_library_panel_from_wide(pool: object) -> LibraryPanel | None:
     date_idx = {d: i for i, d in enumerate(date_list)}
     stock_idx = {s: i for i, s in enumerate(stock_list)}
     d_n, s_n, k = len(date_list), len(stock_list), len(names)
-    X = np.zeros((d_n, s_n, k), dtype=np.float64)
+    # X f32(仅超阈值大面板):全 A 2055×5776×84 ≈ 997M 格,f64 X + 逐日 Q 缓存
+    # 各 ~8G(v19 探针死于池后残差投影)。f32 后各 ~4G;投影/QR 的 numpy 数学
+    # 自动升精度,1e-6 级差异远低于裁决阈值。csi800 级 ~163M 格保 f64 零回归。
+    _dtype = (
+        np.float32 if d_n * s_n * k >= RESIDUAL_PANEL_F32_CELLS else np.float64
+    )
+    X = np.zeros((d_n, s_n, k), dtype=_dtype)
 
-    # 一次 join 索引，按列 scatter（P4c：ts_code 可能 Categorical，小帧 align）
+    # 索引 join 只用键列(84 列宽帧 join 会整帧复制 ~3G);值列逐列从 wide 直取,
+    # 行序与 keys join 结果对齐依赖 wide 行序不变——故 join 后按行序回查。
+    # (P4c:ts_code 可能 Categorical,小帧 align)
     from factorzen.discovery.scoring import _align_join_key
 
     date_map = pl.DataFrame({"trade_date": list(date_list), "_di": list(range(d_n))})
     stock_map = pl.DataFrame({"ts_code": list(stock_list), "_si": list(range(s_n))})
-    wide_sel = wide.select(["trade_date", "ts_code", *names])
-    date_map = _align_join_key(date_map, "trade_date", wide_sel)
-    stock_map = _align_join_key(stock_map, "ts_code", wide_sel)
+    keys_only = wide.select(["trade_date", "ts_code"])
+    date_map = _align_join_key(date_map, "trade_date", keys_only)
+    stock_map = _align_join_key(stock_map, "ts_code", keys_only)
+    # left join 保全行(全 null 行的 date/stock 不在 any_finite 并集轴上 → 哨兵 -1
+    # 掩码丢弃,与原 wide_sel inner join 的丢行语义一致);行序 maintain_order 保序,
+    # 值列按原始行位从 wide 直取。
     indexed = (
-        wide_sel
-        .join(date_map, on="trade_date", how="inner")
-        .join(stock_map, on="ts_code", how="inner")
+        keys_only
+        .join(date_map, on="trade_date", how="left", maintain_order="left")
+        .join(stock_map, on="ts_code", how="left", maintain_order="left")
     )
-    r = indexed["_di"].to_numpy().astype(np.int64, copy=False)
-    c = indexed["_si"].to_numpy().astype(np.int64, copy=False)
+    r = indexed["_di"].fill_null(-1).cast(pl.Int64).to_numpy()
+    c = indexed["_si"].fill_null(-1).cast(pl.Int64).to_numpy()
+    on_axis = (r >= 0) & (c >= 0)
     for j, name in enumerate(names):
         raw = np.full((d_n, s_n), np.nan, dtype=np.float64)
-        v = indexed[name].to_numpy()
+        v = wide[name].to_numpy()
         # polars null → 可能是 None 在 object；统一 isfinite
         v64 = np.asarray(v, dtype=np.float64)
-        keep = np.isfinite(v64)
+        keep = np.isfinite(v64) & on_axis
         raw[r[keep], c[keep]] = v64[keep]
         for di in range(d_n):
             X[di, :, j] = _cs_zscore_null0(raw[di])
@@ -248,13 +264,16 @@ def _qr_basis(X: np.ndarray) -> np.ndarray | None:
     秩亏时 Householder QR 无列主元，截断 R 对角不能保证张成完整 col(A)；
     返回 None 让呼叫方走 ``lstsq``（SVD）慢路径，残差与 ``residualize_cross_section`` 一致。
     """
-    X = np.asarray(X, dtype=np.float64)
+    # 保持输入精度:大面板 X 为 f32 时 Q 缓存同存 f32(逐日 Q 全集 ~8G→4G,全 A 关键);
+    # 投影 Q@(Qᵀy) 与 f64 y 相乘时 numpy 自动升精度。小面板 f64 不变。
+    _dt = np.float32 if getattr(X, "dtype", None) == np.float32 else np.float64
+    X = np.asarray(X, dtype=_dt)
     if X.ndim == 1:
         X = X.reshape(-1, 1)
     n = int(X.shape[0])
     if n == 0:
-        return np.zeros((0, 0), dtype=np.float64)
-    A = np.column_stack([np.ones(n, dtype=np.float64), X])
+        return np.zeros((0, 0), dtype=_dt)
+    A = np.column_stack([np.ones(n, dtype=_dt), X])
     Q, R = np.linalg.qr(A, mode="reduced")
     if R.size == 0:
         return Q

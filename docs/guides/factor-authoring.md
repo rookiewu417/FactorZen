@@ -106,10 +106,11 @@ trade_date · ts_code · factor_value
 
 ## 写因子时最容易踩的坑
 
-> ⚠️ **`lookback_days` 与 `frequency` 的子类声明目前不生效。**
-> `DailyFactor` 是 `@dataclass`，它生成的 `__init__` 在实例化时会把 `lookback_days` 写回基类默认值 **20**、把 `frequency` 写回 `"daily"`。而 `fz factor run`（`pipelines/daily_single.py:456,521`）和库物化（`discovery/python_factor.py:231`）读的都是**实例**属性。
-> 实测：`momentum_weekly` 类上写着 `lookback_days = 30`，`cls.lookback_days` 是 30，但 `factor_cls().lookback_days` 是 20。
-> **实际后果**：任何 python 因子拿到的预热窗口恒为 20 个交易日。写因子时按「只有 20 天预热」做保守设计——滚动窗口用 `min_samples` 兜底、窗口尽量不超过 20 天，或在 `compute()` 内部自己再往前取数。别指望 `lookback_days` 帮你扩窗。
+> ⚠️ **不要给因子类加 `@dataclass`。**
+> `DailyFactor` 刻意是普通类而非 dataclass。子类以无注解的类属性声明 `lookback_days = 30` 这种写法，只有在基类不是 dataclass 时才生效——一旦某层加上 `@dataclass`，生成的 `__init__` 会在实例化时用基类默认值把子类声明覆盖掉，而消费方（`pipelines/daily_single.py`、`discovery/python_factor.py`）读的都是**实例**属性，预热窗口会静默退化成 20 天且不报错。
+> `tests/test_factor_class_attr_declaration.py` 有全量守卫盯着这件事。
+>
+> （日内因子 `IntradayFactor` 走的是另一套约定：基类与子类**都**用 `@dataclass` + 注解字段，那样是自洽的，照 `builtin_factors/intraday/` 的样子写即可。）
 
 其余逐条对照：
 

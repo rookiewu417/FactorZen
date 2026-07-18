@@ -135,8 +135,8 @@ pixi run fz factor sweep --config workspace/configs/daily/daily_factor_template.
 workspace/
 ├── mining_sessions/session_<seed>_<method>/  因子挖掘候选
 │   ├── candidates.csv             候选排行（表达式 + IC）
-│   ├── manifest.json              配置/命令/seed/git SHA
-│   └── exported/*.py              可复现因子代码
+│   └── manifest.json              配置/命令/seed/git SHA
+├── factor_library/                入库因子登记簿（jsonl；可直接 fz factor run）
 ├── factor_evaluations/{run_id}/   单因子评估
 │   ├── report.html                Tear Sheet 报告（含分层回测结果，无独立 backtest 文件）
 │   ├── manifest.json              配置/命令/git SHA/lockfile hash/阶段耗时

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import shutil
 from pathlib import Path
 
 from factorzen.agents.manifest import write_session_manifest
@@ -216,17 +215,8 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_A
     run_dir.mkdir(parents=True, exist_ok=True)
     from factorzen.discovery.export import agent_candidates_csv_df
     agent_candidates_csv_df(result.candidates).write_csv(run_dir / "candidates.csv")
-    if export:
-        exp_dir = run_dir / "exported"
-        # 清空必须独立于「本次有无候选」：复用 run_id 时若本次候选更少（乃至为 0），
-        # 上次 run 的多余因子文件会残留并被下游消费。
-        if exp_dir.exists():
-            shutil.rmtree(exp_dir)
-        if result.candidates:
-            from factorzen.discovery.export import export_candidate
-            exp_dir.mkdir(parents=True, exist_ok=True)
-            for i, c in enumerate(result.candidates):
-                export_candidate(c["expression"], f"agent_{rid}_{i}", str(exp_dir))
+    # export 参数保留 API 兼容；exported/*.py 桥已废除（入库走 factor_library）
+    _ = export
     _print_final_stats(result, str(run_dir), label="mine-agent")
     return {"run_dir": str(run_dir), "n_candidates": len(result.candidates),
             "n_trials": result.n_trials, "candidates": result.candidates}

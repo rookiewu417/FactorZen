@@ -8,7 +8,6 @@ import json
 import sys
 
 from factorzen.config.settings import (
-    DAILY_FACTORS_DIR,
     FACTOR_EVALUATIONS_DIR,
     FACTOR_LIBRARY_DIR,
     PORTFOLIOS_DIR,
@@ -80,6 +79,13 @@ def _cmd_factor_list(args: argparse.Namespace) -> int:
         from factorzen.intraday.factors.registry import list_factors
     else:
         from factorzen.daily.factors.registry import list_factors
+        from factorzen.discovery.library_provider import load_library_factors
+
+        # 注入 factor_library expression 型；库损坏/缺失不崩 list
+        try:
+            load_library_factors()
+        except ValueError as e:
+            print(f"[factor] load_library_factors 跳过: {e}", file=sys.stderr)
 
     for name in list_factors():
         print(name)
@@ -483,8 +489,9 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
-    print(f"[mine] 复现：cp {sd}/exported/*.py {DAILY_FACTORS_DIR}/ && "
-          f"fz factor run <name> --set preprocessing.neutralize=false")
+    print("[mine] 复现：入库候选 fz factor-library list 查 name 后 "
+          "fz factor run <name> --set preprocessing.neutralize=false；"
+          "未入库候选：表达式在 candidates.csv")
     print("[mine] 注：candidates.csv 的 IC 为挖掘内估计(plain zscore)；"
           "fz factor run 默认带中性化，IC parity 需 neutralize=false")
     return 0
@@ -707,6 +714,7 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
     from factorzen.discovery.factor_library import (
         build_library_pool,
         library_file_hash,
+        python_pool_cache_key,
         write_pool_cache,
     )
     from factorzen.discovery.leaf_health import (
@@ -760,10 +768,13 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
             Path(args.index_path).parent / "factor_library"
         )
         # 强制 compact（与父进程装载 CompactLibraryPool 契约一致）
+        # universe：库含 python 记录时物化必需（与 run_team_agent 池调用同口径）
+        _pool_universe = getattr(args, "universe", None)
         lib_pool = build_library_pool(
             market, session_prepped, ctx.leaf_map,
             root=lib_root, eval_start=eval_start_date,
             compact=True,
+            universe=_pool_universe,
         )
 
         # meta 真实填：date 字段必须 str(date)=ISO（"2021-01-04"），与 load_pool_cache 校验同源
@@ -776,6 +787,10 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
                 "statuses": ["active"],
                 "eval_start": str(eval_start_date),
                 "library_hash": library_file_hash(market, lib_root),
+                "python_pool_key": python_pool_cache_key(
+                    market, root=lib_root, statuses=("active",),
+                    universe=_pool_universe,
+                ),
                 "prepped_height": session_prepped.height,
                 "prepped_date_min": str(session_prepped["trade_date"].min()),
                 "prepped_date_max": str(session_prepped["trade_date"].max()),
@@ -986,10 +1001,47 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     )
     lift_adm_start = _lift_admission_str(holdout_start)
     lift_adm_end = _lift_admission_str(holdout_df["trade_date"].max())
+    # lift 复审 active 池物化：透传 python_universe（expression + py:: 统一入口）。
+    # 惰性构建：只有 rebuild 真调物化（存在 lift 轨复审 + active 记录）才 prep——
+    # ①无复审的 rebuild 不多付一次 prep；②退化帧（缺列的小样本/测试）prep 失败
+    # 降级为 materialize 恒 None（旧行为），不许在 CLI 层直接崩。
+    def _make_lazy_rebuild_materializer():
+        state: dict = {"mat": None, "failed": False}
+
+        def _mat(expr: str):
+            if state["failed"]:
+                return None
+            if state["mat"] is None:
+                try:
+                    from factorzen.discovery.evaluation import _preprocess_daily
+                    from factorzen.discovery.lift_test import _materializer_from_prepped
+
+                    prepped_mat = _preprocess_daily(daily, profile).sort(
+                        ["ts_code", "trade_date"]
+                    )
+                    state["mat"] = _materializer_from_prepped(
+                        prepped_mat, leaf_map,
+                        python_universe=args.universe,
+                        python_market=market,
+                    )
+                except Exception as exc:
+                    print(
+                        f"[factor-library] rebuild 复审物化器构建失败"
+                        f"（{type(exc).__name__}: {exc}），active 基线池回退为空",
+                        file=sys.stderr,
+                    )
+                    state["failed"] = True
+                    return None
+            return state["mat"](expr)
+
+        return _mat
+
+    materialize = _make_lazy_rebuild_materializer()
     res = fl.rebuild(
         market, sources=sources, eval_window=(start, end), universe=args.universe,
         horizon=args.horizon, evaluate=evaluate,
         compact_materialize=compact_materialize,
+        materialize=materialize,
         git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
         leaf_map=leaf_map, decorr_threshold=args.decorr_threshold,
         daily=daily, profile=profile,
@@ -1448,9 +1500,49 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     )
 
     sessions = list(args.session or [])
-    if not sessions:
-        print("[factor-library lift-test] 需至少一个 --session 目录", file=sys.stderr)
+    factor_names = list(getattr(args, "factor", None) or [])
+    if not sessions and not factor_names:
+        print(
+            "[factor-library lift-test] 需至少一个 --session 目录或 --factor 因子名",
+            file=sys.stderr,
+        )
         return 2
+
+    market = args.market
+
+    # --factor：一期仅 ashare + 必填 universe；registry 存在性 fail-loudly
+    py_cands: list[dict] = []
+    if factor_names:
+        if market != "ashare":
+            print(
+                f"[factor-library lift-test] --factor 一期仅支持 market=ashare，"
+                f"收到 market={market!r}",
+                file=sys.stderr,
+            )
+            return 2
+        if not getattr(args, "universe", None):
+            print(
+                "[factor-library lift-test] --factor 时 --universe 必填（如 csi300）",
+                file=sys.stderr,
+            )
+            return 2
+        from factorzen.daily.factors.registry import get_factor
+
+        for name in factor_names:
+            try:
+                get_factor(name)
+            except KeyError:
+                print(
+                    f"[factor-library lift-test] 未注册因子: {name!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            py_cands.append({
+                "expression": fl.python_identity(name),
+                "kind": "python",
+                "name": name,
+                "impl": name,
+            })
 
     # 旗标覆盖优先：任一非 None → 所有候选归同一旗标窗（escape hatch）
     flag_start = getattr(args, "admission_start", None)
@@ -1509,14 +1601,19 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         resolved_horizon = DEFAULT_HORIZON
 
     groups = _group_lift_candidates_by_admission(session_items)
+    # python 候选单独成组：admission 窗取旗标；未给旗标 → g_start=None（沿用无独立性保证警告）
+    if py_cands:
+        groups.append((flag_adm_start, flag_adm_end, py_cands))
+
     n_gray = sum(len(cands) for _, _, cands in groups)
     if n_gray == 0:
-        print("[factor-library lift-test] 未从 session 抽到 gray_zone 候选")
+        print("[factor-library lift-test] 未从 session/--factor 抽到候选")
         return 0
 
     print(
-        f"[factor-library lift-test] gray_zone 候选 {n_gray} 个（去重后），"
+        f"[factor-library lift-test] 候选 {n_gray} 个（去重后），"
         f"admission 分组 {len(groups)} 组"
+        + (f"（含 python {len(py_cands)}）" if py_cands else "")
     )
     for gi, (g_start, g_end, cands) in enumerate(groups, start=1):
         print(
@@ -1529,7 +1626,6 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    market = args.market
     # 装配日频帧一次（各 session 共享；跨 universe 分帧另任务）——与 mine agent/team
     # **同源** `_prepare_agent_mining_data`。禁止另起一套 loader，否则事件叶子缺列/fill
     # 语义漂移 → 候选近乎全空 → build_panel「行因子齐全」暴跌、lift 成噪声。
@@ -1543,12 +1639,20 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     for _gs, _ge, cands in groups:
         for c in cands:
             e = c.get("expression") if isinstance(c, dict) else None
-            if e:
-                all_exprs.append(str(e))
+            if not e:
+                continue
+            es = str(e)
+            # py:: 哨兵不是可 parse 表达式；跳过以免误触 ix_ 词法或无意义 parse 尝试
+            if fl.is_python_identity(es):
+                continue
+            all_exprs.append(es)
     try:
         for rec in fl.load_library(market, root=lib_root):
             if getattr(rec, "status", None) == "active" and rec.expression:
-                all_exprs.append(str(rec.expression))
+                es = str(rec.expression)
+                if fl.is_python_identity(es):
+                    continue
+                all_exprs.append(es)
     except Exception:
         pass
     need_intraday = bool(getattr(args, "intraday_leaves", False)) or expressions_need_intraday(
@@ -1578,6 +1682,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         top_m = int(top_m_raw)
     seed = getattr(args, "seed", 0) or 0
     se_mult = float(getattr(args, "se_mult", 1.0) or 1.0)
+    python_universe = getattr(args, "universe", None)
 
     # base_ctx：prep 一次；admission 窗 per-group replace（不改 horizon）
     try:
@@ -1589,6 +1694,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             admission_start=None,
             admission_end=None,
             library_root=lib_root,
+            python_universe=python_universe,
+            python_market=market,
         )
     except Exception:
         # 回退=raw 帧当 prepped:派生叶子(ret_1d 等)将全空——真实数据不应走到这
@@ -1604,6 +1711,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             admission_end=None,
             library_root=lib_root,
             profile_name=getattr(profile, "name", None) if profile is not None else None,
+            python_universe=python_universe,
+            python_market=market,
         )
 
     lift_workers_arg = getattr(args, "lift_workers", None)  # None→自适应(按可用内存)
@@ -1623,7 +1732,11 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     # 物化 memo：filter 与 run_lift_tests 共用，避免二次物化
     from factorzen.discovery.lift_test import _materializer_from_prepped
 
-    mat_base = _materializer_from_prepped(base_ctx.prepped, leaf_map)
+    mat_base = _materializer_from_prepped(
+        base_ctx.prepped, leaf_map,
+        python_universe=python_universe,
+        python_market=market,
+    )
     mat_cache: dict[str, object] = {}
 
     def memo_mat(expr: str):
@@ -1758,7 +1871,17 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         f"{'baseline':>8s}  passed"
     )
     for r in results:
-        expr = (r.get("expression") or "")[:40]
+        raw_expr = r.get("expression") or ""
+        # python 候选打印用 name（可读性），避免 py:: 哨兵裸奔
+        if fl.is_python_identity(str(raw_expr)):
+            label = (
+                r.get("name")
+                or fl._python_name_from_expression(str(raw_expr))
+                or raw_expr
+            )
+        else:
+            label = raw_expr
+        expr = str(label)[:40]
         lift = r.get("lift")
         se = r.get("lift_se")
         sh = r.get("lift_second_half")
@@ -1886,7 +2009,12 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     }
     if truncated_from is not None:
         lift_manifest["truncated_from"] = truncated_from
-    out_man = Path(sessions[0]) / "lift_test_manifest.json"
+    if sessions:
+        out_man = Path(sessions[0]) / "lift_test_manifest.json"
+    else:
+        # 仅 --factor：落库根目录可审计
+        Path(lib_root).mkdir(parents=True, exist_ok=True)
+        out_man = Path(lib_root) / f"lift_test_{market}_manifest.json"
     out_man.write_text(
         json.dumps(lift_manifest, ensure_ascii=False, indent=2), encoding="utf-8",
     )
@@ -2088,6 +2216,7 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
         return _validate_overfit_us(args)
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.daily.factors.registry import get_factor
+    from factorzen.discovery.library_provider import load_library_factors
     from factorzen.discovery.scoring import ic_overfit_report
 
     # factor 位置参数 nargs='?' 可缺省；缺省时给友好用法提示，而非 get_factor(None) 裸 KeyError
@@ -2095,6 +2224,11 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
         print("[validate] 缺少因子名：用法 fz validate overfit <factor> --start ... --end ...",
               file=sys.stderr)
         return 2
+    # ashare daily：注入 library expression 因子（库损坏不崩）
+    try:
+        load_library_factors()
+    except ValueError as e:
+        print(f"[validate] load_library_factors 跳过: {e}", file=sys.stderr)
     factor = get_factor(args.factor)()
     uni = None
     if getattr(args, "universe", None):

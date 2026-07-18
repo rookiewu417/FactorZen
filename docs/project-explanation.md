@@ -72,7 +72,8 @@ workspace/
   factors/            用户新增因子
   configs/            实验 YAML 配置
   factor_evaluations/ report.html / manifest.json / parquet 产物 + experiment_index.jsonl
-  mining_sessions/    因子挖掘 session（candidates.csv / manifest.json / exported/）
+  mining_sessions/    因子挖掘 session（candidates.csv / manifest.json）
+  factor_library/     入库因子登记簿（jsonl；provider 注入 registry 可直接 fz factor run）
   mine_team/          多 Agent 团队挖掘产物
   risk_models/        Barra 风险模型产物
   portfolios/         组合优化建仓产物（weights.parquet / attribution.csv / risk_summary.csv / manifest.json）

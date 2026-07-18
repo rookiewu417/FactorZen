@@ -550,11 +550,17 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
 
     fl_lt = fl_sub.add_parser(
         "lift-test",
-        help="灰区候选组合增量 lift 实验 → 通过者以 status=probation 入库（第二通道）",
+        help="灰区候选 / registry python 因子组合增量 lift 实验 → 通过者以 status=probation 入库（第二通道）",
     )
     fl_lt.add_argument(
-        "--session", nargs="+", required=True,
-        help="mine_team / mine-agent / mining_session 的 run 目录（含 manifest.json）",
+        "--session", nargs="+", required=False, default=None,
+        help="mine_team / mine-agent / mining_session 的 run 目录（含 manifest.json）；"
+             "与 --factor 至少一个",
+    )
+    fl_lt.add_argument(
+        "--factor", nargs="+", default=None,
+        help="registry 因子名（python 型）；与 --session 至少一个；"
+             "要求 market=ashare 且 --universe 必填",
     )
     fl_lt.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
     fl_lt.add_argument("--start", required=True, help="评估窗口起点 YYYYMMDD")

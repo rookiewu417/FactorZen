@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from factorzen.config.settings import DAILY_FACTORS_DIR, MINING_SESSIONS_DIR
+from factorzen.config.settings import MINING_SESSIONS_DIR
 from factorzen.core.experiment import get_git_sha
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.evaluation import _rank_fingerprint  # 公共指纹；M1 原名 re-export 兼容
@@ -584,14 +584,12 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 "n_gray_zone": n_gray_zone,
                 "objective": eff_objective,
                 "reproduce_note": (
-                    f"导出因子在 exported/；复现需复制到 {DAILY_FACTORS_DIR}/ 后 "
-                    "fz factor run <name> --set preprocessing.neutralize=false（IC parity）"
+                    "入库候选：fz factor-library list 查 name 后 "
+                    "fz factor run <name> --set preprocessing.neutralize=false；"
+                    "未入库候选：表达式在 candidates.csv"
                 )}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
-    from factorzen.discovery.export import export_candidate
-    exported_dir = session_dir / "exported"
-    for i, c in enumerate(top):
-        export_candidate(c["expression"], f"mined_{seed}_{i+1}", str(exported_dir))
+    # exported/*.py 桥已废除：入库走 factor_library + registry library provider
 
     # ── 自动维护因子库（M1 收尾 upsert）─────────────────────────────────────────
     # 只收 passed（library gate）者；市场从 profile.name 取（None→ashare）。库根默认由 out_dir

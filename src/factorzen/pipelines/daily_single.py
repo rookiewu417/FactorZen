@@ -441,6 +441,13 @@ def _run(
 
     # ── 1. 获取因子类 ──
     logger.info(f"──── 单因子评估: {args.factor} | {args.start} ~ {args.end} ────")
+    # ashare daily 管线：注入 factor_library expression 型（库损坏/缺失不崩 run）
+    # import 放函数内：daily→discovery 反向依赖禁止在模块级出现（架构环）
+    from factorzen.discovery.library_provider import load_library_factors
+    try:
+        load_library_factors()
+    except ValueError as e:
+        logger.warning(f"load_library_factors 跳过: {e}")
     try:
         factor_cls = get_factor(args.factor)
     except KeyError as e:

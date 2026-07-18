@@ -1,6 +1,6 @@
-> [FactorZen](../../README.md) · [文档](../README.md) · **环境变量**
-
 # 环境变量参考
+
+> [FactorZen](../../README.md) · [文档](../README.md) · **环境变量**
 
 所有凭据从项目根的 `.env` 读取。仓库里有一份 `.env.example` 作模板：
 

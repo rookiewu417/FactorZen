@@ -174,7 +174,7 @@ pixi run -- fz factor-library lift-test \
   --market ashare --universe csi500 --start 20200101 --end 20241231 --apply
 ```
 
-几条硬约束（都在 `cli/main.py:1515-1546` 里 fail-loudly，不会静默降级）：
+几条硬约束（都在 `cli/main.py:1513-1545` 里 fail-loudly，不会静默降级）：
 
 - `--factor` 目前**只支持 `--market ashare`**，其它市场直接报错退出。
 - `--factor` 时 **`--universe` 必填**（如 `csi500`）——python 因子的物化需要 PIT membership 口径。

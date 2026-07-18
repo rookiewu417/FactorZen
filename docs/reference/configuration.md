@@ -1,6 +1,6 @@
-> [FactorZen](../../README.md) · [文档](../README.md) · **配置参考**
-
 # 配置参考
+
+> [FactorZen](../../README.md) · [文档](../README.md) · **配置参考**
 
 FactorZen 的配置分三层，越靠后优先级越高：
 

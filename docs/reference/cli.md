@@ -1,6 +1,6 @@
-> [FactorZen](../../README.md) · [文档](../README.md) · **CLI 参考**
-
 # CLI 参考手册
+
+> [FactorZen](../../README.md) · [文档](../README.md) · **CLI 参考**
 
 FactorZen 的全部功能都通过单一入口 `fz` 暴露。本手册覆盖 **16 个顶层命令 / 47 个叶子命令**（含 2 个 deprecated 别名）的完整参数面，所有默认值均取自真实 argparse 声明。
 

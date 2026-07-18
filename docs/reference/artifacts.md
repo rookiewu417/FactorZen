@@ -1,6 +1,6 @@
-> [FactorZen](../../README.md) · [文档](../README.md) · **产物布局**
-
 # 产物布局
+
+> [FactorZen](../../README.md) · [文档](../README.md) · **产物布局**
 
 FactorZen 严格区分两个根目录：
 

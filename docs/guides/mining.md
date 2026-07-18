@@ -42,15 +42,13 @@ pl.Expr                          求值
 
 ### 叶子（57 个，`core/feature_schema.py` 是单一真源）
 
-| 族 | 数量 | 例子 |
+| 族 | 数量 | 叶子 |
 |---|---|---|
-| 行情基础 | — | `open` `high` `low` `close` `vol` `amount` `vwap` `ret_1d` `log_vol` `amplitude` `intraday_ret` `overnight_ret` |
+| 行情基础 | 12 | `open` `high` `low` `close` `vol` `amount` `vwap` `ret_1d` `log_vol` `amplitude` `intraday_ret` `overnight_ret` |
 | 估值 / 规模 | 10 | `total_mv` `circ_mv` `pe_ttm` `pb` `ps_ttm` `dv_ttm` `turnover_rate` `turnover_rate_f` `volume_ratio` `float_share` |
 | 基本面（PIT 按公告日对齐） | 8 | `roe` `roa` `netprofit_yoy` `or_yoy` `assets_yoy` `debt_to_assets` `grossprofit_margin` `netprofit_margin` |
-| 资金流 | 8 | `net_mf_amount` `north_ratio` 等 |
-| 两融 | 4 | `margin_balance` `margin_buy_ratio` `margin_ratio` `short_balance` |
+| 资金流（含两融、龙虎榜） | 8 | `net_mf_amount` `north_ratio` · `margin_balance` `margin_buy_ratio` `margin_ratio` `short_balance` · `top_list_flag` `top_list_net_buy` |
 | 股东户数 | 2 | `holder_num` `holder_num_chg` |
-| 龙虎榜 | 2 | `top_list_flag` `top_list_net_buy` |
 | **日内微观结构** | 17 | `i_rv` `i_amihud` `i_smart_money` `i_vwap_dev` …（见[日内叶子](#日内叶子)） |
 
 > ⚠️ 日内的 17 个 `i_*` 叶子**默认不启用**，必须显式加 `--intraday-leaves`，且面板要先构建好。它们计入 57 这个总数，但不加旗标时不会出现在搜索空间里。
@@ -289,7 +287,7 @@ pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi500 \
   --pool-subproc
 ```
 
-`--pool-subproc`（或环境变量 `FACTORZEN_POOL_SUBPROC=1`）会自动派生一个 `fz pool-prebuild` 子进程，产物落在 `workspace/mine_team/_pool_cache/<key>/`。缓存键由**库文件 hash + 窗口 + 票池 + 市场 + holdout 比例 + 日内旗标**共同决定（`cli/main.py:862-871`），命中则直接复用、跳过子进程。
+`--pool-subproc`（或环境变量 `FACTORZEN_POOL_SUBPROC=1`）会自动派生一个 `fz pool-prebuild` 子进程，产物落在 `workspace/mine_team/_pool_cache/<key>/`。缓存键由**库文件 hash + 窗口 + 票池 + 市场 + holdout 比例 + 日内旗标**共同决定（`cli/main.py:860-871`），命中则直接复用、跳过子进程。
 
 **手工预热：**
 

@@ -1,6 +1,6 @@
-> [FactorZen](../../README.md) · [文档](../README.md) · **端到端教程**
-
 # 端到端教程
+
+> [FactorZen](../../README.md) · [文档](../README.md) · **端到端教程**
 
 从零跑完一条完整的 A 股研究链路：
 

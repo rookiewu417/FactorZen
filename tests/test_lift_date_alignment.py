@@ -146,6 +146,48 @@ def test_daily_residual_rank_ic_window_format_agnostic():
     assert iso["trade_date"].to_list() == ["2024-02-06"]
 
 
+def test_daily_residual_rank_ic_joins_date_candidate_with_utf8_returns():
+    """候选 pl.Date × 收益 Utf8——残差引擎的生产真实组合，不得抛 SchemaError。
+
+    候选面板由 ``_materializer_from_prepped`` 产出（prepped 帧原生 pl.Date），
+    收益面板由 ``_build_ret_panel`` 显式 ``cast(pl.Utf8)``。旧实现直接 join
+    两个不同 dtype 的键 → ``SchemaError``（2026-07-15 apply 全灭事故同款）。
+    """
+    from factorzen.discovery.residual import (
+        build_library_panel,
+        daily_residual_rank_ic,
+    )
+
+    rng = np.random.default_rng(3)
+    days = [dt.date(2024, 2, 5), dt.date(2024, 2, 6), dt.date(2024, 2, 7)]
+    codes = _codes(45)
+
+    def _long(M, col):
+        return pl.DataFrame([
+            {"trade_date": d, "ts_code": c, col: float(M[i, j])}
+            for i, d in enumerate(days) for j, c in enumerate(codes)
+        ])
+
+    lib_m = rng.normal(0, 1, size=(3, 45))
+    cand_m = lib_m + rng.normal(0, 0.8, size=(3, 45))
+    fwd_m = cand_m + rng.normal(0, 0.3, size=(3, 45))
+
+    panel = build_library_panel({"lib": _long(lib_m, "factor_value")})
+    assert panel is not None
+    cand = _long(cand_m, "factor_value")
+    fwd_date = _long(fwd_m, "ret")
+    # 复刻 _build_ret_panel：收益侧 cast Utf8
+    fwd_utf8 = fwd_date.with_columns(pl.col("trade_date").cast(pl.Utf8))
+    assert cand.schema["trade_date"] == pl.Date
+
+    same = daily_residual_rank_ic(cand, panel, fwd_date, ret_col="ret")
+    mixed = daily_residual_rank_ic(cand, panel, fwd_utf8, ret_col="ret")
+    assert same.height == 3
+    assert mixed.height == 3, f"Date×Utf8 未对齐: {mixed}"
+    # 形态对齐不得改变数值
+    assert same["ic"].to_list() == mixed["ic"].to_list()
+
+
 # ── 4. 真实后果：admission_ic 不得因形态错配退化成 0.0 ───────────────────────
 
 

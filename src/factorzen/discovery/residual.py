@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
-from factorzen.core.dates import iso_date_str
+from factorzen.core.dates import iso_date_expr, iso_date_str
 from factorzen.core.stats import spearman_avg_rank as _spearman
 from factorzen.daily.evaluation.ic_analysis import _MIN_CROSS_SAMPLES
 
@@ -411,6 +411,30 @@ class ResidualProjector:
         })
 
 
+def _align_date_key(fwd_sel: pl.DataFrame, cand: pl.DataFrame) -> pl.DataFrame:
+    """把 ``fwd_sel.trade_date`` 的 dtype 对齐到 ``cand``（join 前必做）。
+
+    候选面板常是 ``pl.Date``（prepped 帧原生），而 ``lift_test._build_ret_panel``
+    把收益侧 ``cast(pl.Utf8)``——直接 join 抛 ``SchemaError``
+    （2026-07-15 apply 全灭事故 38/38 同款）。
+
+    **方向固定为「转 fwd、不动 cand」**：``lib_panel.date_idx`` 的键与候选同源，
+    改候选侧会让逐日索引查不到而整帧被跳过（静默空序列）。
+    """
+    ct = cand.schema.get("trade_date")
+    ft = fwd_sel.schema.get("trade_date")
+    if ct is None or ft is None or ct == ft:
+        return fwd_sel
+    if ct in (pl.Date, pl.Datetime) and ft == pl.Utf8:
+        # 先规范成 ISO 再解析，兼容紧凑 YYYYMMDD 与带横杠两种来源
+        return fwd_sel.with_columns(
+            iso_date_expr(ft).str.to_date("%Y-%m-%d").cast(ct)
+        )
+    if ct == pl.Utf8:
+        return fwd_sel.with_columns(iso_date_expr(ft))
+    return fwd_sel.with_columns(pl.col("trade_date").cast(ct, strict=False))
+
+
 def _norm_trade_date_str(d: object) -> str:
     """panel/候选日期 → ISO ``YYYY-MM-DD``（``core.dates`` 单一真源）。
 
@@ -460,6 +484,7 @@ def daily_residual_rank_ic(
 
     fwd_sel = fwd_returns.select(["trade_date", "ts_code", ret_col])
     fwd_sel = _align_join_key(fwd_sel, "ts_code", cand)
+    fwd_sel = _align_date_key(fwd_sel, cand)
     joined = cand.join(
         fwd_sel, on=["trade_date", "ts_code"], how="inner",
     ).filter(pl.col(ret_col).is_not_null() & pl.col(ret_col).is_finite())

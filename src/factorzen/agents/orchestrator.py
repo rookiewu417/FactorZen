@@ -141,8 +141,10 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             )
             market = getattr(profile, "name", None) or "ashare"
             lib_root = library_root or DEFAULT_ROOT
+            # eval_start:裁预热前缀(与 team 同理;None 不裁零回归)
             lib_pool = build_library_pool(
                 market, session_prepped, ctx.leaf_map, root=lib_root,
+                eval_start=_eval_start_date,
             )
             covered, crowded = library_covered_by_family(
                 market, per_family=2, max_total=12, root=lib_root,

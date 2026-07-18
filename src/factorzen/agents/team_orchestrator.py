@@ -755,8 +755,12 @@ def run_team_agent(
                 build_library_pool,
                 library_covered_by_family,
             )
+            # eval_start:求值后裁掉 504 天预热前缀(库因子自身滚动窗在完整帧上算,
+            # 裁剪只去掉无消费的前缀行;train/holdout 残差与 lift 全在 eval 窗内)。
+            # 全 A 9.57M 行时池行数 -24%(≈-1.6G),None 时不裁零回归。
             lib_pool = build_library_pool(
                 market, session_prepped, ctx.leaf_map, root=lib_root,
+                eval_start=_eval_start_date,
             )
             covered, crowded = library_covered_by_family(
                 market, per_family=2, max_total=12, root=lib_root,

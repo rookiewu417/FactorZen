@@ -22,6 +22,9 @@ import polars as pl
 # 提前切换无数值代价。小帧/测试(<4G)仍走 legacy 零回归。
 POOL_KEY_BYTES_PER_ROW = 41
 POOL_COMPACT_BYTES_THRESHOLD = 4 * (1024**3)  # 4 GiB
+# 值列 f32 阈值:估算 n_factors×n_rows×8B ≥ 此值时 compact 池值列存 f32
+# (仅存储层;__getitem__/numpy 边界升回 f64)。csi800 级 ~1.25G 不触发,f64 零回归。
+POOL_VALUE_F32_BYTES_THRESHOLD = 2 * (1024**3)  # 2 GiB
 
 class CompactLibraryPool(Mapping[str, pl.DataFrame]):
     """单骨架宽面板库池：键列一份 + 每因子一列 f64（null 保留非有限）。
@@ -59,9 +62,11 @@ class CompactLibraryPool(Mapping[str, pl.DataFrame]):
     def __getitem__(self, key: str) -> pl.DataFrame:
         if key not in self._names:
             raise KeyError(key)
+        # factor_value 出口恒 f64:内部可为 f32 存储(大池省内存),API dtype 契约不变
         return (
             self._wide.select(
-                ["trade_date", "ts_code", pl.col(key).alias("factor_value")]
+                ["trade_date", "ts_code",
+                 pl.col(key).cast(pl.Float64).alias("factor_value")]
             )
             .filter(
                 pl.col("factor_value").is_not_null()

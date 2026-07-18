@@ -8,6 +8,96 @@ import polars as pl
 
 from factorzen.discovery.operators import LEAF_FEATURES, OPERATORS
 
+# ts 节点分块物化（全 A ~9.57M 行时 polars 单次 .over("ts_code") 瞬时 ~5G）。
+# 仅 category=="ts" 且 work 够大时触发；cs 全截面廉价（单列 ~77MB）不分块。
+# 测试用 monkeypatch 压低阈值激发分块路径——调用方无感知、无新参数。
+TS_CHUNK_ROWS_THRESHOLD: int = 3_000_000
+TS_CHUNK_TARGET_ROWS: int = 1_500_000
+# 大窗滚动算子(ts_median/ts_rank 等)内部分配 ∝ 行数×窗口——252 窗下 1.5M 行批
+# 仍要 ~3G(v12 探针 #59 号因子实锤)。批目标按窗口自适应:预算格数÷窗口,
+# 下限保批次不碎片化。
+TS_CHUNK_CELL_BUDGET: int = 150_000_000
+TS_CHUNK_MIN_ROWS: int = 100_000
+
+
+def _ts_chunk_target_rows(window: int | None) -> int:
+    """窗口自适应批目标:min(默认目标, max(下限, 预算格数÷窗口))。"""
+    w = max(int(window or 1), 1)
+    return min(TS_CHUNK_TARGET_ROWS, max(TS_CHUNK_MIN_ROWS, TS_CHUNK_CELL_BUDGET // w))
+
+
+def _ts_stock_batches(
+    ts_code: pl.Series, target_rows: int
+) -> list[tuple[int, int]]:
+    """按整股边界贪心合批 → [(offset, length), ...]。
+
+    前提：``work`` 已按 (ts_code, trade_date) 排序，每股是连续行段。
+    用 rle 取每股 (offset, len)（Categorical / Utf8 均可）；绝不切开一只股票
+    （单股超 target 也整只成批）。行序与输入一致。
+    """
+    rle = ts_code.rle()
+    lengths = rle.struct.field("len").to_list()
+    batches: list[tuple[int, int]] = []
+    offset = 0
+    batch_off = 0
+    batch_len = 0
+    for length in lengths:
+        length = int(length)
+        if batch_len > 0 and batch_len + length > target_rows:
+            batches.append((batch_off, batch_len))
+            batch_off = offset
+            batch_len = 0
+        if batch_len == 0:
+            batch_off = offset
+        batch_len += length
+        offset += length
+    if batch_len > 0:
+        batches.append((batch_off, batch_len))
+    return batches
+
+
+def _materialize_cs_chunked(
+    work: pl.DataFrame, expr: pl.Expr, name: str
+) -> pl.DataFrame:
+    """cs 节点窄帧物化:cs 是单列截面操作,不需要分块——只需别带着全帧求值。
+
+    select 出表达式引用列+trade_date(几列小帧)求值,结果 Series 行序与 work
+    天然对齐(select 保序),单列贴回。分配 ≈ 窄帧×2 + work 追加复制一次;
+    此前的日期段分块版(with_row_index+filter+concat+sort)四次全帧拷贝反而
+    更贵(v17 逐节点 RSS 追踪:首个 rank 一步 1.6G)。
+    """
+    needed = set(expr.meta.root_names()) | {"trade_date"}
+    sub = work.select([c for c in work.columns if c in needed])
+    s = sub.with_columns(expr.alias(name))[name]
+    return work.with_columns(s)
+
+
+def _materialize_ts_chunked(
+    work: pl.DataFrame, expr: pl.Expr, name: str, window: int | None = None
+) -> pl.DataFrame:
+    """按整股批次物化 ts 表达式列 ``name``。
+
+    峰值内存设计账：parts 累积 + 旧 work 共存 → 峰值 ≈ 2×work + 1 批内部分配
+    （批间串行、无并行；concat 后旧 work/parts 由局部变量覆盖释放）。
+    批次取用 ``sub.slice(offset, len)``（零拷贝视图）；``pl.concat(parts)``
+    保持原行序。
+
+    窄帧化(v18):ts 只需「引用列 + ts_code」——rolling 在已排序股内按位置滚,
+    select 保序;批/concat 都作用于 3-4 列窄帧,消灭每 ts 节点 2×全 work 的
+    concat 抖动(22 节点×15 列 work 是 #79 级因子的最后大头)。结果 Series
+    行序与 work 天然对齐,单列贴回。
+    """
+    needed = set(expr.meta.root_names()) | {"ts_code"}
+    sub = work.select([c for c in work.columns if c in needed])
+    batches = _ts_stock_batches(sub["ts_code"], _ts_chunk_target_rows(window))
+    parts: list[pl.Series] = []
+    for offset, length in batches:
+        parts.append(
+            sub.slice(offset, length).with_columns(expr.alias(name))[name]
+        )
+    s = pl.concat(parts)
+    return work.with_columns(s.alias(name))
+
 
 class LookaheadWindowError(ValueError):
     """时序算子窗口 <1（负=前视/未来函数、零=无意义）。
@@ -376,25 +466,44 @@ def evaluate_materialized(
     work = df.select([c for c in df.columns if c in _needed])
     counter = [0]
 
-    def rec(n: Node) -> pl.Expr:
+    # 消费即弃:AST 是树,每个 __mz 中间列恰被其父节点消费一次——父节点物化后
+    # 立即 drop 已消费的子 __mz 列(叶列可能被多分支复用,绝不 drop)。
+    # 否则深嵌套(如 11 物化节点)work 一路膨胀,每次 with_columns/concat 全列复制,
+    # 峰值 ≈ 3×膨胀后 work(隔离实验:单表达式增量峰值 4G,v13 探针 #59 号实锤)。
+    # rec 返回 (expr, 本 expr 携带的待消费 __mz 列名集)。
+    def rec(n: Node) -> tuple[pl.Expr, set[str]]:
         nonlocal work
         if isinstance(n, Feature):
-            return pl.col(lm[n.name])
+            return pl.col(lm[n.name]), set()
         if isinstance(n, Constant):
-            return pl.lit(float(n.value))
+            return pl.lit(float(n.value)), set()
         if isinstance(n, OpNode):
             spec = OPERATORS[n.op]
-            child_exprs = [rec(c) for c in n.children]
+            child_results = [rec(c) for c in n.children]
+            child_exprs = [e for e, _ in child_results]
+            pending: set[str] = set()
+            for _, deps in child_results:
+                pending |= deps
             expr = spec.build(child_exprs, n.window)
             if spec.category in ("ts", "cs"):
                 name = f"__mz{counter[0]}"
                 counter[0] += 1
-                work = work.with_columns(expr.alias(name))
-                return pl.col(name)
-            return expr
+                # ts 且帧够大：按整股批次物化，内部分配缩到 ~1/B；cs 与小帧保持
+                # 全帧 with_columns（截面需全 trade_date 键；小帧字节级零回归）。
+                if work.height >= TS_CHUNK_ROWS_THRESHOLD:
+                    if spec.category == "ts":
+                        work = _materialize_ts_chunked(work, expr, name, n.window)
+                    else:  # cs:按日期段分块(行序经 __ridx 还原)
+                        work = _materialize_cs_chunked(work, expr, name)
+                else:
+                    work = work.with_columns(expr.alias(name))
+                if pending:
+                    work = work.drop(list(pending))
+                return pl.col(name), {name}
+            return expr, pending
         raise TypeError(f"无法求值节点: {n!r}")
 
-    final_expr = rec(node)
+    final_expr, _final_deps = rec(node)
     return work.with_columns(final_expr.alias("__f"))["__f"]
 
 

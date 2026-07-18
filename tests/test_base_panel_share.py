@@ -210,150 +210,6 @@ def test_combine_lgbm_base_none_matches_no_kw():
     )
 
 
-def test_run_lift_tests_base_panel_path_matches_mock():
-    """run_lift_tests：mock combine 下 base_panel 路径与关闭共享路径结果一致。
-
-    通过注入 combine_fn 关闭共享 vs 真 lgbm 路径另测。
-    """
-    from factorzen.discovery.lift_test import run_lift_tests
-
-    active = {"lib_a": _long_factor(_dates(40), [f"{i:04d}.SZ" for i in range(8)],
-                                    np.random.default_rng(0))}
-    dates = _dates(40)
-    codes = [f"{i:04d}.SZ" for i in range(8)]
-    cand = _long_factor(dates, codes, np.random.default_rng(1))
-    ret_rows = [
-        {"trade_date": d, "ts_code": c, "ret": 0.01 * (i + 1)}
-        for d in dates
-        for i, c in enumerate(codes)
-    ]
-    ret = pl.DataFrame(ret_rows)
-
-    def det_combine(fds, rdf, cv, **kw):
-        n = len(fds)
-        if n <= len(active):
-            return ret.select(["trade_date", "ts_code"]).with_columns(
-                pl.lit(0.0).alias("factor_value")
-            )
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
-
-    grays = [
-        {"expression": "c0", "residual_ic_train": 0.01},
-        {"expression": "c1", "residual_ic_train": 0.009},
-    ]
-    common = dict(
-        market="ashare",
-        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=lambda e: cand,
-        combine_fn=det_combine,
-        top_m=None,
-        threshold=0.001,
-        block_days=10,
-        seed=0,
-        lift_workers=1,
-    )
-    # mock 关闭 base_panel 共享；两次调用应一致
-    a = run_lift_tests(grays, **common)
-    b = run_lift_tests(grays, **common)
-    assert len(a) == len(b) == 2
-    for x, y in zip(a, b, strict=True):
-        assert x["lift"] == y["lift"]
-        assert x["passed"] == y["passed"]
-        assert x["expression"] == y["expression"]
-
-
-def test_run_lift_tests_real_lgbm_base_panel_parity():
-    """真 lgbm：生产 base_panel 共享路径与强制关闭共享（monkeypatch）结果一致。"""
-    import factorzen.discovery.lift_test as lt
-    from factorzen.research.combination.models import combine_lgbm as real_combine
-
-    baseline, cand, ret, _full = _synth_five_plus_one(
-        n_days=80, n_stocks=18, seed=5, candidate_extra=False,
-    )
-    # 用 2 个基线因子加速
-    active = {"lib_a": baseline["b0"], "lib_b": baseline["b1"]}
-
-    def thin_combine(fds, rdf, cv, **kw):
-        return real_combine(
-            fds, rdf, cv,
-            seed=0, n_estimators=25, min_child_samples=10, num_leaves=12,
-            **{k: v for k, v in kw.items() if k == "base_panel"},
-        )
-
-    grays = [{"expression": "cand_x", "residual_ic_train": 0.02}]
-    daily = pl.DataFrame({"trade_date": [], "ts_code": [], "close": []})
-
-    # 生产路径：combine_fn=None 内部走 combine_lgbm + base_panel
-    # 用 thin wrapper 替真实 combine_lgbm
-    import factorzen.research.combination.models as models_mod
-
-    original = models_mod.combine_lgbm
-    models_mod.combine_lgbm = thin_combine  # type: ignore[assignment]
-    try:
-        rows_share = lt.run_lift_tests(
-            grays,
-            market="ashare",
-            daily=daily,
-            active_factor_dfs=active,
-            ret_df=ret,
-            materialize_candidate=lambda e: cand,
-            combine_fn=None,
-            lift_workers=1,
-            seed=0,
-            top_m=None,
-            threshold=-1.0,
-            cv_params={
-                "train_days": 35,
-                "test_days": 12,
-                "purge_days": 3,
-                "expanding": False,
-            },
-        )
-    finally:
-        models_mod.combine_lgbm = original  # type: ignore[assignment]
-
-    # 关闭共享：注入 combine_fn 不传 base_panel
-    def no_share_combine(fds, rdf, cv, **kw):
-        return real_combine(
-            fds, rdf, cv,
-            seed=0, n_estimators=25, min_child_samples=10, num_leaves=12,
-        )
-
-    rows_full = lt.run_lift_tests(
-        grays,
-        market="ashare",
-        daily=daily,
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=lambda e: cand,
-        combine_fn=no_share_combine,
-        lift_workers=1,
-        seed=0,
-        top_m=None,
-        threshold=-1.0,
-        cv_params={
-            "train_days": 35,
-            "test_days": 12,
-            "purge_days": 3,
-            "expanding": False,
-        },
-    )
-
-    assert len(rows_share) == len(rows_full) == 1
-    assert rows_share[0]["error"] is None
-    assert rows_full[0]["error"] is None
-    assert rows_share[0]["lift"] is not None
-    assert abs(float(rows_share[0]["lift"]) - float(rows_full[0]["lift"])) < 1e-10
-    assert abs(
-        float(rows_share[0]["candidate_rank_ic"]) - float(rows_full[0]["candidate_rank_ic"])
-    ) < 1e-10
-    assert abs(float(rows_share[0]["baseline"]) - float(rows_full[0]["baseline"])) < 1e-10
-
-
 # ── G1 自适应 workers ──────────────────────────────────────────────────────
 
 
@@ -445,18 +301,15 @@ def test_run_lift_tests_default_workers_adaptive(monkeypatch):
     monkeypatch.setattr(lt, "ThreadPoolExecutor", SpyPool)
 
     dates = _dates(30)
-    codes = [f"{i:04d}.SZ" for i in range(6)]
+    # residual_ic_v1 日守卫 max(30, k+10)：股票数须 ≥30，否则整日被跳过
+    codes = [f"{i:04d}.SZ" for i in range(40)]
+    rng_r = np.random.default_rng(2)
     active = {"lib": _long_factor(dates, codes, np.random.default_rng(0))}
     cand = _long_factor(dates, codes, np.random.default_rng(1))
     ret = pl.DataFrame([
-        {"trade_date": d, "ts_code": c, "ret": 0.01}
+        {"trade_date": d, "ts_code": c, "ret": float(rng_r.standard_normal())}
         for d in dates for c in codes
     ])
-
-    def combine(fds, rdf, cv, **kw):
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
 
     common = dict(
         market="ashare",
@@ -464,7 +317,6 @@ def test_run_lift_tests_default_workers_adaptive(monkeypatch):
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: cand,
-        combine_fn=combine,
         top_m=None,
     )
     rows = lt.run_lift_tests(
@@ -492,19 +344,20 @@ def test_run_lift_tests_default_workers_adaptive(monkeypatch):
 
 
 def test_degenerate_candidate_shared_path_is_error_not_zero_lift():
-    """先红契约：物化后全 null 候选走共享路径 → error，禁止 lift=0 假结论。
+    """契约：物化后全 null 候选 → 显式 error，禁止 lift=0 假结论。
 
-    正常候选同批不受影响。
+    residual_ic_v1 下该契约更吃紧：共线候选**合法**产出 lift=0.0（SE=None →
+    reject），因此「全 null」必须与之区分为 ``degenerate_candidate`` + lift=None，
+    否则两种成因在库里长得一样、无法诊断。正常候选同批不受影响。
     """
     import factorzen.discovery.lift_test as lt
-    from factorzen.research.combination.models import combine_lgbm as real_combine
 
     baseline, cand_ok, ret, _full = _synth_five_plus_one(
-        n_days=80, n_stocks=16, seed=9, candidate_extra=False,
+        n_days=80, n_stocks=40, seed=9, candidate_extra=False,
     )
     active = {"lib_a": baseline["b0"], "lib_b": baseline["b1"]}
     dates = _dates(80)
-    codes = [f"{i:04d}.SZ" for i in range(16)]
+    codes = [f"{i:04d}.SZ" for i in range(40)]
     # 全 null 候选（与 drop_degenerate 同口径）
     cand_null = pl.DataFrame({
         "trade_date": [d for d in dates for _ in codes],
@@ -512,44 +365,25 @@ def test_degenerate_candidate_shared_path_is_error_not_zero_lift():
         "factor_value": [None] * (len(dates) * len(codes)),
     }).with_columns(pl.col("factor_value").cast(pl.Float64))
 
-    def thin_combine(fds, rdf, cv, **kw):
-        return real_combine(
-            fds, rdf, cv,
-            seed=0, n_estimators=20, min_child_samples=8, num_leaves=12,
-            **{k: v for k, v in kw.items() if k == "base_panel"},
-        )
-
     mats = {"null_cand": cand_null, "ok_cand": cand_ok}
     grays = [
         {"expression": "null_cand", "residual_ic_train": 0.03},
         {"expression": "ok_cand", "residual_ic_train": 0.02},
     ]
     daily = pl.DataFrame({"trade_date": [], "ts_code": [], "close": []})
-    cv_params = {
-        "train_days": 35, "test_days": 12, "purge_days": 3, "expanding": False,
-    }
 
-    import factorzen.research.combination.models as models_mod
-
-    original = models_mod.combine_lgbm
-    models_mod.combine_lgbm = thin_combine  # type: ignore[assignment]
-    try:
-        rows = lt.run_lift_tests(
-            grays,
-            market="ashare",
-            daily=daily,
-            active_factor_dfs=active,
-            ret_df=ret,
-            materialize_candidate=lambda e: mats[e],
-            combine_fn=None,  # 生产共享路径
-            lift_workers=1,
-            seed=0,
-            top_m=None,
-            threshold=-1.0,
-            cv_params=cv_params,
-        )
-    finally:
-        models_mod.combine_lgbm = original  # type: ignore[assignment]
+    rows = lt.run_lift_tests(
+        grays,
+        market="ashare",
+        daily=daily,
+        active_factor_dfs=active,
+        ret_df=ret,
+        materialize_candidate=lambda e: mats[e],
+        lift_workers=1,
+        seed=0,
+        top_m=None,
+        threshold=-1.0,  # 阈值放到最低，确保拒因来自 error 而非未过门
+    )
 
     assert len(rows) == 2
     by = {r["expression"]: r for r in rows}
@@ -562,37 +396,6 @@ def test_degenerate_candidate_shared_path_is_error_not_zero_lift():
     # 正常候选不受影响
     assert good["error"] is None
     assert good["lift"] is not None
-
-
-def test_safe_pool_append_never_collides_with_base_keys():
-    """集合一致性：追加安全名与 base_panel 列集不交；撞名表达式仍得新列。"""
-    from factorzen.discovery.lift_test import (
-        _safe_pool_with_new_factors,
-        _with_safe_feature_names,
-    )
-    from factorzen.research.combination.models import _feature_names, build_panel
-
-    baseline, cand, ret, _ = _synth_five_plus_one(
-        n_days=40, n_stocks=8, seed=3, candidate_extra=False,
-    )
-    # 候选表达式已在 active 中（撞名）
-    active = {"lib_a": baseline["b0"], "cand_x": baseline["b1"]}
-    safe_active = _with_safe_feature_names(active)
-    base = build_panel(safe_active, ret)
-    base_feats = set(_feature_names(base))
-
-    # 旧整表重映射：键集 ⊆ base → 静默不 join
-    pool_collide = dict(active)
-    pool_collide["cand_x"] = cand
-    remapped = _with_safe_feature_names(pool_collide)
-    assert set(remapped) <= base_feats
-
-    # 修复：追加新键
-    appended = _safe_pool_with_new_factors(safe_active, {"cand_x": cand})
-    new_keys = set(appended) - base_feats
-    assert new_keys == {f"f{len(safe_active):03d}"}
-    assert set(safe_active).issubset(set(appended))
-    assert set(safe_active) == base_feats
 
 
 def test_combine_lgbm_rejects_all_degenerate_new_factors():

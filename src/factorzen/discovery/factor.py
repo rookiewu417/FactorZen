@@ -9,7 +9,12 @@ import polars as pl
 
 from factorzen.daily.factors.base import DailyFactor
 from factorzen.discovery.derived import add_derived_columns
-from factorzen.discovery.expression import evaluate_materialized, feature_names, parse_expr
+from factorzen.discovery.expression import (
+    evaluate_materialized,
+    feature_names,
+    parse_expr,
+    required_lookback,
+)
 from factorzen.discovery.intraday_expr import attach_expr_leaves, load_expr_registry
 from factorzen.discovery.operators import (
     BASIC_FEATURES,
@@ -24,6 +29,17 @@ _PRICE_COLS = ["open", "high", "low", "close", "open_adj", "high_adj",
                "low_adj", "close_adj", "vol", "amount"]
 
 _IX_TOKEN = re.compile(r"\bix_[A-Za-z0-9_]+\b")
+
+# 表达式因子 lookback 下限（与内置默认一致）；AST 需求更大时按 required_lookback 上取。
+MIN_LOOKBACK_DAYS = 60
+
+
+def lookback_for_expression(expression: str) -> int:
+    """按表达式 AST 推导 lookback_days，至少 MIN_LOOKBACK_DAYS。畸形表达式回退下限。"""
+    try:
+        return max(MIN_LOOKBACK_DAYS, required_lookback(parse_expr(expression)))
+    except ValueError:
+        return MIN_LOOKBACK_DAYS
 
 
 def _parse_leaf_map_for_expression(expression: str) -> dict[str, str] | None:
@@ -57,7 +73,12 @@ class ExpressionFactor(DailyFactor):
         self.node = parse_expr(self.expression, self._leaf_map)
         if not getattr(self, "name", ""):
             self.name = self.mined_name or f"mined_{abs(hash(self.expression)) % (10**8)}"
-        self.description = f"mined: {self.expression}"
+        # 动态子类（library provider）可在类属性写 description（含 status）；勿覆盖
+        cls_desc = type(self).__dict__.get("description")
+        if isinstance(cls_desc, str) and cls_desc:
+            self.description = cls_desc
+        else:
+            self.description = f"mined: {self.expression}"
         self._feats = feature_names(self.node)
         self._ix_leaves = sorted(n for n in self._feats if n.startswith("ix_"))
 

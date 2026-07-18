@@ -2,7 +2,6 @@
 """多 Agent 团队挖掘 pipeline：跑 team → 落 team manifest + candidates.csv + 导出候选。"""
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from factorzen.agents.team_orchestrator import run_team_agent, write_team_manifest
@@ -149,18 +148,8 @@ def run_team_mine(
     # candidates.csv —— 兼容 fz mine leaderboard/export-alpha（含 rank + passed 列）
     from factorzen.discovery.export import agent_candidates_csv_df
     agent_candidates_csv_df(result.candidates).write_csv(run_dir / "candidates.csv")
-    if export:
-        exp_dir = run_dir / "exported"
-        # 清空必须独立于「本次有无候选」：复用 run_id 时若本次候选更少（乃至为 0），
-        # 上次 run 的多余因子文件会残留并被下游消费。
-        if exp_dir.exists():
-            shutil.rmtree(exp_dir)
-        if result.candidates:
-            from factorzen.discovery.export import export_candidate
-
-            exp_dir.mkdir(parents=True, exist_ok=True)
-            for i, c in enumerate(result.candidates):
-                export_candidate(c["expression"], f"team_{rid}_{i}", str(exp_dir))
+    # export 参数保留 API 兼容；exported/*.py 桥已废除（入库走 factor_library）
+    _ = export
     _print_final_stats(result, str(run_dir), label="mine-team")
     return {
         "run_dir": str(run_dir),

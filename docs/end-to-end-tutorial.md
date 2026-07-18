@@ -111,9 +111,10 @@ pixi run fz mine leaderboard workspace/mining_sessions/session_42_genetic
 ```
 workspace/mining_sessions/session_42_genetic/
 ├── candidates.csv    # 候选排行榜（列 rank,n_trials,expression,ic_train,...）
-├── manifest.json     # 参数 / seed / 复现说明
-└── exported/         # top 候选渲染成的 .py 因子文件（复制到 workspace/factors/daily/ 即可注册）
+└── manifest.json     # 参数 / seed / 复现说明
 ```
+
+> 入库候选：`fz factor-library list` 查 name 后 `fz factor run <name> --set preprocessing.neutralize=false`；未入库候选表达式在 `candidates.csv`。
 
 > LLM 方案 B/C 的产物分别落在 `workspace/mine_agent/<run_id>/`、`workspace/mine_team/<run_id>/`，文件结构同上。
 
@@ -143,7 +144,7 @@ pixi run fz mine export-alpha \
 
 **做什么**：对候选因子执行 Deflated Sharpe（DSR）+ block bootstrap IC 置信区间评估，结果只打印到终端、不落盘。单因子样本数 N=1，**不计算 PBO**（PBO/CSCV 适用于一池候选因子的多重检验，不适用于单因子）。
 
-> 验收对象必须是**已注册因子名**。挖掘出的表达式因子需先把 Step 1 session 里 `exported/*.py` 复制到 `workspace/factors/daily/`，再用因子名验收。
+> 验收对象必须是**已注册因子名**。入库候选由 library provider 注入 registry（`fz factor-library list` 查 name）；未入库则表达式仍在 session `candidates.csv`。
 
 ```bash
 # 替换 <factor_name> 为已注册因子名
@@ -354,7 +355,7 @@ pixi run fz report portfolio \
 | 步骤 | 命令 | 产物 |
 |------|------|------|
 | Step 0 拉数据 | `fz data fetch daily / daily-basic` | `data/raw/{daily,daily_basic}/year=YYYY/month=MM/data.parquet`（parquet 缓存，PIT 对齐） |
-| Step 1 挖因子 | `fz mine search / agent / team` + `fz mine export-alpha` | `workspace/mining_sessions/session_{seed}_{method}/`（candidates.csv + exported/）→ `alpha.parquet` |
+| Step 1 挖因子 | `fz mine search / agent / team` + `fz mine export-alpha` | `workspace/mining_sessions/session_{seed}_{method}/`（candidates.csv + manifest）→ `alpha.parquet`；入库后 `fz factor run <name>` |
 | Step 2 防过拟合 | `fz validate overfit` | 终端打印 IC / IR / DSR p / bootstrap CI（不落盘） |
 | Step 3 风险模型 | `fz risk build`（独立诊断，可选） | `workspace/risk_models/<run>/`（exposures / covariance / specific_risk） |
 | Step 4 组合建仓 | `fz portfolio build`（内部现算风险模型） | `workspace/portfolios/<run>/`（weights.parquet + attribution.csv + risk_summary.csv） |

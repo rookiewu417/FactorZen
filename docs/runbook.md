@@ -169,9 +169,8 @@ pixi run fz mine search --start 20200101 --end 20231231 \
 **产物**：`workspace/mining_sessions/session_{seed}_{method}/`
 - `candidates.csv`：候选排行榜（列 `rank,n_trials,expression,ic_train,...`）
 - `manifest.json`：参数 / seed / 复现说明
-- `exported/*.py`：top 候选渲染成的因子文件，复制到 `workspace/factors/daily/` 即可被 registry 发现
 
-> `candidates.csv` 里的 IC 为挖掘内估计（plain zscore，无中性化）。用 `fz factor run` 复跑时默认带中性化，若要对齐 IC 需加 `--set preprocessing.neutralize=false`。
+> 入库候选：`fz factor-library list` 查 name 后 `fz factor run <name> --set preprocessing.neutralize=false`；未入库候选表达式在 `candidates.csv`。`candidates.csv` 里的 IC 为挖掘内估计（plain zscore，无中性化）；`fz factor run` 默认带中性化，IC parity 需 `neutralize=false`。
 
 ---
 
@@ -232,7 +231,7 @@ pixi run fz mine leaderboard workspace/mining_sessions/session_42_genetic
 pixi run fz mine agent --start 20200101 --end 20231231 --iterations 10
 ```
 
-**产物**：`workspace/mine_agent/{run_id}/`（`candidates.csv` + `manifest.json` + `exported/`）
+**产物**：`workspace/mine_agent/{run_id}/`（`candidates.csv` + `manifest.json`）
 
 > 需配置 `FACTORZEN_LLM_*` 环境变量；缺失时命令退出并提示。
 
@@ -257,7 +256,7 @@ pixi run fz mine agent --start 20200101 --end 20231231 --iterations 10
 pixi run fz mine team --start 20200101 --end 20231231
 ```
 
-**产物**：`workspace/mine_team/{run_id}/`（`candidates.csv` + `manifest.json` + `exported/`，并更新 `experiment_index.jsonl`）
+**产物**：`workspace/mine_team/{run_id}/`（`candidates.csv` + `manifest.json`，并更新 `experiment_index.jsonl`）
 
 ---
 
@@ -271,7 +270,7 @@ pixi run fz mine team --start 20200101 --end 20231231
 
 | 参数 | 说明 |
 |------|------|
-| `<factor>` | 已注册因子名（挖掘出的表达式需先把 session `exported/*.py` 复制到 `workspace/factors/daily/`） |
+| `<factor>` | 已注册因子名（入库候选经 library provider 自动可见：`fz factor-library list` 查 name） |
 | `--start` | 评估段开始 |
 | `--end` | 评估段结束 |
 | `--universe` | 股票池（可选） |

@@ -137,7 +137,7 @@ workspace/
   mining_sessions/session_<seed>_<method>/
     manifest.json           # 配置 / seed / git_sha
     candidates.csv          # 候选排行（rank / n_trials / expression / ic_train ...）
-    exported/*.py           # 可复现因子代码
+  factor_library/{market}.jsonl  # 入库因子登记簿（expression 型由 library provider 注入 registry）
 
   factor_evaluations/{run_id}/
     manifest.json           # 配置 / git_sha / pixi.lock hash / 阶段耗时

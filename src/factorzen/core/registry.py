@@ -74,6 +74,30 @@ class FactorRegistry:
         self._discovered = True
         return self._registry
 
+    def register(self, factor_cls: type[BaseFactor], *, override: bool = False) -> bool:
+        """公开注册口：实例化取 name 写入表。
+
+        - name 空 → False
+        - 已存在且 not override → warning（builtin/workspace 优先，provider 让位）→ False
+        - 成功注册 → True
+        """
+        self.discover()
+        try:
+            instance = factor_cls()
+        except Exception as e:
+            logger.warning(f"注册因子失败（实例化异常）: {factor_cls!r}: {e}", exc_info=True)
+            return False
+        name = getattr(instance, "name", "") or ""
+        if not name:
+            return False
+        if name in self._registry and not override:
+            logger.warning(
+                f"因子 '{name}' 已被 workspace/builtin 占用，library provider 让位（override=False）"
+            )
+            return False
+        self._registry[name] = factor_cls
+        return True
+
     def get(self, name: str) -> type[BaseFactor]:
         """按名称获取因子类。若未找到抛出 KeyError。"""
         self.discover()

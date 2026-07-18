@@ -38,7 +38,7 @@ from factorzen.daily.evaluation.backtest import run_strategy_backtest, trim_back
 from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
 from factorzen.daily.evaluation.turnover import compute_turnover
 from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
-from factorzen.daily.factors.registry import get_factor
+from factorzen.daily.factors.registry import get_factor, load_library_factors
 from factorzen.daily.runtime import (
     build_backtest_strategies,
     build_cost_model,
@@ -441,6 +441,11 @@ def _run(
 
     # ── 1. 获取因子类 ──
     logger.info(f"──── 单因子评估: {args.factor} | {args.start} ~ {args.end} ────")
+    # ashare daily 管线：注入 factor_library expression 型（库损坏/缺失不崩 run）
+    try:
+        load_library_factors()
+    except ValueError as e:
+        logger.warning(f"load_library_factors 跳过: {e}")
     try:
         factor_cls = get_factor(args.factor)
     except KeyError as e:

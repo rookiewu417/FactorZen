@@ -1,4 +1,7 @@
-"""导出因子的 lookback_days 须按表达式 AST 推导，避免大窗口/嵌套表达式硬编码 60 欠预热。"""
+"""表达式 lookback_days 须按 AST 推导，避免大窗口/嵌套表达式硬编码 60 欠预热。
+
+原 render_factor_file 路径已废除；契约迁至 discovery.factor.lookback_for_expression。
+"""
 from __future__ import annotations
 
 
@@ -13,20 +16,19 @@ def test_required_lookback_sums_windows_along_deepest_path():
     assert required_lookback(parse_expr("add(ts_mean(close, 20), ts_mean(close, 60))")) == 60
 
 
-def test_render_factor_file_uses_derived_lookback():
-    from factorzen.discovery.export import render_factor_file
+def test_lookback_for_expression_uses_derived_lookback():
+    from factorzen.discovery.factor import lookback_for_expression
 
     # 小窗口/无窗口 → 下限 60
-    assert "lookback_days = 60" in render_factor_file("rank(close)", "f_small")
+    assert lookback_for_expression("rank(close)") == 60
     # 大窗口 → 按需放大
-    src = render_factor_file("ts_mean(close, 120)", "f_big")
-    assert "lookback_days = 120" in src
+    assert lookback_for_expression("ts_mean(close, 120)") == 120
     # 嵌套累加
-    src2 = render_factor_file("ts_mean(delta(close, 40), 60)", "f_nest")
-    assert "lookback_days = 100" in src2
+    assert lookback_for_expression("ts_mean(delta(close, 40), 60)") == 100
 
 
-def test_render_factor_file_malformed_expression_falls_back():
-    from factorzen.discovery.export import render_factor_file
+def test_lookback_for_expression_malformed_falls_back():
+    from factorzen.discovery.factor import lookback_for_expression
+
     # 畸形表达式不应崩，回退到下限 60
-    assert "lookback_days = 60" in render_factor_file("ts_mean(close, )", "f_bad")
+    assert lookback_for_expression("ts_mean(close, )") == 60

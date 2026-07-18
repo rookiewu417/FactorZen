@@ -10,7 +10,7 @@
 - **缺 command**。
 - `run_id = f"agent_{seed}_{n_rounds}r"` 不含时间戳也不含数据窗口 → 同 seed 重跑**静默覆盖**
   上一次的 manifest.json / candidates.csv。
-- `exported/` 里上次 run 的多余因子文件**残留**，被下游消费。
+- （历史）`exported/` 陈旧残留——Batch 2 已废除 exported/*.py 桥，相关断言删除。
 """
 from __future__ import annotations
 
@@ -146,18 +146,8 @@ def test_default_run_id_carries_timestamp():
     assert re.fullmatch(r"\d{8}_\d{6}_agent_42_1r", name), f"run_id 应带时间戳，实得 {name}"
 
 
-def test_exported_dir_is_cleared_before_write():
-    """上次 run 的陈旧因子文件必须清掉，否则下游会消费到它们。"""
-    import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        stale = Path(td) / "t" / "exported"
-        stale.mkdir(parents=True)
-        (stale / "agent_t_99.py").write_text("# 上一次 run 的残留（本次只产出 0..N-1）")
-
-        run_agent_mine(_mock_daily(), n_rounds=1, seed=42, out_dir=td, llm_fn=_llm(),
-                       run_id="t", export=True)
-
-        assert not (stale / "agent_t_99.py").exists(), "exported/ 写前应清理陈旧因子"
+# test_exported_dir_is_cleared_before_write 已删除：exported/*.py 桥废除，
+# agent/team 不再写 exported/，清理契约无对象。
 
 
 def test_manifest_is_strict_json_even_when_pbo_is_nan():

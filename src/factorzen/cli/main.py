@@ -8,7 +8,6 @@ import json
 import sys
 
 from factorzen.config.settings import (
-    DAILY_FACTORS_DIR,
     FACTOR_EVALUATIONS_DIR,
     FACTOR_LIBRARY_DIR,
     PORTFOLIOS_DIR,
@@ -79,7 +78,13 @@ def _cmd_factor_list(args: argparse.Namespace) -> int:
     if args.freq == "intraday":
         from factorzen.intraday.factors.registry import list_factors
     else:
-        from factorzen.daily.factors.registry import list_factors
+        from factorzen.daily.factors.registry import list_factors, load_library_factors
+
+        # 注入 factor_library expression 型；库损坏/缺失不崩 list
+        try:
+            load_library_factors()
+        except ValueError as e:
+            print(f"[factor] load_library_factors 跳过: {e}", file=sys.stderr)
 
     for name in list_factors():
         print(name)
@@ -483,8 +488,9 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
-    print(f"[mine] 复现：cp {sd}/exported/*.py {DAILY_FACTORS_DIR}/ && "
-          f"fz factor run <name> --set preprocessing.neutralize=false")
+    print("[mine] 复现：入库候选 fz factor-library list 查 name 后 "
+          "fz factor run <name> --set preprocessing.neutralize=false；"
+          "未入库候选：表达式在 candidates.csv")
     print("[mine] 注：candidates.csv 的 IC 为挖掘内估计(plain zscore)；"
           "fz factor run 默认带中性化，IC parity 需 neutralize=false")
     return 0
@@ -2087,7 +2093,7 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") == "us":
         return _validate_overfit_us(args)
     from factorzen.daily.data.context import FactorDataContext
-    from factorzen.daily.factors.registry import get_factor
+    from factorzen.daily.factors.registry import get_factor, load_library_factors
     from factorzen.discovery.scoring import ic_overfit_report
 
     # factor 位置参数 nargs='?' 可缺省；缺省时给友好用法提示，而非 get_factor(None) 裸 KeyError
@@ -2095,6 +2101,11 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
         print("[validate] 缺少因子名：用法 fz validate overfit <factor> --start ... --end ...",
               file=sys.stderr)
         return 2
+    # ashare daily：注入 library expression 因子（库损坏不崩）
+    try:
+        load_library_factors()
+    except ValueError as e:
+        print(f"[validate] load_library_factors 跳过: {e}", file=sys.stderr)
     factor = get_factor(args.factor)()
     uni = None
     if getattr(args, "universe", None):

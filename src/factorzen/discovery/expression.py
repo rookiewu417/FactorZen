@@ -59,24 +59,17 @@ def _ts_stock_batches(
 def _materialize_cs_chunked(
     work: pl.DataFrame, expr: pl.Expr, name: str
 ) -> pl.DataFrame:
-    """按日期段分块物化 cs 表达式列(截面组=trade_date,段间独立)。
+    """cs 节点窄帧物化:cs 是单列截面操作,不需要分块——只需别带着全帧求值。
 
-    行序恢复:临时 __ridx 行索引 → 日期范围 filter 分段求值 → concat 后按
-    __ridx sort 还原原行序(排序分配 ~work 字节级,有界)。段内
-    ``.over("trade_date")`` 组集与全帧一致 → 逐位相同。
+    select 出表达式引用列+trade_date(几列小帧)求值,结果 Series 行序与 work
+    天然对齐(select 保序),单列贴回。分配 ≈ 窄帧×2 + work 追加复制一次;
+    此前的日期段分块版(with_row_index+filter+concat+sort)四次全帧拷贝反而
+    更贵(v17 逐节点 RSS 追踪:首个 rank 一步 1.6G)。
     """
-    dates = work["trade_date"].unique().sort()
-    n_dates = len(dates)
-    rows_per_date = max(work.height // max(n_dates, 1), 1)
-    dates_per_batch = max(TS_CHUNK_TARGET_ROWS // rows_per_date, 1)
-    idx = work.with_row_index("__ridx")
-    parts: list[pl.DataFrame] = []
-    for i in range(0, n_dates, dates_per_batch):
-        lo = dates[i]
-        hi = dates[min(i + dates_per_batch, n_dates) - 1]
-        sub = idx.filter(pl.col("trade_date").is_between(lo, hi))
-        parts.append(sub.with_columns(expr.alias(name)))
-    return pl.concat(parts).sort("__ridx").drop("__ridx")
+    needed = set(expr.meta.root_names()) | {"trade_date"}
+    sub = work.select([c for c in work.columns if c in needed])
+    s = sub.with_columns(expr.alias(name))[name]
+    return work.with_columns(s)
 
 
 def _materialize_ts_chunked(

@@ -25,6 +25,11 @@ POOL_COMPACT_BYTES_THRESHOLD = 4 * (1024**3)  # 4 GiB
 # 值列 f32 阈值:估算 n_factors×n_rows×8B ≥ 此值时 compact 池值列存 f32
 # (仅存储层;__getitem__/numpy 边界升回 f64)。csi800 级 ~1.25G 不触发,f64 零回归。
 POOL_VALUE_F32_BYTES_THRESHOLD = 2 * (1024**3)  # 2 GiB
+# ts_code 读回 Categorical 的行数阈值(P4c):与 discovery.preparation.
+# KEYS_CATEGORICAL_ROWS_THRESHOLD 同值对齐;本模块禁止 import discovery,
+# 故本地定义,一致性由 tests/test_pool_prebuild.py 断言防漂移。
+POOL_KEYS_CATEGORICAL_ROWS_THRESHOLD = 4_000_000
+
 
 class CompactLibraryPool(Mapping[str, pl.DataFrame]):
     """单骨架宽面板库池：键列一份 + 每因子一列 f64（null 保留非有限）。
@@ -132,6 +137,45 @@ class CompactLibraryPool(Mapping[str, pl.DataFrame]):
     ) -> HybridLibraryPool:
         """基线 compact + 新增长表因子（lift 候选增量）。"""
         return HybridLibraryPool(self, dict(extras))
+
+    def write_parquet(self, path) -> None:
+        """磁盘契约:ts_code 落盘转 Utf8;trade_date 保持 Date;值列 dtype 原样。"""
+        self._wide.with_columns(pl.col("ts_code").cast(pl.Utf8)).write_parquet(path)
+
+    @classmethod
+    def from_parquet(
+        cls,
+        path,
+        factor_names=None,
+        *,
+        categorical_keys=None,
+    ) -> CompactLibraryPool:
+        """从 parquet 装载宽面板池。
+
+        - ``factor_names``:给定时按该顺序恢复因子列序,缺列抛 ``ValueError``;
+          ``None`` 则从列自动推(与构造器一致)。
+        - ``categorical_keys``:``None``(默认)→ 行数 ≥ 阈值时 ts_code 转 Categorical;
+          ``True``/``False`` 显式开关。
+        """
+        wide = pl.read_parquet(path)
+        if factor_names is not None:
+            names = tuple(factor_names)
+            missing = [n for n in names if n not in wide.columns]
+            if missing:
+                raise ValueError(
+                    f"parquet 缺因子列: {missing}"
+                )
+        else:
+            names = None
+
+        if categorical_keys is None:
+            use_cat = wide.height >= POOL_KEYS_CATEGORICAL_ROWS_THRESHOLD
+        else:
+            use_cat = bool(categorical_keys)
+        if use_cat and "ts_code" in wide.columns:
+            wide = wide.with_columns(pl.col("ts_code").cast(pl.Categorical))
+
+        return cls(wide, names)
 
     @staticmethod
     def _drop_empty_factor_cols(

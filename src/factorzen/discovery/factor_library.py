@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import math
@@ -246,6 +247,154 @@ def library_path(market: str, root: str = DEFAULT_ROOT) -> Path:
     return Path(root) / f"{market}.jsonl"
 
 
+def library_file_hash(market: str, root: str = DEFAULT_ROOT) -> str | None:
+    """库 jsonl 内容 sha256 hexdigest 前 16 位;文件不存在 → None。"""
+    path = library_path(market, root)
+    if not path.exists():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+def write_pool_cache(pool, cache_dir, *, meta: dict) -> None:
+    """把库池写到 cache_dir(parquet + meta.json)。
+
+    - ``pool``:``CompactLibraryPool`` 或 ``{}``(空库)。
+    - 非空先写 ``pool_wide.parquet``,**最后**写 ``pool_meta.json``
+      (meta 存在 = 完整性 sentinel,写序不许颠倒)。
+    - 函数内补全 ``factor_names``/``n_factors``/``value_dtype``/``n_rows``;
+      调用方负责 ``market/statuses/eval_start/library_hash/prepped_*`` 等指纹字段。
+    """
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    out_meta = dict(meta)
+
+    if not pool:
+        out_meta["factor_names"] = []
+        out_meta["n_factors"] = 0
+        out_meta["value_dtype"] = None
+        out_meta["n_rows"] = 0
+    else:
+        # 非空 CompactLibraryPool
+        pool.write_parquet(cache_dir / "pool_wide.parquet")
+        names = list(pool.factor_names)
+        out_meta["factor_names"] = names
+        out_meta["n_factors"] = len(names)
+        out_meta["n_rows"] = int(pool.wide.height)
+        if names:
+            dt = pool.wide.schema[names[0]]
+            if dt == pl.Float32:
+                out_meta["value_dtype"] = "f32"
+            elif dt == pl.Float64:
+                out_meta["value_dtype"] = "f64"
+            else:
+                out_meta["value_dtype"] = str(dt)
+        else:
+            out_meta["value_dtype"] = None
+
+    # meta.json 最后写:存在即视为完整缓存
+    (cache_dir / "pool_meta.json").write_text(
+        json.dumps(out_meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_pool_cache(
+    cache_dir,
+    *,
+    market: str,
+    root: str,
+    statuses,
+    eval_start,
+    expect_height: int,
+    expect_date_min,
+    expect_date_max,
+) -> CompactLibraryPool | dict | None:
+    """装载并校验池缓存;失效返回 None(调用方回落进程内重建)。
+
+    校验项:market/statuses/library_hash/eval_start/prepped_height/date_min/max。
+    ``n_factors==0`` → 返回 ``{}``;否则 from_parquet(factor_names)。
+    """
+    cache_dir = Path(cache_dir)
+    meta_path = cache_dir / "pool_meta.json"
+    if not meta_path.exists():
+        return None
+
+    def _invalidate(reason: str) -> None:
+        print(
+            f"[library-pool] 池缓存失效({reason})→ 进程内重建",
+            flush=True,
+        )
+
+    def _as_str(x):
+        return str(x) if x is not None else None
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _invalidate(f"meta 不可读:{exc}")
+        return None
+
+    if meta.get("market") != market:
+        _invalidate(f"market {meta.get('market')!r}≠{market!r}")
+        return None
+    if list(meta.get("statuses", [])) != list(statuses):
+        _invalidate(f"statuses {meta.get('statuses')!r}≠{list(statuses)!r}")
+        return None
+
+    current_hash = library_file_hash(market, root)
+    if meta.get("library_hash") != current_hash:
+        _invalidate(
+            f"library_hash {meta.get('library_hash')!r}≠{current_hash!r}",
+        )
+        return None
+
+    if _as_str(meta.get("eval_start")) != _as_str(eval_start):
+        _invalidate(
+            f"eval_start {meta.get('eval_start')!r}≠{eval_start!r}",
+        )
+        return None
+    if meta.get("prepped_height") != expect_height:
+        _invalidate(
+            f"prepped_height {meta.get('prepped_height')!r}≠{expect_height!r}",
+        )
+        return None
+    if _as_str(meta.get("prepped_date_min")) != _as_str(expect_date_min):
+        _invalidate(
+            f"prepped_date_min {meta.get('prepped_date_min')!r}"
+            f"≠{expect_date_min!r}",
+        )
+        return None
+    if _as_str(meta.get("prepped_date_max")) != _as_str(expect_date_max):
+        _invalidate(
+            f"prepped_date_max {meta.get('prepped_date_max')!r}"
+            f"≠{expect_date_max!r}",
+        )
+        return None
+
+    n_factors = int(meta.get("n_factors") or 0)
+    if n_factors == 0:
+        print(
+            f"[library-pool] 池缓存命中 {cache_dir}(n_factors=0)",
+            flush=True,
+        )
+        return {}
+
+    try:
+        pool = CompactLibraryPool.from_parquet(
+            cache_dir / "pool_wide.parquet",
+            meta.get("factor_names"),
+        )
+    except Exception as exc:
+        _invalidate(f"parquet 缺失/读失败:{type(exc).__name__}: {exc}")
+        return None
+
+    print(
+        f"[library-pool] 池缓存命中 {cache_dir}(n_factors={n_factors})",
+        flush=True,
+    )
+    return pool
+
+
 def load_library(market: str, root: str = DEFAULT_ROOT) -> list[FactorRecord]:
     """读 jsonl → 记录列表。文件不存在 → 空列表。损坏行跳过。"""
     path = library_path(market, root)
@@ -349,6 +498,7 @@ def build_library_pool(
     eval_start=None,
     compact: bool | None = None,
     compact_threshold: int = POOL_COMPACT_BYTES_THRESHOLD,
+    cache_dir: str | Path | None = None,
 ) -> dict[str, pl.DataFrame] | CompactLibraryPool:
     """把库内因子物化为 mining/评估帧上的因子值面板，供搜索期库级正交去相关。
 
@@ -363,9 +513,25 @@ def build_library_pool(
     - ``compact``：``None``（默认）按 ``n_recs × n_rows × POOL_KEY_BYTES_PER_ROW`` 是否
       ≥ ``compact_threshold`` 自动选择；``True`` 强制单骨架宽面板；``False`` 强制旧
       dict-of-frames（**零回归默认路径**，小帧/测试保持逐字节行为）。
+    - ``cache_dir``：可选池缓存目录；非 None 时先试 ``load_pool_cache``（指纹含库 hash /
+      statuses / eval_start / prepped 窗），命中则跳过求值直接返回；默认 None 零回归。
 
     调用方负责 ``daily`` 已与挖掘同 prep（派生列/停牌掩码等）；本函数不再二次预处理。
     """
+    if cache_dir is not None:
+        cached = load_pool_cache(
+            cache_dir,
+            market=market,
+            root=root,
+            statuses=statuses,
+            eval_start=eval_start,
+            expect_height=daily.height,
+            expect_date_min=daily["trade_date"].min(),
+            expect_date_max=daily["trade_date"].max(),
+        )
+        if cached is not None:
+            return cached
+
     recs = [r for r in load_library(market, root=root) if r.status in statuses]
     if not recs:
         return {}

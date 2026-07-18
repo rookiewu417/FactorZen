@@ -366,7 +366,14 @@ def evaluate_materialized(
     （由 test_arith_operators_carry_no_over_invariant 守卫）。df 须已按 (ts_code, trade_date) 排序。
     """
     lm = LEAF_FEATURES if leaf_map is None else leaf_map
-    work = df
+    # 内存关键:with_columns 每次物化都会复制**全部列**(polars 1.41 实测非零拷贝,
+    # 见 pool-memory zero-copy 实验)。全宽帧(全 A ~50 列 3.7G)× 深嵌套表达式的
+    # 每个 ts/cs 节点 → 10G+ 瞬时尖峰(2026-07-18 memlog 实测锯齿)。
+    # 入口裁到「over 键 + 表达式实际引用的叶列」,每次复制缩到 ~4-7 列。
+    _needed = {"trade_date", "ts_code"} | {
+        lm[f] for f in feature_names(node) if f in lm
+    }
+    work = df.select([c for c in df.columns if c in _needed])
     counter = [0]
 
     def rec(n: Node) -> pl.Expr:

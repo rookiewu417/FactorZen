@@ -589,3 +589,32 @@ def test_p4c_export_alpha_casts_utf8(tmp_path, monkeypatch):
     export_mod.export_alpha_cross_section("rank(close)", object(), "20220103", str(out))
     loaded = pl.read_parquet(out)
     assert loaded.schema["ts_code"] in (pl.Utf8, pl.String)
+
+
+def test_evaluate_materialized_prunes_unused_columns():
+    """内存关键:求值入口裁到键+所引用叶列——with_columns 全列复制(polars 实测)
+    在全宽帧×深嵌套下产生 10G+ 尖峰(全 A OOM 根因,memlog 实锤)。
+    宽帧(多余列)与窄帧求值逐值相等,且多余列不进 work 帧。"""
+    import datetime as dt
+
+    import numpy as np
+    import polars as pl
+
+    from factorzen.discovery.expression import evaluate_materialized, parse_expr
+
+    rng = np.random.default_rng(7)
+    days = [dt.date(2021, 1, 4) + dt.timedelta(days=i) for i in range(30)]
+    rows = []
+    for c in ["000001.SZ", "000002.SZ", "000003.SZ"]:
+        for d in days:
+            rows.append({"trade_date": d, "ts_code": c,
+                         "close_adj": float(rng.uniform(8, 15)),
+                         "vol": float(rng.uniform(1e5, 1e6))})
+    base = pl.DataFrame(rows).sort(["ts_code", "trade_date"])
+    # 加 30 个无关列模拟全宽帧
+    wide = base.with_columns([pl.lit(float(i)).alias(f"junk_{i}") for i in range(30)])
+
+    node = parse_expr("rank(ts_mean(close, 5))")
+    s_narrow = evaluate_materialized(node, base)
+    s_wide = evaluate_materialized(node, wide)
+    assert s_wide.equals(s_narrow), "宽帧与窄帧求值必须逐值相等"

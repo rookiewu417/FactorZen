@@ -124,8 +124,15 @@ def run_combination_experiment(
     out_dir: str = str(COMBINATIONS_DIR),
     run_id: str | None = None,
     command: list[str] | None = None,
+    extra_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """跑四方法 OOS 对比,落盘 comparison/importance/report/manifest。"""
+    """跑四方法 OOS 对比,落盘 comparison/importance/report/manifest。
+
+    ``extra_config``：调用方的运行参数（窗口/票池/选品口径等），合并进 manifest
+    的 ``config``。**不传则 manifest 只有 seed，事后无法判断这次 run 覆盖了什么**
+    ——2026-07-19 追查数据污染时就因此只能去读 combined parquet 反推窗口
+    （CLAUDE.md：manifest 记全命令/窗口，漏了=假复现）。
+    """
     methods = methods or list(_DEFAULT_METHODS)
     run_id = run_id or "combination"
     run_dir = Path(out_dir) / run_id
@@ -164,7 +171,9 @@ def run_combination_experiment(
     if importance_df is not None:
         importance_df.write_csv(run_dir / "importance.csv")
 
-    manifest = build_manifest_base(list(command or []), {"seed": seed})
+    manifest = build_manifest_base(
+        list(command or []), {"seed": seed, **(extra_config or {})},
+    )
     manifest.update(
         {
             "git_sha": get_git_sha(),

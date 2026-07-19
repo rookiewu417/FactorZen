@@ -31,8 +31,12 @@ def run_factor_combination(
     out_dir: str = str(COMBINATIONS_DIR),
     run_id: str | None = None,
     command: list[str] | None = None,
+    extra_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """从 parquet 加载因子/收益,跑 OOS 对比实验。"""
+    """从 parquet 加载因子/收益,跑 OOS 对比实验。
+
+    ``extra_config`` 透传进 manifest 的 ``config``（窗口/票池/选品口径等可复现字段）。
+    """
     factor_dfs: dict[str, pl.DataFrame] = {}
     for f in factor_files:
         name = Path(f).stem
@@ -55,6 +59,7 @@ def run_factor_combination(
         out_dir=out_dir,
         run_id=run_id,
         command=command,
+        extra_config=extra_config,
     )
 
 
@@ -519,7 +524,21 @@ def combine_from_library(
         factor_files=factor_files, ret_file=str(ret_file),
         train_days=train_days, test_days=test_days, purge_days=purge_days,
         embargo_days=embargo_days, methods=methods, seed=seed,
-        out_dir=out_dir, run_id=run_id, command=["combine", "from-library"],
+        out_dir=out_dir, run_id=run_id,
+        # command 只有子命令名不足以复现——窗口/票池/选品口径全记进 config
+        command=["combine", "from-library"],
+        extra_config={
+            "market": market,
+            "statuses": list(statuses),
+            "start": start,
+            "end": end,
+            "universe": universe,
+            "horizon": horizon,
+            "top_n": top_n,
+            "decorr_threshold": decorr_threshold,
+            "library_root": str(root),
+            "library_hash": library_file_hash(market, root),
+        },
     )
     res["factors_used"] = [n for n, _ in kept]
     res["factors_status"] = factors_status

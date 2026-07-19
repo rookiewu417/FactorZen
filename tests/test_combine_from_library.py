@@ -287,3 +287,52 @@ def test_combine_from_library_cli_parser_smoke():
             "--start", "20230103", "--end", "20231231",
             "--statuses", "active,bogus",
         ])
+
+
+def test_manifest_records_full_provenance(tmp_path, monkeypatch):
+    """manifest 必须记全窗口/票池/选品参数——否则事后无法判断一次 run 覆盖了什么。
+
+    **2026-07-19 实际吃亏**：追查一个疑似数据污染时，需要判断历史 combine run 的
+    窗口是否覆盖脏日，却发现 manifest 只有 ``command=['combine','from-library']``、
+    ``config={'seed': 0}``，start/end/universe 全无——只能去读 combined parquet
+    的 trade_date 反推。CLAUDE.md 要求「manifest 记全命令/窗口，漏了=假复现」。
+
+    （反推的结论是没被污染，但那是运气；缺这些字段本身就让 manifest 失去复现价值。）
+    """
+    import factorzen.pipelines.factor_mine as fm
+
+    monkeypatch.setattr(fm, "prepare_mining_daily", lambda *a, **k: _daily())
+
+    lib = tmp_path / "lib"
+    _write_lib(lib, "ashare", [
+        _expr_rec("rank(close)", name="f_close", ic_train=0.08),
+        _expr_rec("ts_mean(vol,5)", name="f_vol", ic_train=0.06),
+    ])
+    res = factor_combine.combine_from_library(
+        market="ashare",
+        library_root=str(lib),
+        start="20230103",
+        end="20231231",
+        universe="csi300",
+        horizon=5,
+        train_days=60,
+        test_days=15,
+        decorr_threshold=1.0,
+        methods=["equal_weight"],
+        out_dir=str(tmp_path / "out"),
+    )
+    manifest = json.loads((Path(res["run_dir"]) / "manifest.json").read_text())
+    cfg = manifest.get("config") or {}
+
+    # 窗口与票池：判断「这次 run 覆盖了哪段数据」的最小充分集
+    assert cfg.get("start") == "20230103", cfg
+    assert cfg.get("end") == "20231231", cfg
+    assert cfg.get("universe") == "csi300", cfg
+    assert cfg.get("market") == "ashare", cfg
+    assert cfg.get("horizon") == 5, cfg
+    # 选品参数：决定纳入哪些因子
+    assert cfg.get("statuses") == ["active"], cfg
+    assert cfg.get("decorr_threshold") == 1.0, cfg
+    assert cfg.get("seed") is not None, cfg
+    # 库指纹：同窗口不同库版本结果不同
+    assert cfg.get("library_hash") is not None, cfg

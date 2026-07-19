@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import polars as pl
 
@@ -156,14 +158,40 @@ def _zscore_and_merge(
     因子库覆盖常异质(不同因子覆盖的股票/日期不同)。inner join 会把并集缩到交集、
     甚至塌空;改外连接取并集,某股票缺某因子时该因子补 0(z-score 后 0=截面均值=中性),
     等价于「缺失因子不表态」,不至于整行被丢或组合崩。
+
+    **键唯一性是链式 join 的前提,必须校验**(2026-07-19 实测 OOM 根因):
+    每次 full join 遇重复键行数相乘,k 个因子链式下按 重复数^k 指数放大。
+    生产物化产物里几乎每个因子面板都有 3 行重复(2026-06-30 的 6 只 603xxx,
+    每键 4 条),重复率仅 0.0006%——62 个因子链式 join 逐步打点实测
+    join#5 6786 行 → join#10 105 万行,最终 anon-rss 打满 23GB 被 OOM killer 杀。
+    故 join 前按 (trade_date, ts_code) 去重(保留首行,确定性),
+    并**汇总告警**:静默去重会掩盖上游数据缺陷。
     """
     if not factor_dfs:
         raise ValueError("factor_dfs 不能为空")
     normed = []
+    dup_report: list[tuple[str, int]] = []
     for name, df in factor_dfs.items():
         base = df.select(["trade_date", "ts_code", "factor_value"])
+        n_raw = base.height
+        # maintain_order 保证「保留首行」在多次运行间一致(可复现铁律)
+        base = base.unique(subset=["trade_date", "ts_code"], keep="first", maintain_order=True)
+        if base.height < n_raw:
+            dup_report.append((name, n_raw - base.height))
         z = base if already_zscored else _zscore_factor(base)
         normed.append(z.rename({"factor_value": f"_f_{name}"}))
+    if dup_report:
+        total = sum(n for _, n in dup_report)
+        head = ", ".join(f"{nm}({n})" for nm, n in dup_report[:5])
+        more = f" 等 {len(dup_report)} 个因子" if len(dup_report) > 5 else ""
+        warnings.warn(
+            f"_zscore_and_merge: {len(dup_report)} 个因子面板含重复 "
+            f"(trade_date, ts_code)，共 {total} 行，已按首行去重后再 join："
+            f"{head}{more}。链式 outer join 会把重复按 重复数^因子数 放大"
+            f"（实测 62 因子 × 每键 4 条 → OOM），**上游重复源应单独排查**。",
+            UserWarning,
+            stacklevel=2,
+        )
     merged = normed[0]
     for z in normed[1:]:
         merged = merged.join(z, on=["trade_date", "ts_code"], how="full", coalesce=True)

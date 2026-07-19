@@ -30,9 +30,47 @@ lag 均在 attach 层按 ts_code 组内交易日序 ``shift(1)`` 结构性完成
 """
 from __future__ import annotations
 
+import warnings
+
 import polars as pl
 
 from factorzen.core.feature_schema import FLOW_FEATURES, MARGIN_FEATURES, TOPLIST_FEATURES
+
+
+def _dedup_join_key(df: pl.DataFrame, *, source: str) -> pl.DataFrame:
+    """join 右侧帧按 (trade_date, ts_code) 去重——left-join 遇重复键会**成倍放行**。
+
+    实证（2026-07-19 根因）：``hk_hold`` 在 **2026-06-30 单日**返回 4200 行/4061 只
+    （正常日 ~950 只北向标的），其中 139 只带重复记录；而 ``HK_HOLD_COLS`` 把
+    ``exchange`` 等区分列裁掉了，事后无法分辨该保留哪条（用股本反推可证每对里
+    恰有一条 ratio 与 vol/total_share 不自洽）。
+
+    危害被 ``_attach_margin`` **平方放大**：它先从 daily 帧取同日分母（此时 daily
+    已被这里污染成 2 行/股）再 join 回 daily ⇒ 2×2=4 行/股。这 4 行最终流进因子面板，
+    在组合层 ``_zscore_and_merge`` 的 k 次链式 full join 下按 4^k 爆炸，实测打满 23GB
+    被 OOM killer 杀（见 `research/combination/methods.py` 的同族防御）。
+
+    故此处**取首行 + 告警**：静默去重会掩盖上游数据缺陷。
+    """
+    if df.is_empty() or "ts_code" not in df.columns or "trade_date" not in df.columns:
+        return df
+    n_raw = df.height
+    out = df.unique(subset=["trade_date", "ts_code"], keep="first", maintain_order=True)
+    if out.height < n_raw:
+        dup_days = (
+            df.group_by(["trade_date", "ts_code"]).agg(pl.len().alias("_k"))
+            .filter(pl.col("_k") > 1)["trade_date"].unique().sort().to_list()
+        )
+        head = ", ".join(str(d) for d in dup_days[:3])
+        more = f" 等 {len(dup_days)} 个交易日" if len(dup_days) > 3 else ""
+        warnings.warn(
+            f"attach_flows[{source}]: 源帧含重复 (trade_date, ts_code) {n_raw - out.height} 行，"
+            f"已取首行——left-join 遇重复键会成倍放行，并被 _attach_margin 平方放大，"
+            f"最终在组合层链式 join 下指数爆炸。涉及 {head}{more}。**上游应修数据**。",
+            UserWarning,
+            stacklevel=3,
+        )
+    return out
 
 # 叶子名 → (缓存分区, 源列名)。北向 ratio 重命名为 north_ratio,避免与通用名冲突。
 # 两融/龙虎榜由专用 _attach_* 处理(需 lag/比值/fill0),不进此表。
@@ -79,6 +117,7 @@ def attach_flows(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame] | Non
         sel = df.select(["ts_code", "trade_date", *[c for c in src_cols if c in df.columns]])
         sel = sel.rename({col: leaf for leaf, col in pairs if col in sel.columns})
         sel = _align_trade_date(sel, daily)
+        sel = _dedup_join_key(sel, source=part)
         daily = daily.join(sel, on=["trade_date", "ts_code"], how="left")
 
     daily = _attach_margin(daily, injected=injected)
@@ -105,14 +144,17 @@ def _attach_margin(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) ->
         return daily
     sel = df.select(["ts_code", "trade_date", *have])
     sel = _align_trade_date(sel, daily)
+    sel = _dedup_join_key(sel, source="margin_detail")
 
     # 同日分母:从 daily 帧取源日的 circ_mv/amount(仅取存在的列)
     denom_cols = [c for c in ("circ_mv", "amount") if c in daily.columns]
     if denom_cols:
-        sel = sel.join(
-            daily.select(["trade_date", "ts_code", *denom_cols]),
-            on=["trade_date", "ts_code"], how="left",
+        # daily 侧也去重再取分母：否则 daily 的重复会先污染 sel、再在末尾
+        # `daily.join(sel)` 时**平方放大**（实测 2 行/股 → 4 行/股，见 _dedup_join_key）
+        denom = _dedup_join_key(
+            daily.select(["trade_date", "ts_code", *denom_cols]), source="daily(分母)",
         )
+        sel = sel.join(denom, on=["trade_date", "ts_code"], how="left")
 
     exprs: list[pl.Expr] = []
     if "rzye" in have:

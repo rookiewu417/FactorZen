@@ -14,6 +14,7 @@
 import json
 import os
 import shutil
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -152,9 +153,19 @@ def _missing_trade_dates(
 
 
 def _fetch_market_by_missing_dates(
-    api: Any, missing_dates: list[str], *, data_type: str, std_cols: list[str]
+    api: Any,
+    missing_dates: list[str],
+    *,
+    data_type: str,
+    std_cols: list[str],
+    clean: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
 ) -> None:
-    """全市场逐交易日拉取「缺失日」并写缓存（按年批量 flush，控内存）。"""
+    """全市场逐交易日拉取「缺失日」并写缓存（按年批量 flush，控内存）。
+
+    ``clean``：可选清洗钩子，在 ``select(std_cols)`` **之前**调用——此时接口的
+    额外列（如 hk_hold 的 exchange/code/name）尚在，可用于过滤/去重；裁列之后
+    这些区分维度就永久丢失了（2026-07-19 事故即源于此，见 ``_hk_hold_clean``）。
+    """
     if not missing_dates:
         return
     buf: list[pl.DataFrame] = []
@@ -167,6 +178,8 @@ def _fetch_market_by_missing_dates(
             .with_columns(_str_to_date(pl.col("trade_date")))
             .sort(["trade_date", "ts_code"])
         )
+        if clean is not None:
+            merged = clean(merged)
         merged = merged.select([c for c in std_cols if c in merged.columns])
         save_parquet(merged, data_type=data_type)
         buf.clear()
@@ -535,6 +548,9 @@ def fetch_finance(
 # 资金流(主力净流入)与北向持股——日频 point-in-time，无需 PIT 季度对齐，直接按交易日 join。
 MONEYFLOW_COLS = ["ts_code", "trade_date", "net_mf_amount", "net_mf_vol",
                   "buy_elg_amount", "sell_elg_amount", "buy_lg_amount", "sell_lg_amount"]
+# 落盘 schema 保持 4 列：新增列会让 scan_parquet 对既有分区报 SchemaError
+# ("extra column ... outside of expected schema")，加列须重写全部历史分区。
+# `exchange` 改在**落盘前**的 `_hk_hold_clean` 里消费掉（见其 docstring）。
 HK_HOLD_COLS = ["ts_code", "trade_date", "ratio", "vol"]
 
 
@@ -551,8 +567,52 @@ def fetch_moneyflow(start: str, end: str, ts_codes: list[str] | None = None) -> 
     return load_parquet("moneyflow", start=start, end=end).collect()
 
 
+def _hk_hold_clean(df: pl.DataFrame) -> pl.DataFrame:
+    """hk_hold 落盘前清洗：按 (ts_code, trade_date) 去重（**不按 exchange 过滤**）。
+
+    **必须在裁列前做**——`exchange` 不在 ``HK_HOLD_COLS`` 里，`select` 之后就没了。
+
+    ⚠️ **不能过滤掉 HK 口径**（初版这么写，随即发现是回归）：多数交易日接口
+    **只返回 HK**，滤掉就落盘 0 行 → ``_missing_trade_dates`` 永远判该日缺失
+    → 每次调用都重抓，死循环烧 API 额度。HK 行的 ts_code 形如 ``00001.HK``，
+    join A 股日线时本就匹配不上，留着无害。北向/南向的语义问题属叶子层，
+    不在取数层删数据解决。
+
+    两件事（2026-07-19 实测 Tushare 返回）：
+
+    1. **口径**：接口返回 SH沪股通 / SZ深股通 / **HK港股通** 三类。HK 是**南向**
+       （内地资金买港股），ts_code 形如 ``00001.HK``，与 `north_ratio`「北向持股
+       占比」的语义不符，且 join A 股日线时全不匹配。实测多数交易日**只返回 HK**
+       （2026-07-15 全部 951 行皆 HK），故该叶子近年基本失效——
+       A 股行数 2024 年 496,268 → 2025 年 **13,819**（降至 1/36，比模块注释里
+       写的「约 1/5」严重得多）。
+    2. **重复**：2026-06-30 单日返回 4200 行/4061 只（正常日 ~950），139 只带重复
+       `(ts_code, trade_date)`。实测两条 `exchange` **都是 SH**，靠 exchange 区分不了；
+       真正不同的是 `code`/`name`——``code=31019 name=半導體`` 与
+       ``code=93019 name=中科曙光`` 被数据源映射到同一个 ``603019.SH``，是
+       **上游 ts_code 映射错误**。股本反推可证每对里恰有一条自洽（中科曙光那条）。
+       无通用规则能判定保留哪条，故取首行 + 告警；**该日 north_ratio 不可信**。
+       危害不在叶子值（库内 0 条因子用 north_*），而在重复行流进 daily 帧后
+       被 `_attach_margin` 平方放大、最终在组合层链式 join 下指数爆炸（23GB OOM）。
+    """
+    if df.is_empty() or "ts_code" not in df.columns:
+        return df
+    n_raw = df.height
+    out = df.unique(subset=["ts_code", "trade_date"], keep="first", maintain_order=True)
+    if out.height < n_raw:
+        logger.warning(
+            f"[hk_hold] 上游同 (ts_code, trade_date) 多条 {n_raw - out.height} 行，"
+            f"已取首行——实测为数据源 ts_code 映射错误（不同 code/name 映射到同一 "
+            f"ts_code），该日 north_ratio 不可信"
+        )
+    return out
+
+
 def fetch_hk_hold(start: str, end: str, ts_codes: list[str] | None = None) -> pl.DataFrame:
-    """拉每日北向持股(沪深股通 hk_hold，ratio=持股占比%)。日频，按缺失交易日市场级拉取 + 缓存。"""
+    """拉每日北向持股(沪深股通 hk_hold，ratio=持股占比%)。日频，按缺失交易日市场级拉取 + 缓存。
+
+    落盘前经 ``_hk_hold_clean`` 滤掉南向(HK)口径并去重；语义与已知缺陷见其 docstring。
+    """
     pro = init_tushare()
     if ts_codes is not None:
         return _fetch_subset_by_codes(pro.hk_hold, start, end, ts_codes,
@@ -560,7 +620,7 @@ def fetch_hk_hold(start: str, end: str, ts_codes: list[str] | None = None) -> pl
     missing = _missing_trade_dates("hk_hold", start, end)
     if missing:
         _fetch_market_by_missing_dates(pro.hk_hold, missing, data_type="hk_hold",
-                                       std_cols=HK_HOLD_COLS)
+                                       std_cols=HK_HOLD_COLS, clean=_hk_hold_clean)
     return load_parquet("hk_hold", start=start, end=end).collect()
 
 

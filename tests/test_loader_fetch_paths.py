@@ -1233,3 +1233,52 @@ def test_holder_normalize_drops_junk_end_dates(tmp_path, monkeypatch):
     # 只有合法行存活；null end_date 与越界日期全部被丢
     assert out.height == 1
     assert out["ts_code"].to_list() == ["000001.SZ"]
+
+
+def test_hk_hold_clean_dedups_but_keeps_hk_rows():
+    """hk_hold 落盘前只去重，**不得按 exchange 过滤**。
+
+    两条契约，都来自 2026-07-19 的实测：
+
+    1. **必须去重**：2026-06-30 单日返回 4200 行/4061 只（正常日 ~950），139 只带
+       重复 (ts_code, trade_date)。两条 exchange **都是 SH**，区分它们的是
+       `code`/`name`（``31019 半導體`` 与 ``93019 中科曙光`` 被数据源映射到同一个
+       ``603019.SH``）——上游 ts_code 映射错误。重复行流进 daily 后被
+       `_attach_margin` 平方放大，最终在组合层链式 join 下指数爆炸（23GB OOM）。
+    2. **不能滤掉 HK**：初版过滤 exchange in (SH,SZ)，随即发现是回归——多数交易日
+       接口**只返回 HK**（2026-07-15 全部 951 行皆 HK），滤掉就落盘 0 行 →
+       `_missing_trade_dates` 永远判该日缺失 → 每次调用都重抓，死循环烧 API 额度。
+    """
+    from factorzen.core.loader import _hk_hold_clean
+
+    # 同键两条不同值（生产形态：exchange 相同，code/name 不同）
+    df = pl.DataFrame({
+        "code": ["31019", "93019", "00001"],
+        "ts_code": ["603019.SH", "603019.SH", "00001.HK"],
+        "trade_date": [date(2026, 6, 30)] * 3,
+        "name": ["半導體", "中科曙光", "长和"],
+        "ratio": [1.20, 0.33, 5.0],
+        "vol": [102592076, 4970305, 999],
+        "exchange": ["SH", "SH", "HK"],
+    })
+    out = _hk_hold_clean(df)
+
+    assert out.height == 2, f"应去重成 2 行，实得 {out.height}"
+    assert out.select(["ts_code", "trade_date"]).unique().height == out.height
+    # HK 行必须留着，否则「只返回 HK」的正常日会落盘 0 行 → 缺失日死循环
+    assert "00001.HK" in out["ts_code"].to_list(), "HK 行被误滤，会导致重抓死循环"
+
+
+def test_hk_hold_clean_keeps_hk_only_day_nonempty():
+    """接口只返回 HK 的正常日，清洗后不得为空（否则该日永远被判缺失）。"""
+    from factorzen.core.loader import _hk_hold_clean
+
+    df = pl.DataFrame({
+        "ts_code": ["00001.HK", "00002.HK"],
+        "trade_date": [date(2026, 7, 15)] * 2,
+        "ratio": [5.0, 6.0],
+        "vol": [100, 200],
+        "exchange": ["HK", "HK"],
+    })
+    out = _hk_hold_clean(df)
+    assert out.height == 2, "只含 HK 的正常日被清空 → _missing_trade_dates 死循环"

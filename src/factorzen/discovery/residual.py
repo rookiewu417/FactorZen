@@ -255,6 +255,50 @@ def _day_min_samples(k: int) -> int:
     return max(MIN_CROSS_SAMPLES, int(k) + 10)
 
 
+# 残差退化的**相对**判据阈值：||r|| / ||y-mean(y)|| 低于此值 = 候选落在库张成内，
+# 残差只剩浮点舍入噪声。按投影运算精度分档（大面板 X 存 f32，噪声高 8 个数量级）。
+#
+# 实测边际（2026-07-19，n=400 k=30 合成库，见提交说明）：
+#                              f64 相对残差   f32 相对残差   判退化
+#   纯共线（含 ×1e7 大量级）        5.6e-16       3.4e-08     是
+#   共线 + 1e-8 相对新信号          7.6e-09          —        否
+#   共线 + 0.1% 新信号             7.6e-04       7.3e-04     否
+#   纯新信号（与库正交）             9.6e-01       9.7e-01     否
+#
+# f32 阈值定 1e-4 而非更紧的 1e-5，是**有意偏保守**：全 A（n~5000, k~87）的投影
+# 噪声按 eps*sqrt(n) 粗估已达 ~1e-5 量级，1e-5 会把真信号判退化（丢真因子，
+# 不可逆）；1e-4 的代价只是漏掉「新信号占比 <0.014%」的候选——这类候选的增量
+# 在 f32 精度下本就估不准，lift 也贴近 0。两个方向的误伤不对等，取保守侧。
+_DEGENERATE_REL_TOL_F64 = 1e-10
+_DEGENERATE_REL_TOL_F32 = 1e-4
+
+
+def _residual_is_degenerate(
+    resid: np.ndarray, y: np.ndarray, *, float32: bool = False,
+) -> bool:
+    """残差相对候选自身量级是否已退化为舍入噪声。
+
+    **必须用相对判据**：``spearman_avg_rank`` 的退化守卫是绝对阈值
+    (``std < 1e-12``)，对大量级候选失效——2026-07-19 实测，同一条零增量共线候选
+    整体 ×1e7 后，舍入残差（相对量级仍 ~1e-16）的绝对 std 越过 1e-12，
+    Spearman 在纯噪声上算出日 IC 达 ±0.85、lift=0.0188（阈值 18 倍）、
+    ``lift_admission`` 判 active。量级本身不该改变「有无增量」的结论。
+
+    去均值后比较：投影恒含截距列，残差对 y 的常数平移不变。
+    """
+    yc = np.asarray(y, dtype=np.float64).reshape(-1)
+    yc = yc - yc.mean()
+    y_norm = float(np.linalg.norm(yc))
+    if not np.isfinite(y_norm) or y_norm == 0.0:
+        # 候选当日截面为常数：无截面信息，与退化同处理
+        return True
+    r_norm = float(np.linalg.norm(np.asarray(resid, dtype=np.float64).reshape(-1)))
+    if not np.isfinite(r_norm):
+        return True
+    tol = _DEGENERATE_REL_TOL_F32 if float32 else _DEGENERATE_REL_TOL_F64
+    return (r_norm / y_norm) <= tol
+
+
 def _qr_rcond_tol(A: np.ndarray, diag: np.ndarray) -> float:
     """与 ``np.linalg.lstsq(..., rcond=None)`` 同阶的数值秩阈值。"""
     scale = float(diag.max()) if diag.size else 1.0
@@ -493,6 +537,8 @@ def daily_residual_rank_ic(
 
     k = lib_panel.k
     min_n = _day_min_samples(k)
+    # 大面板 X 存 f32（内存优化），投影舍入误差随之放大 → 退化阈值按精度分档
+    _panel_is_f32 = getattr(lib_panel.X, "dtype", None) == np.float32
     out_dates: list[str] = []
     out_ics: list[float] = []
     # 窗界与日期串统一走 iso_date_str：调用方传紧凑 YYYYMMDD 时直接比会静默错行
@@ -533,6 +579,9 @@ def daily_residual_rank_ic(
         else:
             X_day = lib_panel.X[di, si_v, :]  # (n, k) 已 z-score + null→0
             resid = residualize_cross_section(y_v, X_day)
+        # 候选落在当日库张成内 → 残差只剩舍入噪声，跳过（绝不在噪声上算 Spearman）
+        if _residual_is_degenerate(resid, y_v, float32=_panel_is_f32):
+            continue
         ic = _spearman(resid, ret_v)
         if ic is not None:
             out_dates.append(d_str)

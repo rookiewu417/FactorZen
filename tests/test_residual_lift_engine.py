@@ -53,6 +53,9 @@ def _synth_lib_cand_ret(
     mode:
     - orthogonal_signal: 候选 = 正交噪声 + 与 ret 强相关的分量
     - collinear: 候选 = 2*f0 + 3（严格线性变换库因子）
+    - collinear_large_scale: 同 collinear 但整体 ×1e7（模拟未归一化的大量级表达式，
+      如千元计的 amount / 万元计的 total_mv 组合）。残差仍是舍入噪声，但其**绝对**
+      std 会越过 ``spearman_avg_rank`` 的 1e-12 绝对守卫。
     - ortho_noise: 候选与库正交、与 ret 无关
     - linear_combo_plus_noise: 候选 = a*f0+b*f1 + 正交噪声（端到端一致性）
     """
@@ -85,6 +88,10 @@ def _synth_lib_cand_ret(
 
     if mode == "collinear":
         cand_M = 2.0 * f0 + 3.0
+        ret_M = 0.5 * f0 + 0.3 * f1 + 0.2 * rng.standard_normal((n_days, n_stocks))
+    elif mode == "collinear_large_scale":
+        # 非整系数 + 大量级：残差相对量级仍是 ~1e-16，但绝对 std 越过 1e-12 守卫
+        cand_M = (2.7183 * f0 - 1.4142 * f1 + 3.1416) * 1e7
         ret_M = 0.5 * f0 + 0.3 * f1 + 0.2 * rng.standard_normal((n_days, n_stocks))
     elif mode == "orthogonal_signal":
         cand_M = signal
@@ -212,6 +219,68 @@ def test_collinear_candidate_near_zero_lift():
     # 阈值传 -1.0 时 passed 会为 True——所以 passed 不是准入契约，
     # lift_admission 才是。共线候选必须拒（否则「数量取胜」会被冗余因子灌水）。
     assert lift_admission(r, threshold=0.005, se_mult=1.0) == "reject", r
+
+
+def test_large_magnitude_collinear_candidate_rejected():
+    """大量级共线候选：残差是舍入噪声，绝不能被判为增量。
+
+    回归锚（2026-07-19 实测的准入穿透）：``spearman_avg_rank`` 的退化守卫是
+    **绝对**阈值 ``std < 1e-12``，而残差是否退化取决于它**相对**原值的比例。
+    候选量级放大 1e7 后，同一条零增量候选的舍入残差（相对量级 ~1e-16）绝对 std
+    越过 1e-12，Spearman 在纯噪声上算出 60 天日 IC，得 lift=0.0188（阈值 18 倍）、
+    lift_admission=active——纯浮点噪声准入入库。
+
+    与 ``test_collinear_candidate_near_zero_lift`` 是同一经济情形的两个数值分支，
+    契约必须一致：零增量 → 拒。
+    """
+    from factorzen.discovery.lift_test import lift_admission, run_lift_tests
+
+    active, cand, ret = _synth_lib_cand_ret(
+        n_days=60, n_stocks=60, seed=11, mode="collinear_large_scale",
+    )
+    rows = run_lift_tests(
+        [{"expression": "big_col_cand"}],
+        market="ashare",
+        daily=pl.DataFrame(),
+        active_factor_dfs=active,
+        ret_df=ret,
+        materialize_candidate=lambda e: cand,
+        lift_workers=1,
+        threshold=-1.0,
+    )
+    r = rows[0]
+    # 经济含义与小量级分支同：零增量必拒
+    assert lift_admission(r, threshold=0.001, se_mult=1.0) == "reject", r
+    # 且 lift 本身不得把舍入噪声报成增量
+    assert r["lift"] is None or abs(float(r["lift"])) < 1e-6, r
+
+
+def test_degenerate_guard_scale_invariant():
+    """同一候选整体缩放不改变残差 IC 结论——退化判据必须是尺度不变的。
+
+    这是上面那条穿透的**根因层**断言：小量级已被 1e-12 绝对守卫挡住，
+    放大后就该同样被挡。用两个量级跑同一逻辑候选做对拍。
+    """
+    from factorzen.discovery.residual import (
+        ResidualProjector,
+        build_library_panel,
+        daily_residual_rank_ic,
+    )
+
+    active, cand, ret = _synth_lib_cand_ret(
+        n_days=40, n_stocks=60, seed=3, mode="collinear_large_scale",
+    )
+    panel = build_library_panel(active)
+    proj = ResidualProjector.from_panel(panel)
+
+    big = daily_residual_rank_ic(cand, panel, ret, ret_col="ret", projector=proj)
+    small = daily_residual_rank_ic(
+        cand.with_columns(pl.col("factor_value") / 1e7),
+        panel, ret, ret_col="ret", projector=proj,
+    )
+    # 缩放不改变「无有效残差日」这一结论
+    assert big.height == small.height, (big.height, small.height)
+    assert big.is_empty(), f"大量级共线候选不应产出残差 IC 日，实得 {big.height} 天"
 
 
 # ── 3. 正交强信号 → 正增量 ──────────────────────────────────────────────────

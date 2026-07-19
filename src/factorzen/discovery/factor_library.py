@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import math
+import warnings
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -1210,6 +1211,9 @@ def _compact_of_from_panels(exprs: list[str], materialize: Materializer) -> Comp
 def _decorrelate(
     affected: list[FactorRecord], unchanged: list[FactorRecord],
     compact_of: CompactMaterializer | None, decorr_threshold: float,
+    *,
+    preserve_status: bool = False,
+    sort_key: Callable[[FactorRecord], Any] | None = None,
 ) -> int:
     """方案 A 去相关（内存有界）：对 affected 逐个与「其它 active 因子」算逐对相关。
 
@@ -1218,10 +1222,26 @@ def _decorrelate(
     ``unchanged``：本批未触及、状态稳定的库内 active 记录，始终在池中。
     ``compact_of``：expr → 紧凑 (date×stock) 矩阵；缓存的是**小矩阵**（非完整面板），内存随
     因子数有界。``None`` → 不去相关，全部 active。返回被标记 correlated 的数量。
+
+    **全仓唯一的去相关实现**（``upsert`` 与 ``upsert_lift_admissions`` 共用，
+    ``rebuild`` 委托 ``upsert``）。两条准入轨对同一对因子必须给出同一裁决，
+    见 ``test_same_verdict_as_single_track``。扩展一律走参数化 + 保留现默认值。
+
+    ``preserve_status``
+        ``False``（默认，单因子轨语义）：未超阈者一律写 ``status="active"``。
+        ``True``（lift 轨）：**只允许下调到 ``correlated``，绝不上调**——保留调用方
+        已算好的 status。lift 轨默认 ``allow_active=False`` 会把 decision=active 的
+        记录 cap 成 ``probation``（运营护栏 §14.1）；若这里无条件写 active，
+        等于把 cap 整体冲掉，比不加门更糟。
+    ``sort_key``
+        贪心处理顺序（谁先占 active 位）。``None`` → ``-|ir_train|`` 降序（现语义）。
+        lift 轨必须显式传 ``lift`` 降序：**lift 结果行根本没有 ir_train 字段**，
+        默认键对整批恒为 0，贪心会退化成表达式字母序（即随机占位）。
     """
     if compact_of is None:
-        for r in affected:
-            r.status = "active"
+        if not preserve_status:
+            for r in affected:
+                r.status = "active"
         return 0
 
     mat_cache: dict[str, np.ndarray | None] = {}
@@ -1234,13 +1254,19 @@ def _decorrelate(
                 mat_cache[expr] = None
         return mat_cache[expr]
 
+    # 池子只取 unchanged 里的 active：库内既有 probation 不挡新候选（试用因子不该
+    # 挡路，与 library_covered_expressions 同原则）。但本批 affected 中已占位者会在
+    # 下方入池——批内重复必须互相挡，否则门等于没加。
     active_pool: list[str] = [r.expression for r in unchanged if r.status == "active"]
-    ordered = sorted(affected, key=lambda r: (-abs(r.ir_train or 0.0), r.expression))
+    _key = sort_key or (lambda r: (-abs(r.ir_train or 0.0), r.expression))
+    ordered = sorted(affected, key=_key)
     correlated = 0
     for rec in ordered:
         cand = mat(rec.expression)
         if cand is None:
-            rec.status = "active"      # 无法物化 → 无从去相关，保守留 active
+            # 无法物化 → 无从去相关，保守保留（默认轨写 active；lift 轨保持原 status）
+            if not preserve_status:
+                rec.status = "active"
             active_pool.append(rec.expression)
             continue
         best_val, best_expr = 0.0, None
@@ -1255,11 +1281,13 @@ def _decorrelate(
                 best_val, best_expr = c, other
         rec.max_corr_in_lib = round(float(best_val), 4)
         if best_expr is not None and best_val > decorr_threshold:
+            # 去重优先级最高：correlated 是唯一允许覆盖调用方 status 的写入
             rec.status = "correlated"
             rec.correlated_with = best_expr
             correlated += 1
         else:
-            rec.status = "active"
+            if not preserve_status:
+                rec.status = "active"
             active_pool.append(rec.expression)
     return correlated
 
@@ -1386,6 +1414,9 @@ def upsert_lift_admissions(
     threshold: float = DEFAULT_LIFT_THRESHOLD,
     se_mult: float = 1.0,
     allow_active: bool = False,
+    materialize: Materializer | None = None,
+    compact_materialize: CompactMaterializer | None = None,
+    decorr_threshold: float = 0.7,
 ) -> dict:
     """把 ``run_lift_tests`` 结果行按 ``lift_admission`` 写入因子库（lift 准入轨道）。
 
@@ -1417,8 +1448,20 @@ def upsert_lift_admissions(
     已存在同 expression：更新指标与 status（保留 ``added_at``），不重复添加。
     逐行 try/except：一行坏数据不崩整批，进 ``errors`` 列表。
 
+    **相关性门（W1）**：准入行走完后过一次 ``_decorrelate``（全仓单一实现，
+    与单因子轨同阈值同裁决）。它**不是**回退到硬质量门——残差 lift 是对冻结基线
+    算的，同批候选共用同一基线快照，两条互为重复的候选会拿到相同的正 lift 双双
+    准入（实测 12 条准入只含 4-5 个独立信号）。语义正确的解法是「每准入一条就并入
+    基线再测下一条」（贪心 re-lift），本门是它的**廉价代理**；且方案 A 只标记不
+    丢弃（记录仍收录、``admission_decision`` 保留裁决原文），是批内去重不是拒绝。
+
+    门需要物化能力：传 ``compact_materialize``（优先）或 ``materialize``。
+    **两者都缺 → 跳过去相关 + `warnings.warn` 告警 + 返回 ``decorrelation_skipped``**，
+    绝不静默降级（静默走 ``_decorrelate(compact_of=None)`` 会把 status 全冲成 active）。
+
     返回 ``{"added_active", "added_probation", "rejected", "demoted_no_lift",
-    "capped_active", "errors"}``（``demoted_no_lift`` / ``capped_active`` 仅在发生时出现）。
+    "capped_active", "correlated", "decorrelation_skipped", "errors"}``
+    （后四项仅在发生时出现）。
     """
     from factorzen.discovery.lift_test import lift_admission
 
@@ -1446,6 +1489,12 @@ def upsert_lift_admissions(
     }
     leaf_map = meta.get("leaf_map")
     dirty = False
+    # 本批实际写入的准入记录（reject 降级 / single 轨跳过的不进）——去相关的 affected 集
+    admitted: list[FactorRecord] = []
+    admitted_exprs: set[str] = set()
+    # expr → 该记录当初累加的计数键；被去相关改判 correlated 时按这个键回退，
+    # 不靠事后从 status/allow_active 反推（forward-confirmed 路径会反推错）。
+    admitted_counter: dict[str, str] = {}
 
     for i, row in enumerate(rows or []):
         try:
@@ -1583,12 +1632,72 @@ def upsert_lift_admissions(
 
             by_expr[norm] = rec
             dirty = True
+            # 已 forward-confirmed 的 active **不进去相关的 affected 集**：它们会落进
+            # `unchanged` 且 status=="active"，即仍在比较池里挡住重复的新候选，但自身
+            # 不会被贪心下调成 correlated——否则一条高 lift 的新候选就能撤销一个已确认
+            # 状态，破坏上面刚保证的状态机单调性。
+            if norm not in admitted_exprs and not prev_confirmed_active:
+                admitted.append(rec)
+                admitted_exprs.add(norm)
+                admitted_counter[norm] = (
+                    "added_active" if rec.status == "active" else "added_probation"
+                )
         except Exception as exc:
             out["errors"].append({
                 "index": i,
                 "expression": (row.get("expression") if isinstance(row, dict) else None),
                 "error": f"{type(exc).__name__}: {exc}",
             })
+
+    # ── 相关性门（W1）──────────────────────────────────────────────────────
+    # 顺序：先按 lift 裁决算好 status（含 cap），再去重。去重只允许把重复者下调到
+    # correlated（preserve_status=True），绝不上调——否则 cap 出来的 probation 会被
+    # 冲成 active，运营护栏整体失效。
+    if admitted:
+        compact_of = compact_materialize
+        if compact_of is None and materialize is not None:
+            needed = [r.expression for r in admitted] + [
+                e for e, r in by_expr.items()
+                if e not in admitted_exprs and r.status == "active"
+            ]
+            compact_of = _compact_of_from_panels(needed, materialize)
+        if compact_of is None:
+            # fail-loudly：没有物化能力就跳过，绝不静默走 compact_of=None 分支
+            # （那会把 status 全部冲成 active）。
+            # 标志无条件落盘（provenance 要完整）；但**只在门真有事可做时才告警**——
+            # 单条准入且库内无 active 时去相关本就是 no-op，无差别告警会造成告警疲劳，
+            # 真漏接线时反而没人看见。
+            out["decorrelation_skipped"] = True
+            n_pool = sum(
+                1 for e, r in by_expr.items()
+                if e not in admitted_exprs and r.status == "active"
+            )
+            if len(admitted) > 1 or n_pool:
+                msg = (
+                    f"upsert_lift_admissions: 未传 materialize/compact_materialize，"
+                    f"跳过去相关——本批 {len(admitted)} 条准入记录**未做重复筛查**"
+                    f"（库内另有 {n_pool} 条 active 可比），库内可能进入互为重复的因子。"
+                )
+                _LOG.warning(msg)
+                warnings.warn(msg, UserWarning, stacklevel=2)
+        else:
+            unchanged = [r for e, r in by_expr.items() if e not in admitted_exprs]
+            n_corr = _decorrelate(
+                admitted, unchanged, compact_of, decorr_threshold,
+                preserve_status=True,
+                # lift 轨权威指标是 lift；结果行没有 ir_train，用默认键会退化成字母序
+                sort_key=lambda r: (-(r.lift if r.lift is not None else -math.inf),
+                                    r.expression),
+            )
+            if n_corr:
+                out["correlated"] = n_corr
+                # 被判 correlated 的不再计入 active/probation 计数（status 已改写）
+                for rec in admitted:
+                    if rec.status != "correlated":
+                        continue
+                    key = admitted_counter.get(rec.expression)
+                    if key:
+                        out[key] = max(0, out[key] - 1)
 
     if dirty:
         _save_library(market, list(by_expr.values()), root=root)

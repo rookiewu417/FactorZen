@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import types
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import polars as pl
 
 from factorzen.reports._charts import (
+    _make_benchmark_chart,
+    _make_drawdown_chart,
+    _make_group_bar_chart,
+    _make_group_nav_chart,
     _make_ic_chart,
+    _make_ic_cumulative_chart,
     _make_monthly_return_heatmap,
     _make_returns_chart,
     _with_plot_dates,
@@ -69,3 +74,125 @@ def test_with_plot_dates_falls_back_to_index_without_date_column():
     assert x_col == "_plot_index"
     assert is_date is False
     assert list(out["_plot_index"]) == [0, 1, 2]
+
+
+# ── 新增决策图：IC 累计 / 回撤 / 分组净值 / 分组柱 / 基准对比 ──────────────────
+
+
+def _prod_nav(n: int = 40) -> pl.DataFrame:
+    """生产形态的组合 nav：单一净值曲线，**无 group 列**。
+
+    全仓 5 个策略类（QuantileLongShort/TopNLongOnly/PrecomputedWeights/
+    FactorWeighted/Optimizer）都产单一组合净值，不产分层 nav。
+    """
+    dates = [date(2023, 1, 3) + timedelta(days=i) for i in range(n)]
+    nav, rows = 1.0, []
+    for i, d in enumerate(dates):
+        nav *= 1.0 + (0.004 if i % 4 else -0.009)  # 有涨有跌，制造真实回撤
+        rows.append({"trade_date": d, "net_return": 0.004 if i % 4 else -0.009, "nav": nav})
+    return pl.DataFrame(rows)
+
+
+def _group_daily(n_days: int = 30, n_groups: int = 5) -> pl.DataFrame:
+    rows = []
+    for g in range(n_groups):
+        for i in range(n_days):
+            rows.append(
+                {
+                    "trade_date": date(2023, 1, 3) + timedelta(days=i),
+                    "group": g,
+                    "mean_ret": 0.0005 * (g + 1) * (1 if i % 3 else -0.6),
+                }
+            )
+    return pl.DataFrame(rows).with_columns(pl.col("group").cast(pl.Int32))
+
+
+def test_new_charts_return_none_on_none_result():
+    assert _make_ic_cumulative_chart(None) is None
+    assert _make_drawdown_chart(None) is None
+    assert _make_group_bar_chart(None) is None
+    assert _make_group_nav_chart(None) is None
+    assert _make_benchmark_chart(None) is None
+
+
+def test_ic_cumulative_renders_and_survives_nan_gaps():
+    """含 NaN 的 IC 序列不应中断曲线或抛异常。"""
+    ic = pl.DataFrame(
+        {
+            "trade_date": [date(2023, 1, 3) + timedelta(days=i) for i in range(30)],
+            "ic": [float("nan") if i % 7 == 0 else 0.02 + 0.001 * (i % 5) for i in range(30)],
+        }
+    )
+    b64 = _make_ic_cumulative_chart(_ns(ic_series=ic))
+    assert isinstance(b64, str) and len(b64) > 100
+
+
+def test_ic_cumulative_none_when_all_values_nan():
+    ic = pl.DataFrame(
+        {
+            "trade_date": [date(2023, 1, 3) + timedelta(days=i) for i in range(5)],
+            "ic": [float("nan")] * 5,
+        }
+    )
+    assert _make_ic_cumulative_chart(_ns(ic_series=ic)) is None
+
+
+def test_drawdown_renders_on_production_shaped_nav():
+    b64 = _make_drawdown_chart(_ns(nav=_prod_nav()))
+    assert isinstance(b64, str) and len(b64) > 100
+
+
+def test_drawdown_none_when_nav_has_group_column():
+    """带 group 列的 nav 是多条曲线，单一回撤曲线无意义，应跳过而非画错。"""
+    grouped = _prod_nav(10).with_columns(pl.lit(0, dtype=pl.Int32).alias("group"))
+    assert _make_drawdown_chart(_ns(nav=grouped)) is None
+
+
+def test_drawdown_none_when_too_few_points():
+    tiny = pl.DataFrame({"trade_date": [date(2023, 1, 3)], "nav": [1.0]})
+    assert _make_drawdown_chart(_ns(nav=tiny)) is None
+
+
+def test_group_nav_renders_from_group_daily_returns():
+    b64 = _make_group_nav_chart(_ns(group_daily_returns=_group_daily()))
+    assert isinstance(b64, str) and len(b64) > 100
+
+
+def test_group_nav_none_when_single_group():
+    """单组无从比较分层，应返回 None 而非画一条孤线。"""
+    single = _group_daily(n_days=20, n_groups=1)
+    assert _make_group_nav_chart(_ns(group_daily_returns=single)) is None
+
+
+def test_group_nav_none_when_frame_empty():
+    empty = pl.DataFrame(
+        schema={"trade_date": pl.Date, "group": pl.Int32, "mean_ret": pl.Float64}
+    )
+    assert _make_group_nav_chart(_ns(group_daily_returns=empty)) is None
+
+
+def test_group_bar_renders_and_rejects_degenerate_input():
+    assert isinstance(_make_group_bar_chart(_ns(group_means=[0.001, 0.003, 0.006])), str)
+    assert _make_group_bar_chart(_ns(group_means=[])) is None
+    assert _make_group_bar_chart(_ns(group_means=[0.001])) is None
+    assert _make_group_bar_chart(_ns(group_means=[0.001, float("nan")])) is None
+
+
+def test_benchmark_chart_renders_with_three_series():
+    daily = pl.DataFrame(
+        {
+            "trade_date": [date(2023, 1, 3) + timedelta(days=i) for i in range(30)],
+            "strategy_nav": [1.0 + 0.002 * i for i in range(30)],
+            "benchmark_nav": [1.0 + 0.001 * i for i in range(30)],
+            "excess_nav": [1.0 + 0.001 * i for i in range(30)],
+        }
+    )
+    b64 = _make_benchmark_chart(
+        _ns(daily=daily, benchmark_name="沪深300", information_ratio=0.56)
+    )
+    assert isinstance(b64, str) and len(b64) > 100
+
+
+def test_benchmark_chart_none_when_daily_empty():
+    """生产 fixture 曾用空 daily——此时必须返回 None 而非抛异常。"""
+    assert _make_benchmark_chart(_ns(daily=pl.DataFrame(), benchmark_name="沪深300")) is None

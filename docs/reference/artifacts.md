@@ -49,7 +49,7 @@ FactorZen 严格区分两个根目录：
 |---|---|---|
 | `factor.parquet` | 116 MB | 因子面板（全时段全标的），最大的文件 |
 | `universe.parquet` | 7.1 MB | 逐日 universe 快照，PIT 自查用 |
-| `report.html` | 98 KB | 单页 tear sheet |
+| `report.html` | ~490 KB | 单页 tear sheet；7 张图以 base64 PNG 内嵌，故体积随图数增长 |
 | `manifest.json` | 3.6 KB | 复现清单，见 §3.1 |
 | `ic.parquet` | 6.2 KB | 逐日 IC 序列 |
 | `quality.json` | 1.0 KB | 因子质量指标 |

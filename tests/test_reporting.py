@@ -73,7 +73,14 @@ def make_bt_result(
     max_dd: float = -0.1820,
     with_nav: bool = True,
     n_days: int = 60,
+    grouped_nav: bool = False,
 ) -> Any:
+    """构造回测结果。
+
+    默认为**生产形态**：单一组合净值（trade_date, net_return, nav），**无 group 列**——
+    全仓 5 个策略类都只产组合净值，没有任何策略产出分层 nav。
+    ``grouped_nav=True`` 才产带 group 的多曲线形态，用于覆盖 _make_returns_chart 的分支。
+    """
     portfolio = {
         "ann_ret": ann_ret,
         "ann_vol": 0.18,
@@ -83,7 +90,9 @@ def make_bt_result(
         "total_cost": 0.01,
         "ann_turnover": 0.25 * 252,
     }
-    if with_nav:
+    if not with_nav:
+        nav_df = pl.DataFrame()
+    elif grouped_nav:
         dates = [date(2023, 1, 3) + timedelta(days=i) for i in range(n_days)]
         rows = []
         for g in (0, 1, 4):
@@ -93,11 +102,19 @@ def make_bt_result(
                 rows.append({"trade_date": d, "group": g, "nav": nav})
         nav_df = pl.DataFrame(rows)
     else:
-        nav_df = pl.DataFrame()
+        dates = [date(2023, 1, 3) + timedelta(days=i) for i in range(n_days)]
+        rows = []
+        nav = 1.0
+        for i, d in enumerate(dates):
+            ret = 0.0035 if i % 4 else -0.008  # 有涨有跌，产生真实回撤形态
+            nav *= 1.0 + ret
+            rows.append({"trade_date": d, "net_return": ret, "nav": nav})
+        nav_df = pl.DataFrame(rows)
 
     return types.SimpleNamespace(
         strategy_name="top_n",
         nav=nav_df,
+        returns=nav_df,
         summary_stats={"portfolio": portfolio, "long_short": portfolio},
     )
 
@@ -117,23 +134,80 @@ def make_mono_result(
     *,
     monotonicity_score: float = 1.0,
     direction: str = "positive",
+    with_group_daily: bool = True,
+    n_days: int = 40,
 ) -> Any:
+    """构造单调性结果。
+
+    ``group_daily_returns`` 对齐 compute_monotonicity 的真实产出
+    （trade_date, group[Int32, 0-indexed], mean_ret），报告层据此画分组净值与逐组绩效。
+    """
     if group_means is None:
         group_means = [0.001, 0.002, 0.003, 0.004, 0.006]
+    if with_group_daily:
+        rows = []
+        for g, base in enumerate(group_means):
+            for i in range(n_days):
+                rows.append(
+                    {
+                        "trade_date": date(2023, 1, 3) + timedelta(days=i),
+                        "group": g,
+                        "mean_ret": base * (1 if i % 3 else -0.6),
+                    }
+                )
+        gdr = pl.DataFrame(rows).with_columns(pl.col("group").cast(pl.Int32))
+    else:
+        gdr = pl.DataFrame(
+            schema={"trade_date": pl.Date, "group": pl.Int32, "mean_ret": pl.Float64}
+        )
     return types.SimpleNamespace(
         factor_name="test_factor",
         monotonicity_score=monotonicity_score,
         group_means=group_means,
         direction=direction,
         ols_slope=0.001,
+        group_daily_returns=gdr,
     )
 
 
-def make_benchmark_result(ann_excess_ret: float = 0.0450) -> Any:
+def make_benchmark_result(
+    ann_excess_ret: float = 0.0450,
+    *,
+    with_daily: bool = True,
+    n_days: int = 40,
+) -> Any:
+    """构造基准对比结果。
+
+    ``daily`` 对齐 BenchmarkResult 的真实列
+    （trade_date, strategy_ret, benchmark_ret, excess_ret, *_nav）。
+    """
+    if with_daily:
+        rows = []
+        s_nav = b_nav = e_nav = 1.0
+        for i in range(n_days):
+            s_ret = 0.0035 if i % 4 else -0.006
+            b_ret = 0.0020 if i % 5 else -0.004
+            s_nav *= 1.0 + s_ret
+            b_nav *= 1.0 + b_ret
+            e_nav *= 1.0 + (s_ret - b_ret)
+            rows.append(
+                {
+                    "trade_date": date(2023, 1, 3) + timedelta(days=i),
+                    "strategy_ret": s_ret,
+                    "benchmark_ret": b_ret,
+                    "excess_ret": s_ret - b_ret,
+                    "strategy_nav": s_nav,
+                    "benchmark_nav": b_nav,
+                    "excess_nav": e_nav,
+                }
+            )
+        daily = pl.DataFrame(rows)
+    else:
+        daily = pl.DataFrame()
     return types.SimpleNamespace(
         benchmark_code="000300.SH",
         benchmark_name="沪深300",
-        daily=pl.DataFrame(),
+        daily=daily,
         ann_excess_ret=ann_excess_ret,
         tracking_error=0.08,
         information_ratio=0.56,
@@ -218,8 +292,18 @@ class TestFullRender:
         # n_periods=80 ≥ 60 → 不应有短样本警告
         assert "样本量较少" not in html
 
-        # 两张 base64 图
-        assert html.count("data:image/png;base64,") == 2
+        # 七张决策图各就各位（按 alt 断言，避免写死总数——加图就得改数字且看不出缺哪张）
+        for alt in (
+            "组合净值",
+            "回撤曲线",
+            "策略与基准对比",
+            "IC 时序",
+            "IC 累计曲线",
+            "分组累计净值",
+            "分组平均收益",
+        ):
+            assert f'alt="{alt}"' in html, f"缺少图表：{alt}"
+        assert html.count("data:image/png;base64,") == 7
 
         # 无 JS / 无外部资源
         assert "<script" not in html.lower()
@@ -287,8 +371,11 @@ class TestDegenerateInputs:
         html = generate_tear_sheet("empty_ic", ic, make_bt_result(), make_to_result(0.2))
         assert "0.0200" in html
         assert "0.25" in html
-        # 有 nav 图但无 IC 图
-        assert html.count("data:image/png;base64,") == 1
+        # 净值/回撤依赖 bt_result 仍应渲染；两张 IC 图依赖空序列应整体缺席
+        assert 'alt="组合净值"' in html
+        assert 'alt="回撤曲线"' in html
+        assert 'alt="IC 时序"' not in html
+        assert 'alt="IC 累计曲线"' not in html
 
 
 # ── benchmark row ────────────────────────────────────────────────────────────
@@ -433,6 +520,99 @@ class TestWalkForward:
         )
         assert "disabled" in html
         assert "OOS Sharpe 均值" not in html
+
+
+# ── 分层有效性区块：逐组绩效表 + 口径标注 ──────────────────────────────────
+
+
+class TestGroupPerfTable:
+    def test_group_perf_metrics_match_hand_computed_values(self):
+        """逐组绩效对齐手算值（不依赖被测代码反推）。
+
+        G1 收益序列 [0.01, -0.02, 0.03]：
+          年化   = mean * 252 = (0.02/3) * 252 = 168.00%
+          年化波动 = std(ddof=0) * sqrt(252) = 0.0205480 * 15.87451 = 0.326190
+          Sharpe = 1.68 / 0.326190 = 5.15
+          净值   = [1.01, 0.9898, 1.019694]，峰值 1.01 → 回撤 = 0.9898/1.01-1 = -2.00%
+          胜率   = 2/3 = 66.67%
+        """
+        from factorzen.reports.tear_sheet import _build_group_perf_table
+
+        rows = []
+        for g, rets in enumerate([[0.01, -0.02, 0.03], [0.02, 0.01, 0.01]]):
+            for i, r in enumerate(rets):
+                rows.append(
+                    {
+                        "trade_date": date(2023, 1, 3) + timedelta(days=i),
+                        "group": g,
+                        "mean_ret": r,
+                    }
+                )
+        mono = types.SimpleNamespace(
+            group_daily_returns=pl.DataFrame(rows).with_columns(
+                pl.col("group").cast(pl.Int32)
+            )
+        )
+
+        table = _build_group_perf_table(mono)
+        assert table is not None
+        g1 = table["rows"][0]
+        assert g1["group"] == "G1"
+        assert g1["ann_ret"] == "168.00%"
+        assert g1["sharpe"] == "5.15"
+        assert g1["max_dd"] == "-2.00%"
+        assert g1["win_rate"] == "66.67%"
+        assert g1["n_periods"] == "3"
+
+    def test_group_perf_table_rendered_with_caveat(self):
+        """分组区块必须带口径标注——等权免成本的数字与组合回测不可直接比较。"""
+        html = generate_tear_sheet(
+            "grouped",
+            make_ic_result(n_periods=100, ic_mean=0.03),
+            make_bt_result(),
+            make_to_result(0.2),
+            mono_result=make_mono_result(),
+        )
+        assert "分层有效性" in html
+        assert "胜率" in html
+        assert "不含交易成本与交易约束" in html, "缺口径标注会诱导与组合回测数字混比"
+
+    def test_no_group_block_when_group_daily_missing(self):
+        """旧结果对象无 group_daily_returns 时应静默降级，不崩、不留空表头。
+
+        只有依赖逐日明细的两项（分组净值图、逐组绩效表）消失；
+        分组柱状图与口径标注仍在——它们只依赖 group_means，而 group_means
+        同样是等权免成本口径，标注依旧适用。
+        """
+        html = generate_tear_sheet(
+            "legacy_mono",
+            make_ic_result(n_periods=100, ic_mean=0.03),
+            make_bt_result(),
+            make_to_result(0.2),
+            mono_result=make_mono_result(with_group_daily=False),
+        )
+        assert 'alt="分组累计净值"' not in html
+        assert "胜率" not in html, "逐组绩效表应缺席"
+        # 柱状图与口径标注仍应在
+        assert 'alt="分组平均收益"' in html
+        assert "不含交易成本与交易约束" in html
+        # 单调性表本身仍在（它只依赖 group_means）
+        assert "Spearman" in html
+
+    def test_single_group_rejected(self):
+        """单组无从比较分层，绩效表应返回 None 而非渲染一行。"""
+        from factorzen.reports.tear_sheet import _build_group_perf_table
+
+        rows = [
+            {"trade_date": date(2023, 1, 3) + timedelta(days=i), "group": 0, "mean_ret": 0.01}
+            for i in range(5)
+        ]
+        mono = types.SimpleNamespace(
+            group_daily_returns=pl.DataFrame(rows).with_columns(
+                pl.col("group").cast(pl.Int32)
+            )
+        )
+        assert _build_group_perf_table(mono) is None
 
 
 # ── export / env ─────────────────────────────────────────────────────────────

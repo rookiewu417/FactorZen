@@ -12,6 +12,12 @@ from factorzen.core.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _empty_group_daily() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={"trade_date": pl.Date, "group": pl.Int32, "mean_ret": pl.Float64}
+    )
+
+
 @dataclass
 class MonotonicityResult:
     """因子单调性分析结果。
@@ -21,6 +27,10 @@ class MonotonicityResult:
         monotonicity_score: 单调性得分 (0.0-1.0)，连续分位间收益方向一致的占比
         group_means: 各分组的平均收益
         direction: 方向 ("positive" / "negative")
+        group_daily_returns: 逐日 × 分组等权平均收益（trade_date, group, mean_ret）。
+            ``group_means`` 是它按组求均值的结果；保留明细供报告层画分组净值/绩效。
+            **口径**：等权、不含交易成本与交易约束（停牌/涨跌停/T+1），
+            与 ``StrategyBacktestResult`` 的组合回测口径不同，不可混用比较。
     """
 
     factor_name: str = ""
@@ -28,6 +38,7 @@ class MonotonicityResult:
     group_means: list[float] = field(default_factory=list)
     direction: str = "neutral"
     ols_slope: float = 0.0
+    group_daily_returns: pl.DataFrame = field(default_factory=_empty_group_daily)
 
     def summary(self) -> str:
         lines = [
@@ -80,7 +91,11 @@ def compute_monotonicity(
     )
 
     # 每组平均收益
-    group_ret = df.group_by(["trade_date", "group"]).agg(pl.col(ret_col).mean().alias("mean_ret"))
+    group_ret = (
+        df.group_by(["trade_date", "group"])
+        .agg(pl.col(ret_col).mean().alias("mean_ret"))
+        .sort(["trade_date", "group"])
+    )
 
     # 各分组全局平均收益
     means_df = group_ret.group_by("group").agg(pl.col("mean_ret").mean()).sort("group")
@@ -93,6 +108,7 @@ def compute_monotonicity(
             monotonicity_score=0.0,
             group_means=group_means,
             direction="neutral",
+            group_daily_returns=group_ret,
         )
 
     same_direction = 0
@@ -119,4 +135,5 @@ def compute_monotonicity(
         group_means=group_means,
         direction=direction,
         ols_slope=ols_slope,
+        group_daily_returns=group_ret,
     )

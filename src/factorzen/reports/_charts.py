@@ -247,3 +247,284 @@ def _make_monthly_return_heatmap(bt_result: Any) -> str | None:
     fig.colorbar(image, ax=ax, fraction=0.025, pad=0.02, format=mticker.PercentFormatter(1.0))
     fig.tight_layout()
     return _fig_to_base64(fig)
+
+
+def _make_ic_cumulative_chart(ic_result: Any) -> str | None:
+    """IC 累计曲线：斜率即平均 IC，斜率转平/转负标示 alpha 失效时点。
+
+    棒图只能看单期强弱，累计曲线才能看出趋势——这是判断因子是否已失效的第一工具。
+    虚线为「恒定斜率」参考（首末点连线）；实线持续落在参考线下方＝后段贡献衰减。
+    """
+    if ic_result is None:
+        return None
+    ic_series = _safe_attr(ic_result, "ic_series")
+    if ic_series is None or ic_series.is_empty():
+        return None
+
+    ic_pd = ic_series.to_pandas()
+    ic_col = (
+        "ic"
+        if "ic" in ic_pd.columns
+        else next((c for c in ic_pd.columns if c != "trade_date"), None)
+    )
+    if ic_col is None:
+        return None
+    date_col = "trade_date" if "trade_date" in ic_pd.columns else ic_pd.columns[0]
+    ic_pd = ic_pd.sort_values(date_col)
+
+    values = ic_pd[ic_col].to_numpy(dtype=float)
+    finite = np.isfinite(values)
+    if not finite.any():
+        return None
+    # 缺失期不推进累计（填 0），避免断线；不参与统计
+    cum = np.cumsum(np.where(finite, values, 0.0))
+
+    ic_pd, x_col, is_date_axis = _with_plot_dates(ic_pd, date_col)
+    x_vals = ic_pd[x_col].to_numpy()
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(x_vals, cum, color="#2c7fb8", linewidth=1.6, label="累计 IC")
+    ax.fill_between(x_vals, 0, cum, color="#2c7fb8", alpha=0.12)
+    if len(cum) >= 2:
+        ax.plot(
+            [x_vals[0], x_vals[-1]],
+            [0.0, cum[-1]],
+            color="#999",
+            linestyle="--",
+            linewidth=0.9,
+            label="恒定斜率参考",
+        )
+    ax.axhline(y=0, color="gray", linestyle="-", linewidth=0.5)
+    mean_ic = float(np.mean(values[finite]))
+    ax.set_title(f"IC 累计曲线（累计 {cum[-1]:.2f}，均值 {mean_ic:.4f}）", fontsize=12)
+    ax.set_ylabel("累计 IC")
+    ax.legend(fontsize=8, loc="best")
+    _format_sparse_x_axis(ax, is_date_axis=is_date_axis)
+    fig.autofmt_xdate()
+    return _fig_to_base64(fig)
+
+
+def _make_drawdown_chart(bt_result: Any) -> str | None:
+    """回撤曲线（underwater）：最大回撤的形态比数值更能说明风险。
+
+    单次崩塌 vs 长期阴跌、水下时长与修复耗时，核心指标表里的一个 max_dd 数字看不出来。
+    """
+    if bt_result is None:
+        return None
+    nav = _safe_attr(bt_result, "nav")
+    if nav is None or nav.is_empty():
+        return None
+
+    nav_pd = nav.to_pandas()
+    if "nav" not in nav_pd.columns or "trade_date" not in nav_pd.columns:
+        return None
+    # 分层 nav（含 group 列）语义是多条曲线，回撤图只描述单一组合净值
+    if "group" in nav_pd.columns:
+        return None
+
+    nav_pd = nav_pd.sort_values("trade_date")
+    navs = nav_pd["nav"].to_numpy(dtype=float)
+    finite = np.isfinite(navs) & (navs > 0)
+    if finite.sum() < 2:
+        return None
+    nav_pd = nav_pd.loc[finite]
+    navs = navs[finite]
+
+    running_max = np.maximum.accumulate(navs)
+    drawdown = navs / running_max - 1.0
+
+    nav_pd, x_col, is_date_axis = _with_plot_dates(nav_pd)
+    x_vals = nav_pd[x_col].to_numpy()
+
+    fig, ax = plt.subplots(figsize=(10, 3.6))
+    ax.fill_between(x_vals, drawdown, 0, color="#c0392b", alpha=0.28)
+    ax.plot(x_vals, drawdown, color="#c0392b", linewidth=1.0)
+    ax.axhline(y=0, color="gray", linestyle="-", linewidth=0.5)
+
+    trough = int(np.argmin(drawdown))
+    max_dd = float(drawdown[trough])
+    # 水下占比：净值未创新高的时间比例
+    underwater_ratio = float(np.mean(drawdown < -1e-12))
+    if max_dd < 0:
+        ax.annotate(
+            f"最大回撤 {max_dd * 100:.2f}%",
+            xy=(x_vals[trough], max_dd),
+            xytext=(0, -14),
+            textcoords="offset points",
+            ha="center",
+            fontsize=8,
+            color="#7b241c",
+        )
+    ax.set_title(f"回撤曲线（水下时间占比 {underwater_ratio * 100:.1f}%）", fontsize=12)
+    ax.set_ylabel("回撤")
+    ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+    _format_sparse_x_axis(ax, is_date_axis=is_date_axis)
+    fig.autofmt_xdate()
+    return _fig_to_base64(fig)
+
+
+def _make_group_bar_chart(mono_result: Any) -> str | None:
+    """分组平均收益柱状图：一眼看出是否单调、收益是否只来自某一端。
+
+    表格逐行读不出形状；柱状图能立刻区分「全程单调」与「只有极端组有效」。
+    """
+    if mono_result is None:
+        return None
+    group_means = _safe_attr(mono_result, "group_means", None)
+    if not group_means or len(group_means) < 2:
+        return None
+    try:
+        means = np.asarray([float(m) for m in group_means], dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(means).all():
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 3.8))
+    labels = [f"G{i + 1}" for i in range(len(means))]
+    colors = ["#c0392b" if m < 0 else "#27ae60" for m in means]
+    ax.bar(labels, means, color=colors, alpha=0.85, width=0.62)
+    ax.axhline(y=0, color="gray", linestyle="-", linewidth=0.6)
+
+    for i, m in enumerate(means):
+        ax.annotate(
+            f"{m * 100:.3f}%",
+            xy=(i, m),
+            xytext=(0, 3 if m >= 0 else -11),
+            textcoords="offset points",
+            ha="center",
+            fontsize=7.5,
+        )
+
+    spread = float(means[-1] - means[0])
+    ax.set_title(
+        f"分组平均收益（G{len(means)} − G1 = {spread * 100:.3f}%）",
+        fontsize=12,
+    )
+    ax.set_ylabel("期均收益")
+    ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+    ax.margins(y=0.18)
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+def _make_group_nav_chart(mono_result: Any) -> str | None:
+    """分组累计净值曲线：每一组一条线，低→高按色阶排列。
+
+    因子若真单调有效，曲线终点顺序应与色阶一致（G1 最低 → GN 最高）；
+    交叉缠绕说明分组区分度不稳定。
+
+    **口径**：等权分组、不含交易成本与交易约束，与组合回测净值不可直接比较。
+    """
+    if mono_result is None:
+        return None
+    frame = _safe_attr(mono_result, "group_daily_returns", None)
+    if frame is None or getattr(frame, "is_empty", lambda: True)():
+        return None
+
+    gdr = frame.to_pandas()
+    required = {"trade_date", "group", "mean_ret"}
+    if not required.issubset(set(gdr.columns)):
+        return None
+    gdr = gdr.dropna(subset=["mean_ret"]).sort_values(["group", "trade_date"])
+    if gdr.empty:
+        return None
+
+    groups = sorted(gdr["group"].unique())
+    if len(groups) < 2:
+        return None
+
+    # viridis 而非 RdYlGn：后者色阶中点是浅黄，中间组在白底上几乎不可见
+    # （实测 5 组时 G3 看不见）。viridis 全程亮度足够，且保留低→高的顺序感。
+    cmap = plt.get_cmap("viridis")
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    finals: list[tuple[Any, float]] = []
+    for idx, g in enumerate(groups):
+        part = gdr[gdr["group"] == g]
+        rets = part["mean_ret"].to_numpy(dtype=float)
+        rets = np.where(np.isfinite(rets), rets, 0.0)
+        if rets.size < 2:
+            continue
+        nav = np.cumprod(1.0 + rets)
+        part, x_col, is_date_axis = _with_plot_dates(part)
+        # 压到 [0, 0.86]：viridis 末端的亮黄在白底上偏淡，截掉后最高组仍是黄绿而非纯黄
+        color = cmap(0.86 * idx / max(1, len(groups) - 1))
+        ax.plot(
+            part[x_col].to_numpy(),
+            nav,
+            linewidth=1.3,
+            color=color,
+            label=f"G{int(g) + 1}",
+        )
+        finals.append((g, float(nav[-1])))
+
+    if not finals:
+        plt.close(fig)
+        return None
+
+    ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=0.6, alpha=0.6)
+    ax.set_title("分组累计净值（等权，不含成本与交易约束）", fontsize=12)
+    ax.set_ylabel("累计净值")
+    ax.legend(fontsize=8, loc="upper left", ncol=min(len(finals), 5))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
+    _format_sparse_x_axis(ax, is_date_axis=is_date_axis)
+    fig.autofmt_xdate()
+    return _fig_to_base64(fig)
+
+
+def _make_benchmark_chart(benchmark_result: Any) -> str | None:
+    """策略 / 基准 / 超额三线图：区分「真 alpha」与「跟着大盘涨」。
+
+    核心指标表只露一个「超额年化」标量，看不出超额是稳定累积还是集中在某一段。
+    """
+    if benchmark_result is None:
+        return None
+    daily = _safe_attr(benchmark_result, "daily")
+    if daily is None or daily.is_empty():
+        return None
+
+    frame = daily.to_pandas()
+    if "trade_date" not in frame.columns:
+        return None
+    series_specs = [
+        ("strategy_nav", "策略", "#2c7fb8", 1.6),
+        ("benchmark_nav", "基准", "#7f8c8d", 1.2),
+        ("excess_nav", "超额", "#e67e22", 1.4),
+    ]
+    available = [s for s in series_specs if s[0] in frame.columns]
+    if not available:
+        return None
+
+    frame = frame.sort_values("trade_date")
+    frame, x_col, is_date_axis = _with_plot_dates(frame)
+    x_vals = frame[x_col].to_numpy()
+
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    plotted = False
+    for col, label, color, width in available:
+        vals = frame[col].to_numpy(dtype=float)
+        if not np.isfinite(vals).any():
+            continue
+        ax.plot(x_vals, vals, linewidth=width, color=color, label=label)
+        plotted = True
+    if not plotted:
+        plt.close(fig)
+        return None
+
+    ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=0.6, alpha=0.6)
+    bench_name = str(_safe_attr(benchmark_result, "benchmark_name", "") or "基准")
+    ir = _safe_attr(benchmark_result, "information_ratio", None)
+    title = f"策略 vs {bench_name} vs 超额"
+    try:
+        ir_val = float(ir)  # type: ignore[arg-type]
+        if np.isfinite(ir_val):
+            title = f"{title}（IR={ir_val:.2f}）"
+    except (TypeError, ValueError):
+        pass
+    ax.set_title(title, fontsize=12)
+    ax.set_ylabel("净值")
+    ax.legend(fontsize=8, loc="upper left")
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
+    _format_sparse_x_axis(ax, is_date_axis=is_date_axis)
+    fig.autofmt_xdate()
+    return _fig_to_base64(fig)

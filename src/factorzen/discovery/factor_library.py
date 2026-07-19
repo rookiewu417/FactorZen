@@ -1177,8 +1177,15 @@ _TARGETED_STATE_FIELDS = (
     "status", "admission_track", "admission_decision",
     "max_corr_in_lib", "correlated_with",
 )
-# 缺值才回填：provenance / 元数据。候选若真带了新值（如补算的 admission_ic）以新值
-# 为准——补算 admission_ic / lift_metric 正是定向重估的头号用途，不能被 prev 顶回去。
+# 缺值才回填：provenance / 元数据。候选若真带了新值以新值为准，不能被 prev 顶回去
+# （典型场景：lift 轨记录经复审拿到刷新的 admission_ic / lift_metric）。
+#
+# ⚠️ 别把「single 轨这些字段为 None」当成待补的账：single 轨压根不跑 lift，
+# `lift_metric=None` 是**正确值**不是缺失；`admission_ic` 同理——它是残差 lift 实验的
+# 产物，single 轨的裸 IC 就是 `ic_train`，`forward_review` 已按此兜底。
+# 2026-07-19 实测：库内 202 条 single 全为 None，零条出现「有 lift 值却无 lift_metric」
+# 的真不一致。定向重估的真实用途是**算子实现变更后重算受影响记录**（如 ts_decay_linear
+# 从等权占位换真线性衰减后那 12 条）。
 _TARGETED_CARRY_IF_MISSING_FIELDS = (
     # 注：evidence_tier 不在此列——定向重估的 ic/holdout/dsr 是当期评估器现算的，
     # 标 v2 是诚实的；沿用 prev 的 legacy 反而谎报证据层级。

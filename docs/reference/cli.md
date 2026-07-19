@@ -554,6 +554,8 @@ pixi run -- fz pool-prebuild --start 20200101 --end 20241231 --universe csi500 \
 | `--symbols` | str | 无 | | 仅 crypto/futures/us：逗号分隔 symbols |
 | `--decorr-threshold` | float | `0.7` | | 去相关 \|corr\| 门槛；超阈值仍收录但标记 `correlated` |
 | `--holdout-ratio` | float | `0.2` | | holdout 比例 |
+| `--only` | str… | 无 | | **定向重估**：只重估这些表达式（自动规范化，须已在库） |
+| `--only-file` | str | 无 | | **定向重估**：从文件读表达式（一行一条，`#` 开头与空行跳过） |
 | `--freq` | `1m` \| `5m` \| `15m` \| `1h` \| `daily` | `daily` | | crypto bar 粒度 |
 
 ```bash
@@ -561,6 +563,38 @@ pixi run -- fz factor-library rebuild --market ashare --universe csi500 --horizo
 ```
 
 **产物**：重写 `workspace/factor_library/` 下该市场的登记簿与 `{market}.md`。
+
+#### 定向重估（`--only` / `--only-file`）
+
+不带 `--only`/`--only-file` 时是**全量重建**：清空该市场登记簿、重估全部历史源、
+重跑全局贪心去相关、并对全部 lift 轨记录重跑 add-one lift。为几条记录付这个代价
+（且会重排全库 `status`）通常不是想要的——算子实现变更后补估一小撮记录、或批量
+补算存量 `admission_ic` / `lift_metric` 时，用定向重估：
+
+```bash
+# 少量目标：直接列在命令行
+pixi run -- fz factor-library rebuild --market ashare --universe csi300 \
+    --only "ts_decay_linear(close, 20)" "ts_decay_linear(vol, 10)"
+
+# 批量补账：一行一条写进文件（可由登记簿 jsonl 生成）
+pixi run -- fz factor-library rebuild --market ashare --universe csi300 \
+    --only-file targets.txt
+```
+
+定向模式的语义：
+
+- **绝不清库**，子集之外的记录一个字节都不动（含 `updated_at`）；
+- 只评估子集；lift 轨复审也只覆盖子集；
+- 去相关**只降不升**：目标可被下调为 `correlated`（与库内未重估的 active 超阈），
+  但**绝不会**被上调回 `active`。想让 `correlated` / `no_lift` 升回 `active`，
+  必须跑一次全量重建——只有全局重排才有权威口径；
+- 已在库的目标**不再过单因子准入门**（准入门管「进库」，不管「留任」）。重估后不
+  满足该门的记录仍会写入真实指标，但会在 stderr 大声列出、并记进 manifest 的
+  `targeted_gate_failed`，由操作者决定是否跑全量重建淘汰；
+- 给了定向旗标却解析出空目标集 → 直接报错退出（不静默降级成全量重建）。
+
+manifest 增记 `targeted` / `n_targeted` / `targeted_missing`（不在库的目标）/
+`targeted_python_skipped` / `targeted_gate_failed` / `fresh`。
 
 ### fz factor-library list
 
@@ -621,6 +655,8 @@ pixi run -- fz factor-library render --market ashare
 | `--end` | str | — | ✅ | 评估窗口终点 `YYYYMMDD` |
 | `--universe` | str | 无 | | A 股票池名 |
 | `--top-m` | int | `20` | | 按 \|residual_ic_train\| 取 top-M 控成本；`--top-m 0` = 全测逃生口。截断会在 stderr 大声打印并记 `truncated_from` |
+| `--queue-ic-floor` | float | 无（残差 `0.008` / 裸 IC `0.010`） | | 噪声地板：`\|train IC\|` 低于此值的候选默认剔出组门；无 IC 指标的候选（如 `--factor` 注入）不受影响 |
+| `--include-sub-floor` | flag | 关 | | 逃生口：sub-floor 候选照旧进组门（复现旧行为）。组门是等权残差组合，噪声占多数时会连坐拒掉真信号 |
 | `--threshold` | float | 无（= `0.001`） | | RankIC lift 阈值 |
 | `--seed` | int | `0` | | 随机种子 |
 | `--library-root` | str | 无（= `workspace/factor_library`） | | 因子库根目录 |

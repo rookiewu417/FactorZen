@@ -233,6 +233,10 @@ class UpsertResult:
     updated: int = 0
     correlated: int = 0        # 本批被标记为 correlated 的数量
     skipped: int = 0           # 未过 library gate 被跳过的数量
+    # 定向重估（preserve_status）专用：已在库但重估后不再满足 library gate 的表达式。
+    # 这些记录**指标照常刷新**（gate 是准入门不是留任门），但调用方必须大声报告——
+    # 静默留着「过不了门却还在库里」的 active 就是护栏失效。
+    gate_failed: list[str] = field(default_factory=list)
     records: list[FactorRecord] = field(default_factory=list)  # 本批新增/更新的记录（含最终 status）
     # rebuild 专用：lift 轨复审失败原因（None=未失败/无 lift 记录）。调用方（CLI）
     # 必须检查——复审失败时旧记录已恢复，静默返回会造成「表面成功、实际跳过」。
@@ -1158,6 +1162,47 @@ def _record_from_candidate(
     )
 
 
+# ── 定向重估：从 prev 继承的字段清单 ─────────────────────────────────────────
+# `_record_from_candidate` 建的是**全新** FactorRecord：status 走 dataclass 默认
+# "active"、admission_track 默认 "single"、lift*/hypothesis/name 按候选 dict 取
+# （rebuild 的评估器根本不产这些键）。全量 rebuild 里这没问题（从零重建，状态本就
+# 该由 gate + 去相关重新裁决）；**定向重估里这是数据丢失**——目标只是刷新指标。
+#
+# 无条件继承：状态/轨道类字段。它们不是「候选给的新值」，候选 dict 里压根没有对应
+# 键，`_record_from_candidate` 填的是 dataclass 默认值，直接覆盖等于抹掉裁决结果。
+_TARGETED_STATE_FIELDS = (
+    "status", "admission_track", "admission_decision",
+    "max_corr_in_lib", "correlated_with",
+)
+# 缺值才回填：provenance / 元数据。候选若真带了新值（如补算的 admission_ic）以新值
+# 为准——补算 admission_ic / lift_metric 正是定向重估的头号用途，不能被 prev 顶回去。
+_TARGETED_CARRY_IF_MISSING_FIELDS = (
+    # 注：evidence_tier 不在此列——定向重估的 ic/holdout/dsr 是当期评估器现算的，
+    # 标 v2 是诚实的；沿用 prev 的 legacy 反而谎报证据层级。
+    "hypothesis", "name", "impl", "admission_ic",
+    "lift", "lift_baseline", "lift_se", "lift_first_half", "lift_second_half",
+    "lift_metric", "n_lib_factors",
+    "admission_start", "admission_end", "scored_start", "scored_end",
+    "block_days", "cv_train_days", "cv_test_days",
+    "lift_threshold", "lift_se_mult", "baseline_hash", "profile_name", "frequency",
+    "last_eval_run_id", "last_eval_at",
+    "intraday_leaves", "intraday_panel",
+)
+
+
+def _carry_state_from_prev(rec: FactorRecord, prev: FactorRecord) -> None:
+    """定向重估：把 ``prev`` 的状态/轨道/provenance 搬到刚建好的 ``rec`` 上（原地）。
+
+    只在 ``upsert(preserve_status=True)`` 走。指标字段（ic/ir/holdout/dsr/turnover/
+    n_train/eval_window/…）一律用新算的，不在这里碰。
+    """
+    for f in _TARGETED_STATE_FIELDS:
+        setattr(rec, f, getattr(prev, f))
+    for f in _TARGETED_CARRY_IF_MISSING_FIELDS:
+        if getattr(rec, f, None) is None:
+            setattr(rec, f, getattr(prev, f, None))
+
+
 def _panel_to_compact(panel: pl.DataFrame, date_idx: dict, stock_idx: dict,
                       d_n: int, s_n: int, *, dtype=np.float32) -> np.ndarray:
     """把 [trade_date, ts_code, factor_value] 面板散射成固定网格的紧凑矩阵。
@@ -1299,6 +1344,7 @@ def upsert(
     decorr_threshold: float = 0.7, materialize: Materializer | None = None,
     compact_materialize: CompactMaterializer | None = None,
     leaf_map: dict[str, str] | None = None, root: str = DEFAULT_ROOT,
+    preserve_status: bool = False,
 ) -> UpsertResult:
     """把候选 upsert 进 ``{market}.jsonl`` + 重生 md。
 
@@ -1308,6 +1354,19 @@ def upsert(
        correlated 仍收录。去相关物化优先用 ``compact_materialize``（真实大规模调用方传，网格来自
        prepped、单因子只驻小矩阵）；否则退回 ``materialize``（面板，仅小规模/测试，内部转紧凑）。
     4. 写回 jsonl + 重生 ``{market}.md`` + 刷新 ``summary.md``。
+
+    ``preserve_status``（默认 False = 现语义，零回归）
+        **定向重估语义**（``rebuild(only=[...])`` 用）：``True`` 时
+        ① 已在库的候选（``prev`` 非空）**继承 prev 的 status/轨道/lift provenance**
+           （`_carry_state_from_prev`），只刷新指标；
+        ② 已在库的候选**绕过 library gate**——gate 是「准入」门不是「留任」门，
+           留任由 status（去相关 / lift 复审 / forward review）裁决。不过门者
+           照常写真实指标，但计入 ``UpsertResult.gate_failed`` 供调用方大声报告
+           （把真值挡在库外只会留下「看起来合法的陈旧值」，是本项目的哨兵坑同一类）。
+           **新表达式（``prev`` 为空）仍照常过 gate**，准入门不放松。
+        ③ 去相关传 ``preserve_status=True`` → **只降不升**（详见 `rebuild` docstring
+           的「去相关语义」段：下调=从池里移除成员，安全；上调=往池里加成员，会让
+           未重估的 active 变成实际重复而库里仍标 active，正是要避免的级联失真）。
     """
     existing = load_library(market, root=root)
     by_expr: dict[str, FactorRecord] = {r.expression: r for r in existing}
@@ -1319,19 +1378,28 @@ def upsert(
         raw = cand.get("expression")
         if not raw:
             continue
-        # holdout_n_days：覆盖门（P1）。upsert 是 M1/M5-M6 之外的第三条 gate 路径
-        # （rebuild 走它）——漏传会让稀薄 holdout（如北向季末残留）靠运气混进库。
-        if acceptance_reasons(gate="library", ic_train=cand.get("ic_train"),
-                              holdout_ic=cand.get("holdout_ic"),
-                              dsr_pvalue=cand.get("dsr_pvalue"),
-                              holdout_n_days=cand.get("n_holdout_days")):
-            res.skipped += 1
-            continue
         norm = _normalize(raw, leaf_map)
         prev = by_expr.get(norm)
+        # holdout_n_days：覆盖门（P1）。upsert 是 M1/M5-M6 之外的第三条 gate 路径
+        # （rebuild 走它）——漏传会让稀薄 holdout（如北向季末残留）靠运气混进库。
+        gate_reasons = acceptance_reasons(
+            gate="library", ic_train=cand.get("ic_train"),
+            holdout_ic=cand.get("holdout_ic"),
+            dsr_pvalue=cand.get("dsr_pvalue"),
+            holdout_n_days=cand.get("n_holdout_days"),
+        )
+        if gate_reasons:
+            # 定向重估里「已在库」= 留任判定，不过门也要刷真实指标 + 记账（见 docstring）
+            if preserve_status and prev is not None:
+                res.gate_failed.append(norm)
+            else:
+                res.skipped += 1
+                continue
         rec = _record_from_candidate(cand, norm, market, eval_window, universe, horizon,
                                      run_id, session_dir, git_sha, now, prev)
         rec.evidence_tier = "v2"  # 新写入路径一律 v2（与 lift 轨对称）
+        if preserve_status and prev is not None:
+            _carry_state_from_prev(rec, prev)
         if prev is None:
             res.added += 1
         else:
@@ -1348,7 +1416,8 @@ def upsert(
         needed = [r.expression for r in affected] + \
                  [r.expression for r in unchanged if r.status == "active"]
         compact_of = _compact_of_from_panels(needed, materialize)
-    res.correlated = _decorrelate(affected, unchanged, compact_of, decorr_threshold)
+    res.correlated = _decorrelate(affected, unchanged, compact_of, decorr_threshold,
+                                  preserve_status=preserve_status)
     res.records = affected
 
     _save_library(market, list(by_expr.values()), root=root)
@@ -1978,6 +2047,7 @@ def rebuild(
     compact_materialize: CompactMaterializer | None = None, decorr_threshold: float = 0.7,
     leaf_map: dict[str, str] | None = None, root: str = DEFAULT_ROOT,
     manifest_extra: dict | None = None, fresh: bool = True,
+    only: list[str] | None = None,
     # ── lift 轨复审注入点（测试 mock / 生产默认 run_lift_tests）──────────────
     lift_runner: Callable[..., list[dict]] | None = None,
     active_factor_dfs: dict[str, pl.DataFrame] | None = None,
@@ -2015,8 +2085,65 @@ def rebuild(
     注入点：``lift_runner(cands, *, active_factor_dfs, **kw) -> list[dict]``；
     残差口径（``residual_ic_v1``）无 combine_fn；``active_factor_dfs`` / ``daily`` 供生产默认路径。
     落 ``rebuild_{market}_manifest.json``（窗口/源/git_sha/时间 + lift 复审计数，可复现）。
+
+    ── 定向重估 ``only`` ────────────────────────────────────────────────────
+    ``only``：只重估这批表达式（自动规范化；不在库的记进 manifest
+    ``targeted_missing``）。用于「算子实现变更后补一小撮记录」「补算存量
+    ``admission_ic`` / ``lift_metric``」这类账，避免为几条记录付全库重估的代价。
+
+    全量 rebuild 的级联有**四个独立来源**，定向模式四个全堵：
+    1. ``fresh`` 清库 → 定向**强制 ``fresh=False``**（清库会直接毁掉子集之外的记录）；
+    2. ``evaluate(全部 sources)`` → 定向只喂子集；
+    3. ``upsert`` 里库被清空导致去相关池从空开始、全库贪心重排 → 定向不清库，
+       子集外记录留在 ``unchanged`` 池里当比较基准，本身不被重判；
+    4. ``_decorrelate`` 默认无条件写 ``active`` → 定向走 ``preserve_status=True``。
+    另：lift 轨复审（最贵的一步）也只覆盖子集。
+
+    **去相关语义 = 指标刷新 + 「只降不升」（demote-only，单调）。** 这是定向重估最
+    关键的设计判断，理由：
+    - 全局贪心是**顺序相关**的（``sort_key=-|ir_train|`` 决定谁先占 active 位）。
+      只重估子集时子集内 ir_train 会变 → 排序会变；若允许写 ``active``，子集外那些
+      「当初因为被子集内某条挡住才判 correlated」的记录就与新口径不自洽，而我们并
+      不重跑它们。
+    - **下调安全、上调不安全**（非对称，核心依据）：下调 correlated = 从 active 池
+      里**移除**成员；「重复性」是相对池内成员定义的，移除成员只会让其它 active 更
+      不重复，不产生任何新失真。上调 active = 往池里**新增**成员 → 可能让某条未重估
+      的 active 实际变成重复、库里却仍标 active——这正是要避免的级联失真。
+    - 因此 correlated / no_lift 想升回 active，**必须跑全量 rebuild**（只有全局重排
+      才有权威）。定向模式无论如何不会做这件事。
+    被否掉的替代方案：「只在子集内比较」会漏掉与子集外 active 的相关性（库进重复
+    因子）；「跳过去相关」会让 ``max_corr_in_lib`` 陈旧，且 ``compact_of=None`` 分支
+    本身就会把 status 冲成 active（lift 轨踩过的坑，见 `upsert_lift_admissions`）。
     """
     from factorzen.discovery.lift_test import lift_admission
+
+    # ── 定向重估：解析 only ────────────────────────────────────────────────
+    targeted: set[str] | None = None
+    targeted_order: list[str] = []
+    targeted_missing: list[str] = []
+    targeted_python: list[str] = []
+    if only is not None:
+        lib_now = {r.expression: r for r in load_library(market, root=root)}
+        seen_t: set[str] = set()
+        for raw in only:
+            if not raw:
+                continue
+            try:
+                norm = _normalize(str(raw), leaf_map)
+            except Exception:
+                # 畸形目标不崩整批（异常契约：解析外部输入只当"未命中"处理）
+                targeted_missing.append(str(raw))
+                continue
+            if norm in seen_t:
+                continue
+            seen_t.add(norm)
+            if norm not in lib_now:
+                targeted_missing.append(norm)
+                continue
+            targeted_order.append(norm)
+        targeted = set(targeted_order)
+        # 定向绝不清库：fresh 会把子集之外的记录全部删掉，与"定向"直接矛盾
+        fresh = False
 
     # 保留：single 轨 probation + 全部 lift 轨 + 全部 python 记录
     # （python 定义不在 collect_source_expressions 的任何源里，清库不保即丢数据）
@@ -2053,12 +2180,32 @@ def rebuild(
         n_preserved_python = sum(1 for r in existing_pre if _is_python_record(r))
 
     uniq: list[str] = []
-    seen: set[str] = set()
-    for e in sources:
-        n = _normalize(e, leaf_map)
-        if n not in seen:
-            seen.add(n)
-            uniq.append(e)          # 原串喂 evaluate（其内部自行规范化）
+    if targeted is None:
+        seen: set[str] = set()
+        for e in sources:
+            n = _normalize(e, leaf_map)
+            if n not in seen:
+                seen.add(n)
+                uniq.append(e)      # 原串喂 evaluate（其内部自行规范化）
+    else:
+        # 定向：评估输入 = 目标本身（**不看 sources**）。库记录就是权威来源——只在
+        # sources 里找会漏掉「不在任何历史产物里」的记录（lift 轨入库/手工补录），
+        # 那些目标会静默变成 no-op。
+        # 两类目标不喂 evaluate（与全量 rebuild 的分工严格一致，避免两条路径写同一条
+        # 记录）：
+        #   - python 型（``py::`` 哨兵）：表达式评估器根本 parse 不了；
+        #   - lift 轨：全量 rebuild 里它们被抽进 ``preserved_lift`` 只走 lift 复审，
+        #     不进 ``upsert``。若这里喂进去，同一条记录会先被 upsert 写一遍、再被
+        #     lift 复审覆盖一遍，白算一次评估且中间态可能落盘。
+        lib_by_expr = {r.expression: r for r in load_library(market, root=root)}
+        for n in targeted_order:
+            rec_t = lib_by_expr.get(n)
+            if rec_t is not None and _is_python_record(rec_t):
+                targeted_python.append(n)
+                continue
+            if rec_t is not None and (rec_t.admission_track or "single") == "lift":
+                continue            # 交给下方 lift 轨复审
+            uniq.append(n)          # 已是规范形
 
     cand_dicts = evaluate(uniq) if uniq else []
     res = upsert(
@@ -2066,6 +2213,7 @@ def rebuild(
         run_id=f"rebuild_{now}", session_dir=None, git_sha=git_sha, now=now,
         decorr_threshold=decorr_threshold, materialize=materialize,
         compact_materialize=compact_materialize, leaf_map=leaf_map, root=root,
+        preserve_status=targeted is not None,
     )
 
     # 写回 single 轨 probation（规范形已在库则不覆盖——同 expr 被 gate 路径重算进库时
@@ -2085,6 +2233,11 @@ def rebuild(
             [pr for pr in preserved_probation if pr.expression in by_expr
              and by_expr[pr.expression].status == "probation"]
         )
+
+    # 定向：lift 轨复审只覆盖子集。add-one lift 是 rebuild 里最贵的一步（每条一次
+    # 残差重算），全库 200+ 条要跑几十分钟——不裁剪等于定向白做。
+    if targeted is not None:
+        preserved_lift = [r for r in preserved_lift if r.expression in targeted]
 
     # ── lift 轨复审 ──────────────────────────────────────────────────────────
     n_lift_reviewed = 0
@@ -2279,6 +2432,14 @@ def rebuild(
         "n_sources": len(sources), "n_unique": len(uniq), "n_evaluated": len(cand_dicts),
         "added": res.added, "updated": res.updated, "correlated": res.correlated,
         "skipped": res.skipped,
+        # 定向重估记账（targeted=False 时全为默认值，全量 rebuild 的 manifest 形态不变）
+        "fresh": fresh,
+        "targeted": targeted is not None,
+        "n_targeted": len(targeted_order) if targeted is not None else 0,
+        "targeted_missing": targeted_missing,
+        "targeted_python_skipped": targeted_python,
+        # 已在库但重估后不再满足 library gate：指标已刷新，status 未裁决，需人工/全量 rebuild
+        "targeted_gate_failed": list(res.gate_failed),
         "n_probation_preserved": len(preserved_probation),
         "preserved_python": n_preserved_python,
         "n_lift_reviewed": n_lift_reviewed,

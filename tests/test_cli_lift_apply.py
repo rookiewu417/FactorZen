@@ -21,7 +21,7 @@ def _write_gray_session(tmp_path: Path) -> Path:
                     {
                         "expression": "rank(close)",
                         "reject_category": "gray_zone",
-                        "residual_ic_train": 0.006,
+                        "residual_ic_train": 0.02,  # ≥ DEFAULT_GRAY_IC_FLOOR（避开 sub-floor 防呆）
                         "n_residual_holdout_days": 100,
                     },
                 ],

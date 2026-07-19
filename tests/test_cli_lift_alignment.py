@@ -70,7 +70,8 @@ def _write_lift_queue_session(tmp_path: Path, expressions: list[str]) -> Path:
         {
             "expression": e,
             "reject_category": "lift_queue",
-            "residual_ic_train": 0.01 - i * 0.0001,
+            # 基数 0.02：25 条全在 DEFAULT_GRAY_IC_FLOOR 之上，本测试测截断非地板
+            "residual_ic_train": 0.02 - i * 0.0001,
             "ic_train": 0.001,
             "n_residual_holdout_days": 100,
         }

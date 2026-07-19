@@ -797,7 +797,8 @@ def test_cli_lift_test_parser_and_dry_run(tmp_path, monkeypatch):
     (run_dir / "manifest.json").write_text(json.dumps({
         "attempts": [
             {"expression": "rank(close)", "reject_category": "gray_zone",
-             "residual_ic_train": 0.006, "n_residual_holdout_days": 100},
+             # 须 ≥ DEFAULT_GRAY_IC_FLOOR，否则被组门 sub-floor 防呆剔除
+             "residual_ic_train": 0.02, "n_residual_holdout_days": 100},
         ],
         "candidates": [],
     }), encoding="utf-8")

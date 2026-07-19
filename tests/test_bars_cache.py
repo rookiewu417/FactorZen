@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import polars as pl
@@ -106,6 +106,39 @@ class TestBarsCache:
         assert man is not None
         assert man["resample_hash"] == resample_semantics_hash("5min")
         assert "2024-06" in man["coverage"]["months"]
+
+    def test_partially_cached_boundary_month_rebuilt(self, tmp_path: Path) -> None:
+        """上游在边界月内补数后，读穿缓存必须重算该月而非命中部分缓存。
+
+        与 ``features/engine`` 的部分月防呆是双路径配对项。bars 层更隐蔽：
+        features 用 ``--force`` 只能绕过它**自己**的跳过，读穿到这里仍会命中
+        部分 bars，于是「重算」出的特征月照样是残的。
+        """
+        src = tmp_path / "src"
+        cache = tmp_path / "cache"
+        # ① 源湖此刻只有 06-03（上游数据尚未到月末）
+        _build_src(src, [(2024, 6, [3])])
+        first = load_or_build_bars(
+            "2024-06", "5min", source_dir=src, cache_dir=cache,
+        )
+        assert first["trade_time"].dt.date().max() == date(2024, 6, 3)
+        man1 = read_bars_manifest("5min", cache_dir=cache)
+        assert man1 is not None
+        assert man1["coverage"]["month_last_date"]["2024-06"] == "2024-06-03"
+
+        # ② 上游补进 06-04（同月，月标签不变）
+        _build_src(src, [(2024, 6, [3, 4])])
+
+        # ③ 再读：不得命中部分缓存
+        second = load_or_build_bars(
+            "2024-06", "5min", source_dir=src, cache_dir=cache,
+        )
+        assert second["trade_time"].dt.date().max() == date(2024, 6, 4), (
+            "边界月命中了部分缓存，补进的 06-04 丢失"
+        )
+        man2 = read_bars_manifest("5min", cache_dir=cache)
+        assert man2 is not None
+        assert man2["coverage"]["month_last_date"]["2024-06"] == "2024-06-04"
 
     def test_missing_month_falls_back_to_compute(self, tmp_path: Path) -> None:
         src = tmp_path / "src"

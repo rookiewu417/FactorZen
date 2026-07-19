@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import polars as pl
@@ -283,6 +283,81 @@ class TestBuildIntradayFeatures:
         # 分区文件未重写
         assert jan_path.stat().st_mtime_ns == jan_mtime_1
         assert jan_path.read_bytes() == jan_bytes_1
+
+    def test_partially_covered_boundary_month_recomputed(self, tmp_path: Path) -> None:
+        """上游在边界月内补数后，增量 build 必须重算该月而非跳过。
+
+        回归锚（2026-07-19 实证）：月标签级 coverage 区分不了「整月已算」与
+        「算了前几天」。生产上特征面板停在 2026-04-10，而 ``status`` 把
+        2026-04 标为已覆盖，增量 build 跳过它，只有 ``--force`` 才补得上——
+        用户以为补齐了，实际 17 个分钟叶子在 holdout 段覆盖 0% 被全摘。
+        """
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        # ① 源湖此刻只有 2024-02 的前 2 天（模拟上游数据尚未到月末）
+        frames = [
+            _make_day_bars(code, datetime(2024, 2, d), n=20, base_px=px)
+            for d in (1, 2)
+            for code, px in (("000001.SZ", 10.5), ("000002.SZ", 20.5))
+        ]
+        save_parquet(
+            pl.concat(frames), data_type="minute_1min", date_col="trade_time",
+            base_dir=src, mode="overwrite",
+        )
+        r1 = build_intraday_features(
+            "20240201", "20240229", source_dir=src, out_dir=out, min_bar_coverage=0.0,
+        )
+        assert r1.months == ["2024-02"]
+        m1 = read_manifest(version="v1", freq="5min", base_dir=out)
+        assert m1 is not None
+        # 逐月末日被记录下来，这是判定部分覆盖的唯一依据
+        assert m1["coverage"]["month_last_date"]["2024-02"] == "2024-02-02"
+
+        # ② 上游补进 02-05（同月，月标签不变）
+        frames2 = [
+            _make_day_bars(code, datetime(2024, 2, 5), n=20, base_px=px)
+            for code, px in (("000001.SZ", 10.5), ("000002.SZ", 20.5))
+        ]
+        save_parquet(
+            pl.concat(frames2), data_type="minute_1min", date_col="trade_time",
+            base_dir=src, mode="append",
+        )
+
+        # ③ 同样区间再 build：不得跳过（源末日 02-05 > 记录末日 02-02）
+        r2 = build_intraday_features(
+            "20240201", "20240229", source_dir=src, out_dir=out, min_bar_coverage=0.0,
+        )
+        assert r2.months == ["2024-02"], "边界月被误判为完整覆盖而跳过"
+        m2 = read_manifest(version="v1", freq="5min", base_dir=out)
+        assert m2 is not None
+        assert m2["coverage"]["month_last_date"]["2024-02"] == "2024-02-05"
+        # 分区真的补上了 02-05
+        got = pl.read_parquet(
+            out / "v1" / "5min" / "year=2024" / "month=02" / "data.parquet"
+        )
+        assert got["trade_date"].max() == date(2024, 2, 5)
+
+    def test_legacy_manifest_without_month_last_date_recomputes_boundary_only(
+        self, tmp_path: Path
+    ) -> None:
+        """老 manifest 缺逐月末日字段 → 只重算边界月，历史月仍跳过（迁移代价 O(1)）。"""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _build_mini_source(src)
+        build_intraday_features(
+            "20240101", "20240229", source_dir=src, out_dir=out, min_bar_coverage=0.0,
+        )
+        # 抹掉新字段，伪造升级前的 manifest
+        mpath = out / "v1" / "5min" / "manifest.json"
+        payload = json.loads(mpath.read_text())
+        payload["coverage"].pop("month_last_date", None)
+        mpath.write_text(json.dumps(payload))
+
+        r = build_intraday_features(
+            "20240101", "20240229", source_dir=src, out_dir=out, min_bar_coverage=0.0,
+        )
+        # 只有边界月 2024-02 重算，2024-01 仍跳过
+        assert r.months == ["2024-02"], r.months
 
     def test_missing_month_still_computed(self, tmp_path: Path) -> None:
         """coverage 缺月 → 仅补算缺月，已覆盖月跳过。"""

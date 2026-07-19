@@ -66,7 +66,8 @@ def test_run_experiment_default_methods(tmp_path):
         factor_dfs, ret_df, cv=cv, out_dir=str(tmp_path), run_id="exp2"
     )
     comp = pl.read_csv(res["run_dir"] + "/comparison.csv")
-    # 默认四方法
+    # 默认四方法。*_signed（允许负权）可选但**不进默认**——真实库 OOS 实测更差，
+    # 见 methods._solve_max_ir_weights 的对照表。
     assert set(comp["method"].to_list()) == {
         "equal_weight",
         "ic_weighted",

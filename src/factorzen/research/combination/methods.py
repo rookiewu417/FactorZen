@@ -213,6 +213,7 @@ def estimate_ic_weights(
     *,
     ic_cache: IcCache | None = None,
     train_dates: set[str] | None = None,
+    allow_negative: bool = False,
 ) -> dict[str, float]:
     """IC 加权:权重 = max(0, IC_mean) 归一化;全非正则退化等权。
 
@@ -220,6 +221,16 @@ def estimate_ic_weights(
         ic_window: 计算 IC 的最近窗口天数(-1 表示全历史)。
         ic_cache: 可选全样本 IC 缓存;与 train_dates 联用时按 train 切片,避免重算。
         train_dates: 训练集日期集合(与 ic_cache 联用)。
+        allow_negative: 允许负权(见下)。默认 False = 现语义,A 股基线零回归。
+
+    ``allow_negative=True``:权重 = IC_mean **不裁剪**,按 **L1**(``Σ|w|=1``)归一化。
+    动机(P1-①):准入用残差口径、部署用裸值,已实锤裸 IC 为负的因子够格准入;
+    裁到 0 等于把它携带的信息整条丢掉,让它带负权才是"权重自己处理符号"。
+    归一化必须换 L1——负权下 ``Σw`` 可能≈0,除之会让权重爆炸甚至整体翻号。
+
+    ⚠️ **该动机已被实测证伪,默认保持 False**:真实库 OOS 上 signed 版反而更差
+    (0.0276 vs clipped 0.0374)。裁剪是有效的隐式正则,不是历史包袱。
+    详见 ``_solve_max_ir_weights`` 里的完整对照表与解释。
     """
     weights: dict[str, float] = {}
     for name, df in factor_dfs.items():
@@ -234,11 +245,59 @@ def estimate_ic_weights(
             weights[name] = 0.0
         else:
             tail = ic_series[-ic_window:] if ic_window > 0 else ic_series
-            weights[name] = float(max(0.0, np.mean(tail)))
-    total_w = sum(weights.values())
+            raw = float(np.mean(tail))
+            weights[name] = raw if allow_negative else max(0.0, raw)
+    # 归一化基数:signed 走 L1(Σ|w|),clipped 沿用 Σw(此时二者等价,逐位不变)
+    total_w = sum(abs(w) for w in weights.values()) if allow_negative \
+        else sum(weights.values())
     if total_w < 1e-12:
         return {n: 1.0 / len(factor_dfs) for n in factor_dfs}
     return {n: w / total_w for n, w in weights.items()}
+
+
+def _solve_max_ir_weights(
+    mu: np.ndarray, sigma: np.ndarray, *, allow_negative: bool = False,
+) -> np.ndarray:
+    """max-IR 闭式解 ``w ∝ Σ⁻¹μ`` 的求解 + 归一化(纯数值,便于手算对拍)。
+
+    ``allow_negative=False``(默认):裁到非负再按 ``Σw`` 归一化——现语义。
+    ``allow_negative=True``:保留闭式解符号,按 **L1** 归一化。
+    退化(和≈0)一律回等权,不除零。
+
+    ⚠️ **实测结论:``allow_negative=True`` 在真实库上更差,故默认保持 False。**
+    csi300 / 2020-2026 / 85 因子(其中 21 条 ``ic_train`` 为负)六方法同协议 OOS:
+
+    ====================  =============  =====
+    method                rank_ic_mean    ICIR
+    ====================  =============  =====
+    equal_weight               0.0587     0.241
+    max_ir                     0.0536     0.247
+    ic_weighted                0.0374     0.146
+    ic_weighted_signed         0.0276     0.102
+    max_ir_signed              0.0186     0.139
+    ====================  =============  =====
+
+    即"裁剪到非负"**不是**未经审视的历史包袱,而是有效的**隐式正则**
+    ——与 Jagannathan & Ma (2003)"禁止做空约束等价于协方差收缩"一致:
+    ``Σ⁻¹μ`` 的闭式最优性建立在 μ/Σ 估准的前提上,而 85 个因子的 IC 估计噪声很大,
+    放开负权只是让噪声被放大。等权跑赢一切也是同一现象(1/N 难以击败)。
+    保留本参数是为了让这个结论**可复现、可再检验**,不是推荐使用。
+    """
+    k = len(mu)
+    try:
+        sigma_inv = np.linalg.inv(sigma + np.eye(k) * 1e-6)
+    except np.linalg.LinAlgError:
+        sigma_inv = np.eye(k)
+    w_raw = sigma_inv @ mu
+    if allow_negative:
+        denom = float(np.abs(w_raw).sum())
+        if denom < 1e-12:
+            return np.ones(k) / k
+        return w_raw / denom
+    w_pos = np.maximum(w_raw, 0.0)
+    if w_pos.sum() < 1e-12:
+        w_pos = np.ones(k)
+    return w_pos / w_pos.sum()
 
 
 def estimate_max_ir_weights(
@@ -248,8 +307,12 @@ def estimate_max_ir_weights(
     *,
     ic_cache: IcCache | None = None,
     train_dates: set[str] | None = None,
+    allow_negative: bool = False,
 ) -> dict[str, float] | None:
-    """最大化 IR 闭式解 w = Σ⁻¹μ(Ledoit-Wolf 收缩)。数据不足返回 None(调用方退化等权)。"""
+    """最大化 IR 闭式解 w = Σ⁻¹μ(Ledoit-Wolf 收缩)。数据不足返回 None(调用方退化等权)。
+
+    ``allow_negative``:见 ``_solve_max_ir_weights``。默认 False = 现语义(裁到非负)。
+    """
     names = list(factor_dfs.keys())
     k = len(names)
     ic_series_map: dict[str, np.ndarray] = {}
@@ -276,15 +339,8 @@ def estimate_max_ir_weights(
         sigma = LedoitWolf().fit(ic_mat).covariance_
     except ImportError:
         sigma = np.cov(ic_mat, rowvar=False) + np.eye(k) * 1e-6
-    try:
-        sigma_inv = np.linalg.inv(sigma + np.eye(k) * 1e-6)
-    except np.linalg.LinAlgError:
-        sigma_inv = np.eye(k)
-    w_raw = sigma_inv @ mu
-    w_pos = np.maximum(w_raw, 0.0)
-    if w_pos.sum() < 1e-12:
-        w_pos = np.ones(k)
-    return dict(zip(names, (w_pos / w_pos.sum()).tolist(), strict=True))
+    w = _solve_max_ir_weights(mu, sigma, allow_negative=allow_negative)
+    return dict(zip(names, w.tolist(), strict=True))
 
 
 def equal_weight(factor_dfs: dict[str, pl.DataFrame]) -> pl.DataFrame:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import json
+import logging
 import multiprocessing as mp
 import warnings
 from calendar import monthrange
@@ -32,6 +33,8 @@ from factorzen.intraday.sessions import (
     resample_intraday,
     session_bar_index,
 )
+
+_LOG = logging.getLogger(__name__)
 
 _EPS = 1e-12
 _KEYS = ["ts_code", "trade_date"]
@@ -487,25 +490,104 @@ def _merge_coverage(
     start: str,
     end: str,
     months: list[str],
+    month_last_date: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """合并 coverage：months 并集、start/end 取极值。"""
+    """合并 coverage：months 并集、start/end 取极值、逐月末日以本 run 为准。
+
+    ``month_last_date``：本 run 各月实际写入的最大交易日。旧记录保留，本 run
+    重算过的月覆盖旧值（部分覆盖月补齐后末日前移是不可能的，重算即最新）。
+    """
+    new_mld = dict(month_last_date or {})
     if existing is None:
-        return {"start": start, "end": end, "months": sorted(months)}
+        return {
+            "start": start,
+            "end": end,
+            "months": sorted(months),
+            "month_last_date": new_mld,
+        }
     cov = existing.get("coverage") or {}
     old_months = list(cov.get("months") or [])
     merged_months = sorted(set(old_months) | set(months))
     old_start = cov.get("start") or start
     old_end = cov.get("end") or end
+    merged_mld = {str(k): str(v) for k, v in (cov.get("month_last_date") or {}).items()}
+    merged_mld.update(new_mld)
     return {
         "start": min(str(old_start), start),
         "end": max(str(old_end), end),
         "months": merged_months,
+        "month_last_date": merged_mld,
     }
 
 
 def _month_label_ym(label: str) -> tuple[int, int]:
     """``YYYY-MM`` → (year, month)。"""
     return int(label[:4]), int(label[5:7])
+
+
+def _iso_date(v: Any) -> str | None:
+    """date / datetime / 字符串 → ``YYYY-MM-DD``；不可解析 → None。"""
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        return str(v.isoformat())[:10]
+    s = str(v)
+    return s[:10] if len(s) >= 10 else None
+
+
+def _source_month_last_date(m_start: str, m_end: str, src: Path) -> str | None:
+    """源湖在该月的最大交易日（lazy scan 聚合，不物化行）。无数据 → None。"""
+    try:
+        lf = load_parquet(
+            "minute_1min",
+            start=m_start,
+            end=m_end,
+            date_col="trade_time",
+            base_dir=src,
+        )
+        v = lf.select(pl.col("trade_time").max()).collect().item()
+    except Exception:
+        return None
+    return _iso_date(v)
+
+
+def _stale_boundary_month(
+    existing: dict[str, Any] | None,
+    *,
+    hash_ok: bool,
+    windows: list[tuple[str, str, str]],
+    src: Path,
+) -> str | None:
+    """上次 build 的边界月若源数据已延伸出记录范围 → 返回该月标签（须重算）。
+
+    月标签级 coverage 区分不了「整月已算」与「算了前 10 天」：上次 build 时
+    上游只到月中，该月照样被写进 ``coverage.months``，之后上游补齐了增量
+    build 仍会跳过它。**2026-07-19 实证**：特征面板停在 2026-04-10，而
+    ``status`` 把 2026-04 标为已覆盖，`build` 增量跳过该月，只有 ``--force``
+    才补得上——正是 CLAUDE.md「『文件存在』≠『数据完整』」那条陷阱。
+
+    部分覆盖只可能发生在上次的边界月（最大已覆盖月），故只查这一个月，
+    成本 O(1)，不影响历史月的跳过。
+    """
+    if not hash_ok or existing is None:
+        return None
+    cov = existing.get("coverage") or {}
+    months = [str(m) for m in (cov.get("months") or [])]
+    if not months:
+        return None
+    boundary = max(months)
+    win = {label: (s, e) for label, s, e in windows}
+    if boundary not in win:
+        return None  # 边界月不在本次请求区间内
+    recorded = (cov.get("month_last_date") or {}).get(boundary)
+    if recorded is None:
+        # 老 manifest 无逐月末日记录 → 保守重算这一个月（迁移代价 O(1) 而非全量）
+        return boundary
+    m_start, m_end = win[boundary]
+    src_last = _source_month_last_date(m_start, m_end, src)
+    if src_last is None:
+        return None
+    return boundary if src_last > str(recorded) else None
 
 
 def _should_skip_month(
@@ -550,11 +632,11 @@ def _process_one_month(
     min_bar_coverage: float,
     bars_cache_dir: str | None = None,
     use_bars_cache: bool = True,
-) -> tuple[str, int, int] | None:
+) -> tuple[str, int, int, str | None] | None:
     """单月 load → compute → save。进程池 worker 入口（可 pickle）。
 
     分区写入互不相交（``year=/month=`` 独立目录）。返回
-    ``(label, rows, n_stocks)``；空月 / 无源数据返回 ``None``。
+    ``(label, rows, n_stocks, last_date)``；空月 / 无源数据返回 ``None``。
 
     bars 层经 ``load_or_build_bars`` 读穿缓存（双消费方共享中间层）。
     """
@@ -626,9 +708,12 @@ def _process_one_month(
     )
     rows = panel.height
     n_stocks = panel["ts_code"].n_unique()
+    # 该月实际写入的最大交易日：月标签级 coverage 区分不了「整月已算」与
+    # 「算了前 10 天」，逐月末日是判定部分覆盖的唯一依据（见 _stale_boundary_month）
+    last_date = _iso_date(panel["trade_date"].max())
     del panel
     gc.collect()
-    return (label, rows, int(n_stocks))
+    return (label, rows, int(n_stocks), last_date)
 
 
 def build_intraday_features(
@@ -724,8 +809,18 @@ def build_intraday_features(
     jobs: list[tuple[str, str, str]] = []
     skipped_months: list[str] = []
 
+    # 部分月防呆：上次 build 的边界月可能只覆盖到月中，月标签级 coverage 看不出来
+    stale_boundary = _stale_boundary_month(
+        existing, hash_ok=hash_ok, windows=windows, src=src,
+    )
+    if stale_boundary is not None:
+        _LOG.info(
+            "[intraday-features] 边界月 %s 源数据已延伸出上次记录范围 → 重算该月",
+            stale_boundary,
+        )
+
     for label, m_start, m_end in windows:
-        if _should_skip_month(
+        if label != stale_boundary and _should_skip_month(
             label,
             data_type=data_type,
             out_dir=out,
@@ -737,7 +832,7 @@ def build_intraday_features(
             continue
         jobs.append((label, m_start, m_end))
 
-    month_results: list[tuple[str, int, int]] = []
+    month_results: list[tuple[str, int, int, str | None]] = []
     src_s = str(src)
     out_s = str(out)
     bars_cache_s = str(bars_cache_dir) if bars_cache_dir is not None else None
@@ -791,12 +886,14 @@ def build_intraday_features(
     processed_months = [t[0] for t in month_results]
     rows_total = sum(t[1] for t in month_results)
     n_stocks = max((t[2] for t in month_results), default=0)
+    run_month_last = {t[0]: t[3] for t in month_results if t[3] is not None}
 
     coverage = _merge_coverage(
         existing if hash_ok else None,
         start,
         end,
         processed_months,
+        run_month_last,
     )
     # overwrite 且 hash 不匹配时：coverage 仅本 build
     if existing is not None and existing.get("battery_hash") != bhash and overwrite:
@@ -804,6 +901,7 @@ def build_intraday_features(
             "start": start,
             "end": end,
             "months": sorted(processed_months),
+            "month_last_date": dict(run_month_last),
         }
 
     # 本 build 无新月但 hash 匹配（含全量跳过）：保留旧 coverage / rows / n_stocks

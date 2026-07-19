@@ -116,14 +116,38 @@ def _parse_month_label(month: str) -> tuple[int, int, str, str]:
     return y, m, f"{y:04d}{m:02d}01", f"{y:04d}{m:02d}{last:02d}"
 
 
+def _source_month_last_date(m_start: str, m_end: str, src: Path | None) -> str | None:
+    """1min 源湖在该月的最大交易日（lazy 聚合）。无源/无数据 → None。"""
+    root = DATA_RAW if src is None else Path(src)
+    try:
+        lf = load_parquet(
+            "minute_1min", start=m_start, end=m_end,
+            date_col="trade_time", base_dir=root,
+        )
+        v = lf.select(pl.col("trade_time").max()).collect().item()
+    except Exception:
+        return None
+    if v is None:
+        return None
+    return str(v.isoformat())[:10] if hasattr(v, "isoformat") else str(v)[:10]
+
+
 def _cache_valid(
     month: str,
     freq: str,
     *,
     cache_dir: Path | None,
     rhash: str,
+    source_dir: Path | None = None,
 ) -> bool:
-    """覆盖 + 哈希 + 分区非空，三者同时成立才命中。"""
+    """覆盖 + 哈希 + 分区非空 + 边界月未被上游延伸，四者同时成立才命中。
+
+    第四条是部分月防呆（与 ``features/engine._stale_boundary_month`` 同构，
+    双路径登记簿配对项）：月标签级 coverage 区分不了「整月已缓存」与「缓存了
+    前 10 天」。bars 层的部分缓存比 features 层更隐蔽——features 用
+    ``--force`` 能绕过自身跳过，但读穿到这里仍会命中部分 bars，
+    于是「重算」出来的特征月照样是残的。
+    """
     existing = read_bars_manifest(freq, cache_dir=cache_dir)
     if existing is None:
         return False
@@ -131,12 +155,23 @@ def _cache_valid(
         return False
     if existing.get("freq") != normalize_freq(freq):
         return False
-    months = list((existing.get("coverage") or {}).get("months") or [])
+    cov = existing.get("coverage") or {}
+    months = [str(x) for x in (cov.get("months") or [])]
     if month not in months:
         return False
-    y, m, _, _ = _parse_month_label(month)
+    y, m, m_start, m_end = _parse_month_label(month)
     root = DATA_DERIVED if cache_dir is None else Path(cache_dir)
-    return partition_exists(bars_data_type(freq), y, m, base_dir=root)
+    if not partition_exists(bars_data_type(freq), y, m, base_dir=root):
+        return False
+    # 边界月（最大已覆盖月）才可能是部分缓存，只查这一个月，成本 O(1)
+    if month == max(months):
+        recorded = (cov.get("month_last_date") or {}).get(month)
+        if recorded is None:
+            return False  # 老 manifest 无逐月末日 → 重算一次即补上记录
+        src_last = _source_month_last_date(m_start, m_end, source_dir)
+        if src_last is not None and src_last > str(recorded):
+            return False
+    return True
 
 
 def build_bars_from_minute(minute: pl.DataFrame, freq: str) -> pl.DataFrame:
@@ -155,18 +190,27 @@ def _merge_coverage(
     month: str,
     m_start: str,
     m_end: str,
+    last_date: str | None = None,
 ) -> dict[str, Any]:
+    """``last_date``：本月实际缓存到的最大交易日，供 ``_cache_valid`` 判部分月。"""
+    mld_new = {month: last_date} if last_date else {}
     if existing is None:
-        return {"start": m_start, "end": m_end, "months": [month]}
+        return {
+            "start": m_start, "end": m_end, "months": [month],
+            "month_last_date": dict(mld_new),
+        }
     cov = existing.get("coverage") or {}
     old_months = list(cov.get("months") or [])
     merged = sorted(set(old_months) | {month})
     old_start = str(cov.get("start") or m_start)
     old_end = str(cov.get("end") or m_end)
+    mld = {str(k): str(v) for k, v in (cov.get("month_last_date") or {}).items()}
+    mld.update(mld_new)
     return {
         "start": min(old_start, m_start),
         "end": max(old_end, m_end),
         "months": merged,
+        "month_last_date": mld,
     }
 
 
@@ -204,7 +248,12 @@ def _write_month_bars(
         # 语义变更：覆盖重建 coverage
         existing = None
 
-    coverage = _merge_coverage(existing, month, m_start, m_end)
+    last_date: str | None = None
+    if not bars.is_empty():
+        mx: Any = bars["trade_time"].max()
+        if mx is not None and hasattr(mx, "isoformat"):
+            last_date = str(mx.isoformat())[:10]
+    coverage = _merge_coverage(existing, month, m_start, m_end, last_date)
     payload: dict[str, Any] = {
         "freq": freq_n,
         "resample_hash": rhash,
@@ -274,7 +323,9 @@ def load_or_build_bars(
     rhash = resample_semantics_hash(freq_n)
     _parse_month_label(month)  # validate
 
-    if not force and _cache_valid(month, freq_n, cache_dir=cache_dir, rhash=rhash):
+    if not force and _cache_valid(
+        month, freq_n, cache_dir=cache_dir, rhash=rhash, source_dir=source_dir,
+    ):
         return _read_month_bars(month, freq_n, cache_dir=cache_dir)
 
     # 重建

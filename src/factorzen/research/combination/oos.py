@@ -127,24 +127,31 @@ def _estimate_fold(
 ) -> dict[str, float]:
     if method == "equal_weight":
         return estimate_equal_weights(all_factor_dfs)
-    if method == "ic_weighted":
+    # *_signed:允许负权(L1 归一化)。动机见 methods.estimate_ic_weights 的 P1-① 说明——
+    # 准入用残差口径、部署用裸值,裸 IC 为负的因子被裁到 0 等于整条信息丢掉。
+    if method in ("ic_weighted", "ic_weighted_signed"):
         return estimate_ic_weights(
             train_factor_dfs,
             train_ret,
             ic_cache=ic_cache,
             train_dates=train_dates,
+            allow_negative=method.endswith("_signed"),
             **{k: v for k, v in kwargs.items() if k in ("ic_window",)},
         )
-    if method == "max_ir":
+    if method in ("max_ir", "max_ir_signed"):
         w = estimate_max_ir_weights(
             train_factor_dfs,
             train_ret,
             ic_cache=ic_cache,
             train_dates=train_dates,
+            allow_negative=method.endswith("_signed"),
             **{k: v for k, v in kwargs.items() if k in ("lookback",)},
         )
         return w if w is not None else estimate_equal_weights(all_factor_dfs)
-    raise ValueError(f"未知 method: {method}(支持 equal_weight/ic_weighted/max_ir)")
+    raise ValueError(
+        f"未知 method: {method}(支持 equal_weight/ic_weighted/max_ir"
+        f"/ic_weighted_signed/max_ir_signed)"
+    )
 
 
 def combine_oos(

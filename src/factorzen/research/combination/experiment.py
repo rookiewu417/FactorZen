@@ -26,7 +26,14 @@ from factorzen.research.combination.methods import (
 from factorzen.research.combination.models import LGBMCombiner, build_panel, combine_lgbm
 from factorzen.research.combination.oos import combine_oos, drop_degenerate_factors
 
-_LINEAR = {"equal_weight", "ic_weighted", "max_ir"}
+_LINEAR = {
+    "equal_weight", "ic_weighted", "max_ir",
+    # *_signed:允许负权(L1 归一化)的对应版本。加进默认对照是为了让
+    # 「允许负权是否真的更好」由同协议 OOS 数据裁决,而不是靠先验假设。
+    "ic_weighted_signed", "max_ir_signed",
+}
+# *_signed 不进默认对照:已实测在真实库上更差(见 methods._solve_max_ir_weights 的
+# 对照表),留着白烧每次 run 的算力。要复检用 --methods 显式点名。
 _DEFAULT_METHODS = ["equal_weight", "ic_weighted", "max_ir", "lgbm"]
 
 

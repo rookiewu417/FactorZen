@@ -53,11 +53,16 @@ def run_mine(*, start: str, end: str, universe: str | None = None,
              library_orthogonal: bool = True,
              objective: str = "residual",
              intraday: bool = False,
-             intraday_freq: str = "5min") -> dict:
+             intraday_freq: str = "5min",
+             intraday_expr_leaves: list[str] | None = None) -> dict:
     prep_meta: dict = {}
+    # intraday_expr_leaves：`ix_*` bar 级表达式叶（v2 scout 产物）。与 `intraday`
+    # 管的 17 个 builtin `i_*` 是两套东西，必须单独透传——漏了则 `ix_*` 表达式
+    # 求值时列不存在，静默变成「编译失败 → 不入候选」。
     daily = prepare_mining_daily(
         start, end, universe, out_meta=prep_meta,
         intraday=intraday, intraday_freq=intraday_freq,
+        intraday_expr_leaves=intraday_expr_leaves,
     )
     # 收尾自动 upsert 因子库（--no-library 关）；库根由 run_session 从 out_dir 推导
     # （workspace/mining_sessions → workspace/factor_library）。universe 落进记录溯源。

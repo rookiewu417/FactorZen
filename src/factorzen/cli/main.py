@@ -494,6 +494,7 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         objective=getattr(args, "objective", "residual"),
         intraday=bool(getattr(args, "intraday_leaves", False)),
         intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
+        intraday_expr_leaves=getattr(args, "intraday_expr_leaves", None),
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")

@@ -316,13 +316,16 @@ def _cmd_data_intraday_features_status(args: argparse.Namespace) -> int:
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
     cov = manifest.get("coverage") or {}
     months = list(cov.get("months") or [])
+    mld = cov.get("month_last_date") or {}
     data_type = f"{version}/{freq}"
-    print("\nmonth\tpartition_exists")
+    # last_date 必须显示：只有它能区分「整月已算」与「算了前 10 天」，
+    # 光看 partition_exists=True 会把部分月读成完整月（2026-07-19 实际踩过）
+    print("\nmonth\tpartition_exists\tlast_date")
     for ym in months:
         y_str, m_str = ym.split("-")
         y, m = int(y_str), int(m_str)
         ok = partition_exists(data_type, y, m, base_dir=INTRADAY_FEATURES_DIR)
-        print(f"{ym}\t{ok}")
+        print(f"{ym}\t{ok}\t{mld.get(ym) or '-'}")
     return 0
 
 

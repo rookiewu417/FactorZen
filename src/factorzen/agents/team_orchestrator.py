@@ -649,8 +649,7 @@ def run_team_agent(
     auto_lift: bool = True,
     lift_se_mult: float = 1.0,
     lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
-    # 测试注入：session 末 lift 钩子（combine / materialize / active 面板 / ret）
-    lift_combine_fn=None,
+    # 测试注入：session 末 lift 钩子（materialize / active 面板 / ret）
     lift_materialize_candidate=None,
     lift_active_factor_dfs: dict | None = None,
     lift_ret_df=None,
@@ -1059,7 +1058,6 @@ def run_team_agent(
         lift_se_mult=lift_se_mult,
         lift_workers=lift_workers,
         data_window=data_window,
-        combine_fn=lift_combine_fn,
         prepped=session_prepped,
         materialize_candidate=lift_materialize_candidate,
         active_factor_dfs=lift_active_factor_dfs,
@@ -1209,7 +1207,6 @@ def _session_end_auto_lift(
     lift_se_mult: float = 1.0,
     lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     data_window: dict | None = None,
-    combine_fn=None,
     prepped=None,
     materialize_candidate=None,
     active_factor_dfs: dict | None = None,
@@ -1219,8 +1216,9 @@ def _session_end_auto_lift(
 ) -> dict:
     """session 末：lift 队列 → 覆盖把关 → 组门 → 逐候选 → upsert。
 
-    组门算完后把 ``base_daily`` 传给 ``run_lift_tests`` 复用，省 1 次基线 combine。
-    ``lift_workers`` 透传到逐候选并行（None=按可用内存自适应；``<=1`` 串行）。
+    残差增量口径（``residual_ic_v1``）：组门与逐候选共用同一库快照投影，
+    不再复用基线 IC 序列。``lift_workers`` 透传到逐候选并行
+    （None=按可用内存自适应；``<=1`` 串行）。
     ``horizon``：与 ``run_team_agent`` 的 mining horizon 一致，强制显式传入
     （禁止再吃 ``DEFAULT_HORIZON`` 隐式默认，避免 single 评估与 lift 入库漂移）。
 
@@ -1303,7 +1301,7 @@ def _session_end_auto_lift(
             _step("lift 钩子 ▸ 覆盖后队列为空，跳过组测")
             return meta
 
-        # 组门：1 次 lgbm（基线+组）——失败则不跑逐候选
+        # 组门：整批残差等权组合一次——失败则不跑逐候选
         group = run_group_lift(
             kept,
             market=market,
@@ -1315,11 +1313,9 @@ def _session_end_auto_lift(
             active_factor_dfs=active_factor_dfs,
             ret_df=ret_df,
             materialize_candidate=mat,
-            combine_fn=combine_fn,
             ctx=lift_ctx,
         )
-        # base_daily 是 polars 帧，不可进 JSON manifest；抽出复用后从落盘视图剥离
-        shared_base_daily = group.get("base_daily")
+        # 防御性剥离：组结果本无 base_daily；若旧 mock 注入帧则不进 JSON manifest
         meta["lift_group"] = {
             k: v for k, v in group.items() if k != "base_daily"
         }
@@ -1335,7 +1331,7 @@ def _session_end_auto_lift(
             f"→ {'过' if group_ok else '拒'}"
         )
         if not group_ok:
-            # 组门不过：全体 reject，不跑逐候选（省 n 次 lgbm）；写回 experiment_index
+            # 组门不过：全体 reject，不跑逐候选（省 n 次残差评估）；写回 experiment_index
             _append_lift_rejects_to_index(
                 index,
                 kept,
@@ -1362,10 +1358,8 @@ def _session_end_auto_lift(
             active_factor_dfs=active_factor_dfs,
             ret_df=ret_df,
             materialize_candidate=mat,
-            combine_fn=combine_fn,
             ctx=lift_ctx,
             lift_workers=lift_workers,
-            base_daily=shared_base_daily,
         )
         meta["lift_results"] = results
         meta["n_lift_evaluated"] = 1 + len(results)

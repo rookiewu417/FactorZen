@@ -20,23 +20,27 @@ def _dates(n_days: int):
     return days
 
 
-def _synth_panels(n_days=160, n_stocks=40, seed=0, *, interactive=True):
-    """构造 lib 因子 + 候选 + 收益。
+def _synth_panels(n_days=80, n_stocks=40, seed=0, *, signal: bool = True):
+    """构造 lib 因子 + 候选 + 收益（residual_ic_v1 离线面板）。
 
-    interactive=True：ret = 0.3*lib + 0.5*(lib*cand 交互) + 噪声
-      → 候选线性 IC≈0，但 lgbm 学到交互后 lift 显著。
-    interactive=False：ret = 0.5*lib + 噪声（候选纯噪声）→ lift≈0。
+    signal=True：候选含与 ret 正交于 lib 的强相关分量 → 残差 lift 显著。
+    signal=False：候选为与 ret 无关噪声 → 残差 lift≈0。
+    n_stocks 默认 40：满足 residual 日守卫 max(30, k+10)。
     """
     rng = np.random.default_rng(seed)
     dates = _dates(n_days)
     lib_rows, cand_rows, noise_rows, ret_rows = [], [], [], []
     for d in dates:
         lib = rng.standard_normal(n_stocks)
-        cand = rng.standard_normal(n_stocks)
         noise = rng.standard_normal(n_stocks)
-        if interactive:
-            ret = 0.3 * lib + 0.6 * (lib * cand) + 0.25 * rng.standard_normal(n_stocks)
+        ortho = rng.standard_normal(n_stocks)
+        # 对 lib 正交化 ortho
+        ortho = ortho - (np.dot(ortho, lib) / (np.dot(lib, lib) + 1e-12)) * lib
+        if signal:
+            cand = ortho
+            ret = 0.3 * lib + 0.7 * ortho + 0.15 * rng.standard_normal(n_stocks)
         else:
+            cand = noise
             ret = 0.5 * lib + 0.4 * rng.standard_normal(n_stocks)
         for s in range(n_stocks):
             code = f"{s:04d}.SZ"
@@ -52,25 +56,20 @@ def _synth_panels(n_days=160, n_stocks=40, seed=0, *, interactive=True):
     )
 
 
-def test_lift_interactive_candidate_passes_noise_fails():
-    """交互项候选 lift 显著过阈值；纯噪声候选 lift≈0 拒。基线只算一次。"""
-    from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
-    from factorzen.discovery.lift_test import run_lift_tests
-    from factorzen.research.combination.models import combine_lgbm
+def test_lift_signal_candidate_passes_noise_fails():
+    """正交强信号候选 lift 过阈值；纯噪声候选 lift 更低/拒。residual_ic_v1 口径。"""
+    from factorzen.discovery.lift_test import (
+        DEFAULT_RESIDUAL_LIFT_THRESHOLD,
+        run_lift_tests,
+    )
 
-    active, cand_good, cand_noise, ret = _synth_panels(interactive=True)
-    # 噪声场景的 ret 另造一版纯噪声候选仍用 interactive ret（噪声候选本身无信号）
-    call_count = {"n": 0}
-    real_combine = combine_lgbm
-
-    def counting_combine(fds, rdf, cv, **kw):
-        call_count["n"] += 1
-        return real_combine(fds, rdf, cv, seed=0, n_estimators=40, min_child_samples=15)
-
-    cv_params = {"train_days": 60, "test_days": 20, "purge_days": 5}
+    active, cand_good, _, ret = _synth_panels(signal=True, seed=0)
+    _, cand_noise, _, _ = _synth_panels(signal=False, seed=1)
+    # 噪声候选挂到同一 ret/active 轴（仅换候选值）
+    cand_noise = cand_noise  # 同日期股票网格
 
     mat_map = {
-        "interactive_cand": cand_good,
+        "signal_cand": cand_good,
         "noise_cand": cand_noise,
     }
 
@@ -79,7 +78,7 @@ def test_lift_interactive_candidate_passes_noise_fails():
 
     rows = run_lift_tests(
         [
-            {"expression": "interactive_cand", "residual_ic_train": 0.006},
+            {"expression": "signal_cand", "residual_ic_train": 0.006},
             {"expression": "noise_cand", "residual_ic_train": 0.005},
         ],
         market="ashare",
@@ -87,40 +86,32 @@ def test_lift_interactive_candidate_passes_noise_fails():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=materialize,
-        combine_fn=counting_combine,
-        cv_params=cv_params,
         top_m=10,
-        threshold=DEFAULT_LIFT_THRESHOLD,
+        threshold=DEFAULT_RESIDUAL_LIFT_THRESHOLD,
         seed=0,
+        lift_workers=1,
     )
     by_expr = {r["expression"]: r for r in rows}
-    assert by_expr["interactive_cand"]["passed"] is True, by_expr["interactive_cand"]
-    assert by_expr["interactive_cand"]["lift"] >= DEFAULT_LIFT_THRESHOLD
-    # 噪声：lift 应接近 0（允许小幅波动，但不得过阈值太多；硬门：不 passed 或 lift 显著低于交互）
-    assert by_expr["noise_cand"]["passed"] is False or (
-        by_expr["noise_cand"]["lift"] is not None
-        and by_expr["noise_cand"]["lift"] < by_expr["interactive_cand"]["lift"]
-    )
-    # 基线 1 次 + 2 候选 = 3 次 combine（不重复算基线）
-    assert call_count["n"] == 3, f"baseline 应只算一次，实际 combine 调用 {call_count['n']}"
+    assert by_expr["signal_cand"]["error"] is None, by_expr["signal_cand"]
+    assert by_expr["signal_cand"]["passed"] is True, by_expr["signal_cand"]
+    assert by_expr["signal_cand"]["lift"] >= DEFAULT_RESIDUAL_LIFT_THRESHOLD
+    assert by_expr["signal_cand"]["baseline"] is None
+    assert by_expr["signal_cand"].get("lift_metric") == "residual_ic_v1"
+    # 噪声：lift 应显著低于信号
+    assert by_expr["noise_cand"]["lift"] is not None
+    assert by_expr["noise_cand"]["lift"] < by_expr["signal_cand"]["lift"]
 
 
 def test_lift_top_m_truncation_recorded():
     """top_m 截断不静默：返回行带 n_input / n_selected。"""
     from factorzen.discovery.lift_test import run_lift_tests
 
-    active, cand, _, ret = _synth_panels(n_days=100, n_stocks=20, interactive=False)
+    active, cand, _, ret = _synth_panels(n_days=60, n_stocks=40, signal=False)
     grays = [
         {"expression": f"c{i}", "residual_ic_train": 0.009 - i * 0.0001}
         for i in range(5)
     ]
     mats = {f"c{i}": cand for i in range(5)}
-
-    def combine_stub(fds, rdf, cv, **kw):
-        # 返回合法空壳组合帧（全 0 因子值）
-        return ret.select(["trade_date", "ts_code"]).with_columns(
-            pl.lit(0.0).alias("factor_value")
-        )
 
     rows = run_lift_tests(
         grays,
@@ -129,9 +120,9 @@ def test_lift_top_m_truncation_recorded():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: mats[e],
-        combine_fn=combine_stub,
         top_m=2,
         threshold=0.001,
+        lift_workers=1,
     )
     assert len(rows) == 2
     assert rows[0]["n_input"] == 5 and rows[0]["n_selected"] == 2
@@ -141,17 +132,12 @@ def test_lift_top_m_truncation_recorded():
 def test_lift_bad_candidate_does_not_crash_batch():
     from factorzen.discovery.lift_test import run_lift_tests
 
-    active, cand, _, ret = _synth_panels(n_days=80, n_stocks=20, interactive=False)
+    active, cand, _, ret = _synth_panels(n_days=60, n_stocks=40, signal=False)
 
     def materialize(expr):
         if expr == "bad":
             raise RuntimeError("boom")
         return cand
-
-    def combine_stub(fds, rdf, cv, **kw):
-        return ret.select(["trade_date", "ts_code"]).with_columns(
-            pl.lit(0.0).alias("factor_value")
-        )
 
     rows = run_lift_tests(
         [
@@ -163,8 +149,8 @@ def test_lift_bad_candidate_does_not_crash_batch():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=materialize,
-        combine_fn=combine_stub,
         top_m=10,
+        lift_workers=1,
     )
     assert len(rows) == 2
     assert rows[0]["passed"] is False and rows[0]["error"]
@@ -366,10 +352,11 @@ def test_lift_admission_four_branches():
     }, threshold=thr) == "reject"
 
 
-def _signed_factor_panels(sign: float, n_days=80, n_stocks=30, seed=1):
+def _signed_factor_panels(sign: float, n_days=60, n_stocks=40, seed=1):
     """构造单因子与 ret 同号/反号相关的面板（admission_ic 符号断言用）。
 
     factor ≈ sign * ret + 极小噪声 → RankIC 符号 ≈ sign 的符号。
+    n_stocks≥40 满足 residual 日守卫。
     """
     rng = np.random.default_rng(seed)
     dates = _dates(n_days)
@@ -391,14 +378,8 @@ def _signed_factor_panels(sign: float, n_days=80, n_stocks=30, seed=1):
 
 
 def test_run_lift_tests_admission_ic_reflects_single_factor_sign():
-    """admission_ic = 单因子 admission 窗 RankIC，正/负相关各得对应符号；非组合 IC。"""
+    """admission_ic = 单因子 admission 窗 RankIC，正/负相关各得对应符号；非残差 IC。"""
     from factorzen.discovery.lift_test import run_lift_tests
-
-    def combine_stub(fds, rdf, cv, **kw):
-        # 恒正假预测：若误用 candidate_rank_ic 当方向会永远为正
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").abs().alias("factor_value")]
-        )
 
     # 正相关
     active_pos, cand_pos, ret_pos = _signed_factor_panels(+1.0, seed=11)
@@ -409,9 +390,9 @@ def test_run_lift_tests_admission_ic_reflects_single_factor_sign():
         active_factor_dfs=active_pos,
         ret_df=ret_pos,
         materialize_candidate=lambda e: cand_pos,
-        combine_fn=combine_stub,
         top_m=None,
         threshold=0.001,
+        lift_workers=1,
     )
     assert len(rows_pos) == 1
     rpos = rows_pos[0]
@@ -419,7 +400,7 @@ def test_run_lift_tests_admission_ic_reflects_single_factor_sign():
     assert rpos["admission_ic"] > 0, rpos
     assert rpos.get("ic_train") == 0.03
     assert rpos.get("residual_ic_train") == 0.02
-    # 组合模型 IC 可能为正，但方向权威是 admission_ic（单因子）
+    # residual_ic_v1 下 candidate_rank_ic 与 lift 同源；方向权威仍是 admission_ic
     assert "candidate_rank_ic" in rpos
 
     # 负相关
@@ -431,30 +412,23 @@ def test_run_lift_tests_admission_ic_reflects_single_factor_sign():
         active_factor_dfs=active_neg,
         ret_df=ret_neg,
         materialize_candidate=lambda e: cand_neg,
-        combine_fn=combine_stub,
         top_m=None,
         threshold=0.001,
+        lift_workers=1,
     )
     assert len(rows_neg) == 1
     rneg = rows_neg[0]
     assert rneg.get("admission_ic") is not None, rneg
     assert rneg["admission_ic"] < 0, rneg
-    # 负向单因子 vs 组合 stub 的 candidate_rank_ic 符号可不同——证明不是同一字段
-    assert rneg["admission_ic"] != rneg.get("candidate_rank_ic") or (
-        rneg.get("candidate_rank_ic") is not None and rneg["candidate_rank_ic"] >= 0
-    )
+    # 负向裸 IC 必须为负（方向权威）；残差 lift 可与之不同
+    assert rneg["admission_ic"] < 0
 
 
 def test_run_lift_tests_error_rows_have_admission_ic_key():
     """错误路径 row 也有 admission_ic 键（形态一致，下游 no KeyError）。"""
     from factorzen.discovery.lift_test import run_lift_tests
 
-    active, cand, _, ret = _synth_panels(n_days=60, n_stocks=20, interactive=False)
-
-    def combine_stub(fds, rdf, cv, **kw):
-        return ret.select(["trade_date", "ts_code"]).with_columns(
-            pl.lit(0.0).alias("factor_value")
-        )
+    active, cand, _, ret = _synth_panels(n_days=60, n_stocks=40, signal=False)
 
     def materialize(expr):
         if expr == "bad":
@@ -471,8 +445,8 @@ def test_run_lift_tests_error_rows_have_admission_ic_key():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=materialize,
-        combine_fn=combine_stub,
         top_m=10,
+        lift_workers=1,
     )
     assert all("admission_ic" in r for r in rows)
     # 失败行 admission_ic 应为 None（未成功物化）
@@ -482,27 +456,10 @@ def test_run_lift_tests_error_rows_have_admission_ic_key():
 
 
 def test_run_lift_tests_new_fields_and_top_m_none():
-    """新字段全链 + top_m=None 全测；mock combine 返回可控预测。"""
+    """新字段全链 + top_m=None 全测；正交信号 → residual lift 过阈值。"""
     from factorzen.discovery.lift_test import run_lift_tests
 
-    active, cand, _noise, ret = _synth_panels(n_days=100, n_stocks=25, interactive=False)
-    # 基线：弱噪声预测（截面方差 > 0，避免 std 守卫跳过整天）
-    # 候选 add-one：用 ret 本身作预测 → 近完美 IC，相对基线正 lift
-    rng = np.random.default_rng(7)
-    noise_vals = rng.standard_normal(ret.height)
-    base_pred = ret.select(["trade_date", "ts_code"]).with_columns(
-        pl.Series("factor_value", noise_vals)
-    )
-    call_n = {"n": 0}
-
-    def combine_ctrl(fds, rdf, cv, **kw):
-        call_n["n"] += 1
-        n_factors = len(fds)
-        if n_factors <= len(active):
-            return base_pred
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
+    active, cand, _noise, ret = _synth_panels(n_days=60, n_stocks=40, signal=True)
 
     grays = [
         {"expression": f"c{i}", "residual_ic_train": 0.009 - i * 0.0001}
@@ -517,10 +474,10 @@ def test_run_lift_tests_new_fields_and_top_m_none():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: mats[e],
-        combine_fn=combine_ctrl,
         top_m=None,  # 全测
         threshold=0.001,
         block_days=10,
+        lift_workers=1,
     )
     assert len(rows) == 4
     assert rows[0]["n_input"] == 4 and rows[0]["n_selected"] == 4
@@ -532,30 +489,19 @@ def test_run_lift_tests_new_fields_and_top_m_none():
         assert "lift_second_half" in r
         assert r["lift"] is not None
         assert r["n_blocks"] is not None and r["n_blocks"] >= 1
-        assert r["passed"] is True  # 完美 ret 预测应对基线有正 lift
+        assert r["passed"] is True
         assert r["error"] is None
-    # 基线 1 + 4 候选
-    assert call_n["n"] == 5
+        assert r["baseline"] is None
+        assert r.get("lift_metric") == "residual_ic_v1"
+        # residual_ic_v1：candidate_rank_ic 与 lift 同源
+        assert r["candidate_rank_ic"] == r["lift"]
 
 
 def test_run_group_lift_three_states():
     """run_group_lift：正常 / 部分物化失败 / 全失败。"""
     from factorzen.discovery.lift_test import run_group_lift
 
-    active, cand, _, ret = _synth_panels(n_days=80, n_stocks=20, interactive=False)
-    rng = np.random.default_rng(3)
-    base_noise = ret.select(["trade_date", "ts_code"]).with_columns(
-        pl.Series("factor_value", rng.standard_normal(ret.height))
-    )
-
-    def combine_stub(fds, rdf, cv, **kw):
-        n = len(fds)
-        # 更多因子 → 用 ret 当预测，制造正 group lift
-        if n > len(active):
-            return rdf.select(
-                ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-            )
-        return base_noise
+    active, cand, _, ret = _synth_panels(n_days=60, n_stocks=40, signal=True)
 
     def mat_partial(expr):
         if expr == "bad":
@@ -577,7 +523,6 @@ def test_run_group_lift_three_states():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: cand,
-        combine_fn=combine_stub,
         threshold=0.001,
     )
     assert ok["error"] is None
@@ -586,6 +531,9 @@ def test_run_group_lift_three_states():
     assert ok["skipped"] == []
     assert ok["lift"] is not None
     assert "lift_se" in ok and "n_blocks" in ok
+    assert ok["baseline"] is None
+    assert ok.get("lift_metric") == "residual_ic_v1"
+    assert "base_daily" not in ok
 
     # 部分失败
     partial = run_group_lift(
@@ -599,7 +547,6 @@ def test_run_group_lift_three_states():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=mat_partial,
-        combine_fn=combine_stub,
     )
     assert partial["error"] is None
     assert partial["n_candidates"] == 1
@@ -619,7 +566,6 @@ def test_run_group_lift_three_states():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=mat_partial,
-        combine_fn=combine_stub,
     )
     assert all_bad["error"] == "all_candidates_materialize_failed"
     assert all_bad["n_candidates"] == 0
@@ -892,7 +838,8 @@ def test_cli_lift_test_parser_and_dry_run(tmp_path, monkeypatch):
     monkeypatch.setattr(
         lt_mod, "run_group_lift",
         lambda queue, **k: {
-            "lift": 0.01, "lift_se": 0.001, "error": None, "base_daily": None,
+            "lift": 0.01, "lift_se": 0.001, "error": None,
+            "lift_metric": "residual_ic_v1",
         },
     )
     monkeypatch.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)
@@ -911,16 +858,15 @@ def test_cli_lift_test_parser_and_dry_run(tmp_path, monkeypatch):
     assert man["threshold"] == 0.002
 
 
-def test_expression_keys_survive_real_lgbm(tmp_path):
-    """因子字典键是**真实表达式**（含括号/逗号）时必须能过真 lgbm——
-    线上事故回归：LightGBMError: Do not support special JSON characters in
-    feature name（合成测试用安全名没抓到，真实表达式键立刻炸基线）。
-    进 combine 边界前键须映射为安全特征名，报告仍用真实表达式。
+def test_expression_keys_survive_residual_engine(tmp_path):
+    """因子字典键是**真实表达式**（含括号/逗号）时 residual 引擎仍正常。
+
+    报告行 expression 保持真实表达式；库键可含特殊字符（残差路径不经 lgbm 特征名）。
     """
     from factorzen.discovery.lift_test import run_lift_tests
 
-    actives, cand_panel, _noise, ret_df = _synth_panels(interactive=True)
-    # 键改成真实表达式形态（括号/逗号/空格——lgbm 特征名黑名单字符）
+    actives, cand_panel, _noise, ret_df = _synth_panels(signal=True)
+    # 键改成真实表达式形态（括号/逗号/空格）
     actives = {f"rank(ts_mean(close, {5 + i}))": df
                for i, (_k, df) in enumerate(actives.items())}
     gray = [{"expression": "mul(rank(vol), neg(ts_std(ret_1d, 20)))",
@@ -930,26 +876,26 @@ def test_expression_keys_survive_real_lgbm(tmp_path):
         gray, market="ashare", daily=pl.DataFrame(),
         active_factor_dfs=actives, ret_df=ret_df,
         materialize_candidate=lambda e: cand_panel,
-        cv_params={"train_days": 60, "test_days": 20, "purge_days": 2,
-                   "embargo_days": 0},
-        top_m=1, threshold=-1.0, seed=0,
-    )   # 不注入 combine_fn → 走真 combine_lgbm
-    assert out[0]["error"] is None, f"真实表达式键不得炸 lgbm: {out[0]}"
-    assert out[0]["baseline"] is not None
+        top_m=1, threshold=-1.0, seed=0, lift_workers=1,
+    )
+    assert out[0]["error"] is None, f"真实表达式键不得炸 residual 引擎: {out[0]}"
+    assert out[0]["baseline"] is None
+    assert out[0]["lift"] is not None
     assert out[0]["expression"] == "mul(rank(vol), neg(ts_std(ret_1d, 20)))"
+    assert out[0].get("lift_metric") == "residual_ic_v1"
 
 
 # ── P9：准入 provenance 可重放 ───────────────────────────────────────────────
 
 
 def test_run_lift_tests_admission_provenance_complete():
-    """production 形态 run_lift_tests：row 含 admission/scored/CV/block/baseline_hash。"""
+    """production 形态 run_lift_tests：row 含 admission/scored/block/baseline_hash。"""
     import hashlib
 
     from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
 
     dates = _dates(60)
-    n_stocks = 15
+    n_stocks = 40  # residual 日守卫 max(30, k+10)
     # 两套 active 键集合，验证 baseline_hash 集合稳定与差异
     active_a = {
         "lib_z": pl.DataFrame({
@@ -987,11 +933,6 @@ def test_run_lift_tests_admission_provenance_complete():
         ],
     })
 
-    def combine_stub(fds, rdf, cv, **kw):
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
-
     ctx = LiftEvalContext(
         market="ashare",
         prepped=pl.DataFrame({"trade_date": ["x"], "ts_code": ["y"], "close": [1.0]}),
@@ -1001,38 +942,41 @@ def test_run_lift_tests_admission_provenance_complete():
         admission_end="20240301",
         profile_name="ashare_default",
     )
-    cv_params = {"train_days": 40, "test_days": 10, "purge_days": 3}
     common = dict(
         gray_candidates=[{"expression": "cand0", "residual_ic_train": 0.01}],
         market="ashare",
         daily=pl.DataFrame(),
         ret_df=ret,
         materialize_candidate=lambda e: cand,
-        combine_fn=combine_stub,
-        cv_params=cv_params,
         block_days=10,
         threshold=0.001,
         ctx=ctx,
         horizon=5,
+        lift_workers=1,
     )
 
     r1 = run_lift_tests(**common, active_factor_dfs=active_a)[0]
     r1b = run_lift_tests(**common, active_factor_dfs=active_a_reordered)[0]
     r2 = run_lift_tests(**common, active_factor_dfs=active_b)[0]
 
-    # admission / scored / CV / block / profile / frequency
+    # admission / scored / block / profile / frequency
     assert r1["admission_start"] == "20240115"
     assert r1["admission_end"] == "20240301"
     assert r1["scored_start"] is not None
     assert r1["scored_end"] is not None
-    assert r1["scored_start"] >= "20240115"
+    # 窗界入参可紧凑，但回填的 scored_* 一律 ISO（core.dates 单一形态）；
+    # 两侧必须同形态比较——混比会静默为真（"20240115" > "2024-01-15"）
+    assert r1["scored_start"] >= "2024-01-15"
     assert r1["block_days"] == 10
-    assert r1["cv_train_days"] == 40
-    assert r1["cv_test_days"] == 10
+    # residual_ic_v1：CV 键保留、值 None
+    assert r1["cv_train_days"] is None
+    assert r1["cv_test_days"] is None
     assert r1["threshold"] == 0.001
     assert r1["profile_name"] == "ashare_default"
     assert r1["frequency"] == "daily"
     assert r1["horizon"] == 5
+    assert r1.get("lift_metric") == "residual_ic_v1"
+    assert r1.get("n_lib_factors") == 2
 
     # baseline_hash：同集合稳定（插入序无关）、不同集合不同
     expected = hashlib.sha256(",".join(sorted(active_a.keys())).encode()).hexdigest()[:16]

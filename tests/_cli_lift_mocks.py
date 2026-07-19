@@ -22,7 +22,7 @@ def patch_cli_lift_pre_gates(monkeypatch, *, group_lift: float = 0.01, group_se:
             "lift": group_lift,
             "lift_se": group_se,
             "error": None,
-            "base_daily": None,
+            "lift_metric": "residual_ic_v1",
         },
     )
     monkeypatch.setattr(

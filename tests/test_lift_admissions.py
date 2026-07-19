@@ -337,7 +337,7 @@ def test_rebuild_lift_review_with_mock_runner(tmp_path):
 
     calls: list[str] = []
 
-    def lift_runner(cands, *, active_factor_dfs=None, combine_fn=None, **kw):
+    def lift_runner(cands, *, active_factor_dfs=None, **kw):
         expr = cands[0]["expression"]
         calls.append(expr)
         # 新池应含 single active
@@ -677,7 +677,10 @@ def test_upsert_lift_reject_new_expression_not_stored(tmp_path):
 
 
 def test_upsert_lift_admissions_persists_admission_provenance(tmp_path):
-    """run_lift_tests row → upsert → 读回 FactorRecord 字段与 row 一致。"""
+    """run_lift_tests row → upsert → 读回 FactorRecord 字段与 row 一致。
+
+    residual_ic_v1：无 combine_fn/cv_params；cv_* 键保留值为 None。
+    """
     from factorzen.discovery.factor_library import load_library, upsert_lift_admissions
     from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
 
@@ -687,7 +690,7 @@ def test_upsert_lift_admissions_persists_admission_provenance(tmp_path):
         if d.weekday() < 5:
             dates.append(d.strftime("%Y%m%d"))
         d += timedelta(days=1)
-    n_stocks = 12
+    n_stocks = 40  # residual 日守卫 max(30, k+10)
     active = {
         "lib_b": pl.DataFrame({
             "trade_date": [dd for dd in dates for _ in range(n_stocks)],
@@ -711,11 +714,6 @@ def test_upsert_lift_admissions_persists_admission_provenance(tmp_path):
         "factor_value": [float(s) + 0.5 for _ in dates for s in range(n_stocks)],
     })
 
-    def combine_stub(fds, rdf, cv, **kw):
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
-
     ctx = LiftEvalContext(
         market="ashare",
         prepped=pl.DataFrame({"trade_date": ["x"], "ts_code": ["y"], "close": [1.0]}),
@@ -732,11 +730,10 @@ def test_upsert_lift_admissions_persists_admission_provenance(tmp_path):
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: cand,
-        combine_fn=combine_stub,
-        cv_params={"train_days": 30, "test_days": 8, "purge_days": 2},
         block_days=12,
         threshold=0.001,
         ctx=ctx,
+        lift_workers=1,
     )
     # 强制 passed 以便 upsert 写入（本测只关心 provenance 落盘）
     rows[0]["lift"] = 0.05
@@ -762,8 +759,9 @@ def test_upsert_lift_admissions_persists_admission_provenance(tmp_path):
     assert rec.scored_start == row["scored_start"]
     assert rec.scored_end == row["scored_end"]
     assert rec.block_days == row["block_days"] == 12
-    assert rec.cv_train_days == row["cv_train_days"] == 30
-    assert rec.cv_test_days == row["cv_test_days"] == 8
+    # residual_ic_v1：CV 键保留、值为 None（FactorRecord schema 不动）
+    assert rec.cv_train_days == row["cv_train_days"] is None
+    assert rec.cv_test_days == row["cv_test_days"] is None
     assert rec.baseline_hash == row["baseline_hash"]
     assert rec.baseline_hash is not None
     assert rec.profile_name == row["profile_name"] == "ashare_v1"

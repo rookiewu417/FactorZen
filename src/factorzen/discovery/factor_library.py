@@ -192,6 +192,10 @@ class FactorRecord:
     baseline_hash: str | None = None
     profile_name: str | None = None
     frequency: str | None = None
+    # lift 口径版本（residual_ic_v1 等）；旧 jsonl 缺字段 → None，与新记录可区分
+    lift_metric: str | None = None
+    # 残差投影时库内 active 因子数（审计；旧行缺失 → None）
+    n_lib_factors: int | None = None
     # 注：target_price / execution_lag 属执行配置 provenance，lift 流程当前不持有，
     # 不加空壳字段；后续从市场执行配置线程接入。
     source_run_id: str | None = None
@@ -1138,6 +1142,8 @@ def _record_from_candidate(
         baseline_hash=g("baseline_hash"),
         profile_name=g("profile_name"),
         frequency=g("frequency"),
+        lift_metric=g("lift_metric"),
+        n_lib_factors=g("n_lib_factors"),
         source_run_id=run_id,
         source_session_dir=session_dir,
         git_sha=git_sha,
@@ -1480,6 +1486,13 @@ def upsert_lift_admissions(
                     prev.lift_se = _as_float(row.get("lift_se"))
                     prev.lift_first_half = _as_float(row.get("lift_first_half"))
                     prev.lift_second_half = _as_float(row.get("lift_second_half"))
+                    lm = row.get("lift_metric")
+                    if lm is not None:
+                        prev.lift_metric = str(lm)
+                    nlf = row.get("n_lib_factors")
+                    if nlf is not None:
+                        with contextlib.suppress(TypeError, ValueError):
+                            prev.n_lib_factors = int(nlf)
                     if run_id is not None:
                         prev.source_run_id = run_id
                     if session_dir is not None:
@@ -1515,6 +1528,7 @@ def upsert_lift_admissions(
                 "block_days", "cv_train_days", "cv_test_days",
                 "lift_threshold", "lift_se_mult", "baseline_hash",
                 "profile_name", "frequency", "threshold", "se_mult",
+                "lift_metric", "n_lib_factors",
             ):
                 if cand.get(_pk) is None and meta.get(_pk) is not None:
                     cand[_pk] = meta[_pk]
@@ -1857,7 +1871,6 @@ def rebuild(
     manifest_extra: dict | None = None, fresh: bool = True,
     # ── lift 轨复审注入点（测试 mock / 生产默认 run_lift_tests）──────────────
     lift_runner: Callable[..., list[dict]] | None = None,
-    combine_fn: Callable | None = None,
     active_factor_dfs: dict[str, pl.DataFrame] | None = None,
     daily: pl.DataFrame | None = None,
     lift_threshold: float = DEFAULT_LIFT_THRESHOLD,
@@ -1890,8 +1903,8 @@ def rebuild(
       运营护栏分工不同）。复审整体 try/except：失败不毁单轨结果，manifest 记 error，
       lift 轨保持原状。
 
-    注入点：``lift_runner(cands, *, active_factor_dfs, combine_fn=..., **kw) -> list[dict]``；
-    ``combine_fn`` 转给 runner；``active_factor_dfs`` / ``daily`` 供生产默认路径。
+    注入点：``lift_runner(cands, *, active_factor_dfs, **kw) -> list[dict]``；
+    残差口径（``residual_ic_v1``）无 combine_fn；``active_factor_dfs`` / ``daily`` 供生产默认路径。
     落 ``rebuild_{market}_manifest.json``（窗口/源/git_sha/时间 + lift 复审计数，可复现）。
     """
     from factorzen.discovery.lift_test import lift_admission
@@ -2031,7 +2044,7 @@ def rebuild(
                     return ctx_by_h[h]
 
                 def runner(
-                    cands, *, active_factor_dfs=None, combine_fn=None,
+                    cands, *, active_factor_dfs=None,
                     horizon=None, **kw,
                 ):
                     # 调用方传 rec.horizon；缺省退回 rebuild 全局 horizon 或 5
@@ -2050,7 +2063,6 @@ def rebuild(
                         top_m=None,
                         threshold=lift_threshold,
                         active_factor_dfs=active_factor_dfs,
-                        combine_fn=combine_fn,
                         ctx=_ctx_for(h),
                     )
 
@@ -2071,10 +2083,9 @@ def rebuild(
                 rows = runner(
                     [cand_row],
                     active_factor_dfs=pool_dfs,
-                    combine_fn=combine_fn,
                     horizon=rec_h,
                 )
-                n_lift_evaluated += 1  # 每次 add-one 计 1 次 lgbm（多重检验 N）
+                n_lift_evaluated += 1  # 每次 add-one 计 1 次（多重检验 N）
                 if not rows:
                     # 无结果 → 视为无增量
                     decision = "reject"
@@ -2102,6 +2113,13 @@ def rebuild(
                         updated.lift_first_half = _as_float(lift_row.get("lift_first_half"))
                     if lift_row.get("lift_second_half") is not None:
                         updated.lift_second_half = _as_float(lift_row.get("lift_second_half"))
+                    lm = lift_row.get("lift_metric")
+                    if lm is not None:
+                        updated.lift_metric = str(lm)
+                    nlf = lift_row.get("n_lib_factors")
+                    if nlf is not None:
+                        with contextlib.suppress(TypeError, ValueError):
+                            updated.n_lib_factors = int(nlf)
 
                 # 复审不 cap：decision 即 status（保留既有 active，非 auto-lift 新晋升）
                 if decision == "active":

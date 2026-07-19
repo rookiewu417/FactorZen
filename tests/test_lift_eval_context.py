@@ -1,4 +1,7 @@
-"""LiftEvalContext 统一评估上下文 + admission 评分窗口。TDD、mock 离线。"""
+"""LiftEvalContext 统一评估上下文 + admission 评分窗口。TDD、mock 离线。
+
+residual_ic_v1：无 combine_fn；注入 active_factor_dfs + ret_df + materialize。
+"""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -15,6 +18,11 @@ def _dates(n_days: int, start: date | None = None):
             days.append(d.strftime("%Y%m%d"))
         d += timedelta(days=1)
     return days
+
+
+def _iso(compact: str) -> str:
+    """``YYYYMMDD`` → ``YYYY-MM-DD``：生产 scored_* 的形态。"""
+    return f"{compact[0:4]}-{compact[4:6]}-{compact[6:8]}"
 
 
 def _panel_from_values(dates, n_stocks, value_fn, *, col="factor_value"):
@@ -48,25 +56,18 @@ def _active_noise(dates, n_stocks, seed=0):
 
 
 def test_admission_window_flips_lift_sign():
-    """全窗 lift>0，admission 只看后半段 → lift<0；scored_* 落在窗内。"""
+    """全窗 residual lift>0，admission 只看后半段 → lift<0；scored_* 落在窗内。"""
     from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
 
-    n_days, n_stocks = 40, 20
+    # n_stocks≥40：residual 日守卫 max(30, k+10)
+    n_days, n_stocks = 50, 40
     dates = _dates(n_days)
-    # 前 28 日强、后 12 日弱 → 全窗 lift>0；admission 从 mid_late 起 → lift<0
-    mid_late = dates[28]
+    # 前 30 日强、后 20 日弱 → 全窗 lift>0；admission 从 mid_late 起 → lift<0
+    mid_late = dates[30]
     active = _active_noise(dates, n_stocks)
     ret = _ret_by_stock_rank(dates, n_stocks)
-    cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s))  # 占位物化
 
-    # 基线：噪声预测 → 日 IC≈0
-    # 候选：mid_late 前完美 IC≈1，之后反相关 IC≈-1
-    rng = np.random.default_rng(11)
-    base_pred = ret.select(["trade_date", "ts_code"]).with_columns(
-        pl.Series("factor_value", rng.standard_normal(ret.height))
-    )
-
-    def cand_pred():
+    def cand_flip():
         rows = []
         for d in dates:
             for s in range(n_stocks):
@@ -76,12 +77,7 @@ def test_admission_window_flips_lift_sign():
                 })
         return pl.DataFrame(rows)
 
-    cand_pred_df = cand_pred()
-
-    def combine_ctrl(fds, rdf, cv, **kw):
-        if len(fds) <= len(active):
-            return base_pred
-        return cand_pred_df
+    cand = cand_flip()
 
     common = dict(
         gray_candidates=[{"expression": "flip_cand", "residual_ic_train": 0.006}],
@@ -90,17 +86,16 @@ def test_admission_window_flips_lift_sign():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: cand,
-        combine_fn=combine_ctrl,
         threshold=0.001,
         block_days=10,
         top_m=10,
+        lift_workers=1,
     )
 
     full = run_lift_tests(**common)
     assert full[0]["error"] is None, full[0]
     assert full[0]["lift"] is not None and full[0]["lift"] > 0, full[0]
 
-    # ctx 只提供评分窗；active/ret/mat 仍显式注入（测裁剪，不测物化路径）
     ctx = LiftEvalContext(
         market="ashare",
         prepped=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
@@ -112,7 +107,6 @@ def test_admission_window_flips_lift_sign():
     windowed = run_lift_tests(**common, ctx=ctx)
     assert windowed[0]["error"] is None, windowed[0]
     assert windowed[0]["lift"] is not None and windowed[0]["lift"] < 0, windowed[0]
-    # 结论翻转
     assert full[0]["passed"] is True or full[0]["lift"] > 0
     assert windowed[0]["lift"] < 0
 
@@ -120,12 +114,14 @@ def test_admission_window_flips_lift_sign():
     assert windowed[0]["admission_end"] is None
     assert windowed[0]["scored_start"] is not None
     assert windowed[0]["scored_end"] is not None
-    assert windowed[0]["scored_start"] >= mid_late
+    assert windowed[0]["scored_start"] >= _iso(mid_late)
     assert windowed[0]["scored_end"] >= windowed[0]["scored_start"]
     assert windowed[0]["horizon"] == 5
+    assert windowed[0]["baseline"] is None
+    assert windowed[0].get("lift_metric") == "residual_ic_v1"
 
 
-# ── 2. 对称性：baseline 与 candidate 共用同一 prepped ────────────────────────
+# ── 2. 对称性：pool 与 materializer 共用同一 prepped ─────────────────────────
 
 
 def test_make_lift_context_shared_prepped_for_pool_and_materializer(monkeypatch):
@@ -192,8 +188,6 @@ def test_make_lift_context_shared_prepped_for_pool_and_materializer(monkeypatch)
     )
     monkeypatch.setattr(lt, "_materializer_from_prepped", spy_mat_from_prepped)
 
-    # 不注入 active/ret/mat → 走 ctx 派生路径
-    # ret 也 mock，避免真实 fwd return 在短帧上炸
     monkeypatch.setattr(
         lt, "_build_ret_panel",
         lambda daily_df, *, horizon=5: pl.DataFrame({
@@ -203,18 +197,14 @@ def test_make_lift_context_shared_prepped_for_pool_and_materializer(monkeypatch)
         }),
     )
 
-    def combine_stub(fds, rdf, cv, **kw):
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
-
+    # 短面板会 no_residual_days；本测只验证 prepped 共享，不关心 lift 值
     run_lift_tests(
         [{"expression": "rank(close)", "residual_ic_train": 0.006}],
         market="mock_mkt",
         daily=daily,
         ctx=ctx,
-        combine_fn=combine_stub,
         top_m=1,
+        lift_workers=1,
     )
 
     assert captured.get("pool_id") == prepped_id
@@ -231,8 +221,8 @@ def test_explicit_injection_overrides_ctx(monkeypatch):
     from factorzen.discovery import lift_test as lt
     from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
 
-    dates = _dates(30)
-    n_stocks = 15
+    dates = _dates(40)
+    n_stocks = 40
     active = _active_noise(dates, n_stocks, seed=1)
     ret = _ret_by_stock_rank(dates, n_stocks)
     cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s))
@@ -276,11 +266,6 @@ def test_explicit_injection_overrides_ctx(monkeypatch):
         injected_mat["n"] += 1
         return cand
 
-    def combine_stub(fds, rdf, cv, **kw):
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
-
     rows = run_lift_tests(
         [{"expression": "c0", "residual_ic_train": 0.01}],
         market="ashare",
@@ -289,8 +274,8 @@ def test_explicit_injection_overrides_ctx(monkeypatch):
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=mat,
-        combine_fn=combine_stub,
         horizon=5,  # 显式覆盖 ctx.horizon=99
+        lift_workers=1,
     )
 
     assert pool_called["n"] == 0
@@ -308,23 +293,11 @@ def test_ctx_none_zero_regression_same_inputs():
     """ctx=None / 不传 ctx 同一 mock 输入结果一致。"""
     from factorzen.discovery.lift_test import run_lift_tests
 
-    dates = _dates(60)
-    n_stocks = 20
+    dates = _dates(50)
+    n_stocks = 40
     active = _active_noise(dates, n_stocks, seed=2)
     ret = _ret_by_stock_rank(dates, n_stocks)
     cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s) + 0.01 * hash(d) % 7)
-
-    rng = np.random.default_rng(21)
-    base_pred = ret.select(["trade_date", "ts_code"]).with_columns(
-        pl.Series("factor_value", rng.standard_normal(ret.height))
-    )
-
-    def combine_ctrl(fds, rdf, cv, **kw):
-        if len(fds) <= len(active):
-            return base_pred
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
 
     kwargs = dict(
         gray_candidates=[
@@ -336,11 +309,11 @@ def test_ctx_none_zero_regression_same_inputs():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: cand,
-        combine_fn=combine_ctrl,
         top_m=10,
         threshold=0.001,
         block_days=10,
         seed=0,
+        lift_workers=1,
     )
 
     a = run_lift_tests(**kwargs)
@@ -351,12 +324,12 @@ def test_ctx_none_zero_regression_same_inputs():
         assert {k: v for k, v in ra.items() if k != "elapsed_s"} == {
             k: v for k, v in rb.items() if k != "elapsed_s"
         }
-    # provenance 存在（ctx=None 时 admission 不裁）
     for r in a:
         assert r["admission_start"] is None
         assert r["admission_end"] is None
         assert r["horizon"] == 5
         assert "scored_start" in r and "scored_end" in r
+        assert r.get("lift_metric") == "residual_ic_v1"
 
 
 # ── 5. horizon 透传 ──────────────────────────────────────────────────────────
@@ -368,7 +341,7 @@ def test_ctx_horizon_passed_to_build_ret_panel(monkeypatch):
     from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
 
     dates = _dates(40)
-    n_stocks = 15
+    n_stocks = 40
     active = _active_noise(dates, n_stocks, seed=3)
     ret = _ret_by_stock_rank(dates, n_stocks)
     cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s))
@@ -390,11 +363,6 @@ def test_ctx_horizon_passed_to_build_ret_panel(monkeypatch):
         admission_end=None,
     )
 
-    def combine_stub(fds, rdf, cv, **kw):
-        return rdf.select(
-            ["trade_date", "ts_code", pl.col("ret").alias("factor_value")]
-        )
-
     rows = run_lift_tests(
         [{"expression": "c0", "residual_ic_train": 0.01}],
         market="ashare",
@@ -403,7 +371,7 @@ def test_ctx_horizon_passed_to_build_ret_panel(monkeypatch):
         active_factor_dfs=active,
         # 不注入 ret_df → 走 _build_ret_panel
         materialize_candidate=lambda e: cand,
-        combine_fn=combine_stub,
+        lift_workers=1,
         # 不传 horizon → 从 ctx 派生
     )
 
@@ -415,19 +383,13 @@ def test_group_lift_admission_window_and_provenance():
     """run_group_lift 透传 admission 窗并写 provenance 字段。"""
     from factorzen.discovery.lift_test import LiftEvalContext, run_group_lift
 
-    n_days, n_stocks = 40, 20
+    n_days, n_stocks = 50, 40
     dates = _dates(n_days)
-    mid_late = dates[28]
+    mid_late = dates[30]
     active = _active_noise(dates, n_stocks, seed=4)
     ret = _ret_by_stock_rank(dates, n_stocks)
-    cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s))
 
-    rng = np.random.default_rng(41)
-    base_pred = ret.select(["trade_date", "ts_code"]).with_columns(
-        pl.Series("factor_value", rng.standard_normal(ret.height))
-    )
-
-    def cand_pred():
+    def cand_flip():
         rows = []
         for d in dates:
             for s in range(n_stocks):
@@ -437,10 +399,7 @@ def test_group_lift_admission_window_and_provenance():
                 })
         return pl.DataFrame(rows)
 
-    def combine_ctrl(fds, rdf, cv, **kw):
-        if len(fds) <= len(active):
-            return base_pred
-        return cand_pred()
+    cand = cand_flip()
 
     ctx = LiftEvalContext(
         market="ashare",
@@ -458,12 +417,14 @@ def test_group_lift_admission_window_and_provenance():
         active_factor_dfs=active,
         ret_df=ret,
         materialize_candidate=lambda e: cand,
-        combine_fn=combine_ctrl,
         ctx=ctx,
         threshold=0.001,
     )
-    assert out["error"] is None
+    assert out["error"] is None, out
     assert out["lift"] is not None and out["lift"] < 0
     assert out["admission_start"] == mid_late
-    assert out["scored_start"] is not None and out["scored_start"] >= mid_late
+    assert out["scored_start"] is not None and out["scored_start"] >= _iso(mid_late)
     assert out["horizon"] == 5
+    assert out["baseline"] is None
+    assert "base_daily" not in out
+    assert out.get("lift_metric") == "residual_ic_v1"

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 from typing import Any
@@ -46,12 +47,35 @@ def _max_drawdown(cum: list[float]) -> float:
     return mdd
 
 
+def _top_bucket_turnover(tops: list[frozenset[str]]) -> float:
+    """相邻期 top 分位成分的变动率均值 ∈ [0,1]。
+
+    **为什么这样定义**：组合因子是**截面打分**不是权重，没有「权重变动 L1」可算；
+    而实际成本来自「按打分选股、每期换仓」，故直接量 top 桶的成分换手：
+    ``|Tₜ \\ Tₜ₋₁| / |Tₜ|``。次序在桶内变动不算换手（不产生交易），
+    这与用 rank 相关衡量不同——后者会把桶内洗牌也记成成本。
+
+    不足 2 期 → 0.0（无相邻对可比，形态一致不抛）。
+    """
+    if len(tops) < 2:
+        return 0.0
+    rates = [
+        len(cur - prev) / len(cur)
+        for prev, cur in itertools.pairwise(tops)
+        if cur
+    ]
+    return float(np.mean(rates)) if rates else 0.0
+
+
 def _evaluate_oos(
     combined: pl.DataFrame, ret_df: pl.DataFrame, n_groups: int = 5
 ) -> dict[str, float]:
-    """OOS 组合因子的统一评估:逐日 RankIC + 分层多空 spread,汇总指标。
+    """OOS 组合因子的统一评估:逐日 RankIC + 分层多空 spread + top 桶换手,汇总指标。
 
     RankIC 走 ``spearman_avg_rank``（与 lift_test / ic_analysis average-rank 主口径一致）。
+
+    ``turnover``：报告一直写着「RankIC 高不代表实盘更优,需结合换手判断」却没算过，
+    仅凭 IC 无法在 lgbm/线性方法之间下部署结论（ML 信号可能换手快得多）。
     """
     rdf = ret_df.with_columns(pl.col("trade_date").cast(pl.Utf8))
     m = combined.join(rdf, on=["trade_date", "ts_code"], how="inner")
@@ -67,7 +91,9 @@ def _evaluate_oos(
         order = f.argsort()
         q = max(1, len(f) // n_groups)
         spread = float(r[order[-q:]].mean() - r[order[:q]].mean())
-        day_rows.append((str(_d[0]), ic, spread))
+        codes = g["ts_code"].to_list()
+        top = frozenset(codes[i] for i in order[-q:])
+        day_rows.append((str(_d[0]), ic, spread, top))
     if not day_rows:
         return {
             "rank_ic_mean": 0.0,
@@ -75,6 +101,7 @@ def _evaluate_oos(
             "ic_positive_ratio": 0.0,
             "top_bottom_spread": 0.0,
             "max_drawdown": 0.0,
+            "turnover": 0.0,
             "n_periods": 0,
         }
     day_rows.sort(key=lambda x: x[0])
@@ -90,6 +117,7 @@ def _evaluate_oos(
         "ic_positive_ratio": float((ics > 0).mean()),
         "top_bottom_spread": float(np.mean(spreads)),
         "max_drawdown": _max_drawdown(cum),
+        "turnover": _top_bucket_turnover([r[3] for r in day_rows]),
         "n_periods": len(day_rows),
     }
 
@@ -220,22 +248,27 @@ def _render_report(
         "",
         "## 方法对比",
         "",
-        "| 方法 | RankIC 均值 | ICIR | 多空 spread | 最大回撤 | IC>0 占比 | 期数 |",
-        "|------|-----------|------|-----------|---------|----------|------|",
+        "| 方法 | RankIC 均值 | ICIR | 多空 spread | 换手 | 最大回撤 | IC>0 占比 | 期数 |",
+        "|------|-----------|------|-----------|------|---------|----------|------|",
     ]
     for r in comparison.iter_rows(named=True):
         lines.append(
             f"| {r['method']} | {r['rank_ic_mean']:.4f} | {r['icir']:.3f} | "
-            f"{r['top_bottom_spread']:.4%} | {r['max_drawdown']:.4%} | "
+            f"{r['top_bottom_spread']:.4%} | {r.get('turnover', 0.0):.1%} | "
+            f"{r['max_drawdown']:.4%} | "
             f"{r['ic_positive_ratio']:.1%} | {r['n_periods']} |"
         )
     lines += [
         "",
         f"**最高 RankIC 方法:** `{best['method']}`(RankIC={best['rank_ic_mean']:.4f}, "
-        f"ICIR={best['icir']:.3f})。",
+        f"ICIR={best['icir']:.3f}, 换手={best.get('turnover', 0.0):.1%})。",
         "",
         "> 注:RankIC 高不代表实盘更优,需结合换手/容量/稳健性综合判断;"
         "若 ML 未显著胜出,线性方法因更稳健/可解释而更可运营——诚实记录即结论。",
+        "",
+        "> **换手口径**:相邻期 **top 分位成分**的变动率均值 `|Tₜ\\Tₜ₋₁|/|Tₜ|`。"
+        "组合因子是截面打分不是权重,故量成分换手而非权重 L1;桶内次序变动不计"
+        "(不产生交易)。跨方法比较时:RankIC 相近而换手高者,成本后大概率更差。",
     ]
     if importance_df is not None:
         lines += ["", "## LightGBM 因子重要性", "", "| 因子 | 重要性 | 方法 |", "|------|-------|------|"]

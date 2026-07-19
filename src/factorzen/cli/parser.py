@@ -540,7 +540,8 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_rb.add_argument(
         "--only-file", dest="only_file", default=None,
         help="定向重估：从文件读表达式（一行一条，'#' 开头与空行跳过）；语义同 --only，"
-             "供上百条批量补账（如补算存量 admission_ic / lift_metric）",
+             "供上百条批量补账（如补算存量 lift_metric；admission_ic 仅 lift 轨可补——"
+             "single 轨的裸 IC 就是 ic_train）",
     )
     _add_freq_arg(fl_rb)
     fl_rb.set_defaults(func=commands._cmd_factor_library_rebuild)

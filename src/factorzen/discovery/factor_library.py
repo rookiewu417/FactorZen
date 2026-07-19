@@ -2111,6 +2111,13 @@ def rebuild(
     ``targeted_missing``）。用于「算子实现变更后补一小撮记录」「补算存量
     ``admission_ic`` / ``lift_metric``」这类账，避免为几条记录付全库重估的代价。
 
+    **补算 ``admission_ic`` 只对 lift 轨有效**（走复审、由 ``run_lift_tests`` 现算）。
+    single 轨补不了：生产 ``evaluate`` 闭包（``build_library_evaluator``）产出的候选
+    dict 里根本没有 ``admission_ic`` 键——那是残差 lift 实验的产物，裸口径 gate 不算。
+    single 轨也不需要它：``ic_train`` 就是它的裸 IC，``forward_review`` 已按
+    「``admission_ic`` 优先、``ic_train`` 兜底」解析方向；``lift_admission`` 的裸 IC
+    同号门只在 lift 轨生效，single 轨结构上不经过。
+
     全量 rebuild 的级联有**四个独立来源**，定向模式四个全堵：
     1. ``fresh`` 清库 → 定向**强制 ``fresh=False``**（清库会直接毁掉子集之外的记录）；
     2. ``evaluate(全部 sources)`` → 定向只喂子集；

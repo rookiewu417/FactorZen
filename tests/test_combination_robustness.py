@@ -85,3 +85,72 @@ def test_combine_oos_survives_heterogeneous_coverage():
     assert out.height > 0
     covered = set(out["ts_code"].to_list())
     assert covered & set(codes[:half]) and covered & set(codes[half:])
+
+
+def test_duplicate_join_keys_do_not_explode_rows():
+    """因子面板含少量重复 (trade_date, ts_code) 时，链式 outer join 不得笛卡尔积爆炸。
+
+    **实测根因（2026-07-19）**：`_zscore_and_merge` 把 k 个因子链式 full join，
+    每次遇重复键行数相乘。生产物化产物里几乎每个因子面板都有 3 行重复
+    （2026-06-30 的 6 只 603xxx，每键 4 条），重复率仅 0.0006%——
+    但 62 个因子链式 join 下按 4^n 放大：逐步打点实测
+
+        join #5: 6786 行 → join #10: 1,051,266 行（5 次 join 涨 155 倍）
+
+    最终 anon-rss 打满 23GB 被 OOM killer 杀。P1-① 阶段 2 的四次尝试全折在这里。
+
+    键唯一性是链式 join 的**前提**，不该假设成立而不校验——上游任何一处重复
+    都会被指数放大成 OOM。
+    """
+    from factorzen.research.combination.methods import _zscore_and_merge
+
+    n_days, n_stocks, k = 6, 20, 8
+    dates = [f"2025010{i + 1}" for i in range(n_days)]
+    codes = [f"{s:04d}.SZ" for s in range(n_stocks)]
+    rng = np.random.default_rng(3)
+
+    factor_dfs = {}
+    for j in range(k):
+        rows = [
+            {"trade_date": d, "ts_code": c, "factor_value": float(rng.standard_normal())}
+            for d in dates
+            for c in codes
+        ]
+        # 每个因子在同一个 (日, 股) 上多出 3 条重复（模拟生产的 4 条/键）
+        dup_key = (dates[0], codes[0])
+        rows += [
+            {"trade_date": dup_key[0], "ts_code": dup_key[1],
+             "factor_value": float(rng.standard_normal())}
+            for _ in range(3)
+        ]
+        factor_dfs[f"f{j}"] = pl.DataFrame(rows)
+
+    merged, names = _zscore_and_merge(factor_dfs)
+
+    assert len(names) == k
+    # 唯一键数就是行数上界；未防御时这里是 4**8 = 65536 量级
+    assert merged.height == n_days * n_stocks, (
+        f"链式 join 把 {k} 个因子的重复键放大到 {merged.height} 行"
+        f"（应为 {n_days * n_stocks}）"
+    )
+    assert merged.select(["trade_date", "ts_code"]).unique().height == merged.height
+
+
+def test_duplicate_join_keys_emit_warning():
+    """重复键必须告警——静默去重会掩盖上游数据缺陷（本例真实来源仍未查清）。"""
+    from factorzen.research.combination.methods import _zscore_and_merge
+
+    base = [
+        {"trade_date": "20250101", "ts_code": "0001.SZ", "factor_value": 1.0},
+        {"trade_date": "20250101", "ts_code": "0002.SZ", "factor_value": 2.0},
+    ]
+    dfs = {
+        "clean": pl.DataFrame(base),
+        "dirty": pl.DataFrame([
+            *base,
+            {"trade_date": "20250101", "ts_code": "0001.SZ", "factor_value": 9.0},
+        ]),
+    }
+    with pytest.warns(UserWarning, match="重复"):
+        merged, _ = _zscore_and_merge(dfs)
+    assert merged.height == 2

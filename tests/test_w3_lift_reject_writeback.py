@@ -237,7 +237,7 @@ def _write_session(tmp_path: Path, *, index_path: str | None, expr: str = "rank(
             "attempts": [{
                 "expression": expr,
                 "reject_category": "lift_queue",
-                "residual_ic_train": 0.006,
+                "residual_ic_train": 0.02,
                 "ic_train": 0.02,
                 "n_residual_holdout_days": 100,
             }],
@@ -279,13 +279,13 @@ def test_cli_apply_writes_lift_rejects_to_index(tmp_path, monkeypatch):
                 {
                     "expression": "rank(close)",
                     "reject_category": "lift_queue",
-                    "residual_ic_train": 0.006,
+                    "residual_ic_train": 0.02,
                     "ic_train": 0.02,
                 },
                 {
                     "expression": "rank(vol)",
                     "reject_category": "lift_queue",
-                    "residual_ic_train": 0.007,
+                    "residual_ic_train": 0.015,
                     "ic_train": 0.015,
                 },
             ],
@@ -381,7 +381,7 @@ def test_cli_apply_group_gate_fail_writes(tmp_path, monkeypatch):
             "attempts": [{
                 "expression": "rank(close)",
                 "reject_category": "lift_queue",
-                "residual_ic_train": 0.006,
+                "residual_ic_train": 0.02,
                 "ic_train": 0.02,
             }],
             "candidates": [],
@@ -449,7 +449,7 @@ def test_cli_dry_run_zero_index_write(tmp_path, monkeypatch):
             "attempts": [{
                 "expression": "rank(close)",
                 "reject_category": "lift_queue",
-                "residual_ic_train": 0.006,
+                "residual_ic_train": 0.02,
             }],
             "candidates": [],
             "params": {

@@ -280,6 +280,72 @@ def classify_reject_category(reasons: list[str]) -> str | None:
     return None
 
 
+def _use_residual_objective(candidate: dict, objective: str | None) -> bool:
+    """候选按残差口径还是裸 IC 口径判定。"""
+    if objective == "raw":
+        return False
+    if objective == "residual":
+        return True
+    # 未显式指定：有残差 train IC 即 residual 口径（挖掘落盘字段）
+    return candidate.get("residual_ic_train") is not None
+
+
+def ic_floor_for_candidate(candidate: dict, *, objective: str | None = None) -> float:
+    """候选适用的 lift 队列 |IC| 噪声地板。
+
+    残差口径 → ``DEFAULT_GRAY_IC_FLOOR``；裸 IC 口径 → ``DEFAULT_RAW_GRAY_IC_FLOOR``。
+    """
+    if _use_residual_objective(candidate, objective):
+        return DEFAULT_GRAY_IC_FLOOR
+    return DEFAULT_RAW_GRAY_IC_FLOOR
+
+
+def candidate_train_ic(candidate: dict, *, objective: str | None = None) -> float | None:
+    """候选用于与地板比较的 train |IC| 原值；None/NaN → None。"""
+    if _use_residual_objective(candidate, objective):
+        ic = candidate.get("residual_ic_train")
+    else:
+        ic = candidate.get("ic_train")
+    if ic is None:
+        return None
+    try:
+        val = float(ic)
+    except (TypeError, ValueError):
+        return None
+    if val != val:  # NaN
+        return None
+    return val
+
+
+def is_sub_floor_candidate(
+    candidate: dict,
+    *,
+    objective: str | None = None,
+    floor: float | None = None,
+) -> bool:
+    """候选的 |train IC| 是否低于噪声地板（= lift 队列下界）。
+
+    **只看地板这一条**（不含 ``is_lift_queue_candidate`` 的覆盖门 / 库重复门），
+    供组门连坐防呆预过滤使用：把「按当前地板本就不该在队列里」的历史积压剔出组门，
+    避免噪声在等权残差组合里稀释真信号、导致整组连坐拒
+    （2026-07-17 事故：130/150 条 sub-floor → 组 lift=-0.0007 全体拒）。
+
+    ``floor``：显式覆盖；``None`` 时按候选口径取
+    ``DEFAULT_GRAY_IC_FLOOR`` / ``DEFAULT_RAW_GRAY_IC_FLOOR``。
+
+    **无可比 IC 指标（None/NaN）→ False**（不算 sub-floor，不过滤）。
+    只拦「实测到的噪声」，不拦「没测过的」——``--factor`` 注入的 registry python
+    候选不带 ic_train，判 True 会把该路径整个过滤空。
+    """
+    ic = candidate_train_ic(candidate, objective=objective)
+    if ic is None:
+        return False
+    lo = floor if floor is not None else ic_floor_for_candidate(
+        candidate, objective=objective,
+    )
+    return abs(ic) < float(lo)
+
+
 def is_lift_queue_candidate(candidate: dict, *, objective: str | None = None) -> bool:
     """lift 队列判定：对组合 lift 实验仍有价值的候选（无 IC 上界）。
 
@@ -311,24 +377,12 @@ def is_lift_queue_candidate(candidate: dict, *, objective: str | None = None) ->
         except (TypeError, ValueError):
             pass
 
-    if objective == "raw":
-        use_residual = False
-    elif objective == "residual":
-        use_residual = True
-    else:
-        # 未显式指定：有残差 train IC 即 residual 口径（挖掘落盘字段）
-        use_residual = candidate.get("residual_ic_train") is not None
-
-    if use_residual:
+    if _use_residual_objective(candidate, objective):
         n_days = candidate.get("n_residual_holdout_days")
-        ic = candidate.get("residual_ic_train")
-        lo = DEFAULT_GRAY_IC_FLOOR
     else:
         n_days = candidate.get("n_holdout_days")
         if n_days is None:
             n_days = candidate.get("holdout_n_days")
-        ic = candidate.get("ic_train")
-        lo = DEFAULT_RAW_GRAY_IC_FLOOR
 
     if n_days is None:
         return False
@@ -337,9 +391,10 @@ def is_lift_queue_candidate(candidate: dict, *, objective: str | None = None) ->
             return False
     except (TypeError, ValueError):
         return False
-    if ic is None or ic != ic:  # None / NaN
+    # 条件 3（地板）与 is_sub_floor_candidate 共用单一真源
+    if candidate_train_ic(candidate, objective=objective) is None:
         return False
-    return abs(float(ic)) >= lo
+    return not is_sub_floor_candidate(candidate, objective=objective)
 
 
 def is_gray_zone(candidate: dict, *, objective: str | None = None) -> bool:

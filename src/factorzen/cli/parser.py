@@ -531,6 +531,17 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_rb.add_argument("--decorr-threshold", dest="decorr_threshold", type=float, default=0.7,
                        help="去相关 |corr| 门槛，超此仍收录但标 correlated（默认0.7）")
     fl_rb.add_argument("--holdout-ratio", dest="holdout_ratio", type=float, default=0.2)
+    fl_rb.add_argument(
+        "--only", nargs="+", default=None,
+        help="定向重估：只重估这些表达式（自动规范化，须已在库）。不清库、不重估其余记录、"
+             "lift 复审也只覆盖子集；去相关**只降不升**（可下调 correlated，绝不上调 "
+             "active——上调要跑全量 rebuild）。与 --only-file 可同时给（取并集）",
+    )
+    fl_rb.add_argument(
+        "--only-file", dest="only_file", default=None,
+        help="定向重估：从文件读表达式（一行一条，'#' 开头与空行跳过）；语义同 --only，"
+             "供上百条批量补账（如补算存量 admission_ic / lift_metric）",
+    )
     _add_freq_arg(fl_rb)
     fl_rb.set_defaults(func=commands._cmd_factor_library_rebuild)
 
@@ -570,6 +581,17 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "--top-m", dest="top_m", type=int, default=20,
         help="按 |residual_ic_train| 取 top-M 控成本（默认 20；--top-m 0=全测逃生口；"
              "截断会 stderr 大声打印并记 truncated_from）",
+    )
+    fl_lt.add_argument(
+        "--queue-ic-floor", dest="queue_ic_floor", type=float, default=None,
+        help="sub-floor 噪声地板：|train IC| 低于此值的候选默认剔出组门"
+             "（默认按候选口径取 DEFAULT_GRAY_IC_FLOOR=0.008 残差 / "
+             "DEFAULT_RAW_GRAY_IC_FLOOR=0.010 裸 IC；无 IC 指标的候选不受影响）",
+    )
+    fl_lt.add_argument(
+        "--include-sub-floor", dest="include_sub_floor", action="store_true",
+        help="逃生口：sub-floor 候选照旧进组门（复现旧行为）。"
+             "注意组门是等权残差组合，噪声占多数时会连坐拒掉真信号",
     )
     fl_lt.add_argument("--threshold", type=float, default=None,
                        help="RankIC lift 阈值（默认 DEFAULT_LIFT_THRESHOLD=0.001）")

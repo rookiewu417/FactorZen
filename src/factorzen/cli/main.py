@@ -6,6 +6,7 @@ import argparse
 import dataclasses
 import json
 import sys
+from typing import TYPE_CHECKING
 
 from factorzen.config.settings import (
     FACTOR_EVALUATIONS_DIR,
@@ -16,6 +17,9 @@ from factorzen.config.settings import (
     SIM_DIR,
 )
 from factorzen.experiments.run_paths import run_dir
+
+if TYPE_CHECKING:  # 本模块 Path 一律函数内导入（保持 CLI 启动开销）；此处仅供注解
+    from pathlib import Path
 
 
 def _factor_template(class_name: str, factor_name: str, frequency: str) -> str:
@@ -954,6 +958,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
 def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     from datetime import date
     from datetime import datetime as _dt
+    from pathlib import Path
 
     import polars as pl
 
@@ -963,6 +968,28 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     from factorzen.validation.holdout import split_holdout
 
     market = args.market
+    # ── 定向重估目标（--only / --only-file 并集；均缺省 → None = 全量 rebuild）──
+    only: list[str] | None = None
+    only_raw: list[str] = list(getattr(args, "only", None) or [])
+    only_file = getattr(args, "only_file", None)
+    if only_file:
+        try:
+            for line in Path(only_file).read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    only_raw.append(line)
+        except OSError as exc:
+            print(f"[factor-library] 读取 --only-file 失败：{exc}", file=sys.stderr)
+            return 1
+    if only_raw:
+        only = only_raw
+    elif getattr(args, "only", None) is not None or only_file:
+        # 显式给了定向旗标却解析出空集：静默降级成全量重估会重排全库 status，
+        # 是「以为只动几条、实际动全库」的最坏结果 → fail-loudly
+        print("[factor-library] --only/--only-file 解析出空目标集；"
+              "如需全量重估请不带这两个旗标重跑", file=sys.stderr)
+        return 1
+
     # A 股不带 --universe = 全 A 5000+ 只拉取，多年窗口必 OOM（实测 ~22GB 被杀）；
     # 库的评估口径历史上一直是命名池（csi300），无池 rebuild 几乎必为误操作。
     if market == "ashare" and not getattr(args, "universe", None):
@@ -1049,6 +1076,7 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
         leaf_map=leaf_map, decorr_threshold=args.decorr_threshold,
         daily=daily, profile=profile,
         admission_start=lift_adm_start, admission_end=lift_adm_end,
+        only=only,
     )
     # lift 轨复审失败时 rebuild 已恢复旧记录；CLI 必须 fail-loudly，禁止「表面成功」
     if res.lift_review_error is not None:
@@ -1058,8 +1086,19 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"[factor-library] {market} rebuild：新增 {res.added} / 更新 {res.updated} / "
+    mode = f"定向重估 {len(only)} 条" if only else "全量 rebuild"
+    print(f"[factor-library] {market} {mode}：新增 {res.added} / 更新 {res.updated} / "
           f"标记 correlated {res.correlated} / 跳过 {res.skipped}（窗口 {start}–{end}）")
+    if only:
+        # 定向语义必须每次说清楚：操作者最容易误以为「重估完 correlated 会自动升回来」
+        print("[factor-library] 定向重估：只刷新指标 + 只降不升"
+              "（correlated/no_lift 升回 active 需跑全量 rebuild）")
+    if res.gate_failed:
+        # 指标已按真值刷新，但这些记录已不满足 library gate 却仍留在库里 → 必须大声说
+        print(f"[factor-library] 警告：{len(res.gate_failed)} 条定向目标重估后不再满足 "
+              f"library gate（指标已刷新，status 未裁决，需人工复核或跑全量 rebuild）："
+              f"{', '.join(res.gate_failed[:10])}"
+              f"{' …' if len(res.gate_failed) > 10 else ''}", file=sys.stderr)
     print(f"[factor-library] → {FACTOR_LIBRARY_DIR}/{market}.jsonl + {market}.md")
     return 0
 
@@ -1263,6 +1302,23 @@ def _cmd_factor_library_lift_null(args: argparse.Namespace) -> int:
     print("[lift-null] 统计层下界：真实链路含选择偏差，误准入只会更高")
     print(format_calibration_markdown(rows))
     return 0
+
+
+def _timestamped_sibling(path: Path) -> Path:
+    """``x.json`` → ``x_{YYYYmmddTHHMMSS}.json``，**保证不覆写已存在文件**。
+
+    同秒重跑（或时钟回拨）撞名时追加 ``_2``/``_3``…… 后缀——审计归档一旦落盘
+    就不可变，静默覆盖等于丢证据。
+    """
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+    cand = path.with_name(f"{path.stem}_{ts}{path.suffix}")
+    n = 2
+    while cand.exists():
+        cand = path.with_name(f"{path.stem}_{ts}_{n}{path.suffix}")
+        n += 1
+    return cand
 
 
 def _lift_admission_str(v) -> str | None:
@@ -1488,7 +1544,12 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
 
     from factorzen.core.experiment import get_git_sha
     from factorzen.discovery import factor_library as fl
-    from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
+    from factorzen.discovery.guardrails import (
+        DEFAULT_GRAY_IC_FLOOR,
+        DEFAULT_LIFT_THRESHOLD,
+        DEFAULT_RAW_GRAY_IC_FLOOR,
+        is_sub_floor_candidate,
+    )
     from factorzen.discovery.lift_test import (
         DEFAULT_HORIZON,
         LiftEvalContext,
@@ -1751,13 +1812,76 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
 
     results: list[dict] = []
     all_dropped: list[dict] = []
+    all_sub_floor: list[dict] = []
     lift_groups_meta: list[dict] = []
     truncated_from: int | None = None
     n_lift_evaluated = 0
 
+    # 组门连坐防呆：组门是「整批候选等权残差组合」的短路门，噪声占多数时会
+    # 稀释真信号、把整组连坐拒掉（2026-07-17 事故：130/150 sub-floor →
+    # 组 lift=-0.0007 → 150 条全拒 + 写回 lift_rejected）。sub-floor 候选按
+    # 当前噪声地板本就不该在 lift 队列里（地板收紧前入队的历史积压），
+    # 故默认剔出组门 = 恢复不变量；--include-sub-floor 为逃生口。
+    queue_ic_floor = getattr(args, "queue_ic_floor", None)
+    include_sub_floor = bool(getattr(args, "include_sub_floor", False))
+
     for g_start, g_end, cands in groups:
-        n_in = len(cands)
-        ordered = sorted(cands, key=_rank_ic_key, reverse=True)
+        if include_sub_floor:
+            in_floor = list(cands)
+            sub_floor = [
+                c for c in cands
+                if is_sub_floor_candidate(c, floor=queue_ic_floor)
+            ]
+        else:
+            in_floor, sub_floor = [], []
+            for c in cands:
+                (sub_floor if is_sub_floor_candidate(c, floor=queue_ic_floor)
+                 else in_floor).append(c)
+        if sub_floor:
+            floor_desc = (
+                f"{queue_ic_floor}" if queue_ic_floor is not None
+                else f"{DEFAULT_GRAY_IC_FLOOR}(残差)/{DEFAULT_RAW_GRAY_IC_FLOOR}(裸IC)"
+            )
+            share = len(sub_floor) / max(1, len(cands))
+            action = "保留进组门（--include-sub-floor）" if include_sub_floor else "剔出组门"
+            print(
+                f"[factor-library lift-test] 警告：{len(sub_floor)}/{len(cands)} 个候选低于"
+                f"噪声地板 sub-floor（floor={floor_desc}）→ {action}"
+                f"（组 {g_start or '—'}~{g_end or '—'}）",
+                file=sys.stderr,
+            )
+            if share >= 0.5:
+                # 事故形态：噪声占多数。组门等权组合会被噪声主导。
+                print(
+                    f"[factor-library lift-test] 警告：sub-floor 占比 {share:.0%} ≥50%，"
+                    "属「历史积压全量复测」形态——组门是小队列短路语义，"
+                    "噪声占主时整组连坐拒会误杀真信号"
+                    + ("（当前 --include-sub-floor 已关闭防呆，风险自负）"
+                       if include_sub_floor else "（已按默认防呆剔除）"),
+                    file=sys.stderr,
+                )
+            # 记账：被剔者不产生 results 行，故不会被写回 lift_rejected
+            all_sub_floor.extend(
+                {
+                    "expression": c.get("expression"),
+                    "ic_train": c.get("ic_train"),
+                    "residual_ic_train": c.get("residual_ic_train"),
+                    "admission_start": g_start,
+                    "admission_end": g_end,
+                    "filtered": not include_sub_floor,
+                }
+                for c in sub_floor
+            )
+        if not in_floor:
+            lift_groups_meta.append({
+                "admission_start": g_start,
+                "admission_end": g_end,
+                "skipped": "empty_after_sub_floor",
+            })
+            continue
+
+        n_in = len(in_floor)
+        ordered = sorted(in_floor, key=_rank_ic_key, reverse=True)
         if top_m is not None and n_in > top_m:
             selected = ordered[:top_m]
             truncated_from = (truncated_from or 0) + n_in
@@ -2012,6 +2136,11 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         "admissions": admissions,
         "lift_dropped_coverage": all_dropped,
         "lift_group": lift_group_field,
+        # 组门连坐防呆记账（sub_floor_filtered=False 即逃生口开着，如实记但未剔）
+        "queue_ic_floor": queue_ic_floor,
+        "n_sub_floor": len(all_sub_floor),
+        "sub_floor_filtered": not include_sub_floor,
+        "lift_dropped_sub_floor": all_sub_floor,
     }
     if truncated_from is not None:
         lift_manifest["truncated_from"] = truncated_from
@@ -2021,10 +2150,15 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         # 仅 --factor：落库根目录可审计
         Path(lib_root).mkdir(parents=True, exist_ok=True)
         out_man = Path(lib_root) / f"lift_test_{market}_manifest.json"
-    out_man.write_text(
-        json.dumps(lift_manifest, ensure_ascii=False, indent=2), encoding="utf-8",
-    )
-    print(f"[factor-library lift-test] → {out_man}")
+    payload = json.dumps(lift_manifest, ensure_ascii=False, indent=2)
+    # 审计保全：先落**不可变时间戳归档**，再覆写稳定名做 latest 指针。
+    # 2026-07-17 事故：失败的全量复测覆写掉了此前 top-20 成功的 manifest
+    # （n_passed=2 的证据文件丢失）。归档永不覆写 → 成功证据不可被后续 run 抹掉；
+    # 稳定名保持原路径原语义 → 下游（文档/人工/测试）零回归。
+    archive = _timestamped_sibling(out_man)
+    archive.write_text(payload, encoding="utf-8")
+    out_man.write_text(payload, encoding="utf-8")
+    print(f"[factor-library lift-test] → {out_man}（归档 {archive.name}）")
     return 0
 
 

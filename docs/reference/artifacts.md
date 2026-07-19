@@ -49,7 +49,7 @@ FactorZen 严格区分两个根目录：
 |---|---|---|
 | `factor.parquet` | 116 MB | 因子面板（全时段全标的），最大的文件 |
 | `universe.parquet` | 7.1 MB | 逐日 universe 快照，PIT 自查用 |
-| `report.html` | ~490 KB | 单页 tear sheet；7 张图以 base64 PNG 内嵌，故体积随图数增长 |
+| `report.html` | 98 KB | 单页 tear sheet |
 | `manifest.json` | 3.6 KB | 复现清单，见 §3.1 |
 | `ic.parquet` | 6.2 KB | 逐日 IC 序列 |
 | `quality.json` | 1.0 KB | 因子质量指标 |
@@ -75,7 +75,8 @@ manifest.json   metrics.json   nav.parquet
 | 文件 | 体量 | 内容 |
 |---|---|---|
 | `manifest.json` | 441 KB | session 全记录（attempts / candidates / lift 结果），见 §3.3 |
-| `lift_test_manifest.json` | 83 KB | lift 准入复审记录 |
+| `lift_test_manifest.json` | 83 KB | lift 准入复审记录（最新一次；每次运行覆写） |
+| `lift_test_manifest_{YYYYmmddTHHMMSS}.json` | 83 KB | 同上的**不可变归档**，每次运行新增一份、永不覆写 |
 | `candidates.csv` | 38 B | 存活候选摘要（该 run 几乎为空） |
 
 `fz mine team` 还会在 `mine_team/_pool_cache/{key}/` 下建池缓存目录。
@@ -242,6 +243,11 @@ n_lift_evaluated, lift_dropped_coverage[], lift_error, objective, git_sha
 | `server/artifacts.py:40,77` | **读**取端 | 扫 `<workspace>/<domain>/<run_id>/manifest.json` 建索引，供只读展示 server |
 
 变体文件名：`rebuild_{market}_manifest.json`、`input_manifest.json`（combinations）、`lift_test_manifest.json`（mine_team）、`job_manifest.txt`（architecture_review，**非 JSON**）。
+
+lift-test 每次运行落**两份**：稳定名 `lift_test_manifest.json`（latest 指针，覆写）
++ 时间戳归档 `lift_test_manifest_{YYYYmmddTHHMMSS}.json`（永不覆写）。
+归档保证成功运行的证据不被后续失败运行抹掉；只读展示 server 按精确名
+`manifest.json` 建索引，不扫这两者，故无影响。
 
 ---
 

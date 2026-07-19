@@ -496,6 +496,94 @@ def test_rebuild_lift_to_probation(tmp_path):
     assert man["n_lift_active"] == 0
 
 
+def test_rebuild_lift_review_refreshes_admission_ic(tmp_path):
+    """复审必须把 runner 现算的 ``admission_ic`` 写回记录（方向权威，不能只留旧值）。
+
+    真实事故：库内 2 条 lift 轨 probation 的 ``admission_ic`` 是 trade_date 格式 P0
+    留下的哨兵 ``0.0``；``run_lift_tests`` 每次复审都现算正确值供 ``lift_admission``
+    判门，但写回循环只搬 ``lift_*`` 字段 → 哨兵永不刷新 →
+    ``forward_review`` 的 ``_sign_from_ic_train(0.0)`` 恒 None → 永判 ``missing_sign``，
+    记录卡死 probation 无法晋升/降级。
+    """
+    from factorzen.discovery.factor_library import (
+        FactorRecord,
+        _save_library,
+        load_library,
+        rebuild,
+    )
+
+    _save_library("ashare", [
+        FactorRecord(
+            expression="rank(close)", market="ashare", status="active",
+            admission_track="single", ic_train=0.05, holdout_ic=0.04,
+            n_train=100, added_at="2026-07-01", updated_at="2026-07-01",
+        ),
+        FactorRecord(
+            # 哨兵 0.0：方向解析不出来
+            expression="rank(vol)", market="ashare", status="probation",
+            admission_track="lift", ic_train=0.01, lift=0.01, admission_ic=0.0,
+            added_at="2026-07-02", updated_at="2026-07-02",
+        ),
+    ], root=str(tmp_path))
+
+    def evaluate(exprs):
+        return [{
+            "expression": "rank(close)", "ic_train": 0.05, "holdout_ic": 0.04,
+            "n_train": 100, "n_holdout_days": 100,
+        }]
+
+    def runner(cands, **kw):
+        return [_lift_row(
+            cands[0]["expression"], lift=0.006, lift_se=0.001,
+            lift_second_half=0.003, admission_ic=-0.031,
+        )]
+
+    rebuild(
+        "ashare", sources=["rank(close)"],
+        eval_window=("20200101", "20260101"), universe="u", horizon=1,
+        evaluate=evaluate, git_sha="x", now="2026-07-14", root=str(tmp_path),
+        lift_runner=runner, active_factor_dfs={},
+    )
+    rec = {r.expression: r for r in load_library("ashare", root=str(tmp_path))}["rank(vol)"]
+    # 取负值断言：既证明「刷新了」，又证明没被 ic_train(+0.01) 或 |值| 冒名顶替
+    assert rec.admission_ic == -0.031, rec.admission_ic
+
+    # 方向已可解析（哨兵 0.0 会返回 None → 卡死 missing_sign）
+    from factorzen.discovery.forward_track import _sign_from_ic_train
+
+    assert _sign_from_ic_train(rec.admission_ic) == -1.0
+
+
+def test_rebuild_lift_review_keeps_admission_ic_when_row_lacks_it(tmp_path):
+    """runner 未给 ``admission_ic``（如 error 行）→ 保留旧值，不写 None 抹掉方向。"""
+    from factorzen.discovery.factor_library import (
+        FactorRecord,
+        _save_library,
+        load_library,
+        rebuild,
+    )
+
+    _save_library("ashare", [
+        FactorRecord(
+            expression="rank(vol)", market="ashare", status="active",
+            admission_track="lift", ic_train=0.01, lift=0.01, admission_ic=0.042,
+            added_at="2026-07-02", updated_at="2026-07-02",
+        ),
+    ], root=str(tmp_path))
+
+    rebuild(
+        "ashare", sources=[],
+        eval_window=("20200101", "20260101"), universe="u", horizon=1,
+        evaluate=lambda exprs: [], git_sha="x", now="2026-07-14", root=str(tmp_path),
+        lift_runner=lambda cands, **kw: [_lift_row(
+            cands[0]["expression"], lift=0.006, lift_se=0.001, lift_second_half=0.003,
+        )],
+        active_factor_dfs={},
+    )
+    rec = {r.expression: r for r in load_library("ashare", root=str(tmp_path))}["rank(vol)"]
+    assert rec.admission_ic == 0.042, rec.admission_ic
+
+
 def test_upsert_lift_admissions_never_overwrites_single_track_active(tmp_path):
     """single 轨 active 记录不被 lift 批次覆盖/降级（与 rebuild 侧守卫同语义）。"""
     from factorzen.discovery.factor_library import (

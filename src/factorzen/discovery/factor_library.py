@@ -1190,6 +1190,26 @@ _TARGETED_CARRY_IF_MISSING_FIELDS = (
 )
 
 
+# rebuild 的 lift 复审把 runner 现算的 row 搬回记录。**语义 = row 给了才覆盖**
+# （error 行整套字段为 None，覆盖等于把旧证据抹成空白）。
+#
+# 与 `upsert_lift_admissions` 的 `_record_from_candidate(dict(row))` 是**同一批字段**——
+# 那条路径靠「row 即候选 dict」天然全量透传，这条靠逐字段搬。两处必须同步：
+# 曾经这里只搬 lift_*，导致 `admission_ic` 永不刷新，库内 2 条 lift probation 记录
+# 一直留着 trade_date 格式 P0 的哨兵 0.0 → `forward_review` 恒判 missing_sign 卡死。
+_LIFT_REVIEW_FLOAT_FIELDS = (
+    "lift", "lift_se", "lift_first_half", "lift_second_half",
+    "admission_ic",  # 方向权威：0.0 哨兵不刷新会让 forward_review 永远解析不出方向
+)
+# lift_threshold / lift_se_mult 不在此列：row 的 meta 只有 "threshold"，且
+# `run_lift_tests` 压根不收 se_mult。判门实际用的是 rebuild 自己的入参，
+# 直接照实写（见下方 `_LIFT_REVIEW_*` 的使用点），不从 row 反推。
+_LIFT_REVIEW_PROVENANCE_FIELDS = (
+    "admission_start", "admission_end", "scored_start", "scored_end",
+    "baseline_hash", "profile_name", "frequency",
+)
+
+
 def _carry_state_from_prev(rec: FactorRecord, prev: FactorRecord) -> None:
     """定向重估：把 ``prev`` 的状态/轨道/provenance 搬到刚建好的 ``rec`` 上（原地）。
 
@@ -2363,25 +2383,28 @@ def rebuild(
                 updated.updated_at = now
                 updated.admission_track = "lift"
                 if lift_row:
-                    if lift_row.get("lift") is not None:
-                        updated.lift = _as_float(lift_row.get("lift"))
                     if lift_row.get("lift_baseline", lift_row.get("baseline")) is not None:
                         updated.lift_baseline = _as_float(
                             lift_row.get("lift_baseline", lift_row.get("baseline"))
                         )
-                    if lift_row.get("lift_se") is not None:
-                        updated.lift_se = _as_float(lift_row.get("lift_se"))
-                    if lift_row.get("lift_first_half") is not None:
-                        updated.lift_first_half = _as_float(lift_row.get("lift_first_half"))
-                    if lift_row.get("lift_second_half") is not None:
-                        updated.lift_second_half = _as_float(lift_row.get("lift_second_half"))
+                    for _f in _LIFT_REVIEW_FLOAT_FIELDS:
+                        if lift_row.get(_f) is not None:
+                            setattr(updated, _f, _as_float(lift_row.get(_f)))
+                    for _f in _LIFT_REVIEW_PROVENANCE_FIELDS:
+                        if lift_row.get(_f) is not None:
+                            setattr(updated, _f, lift_row.get(_f))
                     lm = lift_row.get("lift_metric")
                     if lm is not None:
                         updated.lift_metric = str(lm)
-                    nlf = lift_row.get("n_lib_factors")
-                    if nlf is not None:
-                        with contextlib.suppress(TypeError, ValueError):
-                            updated.n_lib_factors = int(nlf)
+                    for _f in ("n_lib_factors", "block_days", "cv_train_days",
+                               "cv_test_days"):
+                        _v = lift_row.get(_f)
+                        if _v is not None:
+                            with contextlib.suppress(TypeError, ValueError):
+                                setattr(updated, _f, int(_v))
+                    # 判门实际用的阈值/SE 倍数（rebuild 入参，非 row 反推）
+                    updated.lift_threshold = float(lift_threshold)
+                    updated.lift_se_mult = float(se_mult)
 
                 # 复审不 cap：decision 即 status（保留既有 active，非 auto-lift 新晋升）
                 if decision == "active":

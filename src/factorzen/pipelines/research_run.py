@@ -110,10 +110,12 @@ def run_research(*, start: str, end: str, universe: str | None = None,
                  turnover: float | None = None, industry_neutral: bool = False,
                  lookback: int = 60, run_id: str | None = None,
                  out_root: str = "workspace", command: list[str] | None = None,
-                 intraday: bool = False, intraday_freq: str = "5min") -> dict:
+                 intraday: bool = False, intraday_freq: str = "5min",
+                 intraday_expr_leaves: list[str] | None = None) -> dict:
     """一条命令跑通 mine → 头部 passed 因子 → 按调仓日循环 build → sim → report。
 
-    ``intraday`` / ``intraday_freq`` 透传给 ``run_mine``，把 i_* 叶子纳入挖掘搜索空间；
+    ``intraday`` / ``intraday_freq`` / ``intraday_expr_leaves`` 透传给 ``run_mine``，
+    把 i_*（17 个 builtin）与 ix_*（scout 提案的 bar 级表达式叶）纳入挖掘搜索空间；
     α 面板经 ``ExpressionFactor.compute`` 在表达式含 i_* 时自动 attach 日内面板，
     风险/组合/sim 不直接消费 i_* 叶子。
 
@@ -144,7 +146,8 @@ def run_research(*, start: str, end: str, universe: str | None = None,
     # ── 1) 挖掘 → 选头部 passed 因子 ──
     mine_res = run_mine(start=start, end=end, universe=universe, n_trials=n_trials,
                         top_k=top_k, seed=seed, method=method,
-                        intraday=intraday, intraday_freq=intraday_freq)
+                        intraday=intraday, intraday_freq=intraday_freq,
+                        intraday_expr_leaves=intraday_expr_leaves)
     expr = _select_passed_expression(mine_res["candidates"])
 
     # ── 2) 整段因子面板：union 拉取（替代期末快照，消除调出股整窗消失）──

@@ -169,3 +169,51 @@ def test_prompt_injects_notes_only_when_i_star_leaves():
     assert ASHARE_INTRADAY_LEAF_NOTES not in stripped
     assert "i_rv" in stripped
 
+
+
+def test_run_mine_passes_intraday_expr_leaves_through(monkeypatch):
+    """`ix_*` 表达式叶必须从 `run_mine` 一路透传到 `prepare_mining_daily`。
+
+    latent 接线缺口（2026-07-19 补）：`run_mine` 签名原本只有 `intraday` /
+    `intraday_freq`，没有 `intraday_expr_leaves`。前者管 17 个 builtin `i_*`，
+    后者管 scout 提案的 `ix_*` bar 级表达式叶——**是两套东西**。漏传则 `ix_*`
+    求值时列不存在，静默变成「编译失败 → 不入候选」，`fz mine search` /
+    `fz research run` 永远拿不到 scout 产物。
+    """
+    import factorzen.pipelines.factor_mine  # noqa: F401  （见上方首次导入陷阱注释）
+
+    calls: list[dict] = []
+
+    def _fake_prepare(*a, **kw):
+        calls.append(kw)
+        return pl.DataFrame({
+            "trade_date": [__import__("datetime").date(2024, 1, 2)] * 2,
+            "ts_code": ["A", "B"], "close": [1.0, 2.0], "close_adj": [1.0, 2.0],
+        })
+
+    monkeypatch.setattr(
+        "factorzen.discovery.preparation.prepare_mining_daily", _fake_prepare,
+    )
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine.prepare_mining_daily", _fake_prepare,
+    )
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine.run_session",
+        lambda *a, **kw: {"session_dir": None, "candidates": []},
+    )
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine._inject_membership_into_session_manifest",
+        lambda *a, **kw: None,
+    )
+
+    from factorzen.pipelines.factor_mine import run_mine
+
+    run_mine(start="20240101", end="20240601", universe=None,
+             intraday=True, intraday_expr_leaves=["ix_abc12345"])
+
+    assert calls, "prepare_mining_daily 未被调用"
+    assert calls[0].get("intraday_expr_leaves") == ["ix_abc12345"], calls[0]
+    # 不传时保持 None（零回归）
+    calls.clear()
+    run_mine(start="20240101", end="20240601", universe=None, intraday=True)
+    assert calls[0].get("intraday_expr_leaves") is None, calls[0]

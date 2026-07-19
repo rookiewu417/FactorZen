@@ -13,8 +13,17 @@ from typing import Any
 import jinja2
 import numpy as np
 
+from factorzen.config.constants import TRADING_DAYS_PER_YEAR
 from factorzen.core.logger import get_logger
-from factorzen.reports._charts import _make_ic_chart, _make_returns_chart
+from factorzen.reports._charts import (
+    _make_benchmark_chart,
+    _make_drawdown_chart,
+    _make_group_bar_chart,
+    _make_group_nav_chart,
+    _make_ic_chart,
+    _make_ic_cumulative_chart,
+    _make_returns_chart,
+)
 from factorzen.reports._formatting import (
     _finite_float,
     _format_metric_number,
@@ -237,6 +246,60 @@ def _build_mono_table(mono_result: Any) -> dict[str, Any] | None:
     }
 
 
+def _build_group_perf_table(mono_result: Any) -> dict[str, Any] | None:
+    """逐组绩效表：每一分组的年化 / Sharpe / 最大回撤 / 胜率。
+
+    数据取自 ``MonotonicityResult.group_daily_returns``（逐日 × 分组等权收益）。
+    **口径**：等权、不含交易成本与交易约束，与组合回测的 Sharpe / 回撤不可直接比较——
+    它回答的是「因子分组本身有没有区分度」，不是「这组能不能交易出来」。
+    """
+    if mono_result is None:
+        return None
+    frame = _safe_attr(mono_result, "group_daily_returns", None)
+    if frame is None or getattr(frame, "is_empty", lambda: True)():
+        return None
+    try:
+        gdr = frame.to_pandas()
+    except Exception:
+        return None
+    if not {"trade_date", "group", "mean_ret"}.issubset(set(gdr.columns)):
+        return None
+    gdr = gdr.dropna(subset=["mean_ret"])
+    if gdr.empty:
+        return None
+
+    groups = sorted(gdr["group"].unique())
+    if len(groups) < 2:
+        return None
+
+    rows: list[dict[str, Any]] = []
+    for g in groups:
+        rets = gdr.loc[gdr["group"] == g, "mean_ret"].to_numpy(dtype=float)
+        rets = rets[np.isfinite(rets)]
+        if rets.size < 2:
+            continue
+        ann_ret = float(np.mean(rets) * TRADING_DAYS_PER_YEAR)
+        ann_vol = float(np.std(rets) * np.sqrt(TRADING_DAYS_PER_YEAR))
+        sharpe = ann_ret / ann_vol if ann_vol > 0 else None
+        nav = np.cumprod(1.0 + rets)
+        max_dd = float(np.min(nav / np.maximum.accumulate(nav) - 1.0))
+        win_rate = float(np.mean(rets > 0))
+        rows.append(
+            {
+                "group": f"G{int(g) + 1}",
+                "ann_ret": _fmt_pct2(ann_ret),
+                "sharpe": _fmt_ratio2(sharpe),
+                "max_dd": _fmt_pct2(max_dd),
+                "win_rate": _fmt_pct2(win_rate),
+                "n_periods": str(int(rets.size)),
+            }
+        )
+
+    if len(rows) < 2:
+        return None
+    return {"rows": rows, "n_groups": len(rows)}
+
+
 def _build_direction_view(backtest_direction: dict[str, Any] | None) -> dict[str, Any]:
     if not backtest_direction:
         return {"is_reversed": False, "label": "正向信号", "reason": ""}
@@ -312,19 +375,27 @@ def generate_tear_sheet(
         quality_report=quality_report,
     )
 
+    group_perf_table = _build_group_perf_table(mono_result)
+
+    # 单图失败不拖垮整页：逐个 try，失败只落 warning 并留空区块
+    chart_specs: list[tuple[str, str, Any]] = [
+        ("returns_chart", "组合净值图", lambda: _make_returns_chart(bt_result, factor_name)),
+        ("drawdown_chart", "回撤曲线", lambda: _make_drawdown_chart(bt_result)),
+        ("benchmark_chart", "基准对比图", lambda: _make_benchmark_chart(benchmark_result)),
+        ("ic_chart", "IC 时序图", lambda: _make_ic_chart(ic_result)),
+        ("ic_cum_chart", "IC 累计图", lambda: _make_ic_cumulative_chart(ic_result)),
+        ("group_nav_chart", "分组净值图", lambda: _make_group_nav_chart(mono_result)),
+        ("group_bar_chart", "分组收益柱状图", lambda: _make_group_bar_chart(mono_result)),
+    ]
     charts: dict[str, str] = {}
-    try:
-        ret_b64 = _make_returns_chart(bt_result, factor_name)
-        if ret_b64:
-            charts["returns_chart"] = ret_b64
-    except Exception:
-        logger.warning("生成分层净值图失败", exc_info=True)
-    try:
-        ic_b64 = _make_ic_chart(ic_result)
-        if ic_b64:
-            charts["ic_chart"] = ic_b64
-    except Exception:
-        logger.warning("生成 IC 图失败", exc_info=True)
+    for key, label, maker in chart_specs:
+        try:
+            b64 = maker()
+        except Exception:
+            logger.warning("生成%s失败", label, exc_info=True)
+            continue
+        if b64:
+            charts[key] = b64
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     meta_parts = [p for p in [date_range, universe, frequency, f"生成时间 {generated_at}"] if p]
@@ -343,5 +414,6 @@ def generate_tear_sheet(
         charts=charts,
         decay_table=decay_table,
         mono_table=mono_table,
+        group_perf_table=group_perf_table,
         warnings=warnings,
     )

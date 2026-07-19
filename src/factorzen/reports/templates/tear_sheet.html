@@ -48,6 +48,14 @@
   .chart { margin: 12px 0; text-align: center; }
   .chart img { max-width: 100%; height: auto; border: 1px solid #e0e0e0; }
   .muted { color: #888; font-size: 0.88rem; }
+  .caveat {
+    font-size: 0.84rem;
+    color: #5a4a20;
+    background: #fdf8e8;
+    border-left: 3px solid #d4b464;
+    padding: 7px 10px;
+    margin: 8px 0 4px;
+  }
   .warnings {
     margin-top: 22px;
     border: 1px solid #e0c080;
@@ -109,20 +117,32 @@
     </tbody>
   </table>
 
-  <!-- 3. 分层净值 -->
-  <h2>分层净值</h2>
+  <!-- 3. 收益与风险：组合净值 + 回撤形态 + 基准归因 -->
+  <h2>收益与风险</h2>
   {% if charts.get('returns_chart') %}
-  <div class="chart"><img src="data:image/png;base64,{{ charts.returns_chart }}" alt="分层净值"></div>
+  <div class="chart"><img src="data:image/png;base64,{{ charts.returns_chart }}" alt="组合净值"></div>
   {% else %}
-  <p class="muted">未计算</p>
+  <p class="muted">组合净值：未计算</p>
   {% endif %}
 
-  <!-- 4. IC 序列（复用 _make_ic_chart：IC 棒图 + 滚动均值） -->
-  <h2>IC 序列</h2>
+  {% if charts.get('drawdown_chart') %}
+  <div class="chart"><img src="data:image/png;base64,{{ charts.drawdown_chart }}" alt="回撤曲线"></div>
+  {% endif %}
+
+  {% if charts.get('benchmark_chart') %}
+  <div class="chart"><img src="data:image/png;base64,{{ charts.benchmark_chart }}" alt="策略与基准对比"></div>
+  {% endif %}
+
+  <!-- 4. 预测能力：IC 时序（单期强弱）+ IC 累计（趋势/失效时点） -->
+  <h2>预测能力</h2>
   {% if charts.get('ic_chart') %}
   <div class="chart"><img src="data:image/png;base64,{{ charts.ic_chart }}" alt="IC 时序"></div>
   {% else %}
-  <p class="muted">未计算</p>
+  <p class="muted">IC 时序：未计算</p>
+  {% endif %}
+
+  {% if charts.get('ic_cum_chart') %}
+  <div class="chart"><img src="data:image/png;base64,{{ charts.ic_cum_chart }}" alt="IC 累计曲线"></div>
   {% endif %}
 
   <!-- 5. IC 衰减表 -->
@@ -144,14 +164,52 @@
   <p class="muted">未计算</p>
   {% endif %}
 
-  <!-- 6. 单调性表 -->
-  <h2>单调性</h2>
+  <!-- 6. 分层有效性：分组净值 + 分组收益 + 逐组绩效 + 单调性结论 -->
+  <h2>分层有效性</h2>
+  {% if charts.get('group_nav_chart') or charts.get('group_bar_chart') or group_perf_table %}
+  <p class="caveat">
+    以下分组口径为<strong>等权、不含交易成本与交易约束</strong>（停牌 / 涨跌停 / T+1），
+    回答「因子分组本身有无区分度」；与上方组合回测净值口径不同，两者数值不可直接比较。
+  </p>
+  {% endif %}
+
+  {% if charts.get('group_nav_chart') %}
+  <div class="chart"><img src="data:image/png;base64,{{ charts.group_nav_chart }}" alt="分组累计净值"></div>
+  {% endif %}
+
+  {% if charts.get('group_bar_chart') %}
+  <div class="chart"><img src="data:image/png;base64,{{ charts.group_bar_chart }}" alt="分组平均收益"></div>
+  {% endif %}
+
+  {% if group_perf_table %}
+  <table>
+    <thead>
+      <tr>
+        <th>分组</th><th>年化收益</th><th>Sharpe</th>
+        <th>最大回撤</th><th>胜率</th><th>期数</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in group_perf_table.rows %}
+      <tr>
+        <td class="group">{{ row.group }}</td>
+        <td class="value">{{ row.ann_ret }}</td>
+        <td class="value">{{ row.sharpe }}</td>
+        <td class="value">{{ row.max_dd }}</td>
+        <td class="value">{{ row.win_rate }}</td>
+        <td class="value">{{ row.n_periods }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
   {% if mono_table %}
   <table>
     <thead><tr><th>分组</th><th>平均收益</th></tr></thead>
     <tbody>
       {% for row in mono_table.rows %}
-      <tr><td>{{ row.group }}</td><td class="value">{{ row.mean_ret }}</td></tr>
+      <tr><td class="group">{{ row.group }}</td><td class="value">{{ row.mean_ret }}</td></tr>
       {% endfor %}
       <tr>
         <td colspan="2">
@@ -161,7 +219,7 @@
       </tr>
     </tbody>
   </table>
-  {% else %}
+  {% elif not group_perf_table %}
   <p class="muted">未计算</p>
   {% endif %}
 

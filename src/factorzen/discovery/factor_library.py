@@ -241,6 +241,9 @@ class UpsertResult:
     # rebuild 专用：lift 轨复审失败原因（None=未失败/无 lift 记录）。调用方（CLI）
     # 必须检查——复审失败时旧记录已恢复，静默返回会造成「表面成功、实际跳过」。
     lift_review_error: str | None = None
+    # rebuild 专用：复审时**求值失败**（error 行 / lift=None / runner 返回空）的表达式。
+    # 这些记录保持原状不降级——「算不出来」≠「算出来没用」。调用方必须大声报告。
+    lift_eval_failed: list[str] = field(default_factory=list)
 
 
 # ── 序列化辅助 ───────────────────────────────────────────────────────────────
@@ -1190,6 +1193,26 @@ _TARGETED_CARRY_IF_MISSING_FIELDS = (
 )
 
 
+# rebuild 的 lift 复审把 runner 现算的 row 搬回记录。**语义 = row 给了才覆盖**
+# （error 行整套字段为 None，覆盖等于把旧证据抹成空白）。
+#
+# 与 `upsert_lift_admissions` 的 `_record_from_candidate(dict(row))` 是**同一批字段**——
+# 那条路径靠「row 即候选 dict」天然全量透传，这条靠逐字段搬。两处必须同步：
+# 曾经这里只搬 lift_*，导致 `admission_ic` 永不刷新，库内 2 条 lift probation 记录
+# 一直留着 trade_date 格式 P0 的哨兵 0.0 → `forward_review` 恒判 missing_sign 卡死。
+_LIFT_REVIEW_FLOAT_FIELDS = (
+    "lift", "lift_se", "lift_first_half", "lift_second_half",
+    "admission_ic",  # 方向权威：0.0 哨兵不刷新会让 forward_review 永远解析不出方向
+)
+# lift_threshold / lift_se_mult 不在此列：row 的 meta 只有 "threshold"，且
+# `run_lift_tests` 压根不收 se_mult。判门实际用的是 rebuild 自己的入参，
+# 直接照实写（见下方 `_LIFT_REVIEW_*` 的使用点），不从 row 反推。
+_LIFT_REVIEW_PROVENANCE_FIELDS = (
+    "admission_start", "admission_end", "scored_start", "scored_end",
+    "baseline_hash", "profile_name", "frequency",
+)
+
+
 def _carry_state_from_prev(rec: FactorRecord, prev: FactorRecord) -> None:
     """定向重估：把 ``prev`` 的状态/轨道/provenance 搬到刚建好的 ``rec`` 上（原地）。
 
@@ -2091,6 +2114,13 @@ def rebuild(
     ``targeted_missing``）。用于「算子实现变更后补一小撮记录」「补算存量
     ``admission_ic`` / ``lift_metric``」这类账，避免为几条记录付全库重估的代价。
 
+    **补算 ``admission_ic`` 只对 lift 轨有效**（走复审、由 ``run_lift_tests`` 现算）。
+    single 轨补不了：生产 ``evaluate`` 闭包（``build_library_evaluator``）产出的候选
+    dict 里根本没有 ``admission_ic`` 键——那是残差 lift 实验的产物，裸口径 gate 不算。
+    single 轨也不需要它：``ic_train`` 就是它的裸 IC，``forward_review`` 已按
+    「``admission_ic`` 优先、``ic_train`` 兜底」解析方向；``lift_admission`` 的裸 IC
+    同号门只在 lift 轨生效，single 轨结构上不经过。
+
     全量 rebuild 的级联有**四个独立来源**，定向模式四个全堵：
     1. ``fresh`` 清库 → 定向**强制 ``fresh=False``**（清库会直接毁掉子集之外的记录）；
     2. ``evaluate(全部 sources)`` → 定向只喂子集；
@@ -2246,6 +2276,7 @@ def rebuild(
     n_lift_demoted = 0
     n_lift_evaluated = 0
     lift_review_error: str | None = None
+    lift_eval_failed: list[str] = []
 
     if preserved_lift:
         try:
@@ -2348,40 +2379,58 @@ def rebuild(
                     horizon=rec_h,
                 )
                 n_lift_evaluated += 1  # 每次 add-one 计 1 次（多重检验 N）
-                if not rows:
-                    # 无结果 → 视为无增量
-                    decision = "reject"
-                    lift_row: dict = {}
-                else:
-                    lift_row = rows[0]
-                    decision = lift_admission(
-                        lift_row, threshold=lift_threshold, se_mult=se_mult,
-                    )
+                lift_row: dict = rows[0] if rows else {}
+                # ── 求值失败 ≠ 无增量 ────────────────────────────────────────
+                # 复审是对**已在库**记录的再裁决，与新候选准入不对称：新候选缺证据
+                # 就该拒（`lift_admission` 的 lift=None → reject 是对的），但已在库
+                # 记录缺证据只说明这次没算出来，把它当"实测无增量"降级 no_lift，
+                # 等于用一次失败的求值撤销一次成功的求值。
+                # 实际事故：rebuild 的 CLI 路径不开分钟叶子 → 含 i_* 叶子的记录必
+                # 物化失败（error=materialize_failed / lift=None）→ 2 条 probation
+                # 静默变 no_lift，且 lift/lift_se 旧证据还留在行里自相矛盾。
+                # 处置：保持原状（连 updated_at 都不动，避免伪造"已复审"痕迹）+
+                # 记账 + 由调用方 fail-loudly。
+                if not rows or lift_row.get("error") or lift_row.get("lift") is None:
+                    lift_eval_failed.append(rec.expression)
+                    # 原样写回：fresh=True 时库已清空、本记录只存在于 preserved_lift，
+                    # 直接 continue 会把它丢掉（比误降级更糟）。
+                    existing_f = by_expr.get(rec.expression)
+                    if existing_f is None or (
+                        existing_f.admission_track or "single"
+                    ) == "lift":
+                        by_expr[rec.expression] = rec
+                    continue
+                decision = lift_admission(
+                    lift_row, threshold=lift_threshold, se_mult=se_mult,
+                )
 
                 # 在原记录上更新 status / lift 字段（保留 provenance / added_at）
                 updated = FactorRecord.from_dict(rec.to_dict())
                 updated.updated_at = now
                 updated.admission_track = "lift"
                 if lift_row:
-                    if lift_row.get("lift") is not None:
-                        updated.lift = _as_float(lift_row.get("lift"))
                     if lift_row.get("lift_baseline", lift_row.get("baseline")) is not None:
                         updated.lift_baseline = _as_float(
                             lift_row.get("lift_baseline", lift_row.get("baseline"))
                         )
-                    if lift_row.get("lift_se") is not None:
-                        updated.lift_se = _as_float(lift_row.get("lift_se"))
-                    if lift_row.get("lift_first_half") is not None:
-                        updated.lift_first_half = _as_float(lift_row.get("lift_first_half"))
-                    if lift_row.get("lift_second_half") is not None:
-                        updated.lift_second_half = _as_float(lift_row.get("lift_second_half"))
+                    for _f in _LIFT_REVIEW_FLOAT_FIELDS:
+                        if lift_row.get(_f) is not None:
+                            setattr(updated, _f, _as_float(lift_row.get(_f)))
+                    for _f in _LIFT_REVIEW_PROVENANCE_FIELDS:
+                        if lift_row.get(_f) is not None:
+                            setattr(updated, _f, lift_row.get(_f))
                     lm = lift_row.get("lift_metric")
                     if lm is not None:
                         updated.lift_metric = str(lm)
-                    nlf = lift_row.get("n_lib_factors")
-                    if nlf is not None:
-                        with contextlib.suppress(TypeError, ValueError):
-                            updated.n_lib_factors = int(nlf)
+                    for _f in ("n_lib_factors", "block_days", "cv_train_days",
+                               "cv_test_days"):
+                        _v = lift_row.get(_f)
+                        if _v is not None:
+                            with contextlib.suppress(TypeError, ValueError):
+                                setattr(updated, _f, int(_v))
+                    # 判门实际用的阈值/SE 倍数（rebuild 入参，非 row 反推）
+                    updated.lift_threshold = float(lift_threshold)
+                    updated.lift_se_mult = float(se_mult)
 
                 # 复审不 cap：decision 即 status（保留既有 active，非 auto-lift 新晋升）
                 if decision == "active":
@@ -2447,6 +2496,10 @@ def rebuild(
         "n_lift_probation": n_lift_probation,
         "n_lift_demoted": n_lift_demoted,
         "n_lift_evaluated": n_lift_evaluated,
+        # 复审时求值失败（物化失败/无残差日/runner 返回空）→ 记录保持原状未降级。
+        # 有值即表示本次 rebuild 的 lift 轨结论**不完整**，调用方须 fail-loudly。
+        "n_lift_eval_failed": len(lift_eval_failed),
+        "lift_eval_failed": lift_eval_failed,
         # lift 复审评分窗（与 single 轨 holdout 尾段对齐；None=未裁）
         "lift_admission_start": admission_start,
         "lift_admission_end": admission_end,
@@ -2454,6 +2507,7 @@ def rebuild(
     if lift_review_error is not None:
         manifest["lift_review_error"] = lift_review_error
         res.lift_review_error = lift_review_error
+    res.lift_eval_failed = lift_eval_failed
     if manifest_extra:
         manifest.update(manifest_extra)
     Path(root).mkdir(parents=True, exist_ok=True)

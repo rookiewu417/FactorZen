@@ -389,6 +389,123 @@ def test_cli_rebuild_only_flag_reaches_engine(monkeypatch, tmp_path):
     assert lib["rank(open)"].ic_train == 0.05      # 非目标未动
 
 
+def test_cli_rebuild_intraday_flags_reach_data_assembly(monkeypatch, tmp_path):
+    """`--intraday-leaves` 必须真到达数据装配层。
+
+    接线层漂移实锤：该旗标此前只在 mine search/agent/team 上有，rebuild 没有 →
+    `_prepare_agent_mining_data` 的 `getattr(args, "intraday_leaves", False)` 恒 False
+    → 含 i_* 叶子的 lift 记录复审必物化失败。help 里承诺的旗标必须真的通到底。
+    """
+    import factorzen.cli.main as cli_main
+    from factorzen.cli.main import build_parser
+    from factorzen.discovery.factor_library import _save_library
+
+    _save_library("ashare", [_rec("rank(close)")], root=str(tmp_path))
+    seen: dict = {}
+    _patch_cli_for_rebuild(monkeypatch, tmp_path, seen)
+    # 自动检测会读库：必须指到 tmp，否则读的是真实工作区的库（真库含 i_* 记录，
+    # 会让「不给旗标 → False」这条断言假失败，更糟的是测试依赖本机数据）
+    monkeypatch.setattr("factorzen.discovery.factor_library.DEFAULT_ROOT",
+                        str(tmp_path), raising=False)
+
+    def _spy_prepare(args):
+        seen["intraday_leaves"] = getattr(args, "intraday_leaves", None)
+        seen["intraday_freq"] = getattr(args, "intraday_freq", None)
+        return pl.DataFrame({"trade_date": [date(2024, 1, 2)]}), None, {}
+
+    monkeypatch.setattr(cli_main, "_prepare_agent_mining_data", _spy_prepare)
+
+    args = build_parser().parse_args([
+        "factor-library", "rebuild", "--market", "ashare",
+        "--universe", "csi800", "--start", "20200101", "--end", "20201231",
+        "--only", "rank(close)", "--intraday-leaves", "--intraday-freq", "5min",
+    ])
+    assert cli_main._cmd_factor_library_rebuild(args) == 0
+    assert seen["intraday_leaves"] is True
+    assert seen["intraday_freq"] == "5min"
+
+    # 不给旗标、库里也没有 i_* 记录 → False（默认关，零回归）
+    args2 = build_parser().parse_args([
+        "factor-library", "rebuild", "--market", "ashare",
+        "--universe", "csi800", "--start", "20200101", "--end", "20201231",
+        "--only", "rank(close)",
+    ])
+    assert cli_main._cmd_factor_library_rebuild(args2) == 0
+    assert seen["intraday_leaves"] is False
+
+
+def test_cli_rebuild_auto_enables_intraday_from_library(monkeypatch, tmp_path):
+    """库里有含 i_* 叶子的记录 → **不给旗标也自动装日内面板**。
+
+    只靠旗标不够：lift 复审覆盖库内全部 lift 轨记录，操作者忘了加 --intraday-leaves
+    就会让它们物化失败。与 `factor-library lift-test` 的自动置位同款。
+    """
+    import factorzen.cli.main as cli_main
+    from factorzen.cli.main import build_parser
+    from factorzen.discovery.factor_library import FactorRecord, _save_library
+
+    seen: dict = {}
+    _patch_cli_for_rebuild(monkeypatch, tmp_path, seen)
+
+    def _spy_prepare(args):
+        seen["intraday_leaves"] = getattr(args, "intraday_leaves", None)
+        return pl.DataFrame({"trade_date": [date(2024, 1, 2)]}), None, {}
+
+    monkeypatch.setattr(cli_main, "_prepare_agent_mining_data", _spy_prepare)
+    # CLI 用默认 root 读库来做检测 → 把默认 root 指到 tmp
+    monkeypatch.setattr(
+        "factorzen.discovery.factor_library.DEFAULT_ROOT", str(tmp_path), raising=False,
+    )
+    _save_library("ashare", [
+        FactorRecord(
+            expression="ts_mean(neg(abs(i_ret_open30)), 20)", market="ashare",
+            status="probation", admission_track="lift", ic_train=0.05,
+            added_at="2026-07-17", updated_at="2026-07-17",
+        ),
+    ], root=str(tmp_path))
+
+    args = build_parser().parse_args([
+        "factor-library", "rebuild", "--market", "ashare",
+        "--universe", "csi800", "--start", "20200101", "--end", "20201231",
+    ])
+    cli_main._cmd_factor_library_rebuild(args)
+    assert seen["intraday_leaves"] is True, "库内 i_* 记录未触发日内面板自动装配"
+
+
+def test_cli_rebuild_exits_nonzero_on_lift_eval_failure(monkeypatch, tmp_path, capsys):
+    """引擎报了求值失败 → CLI 非零退出 + stderr 点名（禁止「表面成功」）。
+
+    引擎侧「不降级 + 记账」的行为锚在 test_lift_admissions.py；这里只锁接线层：
+    `UpsertResult.lift_eval_failed` 非空必须变成 exit 1，且报错点名表达式与
+    `--intraday-leaves` 这条真实可用的补救旗标。
+    """
+    import factorzen.cli.main as cli_main
+    from factorzen.cli.main import build_parser
+    from factorzen.discovery import factor_library as fl
+
+    seen: dict = {}
+    _patch_cli_for_rebuild(monkeypatch, tmp_path, seen)
+    monkeypatch.setattr(fl, "collect_source_expressions", lambda market: [])
+    monkeypatch.setattr(fl, "rebuild", lambda *a, **kw: fl.UpsertResult(
+        lift_eval_failed=["ts_mean(neg(abs(i_ret_open30)), 20)"],
+    ))
+
+    args = build_parser().parse_args([
+        "factor-library", "rebuild", "--market", "ashare",
+        "--universe", "csi800", "--start", "20200101", "--end", "20201231",
+    ])
+    assert cli_main._cmd_factor_library_rebuild(args) == 1
+    err = capsys.readouterr().err
+    assert "求值失败" in err
+    assert "i_ret_open30" in err
+    # 报错引用的旗标必须真实存在（help 承诺与 parser 定义不许漂移）
+    assert "--intraday-leaves" in err
+    flagged = build_parser().parse_args(
+        ["factor-library", "rebuild", "--intraday-leaves"]
+    )
+    assert flagged.intraday_leaves is True
+
+
 def test_cli_rebuild_only_file(monkeypatch, tmp_path):
     """`--only-file`：一行一条、'#' 注释与空行跳过（上百条批量补账的入口）。"""
     import factorzen.cli.main as cli_main

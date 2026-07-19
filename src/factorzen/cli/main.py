@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import sys
@@ -1009,13 +1010,40 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
             return 1
     # 装配数据（复用挖掘装配 `_prepare_agent_mining_data`，含预热前缀）：窗口写回 args
     args.start, args.end = start, end
+    # 源收集提到 prep 之前：分钟叶子自动置位要先知道会碰哪些表达式（见下）
+    sources = fl.collect_source_expressions(market)
+    # 自动置位（与 `factor-library lift-test` 同款）：库内任一记录或本批源引用 i_*/ix_*
+    # → 装日内面板。**必须自动，不能只靠旗标**——lift 复审覆盖库内全部 lift 轨记录，
+    # 忘了加旗标就会让它们物化失败；而复审把「算不出来」当「无增量」处理过（已修，
+    # 现在会保持原状 + 非零退出），根子上还是这里不该缺列。
+    from factorzen.discovery.preparation import (
+        expressions_need_intraday,
+        intraday_expr_leaf_names,
+    )
+    _scan_exprs: list[str] = [
+        str(e) for e in sources if e and not fl.is_python_identity(str(e))
+    ]
+    # root 在调用点取（`load_library` 的默认参数在 def 时求值，绑死的是导入时的
+    # DEFAULT_ROOT；显式传才跟得上 patch/配置，也与 lift-test 的取法一致）
+    _lib_root = getattr(args, "library_root", None) or fl.DEFAULT_ROOT
+    # 库读不出来不该挡住 rebuild；真缺列会在复审的求值失败守卫里被点名
+    with contextlib.suppress(Exception):
+        _scan_exprs += [
+            str(r.expression) for r in fl.load_library(market, root=_lib_root)
+            if r.expression and not fl.is_python_identity(str(r.expression))
+        ]
+    if getattr(args, "intraday_leaves", False) or expressions_need_intraday(_scan_exprs):
+        args.intraday_leaves = True
+    _ix = intraday_expr_leaf_names(_scan_exprs)
+    if _ix:
+        args.intraday_expr_leaves = _ix
+        args.intraday_leaves = True
     daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[factor-library] 挖掘帧为空（检查 --symbols / 数据湖覆盖 / 缓存回补）",
               file=sys.stderr)
         return 1
     leaf_map = profile.factors.leaf_features() if profile is not None else None
-    sources = fl.collect_source_expressions(market)
     if not sources:
         print(f"[factor-library] 提示：未从历史产物收集到 {market} 候选（将产出空库文件）")
     evaluate, compact_materialize = fl.build_library_evaluator(
@@ -1100,6 +1128,23 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
               f"{', '.join(res.gate_failed[:10])}"
               f"{' …' if len(res.gate_failed) > 10 else ''}", file=sys.stderr)
     print(f"[factor-library] → {FACTOR_LIBRARY_DIR}/{market}.jsonl + {market}.md")
+    if res.lift_eval_failed:
+        # 求值失败的记录已保持原状（未降级），但本次 lift 轨结论不完整 → 非零退出。
+        # 最常见成因：记录带分钟派生叶子（i_*），而本次 rebuild 未装配分钟面板。
+        n = len(res.lift_eval_failed)
+        print(
+            f"[factor-library] 错误：{n} 条 lift 记录复审时求值失败，已保持原状未降级"
+            f"（本次 lift 轨结论不完整）："
+            f"{', '.join(res.lift_eval_failed[:10])}"
+            f"{' …' if n > 10 else ''}",
+            file=sys.stderr,
+        )
+        print(
+            "[factor-library] 若这些表达式含分钟派生叶子（i_*），需带 --intraday-leaves "
+            "重跑，否则叶子不在挖掘帧里必然物化失败",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

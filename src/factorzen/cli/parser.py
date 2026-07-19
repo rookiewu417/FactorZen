@@ -540,7 +540,19 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_rb.add_argument(
         "--only-file", dest="only_file", default=None,
         help="定向重估：从文件读表达式（一行一条，'#' 开头与空行跳过）；语义同 --only，"
-             "供上百条批量补账（如补算存量 admission_ic / lift_metric）",
+             "供上百条批量补账（如补算存量 lift_metric；admission_ic 仅 lift 轨可补——"
+             "single 轨的裸 IC 就是 ic_train）",
+    )
+    # 分钟派生叶子：库里已有带 i_* 叶子的 lift 记录，复审必须能物化它们，
+    # 否则物化失败被当成「无增量」降级（已实际发生，见 rebuild 的求值失败守卫）。
+    fl_rb.add_argument(
+        "--intraday-leaves", dest="intraday_leaves", action="store_true",
+        help="启用日内特征叶子 i_* 接入（仅 ashare；默认关）。库内含 i_* 叶子的 lift "
+             "记录复审时必须开，否则物化失败",
+    )
+    fl_rb.add_argument(
+        "--intraday-freq", dest="intraday_freq", default="5min",
+        help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
     )
     _add_freq_arg(fl_rb)
     fl_rb.set_defaults(func=commands._cmd_factor_library_rebuild)

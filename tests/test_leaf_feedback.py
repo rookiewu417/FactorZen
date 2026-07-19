@@ -134,6 +134,89 @@ def test_leaf_stats_scoped_by_data_window(tmp_path: Path):
 # ── B. 挖穿区 / 未探索区 ──────────────────────────────────────────────────────
 
 
+def test_exhausted_excludes_leaf_present_in_library(tmp_path: Path, monkeypatch):
+    """**进了库**的叶子不判枯竭，哪怕单因子护栏零通过。
+
+    实测事故（2026-07-19）：枯竭判据看 `n_passed==0`，而 `n_passed` 数的是
+    `passed_guardrails`（单因子定量护栏）——PR#97 已把它降级为排序信号，真正的
+    准入是 lift 轨。experiment_index 与库的交集 171 条里 **127 条（74%）索引判
+    passed=False 却在库里、46 条是 active**。判据漏数约四分之三的成功 →
+    叶子被误判枯竭 → `filter_exhausted_expressions` 硬过滤 → 搜索空间越收越窄。
+    """
+    monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
+
+    idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
+    # 两个叶子都是「6 次方向失败、单因子护栏 0 过关」——按旧判据都该枯竭
+    recs = [
+        _rec(f"rank(ts_mean(grossprofit_margin,{i}))", passed=False, ic=0.01)
+        for i in range(6)
+    ] + [
+        _rec(f"rank(ts_mean(roa,{i}))", passed=False, ic=0.01) for i in range(6)
+    ]
+    _write(idx, recs)
+
+    # roa 有一条经 lift 轨进了库（护栏没过，但库是权威成功记录）
+    r = recall(
+        idx, k=5,
+        leaf_names=["grossprofit_margin", "roa"],
+        library_exprs=["ts_decay_linear(mul(rank(roa), 2.0), 20)"],
+    )
+    blob = " ".join(r.leaf_guidance["exhausted"])
+    assert "grossprofit_margin" in blob, "无库内证据的叶子仍应判枯竭"
+    assert "roa" not in blob, "库里有该叶子的因子，不该判枯竭"
+    # 硬过滤用的裸名列表必须同口径（两个消费方不许漂移）
+    assert r.exhausted_leaves == ["grossprofit_margin"], r.exhausted_leaves
+
+
+def test_exhausted_library_exemption_expires_with_demotion(tmp_path: Path, monkeypatch):
+    """豁免只认**在任**记录 → 因子被降级后该叶重新可判枯竭。
+
+    这是「老成功过期」机制：不另造滚动窗口，靠库自身的生命周期。
+    调用方（team_orchestrator）只传 status ∈ {active, probation} 的表达式；
+    此测试模拟降级前后两种传入。
+    """
+    monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
+
+    idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
+    _write(idx, [_rec(f"rank(ts_mean(roa,{i}))", passed=False, ic=0.01) for i in range(6)])
+
+    # 在任 → 豁免
+    live = recall(idx, k=5, leaf_names=["roa"], library_exprs=["rank(mul(roa, 2.0))"])
+    assert live.exhausted_leaves is None, live.exhausted_leaves
+
+    # 该因子被降级出 active/probation → 调用方不再传它 → 豁免消失
+    demoted = recall(idx, k=5, leaf_names=["roa"], library_exprs=[])
+    assert demoted.exhausted_leaves == ["roa"], demoted.exhausted_leaves
+
+
+def test_exhausted_library_match_uses_word_boundary(tmp_path: Path, monkeypatch):
+    """库内表达式按词边界匹配叶名，`roe` 不得被 `grossprofit_margin` 之类子串误命中。
+
+    与 `leaf_stats` 的 `\\b<leaf>\\b` 同口径——两处用不同匹配规则会让「算过几次」
+    和「进库几条」对不上账。
+    """
+    monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
+
+    idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
+    _write(idx, [_rec(f"rank(ts_mean(roe,{i}))", passed=False, ic=0.01) for i in range(6)])
+
+    # 库里只有含 `roe_ttm` 的表达式——不是 `roe`，不该救下 roe
+    r = recall(idx, k=5, leaf_names=["roe"], library_exprs=["rank(roe_ttm)"])
+    assert "roe" in " ".join(r.leaf_guidance["exhausted"]), "子串命中导致误救"
+
+
+def test_exhausted_library_exprs_none_is_zero_regression(tmp_path: Path, monkeypatch):
+    """`library_exprs=None`（旧调用方）→ 行为与加该参数前完全一致。"""
+    monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
+
+    idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
+    _write(idx, [_rec(f"rank(ts_mean(roa,{i}))", passed=False, ic=0.01) for i in range(6)])
+
+    r = recall(idx, k=5, leaf_names=["roa"])
+    assert "roa" in " ".join(r.leaf_guidance["exhausted"])
+    assert r.exhausted_leaves == ["roa"]
+
+
 def test_exhausted_excludes_coverage_only_and_passed(tmp_path: Path, monkeypatch):
     """coverage 失败不计入尝试数；n_passed>0 不入挖穿区。"""
     monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
@@ -355,3 +438,80 @@ def test_team_round_logs_leaf_guidance_summary(tmp_path: Path, monkeypatch):
 def test_constants_defaults():
     assert EXHAUSTED_MIN_TRIES == 15
     assert UNEXPLORED_MAX_TRIES == 2
+
+
+# ── E. 接线层：orchestrator 必须把「在任库表达式」透传给挖穿判定 ──────────────
+
+
+def test_run_team_agent_passes_live_library_exprs_to_recall(tmp_path: Path, monkeypatch):
+    """从最外层 `run_team_agent` 出发，验证 `library_exprs` 真到达 `recall`。
+
+    能力层↔接线层漂移是本项目头号 bug 源：`build_leaf_guidance` 支持库兜底，但只要
+    orchestrator 不传，挖穿判定照旧误杀（分钟叶 17 个全部 `n_passed==0`，正是被误杀
+    的那批）。断言必须从 CLI/入口出发，不能手工拼「已经正确」的参数。
+
+    同时锁住**只传在任记录**：库的生命周期即豁免的过期机制，传了 correlated/no_lift
+    就等于给已降级的因子发终身豁免。
+    """
+    import datetime as dt
+
+    import polars as pl
+
+    from factorzen.agents import team_orchestrator as tor
+    from factorzen.discovery.factor_library import FactorRecord, _save_library
+
+    lib_root = tmp_path / "factor_library"
+    _save_library("ashare", [
+        FactorRecord(expression="rank(roe)", market="ashare", status="active",
+                     ic_train=0.05, added_at="2026-07-01", updated_at="2026-07-01"),
+        FactorRecord(expression="rank(pb)", market="ashare", status="probation",
+                     ic_train=0.03, added_at="2026-07-01", updated_at="2026-07-01"),
+        # 以下两条已降级 → 不得进 library_exprs（否则豁免永不过期）
+        FactorRecord(expression="rank(vol)", market="ashare", status="correlated",
+                     ic_train=0.04, added_at="2026-07-01", updated_at="2026-07-01"),
+        FactorRecord(expression="rank(amount)", market="ashare", status="no_lift",
+                     ic_train=0.02, added_at="2026-07-01", updated_at="2026-07-01"),
+    ], root=str(lib_root))
+
+    seen: dict = {}
+    orig_recall = tor.recall
+
+    def _spy(index, **kw):
+        seen["library_exprs"] = kw.get("library_exprs")
+        return orig_recall(index, **kw)
+
+    monkeypatch.setattr(tor, "recall", _spy)
+
+    dates = [dt.date(2024, 1, 1) + dt.timedelta(days=i) for i in range(60)]
+    rows = [
+        {"trade_date": d, "ts_code": f"{c:06d}.SZ",
+         "close": 10.0 + i * 0.1 + c, "open": 10.0 + i * 0.1 + c,
+         "high": 11.0 + i * 0.1 + c, "low": 9.0 + i * 0.1 + c,
+         "close_adj": 10.0 + i * 0.1 + c, "open_adj": 10.0 + i * 0.1 + c,
+         "high_adj": 11.0 + i * 0.1 + c, "low_adj": 9.0 + i * 0.1 + c,
+         "vol": 1000.0 + c, "amount": 5000.0 + c}
+        for i, d in enumerate(dates) for c in range(30)
+    ]
+    daily = pl.DataFrame(rows)
+
+    seq = [
+        json.dumps({"hypotheses": ["动量"]}),
+        json.dumps({"expressions": ["ts_mean(close, 20)"]}),
+        json.dumps({"verdict": "keep", "reason": "ok"}),
+    ] * 10
+    k = {"i": 0}
+
+    def llm_fn(messages):
+        v = seq[k["i"] % len(seq)]
+        k["i"] += 1
+        return v
+
+    tor.run_team_agent(
+        daily, llm_fn, n_rounds=1, seed=1,
+        index_path=str(tmp_path / "idx.jsonl"), heal_rounds=0,
+        library_root=str(lib_root),
+    )
+
+    got = seen.get("library_exprs")
+    assert got is not None, "orchestrator 没把 library_exprs 传给 recall（接线漏斗）"
+    assert set(got) == {"rank(roe)", "rank(pb)"}, got

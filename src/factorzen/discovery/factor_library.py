@@ -241,6 +241,9 @@ class UpsertResult:
     # rebuild 专用：lift 轨复审失败原因（None=未失败/无 lift 记录）。调用方（CLI）
     # 必须检查——复审失败时旧记录已恢复，静默返回会造成「表面成功、实际跳过」。
     lift_review_error: str | None = None
+    # rebuild 专用：复审时**求值失败**（error 行 / lift=None / runner 返回空）的表达式。
+    # 这些记录保持原状不降级——「算不出来」≠「算出来没用」。调用方必须大声报告。
+    lift_eval_failed: list[str] = field(default_factory=list)
 
 
 # ── 序列化辅助 ───────────────────────────────────────────────────────────────
@@ -2273,6 +2276,7 @@ def rebuild(
     n_lift_demoted = 0
     n_lift_evaluated = 0
     lift_review_error: str | None = None
+    lift_eval_failed: list[str] = []
 
     if preserved_lift:
         try:
@@ -2375,15 +2379,30 @@ def rebuild(
                     horizon=rec_h,
                 )
                 n_lift_evaluated += 1  # 每次 add-one 计 1 次（多重检验 N）
-                if not rows:
-                    # 无结果 → 视为无增量
-                    decision = "reject"
-                    lift_row: dict = {}
-                else:
-                    lift_row = rows[0]
-                    decision = lift_admission(
-                        lift_row, threshold=lift_threshold, se_mult=se_mult,
-                    )
+                lift_row: dict = rows[0] if rows else {}
+                # ── 求值失败 ≠ 无增量 ────────────────────────────────────────
+                # 复审是对**已在库**记录的再裁决，与新候选准入不对称：新候选缺证据
+                # 就该拒（`lift_admission` 的 lift=None → reject 是对的），但已在库
+                # 记录缺证据只说明这次没算出来，把它当"实测无增量"降级 no_lift，
+                # 等于用一次失败的求值撤销一次成功的求值。
+                # 实际事故：rebuild 的 CLI 路径不开分钟叶子 → 含 i_* 叶子的记录必
+                # 物化失败（error=materialize_failed / lift=None）→ 2 条 probation
+                # 静默变 no_lift，且 lift/lift_se 旧证据还留在行里自相矛盾。
+                # 处置：保持原状（连 updated_at 都不动，避免伪造"已复审"痕迹）+
+                # 记账 + 由调用方 fail-loudly。
+                if not rows or lift_row.get("error") or lift_row.get("lift") is None:
+                    lift_eval_failed.append(rec.expression)
+                    # 原样写回：fresh=True 时库已清空、本记录只存在于 preserved_lift，
+                    # 直接 continue 会把它丢掉（比误降级更糟）。
+                    existing_f = by_expr.get(rec.expression)
+                    if existing_f is None or (
+                        existing_f.admission_track or "single"
+                    ) == "lift":
+                        by_expr[rec.expression] = rec
+                    continue
+                decision = lift_admission(
+                    lift_row, threshold=lift_threshold, se_mult=se_mult,
+                )
 
                 # 在原记录上更新 status / lift 字段（保留 provenance / added_at）
                 updated = FactorRecord.from_dict(rec.to_dict())
@@ -2477,6 +2496,10 @@ def rebuild(
         "n_lift_probation": n_lift_probation,
         "n_lift_demoted": n_lift_demoted,
         "n_lift_evaluated": n_lift_evaluated,
+        # 复审时求值失败（物化失败/无残差日/runner 返回空）→ 记录保持原状未降级。
+        # 有值即表示本次 rebuild 的 lift 轨结论**不完整**，调用方须 fail-loudly。
+        "n_lift_eval_failed": len(lift_eval_failed),
+        "lift_eval_failed": lift_eval_failed,
         # lift 复审评分窗（与 single 轨 holdout 尾段对齐；None=未裁）
         "lift_admission_start": admission_start,
         "lift_admission_end": admission_end,
@@ -2484,6 +2507,7 @@ def rebuild(
     if lift_review_error is not None:
         manifest["lift_review_error"] = lift_review_error
         res.lift_review_error = lift_review_error
+    res.lift_eval_failed = lift_eval_failed
     if manifest_extra:
         manifest.update(manifest_extra)
     Path(root).mkdir(parents=True, exist_ok=True)

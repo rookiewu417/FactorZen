@@ -39,7 +39,8 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
                       holdout_ratio=0.2, train_ratio=0.7, decorr_threshold=0.7,
                       min_n_train=5, dsr_alpha=0.05, update_library=True,
                       library_orthogonal=True, objective="residual",
-                      intraday=False, intraday_freq="5min"):
+                      intraday=False, intraday_freq="5min",
+                      intraday_expr_leaves=None):
         captured.update(
             start=start,
             end=end,

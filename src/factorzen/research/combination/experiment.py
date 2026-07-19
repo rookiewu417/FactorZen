@@ -26,8 +26,16 @@ from factorzen.research.combination.methods import (
 from factorzen.research.combination.models import LGBMCombiner, build_panel, combine_lgbm
 from factorzen.research.combination.oos import combine_oos, drop_degenerate_factors
 
-_LINEAR = {"equal_weight", "ic_weighted", "max_ir"}
-_DEFAULT_METHODS = ["equal_weight", "ic_weighted", "max_ir", "lgbm"]
+_LINEAR = {
+    "equal_weight", "ic_weighted", "max_ir",
+    # *_signed:允许负权(L1 归一化)的对应版本。加进默认对照是为了让
+    # 「允许负权是否真的更好」由同协议 OOS 数据裁决,而不是靠先验假设。
+    "ic_weighted_signed", "max_ir_signed",
+}
+_DEFAULT_METHODS = [
+    "equal_weight", "ic_weighted", "max_ir",
+    "ic_weighted_signed", "max_ir_signed", "lgbm",
+]
 
 
 def _max_drawdown(cum: list[float]) -> float:

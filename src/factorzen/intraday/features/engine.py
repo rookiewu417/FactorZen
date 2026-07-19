@@ -132,6 +132,169 @@ def _smart_money_panel(work: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+_LIMIT_LEAVES = (
+    "i_limit_up_seal_share",
+    "i_limit_up_open_count",
+    "i_limit_up_first_touch",
+)
+# 板价比较用**绝对**容差（1 分钱）。**不能用百分比**——否则大价股判得松、
+# 小价股判得紧，触板率随价位系统性偏移。
+_LIMIT_EPS = 0.005
+
+
+def _attach_limit_leaves(
+    panel: pl.DataFrame,
+    work: pl.DataFrame,
+    daily_ref: pl.DataFrame | None,
+    *,
+    n_bars: int,
+) -> pl.DataFrame:
+    """给日聚合面板补三个涨跌停邻域叶；``daily_ref=None`` → 全 null（零回归）。
+
+    ``daily_ref`` 列：``[ts_code, trade_date, pre_close, limit_pct]``。
+    板价 ``P_up = round(pre_close × (1 + limit_pct), 2)``（A 股价格 2 位小数）。
+
+    **三种取值语义必须分清**：
+    - **未触/未封 → 0**（``seal_share`` / ``open_count``）：0 是**有信息**的观测
+      （「今天没封过」），不是缺失。
+    - **全日未触 → ``first_touch = 1.0``**（最晚）：若填 null，截面上 95%+ 是 null，
+      rank/IC 会塌成「少数触板票的子样本游戏」。
+    - **参照缺失/非法 → null**（pre_close 缺失或 ≤0、limit_pct 非有限、非法板价）：
+      这才是真缺失，与「未触板」区别开。
+    """
+    if daily_ref is None or daily_ref.is_empty():
+        return panel.with_columns(
+            [pl.lit(None, dtype=pl.Float64).alias(c) for c in _LIMIT_LEAVES]
+        )
+
+    ref = daily_ref.select(
+        pl.col("ts_code").cast(pl.String),
+        pl.col("trade_date").cast(pl.Date),
+        pl.col("pre_close").cast(pl.Float64),
+        pl.col("limit_pct").cast(pl.Float64),
+    ).with_columns(
+        # 参照合法性：非法 → _p_up=null → 下游三叶自然 null
+        pl.when(
+            pl.col("pre_close").is_not_null()
+            & pl.col("pre_close").is_finite()
+            & (pl.col("pre_close") > 0)
+            & pl.col("limit_pct").is_not_null()
+            & pl.col("limit_pct").is_finite()
+            & (pl.col("limit_pct") > 0)
+        )
+        .then((pl.col("pre_close") * (1.0 + pl.col("limit_pct"))).round(2))
+        .otherwise(None)
+        .alias("_p_up")
+    )
+
+    # ⚠️ **不能**用 `_valid` 过滤。`_valid` 要求该桶有有效**收益**，而当日首根 bar
+    # 没有前收 → `_valid=False`；但涨跌停判定只需 close/high，且**一字板（开盘即封）
+    # 恰恰是最强信号**，按 `_valid` 过滤会系统性漏掉它。这里只要求价格本身可用。
+    bar = (
+        work.join(ref.select(["ts_code", "trade_date", "_p_up"]),
+                  on=_KEYS, how="left")
+        .filter(
+            pl.col("close").is_not_null() & pl.col("close").is_finite()
+            & pl.col("high").is_not_null() & pl.col("high").is_finite()
+        )
+        .with_columns(
+            (pl.col("high") >= (pl.col("_p_up") - _LIMIT_EPS)).alias("_touch"),
+            (pl.col("close") >= (pl.col("_p_up") - _LIMIT_EPS)).alias("_seal"),
+        )
+        .sort(["ts_code", "trade_date", "trade_time"])
+        .with_columns(pl.col("_seal").shift(1).over(_KEYS).alias("_seal_prev"))
+    )
+
+    lim = bar.group_by(_KEYS).agg(
+        pl.col("_p_up").first().alias("_p_up_d"),
+        pl.len().cast(pl.Float64).alias("_n_bar"),
+        pl.col("_seal").sum().cast(pl.Float64).alias("_n_seal"),
+        # 开板：前一根封住、本根没封
+        (pl.col("_seal_prev").fill_null(False) & ~pl.col("_seal"))
+        .sum().cast(pl.Float64).alias("_n_open"),
+        # 首次触板的桶序（1-based）；未触 → null
+        pl.col("_i").filter(pl.col("_touch")).min().alias("_i_touch"),
+    )
+
+    ok = pl.col("_p_up_d").is_not_null()
+    lim = lim.with_columns(
+        pl.when(ok & (pl.col("_n_bar") > 0))
+        .then(pl.col("_n_seal") / pl.col("_n_bar"))
+        .otherwise(None)
+        .alias("i_limit_up_seal_share"),
+        pl.when(ok).then(pl.col("_n_open")).otherwise(None)
+        .alias("i_limit_up_open_count"),
+        # 未触板 → 1.0（最晚），不是 null
+        pl.when(ok)
+        .then(
+            pl.when(pl.col("_i_touch").is_not_null())
+            .then(pl.col("_i_touch").cast(pl.Float64) / float(max(n_bars, 1)))
+            .otherwise(1.0)
+        )
+        .otherwise(None)
+        .alias("i_limit_up_first_touch"),
+    ).select([*_KEYS, *_LIMIT_LEAVES])
+
+    return panel.join(lim, on=_KEYS, how="left")
+
+
+def _load_limit_ref(
+    m_start: str, m_end: str, codes: list[str] | None
+) -> pl.DataFrame | None:
+    """涨跌停叶的日频参照：``[ts_code, trade_date, pre_close, limit_pct]``。
+
+    ``pre_close`` 取自 daily（**t 日开盘前已知**，PIT 合法）；``limit_pct`` 用
+    ``board_limit_pct_for_codes`` 按**当日** ST 状态算（``build_is_st_by_date``
+    走 namechange 的 PIT 判定），与执行层 ``trade_constraints`` **同一函数同一口径**
+    ——绝不在这里手写 10%。
+
+    任何一步失败 → 返回 None（三个 limit 叶 null，其余 17 叶不受影响）。
+    **绝不因参照缺失中断整月构建**：分钟特征的主体与涨跌停无关。
+    """
+    try:
+        from factorzen.core import loader
+        from factorzen.core.universe import build_is_st_by_date
+        from factorzen.daily.evaluation.trade_constraints import (
+            board_limit_pct_for_codes,
+        )
+
+        daily = loader.fetch_daily(m_start, m_end)
+        if daily is None or daily.is_empty() or "pre_close" not in daily.columns:
+            return None
+        if codes is not None:
+            daily = daily.filter(pl.col("ts_code").is_in(codes))
+        daily = daily.select(["ts_code", "trade_date", "pre_close"]).filter(
+            pl.col("pre_close").is_not_null() & (pl.col("pre_close") > 0)
+        )
+        if daily.is_empty():
+            return None
+
+        uniq_codes = daily["ts_code"].unique().to_list()
+        dates = daily["trade_date"].unique().to_list()
+        st_map = build_is_st_by_date(uniq_codes, sorted(dates))
+
+        # 非 ST / ST 两套限幅各算一次（函数按 code 解析板块，is_st 是标量开关）；
+        # 返回值是**百分比**（主板 9.8），故 /100 转小数。
+        pct_normal = dict(
+            zip(uniq_codes, board_limit_pct_for_codes(uniq_codes, is_st=False),
+                strict=True)
+        )
+        pct_st = dict(
+            zip(uniq_codes, board_limit_pct_for_codes(uniq_codes, is_st=True),
+                strict=True)
+        )
+        limits = [
+            (pct_st if c in st_map.get(d, ()) else pct_normal)[c] / 100.0
+            for c, d in zip(daily["ts_code"].to_list(),
+                            daily["trade_date"].to_list(), strict=True)
+        ]
+        return daily.with_columns(pl.Series("limit_pct", limits, dtype=pl.Float64))
+    except Exception as exc:  # 参照缺失不得中断特征构建
+        _LOG.warning("涨跌停参照加载失败(%s: %s)；i_limit_up_* 将为 null",
+                     type(exc).__name__, exc)
+        return None
+
+
 def compute_day_panel(
     minute: pl.DataFrame,
     specs: Sequence[IntradayFeatureSpec],
@@ -139,6 +302,7 @@ def compute_day_panel(
     *,
     min_bar_coverage: float = 0.8,
     bars: pl.DataFrame | None = None,
+    daily_ref: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """纯函数：1min 帧（或预物化 bars）→ 每股每日一行的日频特征面板。
 
@@ -154,6 +318,13 @@ def compute_day_panel(
         freq: 计算频率。
         min_bar_coverage: 有效桶覆盖率门槛。
         bars: 可选预 resample 的 bar 帧（与 ``resample_intraday`` schema 一致）。
+        daily_ref: 涨跌停叶所需的日频参照，列 ``[ts_code, trade_date, pre_close,
+            limit_pct]``。**None → 三个 ``i_limit_up_*`` 全 null，其余 17 叶逐位不变**
+            （零回归）。``limit_pct`` 须由调用方用 ``board_limit_pct_for_codes``
+            按**当日**状态算好（含 ST 切换），本函数不猜 10%。
+
+    **PIT**：``pre_close`` 是 t 日开盘前已知量，板价只由它与当日限幅决定——
+    **禁止用当日 close 反推限价**。信号 t 日收盘可得 → 供 t+1 执行。
 
     Returns:
         列 ``[trade_date, ts_code, i_*×len(specs)]``，按 ``(trade_date, ts_code)`` 排序。
@@ -398,6 +569,8 @@ def compute_day_panel(
             ).alias("_low_cov"),
         )
     )
+
+    panel = _attach_limit_leaves(panel, work, daily_ref, n_bars=n_bars)
 
     # 覆盖不足 → 全部特征 null（行保留）
     null_feats = [
@@ -684,12 +857,17 @@ def _process_one_month(
             gc.collect()
             return None
 
+    # 涨跌停叶所需的日频参照（pre_close + 当日板块限幅）。取不到 → 三叶 null，
+    # 其余 17 叶不受影响；绝不因参照缺失而中断整月构建。
+    daily_ref = _load_limit_ref(m_start, m_end, codes)
+
     panel = compute_day_panel(
         pl.DataFrame(schema={"ts_code": pl.String}),  # unused when bars given
         specs,
         freq_n,
         min_bar_coverage=min_bar_coverage,
         bars=bars,
+        daily_ref=daily_ref,
     )
     del bars
     gc.collect()

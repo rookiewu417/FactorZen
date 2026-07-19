@@ -88,11 +88,18 @@ _CORE_HARD = [
 
 
 class TestBatteryMeta:
-    def test_v1_seventeen_unique_i_prefix(self) -> None:
+    def test_v1_twenty_unique_i_prefix(self) -> None:
+        """17 个连续路径统计 + 3 个涨跌停邻域（2026-07-19 新增）。"""
         specs = battery("v1", "5min")
-        assert len(specs) == 17
+        assert len(specs) == 20
         names = [s.name for s in specs]
-        assert len(set(names)) == 17
+        assert len(set(names)) == 20
+        # 新增的三个必须在册，且与 INTRADAY_FEATURES 一致（登记簿不许漂移）
+        from factorzen.core.feature_schema import INTRADAY_FEATURES
+
+        assert set(names) == INTRADAY_FEATURES
+        assert {"i_limit_up_seal_share", "i_limit_up_open_count",
+                "i_limit_up_first_touch"} <= set(names)
         assert all(n.startswith("i_") for n in names)
         assert all(isinstance(s, IntradayFeatureSpec) for s in specs)
         assert all(s.formula and s.description for s in specs)
@@ -222,3 +229,110 @@ class TestGuards:
         assert panel["i_smart_money"][0] is None
         # 路径效率仍可算
         assert panel["i_path_eff"][0] is not None or panel["i_path_eff"][0] is None
+
+
+# ── 涨跌停邻域叶（A 股特有的离散状态机；与 17 个连续路径统计机制不同）──────────
+
+
+def _limit_day(closes: list[float], highs: list[float] | None = None,
+               *, day: int = 2, code: str = "000001.SZ") -> pl.DataFrame:
+    """每个给定值落在**不同的 5min bar** 上的 1min 帧（09:30 起，每 5 分钟一根）。
+
+    ⚠️ 两个坑（初版都踩了）：
+    1. 间隔必须 ≥5 分钟——连续分钟会被 ``resample_intraday`` 并进同一个桶，
+       seal_share / first_touch 退化成单桶，测不出判别力。
+    2. 起点用 **09:31** 而非 09:30——bar-end 约定下 09:30 与 09:35 会落进同一根，
+       实测 09:30 起点只得 3 根、09:31 起点得 4 根。
+    """
+    from datetime import timedelta
+    highs = highs if highs is not None else list(closes)
+    base = datetime(2024, 1, day, 9, 31, 0)
+    rows = []
+    for i, (c, h) in enumerate(zip(closes, highs, strict=True)):
+        t = base + timedelta(minutes=5 * i)
+        rows.append((code, t, c, h, min(c, h), c, 100, c * 100))
+    return pl.DataFrame(
+        rows,
+        schema=["ts_code", "trade_time", "open", "high", "low", "close", "vol", "amount"],
+        orient="row",
+    )
+
+
+def _limit_ref(pre_close: float, limit_pct: float = 0.1, *, day: int = 2,
+               code: str = "000001.SZ") -> pl.DataFrame:
+    from datetime import date as _date
+    return pl.DataFrame({
+        "ts_code": [code], "trade_date": [_date(2024, 1, day)],
+        "pre_close": [pre_close], "limit_pct": [limit_pct],
+    })
+
+
+def test_limit_leaves_seal_share_and_open_count():
+    """封板时长占比 + 打开次数：手算 ground-truth。
+
+    pre_close=10 → 涨停价 11.0。close 序列 [11.0, 11.0, 10.9, 11.0]：
+    - seal = [1,1,0,1] → seal_share = 3/4
+    - 打开次数 = seal 由 1→0 的次数 = 1
+    """
+    from factorzen.intraday.features import battery, compute_day_panel
+
+    minute = _limit_day([11.0, 11.0, 10.9, 11.0])
+    ref = _limit_ref(10.0)
+    out = compute_day_panel(minute, battery(), "5min", min_bar_coverage=0.0,
+                            daily_ref=ref)
+    assert "i_limit_up_seal_share" in out.columns, out.columns
+    r = out.row(0, named=True)
+    assert abs(r["i_limit_up_seal_share"] - 0.75) < 1e-9, r["i_limit_up_seal_share"]
+    assert r["i_limit_up_open_count"] == 1.0, r["i_limit_up_open_count"]
+
+
+def test_limit_leaves_never_touched_is_zero_not_null():
+    """全日未触板 → seal_share/open_count = **0**（0 有信息「今天没封过」），
+    first_touch = **1.0**（最晚）。不得为 null——否则截面 95%+ null，
+    rank/IC 会塌成少数触板票的子样本游戏。"""
+    from factorzen.intraday.features import battery, compute_day_panel
+
+    out = compute_day_panel(_limit_day([10.1, 10.2, 10.15, 10.2]), battery(), "5min",
+                            min_bar_coverage=0.0, daily_ref=_limit_ref(10.0))
+    r = out.row(0, named=True)
+    assert r["i_limit_up_seal_share"] == 0.0
+    assert r["i_limit_up_open_count"] == 0.0
+    assert r["i_limit_up_first_touch"] == 1.0
+
+
+def test_limit_leaves_first_touch_earlier_is_smaller():
+    """首次触板越早，first_touch 越小（判别力：两组对照）。"""
+    from factorzen.intraday.features import battery, compute_day_panel
+
+    early = compute_day_panel(_limit_day([11.0, 10.5, 10.5, 10.5]), battery(), "5min",
+                              min_bar_coverage=0.0, daily_ref=_limit_ref(10.0))
+    late = compute_day_panel(_limit_day([10.5, 10.5, 10.5, 11.0]), battery(), "5min",
+                             min_bar_coverage=0.0, daily_ref=_limit_ref(10.0))
+    assert early.row(0, named=True)["i_limit_up_first_touch"] < \
+        late.row(0, named=True)["i_limit_up_first_touch"]
+
+
+def test_limit_leaves_null_without_daily_ref():
+    """不传 daily_ref（旧调用方）→ 涨跌停叶全 null，其余 17 叶**逐位不变**（零回归）。"""
+    from factorzen.intraday.features import battery, compute_day_panel
+
+    minute = _limit_day([11.0, 11.0, 10.9, 11.0])
+    with_ref = compute_day_panel(minute, battery(), "5min", min_bar_coverage=0.0,
+                                 daily_ref=_limit_ref(10.0))
+    without = compute_day_panel(minute, battery(), "5min", min_bar_coverage=0.0)
+    assert without.row(0, named=True)["i_limit_up_seal_share"] is None
+    for c in ("i_rv", "i_ret_open30", "i_vwap_dev", "i_amihud"):
+        a = with_ref.row(0, named=True)[c]
+        b = without.row(0, named=True)[c]
+        assert (a is None and b is None) or a == b, f"{c}: {a} vs {b}"
+
+
+def test_limit_leaves_guard_bad_pre_close():
+    """pre_close ≤0 / 缺失 → 三叶全 null（不是 0，区别于「未触板」）。"""
+    from factorzen.intraday.features import battery, compute_day_panel
+
+    out = compute_day_panel(_limit_day([11.0, 11.0]), battery(), "5min",
+                            min_bar_coverage=0.0, daily_ref=_limit_ref(0.0))
+    r = out.row(0, named=True)
+    assert r["i_limit_up_seal_share"] is None
+    assert r["i_limit_up_first_touch"] is None

@@ -197,7 +197,37 @@ def battery_v1(freq: str = "5min") -> list[IntradayFeatureSpec]:
             formula="max|r| / Σ|r|；Σ≤ε→null",
             description="最大单桶绝对收益占全日绝对收益之和的比重",
         ),
+        # ── 涨跌停邻域（A 股特有的离散状态机）──────────────────────────────
+        # 前 17 个都是连续路径统计；这三个测「硬约束下的触/封/开」，机制不同。
+        # 需调用方传 daily_ref（pre_close + 当日板块限幅），缺则三叶 null。
+        IntradayFeatureSpec(
+            name="i_limit_up_seal_share",
+            freq=freq_n,
+            pre=(),
+            agg=_placeholder_agg("i_limit_up_seal_share"),
+            formula="Σ1[close_i ≥ P_up−ε] / n_valid；P_up=round(pre_close×(1+L),2)",
+            description="封板时长占比；未封→0（0 有信息：今天没封过），非 null",
+        ),
+        IntradayFeatureSpec(
+            name="i_limit_up_open_count",
+            freq=freq_n,
+            pre=(),
+            agg=_placeholder_agg("i_limit_up_open_count"),
+            formula="Σ_{i≥2} 1[seal_{i-1}=1 ∧ seal_i=0]（不除以 N；次数截面可比）",
+            description="开板次数（封住后又打开）；未封→0",
+        ),
+        IntradayFeatureSpec(
+            name="i_limit_up_first_touch",
+            freq=freq_n,
+            pre=(),
+            agg=_placeholder_agg("i_limit_up_first_touch"),
+            formula="min{i: high_i ≥ P_up−ε} / n_bars ∈ (0,1]；全日未触→1.0",
+            description=(
+                "首次触板的相对时刻（越小越早）；全日未触填 1.0 而非 null"
+                "——否则截面 95%+ null，rank/IC 塌成少数触板票的子样本游戏"
+            ),
+        ),
     ]
-    assert len(specs) == 17
+    assert len(specs) == 20
     _ = _EPS  # 文档常量，计算在 engine
     return specs

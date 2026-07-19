@@ -66,13 +66,11 @@ def test_run_experiment_default_methods(tmp_path):
         factor_dfs, ret_df, cv=cv, out_dir=str(tmp_path), run_id="exp2"
     )
     comp = pl.read_csv(res["run_dir"] + "/comparison.csv")
-    # 默认六方法：原四方法 + 两个允许负权的 *_signed 版本（P1-①：准入用残差口径、
-    # 部署用裸值，裸 IC 为负的因子被裁到 0 = 整条信息丢掉；signed 让权重自己处理符号）
+    # 默认四方法。*_signed（允许负权）可选但**不进默认**——真实库 OOS 实测更差，
+    # 见 methods._solve_max_ir_weights 的对照表。
     assert set(comp["method"].to_list()) == {
         "equal_weight",
         "ic_weighted",
         "max_ir",
-        "ic_weighted_signed",
-        "max_ir_signed",
         "lgbm",
     }

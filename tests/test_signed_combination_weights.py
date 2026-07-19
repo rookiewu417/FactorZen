@@ -146,10 +146,16 @@ def test_max_ir_signed_closed_form_ground_truth():
 # ── 3. 判别力核心：允许负权确实能救回负 IC 因子 ──────────────────────────────
 
 def test_signed_weighting_beats_clipped_when_negative_ic_factor_present():
-    """本轮改动的**目的性测试**：存在负 IC 因子时，允许负权的合成因子 IC 更高。
+    """机制测试：IC 符号**稳定且估准**时，允许负权的合成因子 IC 更高。
 
     clipped 口径把 neg 裁到 0（信息浪费）；signed 口径给它负权（信息被利用）。
-    这里比较的是**合成因子对收益的 IC**——外部 ground truth，不是权重自证。
+    比较的是**合成因子对收益的 IC**——外部 ground truth，不是权重自证。
+
+    ⚠️ **本测试证明的是机制可行，不是「signed 在实践中更好」。**
+    真实库 OOS（csi300/2020-2026/85 因子，含 21 条负 ic_train）结论**相反**：
+    signed 0.0276 < clipped 0.0374。差异来源是本测试**没有**的估计噪声——
+    这里 neg 因子的 IC 由构造保证稳定，真实库里 85 个因子的 IC 估计噪声很大，
+    放开负权只是放大噪声（Jagannathan & Ma 2003：禁止做空 ≈ 协方差收缩）。
     """
     from factorzen.research.combination.methods import (
         _rank_ic_numpy,

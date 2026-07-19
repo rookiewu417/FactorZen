@@ -19,6 +19,11 @@ INTRADAY_FEATURES: set[str] = {
     "i_amihud",
     "i_path_eff",
     "i_max_ret_share",
+    # 涨跌停邻域（A 股特有）：前 17 个都是**连续路径统计**（RV/矩/路径效率/量时分布），
+    # 这三个是**硬约束下的离散状态机**（触板/封板/开板），机制上不在同一流形。
+    "i_limit_up_seal_share",
+    "i_limit_up_open_count",
+    "i_limit_up_first_touch",
 }
 
 LEAF_FEATURES: dict[str, str] = {
@@ -80,6 +85,9 @@ LEAF_FEATURES: dict[str, str] = {
     "i_amihud": "i_amihud",
     "i_path_eff": "i_path_eff",
     "i_max_ret_share": "i_max_ret_share",
+    "i_limit_up_seal_share": "i_limit_up_seal_share",
+    "i_limit_up_open_count": "i_limit_up_open_count",
+    "i_limit_up_first_touch": "i_limit_up_first_touch",
 }
 
 BASIC_FEATURES: set[str] = {

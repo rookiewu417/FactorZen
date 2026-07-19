@@ -130,7 +130,7 @@ class TestBuildIntradayFeatures:
         assert m["version"] == "v1"
         assert m["freq"] == "5min"
         assert m["battery_hash"] == battery_hash(specs)
-        assert len(m["features"]) == 17
+        assert len(m["features"]) == 20  # 17 连续路径统计 + 3 涨跌停邻域
         assert m["source"] == "minute_1min"
         assert m["bar_label_convention"] == "end"
         assert m["session_policy"] == "regular_only_drop_after_1500"
@@ -530,3 +530,36 @@ class TestBuildIntradayFeatures:
         assert m1["coverage"]["months"] == m2["coverage"]["months"]
         assert m1["battery_hash"] == m2["battery_hash"]
         assert m1["rows_total"] == m2["rows_total"]
+
+
+def test_build_passes_limit_ref_to_compute_day_panel(tmp_path, monkeypatch):
+    """接线锚：``build_intraday_features`` 必须把 ``daily_ref`` 传给 ``compute_day_panel``。
+
+    能力层↔接线层漂移是本项目头号 bug 源——引擎能算涨跌停叶，但只要月构建不传
+    参照，三个 i_limit_up_* 就永远 null，且**不会报错**（设计上参照缺失即 null）。
+    """
+    import factorzen.intraday.features.engine as eng
+
+    seen: dict = {}
+    orig = eng.compute_day_panel
+
+    def _spy(*a, **kw):
+        seen["has_ref"] = kw.get("daily_ref") is not None
+        return orig(*a, **kw)
+
+    monkeypatch.setattr(eng, "compute_day_panel", _spy)
+    monkeypatch.setattr(
+        eng, "_load_limit_ref",
+        lambda *a, **kw: pl.DataFrame({
+            "ts_code": ["000001.SZ"], "trade_date": [date(2024, 1, 2)],
+            "pre_close": [10.0], "limit_pct": [0.1],
+        }),
+    )
+    src = tmp_path / "src"
+    out = tmp_path / "out"
+    _build_mini_source(src)
+    eng.build_intraday_features(
+        "20240101", "20240131", freq="5min", version="v1",
+        source_dir=src, out_dir=out, min_bar_coverage=0.0,
+    )
+    assert seen.get("has_ref") is True, "月构建没把 daily_ref 传给 compute_day_panel"

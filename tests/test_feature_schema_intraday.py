@@ -50,7 +50,7 @@ def test_intraday_features_subset_of_leaf_features():
     from factorzen.core.feature_schema import INTRADAY_FEATURES, LEAF_FEATURES
 
     assert set(LEAF_FEATURES.keys()) >= INTRADAY_FEATURES
-    assert len(INTRADAY_FEATURES) == 17
+    assert len(INTRADAY_FEATURES) == 20  # 17 连续路径统计 + 3 涨跌停邻域
 
 
 def test_intraday_leaves_are_identity_i_prefix():

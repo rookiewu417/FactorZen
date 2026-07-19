@@ -211,7 +211,8 @@ def _run_one_round(
     state, llm_fn, *, index, ledger, rounds_log, mining_df, holdout_df, bundle,
     pending, seed, top_k, heal_rounds, structured, health, data_window, warmup_daily,
     eval_start=None, leaf_budgets=None, hypotheses_per_round=1, profile=None, ctx=None,
-    lib_pool=None, library_covered=None, library_crowded=None, objective: str = "residual",
+    lib_pool=None, library_covered=None, library_crowded=None,
+    library_exprs=None, objective: str = "residual",
     llm_workers: int = 1, residual_projector=None,
     run_id: str | None = None, campaign_id: str | None = None,
     prepped=None,
@@ -238,9 +239,11 @@ def _run_one_round(
     # 每轮重算 leaf_stats：本 session 刚写入的失败也会进入后续轮次的挖穿/未探索。
     # leaf_names=ctx.leaf_names（leaf_health 摘除后的存活叶），死叶不进任一侧。
     # library_covered 在 session 开始预构建，逐轮复用（库文件本 session 不改）。
+    # library_exprs：库内全部表达式，供挖穿判定兜底（≠ library_covered，后者按族截断
+    # 只为喂 LLM；拿截断列表判挖穿会漏掉绝大多数库因子，等于没兜底）。
     rec = recall(
         index, k=5, data_window=data_window, leaf_names=list(ctx.leaf_names),
-        library_covered=library_covered,
+        library_covered=library_covered, library_exprs=library_exprs,
     )
     tasks: list[dict] = []
 
@@ -764,6 +767,7 @@ def run_team_agent(
     _lib_hash_at_pool: str | None = None  # lift 基线复用判据(池构建时的库文件 hash)
     library_covered: list[str] | None = None
     library_crowded: list[tuple[str, int]] | None = None
+    library_exprs: list[str] | None = None   # 挖穿豁免证据源（在任记录表达式）
     market = getattr(profile, "name", None) or (
         (data_window or {}).get("market")) or "ashare"
     lib_root = library_root or str(Path(index_path).parent / "factor_library")
@@ -795,6 +799,15 @@ def run_team_agent(
             )
             library_covered = covered or None
             library_crowded = crowded or None
+            # 挖穿判定的成功证据源：库内**在任**记录（active/probation）的表达式。
+            # ≠ library_covered（后者按族截断 per_family=2/max_total=12 只为喂 LLM，
+            # 拿它判挖穿等于没兜底）。限定在任是有意的——库的生命周期即豁免的过期
+            # 机制：那条因子被降级出 active/probation，该叶的豁免自动消失。
+            from factorzen.discovery.factor_library import load_library
+            library_exprs = [
+                r.expression for r in load_library(market, root=lib_root)
+                if r.expression and r.status in ("active", "probation")
+            ] or None
             state.library_pool_size = len(lib_pool)
             if lib_pool:
                 _step(f"库级正交 ▸ 物化 {len(lib_pool)} 个 active 库因子（root={lib_root}）")
@@ -931,7 +944,7 @@ def run_team_agent(
                 eval_start=_eval_start_date, leaf_budgets=leaf_budgets,
                 hypotheses_per_round=hypotheses_per_round, profile=profile, ctx=ctx,
                 lib_pool=lib_pool, library_covered=library_covered,
-                library_crowded=library_crowded,
+                library_crowded=library_crowded, library_exprs=library_exprs,
                 objective=objective, llm_workers=llm_workers,
                 residual_projector=residual_projector,
                 run_id=session_run_id, campaign_id=session_campaign_id,

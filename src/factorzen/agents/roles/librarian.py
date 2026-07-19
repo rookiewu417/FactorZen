@@ -2,11 +2,14 @@
 """Librarian 角色：跨 session 长期记忆的读（recall）与写（record）。"""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from factorzen.discovery.expression import parse_expr, to_expr_string
 
-# 叶子级指导阈值：方向尝试（排除 coverage 失败）≥ 此值且 0 过关 → 挖穿区。
+# 叶子级指导阈值：方向尝试（排除 coverage 失败）≥ 此值、0 过关、**且库内无该叶因子**
+# → 挖穿区。第三个条件是 2026-07-19 补的：`n_passed` 数的是已被 PR#97 降级的单因子
+# 护栏，只看它会漏数约 74% 的成功（详见 `build_leaf_guidance` docstring）。
 EXHAUSTED_MIN_TRIES = 15
 # 本 session 存活叶子中，历史唯一表达式数 ≤ 此值 → 未探索区（优先考虑）。
 UNEXPLORED_MAX_TRIES = 2
@@ -41,18 +44,61 @@ class Recall:
 LibrarianBriefing = Recall
 
 
+def leaves_present_in_library(
+    library_exprs: list[str] | None, leaf_names: list[str],
+) -> set[str]:
+    """``leaf_names`` 中出现在任一库表达式里的叶子。
+
+    匹配用 ``\\b<leaf>\\b``，与 ``ExperimentIndex.leaf_stats`` **同口径**——两处规则
+    不一致会让「试过几次」和「进库几条」对不上账（`roe` 误命中 `roe_ttm` 之类）。
+    """
+    if not library_exprs or not leaf_names:
+        return set()
+    out: set[str] = set()
+    for name in leaf_names:
+        pat = re.compile(rf"\b{re.escape(name)}\b")
+        if any(pat.search(str(e or "")) for e in library_exprs):
+            out.add(name)
+    return out
+
+
 def build_leaf_guidance(
     stats: dict[str, dict],
     leaf_names: list[str],
     *,
     exhausted_min: int | None = None,
     unexplored_max: int | None = None,
+    library_exprs: list[str] | None = None,
 ) -> dict[str, list[str]]:
     """从 leaf_stats 构建挖穿/未探索列表（只含 ``leaf_names`` 中的存活叶子）。
 
-    - 挖穿区：``n_exprs - n_coverage_fail >= exhausted_min`` 且 ``n_passed == 0``
-      （coverage 失败不算方向尝试）
+    - 挖穿区：``n_exprs - n_coverage_fail >= exhausted_min``、``n_passed == 0``
+      **且该叶子不出现在库内任何表达式里**（coverage 失败不算方向尝试）
     - 未探索区：``n_exprs <= unexplored_max``
+
+    ``library_exprs``：库内**在任表达式**（``status ∈ {active, probation}``，由调用方
+    筛好后传入）。None → 不参与判定，行为与加该参数前一致（零回归）。
+
+    **为什么要看库**：``n_passed`` 数的是 ``passed_guardrails``（单因子定量护栏），
+    而 PR#97 已把单因子门降级为**排序信号**、真正的准入是 lift 轨。2026-07-19 实测
+    experiment_index 与库的交集 171 条里 **127 条（74%）索引判 passed=False 却在库里、
+    46 条是 active**——只看 ``n_passed`` 会漏数约四分之三的成功，把持续产出的叶子误判
+    枯竭，再被 ``filter_exhausted_expressions`` 硬过滤（其「叶集合全 ∈ exhausted」
+    分支**无配额逃生**），搜索空间随索引成熟越收越窄。
+
+    **双源分工**：分母（尝试数）取索引、分子（成功）取库，各用各的权威。
+    索引不完整（只有 team agent 那条路径回写，随机搜索/lift-test --apply/rebuild 都不写）
+    只会让 ``direction_tries`` **偏低 → 更难判枯竭**，方向保守；而库是准入的完整账本。
+    实例：``neg(i_ret_close30)`` 在库内 active、``ic_train=0.0855``，索引里却查无此表达式。
+
+    **为什么不数 ``lift_queue``**：那是管道**中间态**，会被后续 ``lift_rejected`` 覆盖；
+    索引是 last-wins 的**状态投影**，用它数过程事件同样漏 75%（实测全索引 200 条曾入队、
+    末态仍是 lift_queue 的只剩 50 条）——与本 bug 是同一类错误（用错日志语义）。
+    且「曾入队」信号太弱（200 入队 vs 144 最终 lift_rejected），当硬成功会造成更隐蔽的假阴性。
+
+    **为什么不需要「老成功过期」窗口**：豁免只认在任记录，**库的生命周期本身就是过期机制**
+    ——那条因子一旦被降级出 active/probation，豁免自动消失。「半年前贡献过、之后一直失败」
+    属于**拥挤**（``library_crowded`` 软降权通道），不是**枯竭**（硬避）。
 
     阈值默认读模块常量（调用时解析，便于测试 monkeypatch）。
     """
@@ -60,6 +106,7 @@ def build_leaf_guidance(
         exhausted_min = EXHAUSTED_MIN_TRIES
     if unexplored_max is None:
         unexplored_max = UNEXPLORED_MAX_TRIES
+    in_lib = leaves_present_in_library(library_exprs, leaf_names)
     exhausted: list[str] = []
     unexplored: list[str] = []
     for name in leaf_names:
@@ -71,7 +118,7 @@ def build_leaf_guidance(
         n_cov = int(st.get("n_coverage_fail") or 0)
         best = float(st.get("best_abs_ic") or 0.0)
         direction_tries = n_exprs - n_cov
-        if direction_tries >= exhausted_min and n_passed == 0:
+        if direction_tries >= exhausted_min and n_passed == 0 and name not in in_lib:
             exhausted.append(
                 f"{name}(试 {direction_tries} 次 {n_passed} 过关, best|IC|={best:.3f})"
             )
@@ -85,10 +132,16 @@ def raw_exhausted_leaves(
     leaf_names: list[str],
     *,
     exhausted_min: int | None = None,
+    library_exprs: list[str] | None = None,
 ) -> list[str]:
-    """挖穿叶的**裸名**列表（硬过滤用；口径与 ``build_leaf_guidance`` 一致）。"""
+    """挖穿叶的**裸名**列表（硬过滤用；口径与 ``build_leaf_guidance`` 一致）。
+
+    ``library_exprs`` 必须与 ``build_leaf_guidance`` 传同一份——这是**硬过滤**的输入，
+    比提示词严重：口径漂移会让 LLM 看到「未枯竭」却仍被过滤器丢弃。
+    """
     if exhausted_min is None:
         exhausted_min = EXHAUSTED_MIN_TRIES
+    in_lib = leaves_present_in_library(library_exprs, leaf_names)
     out: list[str] = []
     for name in leaf_names:
         st = stats.get(name) or {
@@ -98,7 +151,7 @@ def raw_exhausted_leaves(
         n_passed = int(st.get("n_passed") or 0)
         n_cov = int(st.get("n_coverage_fail") or 0)
         direction_tries = n_exprs - n_cov
-        if direction_tries >= exhausted_min and n_passed == 0:
+        if direction_tries >= exhausted_min and n_passed == 0 and name not in in_lib:
             out.append(name)
     return out
 
@@ -110,6 +163,7 @@ def recall(
     data_window: dict | None = None,
     leaf_names: list[str] | None = None,
     library_covered: list[str] | None = None,
+    library_exprs: list[str] | None = None,
 ) -> Recall:
     """召回本数据窗口内的历史。
 
@@ -120,13 +174,22 @@ def recall(
     ``leaf_stats`` 并生成 ``leaf_guidance``；死叶不出现在挖穿/未探索任一侧。
 
     ``library_covered``：库内 active 高 IC 表达式列表（预构建）；None → 不注入（零回归）。
+
+    ``library_exprs``：库内**全部**表达式（不限 status、不截断），供挖穿判定兜底。
+    与 ``library_covered`` 是两回事——后者按族截断（per_family=2/max_total=12）只为喂
+    LLM，拿它判挖穿会漏掉绝大多数库因子。
     """
     leaf_guidance = None
     exhausted_leaves: list[str] | None = None
     if leaf_names is not None:
         stats = index.leaf_stats(leaf_names, data_window=data_window)
-        leaf_guidance = build_leaf_guidance(stats, list(leaf_names))
-        raw = raw_exhausted_leaves(stats, list(leaf_names))
+        # 两个消费方（提示词 / 硬过滤）必须同参，否则 LLM 看到「未枯竭」却仍被丢弃
+        leaf_guidance = build_leaf_guidance(
+            stats, list(leaf_names), library_exprs=library_exprs,
+        )
+        raw = raw_exhausted_leaves(
+            stats, list(leaf_names), library_exprs=library_exprs,
+        )
         exhausted_leaves = raw or None
     lift_rej = index.known_lift_rejects(k=k, data_window=data_window)
     return Recall(

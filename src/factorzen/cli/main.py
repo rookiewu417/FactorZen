@@ -1921,6 +1921,10 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             threshold=threshold,
             se_mult=se_mult,
             allow_active=bool(getattr(args, "allow_active", False)),
+            # W1 相关性门：复用 lift 已用的物化 memo（库侧 active 面板此前已物化过，
+            # memo 命中不重复算；只有本批准入的少数候选需要新物化）。
+            # 不传 = 静默漏掉去重，故此处必须接通。
+            materialize=memo_mat,
         )
         print(
             f"[factor-library lift-test] 入库：added_active={admissions.get('added_active', 0)} "

@@ -1388,6 +1388,9 @@ def _session_end_auto_lift(
             },
             threshold=DEFAULT_LIFT_THRESHOLD,
             se_mult=float(lift_se_mult),
+            # W1 相关性门：复用 run_lift_tests 同一个物化器（`mat`）。
+            # 不传 = 静默漏掉去重，故此处必须接通。
+            materialize=mat,
         )
         meta["lift_admissions"] = {
             "added_active": int(adm.get("added_active", 0)),

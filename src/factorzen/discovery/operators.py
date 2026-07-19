@@ -42,6 +42,46 @@ def _safe_div(a: pl.Expr, b: pl.Expr) -> pl.Expr:
     return pl.when(b.is_finite() & (b.abs() > 1e-12)).then(a / b).otherwise(None)
 
 
+def _decay_linear(x: pl.Expr, w: int) -> pl.Expr:
+    """线性衰减加权均值：权重 1..w（最新一期最大），按窗口内**有效**权重和归一化。
+
+    **不能用 `rolling_mean(weights=...)`**——polars 1.41.2 的加权 rolling 在遇到
+    null 时是 Rust 层 `panic!`（"weights not yet supported on array with null values"），
+    不是 Python 异常，接不住、会崩掉整个求值进程。而真实因子几乎必然含 null
+    （warm-up / 停牌 / 财务缺失），所以这条路在生产上是死的。
+
+    实现走 cumsum 恒等式，**O(1) 个 rolling 而非 O(w) 个 shift**：
+    令 ``C`` 为累计和，则
+    ``Σ_{k=0}^{w-1}(w-k)·x_{t-k} = w·C_t − Σ_{j=1}^{w} C_{t-j} = w·C_t − rolling_sum(C,w)[t-1]``。
+    朴素 O(w) 位移版在全 A（12.5M 行）w=63 实测 14.4s（`ts_mean` 0.19s），
+    挖掘会被拖垮；本式实测与位移版最大相对误差 ~1e-11（z-score / 千元 / 小收益率
+    三种量级同量级结论），远低于 IC 分辨率。位移参考实现保留在
+    ``tests/test_ts_decay_linear.py`` 作 parity 锚。
+
+    **有限性守卫**：cumsum 是全序列累加器，一个 inf/NaN 会污染其后**全部**取值
+    （位移版只波及 w 个位置）。故非有限值一律按缺失处理——与
+    ``_panel_to_compact`` 的 ``np.isfinite`` 过滤、以及全库「NaN 不得穿透」的口径一致。
+
+    分母按有效权重重归一化（而非固定 Σ1..w）：缺失期不会把结果向 0 稀释，
+    常数序列含 null 时仍还原该常数（量纲与 ``ts_mean`` 同尺度）。
+    窗口内有效样本数 < ``_MIN`` → null，与其它 ts 算子的 min_samples 语义一致。
+
+    调用方在外层套 ``.over("ts_code")``：本函数只组合表达式、不自带窗口分组，
+    避免嵌套 over（截面 over 套时序 over 会产出全 null，见 test_expression_nested_over）。
+    """
+    ok = (x.is_not_null() & x.is_finite()).fill_null(False)
+    filled = pl.when(ok).then(x).otherwise(0.0)
+    mask = ok.cast(pl.Float64)
+    # rolling_sum(C, w).shift(1) = Σ_{j=1..w} C_{t-j}；头部不足 w 期时 shift 产生的
+    # null 补 0（等价于 C_{<0}=0，即窗口自然截断到序列起点）。
+    csum = filled.cum_sum()
+    msum = mask.cum_sum()
+    num = w * csum - csum.rolling_sum(w, min_samples=1).shift(1).fill_null(0.0)
+    den = w * msum - msum.rolling_sum(w, min_samples=1).shift(1).fill_null(0.0)
+    cnt = ok.cast(pl.Int64).rolling_sum(w, min_samples=1)
+    return pl.when(cnt >= _MIN).then(_safe_div(num, den)).otherwise(None)
+
+
 @dataclass(frozen=True)
 class OperatorSpec:
     name: str
@@ -110,7 +150,7 @@ OPERATORS: dict[str, OperatorSpec] = {
     "pct_change": _ts("pct_change", lambda x, w:
         (pl.when(x.shift(w) > 1e-12).then(x / x.shift(w) - 1.0).otherwise(None)).over("ts_code")),
     "ts_decay_linear": _ts("ts_decay_linear", lambda x, w:
-        x.rolling_mean(w, min_samples=_MIN).over("ts_code")),  # MVP：等权近似线性衰减
+        _decay_linear(x, w).over("ts_code")),
     "ts_corr": _ts2("ts_corr", _ts_corr),
     "ts_cov": _ts2("ts_cov", _ts_cov),
     "ts_median": _ts("ts_median", lambda x, w:

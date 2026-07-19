@@ -864,3 +864,71 @@ def test_upsert_row_provenance_beats_meta(tmp_path):
     assert rec.frequency == "daily"
     assert rec.lift_threshold == 0.002
     assert rec.lift_se_mult == 1.5
+
+
+# ── P1-①: 裸 IC 同号门 ────────────────────────────────────────────────────────
+
+def test_naked_ic_sign_gate_rejects_negative_admission_ic():
+    """裸 IC 为负的候选必拒——即使残差 lift 远超门槛。
+
+    **P1-① 口径错配**：准入判据用**残差** IC（`residual_ic_v1`，对库正交化后），
+    而部署 `combine_from_library` 是**裸值等权**（z-score 后等权相加，无正交化）。
+    等权无法表达负贡献，故裸 IC 为负的因子在部署时是纯拖累。
+
+    实证（2026-07-19，csi300 2020-2026 全窗，同 CV）：库内 85 条 active 有 23 条
+    统一窗口裸 IC 为负；剔除后等权组合 rank_ic **0.05601 → 0.06048**、
+    ICIR **0.2282 → 0.2416**，**配对 t = +5.338（n=1454）显著**。
+    （两组共享 62 因子高度相关，必须配对——独立样本 SE 是配对 SE 的 11 倍，
+    用它得 t=+0.486「不显著」，结论相反。）
+
+    代价已知并接受：W4 已证符号反向属**抑制变量效应**（设计行为，非 bug），
+    本门会误杀部分真抑制变量；但实测整体净收益为正。结论绑定「等权部署」前提——
+    若将来部署改用能表达负贡献的权重，此门需重新评估。
+    """
+    from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
+    from factorzen.discovery.lift_test import lift_admission
+
+    thr = DEFAULT_LIFT_THRESHOLD
+    strong = {"lift": thr * 10, "lift_se": 0.0, "lift_second_half": 0.01}
+
+    # 裸 IC 为负 → 拒（lift 再高也拒）
+    assert lift_admission({**strong, "admission_ic": -0.0001}, threshold=thr) == "reject"
+    assert lift_admission({**strong, "admission_ic": -0.02}, threshold=thr) == "reject"
+    # 裸 IC 非负 → 正常裁决
+    assert lift_admission({**strong, "admission_ic": 0.0}, threshold=thr) == "active"
+    assert lift_admission({**strong, "admission_ic": 0.03}, threshold=thr) == "active"
+
+
+def test_naked_ic_sign_gate_skips_when_field_absent():
+    """`admission_ic` 缺失 → **跳过**该门，不因缺失而拒。
+
+    与 `lift_se` 缺失的处理**有意不同**：SE 缺失意味着算不出 bar（区间证据不完整，
+    必拒）；裸 IC 缺失只是少一道额外门——历史库记录、`lift_null` 零假设校准等
+    路径本就不带该字段，按缺失即拒会把它们全部误杀。
+    """
+    from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
+    from factorzen.discovery.lift_test import lift_admission
+
+    thr = DEFAULT_LIFT_THRESHOLD
+    base = {"lift": thr * 10, "lift_se": 0.0, "lift_second_half": 0.01}
+    assert lift_admission(base, threshold=thr) == "active"                    # 无该键
+    assert lift_admission({**base, "admission_ic": None}, threshold=thr) == "active"
+    # 非有限值同样跳过（不可判，不等于负）
+    assert lift_admission({**base, "admission_ic": float("nan")}, threshold=thr) == "active"
+
+
+def test_naked_ic_sign_gate_has_escape_hatch():
+    """`require_positive_naked_ic=False` 关闭该门——留对照/复检逃生口。
+
+    与 CLAUDE.md「护栏咬合：passed 默认参与筛选，留 --all 逃生口」同款。
+    """
+    from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
+    from factorzen.discovery.lift_test import lift_admission
+
+    thr = DEFAULT_LIFT_THRESHOLD
+    row = {"lift": thr * 10, "lift_se": 0.0, "lift_second_half": 0.01,
+           "admission_ic": -0.02}
+    assert lift_admission(row, threshold=thr) == "reject"
+    assert lift_admission(
+        row, threshold=thr, require_positive_naked_ic=False,
+    ) == "active"

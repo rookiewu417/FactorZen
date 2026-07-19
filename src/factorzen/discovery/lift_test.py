@@ -720,18 +720,41 @@ def lift_admission(
     *,
     threshold: float = DEFAULT_LIFT_THRESHOLD,
     se_mult: float = 1.0,
+    require_positive_naked_ic: bool = True,
 ) -> str:
     """统一准入规则：返回 ``\"active\" | \"probation\" | \"reject\"``。
 
     - lift is None / 非有限 → reject
     - lift_se is None / 转换失败 / 非有限（NaN、±inf）→ reject
       （区间证据不完整，不再按 0 处理）
+    - **admission_ic（裸 IC）为负 → reject**（P1-① 同号门，见下）
     - lift ≥ max(threshold, se_mult × lift_se) 且 lift_second_half > 0 → active
     - lift ≥ 同上门槛但 second_half 为 None 或 ≤ 0 → probation
     - 否则 reject
 
     finite lift_se（含 0.0）合法：bar = max(threshold, se_mult × se)。
     orchestrator / rebuild / CLI 三处共用此单一实现。
+
+    **裸 IC 同号门（P1-① 口径错配的解法 ②）**：准入判据用**残差** IC
+    （``residual_ic_v1``，对库正交化后），而部署 ``combine_from_library`` 是
+    **裸值等权**（z-score 后等权相加，无正交化）。等权无法表达负贡献，
+    故裸 IC 为负的因子在部署时是纯拖累。
+
+    实证（2026-07-19，csi300 2020-2026 全窗，同 CV）：库内 85 条 active 有
+    23 条统一窗口裸 IC 为负；剔除后等权组合 rank_ic **0.05601 → 0.06048**、
+    ICIR **0.2282 → 0.2416**，**配对 t = +5.338（n=1454）显著**。
+    （两组共享 62 因子高度相关必须配对——独立样本 SE 是配对 SE 的 11 倍，
+    用它得 t=+0.486「不显著」，结论相反。）
+
+    代价已知并接受：W4 已证符号反向属**抑制变量效应**（设计行为，非 bug），
+    本门会误杀部分真抑制变量；实测整体净收益为正。
+    **结论绑定「等权部署」前提**——若部署改用能表达负贡献的权重，此门须重估
+    （signed 权重已于 2026-07-18 实测证伪，见 ``research/combination/methods``）。
+
+    ``admission_ic`` 缺失/非有限 → **跳过**该门（与 lift_se 缺失即拒**有意不同**：
+    SE 缺失算不出 bar，而裸 IC 缺失只是少一道门；历史库记录与 ``lift_null``
+    零假设校准本就不带该字段，按缺失即拒会全部误杀）。
+    ``require_positive_naked_ic=False`` 关门，留对照/复检逃生口。
     """
     lift = row.get("lift")
     if lift is None:
@@ -756,6 +779,18 @@ def lift_admission(
     bar = max(float(threshold), float(se_mult) * se_val)
     if lift_f < bar:
         return "reject"
+
+    # 裸 IC 同号门（P1-①）：部署是裸值等权，负裸 IC 因子是纯拖累。
+    # 缺失/不可解析/非有限一律跳过——缺证据 ≠ 证据为负。
+    if require_positive_naked_ic:
+        naked_raw = row.get("admission_ic")
+        if naked_raw is not None:
+            try:
+                naked = float(naked_raw)
+            except (TypeError, ValueError):
+                naked = float("nan")
+            if np.isfinite(naked) and naked < 0.0:
+                return "reject"
 
     sh = row.get("lift_second_half")
     if sh is not None:

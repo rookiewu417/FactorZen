@@ -52,3 +52,70 @@ def test_monotonicity_result_fields():
     assert hasattr(result, "direction")
     assert isinstance(result.group_means, list)
     assert all(isinstance(m, float) for m in result.group_means)
+
+
+# ── group_daily_returns：报告层画分组净值/绩效的数据源 ────────────────────────
+
+
+def test_group_daily_returns_matches_hand_computed_ground_truth():
+    """逐日 × 分组收益对齐手算值。
+
+    2 天 × 4 股 × 2 组，分组公式 ``(rank-1)*n_groups//max_rank``：
+    因子 1,2,3,4 → rank 1,2,3,4 → G0={rank1,2}、G1={rank3,4}。
+    收益按天独立给定，各组均值可手算，不依赖 group_means 反推（避免恒真）。
+    """
+    df = pl.DataFrame(
+        {
+            "ts_code": ["a", "b", "c", "d", "a", "b", "c", "d"],
+            "trade_date": ["2026-01-05"] * 4 + ["2026-01-06"] * 4,
+            "factor_value": [1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0],
+            # day1: G0=(0.01+0.02)/2=0.015, G1=(0.03+0.04)/2=0.035
+            # day2: G0=(0.05+0.07)/2=0.060, G1=(0.09+0.11)/2=0.100
+            "fwd_ret": [0.01, 0.02, 0.03, 0.04, 0.05, 0.07, 0.09, 0.11],
+        }
+    )
+    result = compute_monotonicity(df, factor_col="factor_value", ret_col="fwd_ret", n_groups=2)
+    gdr = result.group_daily_returns
+
+    assert set(gdr.columns) == {"trade_date", "group", "mean_ret"}
+    assert gdr.height == 4, "2 天 × 2 组应为 4 行"
+
+    actual = {
+        (row["trade_date"], row["group"]): round(row["mean_ret"], 10)
+        for row in gdr.to_dicts()
+    }
+    expected = {
+        ("2026-01-05", 0): 0.015,
+        ("2026-01-05", 1): 0.035,
+        ("2026-01-06", 0): 0.060,
+        ("2026-01-06", 1): 0.100,
+    }
+    assert actual == expected, f"逐日分组收益不符手算值：{actual}"
+
+
+def test_group_daily_returns_is_sorted_for_cumulative_nav():
+    """必须按 (group, trade_date) 有序——报告层直接 cumprod，乱序会算出错误净值。"""
+    df = _make_strongly_monotonic_data()
+    extra = df.with_columns(pl.lit("2026-01-02").alias("trade_date"))  # 更早的一天
+    result = compute_monotonicity(
+        pl.concat([df, extra]), factor_col="factor_value", ret_col="fwd_ret", n_groups=5
+    )
+    gdr = result.group_daily_returns
+    for g in gdr["group"].unique().to_list():
+        dates = gdr.filter(pl.col("group") == g)["trade_date"].to_list()
+        assert dates == sorted(dates), f"组 {g} 的日期未升序：{dates}"
+
+
+def test_group_daily_returns_empty_input_has_stable_schema():
+    """空输入返回带正确 schema 的空表，报告层无需额外守卫。"""
+    empty = pl.DataFrame(
+        {
+            "ts_code": pl.Series([], dtype=pl.Utf8),
+            "trade_date": pl.Series([], dtype=pl.Utf8),
+            "factor_value": pl.Series([], dtype=pl.Float64),
+            "fwd_ret": pl.Series([], dtype=pl.Float64),
+        }
+    )
+    result = compute_monotonicity(empty, factor_col="factor_value", ret_col="fwd_ret", n_groups=5)
+    assert result.group_daily_returns.is_empty()
+    assert set(result.group_daily_returns.columns) == {"trade_date", "group", "mean_ret"}

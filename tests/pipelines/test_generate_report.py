@@ -1,13 +1,48 @@
-﻿"""Tests for generate_report result persistence metadata."""
+"""test_generate_report_is_st.py：generate_report 回测须传 is_st_by_date（与 daily_single 一致，消除 ST 涨跌停双路径）。
+test_generate_report_persistence.py：Tests for generate_report result persistence metadata.
+test_report_forward_returns.py：fz report build 前向收益/IC 标签须用复权收盘价，与 fz factor test 口径一致，
+"""
 
 from __future__ import annotations
 
 import json
 from datetime import date
+from types import SimpleNamespace
 
 import polars as pl
 
 
+# ==== 来自 test_generate_report_is_st.py ====
+def test_run_backtest_strategies_threads_is_st_by_date(monkeypatch):
+    import factorzen.pipelines.generate_report as gr
+
+    daily = pl.DataFrame({"ts_code": ["A.SZ", "B.SZ"],
+                          "trade_date": [date(2024, 1, 1), date(2024, 1, 1)]})
+    clean = pl.DataFrame({"ts_code": ["A.SZ"], "trade_date": [date(2024, 1, 1)],
+                          "factor_clean": [0.1]})
+    st_map = {date(2024, 1, 1): {"A.SZ"}}
+    # build_is_st_by_date 在函数内 import，patch 源模块
+    monkeypatch.setattr("factorzen.core.universe.build_is_st_by_date", lambda codes, dates: st_map)
+    monkeypatch.setattr(gr, "build_backtest_strategies", lambda c: {"topn": object()})
+    monkeypatch.setattr(gr, "build_runtime_backtest_config", lambda *a, **k: None)
+    monkeypatch.setattr(gr, "build_cost_model", lambda *a, **k: None)
+    monkeypatch.setattr(gr, "trim_backtest_to_first_trade", lambda r: r)
+    monkeypatch.setattr(gr, "logger", SimpleNamespace(info=lambda *a, **k: None))
+
+    captured: dict = {}
+
+    def fake_bt(strategy, clean_df, dly, *, config, cost_model, factor_name, is_st_by_date=None):
+        captured["is_st"] = is_st_by_date
+        return SimpleNamespace(summary=lambda: "ok")
+
+    monkeypatch.setattr(gr, "run_strategy_backtest", fake_bt)
+
+    config = SimpleNamespace(
+        backtest=SimpleNamespace(strategy_specs=[SimpleNamespace(name="topn")], primary="topn"))
+    gr._run_backtest_strategies(config, clean, daily, factor_name="f", frequency="daily")
+    assert captured["is_st"] == st_map, "回测应收到 is_st_by_date（ST PIT 涨跌停阈值）"
+
+# ==== 来自 test_generate_report_persistence.py ====
 def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
     from factorzen.daily.evaluation.backtest import StrategyBacktestResult
     from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
@@ -120,7 +155,6 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
         "stability_ratio": 0.72,
     }
 
-
 def test_negative_significant_ic_uses_reversed_backtest_direction():
     from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
     from factorzen.pipelines import generate_report as mod
@@ -141,7 +175,6 @@ def test_negative_significant_ic_uses_reversed_backtest_direction():
 
     assert decision["direction"] == "reversed"
     assert decision["should_reverse"] is True
-
 
 def test_weak_negative_ic_keeps_normal_backtest_direction():
     from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
@@ -165,7 +198,6 @@ def test_weak_negative_ic_keeps_normal_backtest_direction():
     assert decision["direction"] == "normal"
     assert decision["should_reverse"] is False
 
-
 def test_reversed_backtest_direction_flips_factor_clean():
     from factorzen.pipelines import generate_report as mod
 
@@ -176,7 +208,6 @@ def test_reversed_backtest_direction_flips_factor_clean():
     out = mod._apply_backtest_direction(clean_df, {"direction": "reversed"})
 
     assert out["factor_clean"].to_list() == [-2.0]
-
 
 def test_merge_report_config_args_uses_yaml_and_defaults_benchmark():
     from argparse import Namespace
@@ -212,7 +243,6 @@ def test_merge_report_config_args_uses_yaml_and_defaults_benchmark():
     for banned in ("ic_method", "neutralized_ic", "event_study", "llm_explain", "llm_refresh", "all"):
         assert banned not in vars(merged)
 
-
 def test_merge_report_config_args_keeps_explicit_benchmark():
     from argparse import Namespace
 
@@ -242,7 +272,6 @@ def test_merge_report_config_args_keeps_explicit_benchmark():
     assert merged.benchmark == "000300.SH"
     assert merged.reuse is True
     assert merged.universe == "csi500"
-
 
 def test_effective_report_config_without_yaml_matches_daily_single_preset():
     """双路径对齐：report 无 YAML 时必须与 daily_single 用同一份研究预设。"""
@@ -280,7 +309,6 @@ def test_effective_report_config_without_yaml_matches_daily_single_preset():
     for banned in ("ic_method", "neutralized_ic", "event_study"):
         assert banned not in cfg.model_dump()
 
-
 def test_merge_report_config_args_default_universe_csi500():
     """无 YAML 时 universe 兜底须与 fz factor run 研究预设一致（csi500）。"""
     from argparse import Namespace
@@ -301,3 +329,59 @@ def test_merge_report_config_args_default_universe_csi500():
     merged = mod._merge_report_config_args(args, None)
     assert merged.universe == "csi500"
     assert merged.benchmark == "000905.SH"
+
+# ==== 来自 test_report_forward_returns.py ====
+def test_attach_close_adj_derives_adjusted_close():
+    from factorzen.pipelines.generate_report import _attach_close_adj
+
+    daily = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 1), date(2024, 1, 2)],
+            "ts_code": ["A.SZ", "A.SZ"],
+            "close": [10.0, 11.0],
+        }
+    )
+    adj = pl.DataFrame(
+        {
+            "ts_code": ["A.SZ", "A.SZ"],
+            "trade_date": [date(2024, 1, 1), date(2024, 1, 2)],
+            "adj_factor": [2.0, 2.0],
+        }
+    )
+    out = _attach_close_adj(daily, adj)
+    assert out.sort("trade_date")["close_adj"].to_list() == [20.0, 22.0]
+
+def test_attach_close_adj_empty_adj_returns_unchanged():
+    from factorzen.pipelines.generate_report import _attach_close_adj
+
+    daily = pl.DataFrame(
+        {"trade_date": [date(2024, 1, 1)], "ts_code": ["A.SZ"], "close": [10.0]}
+    )
+    out = _attach_close_adj(daily, pl.DataFrame())
+    assert "close_adj" not in out.columns  # adj 缺失 → 回退，_build_forward_return_frame 用 close
+
+def test_report_forward_returns_use_adjusted_close_no_ex_div_jump():
+    """除权日 close 跳空（送转 10→5）不应污染前向收益——复权后 close_adj 连续。"""
+    from factorzen.pipelines.daily_single import _build_forward_return_frame
+    from factorzen.pipelines.generate_report import _attach_close_adj
+
+    daily = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)],
+            "ts_code": ["A.SZ", "A.SZ", "A.SZ"],
+            "close": [10.0, 5.0, 5.0],  # d2 送转，未复权价腰斩
+        }
+    )
+    adj = pl.DataFrame(
+        {
+            "ts_code": ["A.SZ", "A.SZ", "A.SZ"],
+            "trade_date": [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)],
+            "adj_factor": [1.0, 2.0, 2.0],  # 除权后翻倍 → close_adj = [10,10,10] 连续
+        }
+    )
+    daily_adj = _attach_close_adj(daily, adj)
+    ret_df = _build_forward_return_frame(daily_adj)
+    fwd = ret_df.sort("trade_date")["fwd_ret_1d"].to_list()
+    # 复权后 close_adj 连续 → d1→d2 的 fwd_ret_1d = 0，而非未复权的虚假 -50%
+    assert abs(fwd[0] - 0.0) < 1e-9, f"复权后不应有除权跳空，实际 fwd_ret_1d={fwd[0]}"
+

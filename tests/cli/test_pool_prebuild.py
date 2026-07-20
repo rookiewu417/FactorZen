@@ -8,7 +8,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from tests.daily.test_library_pool_cache import _mk_daily, _seed_lib, _write_lib
+from tests.daily.test_factor_library import _mk_daily, _seed_lib, _write_lib
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 

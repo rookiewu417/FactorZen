@@ -9,7 +9,13 @@ import numpy as np
 import polars as pl
 import pytest
 
-from tests.test_library_corr_panel_equiv import _assert_same, _dates, _panel_df
+from tests.discovery.test_library_residual import (
+    _assert_same,
+    _panel_df,
+)
+from tests.discovery.test_library_residual import (
+    _dates__library_corr_panel_equiv as _dates,
+)
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

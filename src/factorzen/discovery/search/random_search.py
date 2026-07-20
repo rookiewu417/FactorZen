@@ -31,7 +31,8 @@ def random_expression(
     leaf_names = _LEAVES if leaves is None else leaves
     if max_depth <= 0 or rng.random() < 0.25:
         if rng.random() < 0.1:
-            return Constant(float(rng.choice([0.5, 1.0, 2.0])))
+            # 0.0:阈值/游程常用(如 ts_streak_gt(ret_1d, 0.0, 10)=连续上涨天数)
+            return Constant(float(rng.choice([0.0, 0.5, 1.0, 2.0])))
         return Feature(str(rng.choice(leaf_names)))
     op = str(rng.choice(_OPS))
     spec = OPERATORS[op]

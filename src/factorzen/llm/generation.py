@@ -211,6 +211,7 @@ def build_agent_messages(
     from factorzen.llm.prompt_fragments import (
         format_library_crowded,
         format_lift_rejected,
+        format_threshold_streak_ops_note,
     )
 
     neg = negatives or []
@@ -223,7 +224,8 @@ def build_agent_messages(
         f"可用特征(叶子): {', '.join(leaf_names)}\n"
         + _LEAF_GUIDANCE.get(market, "")
         + "时序算子最后一个参数是整型窗口，如 ts_mean(close, 20)。\n"
-        "表达式只能用上面列出的算子写成**函数式**，禁止中缀运算符 + - * /"
+        + format_threshold_streak_ops_note(op_names)
+        + "表达式只能用上面列出的算子写成**函数式**，禁止中缀运算符 + - * /"
         "（用 add/sub/mul/div 代替，如 div(close, open) 而非 close / open）。\n"
         '只输出 JSON: {"hypothesis": "...", "expressions": ["...", "..."], "rationale": "..."}'
     )

@@ -374,7 +374,7 @@ def test_cli_lift_apply_wires_materializer(tmp_path, monkeypatch):
     """
     import factorzen.cli.main as cli_main
     from factorzen.cli.main import build_parser
-    from tests.test_cli_lift_apply import _patch_lift_deps, _write_gray_session
+    from tests.lift.test_cli_lift_apply import _patch_lift_deps, _write_gray_session
 
     run_dir = _write_gray_session(tmp_path)
     upsert_calls: list = []

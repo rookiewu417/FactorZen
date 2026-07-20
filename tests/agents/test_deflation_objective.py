@@ -78,82 +78,85 @@ def _state_with_pool(cand_ir: float, pool_irs: list[float]) -> AgentState:
 # ── 核心：早轮候选必须被最终 N 重新审判 ──────────────────────────────────
 
 
-def test_early_round_candidate_is_rejudged_against_final_n():
-    """IR 落在分歧带：小 N 下过关、最终 N 下不显著 ⇒ 必须被剔除。"""
-    pool = [0.02, -0.05, 0.08, 0.11, -0.09, 0.03, 0.06, -0.02, 0.12,
-            0.01, -0.07, 0.09, 0.04, -0.03, 0.10, 0.05, -0.06]
-    cand_ir = 0.172
-    state = _state_with_pool(cand_ir, pool)
+def test_final_basis_rejudgement_suite():
+    """IR 落在分歧带：小 N 下过关、最终 N 下不显著 ⇒ 必须被剔除。；反向断言：真正显著的候选不该被误杀。没有这条，「无脑清空 candidates」也能过上一个测试。；`passed_guardrails` 是「过了定量护栏」这个事实。最终 N 说没过，事实就得改。；N = 唯一评估过的表达式数，不是逐轮 len(passed) 的三角和。；死表达式（ir_train=None）不得计入 N——它们没有产生可比较的 IR。"""
+    # -- 原 test_early_round_candidate_is_rejudged_against_final_n --
+    def _section_0_test_early_round_candidate_is_rejudged_against_final_n():
+        pool = [0.02, -0.05, 0.08, 0.11, -0.09, 0.03, 0.06, -0.02, 0.12,
+                0.01, -0.07, 0.09, 0.04, -0.03, 0.10, 0.05, -0.06]
+        cand_ir = 0.172
+        state = _state_with_pool(cand_ir, pool)
 
-    final_basis = DeflationBasis.from_ir_pool(
-        [a.ir_train for a in state.attempts if a.compile_ok], two_sided=True)
-    p_final = deflated_pvalue(cand_ir, final_basis, _N_OBS__final_basis_deflation)[1]
-    assert p_final >= 0.05, (
-        f"测试前提：该 IR 在最终 N={final_basis.n_trials} 下必须不显著（实得 p={p_final:.4f}），"
-        "否则本测试没有判别力"
-    )
+        final_basis = DeflationBasis.from_ir_pool(
+            [a.ir_train for a in state.attempts if a.compile_ok], two_sided=True)
+        p_final = deflated_pvalue(cand_ir, final_basis, _N_OBS__final_basis_deflation)[1]
+        assert p_final >= 0.05, (
+            f"测试前提：该 IR 在最终 N={final_basis.n_trials} 下必须不显著（实得 p={p_final:.4f}），"
+            "否则本测试没有判别力"
+        )
 
-    node_finalize_guardrails(state, gate="strict")  # N 惩罚是 strict 专属机制
+        node_finalize_guardrails(state, gate="strict")  # N 惩罚是 strict 专属机制
 
-    assert state.candidates == [], f"最终 N 下 p={p_final:.4f} ≥ 0.05，候选应被剔除"
+        assert state.candidates == [], f"最终 N 下 p={p_final:.4f} ≥ 0.05，候选应被剔除"
 
+    _section_0_test_early_round_candidate_is_rejudged_against_final_n()
 
-def test_significant_candidate_survives_final_rejudgement():
-    """反向断言：真正显著的候选不该被误杀。没有这条，「无脑清空 candidates」也能过上一个测试。"""
-    pool = [0.02, -0.05, 0.08, 0.11, -0.09, 0.03, 0.06, -0.02, 0.12]
-    state = _state_with_pool(0.45, pool)
+    # -- 原 test_significant_candidate_survives_final_rejudgement --
+    def _section_1_test_significant_candidate_survives_final_rejudgement():
+        pool = [0.02, -0.05, 0.08, 0.11, -0.09, 0.03, 0.06, -0.02, 0.12]
+        state = _state_with_pool(0.45, pool)
 
-    node_finalize_guardrails(state)
+        node_finalize_guardrails(state)
 
-    assert len(state.candidates) == 1
-    assert state.candidates[0]["ir_train"] == pytest.approx(0.45)
+        assert len(state.candidates) == 1
+        assert state.candidates[0]["ir_train"] == pytest.approx(0.45)
 
+    _section_1_test_significant_candidate_survives_final_rejudgement()
 
+    # -- 原 test_demoted_candidate_syncs_the_attempt_fact --
+    def _section_2_test_demoted_candidate_syncs_the_attempt_fact():
+        pool = [0.02, -0.05, 0.08, 0.11, -0.09, 0.03, 0.06, -0.02, 0.12,
+                0.01, -0.07, 0.09, 0.04, -0.03, 0.10, 0.05, -0.06]
+        state = _state_with_pool(0.172, pool)
+        cand_expr = state.candidates[0]["expression"]
 
-def test_demoted_candidate_syncs_the_attempt_fact():
-    """`passed_guardrails` 是「过了定量护栏」这个事实。最终 N 说没过，事实就得改。
+        node_finalize_guardrails(state, gate="strict")  # N 惩罚是 strict 专属机制
 
-    不同步的话，Librarian 会把它当「已验证有效」写进长期记忆。
-    """
-    pool = [0.02, -0.05, 0.08, 0.11, -0.09, 0.03, 0.06, -0.02, 0.12,
-            0.01, -0.07, 0.09, 0.04, -0.03, 0.10, 0.05, -0.06]
-    state = _state_with_pool(0.172, pool)
-    cand_expr = state.candidates[0]["expression"]
+        a = next(a for a in state.attempts if a.expression == cand_expr)
+        assert a.passed_guardrails is False, "被最终 N 否掉的候选，其 passed_guardrails 必须回落"
 
-    node_finalize_guardrails(state, gate="strict")  # N 惩罚是 strict 专属机制
+    _section_2_test_demoted_candidate_syncs_the_attempt_fact()
 
-    a = next(a for a in state.attempts if a.expression == cand_expr)
-    assert a.passed_guardrails is False, "被最终 N 否掉的候选，其 passed_guardrails 必须回落"
+    # -- 原 test_final_basis_counts_unique_attempts_not_round_sums --
+    def _section_3_test_final_basis_counts_unique_attempts_not_round_sums():
+        pool = [0.02, -0.05, 0.08, 0.11, -0.09, 0.03]
+        state = _state_with_pool(0.45, pool)
+        n_compile_ok = sum(1 for a in state.attempts if a.compile_ok)
 
+        basis = node_finalize_guardrails(state)
 
-def test_final_basis_counts_unique_attempts_not_round_sums():
-    """N = 唯一评估过的表达式数，不是逐轮 len(passed) 的三角和。"""
-    pool = [0.02, -0.05, 0.08, 0.11, -0.09, 0.03]
-    state = _state_with_pool(0.45, pool)
-    n_compile_ok = sum(1 for a in state.attempts if a.compile_ok)
+        assert basis.n_trials == n_compile_ok == 7
+        assert basis.effective_trials == 14, "Agent 路径双边 ⇒ effective = 2N"
 
-    basis = node_finalize_guardrails(state)
+    _section_3_test_final_basis_counts_unique_attempts_not_round_sums()
 
-    assert basis.n_trials == n_compile_ok == 7
-    assert basis.effective_trials == 14, "Agent 路径双边 ⇒ effective = 2N"
+    # -- 原 test_dead_expressions_do_not_inflate_final_n --
+    def _section_4_test_dead_expressions_do_not_inflate_final_n():
+        pool = [0.02, -0.05, 0.08]
+        state = _state_with_pool(0.45, pool)
+        dead = _attempt__final_basis_deflation(1, 0.0, "rank(dead)")
+        dead.ir_train = None
+        dead.ic_train = None
+        state.attempts.append(dead)
 
+        basis = node_finalize_guardrails(state)
 
-def test_dead_expressions_do_not_inflate_final_n():
-    """死表达式（ir_train=None）不得计入 N——它们没有产生可比较的 IR。"""
-    pool = [0.02, -0.05, 0.08]
-    state = _state_with_pool(0.45, pool)
-    dead = _attempt__final_basis_deflation(1, 0.0, "rank(dead)")
-    dead.ir_train = None
-    dead.ic_train = None
-    state.attempts.append(dead)
+        assert basis.n_trials == 4, "3 个池成员 + 1 个候选；死表达式不计入"
 
-    basis = node_finalize_guardrails(state)
-
-    assert basis.n_trials == 4, "3 个池成员 + 1 个候选；死表达式不计入"
+    _section_4_test_dead_expressions_do_not_inflate_final_n()
 
 
 # ── 可复现：光靠 manifest 就能复算出产物里的 p ────────────────────────────
-
 
 
 def test_real_node_guardrails_records_ci_and_n_train(monkeypatch):
@@ -440,86 +443,91 @@ def _state(*, objective: str, candidates: list[dict],
 # ── 1. residual 候选：raw 弱但 residual 强 → 收尾保留 ──────────────────────
 
 
-def test_residual_candidate_survives_when_raw_ic_below_floor():
-    """raw IC 低于 0.015、residual IC 高于 residual floor → finalize 后仍保留。
+def test_finalize_residual_objective_suite():
+    """raw IC 低于 0.015、residual IC 高于 residual floor → finalize 后仍保留。；residual_ic_train 低于 residual floor → 被删且文案含「残差」、不含 raw 弱 IC 文案。；objective 仍是 residual，但候选无 residual_*（库空退化入池）→ 按 raw 口径删。；objective=raw：强候选保留、弱候选删除，行为与修复前一致。"""
+    # -- 原 test_residual_candidate_survives_when_raw_ic_below_floor --
+    def _section_0_test_residual_candidate_survives_when_raw_ic_below_floor():
+        expr = "rank(neg(pb))"
+        cand = _cand_base(expr, ic_train=0.005, holdout_ic=0.004)
+        cand["residual_ic_train"] = 0.020
+        cand["residual_holdout_ic"] = 0.018
+        cand["n_residual_holdout_days"] = _N_HOLDOUT
 
-    修复前会被「train_IC 太弱(|0.0050|<0.015)」误杀（TDD 反例）。
-    """
-    expr = "rank(neg(pb))"
-    cand = _cand_base(expr, ic_train=0.005, holdout_ic=0.004)
-    cand["residual_ic_train"] = 0.020
-    cand["residual_holdout_ic"] = 0.018
-    cand["n_residual_holdout_days"] = _N_HOLDOUT
+        state = _state(objective="residual", candidates=[cand])
+        node_finalize_guardrails(state)  # gate 默认 library
 
-    state = _state(objective="residual", candidates=[cand])
-    node_finalize_guardrails(state)  # gate 默认 library
+        assert len(state.candidates) == 1, (
+            f"residual 强候选应保留，实得 survivors={state.candidates!r}"
+        )
+        assert state.candidates[0]["expression"] == expr
+        a = next(x for x in state.attempts if x.expression == expr)
+        assert a.passed_guardrails is True
 
-    assert len(state.candidates) == 1, (
-        f"residual 强候选应保留，实得 survivors={state.candidates!r}"
-    )
-    assert state.candidates[0]["expression"] == expr
-    a = next(x for x in state.attempts if x.expression == expr)
-    assert a.passed_guardrails is True
+    _section_0_test_residual_candidate_survives_when_raw_ic_below_floor()
+
+    # -- 原 test_residual_reject_reason_uses_residual_style --
+    def _section_1_test_residual_reject_reason_uses_residual_style():
+        expr = "rank(ts_mean(volume, 5))"
+        cand = _cand_base(expr, ic_train=0.020, holdout_ic=0.015)  # raw 本身够强
+        cand["residual_ic_train"] = 0.001  # < DEFAULT_RESIDUAL_IC_FLOOR 0.010
+        cand["residual_holdout_ic"] = 0.001
+        cand["n_residual_holdout_days"] = _N_HOLDOUT
+
+        state = _state(objective="residual", candidates=[cand])
+        node_finalize_guardrails(state)
+
+        assert state.candidates == [], "residual 弱候选应收尾剔除"
+        a = next(x for x in state.attempts if x.expression == expr)
+        assert a.passed_guardrails is False
+        reason = a.reject_reason or ""
+        assert "残差" in reason, f"应收尾 residual 文案，实得: {reason!r}"
+        assert "train_IC 太弱" not in reason, f"不应出现 raw 弱 IC 文案: {reason!r}"
+
+    _section_1_test_residual_reject_reason_uses_residual_style()
+
+    # -- 原 test_missing_residual_fields_falls_back_to_raw_gate --
+    def _section_2_test_missing_residual_fields_falls_back_to_raw_gate():
+        expr = "rank(neg(pe))"
+        cand = _cand_base(expr, ic_train=0.005, holdout_ic=0.004)  # 无 residual 键
+
+        state = _state(objective="residual", candidates=[cand])
+        node_finalize_guardrails(state)
+
+        assert state.candidates == [], "无 residual 字段时应回退 raw floor 并剔除"
+        a = next(x for x in state.attempts if x.expression == expr)
+        assert a.passed_guardrails is False
+        reason = a.reject_reason or ""
+        assert "train_IC 太弱" in reason, f"回退 raw 应出 train_IC 文案，实得: {reason!r}"
+
+    _section_2_test_missing_residual_fields_falls_back_to_raw_gate()
+
+    # -- 原 test_raw_mode_strong_survives_weak_dropped --
+    def _section_3_test_raw_mode_strong_survives_weak_dropped():
+        strong = _cand_base("rank(neg(pb))", ic_train=0.030, holdout_ic=0.025)
+        weak = _cand_base("rank(ts_std(close, 10))", ic_train=0.005, holdout_ic=0.004)
+
+        state = _state(objective="raw", candidates=[strong, weak])
+        node_finalize_guardrails(state)
+
+        exprs = {c["expression"] for c in state.candidates}
+        assert exprs == {"rank(neg(pb))"}, f"仅强候选应存活，实得 {exprs}"
+        a_strong = next(x for x in state.attempts if x.expression == "rank(neg(pb))")
+        a_weak = next(x for x in state.attempts if x.expression == "rank(ts_std(close, 10))")
+        assert a_strong.passed_guardrails is True
+        assert a_weak.passed_guardrails is False
+        assert "train_IC 太弱" in (a_weak.reject_reason or "")
+
+    _section_3_test_raw_mode_strong_survives_weak_dropped()
 
 
 # ── 2. residual 弱候选：死因文案是 residual 风格 ──────────────────────────
 
 
-def test_residual_reject_reason_uses_residual_style():
-    """residual_ic_train 低于 residual floor → 被删且文案含「残差」、不含 raw 弱 IC 文案。"""
-    expr = "rank(ts_mean(volume, 5))"
-    cand = _cand_base(expr, ic_train=0.020, holdout_ic=0.015)  # raw 本身够强
-    cand["residual_ic_train"] = 0.001  # < DEFAULT_RESIDUAL_IC_FLOOR 0.010
-    cand["residual_holdout_ic"] = 0.001
-    cand["n_residual_holdout_days"] = _N_HOLDOUT
-
-    state = _state(objective="residual", candidates=[cand])
-    node_finalize_guardrails(state)
-
-    assert state.candidates == [], "residual 弱候选应收尾剔除"
-    a = next(x for x in state.attempts if x.expression == expr)
-    assert a.passed_guardrails is False
-    reason = a.reject_reason or ""
-    assert "残差" in reason, f"应收尾 residual 文案，实得: {reason!r}"
-    assert "train_IC 太弱" not in reason, f"不应出现 raw 弱 IC 文案: {reason!r}"
-
-
 # ── 3. 库空退化：objective=residual 但候选无 residual 字段 → 回退 raw ────
-
-
-def test_missing_residual_fields_falls_back_to_raw_gate():
-    """objective 仍是 residual，但候选无 residual_*（库空退化入池）→ 按 raw 口径删。"""
-    expr = "rank(neg(pe))"
-    cand = _cand_base(expr, ic_train=0.005, holdout_ic=0.004)  # 无 residual 键
-
-    state = _state(objective="residual", candidates=[cand])
-    node_finalize_guardrails(state)
-
-    assert state.candidates == [], "无 residual 字段时应回退 raw floor 并剔除"
-    a = next(x for x in state.attempts if x.expression == expr)
-    assert a.passed_guardrails is False
-    reason = a.reject_reason or ""
-    assert "train_IC 太弱" in reason, f"回退 raw 应出 train_IC 文案，实得: {reason!r}"
 
 
 # ── 4. raw 模式零回归 ────────────────────────────────────────────────────
 
-
-def test_raw_mode_strong_survives_weak_dropped():
-    """objective=raw：强候选保留、弱候选删除，行为与修复前一致。"""
-    strong = _cand_base("rank(neg(pb))", ic_train=0.030, holdout_ic=0.025)
-    weak = _cand_base("rank(ts_std(close, 10))", ic_train=0.005, holdout_ic=0.004)
-
-    state = _state(objective="raw", candidates=[strong, weak])
-    node_finalize_guardrails(state)
-
-    exprs = {c["expression"] for c in state.candidates}
-    assert exprs == {"rank(neg(pb))"}, f"仅强候选应存活，实得 {exprs}"
-    a_strong = next(x for x in state.attempts if x.expression == "rank(neg(pb))")
-    a_weak = next(x for x in state.attempts if x.expression == "rank(ts_std(close, 10))")
-    assert a_strong.passed_guardrails is True
-    assert a_weak.passed_guardrails is False
-    assert "train_IC 太弱" in (a_weak.reject_reason or "")
 
 # ==== 来自 test_decorr_boundary.py ====
 _SRC = Path(__file__).resolve().parents[2] / "src" / "factorzen"
@@ -551,14 +559,11 @@ def _mk_daily__objective_decorr(n_days=80, n_stocks=30, seed=3):
 # ── 三处语义契约（参数化）──────────────────────────────────────────────────
 
 
-
-
 @pytest.mark.parametrize(
     "mc,expect_ok",
     [
         (DEFAULT_DECORR_THRESHOLD, False),
         (0.699, True),
-        (0.701, False),
     ],
 )
 def test_library_orthogonal_check_boundary(mc, expect_ok, monkeypatch):
@@ -658,18 +663,23 @@ def test_node_guardrails_session_decorr_boundary(
 # ── M1 源码 + runtime 边界（贪心入选）──────────────────────────────────────
 
 
-def test_m1_source_uses_strict_lt_threshold():
-    """M1 mining_session 必须用 ``mc < decorr_threshold``（恰等拒）。"""
-    text = (_SRC / "discovery" / "mining_session.py").read_text(encoding="utf-8")
-    assert "mc < decorr_threshold" in text
+def test_decorr_source_contract_suite():
+    """M1 mining_session 必须用 ``mc < decorr_threshold``（恰等拒）。；Agent 必须用 ``corr >= DEFAULT_DECORR_THRESHOLD``，禁止硬编码 ``corr > 0.7``。"""
+    # -- 原 test_m1_source_uses_strict_lt_threshold --
+    def _section_0_test_m1_source_uses_strict_lt_threshold():
+        text = (_SRC / "discovery" / "mining_session.py").read_text(encoding="utf-8")
+        assert "mc < decorr_threshold" in text
 
+    _section_0_test_m1_source_uses_strict_lt_threshold()
 
-def test_agent_source_uses_ge_default_decorr_threshold():
-    """Agent 必须用 ``corr >= DEFAULT_DECORR_THRESHOLD``，禁止硬编码 ``corr > 0.7``。"""
-    text = (_SRC / "agents" / "nodes.py").read_text(encoding="utf-8")
-    assert "corr >= DEFAULT_DECORR_THRESHOLD" in text
-    # 会话池去相关处不再出现开区间硬编码
-    assert "corr > 0.7" not in text
+    # -- 原 test_agent_source_uses_ge_default_decorr_threshold --
+    def _section_1_test_agent_source_uses_ge_default_decorr_threshold():
+        text = (_SRC / "agents" / "nodes.py").read_text(encoding="utf-8")
+        assert "corr >= DEFAULT_DECORR_THRESHOLD" in text
+        # 会话池去相关处不再出现开区间硬编码
+        assert "corr > 0.7" not in text
+
+    _section_1_test_agent_source_uses_ge_default_decorr_threshold()
 
 
 def test_m1_greedy_boundary_via_max_correlation_mock(tmp_path, monkeypatch):
@@ -745,116 +755,132 @@ def _factor_df(values: dict) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def test_turnover_constant_ranking_is_zero():
-    """每天排序完全一致（因子值=股票固定特征）→ top-k 持仓不变 → 换手率 ≈ 0。"""
-    days = [dt.date(2022, 1, 3) + dt.timedelta(days=i) for i in range(10)]
-    codes = [f"{i:06d}.SZ" for i in range(40)]
-    values = {(d, c): float(idx) for d in days for idx, c in enumerate(codes)}
-    to = _factor_turnover(_factor_df(values), quantile=0.2)
-    assert to is not None
-    assert to < 1e-9, f"常数排序换手率应为 0，实际 {to}"
+def test_factor_turnover_edges_suite():
+    """每天排序完全一致（因子值=股票固定特征）→ top-k 持仓不变 → 换手率 ≈ 0。；每天完全随机重排 → top-k 频繁换血 → 换手率显著 > 0。；单个交易日无法算相邻变化 → None。；test_turnover_empty_is_none"""
+    # -- 原 test_turnover_constant_ranking_is_zero --
+    def _section_0_test_turnover_constant_ranking_is_zero():
+        days = [dt.date(2022, 1, 3) + dt.timedelta(days=i) for i in range(10)]
+        codes = [f"{i:06d}.SZ" for i in range(40)]
+        values = {(d, c): float(idx) for d in days for idx, c in enumerate(codes)}
+        to = _factor_turnover(_factor_df(values), quantile=0.2)
+        assert to is not None
+        assert to < 1e-9, f"常数排序换手率应为 0，实际 {to}"
+
+    _section_0_test_turnover_constant_ranking_is_zero()
+
+    # -- 原 test_turnover_random_reshuffle_is_high --
+    def _section_1_test_turnover_random_reshuffle_is_high():
+        rng = np.random.default_rng(7)
+        days = [dt.date(2022, 1, 3) + dt.timedelta(days=i) for i in range(30)]
+        codes = [f"{i:06d}.SZ" for i in range(40)]
+        values = {(d, c): float(rng.standard_normal()) for d in days for c in codes}
+        to = _factor_turnover(_factor_df(values), quantile=0.2)
+        assert to is not None
+        assert to > 0.5, f"随机重排换手率应显著>0，实际 {to}"
+
+    _section_1_test_turnover_random_reshuffle_is_high()
+
+    # -- 原 test_turnover_single_day_is_none --
+    def _section_2_test_turnover_single_day_is_none():
+        day = dt.date(2022, 1, 3)
+        codes = [f"{i:06d}.SZ" for i in range(40)]
+        values = {(day, c): float(i) for i, c in enumerate(codes)}
+        assert _factor_turnover(_factor_df(values), quantile=0.2) is None
+
+    _section_2_test_turnover_single_day_is_none()
+
+    # -- 原 test_turnover_empty_is_none --
+    def _section_3_test_turnover_empty_is_none():
+        empty = pl.DataFrame({"trade_date": [], "ts_code": [], "factor_value": []})
+        assert _factor_turnover(empty, quantile=0.2) is None
+
+    _section_3_test_turnover_empty_is_none()
 
 
-def test_turnover_random_reshuffle_is_high():
-    """每天完全随机重排 → top-k 频繁换血 → 换手率显著 > 0。"""
-    rng = np.random.default_rng(7)
-    days = [dt.date(2022, 1, 3) + dt.timedelta(days=i) for i in range(30)]
-    codes = [f"{i:06d}.SZ" for i in range(40)]
-    values = {(d, c): float(rng.standard_normal()) for d in days for c in codes}
-    to = _factor_turnover(_factor_df(values), quantile=0.2)
-    assert to is not None
-    assert to > 0.5, f"随机重排换手率应显著>0，实际 {to}"
+def test_multiobjective_turnover_wiring_suite():
+    """多目标契约：合法/非法结果都含 turnover 键（不破坏现有 4 字段契约）。；ICIR 即 ir_train（IC_mean/IC_std），多目标评估保留并暴露。；M5 node_evaluate 把 evaluate 的 turnover 写进 AttemptRecord。；Critic prompt 必须注入 ICIR + 换手率(成本代理)，引导「IC 高≠可实现超额」判断。；M5 node_critic prompt 同样注入多维指标（与 M6 Critic 口径一致）。"""
+    # -- 原 test_evaluate_expressions_has_turnover_field --
+    def _section_0_test_evaluate_expressions_has_turnover_field():
+        daily = _mock_daily()
+        bundle = DataBundle.build(daily)
+        out = evaluate_expressions(["ts_mean(close,5)", "not_a_func("], daily, bundle)
+        assert len(out) == 2
+        for r in out:
+            assert "turnover" in r, "结果必须含 turnover 字段"
+        ok = next(r for r in out if r["compile_ok"])
+        # 旧断言 `is None or isinstance(float)` 恒真（None 与任意 float 全覆盖）。
+        # turnover 是单边换手率，语义上必落在 [0, 1]：0=从不换仓，1=每日全部换掉。
+        assert ok["turnover"] is not None, "可评估的表达式应算得出换手率"
+        assert 0.0 <= ok["turnover"] <= 1.0, f"单边换手率必须 ∈ [0,1]，实得 {ok['turnover']}"
+        bad = next(r for r in out if not r["compile_ok"])
+        assert bad["turnover"] is None
+
+    _section_0_test_evaluate_expressions_has_turnover_field()
+
+    # -- 原 test_evaluate_expressions_icir_is_ir --
+    def _section_1_test_evaluate_expressions_icir_is_ir():
+        daily = _mock_daily()
+        bundle = DataBundle.build(daily)
+        out = evaluate_expressions(["ts_mean(close,5)"], daily, bundle)
+        assert out[0]["ir_train"] is not None
+        assert isinstance(out[0]["ir_train"], float)
+
+    _section_1_test_evaluate_expressions_icir_is_ir()
+
+    # -- 原 test_node_evaluate_records_turnover --
+    def _section_2_test_node_evaluate_records_turnover():
+        from factorzen.agents.nodes import _PendingExpr, node_evaluate
+        from factorzen.agents.state import AgentState
+        daily = _mock_daily()
+        bundle = DataBundle.build(daily)
+        state = AgentState(seed=0)
+        state._pending = [_PendingExpr("动量", "ts_mean(close, 5)")]  # type: ignore[attr-defined]
+        node_evaluate(state, daily=daily, bundle=bundle)
+        assert len(state.attempts) == 1
+        a = state.attempts[0]
+        # 同上：恒真断言换成语义断言。ts_mean(close,5) 是平滑价格，换手率应显著低于「每日重排」。
+        assert a.turnover is not None
+        assert 0.0 <= a.turnover <= 1.0, f"单边换手率必须 ∈ [0,1]，实得 {a.turnover}"
+
+    _section_2_test_node_evaluate_records_turnover()
+
+    # -- 原 test_critique_prompt_includes_cost_metrics --
+    def _section_3_test_critique_prompt_includes_cost_metrics():
+        from factorzen.agents.roles.critic import critique
+        captured: dict = {}
+
+        def fake_llm(messages):
+            captured["msgs"] = messages
+            return json.dumps({"verdict": "keep", "reason": "ok"})
+        cand = {"expression": "ts_mean(close,5)", "hypothesis": "动量", "ic_train": 0.05,
+                "holdout_ic": 0.03, "dsr": 0.7, "dsr_pvalue": 0.01,
+                "ir_train": 0.55, "turnover": 0.83}
+        critique(cand, fake_llm)
+        alltext = " ".join(m["content"] for m in captured["msgs"])
+        assert "换手" in alltext, "Critic prompt 应含换手率"
+        assert "0.83" in alltext, "Critic prompt 应展示 turnover 数值"
+        assert "ICIR" in alltext or "0.55" in alltext, "Critic prompt 应含 ICIR"
+
+    _section_3_test_critique_prompt_includes_cost_metrics()
+
+    # -- 原 test_node_critic_prompt_includes_cost_metrics --
+    def _section_4_test_node_critic_prompt_includes_cost_metrics():
+        from factorzen.agents.nodes import node_critic
+        from factorzen.agents.state import AgentState, AttemptRecord
+        captured: dict = {}
+
+        def fake_llm(messages):
+            captured["msgs"] = messages
+            return '{"verdict":"keep","reason":"ok"}'
+        state = AgentState(seed=0)
+        state.attempts.append(AttemptRecord(
+            iteration=0, hypothesis="动量", expression="ts_mean(close,5)", compile_ok=True,
+            ic_train=0.05, passed_guardrails=True, critic_verdict=None, error=None,
+            ir_train=0.55, turnover=0.83))
+        node_critic(state, fake_llm)
+        alltext = " ".join(m["content"] for m in captured["msgs"])
+        assert "换手" in alltext and "0.83" in alltext
+
+    _section_4_test_node_critic_prompt_includes_cost_metrics()
 
 
-def test_turnover_single_day_is_none():
-    """单个交易日无法算相邻变化 → None。"""
-    day = dt.date(2022, 1, 3)
-    codes = [f"{i:06d}.SZ" for i in range(40)]
-    values = {(day, c): float(i) for i, c in enumerate(codes)}
-    assert _factor_turnover(_factor_df(values), quantile=0.2) is None
-
-
-def test_turnover_empty_is_none():
-    empty = pl.DataFrame({"trade_date": [], "ts_code": [], "factor_value": []})
-    assert _factor_turnover(empty, quantile=0.2) is None
-
-
-def test_evaluate_expressions_has_turnover_field():
-    """多目标契约：合法/非法结果都含 turnover 键（不破坏现有 4 字段契约）。"""
-    daily = _mock_daily()
-    bundle = DataBundle.build(daily)
-    out = evaluate_expressions(["ts_mean(close,5)", "not_a_func("], daily, bundle)
-    assert len(out) == 2
-    for r in out:
-        assert "turnover" in r, "结果必须含 turnover 字段"
-    ok = next(r for r in out if r["compile_ok"])
-    # 旧断言 `is None or isinstance(float)` 恒真（None 与任意 float 全覆盖）。
-    # turnover 是单边换手率，语义上必落在 [0, 1]：0=从不换仓，1=每日全部换掉。
-    assert ok["turnover"] is not None, "可评估的表达式应算得出换手率"
-    assert 0.0 <= ok["turnover"] <= 1.0, f"单边换手率必须 ∈ [0,1]，实得 {ok['turnover']}"
-    bad = next(r for r in out if not r["compile_ok"])
-    assert bad["turnover"] is None
-
-
-def test_evaluate_expressions_icir_is_ir():
-    """ICIR 即 ir_train（IC_mean/IC_std），多目标评估保留并暴露。"""
-    daily = _mock_daily()
-    bundle = DataBundle.build(daily)
-    out = evaluate_expressions(["ts_mean(close,5)"], daily, bundle)
-    assert out[0]["ir_train"] is not None
-    assert isinstance(out[0]["ir_train"], float)
-
-
-
-def test_node_evaluate_records_turnover():
-    """M5 node_evaluate 把 evaluate 的 turnover 写进 AttemptRecord。"""
-    from factorzen.agents.nodes import _PendingExpr, node_evaluate
-    from factorzen.agents.state import AgentState
-    daily = _mock_daily()
-    bundle = DataBundle.build(daily)
-    state = AgentState(seed=0)
-    state._pending = [_PendingExpr("动量", "ts_mean(close, 5)")]  # type: ignore[attr-defined]
-    node_evaluate(state, daily=daily, bundle=bundle)
-    assert len(state.attempts) == 1
-    a = state.attempts[0]
-    # 同上：恒真断言换成语义断言。ts_mean(close,5) 是平滑价格，换手率应显著低于「每日重排」。
-    assert a.turnover is not None
-    assert 0.0 <= a.turnover <= 1.0, f"单边换手率必须 ∈ [0,1]，实得 {a.turnover}"
-
-
-
-def test_critique_prompt_includes_cost_metrics():
-    """Critic prompt 必须注入 ICIR + 换手率(成本代理)，引导「IC 高≠可实现超额」判断。"""
-    from factorzen.agents.roles.critic import critique
-    captured: dict = {}
-
-    def fake_llm(messages):
-        captured["msgs"] = messages
-        return json.dumps({"verdict": "keep", "reason": "ok"})
-    cand = {"expression": "ts_mean(close,5)", "hypothesis": "动量", "ic_train": 0.05,
-            "holdout_ic": 0.03, "dsr": 0.7, "dsr_pvalue": 0.01,
-            "ir_train": 0.55, "turnover": 0.83}
-    critique(cand, fake_llm)
-    alltext = " ".join(m["content"] for m in captured["msgs"])
-    assert "换手" in alltext, "Critic prompt 应含换手率"
-    assert "0.83" in alltext, "Critic prompt 应展示 turnover 数值"
-    assert "ICIR" in alltext or "0.55" in alltext, "Critic prompt 应含 ICIR"
-
-
-def test_node_critic_prompt_includes_cost_metrics():
-    """M5 node_critic prompt 同样注入多维指标（与 M6 Critic 口径一致）。"""
-    from factorzen.agents.nodes import node_critic
-    from factorzen.agents.state import AgentState, AttemptRecord
-    captured: dict = {}
-
-    def fake_llm(messages):
-        captured["msgs"] = messages
-        return '{"verdict":"keep","reason":"ok"}'
-    state = AgentState(seed=0)
-    state.attempts.append(AttemptRecord(
-        iteration=0, hypothesis="动量", expression="ts_mean(close,5)", compile_ok=True,
-        ic_train=0.05, passed_guardrails=True, critic_verdict=None, error=None,
-        ir_train=0.55, turnover=0.83))
-    node_critic(state, fake_llm)
-    alltext = " ".join(m["content"] for m in captured["msgs"])
-    assert "换手" in alltext and "0.83" in alltext

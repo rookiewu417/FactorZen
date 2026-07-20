@@ -48,49 +48,79 @@ def make_factor_ret_df(n_stocks: int = 50, n_dates: int = 20, seed: int = 42) ->
     return pl.DataFrame(rows)
 
 
+def test_ic_stats_pearson_rank_suite():
+    """method='both' 应返回含 rank 和 pearson 两个 IcStats 的字典。；重尾因子（单个极端值）Pearson IC 受影响更大，绝对值应小于 Rank IC。；不变量：因子为 NaN 的行应与该行被物理删除等价——NaN 不得以最高秩污染 IC。"""
+    # -- 原 test_both_ic_returns_dict --
+    def _section_0_test_both_ic_returns_dict():
+        from factorzen.daily.evaluation.ic_analysis import IcStats, compute_ic
 
+        df = make_factor_ret_df()
+        result = compute_ic(df, method="both")
+        assert "rank" in result
+        assert "pearson" in result
+        assert isinstance(result["rank"], IcStats)
+        assert isinstance(result["pearson"], IcStats)
 
-def test_both_ic_returns_dict():
-    """method='both' 应返回含 rank 和 pearson 两个 IcStats 的字典。"""
-    from factorzen.daily.evaluation.ic_analysis import IcStats, compute_ic
+    _section_0_test_both_ic_returns_dict()
 
-    df = make_factor_ret_df()
-    result = compute_ic(df, method="both")
-    assert "rank" in result
-    assert "pearson" in result
-    assert isinstance(result["rank"], IcStats)
-    assert isinstance(result["pearson"], IcStats)
+    # -- 原 test_heavy_tail_pearson_less_than_rank --
+    def _section_1_test_heavy_tail_pearson_less_than_rank():
+        from factorzen.daily.evaluation.ic_analysis import compute_ic
 
+        rng = np.random.default_rng(0)
+        n_stocks = 100
+        n_dates = 20
+        start = date(2023, 1, 3)
+        rows = []
+        for d in range(n_dates):
+            dt = (start + timedelta(days=d)).isoformat()
+            factors = rng.standard_normal(n_stocks)
+            factors[0] = 1000.0  # extreme outlier
+            rets = np.sign(factors) * 0.01 + rng.standard_normal(n_stocks) * 0.02
+            for s in range(n_stocks):
+                rows.append(
+                    {
+                        "trade_date": dt,
+                        "ts_code": f"00{s:04d}.SZ",
+                        "factor_clean": float(factors[s]),
+                        "ret_1d": float(rets[s]),
+                    }
+                )
+        df = pl.DataFrame(rows)
+        pearson_res = compute_ic(df, method="pearson")
+        rank_res = compute_ic(df, method="rank")
+        # Pearson is disturbed by outlier; rank is more robust
+        # Rank IC should be >= Pearson IC in absolute value (rank is outlier-robust)
+        assert abs(rank_res.ic_mean) >= abs(pearson_res.ic_mean)
 
-def test_heavy_tail_pearson_less_than_rank():
-    """重尾因子（单个极端值）Pearson IC 受影响更大，绝对值应小于 Rank IC。"""
-    from factorzen.daily.evaluation.ic_analysis import compute_ic
+    _section_1_test_heavy_tail_pearson_less_than_rank()
 
-    rng = np.random.default_rng(0)
-    n_stocks = 100
-    n_dates = 20
-    start = date(2023, 1, 3)
-    rows = []
-    for d in range(n_dates):
-        dt = (start + timedelta(days=d)).isoformat()
-        factors = rng.standard_normal(n_stocks)
-        factors[0] = 1000.0  # extreme outlier
-        rets = np.sign(factors) * 0.01 + rng.standard_normal(n_stocks) * 0.02
-        for s in range(n_stocks):
-            rows.append(
-                {
-                    "trade_date": dt,
-                    "ts_code": f"00{s:04d}.SZ",
-                    "factor_clean": float(factors[s]),
-                    "ret_1d": float(rets[s]),
-                }
-            )
-    df = pl.DataFrame(rows)
-    pearson_res = compute_ic(df, method="pearson")
-    rank_res = compute_ic(df, method="rank")
-    # Pearson is disturbed by outlier; rank is more robust
-    # Rank IC should be >= Pearson IC in absolute value (rank is outlier-robust)
-    assert abs(rank_res.ic_mean) >= abs(pearson_res.ic_mean)
+    # -- 原 test_factor_nan_row_equivalent_to_dropped_row --
+    def _section_2_test_factor_nan_row_equivalent_to_dropped_row():
+        from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
+
+        factor_df, ret_df = _panel()
+        codes8 = [f"{i:06d}.SZ" for i in range(8)]
+
+        # A) 每日前 8 只股票的因子值置 NaN（收益不变）
+        nan_df = factor_df.with_columns(
+            pl.when(pl.col("ts_code").is_in(codes8))
+            .then(float("nan"))
+            .otherwise(pl.col("factor_clean"))
+            .alias("factor_clean")
+        )
+        # B) 同样这 8 只股票的行直接删除（ground truth）
+        drop_df = factor_df.filter(~pl.col("ts_code").is_in(codes8))
+
+        nan_ic = compute_rank_ic(nan_df, ret_df, factor_col="factor_clean").ic_mean
+        drop_ic = compute_rank_ic(drop_df, ret_df, factor_col="factor_clean").ic_mean
+
+        assert abs(nan_ic - drop_ic) < 1e-9, (
+            f"NaN 因子行应等价于删除该行，nan_ic={nan_ic:.6f} vs drop_ic={drop_ic:.6f}"
+            "（修复前 NaN 被 rank 排最大参与 IC，两者不等）"
+        )
+
+    _section_2_test_factor_nan_row_equivalent_to_dropped_row()
 
 
 # ==== 来自 test_ic_factor_nan_mask.py ====
@@ -110,31 +140,6 @@ def _panel(n_days=6, n_stocks=40, seed=0):
     return pl.DataFrame(rows_f), pl.DataFrame(rows_r)
 
 
-def test_factor_nan_row_equivalent_to_dropped_row():
-    """不变量：因子为 NaN 的行应与该行被物理删除等价——NaN 不得以最高秩污染 IC。"""
-    from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
-
-    factor_df, ret_df = _panel()
-    codes8 = [f"{i:06d}.SZ" for i in range(8)]
-
-    # A) 每日前 8 只股票的因子值置 NaN（收益不变）
-    nan_df = factor_df.with_columns(
-        pl.when(pl.col("ts_code").is_in(codes8))
-        .then(float("nan"))
-        .otherwise(pl.col("factor_clean"))
-        .alias("factor_clean")
-    )
-    # B) 同样这 8 只股票的行直接删除（ground truth）
-    drop_df = factor_df.filter(~pl.col("ts_code").is_in(codes8))
-
-    nan_ic = compute_rank_ic(nan_df, ret_df, factor_col="factor_clean").ic_mean
-    drop_ic = compute_rank_ic(drop_df, ret_df, factor_col="factor_clean").ic_mean
-
-    assert abs(nan_ic - drop_ic) < 1e-9, (
-        f"NaN 因子行应等价于删除该行，nan_ic={nan_ic:.6f} vs drop_ic={drop_ic:.6f}"
-        "（修复前 NaN 被 rank 排最大参与 IC，两者不等）"
-    )
-
 # ==== 来自 test_hac_tstat.py ====
 def _make_autocorr_ic(n: int = 200, ar_coef: float = 0.6, seed: int = 42) -> np.ndarray:
     """生成 AR(1) 自相关 IC 序列（模拟因子 IC 的序列相关性）。"""
@@ -147,14 +152,14 @@ def _make_autocorr_ic(n: int = 200, ar_coef: float = 0.6, seed: int = 42) -> np.
 
 
 class TestHACTstat:
-    def test_hac_maxlags_formula(self):
-        """HAC 最优滞后阶数公式：floor(4*(N/100)^(2/9))，最小为 1。"""
+    def test_hac_tstat_suite(self):
+        """HAC 最优滞后阶数公式：floor(4*(N/100)^(2/9))，最小为 1。；对高自相关 IC 序列，HAC t-stat 应小于朴素（iid）t-stat。；HAC 与朴素 t-stat 的比值应在 0.3~1.0 范围（30-70% 修正幅度）。；低自相关 IC 序列，HAC t-stat 应接近朴素 t-stat（修正幅度小）。；_ic_stats 返回 6 个 float，无 nan/inf。；空输入应返回零值，不崩溃。"""
+        # -- 原 test_hac_maxlags_formula --
         assert _hac_maxlags(100) == 4
         assert _hac_maxlags(50) >= 1
         assert _hac_maxlags(500) > 4
 
-    def test_hac_tstat_smaller_than_naive_for_autocorr_series(self):
-        """对高自相关 IC 序列，HAC t-stat 应小于朴素（iid）t-stat。"""
+        # -- 原 test_hac_tstat_smaller_than_naive_for_autocorr_series --
         ic = _make_autocorr_ic(n=200, ar_coef=0.6)
         # HAC t-stat
         _, _, _, _, hac_t, _ = _ic_stats(ic)
@@ -165,16 +170,14 @@ class TestHACTstat:
             f"HAC t={abs(hac_t):.2f} 应 < 朴素 t={abs(naive_t):.2f}（AR(1) 自相关序列）"
         )
 
-    def test_hac_correction_ratio_reasonable(self):
-        """HAC 与朴素 t-stat 的比值应在 0.3~1.0 范围（30-70% 修正幅度）。"""
+        # -- 原 test_hac_correction_ratio_reasonable --
         ic = _make_autocorr_ic(n=300, ar_coef=0.6)
         _, _, _, _, hac_t, _ = _ic_stats(ic)
         naive_t, _ = scipy_stats.ttest_1samp(ic, popmean=0.0)
         ratio = abs(hac_t) / (abs(naive_t) + 1e-10)
         assert 0.2 < ratio < 1.01, f"HAC/朴素 t 比值 {ratio:.2f} 超出合理范围 [0.2, 1.0]"
 
-    def test_hac_low_autocorr_close_to_naive(self):
-        """低自相关 IC 序列，HAC t-stat 应接近朴素 t-stat（修正幅度小）。"""
+        # -- 原 test_hac_low_autocorr_close_to_naive --
         rng = np.random.default_rng(99)
         ic = rng.normal(0.03, 0.08, 300)  # i.i.d.
         _, _, _, _, hac_t, _ = _ic_stats(ic)
@@ -185,8 +188,7 @@ class TestHACTstat:
             f"i.i.d. 序列下 HAC t={abs(hac_t):.2f} 与朴素 t={abs(naive_t):.2f} 应接近"
         )
 
-    def test_ic_stats_returns_valid_types(self):
-        """_ic_stats 返回 6 个 float，无 nan/inf。"""
+        # -- 原 test_ic_stats_returns_valid_types --
         ic = _make_autocorr_ic(n=100, ar_coef=0.4)
         result = _ic_stats(ic)
         assert len(result) == 6
@@ -194,10 +196,10 @@ class TestHACTstat:
             assert isinstance(val, float), f"返回值 {val} 应为 float"
             assert np.isfinite(val), f"返回值 {val} 包含 nan/inf"
 
-    def test_ic_stats_empty_input(self):
-        """空输入应返回零值，不崩溃。"""
+        # -- 原 test_ic_stats_empty_input --
         result = _ic_stats(np.array([]))
         assert result == (0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
 
 # ==== 来自 test_monotonicity.py ====
 def _make_strongly_monotonic_data() -> pl.DataFrame:
@@ -213,91 +215,93 @@ def _make_strongly_monotonic_data() -> pl.DataFrame:
     )
 
 
+def test_monotonicity_suite():
+    """强正相关数据 → monotonicity_score 接近 1.0。；分组均值应为单调递增。；逐日 × 分组收益对齐手算值。；必须按 (group, trade_date) 有序——报告层直接 cumprod，乱序会算出错误净值。；空输入返回带正确 schema 的空表，报告层无需额外守卫。"""
+    # -- 原 test_monotonicity_strongly_positive --
+    def _section_0_test_monotonicity_strongly_positive():
+        df = _make_strongly_monotonic_data()
+        result = compute_monotonicity(df, factor_col="factor_value", ret_col="fwd_ret", n_groups=10)
+        assert result.monotonicity_score > 0.5
+        assert result.direction == "positive"
 
-def test_monotonicity_strongly_positive():
-    """强正相关数据 → monotonicity_score 接近 1.0。"""
-    df = _make_strongly_monotonic_data()
-    result = compute_monotonicity(df, factor_col="factor_value", ret_col="fwd_ret", n_groups=10)
-    assert result.monotonicity_score > 0.5
-    assert result.direction == "positive"
+    _section_0_test_monotonicity_strongly_positive()
 
+    # -- 原 test_monotonicity_group_means_monotonic --
+    def _section_1_test_monotonicity_group_means_monotonic():
+        df = _make_strongly_monotonic_data()
+        result = compute_monotonicity(df, factor_col="factor_value", ret_col="fwd_ret", n_groups=10)
+        means = result.group_means
+        assert len(means) == 10
+        for i in range(len(means) - 1):
+            assert means[i] <= means[i + 1], f"组 {i}→{i + 1} 收益不单调"
 
-def test_monotonicity_group_means_monotonic():
-    """分组均值应为单调递增。"""
-    df = _make_strongly_monotonic_data()
-    result = compute_monotonicity(df, factor_col="factor_value", ret_col="fwd_ret", n_groups=10)
-    means = result.group_means
-    assert len(means) == 10
-    for i in range(len(means) - 1):
-        assert means[i] <= means[i + 1], f"组 {i}→{i + 1} 收益不单调"
+    _section_1_test_monotonicity_group_means_monotonic()
 
+    # -- 原 test_group_daily_returns_matches_hand_computed_ground_truth --
+    def _section_2_test_group_daily_returns_matches_hand_computed_ground_truth():
+        df = pl.DataFrame(
+            {
+                "ts_code": ["a", "b", "c", "d", "a", "b", "c", "d"],
+                "trade_date": ["2026-01-05"] * 4 + ["2026-01-06"] * 4,
+                "factor_value": [1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0],
+                # day1: G0=(0.01+0.02)/2=0.015, G1=(0.03+0.04)/2=0.035
+                # day2: G0=(0.05+0.07)/2=0.060, G1=(0.09+0.11)/2=0.100
+                "fwd_ret": [0.01, 0.02, 0.03, 0.04, 0.05, 0.07, 0.09, 0.11],
+            }
+        )
+        result = compute_monotonicity(df, factor_col="factor_value", ret_col="fwd_ret", n_groups=2)
+        gdr = result.group_daily_returns
+
+        assert set(gdr.columns) == {"trade_date", "group", "mean_ret"}
+        assert gdr.height == 4, "2 天 × 2 组应为 4 行"
+
+        actual = {
+            (row["trade_date"], row["group"]): round(row["mean_ret"], 10)
+            for row in gdr.to_dicts()
+        }
+        expected = {
+            ("2026-01-05", 0): 0.015,
+            ("2026-01-05", 1): 0.035,
+            ("2026-01-06", 0): 0.060,
+            ("2026-01-06", 1): 0.100,
+        }
+        assert actual == expected, f"逐日分组收益不符手算值：{actual}"
+
+    _section_2_test_group_daily_returns_matches_hand_computed_ground_truth()
+
+    # -- 原 test_group_daily_returns_is_sorted_for_cumulative_nav --
+    def _section_3_test_group_daily_returns_is_sorted_for_cumulative_nav():
+        df = _make_strongly_monotonic_data()
+        extra = df.with_columns(pl.lit("2026-01-02").alias("trade_date"))  # 更早的一天
+        result = compute_monotonicity(
+            pl.concat([df, extra]), factor_col="factor_value", ret_col="fwd_ret", n_groups=5
+        )
+        gdr = result.group_daily_returns
+        for g in gdr["group"].unique().to_list():
+            dates = gdr.filter(pl.col("group") == g)["trade_date"].to_list()
+            assert dates == sorted(dates), f"组 {g} 的日期未升序：{dates}"
+
+    _section_3_test_group_daily_returns_is_sorted_for_cumulative_nav()
+
+    # -- 原 test_group_daily_returns_empty_input_has_stable_schema --
+    def _section_4_test_group_daily_returns_empty_input_has_stable_schema():
+        empty = pl.DataFrame(
+            {
+                "ts_code": pl.Series([], dtype=pl.Utf8),
+                "trade_date": pl.Series([], dtype=pl.Utf8),
+                "factor_value": pl.Series([], dtype=pl.Float64),
+                "fwd_ret": pl.Series([], dtype=pl.Float64),
+            }
+        )
+        result = compute_monotonicity(empty, factor_col="factor_value", ret_col="fwd_ret", n_groups=5)
+        assert result.group_daily_returns.is_empty()
+        assert set(result.group_daily_returns.columns) == {"trade_date", "group", "mean_ret"}
+
+    _section_4_test_group_daily_returns_empty_input_has_stable_schema()
 
 
 # ── group_daily_returns：报告层画分组净值/绩效的数据源 ────────────────────────
 
-
-def test_group_daily_returns_matches_hand_computed_ground_truth():
-    """逐日 × 分组收益对齐手算值。
-
-    2 天 × 4 股 × 2 组，分组公式 ``(rank-1)*n_groups//max_rank``：
-    因子 1,2,3,4 → rank 1,2,3,4 → G0={rank1,2}、G1={rank3,4}。
-    收益按天独立给定，各组均值可手算，不依赖 group_means 反推（避免恒真）。
-    """
-    df = pl.DataFrame(
-        {
-            "ts_code": ["a", "b", "c", "d", "a", "b", "c", "d"],
-            "trade_date": ["2026-01-05"] * 4 + ["2026-01-06"] * 4,
-            "factor_value": [1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0],
-            # day1: G0=(0.01+0.02)/2=0.015, G1=(0.03+0.04)/2=0.035
-            # day2: G0=(0.05+0.07)/2=0.060, G1=(0.09+0.11)/2=0.100
-            "fwd_ret": [0.01, 0.02, 0.03, 0.04, 0.05, 0.07, 0.09, 0.11],
-        }
-    )
-    result = compute_monotonicity(df, factor_col="factor_value", ret_col="fwd_ret", n_groups=2)
-    gdr = result.group_daily_returns
-
-    assert set(gdr.columns) == {"trade_date", "group", "mean_ret"}
-    assert gdr.height == 4, "2 天 × 2 组应为 4 行"
-
-    actual = {
-        (row["trade_date"], row["group"]): round(row["mean_ret"], 10)
-        for row in gdr.to_dicts()
-    }
-    expected = {
-        ("2026-01-05", 0): 0.015,
-        ("2026-01-05", 1): 0.035,
-        ("2026-01-06", 0): 0.060,
-        ("2026-01-06", 1): 0.100,
-    }
-    assert actual == expected, f"逐日分组收益不符手算值：{actual}"
-
-
-def test_group_daily_returns_is_sorted_for_cumulative_nav():
-    """必须按 (group, trade_date) 有序——报告层直接 cumprod，乱序会算出错误净值。"""
-    df = _make_strongly_monotonic_data()
-    extra = df.with_columns(pl.lit("2026-01-02").alias("trade_date"))  # 更早的一天
-    result = compute_monotonicity(
-        pl.concat([df, extra]), factor_col="factor_value", ret_col="fwd_ret", n_groups=5
-    )
-    gdr = result.group_daily_returns
-    for g in gdr["group"].unique().to_list():
-        dates = gdr.filter(pl.col("group") == g)["trade_date"].to_list()
-        assert dates == sorted(dates), f"组 {g} 的日期未升序：{dates}"
-
-
-def test_group_daily_returns_empty_input_has_stable_schema():
-    """空输入返回带正确 schema 的空表，报告层无需额外守卫。"""
-    empty = pl.DataFrame(
-        {
-            "ts_code": pl.Series([], dtype=pl.Utf8),
-            "trade_date": pl.Series([], dtype=pl.Utf8),
-            "factor_value": pl.Series([], dtype=pl.Float64),
-            "fwd_ret": pl.Series([], dtype=pl.Float64),
-        }
-    )
-    result = compute_monotonicity(empty, factor_col="factor_value", ret_col="fwd_ret", n_groups=5)
-    assert result.group_daily_returns.is_empty()
-    assert set(result.group_daily_returns.columns) == {"trade_date", "group", "mean_ret"}
 
 # ==== 来自 test_thin_cross_section_warning.py ====
 _LOGGER = "factorzen.daily.evaluation.ic_analysis"
@@ -416,35 +420,43 @@ def _make_factor_and_returns(seed: int = 3) -> tuple[pl.DataFrame, pl.DataFrame]
     return pl.DataFrame(rows_f), pl.DataFrame(rows_r)
 
 
-def test_rank_ic_multi_period_covers_horizons():
-    factor, ret = _make_factor_and_returns()
-    result = compute_rank_ic(factor, ret, factor_col="factor_clean", horizons=[1, 5, 10, 20])
+def test_advanced_ic_multi_period_suite():
+    """test_rank_ic_multi_period_covers_horizons；test_rank_ic_decay_is_monotonically_decreasing_in_abs；test_rank_ic_series_covers_trading_days"""
+    # -- 原 test_rank_ic_multi_period_covers_horizons --
+    def _section_0_test_rank_ic_multi_period_covers_horizons():
+        factor, ret = _make_factor_and_returns()
+        result = compute_rank_ic(factor, ret, factor_col="factor_clean", horizons=[1, 5, 10, 20])
 
-    assert sorted(result.multi_period.keys()) == [1, 5, 10, 20]
-    assert sorted(result.decay.keys()) == [1, 5, 10, 20]
-    for h, stats in result.multi_period.items():
-        assert "ic_mean" in stats and "ir" in stats
-        assert stats["ic_mean"] == pytest.approx(result.decay[h])
+        assert sorted(result.multi_period.keys()) == [1, 5, 10, 20]
+        assert sorted(result.decay.keys()) == [1, 5, 10, 20]
+        for h, stats in result.multi_period.items():
+            assert "ic_mean" in stats and "ir" in stats
+            assert stats["ic_mean"] == pytest.approx(result.decay[h])
 
+    _section_0_test_rank_ic_multi_period_covers_horizons()
 
-def test_rank_ic_decay_is_monotonically_decreasing_in_abs():
-    factor, ret = _make_factor_and_returns()
-    result = compute_rank_ic(factor, ret, factor_col="factor_clean", horizons=[1, 5, 10])
-    ic = result.decay
+    # -- 原 test_rank_ic_decay_is_monotonically_decreasing_in_abs --
+    def _section_1_test_rank_ic_decay_is_monotonically_decreasing_in_abs():
+        factor, ret = _make_factor_and_returns()
+        result = compute_rank_ic(factor, ret, factor_col="factor_clean", horizons=[1, 5, 10])
+        ic = result.decay
 
-    assert all(v == v for v in ic.values()), f"IC 不该是 nan：{ic}"
-    assert ic[1] > 0.5, f"1 日 IC 应显著为正，实得 {ic[1]:.4f}"
-    assert abs(ic[1]) > abs(ic[5]) > abs(ic[10]), f"IC 未随持有期衰减：{ic}"
+        assert all(v == v for v in ic.values()), f"IC 不该是 nan：{ic}"
+        assert ic[1] > 0.5, f"1 日 IC 应显著为正，实得 {ic[1]:.4f}"
+        assert abs(ic[1]) > abs(ic[5]) > abs(ic[10]), f"IC 未随持有期衰减：{ic}"
 
+    _section_1_test_rank_ic_decay_is_monotonically_decreasing_in_abs()
 
-def test_rank_ic_series_covers_trading_days():
-    factor, ret = _make_factor_and_returns()
-    result = compute_rank_ic(factor, ret, factor_col="factor_clean", horizons=[1, 5, 10])
+    # -- 原 test_rank_ic_series_covers_trading_days --
+    def _section_2_test_rank_ic_series_covers_trading_days():
+        factor, ret = _make_factor_and_returns()
+        result = compute_rank_ic(factor, ret, factor_col="factor_clean", horizons=[1, 5, 10])
 
-    assert result.n_periods == _N_DAYS
-    assert result.ic_series.height == _N_DAYS
-    assert result.ic_std > 0
+        assert result.n_periods == _N_DAYS
+        assert result.ic_series.height == _N_DAYS
+        assert result.ic_std > 0
 
+    _section_2_test_rank_ic_series_covers_trading_days()
 
 
 # ==== 来自 test_pit_fwd_returns.py ====
@@ -464,120 +476,188 @@ def _make_fina(rows: list[tuple]) -> pl.DataFrame:
 # ── correctness ─────────────────────────────────────────────────────────────
 
 
-def test_pit_align_correctness():
-    """验证无前视偏差：快照日只使用「已公告」的财报中 end_date 最新的那条。"""
-    # Stock A:
-    #   Q2 report: end_date=2024-06-30, ann_date=2024-08-15
-    #   Q3 report: end_date=2024-09-30, ann_date=2024-10-30
-    fina = _make_fina(
-        [
-            ("000001.SZ", date(2024, 6, 30), date(2024, 8, 15), 12.0),
-            ("000001.SZ", date(2024, 9, 30), date(2024, 10, 30), 15.0),
+def test_pit_align_suite():
+    """验证无前视偏差：快照日只使用「已公告」的财报中 end_date 最新的那条。；多股票场景：各自独立取最新已公告财报。；空 DataFrame 或空 snapshot 列表 → 返回空 DataFrame。；1000 只股票 × 40 个月频快照 → 2 秒内完成。；常规多股票多季度。；更正公告反例：后公告但 end_date 更旧，naive asof-ann 会答错。"""
+    # -- 原 test_pit_align_correctness --
+    def _section_0_test_pit_align_correctness():
+        fina = _make_fina(
+            [
+                ("000001.SZ", date(2024, 6, 30), date(2024, 8, 15), 12.0),
+                ("000001.SZ", date(2024, 9, 30), date(2024, 10, 30), 15.0),
+            ]
+        )
+
+        snapshots = [
+            date(2024, 8, 31),  # Q2 已公告，Q3 未公告 → 应取 Q2（roe=12.0）
+            date(2024, 10, 31),  # Q2/Q3 均已公告 → 应取 Q3（roe=15.0）
         ]
-    )
 
-    snapshots = [
-        date(2024, 8, 31),  # Q2 已公告，Q3 未公告 → 应取 Q2（roe=12.0）
-        date(2024, 10, 31),  # Q2/Q3 均已公告 → 应取 Q3（roe=15.0）
-    ]
+        result = pit_align(fina, snapshots)
 
-    result = pit_align(fina, snapshots)
+        # 两个快照日各返回一条
+        assert result.height == 2
 
-    # 两个快照日各返回一条
-    assert result.height == 2
+        row_aug = result.filter(pl.col("snapshot_date") == date(2024, 8, 31))
+        assert row_aug.height == 1
+        assert row_aug[0, "end_date"] == date(2024, 6, 30)
+        assert row_aug[0, "roe"] == 12.0
 
-    row_aug = result.filter(pl.col("snapshot_date") == date(2024, 8, 31))
-    assert row_aug.height == 1
-    assert row_aug[0, "end_date"] == date(2024, 6, 30)
-    assert row_aug[0, "roe"] == 12.0
+        row_oct = result.filter(pl.col("snapshot_date") == date(2024, 10, 31))
+        assert row_oct.height == 1
+        assert row_oct[0, "end_date"] == date(2024, 9, 30)
+        assert row_oct[0, "roe"] == 15.0
 
-    row_oct = result.filter(pl.col("snapshot_date") == date(2024, 10, 31))
-    assert row_oct.height == 1
-    assert row_oct[0, "end_date"] == date(2024, 9, 30)
-    assert row_oct[0, "roe"] == 15.0
+    _section_0_test_pit_align_correctness()
 
+    # -- 原 test_pit_align_multiple_stocks --
+    def _section_1_test_pit_align_multiple_stocks():
+        d1, d2, d3 = date(2024, 3, 31), date(2024, 6, 30), date(2024, 9, 30)
+        fina = _make_fina(
+            [
+                ("A", d1, date(2024, 4, 25), 10.0),
+                ("A", d2, date(2024, 8, 28), 12.0),
+                ("A", d3, date(2024, 10, 30), 14.0),
+                ("B", d1, date(2024, 4, 25), 20.0),
+                ("B", d2, date(2024, 8, 30), 22.0),
+                # B 没有 Q3
+            ]
+        )
 
-def test_pit_align_multiple_stocks():
-    """多股票场景：各自独立取最新已公告财报。"""
-    d1, d2, d3 = date(2024, 3, 31), date(2024, 6, 30), date(2024, 9, 30)
-    fina = _make_fina(
-        [
-            ("A", d1, date(2024, 4, 25), 10.0),
-            ("A", d2, date(2024, 8, 28), 12.0),
-            ("A", d3, date(2024, 10, 30), 14.0),
-            ("B", d1, date(2024, 4, 25), 20.0),
-            ("B", d2, date(2024, 8, 30), 22.0),
-            # B 没有 Q3
+        snapshots = [date(2024, 9, 1), date(2024, 11, 1)]
+
+        result = pit_align(fina, snapshots)
+
+        # Sep: A 取 Q2(12.0), B 取 Q2(22.0)
+        sep_a = result.filter(pl.col("snapshot_date") == date(2024, 9, 1), pl.col("ts_code") == "A")
+        assert sep_a[0, "roe"] == 12.0
+        sep_b = result.filter(pl.col("snapshot_date") == date(2024, 9, 1), pl.col("ts_code") == "B")
+        assert sep_b[0, "roe"] == 22.0
+
+        # Nov: A 取 Q3(14.0), B 仍取 Q2(22.0)（无 Q3）
+        nov_a = result.filter(pl.col("snapshot_date") == date(2024, 11, 1), pl.col("ts_code") == "A")
+        assert nov_a[0, "roe"] == 14.0
+        nov_b = result.filter(pl.col("snapshot_date") == date(2024, 11, 1), pl.col("ts_code") == "B")
+        assert nov_b[0, "roe"] == 22.0
+
+        assert result.height == 4
+
+    _section_1_test_pit_align_multiple_stocks()
+
+    # -- 原 test_pit_align_empty_input --
+    def _section_2_test_pit_align_empty_input():
+        fina = _make_fina(
+            [
+                ("A", date(2024, 6, 30), date(2024, 8, 1), 10.0),
+            ]
+        )
+
+        # 空 fina_df
+        assert pit_align(pl.DataFrame(), [date(2024, 9, 1)]).is_empty()
+
+        # 空 snapshot_dates
+        assert pit_align(fina, []).is_empty()
+
+        # 两者皆空
+        assert pit_align(pl.DataFrame(), []).is_empty()
+
+    _section_2_test_pit_align_empty_input()
+
+    # -- 原 test_pit_align_performance --
+    def _section_3_test_pit_align_performance():
+        n_stocks = 1000
+        n_periods = 40
+
+        base = date(2020, 1, 1)
+        # 每只股票 4 份年报（end_date 在 2020-2023）
+        rows = []
+        for s in range(n_stocks):
+            for y in range(4):
+                end_d = date(2020 + y, 12, 31)
+                ann_d = date(2021 + y, 4, 30)
+                rows.append((f"stock_{s:04d}", end_d, ann_d, y * 5.0 + s * 0.01))
+
+        fina = _make_fina(rows)
+
+        snapshots = [base + timedelta(days=30 * i) for i in range(n_periods)]
+
+        start = time.perf_counter()
+        result = pit_align(fina, snapshots)
+        elapsed = time.perf_counter() - start
+
+        assert not result.is_empty(), "结果不应为空"
+        assert elapsed < 2.0, f"耗时 {elapsed:.2f}s ≥ 2s，算法效率不达标"
+
+    _section_3_test_pit_align_performance()
+
+    # -- 原 test_pit_align_multi_stock_multi_quarter --
+    def _section_4_test_pit_align_multi_stock_multi_quarter():
+        fina = pl.DataFrame(
+            {
+                "ts_code": [
+                    "A", "A", "A",
+                    "B", "B",
+                    "C",
+                ],
+                "end_date": [
+                    date(2023, 3, 31), date(2023, 6, 30), date(2023, 9, 30),
+                    date(2023, 3, 31), date(2023, 6, 30),
+                    date(2023, 6, 30),
+                ],
+                "ann_date": [
+                    date(2023, 4, 20), date(2023, 8, 15), date(2023, 10, 25),
+                    date(2023, 4, 22), date(2023, 8, 20),
+                    date(2023, 8, 10),
+                ],
+                "roe": [10.0, 12.0, 14.0, 20.0, 22.0, 30.0],
+            }
+        )
+        snaps = [
+            date(2023, 5, 1),
+            date(2023, 9, 1),
+            date(2023, 11, 1),
         ]
-    )
+        expected = _pit_align_reference(fina, snaps)
+        got = pit_align(fina, snaps)
+        _assert_equiv(got, expected)
+        # 语义抽检：9/1 时 A 应取 Q2 而非尚未公告的 Q3
+        row = got.filter(
+            (pl.col("snapshot_date") == date(2023, 9, 1)) & (pl.col("ts_code") == "A")
+        )
+        assert row[0, "end_date"] == date(2023, 6, 30)
+        assert row[0, "roe"] == 12.0
 
-    snapshots = [date(2024, 9, 1), date(2024, 11, 1)]
+    _section_4_test_pit_align_multi_stock_multi_quarter()
 
-    result = pit_align(fina, snapshots)
+    # -- 原 test_pit_align_correction_later_ann_older_end --
+    def _section_5_test_pit_align_correction_later_ann_older_end():
+        fina = pl.DataFrame(
+            {
+                "ts_code": ["X", "X"],
+                "end_date": [date(2023, 6, 30), date(2023, 3, 31)],
+                "ann_date": [date(2023, 8, 15), date(2023, 9, 1)],  # 更正更晚
+                "roe": [15.0, 99.0],  # 99 是陷阱：按 ann 最新会错取
+            }
+        )
+        snaps = [date(2023, 8, 20), date(2023, 9, 15)]
+        expected = _pit_align_reference(fina, snaps)
+        got = pit_align(fina, snaps)
+        _assert_equiv(got, expected)
 
-    # Sep: A 取 Q2(12.0), B 取 Q2(22.0)
-    sep_a = result.filter(pl.col("snapshot_date") == date(2024, 9, 1), pl.col("ts_code") == "A")
-    assert sep_a[0, "roe"] == 12.0
-    sep_b = result.filter(pl.col("snapshot_date") == date(2024, 9, 1), pl.col("ts_code") == "B")
-    assert sep_b[0, "roe"] == 22.0
+        # 两日都应取 Q2 (end=6/30, roe=15)，绝不能取更正的 Q1
+        for sd in snaps:
+            row = got.filter(pl.col("snapshot_date") == sd)
+            assert row.height == 1
+            assert row[0, "end_date"] == date(2023, 6, 30)
+            assert row[0, "roe"] == 15.0
 
-    # Nov: A 取 Q3(14.0), B 仍取 Q2(22.0)（无 Q3）
-    nov_a = result.filter(pl.col("snapshot_date") == date(2024, 11, 1), pl.col("ts_code") == "A")
-    assert nov_a[0, "roe"] == 14.0
-    nov_b = result.filter(pl.col("snapshot_date") == date(2024, 11, 1), pl.col("ts_code") == "B")
-    assert nov_b[0, "roe"] == 22.0
-
-    assert result.height == 4
+    _section_5_test_pit_align_correction_later_ann_older_end()
 
 
 # ── empty input ─────────────────────────────────────────────────────────────
 
 
-def test_pit_align_empty_input():
-    """空 DataFrame 或空 snapshot 列表 → 返回空 DataFrame。"""
-    fina = _make_fina(
-        [
-            ("A", date(2024, 6, 30), date(2024, 8, 1), 10.0),
-        ]
-    )
-
-    # 空 fina_df
-    assert pit_align(pl.DataFrame(), [date(2024, 9, 1)]).is_empty()
-
-    # 空 snapshot_dates
-    assert pit_align(fina, []).is_empty()
-
-    # 两者皆空
-    assert pit_align(pl.DataFrame(), []).is_empty()
-
-
 # ── performance ─────────────────────────────────────────────────────────────
 
-
-def test_pit_align_performance():
-    """1000 只股票 × 40 个月频快照 → 2 秒内完成。"""
-    n_stocks = 1000
-    n_periods = 40
-
-    base = date(2020, 1, 1)
-    # 每只股票 4 份年报（end_date 在 2020-2023）
-    rows = []
-    for s in range(n_stocks):
-        for y in range(4):
-            end_d = date(2020 + y, 12, 31)
-            ann_d = date(2021 + y, 4, 30)
-            rows.append((f"stock_{s:04d}", end_d, ann_d, y * 5.0 + s * 0.01))
-
-    fina = _make_fina(rows)
-
-    snapshots = [base + timedelta(days=30 * i) for i in range(n_periods)]
-
-    start = time.perf_counter()
-    result = pit_align(fina, snapshots)
-    elapsed = time.perf_counter() - start
-
-    assert not result.is_empty(), "结果不应为空"
-    assert elapsed < 2.0, f"耗时 {elapsed:.2f}s ≥ 2s，算法效率不达标"
 
 # ==== 来自 test_pit_align_equiv.py ====
 def _pit_align_reference(
@@ -635,71 +715,6 @@ def _assert_equiv(got: pl.DataFrame, expected: pl.DataFrame) -> None:
     assert g.equals(e), (
         f"mismatch\ngot:\n{g}\nexpected:\n{e}"
     )
-
-
-def test_pit_align_multi_stock_multi_quarter():
-    """常规多股票多季度。"""
-    fina = pl.DataFrame(
-        {
-            "ts_code": [
-                "A", "A", "A",
-                "B", "B",
-                "C",
-            ],
-            "end_date": [
-                date(2023, 3, 31), date(2023, 6, 30), date(2023, 9, 30),
-                date(2023, 3, 31), date(2023, 6, 30),
-                date(2023, 6, 30),
-            ],
-            "ann_date": [
-                date(2023, 4, 20), date(2023, 8, 15), date(2023, 10, 25),
-                date(2023, 4, 22), date(2023, 8, 20),
-                date(2023, 8, 10),
-            ],
-            "roe": [10.0, 12.0, 14.0, 20.0, 22.0, 30.0],
-        }
-    )
-    snaps = [
-        date(2023, 5, 1),
-        date(2023, 9, 1),
-        date(2023, 11, 1),
-    ]
-    expected = _pit_align_reference(fina, snaps)
-    got = pit_align(fina, snaps)
-    _assert_equiv(got, expected)
-    # 语义抽检：9/1 时 A 应取 Q2 而非尚未公告的 Q3
-    row = got.filter(
-        (pl.col("snapshot_date") == date(2023, 9, 1)) & (pl.col("ts_code") == "A")
-    )
-    assert row[0, "end_date"] == date(2023, 6, 30)
-    assert row[0, "roe"] == 12.0
-
-
-def test_pit_align_correction_later_ann_older_end():
-    """更正公告反例：后公告但 end_date 更旧，naive asof-ann 会答错。
-
-    某股票先公告了 Q2，后又公告了一份更早的 Q1 更正；在 Q2 已可见后，
-    必须仍取 Q2（max end_date），不能被更晚的 ann_date 覆盖。
-    """
-    fina = pl.DataFrame(
-        {
-            "ts_code": ["X", "X"],
-            "end_date": [date(2023, 6, 30), date(2023, 3, 31)],
-            "ann_date": [date(2023, 8, 15), date(2023, 9, 1)],  # 更正更晚
-            "roe": [15.0, 99.0],  # 99 是陷阱：按 ann 最新会错取
-        }
-    )
-    snaps = [date(2023, 8, 20), date(2023, 9, 15)]
-    expected = _pit_align_reference(fina, snaps)
-    got = pit_align(fina, snaps)
-    _assert_equiv(got, expected)
-
-    # 两日都应取 Q2 (end=6/30, roe=15)，绝不能取更正的 Q1
-    for sd in snaps:
-        row = got.filter(pl.col("snapshot_date") == sd)
-        assert row.height == 1
-        assert row[0, "end_date"] == date(2023, 6, 30)
-        assert row[0, "roe"] == 15.0
 
 
 def test_pit_align_ann_date_null_and_string_dtype():
@@ -829,126 +844,147 @@ def _daily(dates: list[str]) -> pl.DataFrame:
     })
 
 
-def test_no_future_leak_before_announcement():
-    """t 日在 Q1 公告(0420)之前 → roe 必须是 null,绝不能把 0420 才公告的报告泄漏回 0410。"""
-    out = attach_fundamentals(_daily(["20200410"]), fina_df=_fina())
-    row = out.filter(pl.col("trade_date") == dt.date(2020, 4, 10))
-    assert row["roe"][0] is None, "Q1 报告在公告日前泄漏 → 未来函数!"
-    assert row["assets_yoy"][0] is None
+def test_fundamentals_pit_suite():
+    """t 日在 Q1 公告(0420)之前 → roe 必须是 null,绝不能把 0420 才公告的报告泄漏回 0410。；公告后取最新已公告报告:0420~0814 用 Q1(10.0);0815 起用 Q2(end 更大,12.0)。；无 finance 数据(空帧)→ 原样返回但补齐 roe/assets_yoy 为 null(表达式引用不崩)。；扩充的质量/成长字段(毛利率/营收增速等)与 roe 同套 PIT 对齐,公告后取最新报告。；全套质量/成长叶子已注册且可解析(否则 LLM/搜索碰不到、prompt 广告了却用不了)。"""
+    # -- 原 test_no_future_leak_before_announcement --
+    def _section_0_test_no_future_leak_before_announcement():
+        out = attach_fundamentals(_daily(["20200410"]), fina_df=_fina())
+        row = out.filter(pl.col("trade_date") == dt.date(2020, 4, 10))
+        assert row["roe"][0] is None, "Q1 报告在公告日前泄漏 → 未来函数!"
+        assert row["assets_yoy"][0] is None
 
+    _section_0_test_no_future_leak_before_announcement()
 
-def test_uses_latest_announced_report():
-    """公告后取最新已公告报告:0420~0814 用 Q1(10.0);0815 起用 Q2(end 更大,12.0)。"""
-    out = attach_fundamentals(_daily(["20200410", "20200501", "20200820"]), fina_df=_fina())
-    by_date = {r["trade_date"]: r["roe"] for r in out.iter_rows(named=True)}
-    assert by_date[dt.date(2020, 4, 10)] is None       # 公告前
-    assert by_date[dt.date(2020, 5, 1)] == 10.0         # Q1 已公告
-    assert by_date[dt.date(2020, 8, 20)] == 12.0        # Q2 已公告(end_date 更大)
+    # -- 原 test_uses_latest_announced_report --
+    def _section_1_test_uses_latest_announced_report():
+        out = attach_fundamentals(_daily(["20200410", "20200501", "20200820"]), fina_df=_fina())
+        by_date = {r["trade_date"]: r["roe"] for r in out.iter_rows(named=True)}
+        assert by_date[dt.date(2020, 4, 10)] is None       # 公告前
+        assert by_date[dt.date(2020, 5, 1)] == 10.0         # Q1 已公告
+        assert by_date[dt.date(2020, 8, 20)] == 12.0        # Q2 已公告(end_date 更大)
 
+    _section_1_test_uses_latest_announced_report()
 
-def test_missing_finance_returns_daily_with_null_cols():
-    """无 finance 数据(空帧)→ 原样返回但补齐 roe/assets_yoy 为 null(表达式引用不崩)。"""
-    out = attach_fundamentals(_daily(["20200501"]), fina_df=pl.DataFrame())
-    assert "roe" in out.columns and "assets_yoy" in out.columns
-    assert out["roe"][0] is None
+    # -- 原 test_missing_finance_returns_daily_with_null_cols --
+    def _section_2_test_missing_finance_returns_daily_with_null_cols():
+        out = attach_fundamentals(_daily(["20200501"]), fina_df=pl.DataFrame())
+        assert "roe" in out.columns and "assets_yoy" in out.columns
+        assert out["roe"][0] is None
 
+    _section_2_test_missing_finance_returns_daily_with_null_cols()
 
-def test_expanded_fields_pit_aligned():
-    """扩充的质量/成长字段(毛利率/营收增速等)与 roe 同套 PIT 对齐,公告后取最新报告。"""
-    out = attach_fundamentals(_daily(["20200410", "20200820"]), fina_df=_fina())
-    pre = out.filter(pl.col("trade_date") == dt.date(2020, 4, 10))
-    post = out.filter(pl.col("trade_date") == dt.date(2020, 8, 20))
-    for col in ("grossprofit_margin", "or_yoy", "netprofit_yoy", "debt_to_assets", "roa"):
-        assert pre[col][0] is None, f"{col} 公告前泄漏 → 未来函数!"
-    assert post["grossprofit_margin"][0] == 41.0   # Q2
-    assert post["or_yoy"][0] == 9.0
+    # -- 原 test_expanded_fields_pit_aligned --
+    def _section_3_test_expanded_fields_pit_aligned():
+        out = attach_fundamentals(_daily(["20200410", "20200820"]), fina_df=_fina())
+        pre = out.filter(pl.col("trade_date") == dt.date(2020, 4, 10))
+        post = out.filter(pl.col("trade_date") == dt.date(2020, 8, 20))
+        for col in ("grossprofit_margin", "or_yoy", "netprofit_yoy", "debt_to_assets", "roa"):
+            assert pre[col][0] is None, f"{col} 公告前泄漏 → 未来函数!"
+        assert post["grossprofit_margin"][0] == 41.0   # Q2
+        assert post["or_yoy"][0] == 9.0
 
+    _section_3_test_expanded_fields_pit_aligned()
 
-def test_all_fundamental_leaves_registered_and_parse():
-    """全套质量/成长叶子已注册且可解析(否则 LLM/搜索碰不到、prompt 广告了却用不了)。"""
-    from factorzen.discovery.expression import feature_names, parse_expr
-    from factorzen.discovery.operators import FUNDAMENTAL_FEATURES, LEAF_FEATURES
-    expected = {"roe", "roa", "grossprofit_margin", "netprofit_margin", "debt_to_assets",
-                "or_yoy", "netprofit_yoy", "assets_yoy"}
-    assert expected <= FUNDAMENTAL_FEATURES
-    for leaf in expected:
-        assert leaf in LEAF_FEATURES, f"{leaf} 未注册为叶子"
-        assert leaf in feature_names(parse_expr(f"rank({leaf})")), f"{leaf} 解析不出"
+    # -- 原 test_all_fundamental_leaves_registered_and_parse --
+    def _section_4_test_all_fundamental_leaves_registered_and_parse():
+        from factorzen.discovery.expression import feature_names, parse_expr
+        from factorzen.discovery.operators import FUNDAMENTAL_FEATURES, LEAF_FEATURES
+        expected = {"roe", "roa", "grossprofit_margin", "netprofit_margin", "debt_to_assets",
+                    "or_yoy", "netprofit_yoy", "assets_yoy"}
+        assert expected <= FUNDAMENTAL_FEATURES
+        for leaf in expected:
+            assert leaf in LEAF_FEATURES, f"{leaf} 未注册为叶子"
+            assert leaf in feature_names(parse_expr(f"rank({leaf})")), f"{leaf} 解析不出"
+
+    _section_4_test_all_fundamental_leaves_registered_and_parse()
+
 
 # ==== 来自 test_fwd_returns.py ====
-def test_compute_fwd_returns_raises_on_missing_key_columns():
-    # 缺少 ts_code → 应早失败并给出清晰错误,而非晦涩的 polars 异常
-    df = pl.DataFrame({"trade_date": [date(2024, 1, 2)], "close": [100.0]})
-    with pytest.raises(ValueError) as exc:
-        compute_fwd_returns(df, horizons=[1])
-    assert "ts_code" in str(exc.value)
+def test_fwd_returns_suite():
+    """test_compute_fwd_returns_raises_on_missing_key_columns；test_compute_fwd_returns_raises_when_no_price_or_ret_column；test_fwd_ret_1d_uses_next_close_over_current_close；test_fwd_ret_5d_is_cumulative_holding_period_return；test_fwd_returns_compound_from_ret_when_close_is_absent"""
+    # -- 原 test_compute_fwd_returns_raises_on_missing_key_columns --
+    def _section_0_test_compute_fwd_returns_raises_on_missing_key_columns():
+        df = pl.DataFrame({"trade_date": [date(2024, 1, 2)], "close": [100.0]})
+        with pytest.raises(ValueError) as exc:
+            compute_fwd_returns(df, horizons=[1])
+        assert "ts_code" in str(exc.value)
 
+    _section_0_test_compute_fwd_returns_raises_on_missing_key_columns()
 
-def test_compute_fwd_returns_raises_when_no_price_or_ret_column():
-    # 既无 close 也无 ret_col → 应早失败
-    df = pl.DataFrame({"trade_date": [date(2024, 1, 2)], "ts_code": ["000001.SZ"]})
-    with pytest.raises(ValueError) as exc:
-        compute_fwd_returns(df, horizons=[1], ret_col="ret")
-    msg = str(exc.value)
-    assert "close" in msg and "ret" in msg
+    # -- 原 test_compute_fwd_returns_raises_when_no_price_or_ret_column --
+    def _section_1_test_compute_fwd_returns_raises_when_no_price_or_ret_column():
+        df = pl.DataFrame({"trade_date": [date(2024, 1, 2)], "ts_code": ["000001.SZ"]})
+        with pytest.raises(ValueError) as exc:
+            compute_fwd_returns(df, horizons=[1], ret_col="ret")
+        msg = str(exc.value)
+        assert "close" in msg and "ret" in msg
 
+    _section_1_test_compute_fwd_returns_raises_when_no_price_or_ret_column()
 
-def test_fwd_ret_1d_uses_next_close_over_current_close():
-    df = pl.DataFrame(
-        {
-            "trade_date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
-            "ts_code": ["000001.SZ"] * 3,
-            "close": [100.0, 110.0, 121.0],
-        }
-    ).with_columns((pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0).alias("ret"))
+    # -- 原 test_fwd_ret_1d_uses_next_close_over_current_close --
+    def _section_2_test_fwd_ret_1d_uses_next_close_over_current_close():
+        df = pl.DataFrame(
+            {
+                "trade_date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
+                "ts_code": ["000001.SZ"] * 3,
+                "close": [100.0, 110.0, 121.0],
+            }
+        ).with_columns((pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0).alias("ret"))
 
-    out = compute_fwd_returns(df, horizons=[1], ret_col="ret")
+        out = compute_fwd_returns(df, horizons=[1], ret_col="ret")
 
-    assert out["fwd_ret_1d"].to_list() == pytest.approx([0.10, 0.10, None])
+        assert out["fwd_ret_1d"].to_list() == pytest.approx([0.10, 0.10, None])
 
+    _section_2_test_fwd_ret_1d_uses_next_close_over_current_close()
 
-def test_fwd_ret_5d_is_cumulative_holding_period_return():
-    closes = [100.0, 101.0, 103.0, 106.0, 110.0, 115.0, 121.0]
-    df = pl.DataFrame(
-        {
-            "trade_date": [
-                date(2024, 1, 2),
-                date(2024, 1, 3),
-                date(2024, 1, 4),
-                date(2024, 1, 5),
-                date(2024, 1, 8),
-                date(2024, 1, 9),
-                date(2024, 1, 10),
-            ],
-            "ts_code": ["000001.SZ"] * len(closes),
-            "close": closes,
-        }
-    ).with_columns((pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0).alias("ret"))
+    # -- 原 test_fwd_ret_5d_is_cumulative_holding_period_return --
+    def _section_3_test_fwd_ret_5d_is_cumulative_holding_period_return():
+        closes = [100.0, 101.0, 103.0, 106.0, 110.0, 115.0, 121.0]
+        df = pl.DataFrame(
+            {
+                "trade_date": [
+                    date(2024, 1, 2),
+                    date(2024, 1, 3),
+                    date(2024, 1, 4),
+                    date(2024, 1, 5),
+                    date(2024, 1, 8),
+                    date(2024, 1, 9),
+                    date(2024, 1, 10),
+                ],
+                "ts_code": ["000001.SZ"] * len(closes),
+                "close": closes,
+            }
+        ).with_columns((pl.col("close") / pl.col("close").shift(1).over("ts_code") - 1.0).alias("ret"))
 
-    out = compute_fwd_returns(df, horizons=[5], ret_col="ret")
+        out = compute_fwd_returns(df, horizons=[5], ret_col="ret")
 
-    assert out["fwd_ret_5d"][0] == pytest.approx(115.0 / 100.0 - 1.0)
-    assert out["fwd_ret_5d"][1] == pytest.approx(121.0 / 101.0 - 1.0)
-    assert out["fwd_ret_5d"].to_list()[-5:] == [None, None, None, None, None]
+        assert out["fwd_ret_5d"][0] == pytest.approx(115.0 / 100.0 - 1.0)
+        assert out["fwd_ret_5d"][1] == pytest.approx(121.0 / 101.0 - 1.0)
+        assert out["fwd_ret_5d"].to_list()[-5:] == [None, None, None, None, None]
 
+    _section_3_test_fwd_ret_5d_is_cumulative_holding_period_return()
 
-def test_fwd_returns_compound_from_ret_when_close_is_absent():
-    df = pl.DataFrame(
-        {
-            "trade_date": [
-                date(2024, 1, 2),
-                date(2024, 1, 3),
-                date(2024, 1, 4),
-                date(2024, 1, 5),
-            ],
-            "ts_code": ["000001.SZ"] * 4,
-            "ret": [0.0, 0.10, 0.20, -0.05],
-        }
-    )
+    # -- 原 test_fwd_returns_compound_from_ret_when_close_is_absent --
+    def _section_4_test_fwd_returns_compound_from_ret_when_close_is_absent():
+        df = pl.DataFrame(
+            {
+                "trade_date": [
+                    date(2024, 1, 2),
+                    date(2024, 1, 3),
+                    date(2024, 1, 4),
+                    date(2024, 1, 5),
+                ],
+                "ts_code": ["000001.SZ"] * 4,
+                "ret": [0.0, 0.10, 0.20, -0.05],
+            }
+        )
 
-    out = compute_fwd_returns(df, horizons=[2], ret_col="ret")
+        out = compute_fwd_returns(df, horizons=[2], ret_col="ret")
 
-    assert out["fwd_ret_2d"][0] == pytest.approx((1.10 * 1.20) - 1.0)
-    assert out["fwd_ret_2d"][1] == pytest.approx((1.20 * 0.95) - 1.0)
-    assert out["fwd_ret_2d"].to_list()[-2:] == [None, None]
+        assert out["fwd_ret_2d"][0] == pytest.approx((1.10 * 1.20) - 1.0)
+        assert out["fwd_ret_2d"][1] == pytest.approx((1.20 * 0.95) - 1.0)
+        assert out["fwd_ret_2d"].to_list()[-2:] == [None, None]
+
+    _section_4_test_fwd_returns_compound_from_ret_when_close_is_absent()
+
 

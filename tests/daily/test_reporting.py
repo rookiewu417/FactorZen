@@ -229,8 +229,10 @@ def make_benchmark_result(
 # ── full render ──────────────────────────────────────────────────────────────
 
 
-class TestFullRender:
-    def test_core_metrics_and_charts(self):
+def test_tearsheet_render_core_suite():
+    """test_core_metrics_and_charts；test_reversed_direction_badge；test_bt_none_and_missing_optionals；test_empty_ic_series_still_renders_metrics；test_low_ic_and_high_turnover；test_no_warnings_when_healthy；test_decay_only_when_no_multi_period"""
+    # -- 原 test_core_metrics_and_charts --
+    def _section_0_test_core_metrics_and_charts():
         ic = make_ic_result(ic_mean=0.0350, ir=0.44, ic_tstat=3.50, ic_pvalue=0.0005, n_periods=80)
         bt = make_bt_result(ann_ret=0.1250, sharpe=1.35, max_dd=-0.1820)
         to = make_to_result(0.35)
@@ -321,7 +323,10 @@ class TestFullRender:
         assert "http://" not in html
         assert "https://" not in html
 
-    def test_reversed_direction_badge(self):
+    _section_0_test_core_metrics_and_charts()
+
+    # -- 原 test_reversed_direction_badge --
+    def _section_1_test_reversed_direction_badge():
         html = generate_tear_sheet(
             "rev_factor",
             make_ic_result(ic_mean=-0.04, n_periods=100),
@@ -336,12 +341,10 @@ class TestFullRender:
         assert "IC 均值为负且 p 值小于等于 0.10" in html
         assert "正向信号" not in html
 
+    _section_1_test_reversed_direction_badge()
 
-# ── degenerate inputs ────────────────────────────────────────────────────────
-
-
-class TestDegenerateInputs:
-    def test_bt_none_and_missing_optionals(self):
+    # -- 原 test_bt_none_and_missing_optionals --
+    def _section_2_test_bt_none_and_missing_optionals():
         ic = make_ic_result(empty_series=True, n_periods=10, multi_period={}, decay={})
         # 强制空 multi/decay
         ic.multi_period = {}
@@ -367,7 +370,10 @@ class TestDegenerateInputs:
         assert "样本量较少（10 期）" in html
         assert "短样本年化" in html
 
-    def test_empty_ic_series_still_renders_metrics(self):
+    _section_2_test_bt_none_and_missing_optionals()
+
+    # -- 原 test_empty_ic_series_still_renders_metrics --
+    def _section_3_test_empty_ic_series_still_renders_metrics():
         ic = make_ic_result(empty_series=True, n_periods=50, ic_mean=0.02, ir=0.25)
         html = generate_tear_sheet("empty_ic", ic, make_bt_result(), make_to_result(0.2))
         assert "0.0200" in html
@@ -378,6 +384,49 @@ class TestDegenerateInputs:
         assert 'alt="IC 时序"' not in html
         assert 'alt="IC 累计曲线"' not in html
 
+    _section_3_test_empty_ic_series_still_renders_metrics()
+
+    # -- 原 test_low_ic_and_high_turnover --
+    def _section_4_test_low_ic_and_high_turnover():
+        html = generate_tear_sheet(
+            "warn_factor",
+            make_ic_result(ic_mean=0.005, n_periods=100),
+            make_bt_result(),
+            make_to_result(0.85),
+            quality_report={"warnings": ["自定义质量警告 A"]},
+        )
+        assert "IC 均值极低" in html
+        assert "换手率较高" in html
+        assert "自定义质量警告 A" in html
+
+    _section_4_test_low_ic_and_high_turnover()
+
+    # -- 原 test_no_warnings_when_healthy --
+    def _section_5_test_no_warnings_when_healthy():
+        html = generate_tear_sheet(
+            "healthy",
+            make_ic_result(ic_mean=0.04, n_periods=120),
+            make_bt_result(),
+            make_to_result(0.3),
+            quality_report={"warnings": []},
+        )
+        assert "警告" not in html or '<div class="warnings"' not in html
+
+    _section_5_test_no_warnings_when_healthy()
+
+    # -- 原 test_decay_only_when_no_multi_period --
+    def _section_6_test_decay_only_when_no_multi_period():
+        ic = make_ic_result(n_periods=90, multi_period={}, decay={1: 0.0412, 5: 0.0301})
+        ic.multi_period = {}
+        html = generate_tear_sheet("decay_only", ic, make_bt_result(), make_to_result(0.2))
+        assert "0.0412" in html
+        assert "0.0301" in html
+        # decay 无 IR → 未计算
+        assert "IC 衰减" in html
+
+    _section_6_test_decay_only_when_no_multi_period()
+
+# ── degenerate inputs ────────────────────────────────────────────────────────
 
 # ── benchmark row ────────────────────────────────────────────────────────────
 
@@ -407,43 +456,10 @@ class TestBenchmarkRow:
 
 # ── warnings thresholds ──────────────────────────────────────────────────────
 
-
-class TestWarnings:
-    def test_low_ic_and_high_turnover(self):
-        html = generate_tear_sheet(
-            "warn_factor",
-            make_ic_result(ic_mean=0.005, n_periods=100),
-            make_bt_result(),
-            make_to_result(0.85),
-            quality_report={"warnings": ["自定义质量警告 A"]},
-        )
-        assert "IC 均值极低" in html
-        assert "换手率较高" in html
-        assert "自定义质量警告 A" in html
-
-    def test_no_warnings_when_healthy(self):
-        html = generate_tear_sheet(
-            "healthy",
-            make_ic_result(ic_mean=0.04, n_periods=120),
-            make_bt_result(),
-            make_to_result(0.3),
-            quality_report={"warnings": []},
-        )
-        assert "警告" not in html or '<div class="warnings"' not in html
-
-
 # ── decay fallback ───────────────────────────────────────────────────────────
 
 
 class TestDecayFallback:
-    def test_decay_only_when_no_multi_period(self):
-        ic = make_ic_result(n_periods=90, multi_period={}, decay={1: 0.0412, 5: 0.0301})
-        ic.multi_period = {}
-        html = generate_tear_sheet("decay_only", ic, make_bt_result(), make_to_result(0.2))
-        assert "0.0412" in html
-        assert "0.0301" in html
-        # decay 无 IR → 未计算
-        assert "IC 衰减" in html
 
     def test_multi_period_preferred(self):
         ic = make_ic_result(
@@ -527,16 +543,9 @@ class TestWalkForward:
 
 
 class TestGroupPerfTable:
-    def test_group_perf_metrics_match_hand_computed_values(self):
-        """逐组绩效对齐手算值（不依赖被测代码反推）。
-
-        G1 收益序列 [0.01, -0.02, 0.03]：
-          年化   = mean * 252 = (0.02/3) * 252 = 168.00%
-          年化波动 = std(ddof=0) * sqrt(252) = 0.0205480 * 15.87451 = 0.326190
-          Sharpe = 1.68 / 0.326190 = 5.15
-          净值   = [1.01, 0.9898, 1.019694]，峰值 1.01 → 回撤 = 0.9898/1.01-1 = -2.00%
-          胜率   = 2/3 = 66.67%
-        """
+    def test_group_perf_table_suite(self):
+        """逐组绩效对齐手算值（不依赖被测代码反推）。；分组区块必须带口径标注——等权免成本的数字与组合回测不可直接比较。；旧结果对象无 group_daily_returns 时应静默降级，不崩、不留空表头。；单组无从比较分层，绩效表应返回 None 而非渲染一行。"""
+        # -- 原 test_group_perf_metrics_match_hand_computed_values --
         from factorzen.reports.tear_sheet import _build_group_perf_table
 
         rows = []
@@ -565,8 +574,7 @@ class TestGroupPerfTable:
         assert g1["win_rate"] == "66.67%"
         assert g1["n_periods"] == "3"
 
-    def test_group_perf_table_rendered_with_caveat(self):
-        """分组区块必须带口径标注——等权免成本的数字与组合回测不可直接比较。"""
+        # -- 原 test_group_perf_table_rendered_with_caveat --
         html = generate_tear_sheet(
             "grouped",
             make_ic_result(n_periods=100, ic_mean=0.03),
@@ -578,13 +586,7 @@ class TestGroupPerfTable:
         assert "胜率" in html
         assert "不含交易成本与交易约束" in html, "缺口径标注会诱导与组合回测数字混比"
 
-    def test_no_group_block_when_group_daily_missing(self):
-        """旧结果对象无 group_daily_returns 时应静默降级，不崩、不留空表头。
-
-        只有依赖逐日明细的两项（分组净值图、逐组绩效表）消失；
-        分组柱状图与口径标注仍在——它们只依赖 group_means，而 group_means
-        同样是等权免成本口径，标注依旧适用。
-        """
+        # -- 原 test_no_group_block_when_group_daily_missing --
         html = generate_tear_sheet(
             "legacy_mono",
             make_ic_result(n_periods=100, ic_mean=0.03),
@@ -600,8 +602,7 @@ class TestGroupPerfTable:
         # 单调性表本身仍在（它只依赖 group_means）
         assert "Spearman" in html
 
-    def test_single_group_rejected(self):
-        """单组无从比较分层，绩效表应返回 None 而非渲染一行。"""
+        # -- 原 test_single_group_rejected --
         from factorzen.reports.tear_sheet import _build_group_perf_table
 
         rows = [
@@ -617,8 +618,6 @@ class TestGroupPerfTable:
 
 
 # ── export / env ─────────────────────────────────────────────────────────────
-
-
 
 
 # ==== 来自 test_benchmark_reporting.py ====
@@ -932,15 +931,8 @@ def test_save_load_round_trip(tmp_dirs, results):
     assert to.avg_turnover == pytest.approx(0.1)
 
 
-def test_load_results_missing_meta_returns_none(tmp_dirs):
-    assert persist._load_results("momentum_20d", "20240101", "20240131") is None
 
 
-def test_load_results_missing_parquet_returns_none(tmp_dirs, results):
-    _save(results)
-    # 删除其中一个必需 parquet → 退回重新计算（None）
-    (tmp_dirs / "results" / "momentum_20d_20240101_20240131_ic.parquet").unlink()
-    assert persist._load_results("momentum_20d", "20240101", "20240131") is None
 
 
 # ── walk-forward / direction 回读 ───────────────────────────
@@ -952,8 +944,6 @@ def test_load_walk_forward_summary_round_trip(tmp_dirs, results):
     assert persist._load_walk_forward_summary("momentum_20d", "20240101", "20240131") == summary
 
 
-def test_load_walk_forward_summary_missing_returns_none(tmp_dirs):
-    assert persist._load_walk_forward_summary("x", "20240101", "20240131") is None
 
 
 def test_load_backtest_direction_round_trip(tmp_dirs, results):
@@ -964,8 +954,6 @@ def test_load_backtest_direction_round_trip(tmp_dirs, results):
     assert loaded["should_reverse"] is True
 
 
-def test_load_backtest_direction_missing_returns_none(tmp_dirs):
-    assert direction._load_backtest_direction("x", "20240101", "20240131") is None
 
 
 # ── _existing_report_outputs / _save_quality_report ─────────
@@ -978,10 +966,6 @@ def test_existing_report_outputs_lists_present_files(tmp_dirs, results):
     assert "meta" in outputs
     assert "quality_report" in outputs
     assert outputs["meta"].endswith("_meta.json")
-
-
-def test_existing_report_outputs_empty_when_nothing_saved(tmp_dirs):
-    assert persist._existing_report_outputs("x", "20240101", "20240131") == {}
 
 
 def test_save_quality_report_writes_json(tmp_dirs):

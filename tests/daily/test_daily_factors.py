@@ -1,4 +1,4 @@
-﻿"""Unit tests for new daily factors (using synthetic data, no disk I/O)."""
+"""Unit tests for new daily factors (using synthetic data, no disk I/O)."""
 
 import sys
 import types
@@ -118,15 +118,194 @@ def _check_result(result: pl.DataFrame, factor_name: str):
 # ── Individual factor tests ──────────────────────────────────────────────────
 
 
-def test_amihud_illiquidity(ctx):
-    from factorzen.builtin_factors.daily.amihud import AmihudIlliquidity
+def test_daily_factor_compute_suite(ctx):
+    """test_amihud_illiquidity；除权造成的未复权 close 断崖不应污染 Amihud 非流动性（须基于 close_adj 计算）。；MomentumWeekly 之前未被任何测试引用，补基本覆盖。；除权造成的未复权 close 断崖不应污染周频动量（须基于 close_adj 计算）。；VolatilityWeekly 之前未被任何测试引用，补基本覆盖。；除权造成的未复权 close 断崖不应污染周频波动率（须基于 close_adj 计算）。；test_max_return_5d；test_skewness_20d"""
+    # -- 原 test_amihud_illiquidity --
+    def _section_0_test_amihud_illiquidity(ctx):
+        from factorzen.builtin_factors.daily.amihud import AmihudIlliquidity
 
-    factor = AmihudIlliquidity()
-    assert isinstance(factor, DailyFactor)
-    result = factor.compute(ctx)
-    _check_result(result, "amihud_illiquidity")
-    non_null = result["factor_value"].drop_nulls()
-    assert (non_null >= 0).all(), "Amihud illiquidity must be non-negative"
+        factor = AmihudIlliquidity()
+        assert isinstance(factor, DailyFactor)
+        result = factor.compute(ctx)
+        _check_result(result, "amihud_illiquidity")
+        non_null = result["factor_value"].drop_nulls()
+        assert (non_null >= 0).all(), "Amihud illiquidity must be non-negative"
+
+    _section_0_test_amihud_illiquidity(ctx)
+
+    # -- 原 test_amihud_illiquidity_unaffected_by_unadjusted_close_jump --
+    def _section_1_test_amihud_illiquidity_unaffected_by_unadjusted_close_jump():
+        from factorzen.builtin_factors.daily.amihud import AmihudIlliquidity
+
+        days = _trading_days(date(2024, 1, 2), 45)
+        split_index = 15
+        start, end = days[0].strftime("%Y%m%d"), days[-1].strftime("%Y%m%d")
+
+        ctx_jump = _DividendJumpContext(
+            start=start, end=end, _daily_lf=_make_dividend_jump_daily_lf(days, split_index=split_index)
+        )
+        ctx_clean = _DividendJumpContext(
+            start=start, end=end, _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None)
+        )
+
+        # sanity check：确认合成数据本身在除权日确实制造了 close 断崖（否则测试无判别力）
+        split_row = ctx_jump.daily.collect().filter(
+            (pl.col("trade_date") == days[split_index]) & (pl.col("ts_code") == "000000.SZ")
+        )
+        assert abs(split_row["close"][0] - split_row["close_adj"][0]) > 1.0
+
+        factor = AmihudIlliquidity()
+        result_jump = factor.compute(ctx_jump).sort(["ts_code", "trade_date"])
+        result_clean = factor.compute(ctx_clean).sort(["ts_code", "trade_date"])
+
+        np.testing.assert_allclose(
+            result_jump["factor_value"].to_numpy(),
+            result_clean["factor_value"].to_numpy(),
+            rtol=1e-7,
+            atol=1e-12,
+            equal_nan=True,
+        )
+
+    _section_1_test_amihud_illiquidity_unaffected_by_unadjusted_close_jump()
+
+    # -- 原 test_momentum_weekly_basic --
+    def _section_2_test_momentum_weekly_basic():
+        from factorzen.builtin_factors.weekly.momentum import MomentumWeekly
+
+        days = _trading_days(date(2024, 1, 2), 30)
+        snapshot_date = days[25]
+        ctx = _DividendJumpContext(
+            start=days[0].strftime("%Y%m%d"),
+            end=days[-1].strftime("%Y%m%d"),
+            _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
+            _snapshot_dates=[snapshot_date],
+        )
+        factor = MomentumWeekly()
+        assert isinstance(factor, DailyFactor)
+        result = factor.compute(ctx)
+        _check_result(result, "momentum_weekly")
+        assert result["trade_date"].unique().to_list() == [snapshot_date]
+
+    _section_2_test_momentum_weekly_basic()
+
+    # -- 原 test_momentum_weekly_unaffected_by_unadjusted_close_jump --
+    def _section_3_test_momentum_weekly_unaffected_by_unadjusted_close_jump():
+        from factorzen.builtin_factors.weekly.momentum import MomentumWeekly
+
+        days = _trading_days(date(2024, 1, 2), 45)
+        split_index = 15
+        snapshot_date = days[30]  # 距 split_index 仅 15 个交易日，落在 20 日回看窗口内
+        start, end = days[0].strftime("%Y%m%d"), days[-1].strftime("%Y%m%d")
+
+        ctx_jump = _DividendJumpContext(
+            start=start,
+            end=end,
+            _daily_lf=_make_dividend_jump_daily_lf(days, split_index=split_index),
+            _snapshot_dates=[snapshot_date],
+        )
+        ctx_clean = _DividendJumpContext(
+            start=start,
+            end=end,
+            _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
+            _snapshot_dates=[snapshot_date],
+        )
+
+        factor = MomentumWeekly()
+        result_jump = factor.compute(ctx_jump).sort(["ts_code"])
+        result_clean = factor.compute(ctx_clean).sort(["ts_code"])
+
+        assert result_jump.shape[0] > 0
+        np.testing.assert_allclose(
+            result_jump["factor_value"].to_numpy(),
+            result_clean["factor_value"].to_numpy(),
+            rtol=1e-7,
+            atol=1e-12,
+            equal_nan=True,
+        )
+
+    _section_3_test_momentum_weekly_unaffected_by_unadjusted_close_jump()
+
+    # -- 原 test_volatility_weekly_basic --
+    def _section_4_test_volatility_weekly_basic():
+        from factorzen.builtin_factors.weekly.volatility import VolatilityWeekly
+
+        days = _trading_days(date(2024, 1, 2), 30)
+        snapshot_date = days[25]
+        ctx = _DividendJumpContext(
+            start=days[0].strftime("%Y%m%d"),
+            end=days[-1].strftime("%Y%m%d"),
+            _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
+            _snapshot_dates=[snapshot_date],
+        )
+        factor = VolatilityWeekly()
+        assert isinstance(factor, DailyFactor)
+        result = factor.compute(ctx)
+        _check_result(result, "volatility_weekly")
+        non_null = result["factor_value"].drop_nulls().to_numpy()
+        assert np.all(non_null >= 0), "Volatility must be non-negative"
+
+    _section_4_test_volatility_weekly_basic()
+
+    # -- 原 test_volatility_weekly_unaffected_by_unadjusted_close_jump --
+    def _section_5_test_volatility_weekly_unaffected_by_unadjusted_close_jump():
+        from factorzen.builtin_factors.weekly.volatility import VolatilityWeekly
+
+        days = _trading_days(date(2024, 1, 2), 45)
+        split_index = 15
+        snapshot_date = days[30]
+        start, end = days[0].strftime("%Y%m%d"), days[-1].strftime("%Y%m%d")
+
+        ctx_jump = _DividendJumpContext(
+            start=start,
+            end=end,
+            _daily_lf=_make_dividend_jump_daily_lf(days, split_index=split_index),
+            _snapshot_dates=[snapshot_date],
+        )
+        ctx_clean = _DividendJumpContext(
+            start=start,
+            end=end,
+            _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
+            _snapshot_dates=[snapshot_date],
+        )
+
+        factor = VolatilityWeekly()
+        result_jump = factor.compute(ctx_jump).sort(["ts_code"])
+        result_clean = factor.compute(ctx_clean).sort(["ts_code"])
+
+        assert result_jump.shape[0] > 0
+        np.testing.assert_allclose(
+            result_jump["factor_value"].to_numpy(),
+            result_clean["factor_value"].to_numpy(),
+            rtol=1e-7,
+            atol=1e-12,
+            equal_nan=True,
+        )
+
+    _section_5_test_volatility_weekly_unaffected_by_unadjusted_close_jump()
+
+    # -- 原 test_max_return_5d --
+    def _section_6_test_max_return_5d(ctx):
+        from factorzen.builtin_factors.daily.max_return import MaxReturn5D
+
+        factor = MaxReturn5D()
+        assert isinstance(factor, DailyFactor)
+        result = factor.compute(ctx)
+        _check_result(result, "max_return_5d")
+
+    _section_6_test_max_return_5d(ctx)
+
+    # -- 原 test_skewness_20d --
+    def _section_7_test_skewness_20d(ctx):
+        from factorzen.builtin_factors.daily.skewness import Skewness20D
+
+        factor = Skewness20D()
+        assert isinstance(factor, DailyFactor)
+        result = factor.compute(ctx)
+        _check_result(result, "skewness_20d")
+        non_null = result["factor_value"].drop_nulls().to_numpy()
+        assert np.all(np.abs(non_null) < 50), "Skewness out of reasonable range"
+
+    _section_7_test_skewness_20d(ctx)
 
 
 # ── close_adj regression tests (复权 close_adj vs 未复权 close) ─────────────
@@ -206,171 +385,6 @@ class _DividendJumpContext:
         return self._snapshot_dates
 
 
-def test_amihud_illiquidity_unaffected_by_unadjusted_close_jump():
-    """除权造成的未复权 close 断崖不应污染 Amihud 非流动性（须基于 close_adj 计算）。"""
-    from factorzen.builtin_factors.daily.amihud import AmihudIlliquidity
-
-    days = _trading_days(date(2024, 1, 2), 45)
-    split_index = 15
-    start, end = days[0].strftime("%Y%m%d"), days[-1].strftime("%Y%m%d")
-
-    ctx_jump = _DividendJumpContext(
-        start=start, end=end, _daily_lf=_make_dividend_jump_daily_lf(days, split_index=split_index)
-    )
-    ctx_clean = _DividendJumpContext(
-        start=start, end=end, _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None)
-    )
-
-    # sanity check：确认合成数据本身在除权日确实制造了 close 断崖（否则测试无判别力）
-    split_row = ctx_jump.daily.collect().filter(
-        (pl.col("trade_date") == days[split_index]) & (pl.col("ts_code") == "000000.SZ")
-    )
-    assert abs(split_row["close"][0] - split_row["close_adj"][0]) > 1.0
-
-    factor = AmihudIlliquidity()
-    result_jump = factor.compute(ctx_jump).sort(["ts_code", "trade_date"])
-    result_clean = factor.compute(ctx_clean).sort(["ts_code", "trade_date"])
-
-    np.testing.assert_allclose(
-        result_jump["factor_value"].to_numpy(),
-        result_clean["factor_value"].to_numpy(),
-        rtol=1e-7,
-        atol=1e-12,
-        equal_nan=True,
-    )
-
-
-def test_momentum_weekly_basic():
-    """MomentumWeekly 之前未被任何测试引用，补基本覆盖。"""
-    from factorzen.builtin_factors.weekly.momentum import MomentumWeekly
-
-    days = _trading_days(date(2024, 1, 2), 30)
-    snapshot_date = days[25]
-    ctx = _DividendJumpContext(
-        start=days[0].strftime("%Y%m%d"),
-        end=days[-1].strftime("%Y%m%d"),
-        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
-        _snapshot_dates=[snapshot_date],
-    )
-    factor = MomentumWeekly()
-    assert isinstance(factor, DailyFactor)
-    result = factor.compute(ctx)
-    _check_result(result, "momentum_weekly")
-    assert result["trade_date"].unique().to_list() == [snapshot_date]
-
-
-def test_momentum_weekly_unaffected_by_unadjusted_close_jump():
-    """除权造成的未复权 close 断崖不应污染周频动量（须基于 close_adj 计算）。"""
-    from factorzen.builtin_factors.weekly.momentum import MomentumWeekly
-
-    days = _trading_days(date(2024, 1, 2), 45)
-    split_index = 15
-    snapshot_date = days[30]  # 距 split_index 仅 15 个交易日，落在 20 日回看窗口内
-    start, end = days[0].strftime("%Y%m%d"), days[-1].strftime("%Y%m%d")
-
-    ctx_jump = _DividendJumpContext(
-        start=start,
-        end=end,
-        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=split_index),
-        _snapshot_dates=[snapshot_date],
-    )
-    ctx_clean = _DividendJumpContext(
-        start=start,
-        end=end,
-        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
-        _snapshot_dates=[snapshot_date],
-    )
-
-    factor = MomentumWeekly()
-    result_jump = factor.compute(ctx_jump).sort(["ts_code"])
-    result_clean = factor.compute(ctx_clean).sort(["ts_code"])
-
-    assert result_jump.shape[0] > 0
-    np.testing.assert_allclose(
-        result_jump["factor_value"].to_numpy(),
-        result_clean["factor_value"].to_numpy(),
-        rtol=1e-7,
-        atol=1e-12,
-        equal_nan=True,
-    )
-
-
-def test_volatility_weekly_basic():
-    """VolatilityWeekly 之前未被任何测试引用，补基本覆盖。"""
-    from factorzen.builtin_factors.weekly.volatility import VolatilityWeekly
-
-    days = _trading_days(date(2024, 1, 2), 30)
-    snapshot_date = days[25]
-    ctx = _DividendJumpContext(
-        start=days[0].strftime("%Y%m%d"),
-        end=days[-1].strftime("%Y%m%d"),
-        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
-        _snapshot_dates=[snapshot_date],
-    )
-    factor = VolatilityWeekly()
-    assert isinstance(factor, DailyFactor)
-    result = factor.compute(ctx)
-    _check_result(result, "volatility_weekly")
-    non_null = result["factor_value"].drop_nulls().to_numpy()
-    assert np.all(non_null >= 0), "Volatility must be non-negative"
-
-
-def test_volatility_weekly_unaffected_by_unadjusted_close_jump():
-    """除权造成的未复权 close 断崖不应污染周频波动率（须基于 close_adj 计算）。"""
-    from factorzen.builtin_factors.weekly.volatility import VolatilityWeekly
-
-    days = _trading_days(date(2024, 1, 2), 45)
-    split_index = 15
-    snapshot_date = days[30]
-    start, end = days[0].strftime("%Y%m%d"), days[-1].strftime("%Y%m%d")
-
-    ctx_jump = _DividendJumpContext(
-        start=start,
-        end=end,
-        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=split_index),
-        _snapshot_dates=[snapshot_date],
-    )
-    ctx_clean = _DividendJumpContext(
-        start=start,
-        end=end,
-        _daily_lf=_make_dividend_jump_daily_lf(days, split_index=None),
-        _snapshot_dates=[snapshot_date],
-    )
-
-    factor = VolatilityWeekly()
-    result_jump = factor.compute(ctx_jump).sort(["ts_code"])
-    result_clean = factor.compute(ctx_clean).sort(["ts_code"])
-
-    assert result_jump.shape[0] > 0
-    np.testing.assert_allclose(
-        result_jump["factor_value"].to_numpy(),
-        result_clean["factor_value"].to_numpy(),
-        rtol=1e-7,
-        atol=1e-12,
-        equal_nan=True,
-    )
-
-
-def test_max_return_5d(ctx):
-    from factorzen.builtin_factors.daily.max_return import MaxReturn5D
-
-    factor = MaxReturn5D()
-    assert isinstance(factor, DailyFactor)
-    result = factor.compute(ctx)
-    _check_result(result, "max_return_5d")
-
-
-def test_skewness_20d(ctx):
-    from factorzen.builtin_factors.daily.skewness import Skewness20D
-
-    factor = Skewness20D()
-    assert isinstance(factor, DailyFactor)
-    result = factor.compute(ctx)
-    _check_result(result, "skewness_20d")
-    non_null = result["factor_value"].drop_nulls().to_numpy()
-    assert np.all(np.abs(non_null) < 50), "Skewness out of reasonable range"
-
-
 def test_beta_60d(ctx):
     from factorzen.builtin_factors.daily.beta import Beta60D
 
@@ -426,100 +440,41 @@ def test_ep_ratio(ctx):
     assert np.all(non_null > 0), "E/P ratio must be positive"
 
 
-def test_registry_has_new_factors():
-    from factorzen.daily.factors.registry import list_factors
+def test_factor_required_meta_suite():
+    """test_registry_has_new_factors；test_registry_has_qlib_factors"""
+    # -- 原 test_registry_has_new_factors --
+    def _section_0_test_registry_has_new_factors():
+        from factorzen.daily.factors.registry import list_factors
 
-    factors = list_factors()
-    expected = [
-        "amihud_illiquidity",
-        "max_return_5d",
-        "skewness_20d",
-        "beta_60d",
-        "idiosyncratic_vol_20d",
-        "volume_return_corr_20d",
-        "bm_ratio",
-        "ep_ratio",
-        "asset_growth",
-    ]
-    for name in expected:
-        assert name in factors, f"Factor '{name}' not registered"
+        factors = list_factors()
+        expected = [
+            "amihud_illiquidity",
+            "max_return_5d",
+            "skewness_20d",
+            "beta_60d",
+            "idiosyncratic_vol_20d",
+            "volume_return_corr_20d",
+            "bm_ratio",
+            "ep_ratio",
+            "asset_growth",
+        ]
+        for name in expected:
+            assert name in factors, f"Factor '{name}' not registered"
 
+    _section_0_test_registry_has_new_factors()
 
-def test_registry_has_qlib_factors():
-    from factorzen.daily.factors.registry import list_factors
+    # -- 原 test_registry_has_qlib_factors --
+    def _section_1_test_registry_has_qlib_factors():
+        from factorzen.daily.factors.registry import list_factors
 
-    factors = list_factors()
+        factors = list_factors()
 
-    assert "qlib_alpha158_kmid" in factors
-    assert "qlib_alpha158_ma20" in factors
-    assert "qlib_alpha360_close0" in factors
-    assert "qlib_alpha360_volume59" in factors
+        assert "qlib_alpha158_kmid" in factors
+        assert "qlib_alpha158_ma20" in factors
+        assert "qlib_alpha360_close0" in factors
+        assert "qlib_alpha360_volume59" in factors
 
-
-def test_qlib_alpha158_factor_returns_factorzen_schema(ctx, monkeypatch):
-    import factorzen.builtin_factors.qlib.handler as qlib_mod
-    from factorzen.builtin_factors.qlib.handler import QlibAlpha158Kmid
-
-    assert QlibAlpha158Kmid.required_data == ["daily"]
-
-    qlib_df = pl.DataFrame(
-        {
-            "trade_date": [date(2024, 3, 1), date(2024, 3, 1)],
-            "ts_code": ["000001.SZ", "000002.SZ"],
-            "KMID": [0.1, -0.2],
-        }
-    )
-    monkeypatch.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
-
-    result = QlibAlpha158Kmid().compute(ctx)
-
-    assert result.columns == ["trade_date", "ts_code", "factor_value"]
-    assert result["factor_value"].to_list() == [0.1, -0.2]
-
-
-def test_qlib_init_uses_low_memory_defaults(monkeypatch):
-    import factorzen.builtin_factors.qlib.handler as qlib_mod
-
-    init_calls = []
-
-    fake_qlib = types.SimpleNamespace(init=lambda **kwargs: init_calls.append(kwargs))
-    fake_constant = types.SimpleNamespace(REG_CN="cn")
-
-    monkeypatch.setattr(qlib_mod, "_QLIB_INITIALIZED", False)
-    monkeypatch.delenv("QLIB_KERNELS", raising=False)
-    monkeypatch.delenv("QLIB_JOBLIB_BACKEND", raising=False)
-    monkeypatch.setitem(sys.modules, "qlib", fake_qlib)
-    monkeypatch.setitem(sys.modules, "qlib.constant", fake_constant)
-
-    qlib_mod._init_qlib("provider")
-
-    assert init_calls == [
-        {
-            "provider_uri": "provider",
-            "region": "cn",
-            "kernels": 1,
-            "joblib_backend": "threading",
-        }
-    ]
-
-
-def test_qlib_alpha360_factor_returns_factorzen_schema(ctx, monkeypatch):
-    import factorzen.builtin_factors.qlib.handler as qlib_mod
-    from factorzen.builtin_factors.qlib.handler import QlibAlpha360Close0
-
-    qlib_df = pl.DataFrame(
-        {
-            "trade_date": [date(2024, 3, 1), date(2024, 3, 1)],
-            "ts_code": ["000001.SZ", "000002.SZ"],
-            "CLOSE0": [1.0, 1.0],
-        }
-    )
-    monkeypatch.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
-
-    result = QlibAlpha360Close0().compute(ctx)
-
-    assert result.columns == ["trade_date", "ts_code", "factor_value"]
-    assert result["factor_value"].to_list() == [1.0, 1.0]
+    _section_1_test_registry_has_qlib_factors()
 
 
 def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
@@ -555,33 +510,118 @@ def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
     return pl.DataFrame(rows).lazy()
 
 
-def test_asset_growth(ctx, monkeypatch):
-    import factorzen.builtin_factors.monthly.asset_growth as ag_mod
-    from factorzen.builtin_factors.monthly.asset_growth import AssetGrowthMonthly
+def test_special_event_factor_suite(ctx, monkeypatch):
+    """test_asset_growth；When finance data unavailable, factor returns empty DataFrame gracefully.；test_qlib_alpha158_factor_returns_factorzen_schema；test_qlib_init_uses_low_memory_defaults；test_qlib_alpha360_factor_returns_factorzen_schema"""
+    # -- 原 test_asset_growth --
+    def _section_0_test_asset_growth(ctx, mp):
+        import factorzen.builtin_factors.monthly.asset_growth as ag_mod
+        from factorzen.builtin_factors.monthly.asset_growth import AssetGrowthMonthly
 
-    synthetic_lf = _make_finance_lf()
-    monkeypatch.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
+        synthetic_lf = _make_finance_lf()
+        mp.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
 
-    factor = AssetGrowthMonthly()
-    assert isinstance(factor, DailyFactor)
-    result = factor.compute(ctx)
-    _check_result(result, "asset_growth")
-    # YoY growth can be positive or negative, but should be finite
-    non_null = result["factor_value"].drop_nulls().to_numpy()
-    assert np.all(np.isfinite(non_null)), "Asset growth should be finite"
+        factor = AssetGrowthMonthly()
+        assert isinstance(factor, DailyFactor)
+        result = factor.compute(ctx)
+        _check_result(result, "asset_growth")
+        # YoY growth can be positive or negative, but should be finite
+        non_null = result["factor_value"].drop_nulls().to_numpy()
+        assert np.all(np.isfinite(non_null)), "Asset growth should be finite"
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_asset_growth(ctx, mp)
+
+    # -- 原 test_asset_growth_empty_when_no_finance --
+    def _section_1_test_asset_growth_empty_when_no_finance(ctx, mp):
+        import factorzen.builtin_factors.monthly.asset_growth as ag_mod
+        from factorzen.builtin_factors.monthly.asset_growth import AssetGrowthMonthly
+
+        def _raise(_):
+            raise FileNotFoundError("no data")
+
+        mp.setattr(ag_mod, "scan_parquet", _raise)
+
+        factor = AssetGrowthMonthly()
+        result = factor.compute(ctx)
+        assert isinstance(result, pl.DataFrame)
+        assert result.is_empty()
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_asset_growth_empty_when_no_finance(ctx, mp)
+
+    # -- 原 test_qlib_alpha158_factor_returns_factorzen_schema --
+    def _section_2_test_qlib_alpha158_factor_returns_factorzen_schema(ctx, mp):
+        import factorzen.builtin_factors.qlib.handler as qlib_mod
+        from factorzen.builtin_factors.qlib.handler import QlibAlpha158Kmid
+
+        assert QlibAlpha158Kmid.required_data == ["daily"]
+
+        qlib_df = pl.DataFrame(
+            {
+                "trade_date": [date(2024, 3, 1), date(2024, 3, 1)],
+                "ts_code": ["000001.SZ", "000002.SZ"],
+                "KMID": [0.1, -0.2],
+            }
+        )
+        mp.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
+
+        result = QlibAlpha158Kmid().compute(ctx)
+
+        assert result.columns == ["trade_date", "ts_code", "factor_value"]
+        assert result["factor_value"].to_list() == [0.1, -0.2]
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_qlib_alpha158_factor_returns_factorzen_schema(ctx, mp)
+
+    # -- 原 test_qlib_init_uses_low_memory_defaults --
+    def _section_3_test_qlib_init_uses_low_memory_defaults(mp):
+        import factorzen.builtin_factors.qlib.handler as qlib_mod
+
+        init_calls = []
+
+        fake_qlib = types.SimpleNamespace(init=lambda **kwargs: init_calls.append(kwargs))
+        fake_constant = types.SimpleNamespace(REG_CN="cn")
+
+        mp.setattr(qlib_mod, "_QLIB_INITIALIZED", False)
+        mp.delenv("QLIB_KERNELS", raising=False)
+        mp.delenv("QLIB_JOBLIB_BACKEND", raising=False)
+        mp.setitem(sys.modules, "qlib", fake_qlib)
+        mp.setitem(sys.modules, "qlib.constant", fake_constant)
+
+        qlib_mod._init_qlib("provider")
+
+        assert init_calls == [
+            {
+                "provider_uri": "provider",
+                "region": "cn",
+                "kernels": 1,
+                "joblib_backend": "threading",
+            }
+        ]
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_qlib_init_uses_low_memory_defaults(mp)
+
+    # -- 原 test_qlib_alpha360_factor_returns_factorzen_schema --
+    def _section_4_test_qlib_alpha360_factor_returns_factorzen_schema(ctx, mp):
+        import factorzen.builtin_factors.qlib.handler as qlib_mod
+        from factorzen.builtin_factors.qlib.handler import QlibAlpha360Close0
+
+        qlib_df = pl.DataFrame(
+            {
+                "trade_date": [date(2024, 3, 1), date(2024, 3, 1)],
+                "ts_code": ["000001.SZ", "000002.SZ"],
+                "CLOSE0": [1.0, 1.0],
+            }
+        )
+        mp.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
+
+        result = QlibAlpha360Close0().compute(ctx)
+
+        assert result.columns == ["trade_date", "ts_code", "factor_value"]
+        assert result["factor_value"].to_list() == [1.0, 1.0]
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_qlib_alpha360_factor_returns_factorzen_schema(ctx, mp)
 
 
-def test_asset_growth_empty_when_no_finance(ctx, monkeypatch):
-    """When finance data unavailable, factor returns empty DataFrame gracefully."""
-    import factorzen.builtin_factors.monthly.asset_growth as ag_mod
-    from factorzen.builtin_factors.monthly.asset_growth import AssetGrowthMonthly
-
-    def _raise(_):
-        raise FileNotFoundError("no data")
-
-    monkeypatch.setattr(ag_mod, "scan_parquet", _raise)
-
-    factor = AssetGrowthMonthly()
-    result = factor.compute(ctx)
-    assert isinstance(result, pl.DataFrame)
-    assert result.is_empty()

@@ -46,211 +46,259 @@ def test_factor_record_roundtrip():
     assert r3.expression == "x" and r3.market == "crypto" and r3.status == "active"
 
 
-def test_load_library_missing_returns_empty(tmp_path):
-    from factorzen.discovery.factor_library import load_library
-    assert load_library("ashare", root=str(tmp_path)) == []
-
-
 # ── upsert：新增/更新时间戳 + gate ───────────────────────────────────────────
 
-def test_upsert_new_sets_added_at(tmp_path):
-    from factorzen.discovery.factor_library import load_library, upsert
-    res = upsert("ashare", [_cand("rank(close)")], eval_window=("20200101", "20260101"),
-                 universe="csi300", horizon=1, run_id="r1", session_dir="s1",
-                 git_sha="abc", now="2026-07-12", root=str(tmp_path))
-    assert res.added == 1 and res.updated == 0
-    lib = load_library("ashare", root=str(tmp_path))
-    assert len(lib) == 1
-    assert lib[0].added_at == "2026-07-12" and lib[0].updated_at == "2026-07-12"
-    assert lib[0].eval_start == "20200101" and lib[0].eval_end == "20260101"
-    assert lib[0].universe == "csi300" and lib[0].source_run_id == "r1"
+def test_upsert_gate_suite(tmp_path):
+    """test_upsert_new_sets_added_at；test_upsert_duplicate_updates_and_preserves_added_at；规范形去重：'add(close, 1)' 与 'add(close, 1.0)'（整型/浮点字面量 + 空白）归一化同 → 只一条。；不过 library gate 的被跳过：holdout 反号 / |IC| 太弱。；holdout 覆盖稀薄（如北向季末残留仅 5 天）的候选不得入库。；覆盖充足（n_holdout_days ≥ 阈值）且真+有信号 → 正常入库（别把守卫修成一刀切）。；旧调用方候选不带 n_holdout_days → 跳过覆盖门（零回归；与 guardrails None 语义一致）。；门槛复用：upsert 的入库判定与 acceptance_reasons(gate='library') 一致（非恒真："""
+    # -- 原 test_upsert_new_sets_added_at --
+    def _section_0_test_upsert_new_sets_added_at(tmp_path):
+        from factorzen.discovery.factor_library import load_library, upsert
+        res = upsert("ashare", [_cand("rank(close)")], eval_window=("20200101", "20260101"),
+                     universe="csi300", horizon=1, run_id="r1", session_dir="s1",
+                     git_sha="abc", now="2026-07-12", root=str(tmp_path))
+        assert res.added == 1 and res.updated == 0
+        lib = load_library("ashare", root=str(tmp_path))
+        assert len(lib) == 1
+        assert lib[0].added_at == "2026-07-12" and lib[0].updated_at == "2026-07-12"
+        assert lib[0].eval_start == "20200101" and lib[0].eval_end == "20260101"
+        assert lib[0].universe == "csi300" and lib[0].source_run_id == "r1"
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_upsert_new_sets_added_at(_tp0)
 
-def test_upsert_duplicate_updates_and_preserves_added_at(tmp_path):
-    from factorzen.discovery.factor_library import load_library, upsert
-    upsert("ashare", [_cand("rank(close)", ic_train=0.05)],
-           eval_window=("20200101", "20260101"), universe="u", horizon=1,
-           run_id="r1", session_dir="s1", git_sha="a", now="2026-07-01", root=str(tmp_path))
-    res2 = upsert("ashare", [_cand("rank(close)", ic_train=0.08)],
-                  eval_window=("20200101", "20260101"), universe="u", horizon=1,
-                  run_id="r2", session_dir="s2", git_sha="b", now="2026-07-12", root=str(tmp_path))
-    assert res2.added == 0 and res2.updated == 1
-    lib = load_library("ashare", root=str(tmp_path))
-    assert len(lib) == 1
-    assert lib[0].added_at == "2026-07-01"          # 保留原入库日
-    assert lib[0].updated_at == "2026-07-12"        # 刷新更新日
-    assert abs(lib[0].ic_train - 0.08) < 1e-9       # 指标已更新
+    # -- 原 test_upsert_duplicate_updates_and_preserves_added_at --
+    def _section_1_test_upsert_duplicate_updates_and_preserves_added_at(tmp_path):
+        from factorzen.discovery.factor_library import load_library, upsert
+        upsert("ashare", [_cand("rank(close)", ic_train=0.05)],
+               eval_window=("20200101", "20260101"), universe="u", horizon=1,
+               run_id="r1", session_dir="s1", git_sha="a", now="2026-07-01", root=str(tmp_path))
+        res2 = upsert("ashare", [_cand("rank(close)", ic_train=0.08)],
+                      eval_window=("20200101", "20260101"), universe="u", horizon=1,
+                      run_id="r2", session_dir="s2", git_sha="b", now="2026-07-12", root=str(tmp_path))
+        assert res2.added == 0 and res2.updated == 1
+        lib = load_library("ashare", root=str(tmp_path))
+        assert len(lib) == 1
+        assert lib[0].added_at == "2026-07-01"          # 保留原入库日
+        assert lib[0].updated_at == "2026-07-12"        # 刷新更新日
+        assert abs(lib[0].ic_train - 0.08) < 1e-9       # 指标已更新
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_upsert_duplicate_updates_and_preserves_added_at(_tp1)
 
-def test_upsert_normalizes_expression_as_dedup_key(tmp_path):
-    """规范形去重：'add(close, 1)' 与 'add(close, 1.0)'（整型/浮点字面量 + 空白）归一化同 → 只一条。"""
-    from factorzen.discovery.factor_library import load_library, upsert
-    upsert("ashare", [_cand("add(close, 1)")], eval_window=("20200101", "20260101"),
-           universe="u", horizon=1, run_id="r1", session_dir="s1", git_sha="a",
-           now="2026-07-01", root=str(tmp_path))
-    upsert("ashare", [_cand("add( close , 1.0 )")], eval_window=("20200101", "20260101"),
-           universe="u", horizon=1, run_id="r2", session_dir="s2", git_sha="b",
-           now="2026-07-12", root=str(tmp_path))
-    lib = load_library("ashare", root=str(tmp_path))
-    assert len(lib) == 1                             # 同一因子只登记一次
-    assert lib[0].expression == "add(close, 1.0)"    # 存的是规范形
+    # -- 原 test_upsert_normalizes_expression_as_dedup_key --
+    def _section_2_test_upsert_normalizes_expression_as_dedup_key(tmp_path):
+        from factorzen.discovery.factor_library import load_library, upsert
+        upsert("ashare", [_cand("add(close, 1)")], eval_window=("20200101", "20260101"),
+               universe="u", horizon=1, run_id="r1", session_dir="s1", git_sha="a",
+               now="2026-07-01", root=str(tmp_path))
+        upsert("ashare", [_cand("add( close , 1.0 )")], eval_window=("20200101", "20260101"),
+               universe="u", horizon=1, run_id="r2", session_dir="s2", git_sha="b",
+               now="2026-07-12", root=str(tmp_path))
+        lib = load_library("ashare", root=str(tmp_path))
+        assert len(lib) == 1                             # 同一因子只登记一次
+        assert lib[0].expression == "add(close, 1.0)"    # 存的是规范形
 
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_upsert_normalizes_expression_as_dedup_key(_tp2)
 
-def test_upsert_skips_failing_library_gate(tmp_path):
-    """不过 library gate 的被跳过：holdout 反号 / |IC| 太弱。"""
-    from factorzen.discovery.factor_library import load_library, upsert
-    cands = [
-        _cand("rank(close)", ic_train=0.05, holdout_ic=0.04),      # 真+有信号 → 入库
-        _cand("rank(open)", ic_train=0.05, holdout_ic=-0.04),      # holdout 反号 → 跳过
-        _cand("rank(high)", ic_train=0.006, holdout_ic=0.005),     # |IC| 太弱 → 跳过
-    ]
-    res = upsert("ashare", cands, eval_window=("20200101", "20260101"), universe="u",
-                 horizon=1, run_id="r1", session_dir="s1", git_sha="a",
-                 now="2026-07-12", root=str(tmp_path))
-    assert res.added == 1 and res.skipped == 2
-    lib = load_library("ashare", root=str(tmp_path))
-    assert [r.expression for r in lib] == ["rank(close)"]
+    # -- 原 test_upsert_skips_failing_library_gate --
+    def _section_3_test_upsert_skips_failing_library_gate(tmp_path):
+        from factorzen.discovery.factor_library import load_library, upsert
+        cands = [
+            _cand("rank(close)", ic_train=0.05, holdout_ic=0.04),      # 真+有信号 → 入库
+            _cand("rank(open)", ic_train=0.05, holdout_ic=-0.04),      # holdout 反号 → 跳过
+            _cand("rank(high)", ic_train=0.006, holdout_ic=0.005),     # |IC| 太弱 → 跳过
+        ]
+        res = upsert("ashare", cands, eval_window=("20200101", "20260101"), universe="u",
+                     horizon=1, run_id="r1", session_dir="s1", git_sha="a",
+                     now="2026-07-12", root=str(tmp_path))
+        assert res.added == 1 and res.skipped == 2
+        lib = load_library("ashare", root=str(tmp_path))
+        assert [r.expression for r in lib] == ["rank(close)"]
 
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_upsert_skips_failing_library_gate(_tp3)
 
-def test_upsert_blocks_thin_holdout_coverage(tmp_path):
-    """holdout 覆盖稀薄（如北向季末残留仅 5 天）的候选不得入库。
+    # -- 原 test_upsert_blocks_thin_holdout_coverage --
+    def _section_4_test_upsert_blocks_thin_holdout_coverage(tmp_path):
+        from factorzen.discovery.factor_library import load_library, upsert
+        res = upsert("ashare", [_cand("div(vol, amount)", n_holdout_days=5)],
+                     eval_window=("20200101", "20260101"), universe="csi300", horizon=1,
+                     run_id="r1", session_dir="s1", git_sha="a", now="2026-07-13",
+                     root=str(tmp_path))
+        assert res.skipped == 1 and res.added == 0
+        assert load_library("ashare", root=str(tmp_path)) == []
 
-    upsert 是 M1/M5-M6 之外吃 acceptance_reasons 的**第三条路径**（rebuild 走它），
-    P1 修覆盖门时漏了这里——真实后果：div(north_ratio, amount) 靠 5 个季末截面
-    的 holdout_ic 混进 active。防双路径（三路径）漂移。
-    """
-    from factorzen.discovery.factor_library import load_library, upsert
-    res = upsert("ashare", [_cand("div(vol, amount)", n_holdout_days=5)],
-                 eval_window=("20200101", "20260101"), universe="csi300", horizon=1,
-                 run_id="r1", session_dir="s1", git_sha="a", now="2026-07-13",
-                 root=str(tmp_path))
-    assert res.skipped == 1 and res.added == 0
-    assert load_library("ashare", root=str(tmp_path)) == []
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_upsert_blocks_thin_holdout_coverage(_tp4)
 
+    # -- 原 test_upsert_admits_adequate_holdout_coverage --
+    def _section_5_test_upsert_admits_adequate_holdout_coverage(tmp_path):
+        from factorzen.discovery.factor_library import load_library, upsert
+        res = upsert("ashare", [_cand("rank(close)", n_holdout_days=291)],
+                     eval_window=("20200101", "20260101"), universe="csi300", horizon=1,
+                     run_id="r1", session_dir="s1", git_sha="a", now="2026-07-13",
+                     root=str(tmp_path))
+        assert res.added == 1
+        assert [r.expression for r in load_library("ashare", root=str(tmp_path))] == ["rank(close)"]
 
-def test_upsert_admits_adequate_holdout_coverage(tmp_path):
-    """覆盖充足（n_holdout_days ≥ 阈值）且真+有信号 → 正常入库（别把守卫修成一刀切）。"""
-    from factorzen.discovery.factor_library import load_library, upsert
-    res = upsert("ashare", [_cand("rank(close)", n_holdout_days=291)],
-                 eval_window=("20200101", "20260101"), universe="csi300", horizon=1,
-                 run_id="r1", session_dir="s1", git_sha="a", now="2026-07-13",
-                 root=str(tmp_path))
-    assert res.added == 1
-    assert [r.expression for r in load_library("ashare", root=str(tmp_path))] == ["rank(close)"]
+    _tp5 = tmp_path / "_s5"
+    _tp5.mkdir(exist_ok=True)
+    _section_5_test_upsert_admits_adequate_holdout_coverage(_tp5)
 
+    # -- 原 test_upsert_without_n_holdout_days_keeps_old_behavior --
+    def _section_6_test_upsert_without_n_holdout_days_keeps_old_behavior(tmp_path):
+        from factorzen.discovery.factor_library import upsert
+        res = upsert("ashare", [_cand("rank(close)")],
+                     eval_window=("20200101", "20260101"), universe="csi300", horizon=1,
+                     run_id="r1", session_dir="s1", git_sha="a", now="2026-07-13",
+                     root=str(tmp_path))
+        assert res.added == 1
 
-def test_upsert_without_n_holdout_days_keeps_old_behavior(tmp_path):
-    """旧调用方候选不带 n_holdout_days → 跳过覆盖门（零回归；与 guardrails None 语义一致）。"""
-    from factorzen.discovery.factor_library import upsert
-    res = upsert("ashare", [_cand("rank(close)")],
-                 eval_window=("20200101", "20260101"), universe="csi300", horizon=1,
-                 run_id="r1", session_dir="s1", git_sha="a", now="2026-07-13",
-                 root=str(tmp_path))
-    assert res.added == 1
+    _tp6 = tmp_path / "_s6"
+    _tp6.mkdir(exist_ok=True)
+    _section_6_test_upsert_without_n_holdout_days_keeps_old_behavior(_tp6)
 
+    # -- 原 test_upsert_gate_parity_with_acceptance_reasons --
+    def _section_7_test_upsert_gate_parity_with_acceptance_reasons(tmp_path):
+        from factorzen.discovery.factor_library import upsert
+        from factorzen.discovery.guardrails import acceptance_reasons
+        cases = [
+            _cand("f0", ic_train=0.05, holdout_ic=0.04),
+            _cand("f1", ic_train=-0.05, holdout_ic=-0.04),      # 同号反转 → 入
+            _cand("f2", ic_train=0.05, holdout_ic=-0.04),       # 反号 → 不入
+            _cand("f3", ic_train=0.006, holdout_ic=0.006),      # 太弱 → 不入
+            _cand("f4", ic_train=float("nan"), holdout_ic=0.04),  # NaN → 不入
+        ]
+        res = upsert("crypto", cases, eval_window=("20210101", "20260101"), universe="perp",
+                     horizon=1, run_id="r", session_dir="s", git_sha="a", now="2026-07-12",
+                     root=str(tmp_path))
+        accepted = {r.expression for r in res.records}
+        for c in cases:
+            should = not acceptance_reasons(gate="library", ic_train=c["ic_train"],
+                                            holdout_ic=c["holdout_ic"], dsr_pvalue=c["dsr_pvalue"])
+            assert (c["expression"] in accepted) == should, c["expression"]
 
-def test_upsert_gate_parity_with_acceptance_reasons(tmp_path):
-    """门槛复用：upsert 的入库判定与 acceptance_reasons(gate='library') 一致（非恒真：
-    独立枚举多组，交叉核对每一组的进/不进与 acceptance_reasons 是否空原因一致）。"""
-    from factorzen.discovery.factor_library import upsert
-    from factorzen.discovery.guardrails import acceptance_reasons
-    cases = [
-        _cand("f0", ic_train=0.05, holdout_ic=0.04),
-        _cand("f1", ic_train=-0.05, holdout_ic=-0.04),      # 同号反转 → 入
-        _cand("f2", ic_train=0.05, holdout_ic=-0.04),       # 反号 → 不入
-        _cand("f3", ic_train=0.006, holdout_ic=0.006),      # 太弱 → 不入
-        _cand("f4", ic_train=float("nan"), holdout_ic=0.04),  # NaN → 不入
-    ]
-    res = upsert("crypto", cases, eval_window=("20210101", "20260101"), universe="perp",
-                 horizon=1, run_id="r", session_dir="s", git_sha="a", now="2026-07-12",
-                 root=str(tmp_path))
-    accepted = {r.expression for r in res.records}
-    for c in cases:
-        should = not acceptance_reasons(gate="library", ic_train=c["ic_train"],
-                                        holdout_ic=c["holdout_ic"], dsr_pvalue=c["dsr_pvalue"])
-        assert (c["expression"] in accepted) == should, c["expression"]
+    _tp7 = tmp_path / "_s7"
+    _tp7.mkdir(exist_ok=True)
+    _section_7_test_upsert_gate_parity_with_acceptance_reasons(_tp7)
 
 
 # ── 去相关（方案 A：仍收录但打标记）──────────────────────────────────────────
 
-def test_decorrelation_marks_correlated_but_keeps(tmp_path):
-    from factorzen.discovery.factor_library import load_library, upsert
-    base = [((i * 37) % 40) + 0.5 for i in range(40)]
-    panels = {
-        "rank(close)": _panel(base),
-        "rank(open)": _panel([x * 3.0 + 7.0 for x in base]),   # 单调变换 → 高相关
-        "rank(high)": _panel([((i * 11) % 40) + 0.5 for i in range(40)]),  # 不同序 → 低相关
-    }
+def test_decorrelation_upsert_suite(tmp_path):
+    """test_decorrelation_marks_correlated_but_keeps；test_decorrelation_threshold_one_disables；test_decorrelation_no_materialize_all_active"""
+    # -- 原 test_decorrelation_marks_correlated_but_keeps --
+    def _section_0_test_decorrelation_marks_correlated_but_keeps(tmp_path):
+        from factorzen.discovery.factor_library import load_library, upsert
+        base = [((i * 37) % 40) + 0.5 for i in range(40)]
+        panels = {
+            "rank(close)": _panel(base),
+            "rank(open)": _panel([x * 3.0 + 7.0 for x in base]),   # 单调变换 → 高相关
+            "rank(high)": _panel([((i * 11) % 40) + 0.5 for i in range(40)]),  # 不同序 → 低相关
+        }
 
-    def materialize(expr):
-        return panels.get(expr)
+        def materialize(expr):
+            return panels.get(expr)
 
-    cands = [_cand("rank(close)"), _cand("rank(open)"), _cand("rank(high)")]
-    res = upsert("ashare", cands, eval_window=("20200101", "20260101"), universe="u",
-                 horizon=1, run_id="r", session_dir="s", git_sha="a", now="2026-07-12",
-                 materialize=materialize, decorr_threshold=0.7, root=str(tmp_path))
-    lib = {r.expression: r for r in load_library("ashare", root=str(tmp_path))}
-    assert len(lib) == 3                                       # 方案 A：全部收录
-    assert lib["rank(close)"].status == "active"               # 首个 → active
-    assert lib["rank(open)"].status == "correlated"            # 与 close 高相关 → 标记
-    assert lib["rank(open)"].correlated_with == "rank(close)"
-    assert lib["rank(open)"].max_corr_in_lib > 0.7
-    assert lib["rank(high)"].status == "active"                # 低相关 → active
-    assert res.correlated == 1
+        cands = [_cand("rank(close)"), _cand("rank(open)"), _cand("rank(high)")]
+        res = upsert("ashare", cands, eval_window=("20200101", "20260101"), universe="u",
+                     horizon=1, run_id="r", session_dir="s", git_sha="a", now="2026-07-12",
+                     materialize=materialize, decorr_threshold=0.7, root=str(tmp_path))
+        lib = {r.expression: r for r in load_library("ashare", root=str(tmp_path))}
+        assert len(lib) == 3                                       # 方案 A：全部收录
+        assert lib["rank(close)"].status == "active"               # 首个 → active
+        assert lib["rank(open)"].status == "correlated"            # 与 close 高相关 → 标记
+        assert lib["rank(open)"].correlated_with == "rank(close)"
+        assert lib["rank(open)"].max_corr_in_lib > 0.7
+        assert lib["rank(high)"].status == "active"                # 低相关 → active
+        assert res.correlated == 1
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_decorrelation_marks_correlated_but_keeps(_tp0)
 
-def test_decorrelation_threshold_one_disables(tmp_path):
-    from factorzen.discovery.factor_library import load_library, upsert
-    base = [((i * 37) % 40) + 0.5 for i in range(40)]
-    panels = {"a": _panel(base), "b": _panel([x * 3.0 + 7.0 for x in base])}
-    cands = [_cand("a"), _cand("b")]
-    upsert("ashare", cands, eval_window=("20200101", "20260101"), universe="u", horizon=1,
-           run_id="r", session_dir="s", git_sha="a", now="2026-07-12",
-           materialize=lambda e: panels.get(e), decorr_threshold=1.0, root=str(tmp_path))
-    lib = load_library("ashare", root=str(tmp_path))
-    assert all(r.status == "active" for r in lib)              # 阈值 1.0 关闭去相关
+    # -- 原 test_decorrelation_threshold_one_disables --
+    def _section_1_test_decorrelation_threshold_one_disables(tmp_path):
+        from factorzen.discovery.factor_library import load_library, upsert
+        base = [((i * 37) % 40) + 0.5 for i in range(40)]
+        panels = {"a": _panel(base), "b": _panel([x * 3.0 + 7.0 for x in base])}
+        cands = [_cand("a"), _cand("b")]
+        upsert("ashare", cands, eval_window=("20200101", "20260101"), universe="u", horizon=1,
+               run_id="r", session_dir="s", git_sha="a", now="2026-07-12",
+               materialize=lambda e: panels.get(e), decorr_threshold=1.0, root=str(tmp_path))
+        lib = load_library("ashare", root=str(tmp_path))
+        assert all(r.status == "active" for r in lib)              # 阈值 1.0 关闭去相关
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_decorrelation_threshold_one_disables(_tp1)
 
-def test_decorrelation_no_materialize_all_active(tmp_path):
-    from factorzen.discovery.factor_library import load_library, upsert
-    upsert("ashare", [_cand("a"), _cand("b")], eval_window=("20200101", "20260101"),
-           universe="u", horizon=1, run_id="r", session_dir="s", git_sha="a",
-           now="2026-07-12", root=str(tmp_path))    # materialize=None
-    lib = load_library("ashare", root=str(tmp_path))
-    assert all(r.status == "active" for r in lib)
+    # -- 原 test_decorrelation_no_materialize_all_active --
+    def _section_2_test_decorrelation_no_materialize_all_active(tmp_path):
+        from factorzen.discovery.factor_library import load_library, upsert
+        upsert("ashare", [_cand("a"), _cand("b")], eval_window=("20200101", "20260101"),
+               universe="u", horizon=1, run_id="r", session_dir="s", git_sha="a",
+               now="2026-07-12", root=str(tmp_path))    # materialize=None
+        lib = load_library("ashare", root=str(tmp_path))
+        assert all(r.status == "active" for r in lib)
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_decorrelation_no_materialize_all_active(_tp2)
 
 
 # ── default_window ───────────────────────────────────────────────────────────
 
-def test_default_window_end_is_latest_start_back_years(monkeypatch):
-    import factorzen.discovery.backtest_window as bw
-    monkeypatch.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
-    start, end = bw.default_window("ashare", years=6)
-    assert end == "20260630"
-    assert start == "20200630"
+def test_default_window_suite(monkeypatch):
+    """test_default_window_end_is_latest_start_back_years；test_default_window_today_caps_end；test_default_window_crypto_floor；test_default_window_raises_when_cache_missing"""
+    # -- 原 test_default_window_end_is_latest_start_back_years --
+    def _section_0_test_default_window_end_is_latest_start_back_years(mp):
+        import factorzen.discovery.backtest_window as bw
+        mp.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
+        start, end = bw.default_window("ashare", years=6)
+        assert end == "20260630"
+        assert start == "20200630"
 
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_default_window_end_is_latest_start_back_years(mp)
 
-def test_default_window_today_caps_end(monkeypatch):
-    import factorzen.discovery.backtest_window as bw
-    monkeypatch.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
-    start, end = bw.default_window("ashare", years=6, today=date(2025, 1, 15))
-    assert end == "20250115"                          # today 更早 → 封顶
-    assert start == "20190115"
+    # -- 原 test_default_window_today_caps_end --
+    def _section_1_test_default_window_today_caps_end(mp):
+        import factorzen.discovery.backtest_window as bw
+        mp.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
+        start, end = bw.default_window("ashare", years=6, today=date(2025, 1, 15))
+        assert end == "20250115"                          # today 更早 → 封顶
+        assert start == "20190115"
 
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_default_window_today_caps_end(mp)
 
-def test_default_window_crypto_floor(monkeypatch):
-    import factorzen.discovery.backtest_window as bw
-    monkeypatch.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
-    start, end = bw.default_window("crypto", years=6)
-    assert start == "20210101"                         # crypto 起点下限 20210101
-    assert end == "20260630"
+    # -- 原 test_default_window_crypto_floor --
+    def _section_2_test_default_window_crypto_floor(mp):
+        import factorzen.discovery.backtest_window as bw
+        mp.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
+        start, end = bw.default_window("crypto", years=6)
+        assert start == "20210101"                         # crypto 起点下限 20210101
+        assert end == "20260630"
 
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_default_window_crypto_floor(mp)
 
-def test_default_window_raises_when_cache_missing(monkeypatch):
-    import factorzen.discovery.backtest_window as bw
-    monkeypatch.setattr(bw, "latest_data_date", lambda m: None)
-    with pytest.raises(ValueError):
-        bw.default_window("ashare")
+    # -- 原 test_default_window_raises_when_cache_missing --
+    def _section_3_test_default_window_raises_when_cache_missing(mp):
+        import factorzen.discovery.backtest_window as bw
+        mp.setattr(bw, "latest_data_date", lambda m: None)
+        with pytest.raises(ValueError):
+            bw.default_window("ashare")
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_default_window_raises_when_cache_missing(mp)
 
 
 def test_latest_data_date_scans_partitions(tmp_path, monkeypatch):
@@ -279,29 +327,40 @@ def test_latest_data_date_scans_partitions(tmp_path, monkeypatch):
 
 # ── render markdown ──────────────────────────────────────────────────────────
 
-def test_render_markdown_has_stats_and_table(tmp_path):
-    from factorzen.discovery.factor_library import render_markdown, upsert
-    base = [((i * 37) % 40) + 0.5 for i in range(40)]
-    panels = {"rank(close)": _panel(base), "rank(open)": _panel([x * 3 + 7 for x in base])}
-    upsert("ashare", [_cand("rank(close)", holdout_ic=0.06), _cand("rank(open)", holdout_ic=0.03)],
-           eval_window=("20200101", "20260101"), universe="csi300", horizon=1, run_id="r",
-           session_dir="s", git_sha="a", now="2026-07-12",
-           materialize=lambda e: panels.get(e), root=str(tmp_path))
-    md = render_markdown("ashare", root=str(tmp_path))
-    assert (Path(tmp_path) / "ashare.md").exists()
-    assert "active" in md and "correlated" in md
-    assert "rank(close)" in md and "rank(open)" in md
-    # 表格按 holdout_ic 降序：close(0.06) 行在 open(0.03) 行之前
-    assert md.index("rank(close)") < md.index("rank(open)")
-    # summary.md 跨市场总览刷新
-    assert (Path(tmp_path) / "summary.md").exists()
+def test_render_markdown_suite(tmp_path):
+    """test_render_markdown_has_stats_and_table；test_render_markdown_empty_library_no_crash"""
+    # -- 原 test_render_markdown_has_stats_and_table --
+    def _section_0_test_render_markdown_has_stats_and_table(tmp_path):
+        from factorzen.discovery.factor_library import render_markdown, upsert
+        base = [((i * 37) % 40) + 0.5 for i in range(40)]
+        panels = {"rank(close)": _panel(base), "rank(open)": _panel([x * 3 + 7 for x in base])}
+        upsert("ashare", [_cand("rank(close)", holdout_ic=0.06), _cand("rank(open)", holdout_ic=0.03)],
+               eval_window=("20200101", "20260101"), universe="csi300", horizon=1, run_id="r",
+               session_dir="s", git_sha="a", now="2026-07-12",
+               materialize=lambda e: panels.get(e), root=str(tmp_path))
+        md = render_markdown("ashare", root=str(tmp_path))
+        assert (Path(tmp_path) / "ashare.md").exists()
+        assert "active" in md and "correlated" in md
+        assert "rank(close)" in md and "rank(open)" in md
+        # 表格按 holdout_ic 降序：close(0.06) 行在 open(0.03) 行之前
+        assert md.index("rank(close)") < md.index("rank(open)")
+        # summary.md 跨市场总览刷新
+        assert (Path(tmp_path) / "summary.md").exists()
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_render_markdown_has_stats_and_table(_tp0)
 
-def test_render_markdown_empty_library_no_crash(tmp_path):
-    from factorzen.discovery.factor_library import render_markdown
-    md = render_markdown("futures", root=str(tmp_path))
-    assert isinstance(md, str)
-    assert (Path(tmp_path) / "futures.md").exists()
+    # -- 原 test_render_markdown_empty_library_no_crash --
+    def _section_1_test_render_markdown_empty_library_no_crash(tmp_path):
+        from factorzen.discovery.factor_library import render_markdown
+        md = render_markdown("futures", root=str(tmp_path))
+        assert isinstance(md, str)
+        assert (Path(tmp_path) / "futures.md").exists()
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_render_markdown_empty_library_no_crash(_tp1)
 
 
 # ── rebuild（mock 评估）──────────────────────────────────────────────────────
@@ -355,34 +414,69 @@ def _mining_daily(seed=3, n_stocks=40, n_days=150):
     return pl.DataFrame(rows)
 
 
-def test_run_session_auto_upserts_passed_into_library(tmp_path):
-    """M1 收尾自动 upsert：passed 候选进库（library gate 复用）；库文件+md 落盘。"""
-    from factorzen.discovery.factor_library import load_library
-    from factorzen.discovery.mining_session import run_session
-    lib_root = str(tmp_path / "lib")
-    res = run_session(_mining_daily(), n_trials=40, top_k=5, seed=42, method="random",
-                      holdout_ratio=0.2, out_dir=str(tmp_path / "sess"),
-                      library_root=lib_root, library_universe="csi300")
-    passed = [c for c in res["candidates"] if c.get("passed")]
-    lib = load_library("ashare", root=lib_root)
-    lib_exprs = {r.expression for r in lib}
-    from factorzen.discovery.expression import parse_expr, to_expr_string
-    for c in passed:
-        assert to_expr_string(parse_expr(c["expression"])) in lib_exprs
-    if passed:
-        assert (Path(lib_root) / "ashare.jsonl").exists()
-        assert (Path(lib_root) / "ashare.md").exists()
-        assert all(r.universe == "csi300" for r in lib)
+def test_session_library_upsert_suite(tmp_path):
+    """M1 收尾自动 upsert：passed 候选进库（library gate 复用）；库文件+md 落盘。；test_run_session_no_library_flag_skips；M5/M6 收尾自动 upsert（与 M1 双路径配对）：最终 passed 候选进库；--no-library 不进。"""
+    # -- 原 test_run_session_auto_upserts_passed_into_library --
+    def _section_0_test_run_session_auto_upserts_passed_into_library(tmp_path):
+        from factorzen.discovery.factor_library import load_library
+        from factorzen.discovery.mining_session import run_session
+        lib_root = str(tmp_path / "lib")
+        res = run_session(_mining_daily(), n_trials=40, top_k=5, seed=42, method="random",
+                          holdout_ratio=0.2, out_dir=str(tmp_path / "sess"),
+                          library_root=lib_root, library_universe="csi300")
+        passed = [c for c in res["candidates"] if c.get("passed")]
+        lib = load_library("ashare", root=lib_root)
+        lib_exprs = {r.expression for r in lib}
+        from factorzen.discovery.expression import parse_expr, to_expr_string
+        for c in passed:
+            assert to_expr_string(parse_expr(c["expression"])) in lib_exprs
+        if passed:
+            assert (Path(lib_root) / "ashare.jsonl").exists()
+            assert (Path(lib_root) / "ashare.md").exists()
+            assert all(r.universe == "csi300" for r in lib)
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_run_session_auto_upserts_passed_into_library(_tp0)
 
-def test_run_session_no_library_flag_skips(tmp_path):
-    from factorzen.discovery.factor_library import load_library
-    from factorzen.discovery.mining_session import run_session
-    lib_root = str(tmp_path / "lib")
-    run_session(_mining_daily(), n_trials=40, top_k=5, seed=42, method="random",
-                holdout_ratio=0.2, out_dir=str(tmp_path / "sess"),
-                update_library=False, library_root=lib_root)
-    assert load_library("ashare", root=lib_root) == []          # 关开关 → 不写库
+    # -- 原 test_run_session_no_library_flag_skips --
+    def _section_1_test_run_session_no_library_flag_skips(tmp_path):
+        from factorzen.discovery.factor_library import load_library
+        from factorzen.discovery.mining_session import run_session
+        lib_root = str(tmp_path / "lib")
+        run_session(_mining_daily(), n_trials=40, top_k=5, seed=42, method="random",
+                    holdout_ratio=0.2, out_dir=str(tmp_path / "sess"),
+                    update_library=False, library_root=lib_root)
+        assert load_library("ashare", root=lib_root) == []          # 关开关 → 不写库
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_run_session_no_library_flag_skips(_tp1)
+
+    # -- 原 test_run_team_agent_auto_upserts_into_library --
+    def _section_2_test_run_team_agent_auto_upserts_into_library(tmp_path):
+        from factorzen.agents.team_orchestrator import run_team_agent
+        from factorzen.discovery.factor_library import load_library
+        daily = _mining_daily(n_days=180)
+        lib_root = str(tmp_path / "lib")
+        run_team_agent(daily, _scripted_team(), n_rounds=2, seed=42,
+                       index_path=str(tmp_path / "e.jsonl"), library_root=lib_root,
+                       data_window={"start": "20240102", "end": "20240930",
+                                    "universe": "csi300", "market": "ashare"})
+        lib = load_library("ashare", root=lib_root)
+        # 脚本 ts_mean(close,5) 若过 library gate 则进库；进库者窗口/市场正确
+        for r in lib:
+            assert r.market == "ashare" and r.eval_start == "20240102"
+
+        lib_root2 = str(tmp_path / "lib2")
+        run_team_agent(daily, _scripted_team(), n_rounds=2, seed=42,
+                       index_path=str(tmp_path / "e2.jsonl"), update_library=False,
+                       library_root=lib_root2)
+        assert load_library("ashare", root=lib_root2) == []
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_run_team_agent_auto_upserts_into_library(_tp2)
 
 
 # ── 自动接入：M5/M6 run_team_agent 收尾 upsert ───────────────────────────────
@@ -400,28 +494,6 @@ def _scripted_team():
         return v
 
     return fn
-
-
-def test_run_team_agent_auto_upserts_into_library(tmp_path):
-    """M5/M6 收尾自动 upsert（与 M1 双路径配对）：最终 passed 候选进库；--no-library 不进。"""
-    from factorzen.agents.team_orchestrator import run_team_agent
-    from factorzen.discovery.factor_library import load_library
-    daily = _mining_daily(n_days=180)
-    lib_root = str(tmp_path / "lib")
-    run_team_agent(daily, _scripted_team(), n_rounds=2, seed=42,
-                   index_path=str(tmp_path / "e.jsonl"), library_root=lib_root,
-                   data_window={"start": "20240102", "end": "20240930",
-                                "universe": "csi300", "market": "ashare"})
-    lib = load_library("ashare", root=lib_root)
-    # 脚本 ts_mean(close,5) 若过 library gate 则进库；进库者窗口/市场正确
-    for r in lib:
-        assert r.market == "ashare" and r.eval_start == "20240102"
-
-    lib_root2 = str(tmp_path / "lib2")
-    run_team_agent(daily, _scripted_team(), n_rounds=2, seed=42,
-                   index_path=str(tmp_path / "e2.jsonl"), update_library=False,
-                   library_root=lib_root2)
-    assert load_library("ashare", root=lib_root2) == []
 
 
 # ── rebuild 真实路径：候选源收集 + 统一窗口评估器（offline mock 数据）─────────────

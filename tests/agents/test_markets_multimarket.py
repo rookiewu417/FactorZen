@@ -96,84 +96,106 @@ def _profile__futures(varieties, dates, tmp_path, top_n=40):
 
 
 # ── provider → 主力连续 ──────────────────────────────────
-def test_provider_fetch_bars_continuous(tmp_path) -> None:
-    dates = _trade_dates(10)
-    prof = _profile__futures(["CU", "RB"], dates, tmp_path)
-    start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
-    bars = prof.provider.fetch_bars(None, start, end)
-    assert set(bars["ts_code"].unique().to_list()) == {"CU.SHF", "RB.SHF"}
-    assert {"open", "high", "low", "close", "vol", "amount", "oi", "adj_factor",
-            "mapping_ts_code"}.issubset(bars.columns)
-    # 展期日 adj_factor 应变化（contango → roll_step≠1），首段=1
-    cu = bars.filter(pl.col("ts_code") == "CU.SHF").sort("trade_date")
-    adj = cu["adj_factor"].to_list()
-    assert adj[0] == 1.0
-    assert adj[-1] != 1.0  # 后半段被复权
-    # 复权后 close 的 ret 无巨幅展期跳变（|ret|<0.1，contango 8% 跳变已被消除）
-    ret = (cu["close"] / cu["close"].shift(1) - 1.0).drop_nulls().to_list()
-    assert max(abs(r) for r in ret) < 0.1
+def test_futures_provider_suite(tmp_path):
+    """test_provider_fetch_bars_continuous；缓存审计：第二次 fetch 命中缓存不重复拉取（用 fetch 计数验证）。；test_factors_derived_vwap_adjusted_oi_chg_roll_null；test_leaf_map_parity_oi_parses_ashare_rejects"""
+    # -- 原 test_provider_fetch_bars_continuous --
+    def _section_0_test_provider_fetch_bars_continuous(tmp_path):
+        dates = _trade_dates(10)
+        prof = _profile__futures(["CU", "RB"], dates, tmp_path)
+        start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
+        bars = prof.provider.fetch_bars(None, start, end)
+        assert set(bars["ts_code"].unique().to_list()) == {"CU.SHF", "RB.SHF"}
+        assert {"open", "high", "low", "close", "vol", "amount", "oi", "adj_factor",
+                "mapping_ts_code"}.issubset(bars.columns)
+        # 展期日 adj_factor 应变化（contango → roll_step≠1），首段=1
+        cu = bars.filter(pl.col("ts_code") == "CU.SHF").sort("trade_date")
+        adj = cu["adj_factor"].to_list()
+        assert adj[0] == 1.0
+        assert adj[-1] != 1.0  # 后半段被复权
+        # 复权后 close 的 ret 无巨幅展期跳变（|ret|<0.1，contango 8% 跳变已被消除）
+        ret = (cu["close"] / cu["close"].shift(1) - 1.0).drop_nulls().to_list()
+        assert max(abs(r) for r in ret) < 0.1
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_provider_fetch_bars_continuous(_tp0)
 
-def test_provider_cache_audit_incremental(tmp_path) -> None:
-    """缓存审计：第二次 fetch 命中缓存不重复拉取（用 fetch 计数验证）。"""
-    dates = _trade_dates(8)
-    pro = FakePro(["CU"], dates)
-    calls = {"daily": 0}
-    orig = pro.fut_daily
+    # -- 原 test_provider_cache_audit_incremental --
+    def _section_1_test_provider_cache_audit_incremental(tmp_path):
+        dates = _trade_dates(8)
+        pro = FakePro(["CU"], dates)
+        calls = {"daily": 0}
+        orig = pro.fut_daily
 
-    def counting(trade_date):
-        calls["daily"] += 1
-        return orig(trade_date)
+        def counting(trade_date):
+            calls["daily"] += 1
+            return orig(trade_date)
 
-    pro.fut_daily = counting  # type: ignore[method-assign]
-    prof = build_futures_profile(pro=pro, exchanges=("SHFE",),
-                                 calendar=_cal(dates), cache_root=str(tmp_path))
-    start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
-    prof.provider.fetch_bars(None, start, end)
-    first = calls["daily"]
-    assert first == len(dates)  # 冷缓存逐日拉
-    # 新 provider（清进程内 meta 缓存）同窗口再拉 → 命中盘缓存，0 次 API
-    calls["daily"] = 0
-    prof2 = build_futures_profile(pro=pro, exchanges=("SHFE",),
-                                  calendar=_cal(dates), cache_root=str(tmp_path))
-    prof2.provider.fetch_bars(None, start, end)
-    assert calls["daily"] == 0  # 全命中缓存
+        pro.fut_daily = counting  # type: ignore[method-assign]
+        prof = build_futures_profile(pro=pro, exchanges=("SHFE",),
+                                     calendar=_cal(dates), cache_root=str(tmp_path))
+        start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
+        prof.provider.fetch_bars(None, start, end)
+        first = calls["daily"]
+        assert first == len(dates)  # 冷缓存逐日拉
+        # 新 provider（清进程内 meta 缓存）同窗口再拉 → 命中盘缓存，0 次 API
+        calls["daily"] = 0
+        prof2 = build_futures_profile(pro=pro, exchanges=("SHFE",),
+                                      calendar=_cal(dates), cache_root=str(tmp_path))
+        prof2.provider.fetch_bars(None, start, end)
+        assert calls["daily"] == 0  # 全命中缓存
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_provider_cache_audit_incremental(_tp1)
+
+    # -- 原 test_factors_derived_vwap_adjusted_oi_chg_roll_null --
+    def _section_2_test_factors_derived_vwap_adjusted_oi_chg_roll_null(tmp_path):
+        dates = _trade_dates(10)
+        prof = _profile__futures(["CU"], dates, tmp_path)
+        start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
+        bars = prof.provider.fetch_bars(None, start, end)
+        der = prof.factors.derived_columns(bars).sort("trade_date")
+        assert {"vwap", "log_vol", "ret_1d", "oi_chg"}.issubset(der.columns)
+        # 展期日 oi_chg 置 null（换合约机械跳变被消除）
+        roll_i = len(dates) // 2
+        oi_chg = der["oi_chg"].to_list()
+        assert oi_chg[roll_i] is None
+        # vwap 随 adj_factor 复权：后半段 vwap = amount/vol * adj_factor
+        row = der.row(roll_i + 1, named=True)
+        expected_vwap = row["amount"] / row["vol"] * row["adj_factor"]
+        assert abs(row["vwap"] - expected_vwap) < 1e-6
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_factors_derived_vwap_adjusted_oi_chg_roll_null(_tp2)
+
+    # -- 原 test_leaf_map_parity_oi_parses_ashare_rejects --
+    def _section_3_test_leaf_map_parity_oi_parses_ashare_rejects(tmp_path):
+        from factorzen.discovery.expression import evaluate_materialized, parse_expr
+        from factorzen.discovery.operators import LEAF_FEATURES as ASHARE_LEAVES
+
+        dates = _trade_dates(10)
+        prof = _profile__futures(["CU", "RB"], dates, tmp_path)
+        leaf_map = prof.factors.leaf_features()
+        bars = prof.provider.fetch_bars(None, dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d"))
+        der = prof.factors.derived_columns(bars).sort(["ts_code", "trade_date"])
+        node = parse_expr("ts_mean(oi_chg, 3)", leaf_map)  # oi_chg 是期货特有派生叶子
+        vals = evaluate_materialized(node, der, leaf_map)
+        assert vals.len() == der.height  # 可求值
+        # A 股默认 leaf_map 无 oi/oi_chg → 解析失败（异常契约：解析只抛 ValueError，陷阱#7）
+        with pytest.raises(ValueError, match="oi_chg"):
+            parse_expr("ts_mean(oi_chg, 3)", ASHARE_LEAVES)
+
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_leaf_map_parity_oi_parses_ashare_rejects(_tp3)
 
 
 # ── factors 派生列 ───────────────────────────────────────
-def test_factors_derived_vwap_adjusted_oi_chg_roll_null(tmp_path) -> None:
-    dates = _trade_dates(10)
-    prof = _profile__futures(["CU"], dates, tmp_path)
-    start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
-    bars = prof.provider.fetch_bars(None, start, end)
-    der = prof.factors.derived_columns(bars).sort("trade_date")
-    assert {"vwap", "log_vol", "ret_1d", "oi_chg"}.issubset(der.columns)
-    # 展期日 oi_chg 置 null（换合约机械跳变被消除）
-    roll_i = len(dates) // 2
-    oi_chg = der["oi_chg"].to_list()
-    assert oi_chg[roll_i] is None
-    # vwap 随 adj_factor 复权：后半段 vwap = amount/vol * adj_factor
-    row = der.row(roll_i + 1, named=True)
-    expected_vwap = row["amount"] / row["vol"] * row["adj_factor"]
-    assert abs(row["vwap"] - expected_vwap) < 1e-6
 
 
 # ── leaf_map parity ──────────────────────────────────────
-def test_leaf_map_parity_oi_parses_ashare_rejects(tmp_path) -> None:
-    from factorzen.discovery.expression import evaluate_materialized, parse_expr
-    from factorzen.discovery.operators import LEAF_FEATURES as ASHARE_LEAVES
-
-    dates = _trade_dates(10)
-    prof = _profile__futures(["CU", "RB"], dates, tmp_path)
-    leaf_map = prof.factors.leaf_features()
-    bars = prof.provider.fetch_bars(None, dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d"))
-    der = prof.factors.derived_columns(bars).sort(["ts_code", "trade_date"])
-    node = parse_expr("ts_mean(oi_chg, 3)", leaf_map)  # oi_chg 是期货特有派生叶子
-    vals = evaluate_materialized(node, der, leaf_map)
-    assert vals.len() == der.height  # 可求值
-    # A 股默认 leaf_map 无 oi/oi_chg → 解析失败（异常契约：解析只抛 ValueError，陷阱#7）
-    with pytest.raises(ValueError, match="oi_chg"):
-        parse_expr("ts_mean(oi_chg, 3)", ASHARE_LEAVES)
 
 
 # ── run_futures_mining 端到端 pipe ───────────────────────
@@ -264,58 +286,83 @@ def _profile__us(symbols, dates, tmp_path, top_n=None):
 
 
 # ── factors 派生列 ───────────────────────────────────────
-def test_factors_derived_vwap_typical_ret(tmp_path) -> None:
-    dates = _bdays(10)
-    prof = _profile__us(["AAA", "BBB"], dates, tmp_path)
-    bars = prof.provider.fetch_bars(None, dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d"))
-    der = prof.factors.derived_columns(bars).sort(["ts_code", "trade_date"])
-    assert {"vwap", "log_vol", "ret_1d"}.issubset(der.columns)
-    row = der.filter(pl.col("ts_code") == "AAA").sort("trade_date").row(2, named=True)
-    # vwap = (high+low+close)/3（后复权典型价）
-    assert row["vwap"] == pytest.approx((row["high"] + row["low"] + row["close"]) / 3.0)
+def test_us_market_adapter_suite(tmp_path):
+    """test_factors_derived_vwap_typical_ret；test_leaf_map_parity_us_parses_futures_rejects；test_run_us_mining_pipe；test_universe_static_snapshot_survivorship"""
+    # -- 原 test_factors_derived_vwap_typical_ret --
+    def _section_0_test_factors_derived_vwap_typical_ret(tmp_path):
+        dates = _bdays(10)
+        prof = _profile__us(["AAA", "BBB"], dates, tmp_path)
+        bars = prof.provider.fetch_bars(None, dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d"))
+        der = prof.factors.derived_columns(bars).sort(["ts_code", "trade_date"])
+        assert {"vwap", "log_vol", "ret_1d"}.issubset(der.columns)
+        row = der.filter(pl.col("ts_code") == "AAA").sort("trade_date").row(2, named=True)
+        # vwap = (high+low+close)/3（后复权典型价）
+        assert row["vwap"] == pytest.approx((row["high"] + row["low"] + row["close"]) / 3.0)
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_factors_derived_vwap_typical_ret(_tp0)
+
+    # -- 原 test_leaf_map_parity_us_parses_futures_rejects --
+    def _section_1_test_leaf_map_parity_us_parses_futures_rejects(tmp_path):
+        from factorzen.discovery.expression import evaluate_materialized, parse_expr
+
+        dates = _bdays(10)
+        prof = _profile__us(["AAA", "BBB"], dates, tmp_path)
+        leaf_map = prof.factors.leaf_features()
+        bars = prof.provider.fetch_bars(None, dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d"))
+        der = prof.factors.derived_columns(bars).sort(["ts_code", "trade_date"])
+        node = parse_expr("ts_mean(vwap, 3)", leaf_map)  # 价量叶子
+        vals = evaluate_materialized(node, der, leaf_map)
+        assert vals.len() == der.height
+        # 美股 leaf_map 无期货 oi 叶子 → 解析失败（异常契约：只抛 ValueError，陷阱#7）
+        with pytest.raises(ValueError, match="oi"):
+            parse_expr("ts_mean(oi, 3)", leaf_map)
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_leaf_map_parity_us_parses_futures_rejects(_tp1)
+
+    # -- 原 test_run_us_mining_pipe --
+    def _section_2_test_run_us_mining_pipe(tmp_path):
+        from factorzen.markets.us.mining import run_us_mining
+
+        dates = _bdays(50)
+        symbols = [f"S{i:02d}" for i in range(35)]  # 35 > _MIN_CROSS_SAMPLES=30
+        prof = _profile__us(symbols, dates, tmp_path)
+        start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
+        res = run_us_mining(
+            prof, prof.universe.snapshot(end), start, end,
+            n_trials=30, top_k=5, seed=7, out_dir=str(tmp_path / "sessions"),
+        )
+        assert "candidates" in res and "session_dir" in res  # 管道贯通不崩
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_run_us_mining_pipe(_tp2)
+
+    # -- 原 test_universe_static_snapshot_survivorship --
+    def _section_3_test_universe_static_snapshot_survivorship(tmp_path):
+        dates = _bdays(5)
+        symbols = [f"S{i:02d}" for i in range(10)]
+        prof = _profile__us(symbols, dates, tmp_path)
+        # snapshot 对任意 d 返回同一静态池（不做 PIT 历史成分，幸存者偏差 MVP）
+        a = prof.universe.snapshot("20230601")
+        b = prof.universe.snapshot("20200101")
+        assert a == b == symbols
+
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_universe_static_snapshot_survivorship(_tp3)
 
 
 # ── leaf_map parity ──────────────────────────────────────
-def test_leaf_map_parity_us_parses_futures_rejects(tmp_path) -> None:
-    from factorzen.discovery.expression import evaluate_materialized, parse_expr
-
-    dates = _bdays(10)
-    prof = _profile__us(["AAA", "BBB"], dates, tmp_path)
-    leaf_map = prof.factors.leaf_features()
-    bars = prof.provider.fetch_bars(None, dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d"))
-    der = prof.factors.derived_columns(bars).sort(["ts_code", "trade_date"])
-    node = parse_expr("ts_mean(vwap, 3)", leaf_map)  # 价量叶子
-    vals = evaluate_materialized(node, der, leaf_map)
-    assert vals.len() == der.height
-    # 美股 leaf_map 无期货 oi 叶子 → 解析失败（异常契约：只抛 ValueError，陷阱#7）
-    with pytest.raises(ValueError, match="oi"):
-        parse_expr("ts_mean(oi, 3)", leaf_map)
 
 
 # ── run_us_mining 端到端 pipe ────────────────────────────
-def test_run_us_mining_pipe(tmp_path) -> None:
-    from factorzen.markets.us.mining import run_us_mining
-
-    dates = _bdays(50)
-    symbols = [f"S{i:02d}" for i in range(35)]  # 35 > _MIN_CROSS_SAMPLES=30
-    prof = _profile__us(symbols, dates, tmp_path)
-    start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
-    res = run_us_mining(
-        prof, prof.universe.snapshot(end), start, end,
-        n_trials=30, top_k=5, seed=7, out_dir=str(tmp_path / "sessions"),
-    )
-    assert "candidates" in res and "session_dir" in res  # 管道贯通不崩
 
 
 # ── universe 静态快照 ─────────────────────────────────────
-def test_universe_static_snapshot_survivorship(tmp_path) -> None:
-    dates = _bdays(5)
-    symbols = [f"S{i:02d}" for i in range(10)]
-    prof = _profile__us(symbols, dates, tmp_path)
-    # snapshot 对任意 d 返回同一静态池（不做 PIT 历史成分，幸存者偏差 MVP）
-    a = prof.universe.snapshot("20230601")
-    b = prof.universe.snapshot("20200101")
-    assert a == b == symbols
 
 
 # ── registry ─────────────────────────────────────────────
@@ -351,49 +398,60 @@ _GOLDEN = json.loads((Path(__file__).resolve().parent.parent / "golden_ashare_pr
 
 
 # ── 1.1 A 股逐字节零回归（golden 对照，改前捕获） ──────────────────────────────
-def test_build_agent_messages_ashare_byte_identical():
-    from factorzen.llm.generation import build_agent_messages
-    m = build_agent_messages(["ts_mean", "ts_std"], ["close", "vol"], "FB", ["neg1"])
-    assert m[0]["content"] == _GOLDEN["bam_sys"]
-    assert m[1]["content"] == _GOLDEN["bam_user"]
-    # market="ashare" 显式 == 默认（证明 default 分支等价）
-    m2 = build_agent_messages(["ts_mean", "ts_std"], ["close", "vol"], "FB", ["neg1"],
-                              market="ashare")
-    assert m2[0]["content"] == _GOLDEN["bam_sys"]
+def test_crypto_multimarket_messages_suite():
+    """test_build_agent_messages_ashare_byte_identical；test_build_agent_messages_ashare_budget_byte_identical；test_coder_syntax_prompt_ashare_byte_identical；test_hypothesis_prompts_ashare_byte_identical"""
+    # -- 原 test_build_agent_messages_ashare_byte_identical --
+    def _section_0_test_build_agent_messages_ashare_byte_identical():
+        from factorzen.llm.generation import build_agent_messages
+        m = build_agent_messages(["ts_mean", "ts_std"], ["close", "vol"], "FB", ["neg1"])
+        assert m[0]["content"] == _GOLDEN["bam_sys"]
+        assert m[1]["content"] == _GOLDEN["bam_user"]
+        # market="ashare" 显式 == 默认（证明 default 分支等价）
+        m2 = build_agent_messages(["ts_mean", "ts_std"], ["close", "vol"], "FB", ["neg1"],
+                                  market="ashare")
+        assert m2[0]["content"] == _GOLDEN["bam_sys"]
 
+    _section_0_test_build_agent_messages_ashare_byte_identical()
 
-def test_build_agent_messages_ashare_budget_byte_identical():
-    from factorzen.llm.generation import build_agent_messages
-    m = build_agent_messages(["ts_mean"], ["close"], "", [],
-                             leaf_budgets={"north_ratio": 238})
-    assert m[0]["content"] == _GOLDEN["bam_budget_sys"]
+    # -- 原 test_build_agent_messages_ashare_budget_byte_identical --
+    def _section_1_test_build_agent_messages_ashare_budget_byte_identical():
+        from factorzen.llm.generation import build_agent_messages
+        m = build_agent_messages(["ts_mean"], ["close"], "", [],
+                                 leaf_budgets={"north_ratio": 238})
+        assert m[0]["content"] == _GOLDEN["bam_budget_sys"]
 
+    _section_1_test_build_agent_messages_ashare_budget_byte_identical()
 
-def test_coder_syntax_prompt_ashare_byte_identical():
-    from factorzen.agents.roles.coder import _syntax_prompt
-    assert _syntax_prompt() == _GOLDEN["coder_syntax"]
-    assert _syntax_prompt({"north_ratio": 238}) == _GOLDEN["coder_syntax_budget"]
-    # 显式 market/leaf_names=None 亦等价
-    assert _syntax_prompt(market="ashare", leaf_names=None) == _GOLDEN["coder_syntax"]
+    # -- 原 test_coder_syntax_prompt_ashare_byte_identical --
+    def _section_2_test_coder_syntax_prompt_ashare_byte_identical():
+        from factorzen.agents.roles.coder import _syntax_prompt
+        assert _syntax_prompt() == _GOLDEN["coder_syntax"]
+        assert _syntax_prompt({"north_ratio": 238}) == _GOLDEN["coder_syntax_budget"]
+        # 显式 market/leaf_names=None 亦等价
+        assert _syntax_prompt(market="ashare", leaf_names=None) == _GOLDEN["coder_syntax"]
 
+    _section_2_test_coder_syntax_prompt_ashare_byte_identical()
 
-def test_hypothesis_prompts_ashare_byte_identical():
-    from factorzen.agents.roles.hypothesis import propose_hypotheses, propose_structured
-    cap: dict = {}
+    # -- 原 test_hypothesis_prompts_ashare_byte_identical --
+    def _section_3_test_hypothesis_prompts_ashare_byte_identical():
+        from factorzen.agents.roles.hypothesis import propose_hypotheses, propose_structured
+        cap: dict = {}
 
-    def fake(msgs):
-        cap["sys"] = msgs[0]["content"]
-        cap["user"] = msgs[1]["content"]
-        return '{"hypotheses":["x"]}'
-    propose_hypotheses(fake, known_invalid=["a"], known_valid=["b"], feedback="fb", n=2)
-    assert cap["sys"] == _GOLDEN["hyp_sys"]
-    assert cap["user"] == _GOLDEN["hyp_user"]
+        def fake(msgs):
+            cap["sys"] = msgs[0]["content"]
+            cap["user"] = msgs[1]["content"]
+            return '{"hypotheses":["x"]}'
+        propose_hypotheses(fake, known_invalid=["a"], known_valid=["b"], feedback="fb", n=2)
+        assert cap["sys"] == _GOLDEN["hyp_sys"]
+        assert cap["user"] == _GOLDEN["hyp_user"]
 
-    def fake2(msgs):
-        cap["s2"] = msgs[0]["content"]
-        return '{"hypotheses":[{"direction":"d"}]}'
-    propose_structured(fake2, known_invalid=[], known_valid=[])
-    assert cap["s2"] == _GOLDEN["struct_sys"]
+        def fake2(msgs):
+            cap["s2"] = msgs[0]["content"]
+            return '{"hypotheses":[{"direction":"d"}]}'
+        propose_structured(fake2, known_invalid=[], known_valid=[])
+        assert cap["s2"] == _GOLDEN["struct_sys"]
+
+    _section_3_test_hypothesis_prompts_ashare_byte_identical()
 
 
 def test_signal_families_ashare_byte_identical():
@@ -597,38 +655,51 @@ _BARE_STRUCT_ARRAY = (
 )
 
 
-def test_propose_structured_accepts_bare_json_array():
-    from factorzen.agents.roles.hypothesis import propose_structured
-    out = propose_structured(lambda _m: _BARE_STRUCT_ARRAY,
-                             known_invalid=[], known_valid=[], n=2, market="crypto")
-    assert [h["direction"] for h in out] == ["d1", "d2"]
+def test_json_array_fallback_suite():
+    """test_propose_structured_accepts_bare_json_array；test_propose_structured_accepts_fenced_bare_array；test_propose_hypotheses_accepts_bare_string_array；test_write_expressions_accepts_bare_string_array；test_decompose_tasks_accepts_bare_dict_array"""
+    # -- 原 test_propose_structured_accepts_bare_json_array --
+    def _section_0_test_propose_structured_accepts_bare_json_array():
+        from factorzen.agents.roles.hypothesis import propose_structured
+        out = propose_structured(lambda _m: _BARE_STRUCT_ARRAY,
+                                 known_invalid=[], known_valid=[], n=2, market="crypto")
+        assert [h["direction"] for h in out] == ["d1", "d2"]
 
+    _section_0_test_propose_structured_accepts_bare_json_array()
 
-def test_propose_structured_accepts_fenced_bare_array():
-    from factorzen.agents.roles.hypothesis import propose_structured
-    out = propose_structured(lambda _m: "```json\n" + _BARE_STRUCT_ARRAY + "\n```",
-                             known_invalid=[], known_valid=[])
-    assert len(out) == 2 and out[1]["expected_sign"] == -1
+    # -- 原 test_propose_structured_accepts_fenced_bare_array --
+    def _section_1_test_propose_structured_accepts_fenced_bare_array():
+        from factorzen.agents.roles.hypothesis import propose_structured
+        out = propose_structured(lambda _m: "```json\n" + _BARE_STRUCT_ARRAY + "\n```",
+                                 known_invalid=[], known_valid=[])
+        assert len(out) == 2 and out[1]["expected_sign"] == -1
 
+    _section_1_test_propose_structured_accepts_fenced_bare_array()
 
-def test_propose_hypotheses_accepts_bare_string_array():
-    from factorzen.agents.roles.hypothesis import propose_hypotheses
-    out = propose_hypotheses(lambda _m: '["方向1", "方向2"]',
-                             known_invalid=[], known_valid=[], n=2)
-    assert out == ["方向1", "方向2"]
+    # -- 原 test_propose_hypotheses_accepts_bare_string_array --
+    def _section_2_test_propose_hypotheses_accepts_bare_string_array():
+        from factorzen.agents.roles.hypothesis import propose_hypotheses
+        out = propose_hypotheses(lambda _m: '["方向1", "方向2"]',
+                                 known_invalid=[], known_valid=[], n=2)
+        assert out == ["方向1", "方向2"]
 
+    _section_2_test_propose_hypotheses_accepts_bare_string_array()
 
-def test_write_expressions_accepts_bare_string_array():
-    from factorzen.agents.roles.coder import write_expressions
-    out = write_expressions("h", lambda _m: '["ts_mean(close,5)", "rank(vol)"]')
-    assert out == ["ts_mean(close,5)", "rank(vol)"]
+    # -- 原 test_write_expressions_accepts_bare_string_array --
+    def _section_3_test_write_expressions_accepts_bare_string_array():
+        from factorzen.agents.roles.coder import write_expressions
+        out = write_expressions("h", lambda _m: '["ts_mean(close,5)", "rank(vol)"]')
+        assert out == ["ts_mean(close,5)", "rank(vol)"]
 
+    _section_3_test_write_expressions_accepts_bare_string_array()
 
-def test_decompose_tasks_accepts_bare_dict_array():
-    from factorzen.agents.roles.coder import decompose_tasks
-    raw = '[{"name": "n1", "description": "d1", "rationale": "r1"}]'
-    out = decompose_tasks("h", lambda _m: raw)
-    assert out == [{"name": "n1", "description": "d1", "rationale": "r1"}]
+    # -- 原 test_decompose_tasks_accepts_bare_dict_array --
+    def _section_4_test_decompose_tasks_accepts_bare_dict_array():
+        from factorzen.agents.roles.coder import decompose_tasks
+        raw = '[{"name": "n1", "description": "d1", "rationale": "r1"}]'
+        out = decompose_tasks("h", lambda _m: raw)
+        assert out == [{"name": "n1", "description": "d1", "rationale": "r1"}]
+
+    _section_4_test_decompose_tasks_accepts_bare_dict_array()
 
 
 def test_wrapped_object_still_wins_over_array_fallback():
@@ -650,52 +721,105 @@ def _team_args(**over):
     return argparse.Namespace(**base)
 
 
-def test_cmd_mine_team_ashare_passes_profile_none(monkeypatch):
-    from factorzen.cli import main as cli
-    cap: dict = {}
-    monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily",
-                        lambda start, end, universe=None, lookback_days=None, **kw: _mock_ashare_daily())
+def test_multimarket_cli_profile_suite(monkeypatch):
+    """test_cmd_mine_team_ashare_passes_profile_none；test_cmd_mine_team_crypto_assembles_and_threads_profile；test_cmd_mine_team_us_assembles_and_threads_profile；test_us_leaf_map_has_no_ashare_leaves"""
+    # -- 原 test_cmd_mine_team_ashare_passes_profile_none --
+    def _section_0_test_cmd_mine_team_ashare_passes_profile_none(mp):
+        from factorzen.cli import main as cli
+        cap: dict = {}
+        mp.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily",
+                            lambda start, end, universe=None, lookback_days=None, **kw: _mock_ashare_daily())
 
-    def fake_team_mine(daily, **kw):
-        cap.update(kw)
-        return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
-    monkeypatch.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
-    rc = cli._cmd_mine_team(_team_args(market="ashare"))
-    assert rc == 0
-    assert cap["profile"] is None            # A 股零回归：不带 profile
-    assert cap["eval_start"] == "20240301"
+        def fake_team_mine(daily, **kw):
+            cap.update(kw)
+            return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
+        mp.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
+        rc = cli._cmd_mine_team(_team_args(market="ashare"))
+        assert rc == 0
+        assert cap["profile"] is None            # A 股零回归：不带 profile
+        assert cap["eval_start"] == "20240301"
 
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_cmd_mine_team_ashare_passes_profile_none(mp)
 
-def test_cmd_mine_team_crypto_assembles_and_threads_profile(monkeypatch):
-    from factorzen.cli import main as cli
-    cap: dict = {}
-    fake_profile = _CryptoProfileStub()
-    fake_profile.base_freq = "daily"
-    fake_profile.provider = object()
+    # -- 原 test_cmd_mine_team_crypto_assembles_and_threads_profile --
+    def _section_1_test_cmd_mine_team_crypto_assembles_and_threads_profile(mp):
+        from factorzen.cli import main as cli
+        cap: dict = {}
+        fake_profile = _CryptoProfileStub()
+        fake_profile.base_freq = "daily"
+        fake_profile.provider = object()
 
-    monkeypatch.setattr("factorzen.markets.crypto.profile.build_crypto_profile",
-                        lambda **_k: fake_profile)
+        mp.setattr("factorzen.markets.crypto.profile.build_crypto_profile",
+                            lambda **_k: fake_profile)
 
-    def fake_build(provider, symbols, start, end, freq):
-        cap["build"] = dict(symbols=symbols, start=start, end=end, freq=freq)
-        return _crypto_daily(n_days=40)
-    monkeypatch.setattr("factorzen.markets.crypto.mining.build_crypto_daily", fake_build)
+        def fake_build(provider, symbols, start, end, freq):
+            cap["build"] = dict(symbols=symbols, start=start, end=end, freq=freq)
+            return _crypto_daily(n_days=40)
+        mp.setattr("factorzen.markets.crypto.mining.build_crypto_daily", fake_build)
 
-    def fake_team_mine(daily, **kw):
-        cap.update(kw)
-        return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
-    monkeypatch.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
+        def fake_team_mine(daily, **kw):
+            cap.update(kw)
+            return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
+        mp.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
 
-    rc = cli._cmd_mine_team(_team_args(market="crypto", symbols="BTCUSDT,ETHUSDT"))
-    assert rc == 0
-    # profile 透传（非 None）+ eval_start=挖掘窗口 start（预热前缀边界）
-    assert cap["profile"] is fake_profile
-    assert cap["eval_start"] == "20240301"
-    # 预热前缀：build_crypto_daily 的 start 明显早于挖掘窗口 start（AGENT_WARMUP_LOOKBACK 自然日）
-    assert cap["build"]["symbols"] == ["BTCUSDT", "ETHUSDT"]
-    assert cap["build"]["start"] < "20240301"
-    # data_window.market 如实记录 crypto
-    assert cap["data_window"]["market"] == "crypto"
+        rc = cli._cmd_mine_team(_team_args(market="crypto", symbols="BTCUSDT,ETHUSDT"))
+        assert rc == 0
+        # profile 透传（非 None）+ eval_start=挖掘窗口 start（预热前缀边界）
+        assert cap["profile"] is fake_profile
+        assert cap["eval_start"] == "20240301"
+        # 预热前缀：build_crypto_daily 的 start 明显早于挖掘窗口 start（AGENT_WARMUP_LOOKBACK 自然日）
+        assert cap["build"]["symbols"] == ["BTCUSDT", "ETHUSDT"]
+        assert cap["build"]["start"] < "20240301"
+        # data_window.market 如实记录 crypto
+        assert cap["data_window"]["market"] == "crypto"
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cmd_mine_team_crypto_assembles_and_threads_profile(mp)
+
+    # -- 原 test_cmd_mine_team_us_assembles_and_threads_profile --
+    def _section_2_test_cmd_mine_team_us_assembles_and_threads_profile(mp):
+        from factorzen.cli import main as cli
+        cap: dict = {}
+        fake_profile = _USProfileStub()
+        fake_profile.base_freq = "daily"
+        fake_profile.provider = object()
+
+        class _U:
+            def snapshot(self, d):
+                return ["AAPL", "MSFT"]
+        fake_profile.universe = _U()
+        mp.setattr("factorzen.markets.us.profile.build_us_profile", lambda **_k: fake_profile)
+
+        def fake_build(provider, symbols, start, end, freq="daily"):
+            cap["build"] = dict(symbols=symbols, start=start, end=end, freq=freq)
+            return _us_daily()
+        mp.setattr("factorzen.markets.us.mining.build_us_daily", fake_build)
+
+        def fake_team_mine(daily, **kw):
+            cap.update(kw)
+            return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
+        mp.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
+
+        rc = cli._cmd_mine_team(_team_args(market="us", symbols=None))
+        assert rc == 0
+        assert cap["profile"] is fake_profile          # profile 透传（非 None）
+        assert cap["eval_start"] == "20240301"          # eval_start=挖掘窗口 start（预热边界）
+        assert cap["build"]["symbols"] == ["AAPL", "MSFT"]  # 缺 --symbols → universe 静态快照
+        assert cap["build"]["start"] < "20240301"       # 预热前缀：早于挖掘窗口 start
+        assert cap["data_window"]["market"] == "us"     # manifest 如实记录 us
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_cmd_mine_team_us_assembles_and_threads_profile(mp)
+
+    # -- 原 test_us_leaf_map_has_no_ashare_leaves --
+    def _section_3_test_us_leaf_map_has_no_ashare_leaves():
+        from factorzen.markets.us.factors import USFactorSet
+        leaves = set(USFactorSet().leaf_features())
+        assert {"north_ratio", "roe", "net_mf_amount", "funding_rate", "oi"}.isdisjoint(leaves)
+        assert {"close", "vwap", "log_vol", "ret_1d", "amount"}.issubset(leaves)
+
+    _section_3_test_us_leaf_map_has_no_ashare_leaves()
 
 
 def _mock_ashare_daily() -> pl.DataFrame:
@@ -731,41 +855,3 @@ def _us_daily(n_syms: int = 35, n_days: int = 40) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def test_cmd_mine_team_us_assembles_and_threads_profile(monkeypatch):
-    from factorzen.cli import main as cli
-    cap: dict = {}
-    fake_profile = _USProfileStub()
-    fake_profile.base_freq = "daily"
-    fake_profile.provider = object()
-
-    class _U:
-        def snapshot(self, d):
-            return ["AAPL", "MSFT"]
-    fake_profile.universe = _U()
-    monkeypatch.setattr("factorzen.markets.us.profile.build_us_profile", lambda **_k: fake_profile)
-
-    def fake_build(provider, symbols, start, end, freq="daily"):
-        cap["build"] = dict(symbols=symbols, start=start, end=end, freq=freq)
-        return _us_daily()
-    monkeypatch.setattr("factorzen.markets.us.mining.build_us_daily", fake_build)
-
-    def fake_team_mine(daily, **kw):
-        cap.update(kw)
-        return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
-    monkeypatch.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
-
-    rc = cli._cmd_mine_team(_team_args(market="us", symbols=None))
-    assert rc == 0
-    assert cap["profile"] is fake_profile          # profile 透传（非 None）
-    assert cap["eval_start"] == "20240301"          # eval_start=挖掘窗口 start（预热边界）
-    assert cap["build"]["symbols"] == ["AAPL", "MSFT"]  # 缺 --symbols → universe 静态快照
-    assert cap["build"]["start"] < "20240301"       # 预热前缀：早于挖掘窗口 start
-    assert cap["data_window"]["market"] == "us"     # manifest 如实记录 us
-
-
-def test_us_leaf_map_has_no_ashare_leaves():
-    # us 叶子仅价量族，A 股专有叶子（north_ratio/roe/net_mf_amount）零泄漏
-    from factorzen.markets.us.factors import USFactorSet
-    leaves = set(USFactorSet().leaf_features())
-    assert {"north_ratio", "roe", "net_mf_amount", "funding_rate", "oi"}.isdisjoint(leaves)
-    assert {"close", "vwap", "log_vol", "ret_1d", "amount"}.issubset(leaves)

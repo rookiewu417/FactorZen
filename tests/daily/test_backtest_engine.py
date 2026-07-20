@@ -77,39 +77,49 @@ def _make_factor_price(n_dates: int = 60, n_stocks: int = 50, seed: int = 42):
     return pl.DataFrame(rows_factor), pl.DataFrame(rows_price)
 
 
+def test_backtest_core_engine_suite():
+    """test_factor_name_passed_through；test_summary_stats_has_portfolio_and_long_short；test_nav_starts_near_one；test_summary_string_is_non_empty"""
+    # -- 原 test_factor_name_passed_through --
+    def _section_0_test_factor_name_passed_through():
+        factor_df, price_df = _make_factor_price()
+        result = run_stratified_backtest(factor_df, price_df, factor_name="momentum")
+        assert result.factor_name == "momentum"
 
-def test_factor_name_passed_through():
-    factor_df, price_df = _make_factor_price()
-    result = run_stratified_backtest(factor_df, price_df, factor_name="momentum")
-    assert result.factor_name == "momentum"
+    _section_0_test_factor_name_passed_through()
 
+    # -- 原 test_summary_stats_has_portfolio_and_long_short --
+    def _section_1_test_summary_stats_has_portfolio_and_long_short():
+        factor_df, price_df = _make_factor_price()
+        n_groups = 5
+        result = run_stratified_backtest(factor_df, price_df, n_groups=n_groups)
+        assert "portfolio" in result.summary_stats
+        assert "long_short" in result.summary_stats
+        assert result.n_groups == n_groups
 
+    _section_1_test_summary_stats_has_portfolio_and_long_short()
 
-def test_summary_stats_has_portfolio_and_long_short():
-    factor_df, price_df = _make_factor_price()
-    n_groups = 5
-    result = run_stratified_backtest(factor_df, price_df, n_groups=n_groups)
-    assert "portfolio" in result.summary_stats
-    assert "long_short" in result.summary_stats
-    assert result.n_groups == n_groups
+    # -- 原 test_nav_starts_near_one --
+    def _section_2_test_nav_starts_near_one():
+        factor_df, price_df = _make_factor_price()
+        result = run_stratified_backtest(factor_df, price_df, n_groups=5)
+        first_nav = result.nav.sort("trade_date")["nav"][0]
+        assert first_nav == 1.0
 
+    _section_2_test_nav_starts_near_one()
 
-def test_nav_starts_near_one():
-    factor_df, price_df = _make_factor_price()
-    result = run_stratified_backtest(factor_df, price_df, n_groups=5)
-    first_nav = result.nav.sort("trade_date")["nav"][0]
-    assert first_nav == 1.0
+    # -- 原 test_summary_string_is_non_empty --
+    def _section_3_test_summary_string_is_non_empty():
+        factor_df, price_df = _make_factor_price()
+        result = run_stratified_backtest(factor_df, price_df, n_groups=5)
+        text = result.summary()
+        assert "Portfolio" in text
+        assert len(text) > 10
 
+    _section_3_test_summary_string_is_non_empty()
 
 
 # ==== 来自 test_backtest_direction.py ====
 
-def test_summary_string_is_non_empty():
-    factor_df, price_df = _make_factor_price()
-    result = run_stratified_backtest(factor_df, price_df, n_groups=5)
-    text = result.summary()
-    assert "Portfolio" in text
-    assert len(text) > 10
 
 def _ic(**kwargs) -> ICAnalysisResult:
     base = dict(
@@ -128,58 +138,69 @@ def _ic(**kwargs) -> ICAnalysisResult:
     return ICAnalysisResult(**base)
 
 
-def test_significant_negative_ic_reverses():
-    d = _decide_backtest_direction(
-        _ic(ic_mean=-0.03, ic_tstat=-3.0, ic_pvalue=0.003, ir=-0.3)
-    )
-    assert d["direction"] == "reversed"
-    assert d["should_reverse"] is True
-    assert "p 值" in d["reason"] or "负" in d["reason"]
-
-
-def test_pvalue_zero_is_not_treated_as_missing():
-    """``ic_pvalue=0.0`` 必须保留，不能被 ``x or 1.0`` 吃成不显著。"""
-    d = _decide_backtest_direction(
-        _ic(ic_mean=-0.03, ic_tstat=-13.0, ic_pvalue=0.0, ir=-0.3)
-    )
-    assert d["direction"] == "reversed"
-    assert d["ic_pvalue"] == 0.0
-    assert "p 值" in d["reason"]
-
-
-def test_weak_negative_ic_keeps_normal():
-    d = _decide_backtest_direction(
-        _ic(
-            ic_mean=-0.005,
-            ic_tstat=-0.4,
-            ic_pvalue=0.7,
-            oos_ic={"train": -0.004, "test": 0.002},
+def test_backtest_direction_suite():
+    """test_significant_negative_ic_reverses；``ic_pvalue=0.0`` 必须保留，不能被 ``x or 1.0`` 吃成不显著。；test_weak_negative_ic_keeps_normal；IS/OOS 两段 IC 均为负时，即使全样本 p 略高也对齐交易方向。；test_positive_ic_keeps_normal"""
+    # -- 原 test_significant_negative_ic_reverses --
+    def _section_0_test_significant_negative_ic_reverses():
+        d = _decide_backtest_direction(
+            _ic(ic_mean=-0.03, ic_tstat=-3.0, ic_pvalue=0.003, ir=-0.3)
         )
-    )
-    assert d["direction"] == "normal"
-    assert d["should_reverse"] is False
+        assert d["direction"] == "reversed"
+        assert d["should_reverse"] is True
+        assert "p 值" in d["reason"] or "负" in d["reason"]
 
+    _section_0_test_significant_negative_ic_reverses()
 
-def test_oos_both_negative_reverses_even_if_p_weak():
-    """IS/OOS 两段 IC 均为负时，即使全样本 p 略高也对齐交易方向。"""
-    d = _decide_backtest_direction(
-        _ic(
-            ic_mean=-0.02,
-            ic_tstat=-1.5,
-            ic_pvalue=0.14,  # > 0.10
-            oos_ic={"train": -0.025, "test": -0.015},
+    # -- 原 test_pvalue_zero_is_not_treated_as_missing --
+    def _section_1_test_pvalue_zero_is_not_treated_as_missing():
+        d = _decide_backtest_direction(
+            _ic(ic_mean=-0.03, ic_tstat=-13.0, ic_pvalue=0.0, ir=-0.3)
         )
-    )
-    assert d["direction"] == "reversed"
-    assert d["should_reverse"] is True
+        assert d["direction"] == "reversed"
+        assert d["ic_pvalue"] == 0.0
+        assert "p 值" in d["reason"]
 
+    _section_1_test_pvalue_zero_is_not_treated_as_missing()
 
-def test_positive_ic_keeps_normal():
-    d = _decide_backtest_direction(
-        _ic(ic_mean=0.04, ic_tstat=4.0, ic_pvalue=0.0001, ir=0.5)
-    )
-    assert d["direction"] == "normal"
-    assert d["should_reverse"] is False
+    # -- 原 test_weak_negative_ic_keeps_normal --
+    def _section_2_test_weak_negative_ic_keeps_normal():
+        d = _decide_backtest_direction(
+            _ic(
+                ic_mean=-0.005,
+                ic_tstat=-0.4,
+                ic_pvalue=0.7,
+                oos_ic={"train": -0.004, "test": 0.002},
+            )
+        )
+        assert d["direction"] == "normal"
+        assert d["should_reverse"] is False
+
+    _section_2_test_weak_negative_ic_keeps_normal()
+
+    # -- 原 test_oos_both_negative_reverses_even_if_p_weak --
+    def _section_3_test_oos_both_negative_reverses_even_if_p_weak():
+        d = _decide_backtest_direction(
+            _ic(
+                ic_mean=-0.02,
+                ic_tstat=-1.5,
+                ic_pvalue=0.14,  # > 0.10
+                oos_ic={"train": -0.025, "test": -0.015},
+            )
+        )
+        assert d["direction"] == "reversed"
+        assert d["should_reverse"] is True
+
+    _section_3_test_oos_both_negative_reverses_even_if_p_weak()
+
+    # -- 原 test_positive_ic_keeps_normal --
+    def _section_4_test_positive_ic_keeps_normal():
+        d = _decide_backtest_direction(
+            _ic(ic_mean=0.04, ic_tstat=4.0, ic_pvalue=0.0001, ir=0.5)
+        )
+        assert d["direction"] == "normal"
+        assert d["should_reverse"] is False
+
+    _section_4_test_positive_ic_keeps_normal()
 
 
 def test_apply_reversed_flips_factor_clean_only():
@@ -281,33 +302,149 @@ def _weights_first_signal_only():
     return {_DATES[0]: pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [1.0]})}
 
 
-def test_fast_and_slow_path_hold_on_missing_weights():
-    cfg = BacktestConfig(initial_capital=1_000_000, max_participation_rate=1.0)
-    cost = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0)
-    factors, prices = _factors(), _prices()
+def test_missing_weights_hold_suite():
+    """test_fast_and_slow_path_hold_on_missing_weights；#5：weights_by_date 存在但空表 = 显式空仓 → 平到空；不得 carry 前仓。；对照：sig_date 完全不在 weights_by_date → 仍 carry（#5 不得误伤缺失语义）。"""
+    # -- 原 test_fast_and_slow_path_hold_on_missing_weights --
+    def _section_0_test_fast_and_slow_path_hold_on_missing_weights():
+        cfg = BacktestConfig(initial_capital=1_000_000, max_participation_rate=1.0)
+        cost = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0)
+        factors, prices = _factors(), _prices()
 
-    fast = run_strategy_backtest(
-        PrecomputedWeightsStrategy(_weights_first_signal_only()),
-        factors, prices, config=cfg, cost_model=cost,
-        collect_positions=False, collect_trades=False, include_context_positions=False,
-    )
-    slow = run_strategy_backtest(
-        PrecomputedWeightsStrategy(_weights_first_signal_only()),
-        factors, prices, config=cfg, cost_model=cost,
-        collect_trades=True,  # 强制走慢路径
-    )
+        fast = run_strategy_backtest(
+            PrecomputedWeightsStrategy(_weights_first_signal_only()),
+            factors, prices, config=cfg, cost_model=cost,
+            collect_positions=False, collect_trades=False, include_context_positions=False,
+        )
+        slow = run_strategy_backtest(
+            PrecomputedWeightsStrategy(_weights_first_signal_only()),
+            factors, prices, config=cfg, cost_model=cost,
+            collect_trades=True,  # 强制走慢路径
+        )
 
-    assert fast.nav.equals(slow.nav), (
-        "缺权重的 signal 日两路径 NAV 应一致（都持有）；修复前慢路径清仓、快路径持有 → 分叉"
-    )
-    assert fast.returns.equals(slow.returns)
+        assert fast.nav.equals(slow.nav), (
+            "缺权重的 signal 日两路径 NAV 应一致（都持有）；修复前慢路径清仓、快路径持有 → 分叉"
+        )
+        assert fast.returns.equals(slow.returns)
 
-    # 慢路径在缺权重日不应产生卖出换手（持有，非清仓）
-    trades = slow.trades
-    if trades.height > 0:
-        # 01-03 执行日（signal=01-02 无权重）不应有任何成交
-        exec_0103 = trades.filter(pl.col("trade_date") == date(2024, 1, 3))
-        assert exec_0103.height == 0, "缺权重的 signal 日不应清仓换手"
+        # 慢路径在缺权重日不应产生卖出换手（持有，非清仓）
+        trades = slow.trades
+        if trades.height > 0:
+            # 01-03 执行日（signal=01-02 无权重）不应有任何成交
+            exec_0103 = trades.filter(pl.col("trade_date") == date(2024, 1, 3))
+            assert exec_0103.height == 0, "缺权重的 signal 日不应清仓换手"
+
+    _section_0_test_fast_and_slow_path_hold_on_missing_weights()
+
+    # -- 原 test_explicit_empty_weights_flat_not_carry_fast_and_slow --
+    def _section_1_test_explicit_empty_weights_flat_not_carry_fast_and_slow():
+        cfg = BacktestConfig(
+            initial_capital=1_000_000,
+            max_participation_rate=1.0,
+            fallback_adv=1e15,
+        )
+        cost = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0)
+        factors, prices = _factors_single(), _prices_trending_up()
+        # d0 建仓；d1 显式空权重（flat）；d2 不在表中
+        weights_by_date = {
+            _DATES[0]: pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [1.0]}),
+            _DATES[1]: _empty_weight_frame(),
+        }
+        strategy = PrecomputedWeightsStrategy(weights_by_date)
+
+        fast = run_strategy_backtest(
+            strategy,
+            factors,
+            prices,
+            config=cfg,
+            cost_model=cost,
+            collect_positions=False,
+            collect_trades=False,
+            include_context_positions=False,
+        )
+        slow = run_strategy_backtest(
+            strategy,
+            factors,
+            prices,
+            config=cfg,
+            cost_model=cost,
+            collect_trades=True,
+        )
+
+        # 01-02 建仓后 NAV=1.05；01-03 执行显式空仓后应 flat，后续不再随标的涨
+        for result, path in ((fast, "快路径"), (slow, "慢路径")):
+            nav_by_date = {
+                row["trade_date"]: row["nav"]
+                for row in result.nav.select(["trade_date", "nav"]).iter_rows(named=True)
+            }
+            assert nav_by_date[date(2024, 1, 2)] == pytest.approx(1.05), path
+            # 显式空仓后 NAV 应冻结在建仓后水平（≈1.05），而非 carry 到 1.2 / 1.3
+            assert nav_by_date[date(2024, 1, 3)] == pytest.approx(1.05), (
+                f"{path} 显式空仓后应 flat，旧快路径会 carry 到 ~1.2"
+            )
+            assert nav_by_date[date(2024, 1, 4)] == pytest.approx(1.05), (
+                f"{path} 显式空仓后 NAV 不应再随标的波动"
+            )
+            day3 = result.nav.filter(pl.col("trade_date") == date(2024, 1, 3)).row(0, named=True)
+            assert day3["cash_weight"] == pytest.approx(1.0), f"{path} 应全现金"
+
+        # 慢路径 positions：01-03 起无持仓
+        pos_after = slow.positions.filter(pl.col("trade_date") >= date(2024, 1, 3))
+        assert pos_after.height == 0, "显式空仓后不应残留持仓"
+
+        # 双路径 NAV 一致
+        assert fast.nav["nav"].to_list() == pytest.approx(slow.nav["nav"].to_list())
+
+    _section_1_test_explicit_empty_weights_flat_not_carry_fast_and_slow()
+
+    # -- 原 test_missing_signal_date_still_carries_not_flat --
+    def _section_2_test_missing_signal_date_still_carries_not_flat():
+        cfg = BacktestConfig(
+            initial_capital=1_000_000,
+            max_participation_rate=1.0,
+            fallback_adv=1e15,
+        )
+        cost = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0)
+        factors, prices = _factors_single(), _prices_trending_up()
+        # 仅 d0 有权重；d1 缺失（非显式空）
+        weights_by_date = {
+            _DATES[0]: pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [1.0]}),
+        }
+        strategy = PrecomputedWeightsStrategy(weights_by_date)
+
+        fast = run_strategy_backtest(
+            strategy,
+            factors,
+            prices,
+            config=cfg,
+            cost_model=cost,
+            collect_positions=False,
+            collect_trades=False,
+            include_context_positions=False,
+        )
+        slow = run_strategy_backtest(
+            strategy,
+            factors,
+            prices,
+            config=cfg,
+            cost_model=cost,
+            collect_trades=True,
+        )
+
+        for result, path in ((fast, "快路径"), (slow, "慢路径")):
+            nav_by_date = {
+                row["trade_date"]: row["nav"]
+                for row in result.nav.select(["trade_date", "nav"]).iter_rows(named=True)
+            }
+            # 缺权重日 carry：01-03 NAV~1.2，01-04~1.3
+            assert nav_by_date[date(2024, 1, 3)] == pytest.approx(1.2), path
+            assert nav_by_date[date(2024, 1, 4)] == pytest.approx(1.3), path
+
+        assert fast.nav["nav"].to_list() == pytest.approx(slow.nav["nav"].to_list())
+        # 01-03 执行（signal=01-02 缺失）无卖出
+        exec_0103 = slow.trades.filter(pl.col("trade_date") == date(2024, 1, 3))
+        assert exec_0103.height == 0
+
+    _section_2_test_missing_signal_date_still_carries_not_flat()
 
 
 def _prices_trending_up() -> pl.DataFrame:
@@ -371,117 +508,6 @@ def _empty_weight_frame() -> pl.DataFrame:
     return pl.DataFrame(schema={"ts_code": pl.Utf8, "target_weight": pl.Float64})
 
 
-def test_explicit_empty_weights_flat_not_carry_fast_and_slow():
-    """#5：weights_by_date 存在但空表 = 显式空仓 → 平到空；不得 carry 前仓。
-
-    双路径必须一致：旧快路径把「空 indices」当「无信号」carry，慢路径则 flat。
-    """
-    cfg = BacktestConfig(
-        initial_capital=1_000_000,
-        max_participation_rate=1.0,
-        fallback_adv=1e15,
-    )
-    cost = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0)
-    factors, prices = _factors_single(), _prices_trending_up()
-    # d0 建仓；d1 显式空权重（flat）；d2 不在表中
-    weights_by_date = {
-        _DATES[0]: pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [1.0]}),
-        _DATES[1]: _empty_weight_frame(),
-    }
-    strategy = PrecomputedWeightsStrategy(weights_by_date)
-
-    fast = run_strategy_backtest(
-        strategy,
-        factors,
-        prices,
-        config=cfg,
-        cost_model=cost,
-        collect_positions=False,
-        collect_trades=False,
-        include_context_positions=False,
-    )
-    slow = run_strategy_backtest(
-        strategy,
-        factors,
-        prices,
-        config=cfg,
-        cost_model=cost,
-        collect_trades=True,
-    )
-
-    # 01-02 建仓后 NAV=1.05；01-03 执行显式空仓后应 flat，后续不再随标的涨
-    for result, path in ((fast, "快路径"), (slow, "慢路径")):
-        nav_by_date = {
-            row["trade_date"]: row["nav"]
-            for row in result.nav.select(["trade_date", "nav"]).iter_rows(named=True)
-        }
-        assert nav_by_date[date(2024, 1, 2)] == pytest.approx(1.05), path
-        # 显式空仓后 NAV 应冻结在建仓后水平（≈1.05），而非 carry 到 1.2 / 1.3
-        assert nav_by_date[date(2024, 1, 3)] == pytest.approx(1.05), (
-            f"{path} 显式空仓后应 flat，旧快路径会 carry 到 ~1.2"
-        )
-        assert nav_by_date[date(2024, 1, 4)] == pytest.approx(1.05), (
-            f"{path} 显式空仓后 NAV 不应再随标的波动"
-        )
-        day3 = result.nav.filter(pl.col("trade_date") == date(2024, 1, 3)).row(0, named=True)
-        assert day3["cash_weight"] == pytest.approx(1.0), f"{path} 应全现金"
-
-    # 慢路径 positions：01-03 起无持仓
-    pos_after = slow.positions.filter(pl.col("trade_date") >= date(2024, 1, 3))
-    assert pos_after.height == 0, "显式空仓后不应残留持仓"
-
-    # 双路径 NAV 一致
-    assert fast.nav["nav"].to_list() == pytest.approx(slow.nav["nav"].to_list())
-
-
-def test_missing_signal_date_still_carries_not_flat():
-    """对照：sig_date 完全不在 weights_by_date → 仍 carry（#5 不得误伤缺失语义）。"""
-    cfg = BacktestConfig(
-        initial_capital=1_000_000,
-        max_participation_rate=1.0,
-        fallback_adv=1e15,
-    )
-    cost = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0)
-    factors, prices = _factors_single(), _prices_trending_up()
-    # 仅 d0 有权重；d1 缺失（非显式空）
-    weights_by_date = {
-        _DATES[0]: pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [1.0]}),
-    }
-    strategy = PrecomputedWeightsStrategy(weights_by_date)
-
-    fast = run_strategy_backtest(
-        strategy,
-        factors,
-        prices,
-        config=cfg,
-        cost_model=cost,
-        collect_positions=False,
-        collect_trades=False,
-        include_context_positions=False,
-    )
-    slow = run_strategy_backtest(
-        strategy,
-        factors,
-        prices,
-        config=cfg,
-        cost_model=cost,
-        collect_trades=True,
-    )
-
-    for result, path in ((fast, "快路径"), (slow, "慢路径")):
-        nav_by_date = {
-            row["trade_date"]: row["nav"]
-            for row in result.nav.select(["trade_date", "nav"]).iter_rows(named=True)
-        }
-        # 缺权重日 carry：01-03 NAV~1.2，01-04~1.3
-        assert nav_by_date[date(2024, 1, 3)] == pytest.approx(1.2), path
-        assert nav_by_date[date(2024, 1, 4)] == pytest.approx(1.3), path
-
-    assert fast.nav["nav"].to_list() == pytest.approx(slow.nav["nav"].to_list())
-    # 01-03 执行（signal=01-02 缺失）无卖出
-    exec_0103 = slow.trades.filter(pl.col("trade_date") == date(2024, 1, 3))
-    assert exec_0103.height == 0
-
 # ==== 来自 test_intraday_backtest.py ====
 def _make_minute_factor(
     n_stocks: int = 5, n_days: int = 10, bars_per_day: int = 20
@@ -532,30 +558,38 @@ def _make_daily_price(n_stocks: int = 5, n_days: int = 10) -> pl.DataFrame:
     return pl.DataFrame(rows).with_columns(pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d"))
 
 
-def test_aggregate_returns_one_row_per_stock_per_day():
-    minute_factor = _make_minute_factor()
-    daily = aggregate_intraday_factor(minute_factor)
-    assert "trade_date" in daily.columns
-    assert "ts_code" in daily.columns
-    assert "factor_value" in daily.columns
-    n_dates = minute_factor["trade_date"].n_unique()
-    n_stocks = minute_factor["ts_code"].n_unique()
-    assert len(daily) == n_dates * n_stocks
+def test_intraday_backtest_suite():
+    """test_aggregate_returns_one_row_per_stock_per_day；聚合后每日每股的因子值应是当日最后一根 bar 的值。；test_run_intraday_backtest_has_long_short"""
+    # -- 原 test_aggregate_returns_one_row_per_stock_per_day --
+    def _section_0_test_aggregate_returns_one_row_per_stock_per_day():
+        minute_factor = _make_minute_factor()
+        daily = aggregate_intraday_factor(minute_factor)
+        assert "trade_date" in daily.columns
+        assert "ts_code" in daily.columns
+        assert "factor_value" in daily.columns
+        n_dates = minute_factor["trade_date"].n_unique()
+        n_stocks = minute_factor["ts_code"].n_unique()
+        assert len(daily) == n_dates * n_stocks
 
+    _section_0_test_aggregate_returns_one_row_per_stock_per_day()
 
-def test_aggregate_takes_last_value():
-    """聚合后每日每股的因子值应是当日最后一根 bar 的值。"""
-    df = _make_minute_factor(n_stocks=1, n_days=1, bars_per_day=5)
-    daily = aggregate_intraday_factor(df)
-    expected_last = df.sort("trade_time").tail(1)["factor_value"][0]
-    assert abs(daily["factor_value"][0] - expected_last) < 1e-9
+    # -- 原 test_aggregate_takes_last_value --
+    def _section_1_test_aggregate_takes_last_value():
+        df = _make_minute_factor(n_stocks=1, n_days=1, bars_per_day=5)
+        daily = aggregate_intraday_factor(df)
+        expected_last = df.sort("trade_time").tail(1)["factor_value"][0]
+        assert abs(daily["factor_value"][0] - expected_last) < 1e-9
 
+    _section_1_test_aggregate_takes_last_value()
 
+    # -- 原 test_run_intraday_backtest_has_long_short --
+    def _section_2_test_run_intraday_backtest_has_long_short():
+        result = run_intraday_backtest(_make_minute_factor(), _make_daily_price(), n_groups=5)
+        assert "long_short" in result.summary_stats
+        assert not result.nav.is_empty()
 
-def test_run_intraday_backtest_has_long_short():
-    result = run_intraday_backtest(_make_minute_factor(), _make_daily_price(), n_groups=5)
-    assert "long_short" in result.summary_stats
-    assert not result.nav.is_empty()
+    _section_2_test_run_intraday_backtest_has_long_short()
+
 
 # ==== 来自 test_lookahead_safety.py ====
 def _make_synthetic_data(n_dates: int = 200, n_stocks: int = 100, seed: int = 42):
@@ -603,22 +637,21 @@ def _make_synthetic_data(n_dates: int = 200, n_stocks: int = 100, seed: int = 42
 
 
 class TestLookaheadSafety:
-    def test_same_day_return_factor_is_not_traded_same_day(self):
-        """因子 = t 日收益时，t+1 执行后 Sharpe 应接近 0。"""
+    def test_lookahead_safety_suite(self):
+        """因子 = t 日收益时，t+1 执行后 Sharpe 应接近 0。；因子 = t+1 收益是人为未来泄漏，Sharpe 应极高。；BacktestResult.ret_definition 应记录新执行收益口径。"""
+        # -- 原 test_same_day_return_factor_is_not_traded_same_day --
         same_day_factor, _, price_df = _make_synthetic_data()
         result = run_stratified_backtest(same_day_factor, price_df, n_groups=5)
         sharpe_same_day = result.summary_stats["long_short"]["sharpe"]
         assert abs(sharpe_same_day) < 2.0
 
-    def test_future_return_factor_is_inflated(self):
-        """因子 = t+1 收益是人为未来泄漏，Sharpe 应极高。"""
+        # -- 原 test_future_return_factor_is_inflated --
         _, leaked_factor, price_df = _make_synthetic_data()
         result = run_stratified_backtest(leaked_factor, price_df, n_groups=5)
         sharpe_leaked = result.summary_stats["long_short"]["sharpe"]
         assert sharpe_leaked > 5.0
 
-    def test_ret_definition_field(self):
-        """BacktestResult.ret_definition 应记录新执行收益口径。"""
+        # -- 原 test_ret_definition_field --
         same_day_factor, _, price_df = _make_synthetic_data()
         result = run_stratified_backtest(same_day_factor, price_df, n_groups=5)
         assert result.ret_definition == "open_to_close_with_overnight_carry"
@@ -660,44 +693,53 @@ def _make_data(n_dates: int = 200, n_stocks: int = 100, seed: int = 0):
     return pl.DataFrame(factor_rows), pl.DataFrame(price_rows)
 
 
-class TestCostModel:
-    def test_default_values(self):
-        """CostModel 默认值应与 constants.py 一致。"""
+def test_backtest_costs_suite():
+    """CostModel 默认值应与 constants.py 一致。；往返成本 = 2×commission + 2×slippage + stamp_tax。；日频融券费率 = 年化 / 252。；周频融券费率 = 年化 × 5 / 252。；支持自定义成本参数。；启用 CostModel 后，多空年化收益应低于无成本版本。"""
+    # -- 原 test_default_values --
+    def _section_0_test_default_values():
         cm = CostModel()
         assert cm.commission == COMMISSION_RATE
         assert cm.stamp_tax == STAMP_TAX_RATE
         assert cm.slippage == SLIPPAGE_RATE
         assert cm.borrow_annual == BORROW_RATE_ANNUAL
 
-    def test_round_trip_cost(self):
-        """往返成本 = 2×commission + 2×slippage + stamp_tax。"""
+    _section_0_test_default_values()
+
+    # -- 原 test_round_trip_cost --
+    def _section_1_test_round_trip_cost():
         cm = CostModel()
         expected = 2 * cm.commission + 2 * cm.slippage + cm.stamp_tax
         assert abs(cm.round_trip_cost() - expected) < 1e-10
 
-    def test_borrow_rate_per_period_daily(self):
-        """日频融券费率 = 年化 / 252。"""
+    _section_1_test_round_trip_cost()
+
+    # -- 原 test_borrow_rate_per_period_daily --
+    def _section_2_test_borrow_rate_per_period_daily():
         cm = CostModel()
         expected = cm.borrow_annual / TRADING_DAYS_PER_YEAR
         assert abs(cm.borrow_rate_per_period("daily") - expected) < 1e-12
 
-    def test_borrow_rate_per_period_weekly(self):
-        """周频融券费率 = 年化 × 5 / 252。"""
+    _section_2_test_borrow_rate_per_period_daily()
+
+    # -- 原 test_borrow_rate_per_period_weekly --
+    def _section_3_test_borrow_rate_per_period_weekly():
         cm = CostModel()
         assert (
             abs(cm.borrow_rate_per_period("weekly") - cm.borrow_annual * 5 / TRADING_DAYS_PER_YEAR)
             < 1e-12
         )
 
-    def test_custom_values(self):
-        """支持自定义成本参数。"""
+    _section_3_test_borrow_rate_per_period_weekly()
+
+    # -- 原 test_custom_values --
+    def _section_4_test_custom_values():
         cm = CostModel(commission=0.0001, stamp_tax=0.0, slippage=0.0, borrow_annual=0.05)
         assert abs(cm.round_trip_cost() - 0.0002) < 1e-12  # 2×0.0001
 
+    _section_4_test_custom_values()
 
-class TestBacktestCostIntegration:
-    def test_costs_reduce_returns(self):
-        """启用 CostModel 后，多空年化收益应低于无成本版本。"""
+    # -- 原 test_costs_reduce_returns --
+    def _section_5_test_costs_reduce_returns():
         factor_df, price_df = _make_data()
         r_free = run_stratified_backtest(factor_df, price_df, n_groups=5)
         r_cost = run_stratified_backtest(factor_df, price_df, n_groups=5, cost_model=CostModel())
@@ -706,6 +748,10 @@ class TestBacktestCostIntegration:
         assert ann_ret_free > ann_ret_cost, (
             f"加入成本后年化收益应下降: 无成本={ann_ret_free:.4f}, 含成本={ann_ret_cost:.4f}"
         )
+
+    _section_5_test_costs_reduce_returns()
+
+class TestBacktestCostIntegration:
 
     def test_zero_cost_model_matches_no_cost(self):
         """CostModel 全部费率设为 0 时，结果应与 cost_model=None 完全相同。"""

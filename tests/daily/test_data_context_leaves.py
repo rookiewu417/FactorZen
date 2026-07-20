@@ -167,57 +167,75 @@ def test_daily_basic_filters_universe(patched):
 # ══════════════════════════════════════════════════════════
 
 
-def test_snapshot_dates_daily_mode(patched, monkeypatch):
-    monkeypatch.setattr(
-        "factorzen.core.calendar.get_trade_dates",
-        lambda s, e: [date(2024, 1, 2), date(2024, 1, 3)],
-    )
-    ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="daily")
-    assert ctx.snapshot_dates == [date(2024, 1, 2), date(2024, 1, 3)]
+def test_daily_snapshot_downsample_suite(patched, monkeypatch):
+    """test_snapshot_dates_daily_mode；test_snapshot_dates_weekly_mode；test_snapshot_dates_monthly_mode；test_weekly_downsamples_to_snapshot；test_monthly_downsamples_to_snapshot"""
+    # -- 原 test_snapshot_dates_daily_mode --
+    def _section_0_test_snapshot_dates_daily_mode(patched, mp):
+        mp.setattr(
+            "factorzen.core.calendar.get_trade_dates",
+            lambda s, e: [date(2024, 1, 2), date(2024, 1, 3)],
+        )
+        ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="daily")
+        assert ctx.snapshot_dates == [date(2024, 1, 2), date(2024, 1, 3)]
 
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_snapshot_dates_daily_mode(patched, mp)
 
-def test_snapshot_dates_weekly_mode(patched, monkeypatch):
-    monkeypatch.setattr(
-        "factorzen.core.calendar.get_weekly_snapshot_dates",
-        lambda s, e: [date(2024, 1, 3)],
-    )
-    ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="weekly")
-    assert ctx.snapshot_dates == [date(2024, 1, 3)]
+    # -- 原 test_snapshot_dates_weekly_mode --
+    def _section_1_test_snapshot_dates_weekly_mode(patched, mp):
+        mp.setattr(
+            "factorzen.core.calendar.get_weekly_snapshot_dates",
+            lambda s, e: [date(2024, 1, 3)],
+        )
+        ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="weekly")
+        assert ctx.snapshot_dates == [date(2024, 1, 3)]
 
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_snapshot_dates_weekly_mode(patched, mp)
 
-def test_snapshot_dates_monthly_mode(patched, monkeypatch):
-    monkeypatch.setattr(
-        "factorzen.core.calendar.get_monthly_snapshot_dates",
-        lambda s, e: [date(2024, 1, 3)],
-    )
-    ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="monthly")
-    assert ctx.snapshot_dates == [date(2024, 1, 3)]
+    # -- 原 test_snapshot_dates_monthly_mode --
+    def _section_2_test_snapshot_dates_monthly_mode(patched, mp):
+        mp.setattr(
+            "factorzen.core.calendar.get_monthly_snapshot_dates",
+            lambda s, e: [date(2024, 1, 3)],
+        )
+        ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="monthly")
+        assert ctx.snapshot_dates == [date(2024, 1, 3)]
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_snapshot_dates_monthly_mode(patched, mp)
+
+    # -- 原 test_weekly_downsamples_to_snapshot --
+    def _section_3_test_weekly_downsamples_to_snapshot(patched, mp):
+        mp.setattr(
+            "factorzen.core.calendar.get_weekly_snapshot_dates",
+            lambda s, e: [date(2024, 1, 3)],
+        )
+        ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="weekly")
+        df = ctx.weekly.collect()
+        assert df["trade_date"].unique().to_list() == [date(2024, 1, 3)]
+        assert ctx.weekly is ctx.weekly  # 缓存
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_weekly_downsamples_to_snapshot(patched, mp)
+
+    # -- 原 test_monthly_downsamples_to_snapshot --
+    def _section_4_test_monthly_downsamples_to_snapshot(patched, mp):
+        mp.setattr(
+            "factorzen.core.calendar.get_monthly_snapshot_dates",
+            lambda s, e: [date(2024, 1, 2)],
+        )
+        ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="monthly")
+        df = ctx.monthly.collect()
+        assert df["trade_date"].unique().to_list() == [date(2024, 1, 2)]
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_monthly_downsamples_to_snapshot(patched, mp)
 
 
 # ══════════════════════════════════════════════════════════
 # 下采样属性：weekly / monthly / *_basic
 # ══════════════════════════════════════════════════════════
-
-
-def test_weekly_downsamples_to_snapshot(patched, monkeypatch):
-    monkeypatch.setattr(
-        "factorzen.core.calendar.get_weekly_snapshot_dates",
-        lambda s, e: [date(2024, 1, 3)],
-    )
-    ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="weekly")
-    df = ctx.weekly.collect()
-    assert df["trade_date"].unique().to_list() == [date(2024, 1, 3)]
-    assert ctx.weekly is ctx.weekly  # 缓存
-
-
-def test_monthly_downsamples_to_snapshot(patched, monkeypatch):
-    monkeypatch.setattr(
-        "factorzen.core.calendar.get_monthly_snapshot_dates",
-        lambda s, e: [date(2024, 1, 2)],
-    )
-    ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="monthly")
-    df = ctx.monthly.collect()
-    assert df["trade_date"].unique().to_list() == [date(2024, 1, 2)]
 
 
 def test_weekly_basic_downsamples(patched, monkeypatch):
@@ -309,156 +327,169 @@ def _hk() -> pl.DataFrame:
     })
 
 
-def test_flows_join_by_trade_date():
-    """资金流/北向按 (trade_date, ts_code) 逐日 join;ratio 重命名为 north_ratio。"""
-    out = attach_flows(_daily(["20240102", "20240103"]),
-                       injected={"moneyflow": _mf(), "hk_hold": _hk()})
-    by = {r["trade_date"]: r for r in out.iter_rows(named=True)}
-    assert by[dt.date(2024, 1, 2)]["net_mf_amount"] == 1234.5
-    assert by[dt.date(2024, 1, 3)]["net_mf_amount"] == -678.9
-    assert by[dt.date(2024, 1, 2)]["north_ratio"] == 3.5      # ratio → north_ratio
-    assert "ratio" not in out.columns
+def test_flows_attach_suite():
+    """资金流/北向按 (trade_date, ts_code) 逐日 join;ratio 重命名为 north_ratio。；flow 数据缺某天 → 该天叶子为 null(不崩、不错配到别的日子)。；无 flow 数据(注入空帧)→ 原样返回但补 net_mf_amount/north_ratio 为 null。；flow 叶子已注册、可解析,且触发 FLOW_FEATURES 门(物化路径会 attach)。；源帧含重复 (trade_date, ts_code) 时，left-join 不得成倍放行 daily。；daily 已被上游污染成 2 行/股时，_attach_margin 不得再平方放大成 4 行/股。"""
+    # -- 原 test_flows_join_by_trade_date --
+    def _section_0_test_flows_join_by_trade_date():
+        out = attach_flows(_daily(["20240102", "20240103"]),
+                           injected={"moneyflow": _mf(), "hk_hold": _hk()})
+        by = {r["trade_date"]: r for r in out.iter_rows(named=True)}
+        assert by[dt.date(2024, 1, 2)]["net_mf_amount"] == 1234.5
+        assert by[dt.date(2024, 1, 3)]["net_mf_amount"] == -678.9
+        assert by[dt.date(2024, 1, 2)]["north_ratio"] == 3.5      # ratio → north_ratio
+        assert "ratio" not in out.columns
 
+    _section_0_test_flows_join_by_trade_date()
 
-def test_missing_dates_get_null():
-    """flow 数据缺某天 → 该天叶子为 null(不崩、不错配到别的日子)。"""
-    out = attach_flows(_daily(["20240102", "20240110"]),
-                       injected={"moneyflow": _mf(), "hk_hold": _hk()})
-    by = {r["trade_date"]: r for r in out.iter_rows(named=True)}
-    assert by[dt.date(2024, 1, 10)]["net_mf_amount"] is None   # 无数据日
-    assert by[dt.date(2024, 1, 2)]["net_mf_amount"] == 1234.5
+    # -- 原 test_missing_dates_get_null --
+    def _section_1_test_missing_dates_get_null():
+        out = attach_flows(_daily(["20240102", "20240110"]),
+                           injected={"moneyflow": _mf(), "hk_hold": _hk()})
+        by = {r["trade_date"]: r for r in out.iter_rows(named=True)}
+        assert by[dt.date(2024, 1, 10)]["net_mf_amount"] is None   # 无数据日
+        assert by[dt.date(2024, 1, 2)]["net_mf_amount"] == 1234.5
 
+    _section_1_test_missing_dates_get_null()
 
-def test_missing_source_returns_null_cols():
-    """无 flow 数据(注入空帧)→ 原样返回但补 net_mf_amount/north_ratio 为 null。
+    # -- 原 test_missing_source_returns_null_cols --
+    def _section_2_test_missing_source_returns_null_cols():
+        out = attach_flows(_daily(["20240102"]),
+                           injected={"moneyflow": pl.DataFrame(), "hk_hold": pl.DataFrame()})
+        assert "net_mf_amount" in out.columns and "north_ratio" in out.columns
+        assert out["net_mf_amount"][0] is None
 
-    注入空帧而非 {},避免回落读盘(真实 moneyflow 已缓存时 {} 会拿到真数据,测试就不 hermetic)。
-    """
-    out = attach_flows(_daily(["20240102"]),
-                       injected={"moneyflow": pl.DataFrame(), "hk_hold": pl.DataFrame()})
-    assert "net_mf_amount" in out.columns and "north_ratio" in out.columns
-    assert out["net_mf_amount"][0] is None
+    _section_2_test_missing_source_returns_null_cols()
 
+    # -- 原 test_flow_leaves_registered_and_gate --
+    def _section_3_test_flow_leaves_registered_and_gate():
+        from factorzen.discovery.expression import feature_names, parse_expr
+        from factorzen.discovery.operators import FLOW_FEATURES, LEAF_FEATURES
+        assert "net_mf_amount" in FLOW_FEATURES and "north_ratio" in FLOW_FEATURES
+        for leaf in FLOW_FEATURES:
+            assert leaf in LEAF_FEATURES
+            feats = feature_names(parse_expr(f"rank({leaf})"))
+            assert leaf in feats
+            assert feats & FLOW_FEATURES   # 触发物化路径 attach 门
 
-def test_flow_leaves_registered_and_gate():
-    """flow 叶子已注册、可解析,且触发 FLOW_FEATURES 门(物化路径会 attach)。"""
-    from factorzen.discovery.expression import feature_names, parse_expr
-    from factorzen.discovery.operators import FLOW_FEATURES, LEAF_FEATURES
-    assert "net_mf_amount" in FLOW_FEATURES and "north_ratio" in FLOW_FEATURES
-    for leaf in FLOW_FEATURES:
-        assert leaf in LEAF_FEATURES
-        feats = feature_names(parse_expr(f"rank({leaf})"))
-        assert leaf in feats
-        assert feats & FLOW_FEATURES   # 触发物化路径 attach 门
+    _section_3_test_flow_leaves_registered_and_gate()
 
+    # -- 原 test_duplicate_source_rows_do_not_multiply_daily --
+    def _section_4_test_duplicate_source_rows_do_not_multiply_daily():
+        daily = _daily(["20240102", "20240103"])
+        hk_dup = pl.DataFrame({
+            "ts_code": ["000001.SZ"] * 3,
+            "trade_date": [dt.date(2024, 1, 2)] * 2 + [dt.date(2024, 1, 3)],
+            "ratio": [1.2, 0.33, 0.5],   # 同键两条不同值：正是生产观测到的形态
+            "vol": [102592076, 4970305, 1000],
+        })
+        with pytest.warns(UserWarning, match="重复"):
+            out = attach_flows(daily, injected={"hk_hold": hk_dup})
 
-def test_duplicate_source_rows_do_not_multiply_daily():
-    """源帧含重复 (trade_date, ts_code) 时，left-join 不得成倍放行 daily。
+        assert out.height == daily.height, f"daily 被放大到 {out.height} 行"
+        assert out.select(["trade_date", "ts_code"]).unique().height == out.height
+        # keep="first" → 取到 1.2 那条（确定性，不随运行变化）
+        got = out.filter(pl.col("trade_date") == dt.date(2024, 1, 2))["north_ratio"][0]
+        assert got == 1.2
 
-    **实证根因（2026-07-19）**：`hk_hold` 在 2026-06-30 单日返回 4200 行/4061 只
-    （正常日 ~950 只北向标的），139 只带重复记录；`HK_HOLD_COLS` 又把 `exchange`
-    等区分列裁掉，事后无法分辨保留哪条（股本反推可证每对里恰有一条 ratio 与
-    vol/total_share 不自洽）。这些重复行流进因子面板后，在组合层
-    `_zscore_and_merge` 的链式 full join 下按 重复数^因子数 爆炸，实测打满 23GB。
-    """
-    daily = _daily(["20240102", "20240103"])
-    hk_dup = pl.DataFrame({
-        "ts_code": ["000001.SZ"] * 3,
-        "trade_date": [dt.date(2024, 1, 2)] * 2 + [dt.date(2024, 1, 3)],
-        "ratio": [1.2, 0.33, 0.5],   # 同键两条不同值：正是生产观测到的形态
-        "vol": [102592076, 4970305, 1000],
-    })
-    with pytest.warns(UserWarning, match="重复"):
-        out = attach_flows(daily, injected={"hk_hold": hk_dup})
+    _section_4_test_duplicate_source_rows_do_not_multiply_daily()
 
-    assert out.height == daily.height, f"daily 被放大到 {out.height} 行"
-    assert out.select(["trade_date", "ts_code"]).unique().height == out.height
-    # keep="first" → 取到 1.2 那条（确定性，不随运行变化）
-    got = out.filter(pl.col("trade_date") == dt.date(2024, 1, 2))["north_ratio"][0]
-    assert got == 1.2
+    # -- 原 test_margin_does_not_square_amplify_dirty_daily --
+    def _section_5_test_margin_does_not_square_amplify_dirty_daily():
+        from factorzen.daily.data.flows import _attach_margin
 
+        dirty = pl.DataFrame({
+            "trade_date": [dt.date(2024, 1, 2)] * 2,
+            "ts_code": ["000001.SZ"] * 2,
+            "circ_mv": [1000.0, 1000.0],
+            "amount": [500.0, 500.0],
+        })
+        margin = pl.DataFrame({
+            "ts_code": ["000001.SZ"],
+            "trade_date": [dt.date(2024, 1, 2)],
+            "rzye": [1.0e8],
+            "rzmre": [1.0e7],
+            "rqyl": [1000.0],
+        })
+        with pytest.warns(UserWarning, match="重复"):
+            out = _attach_margin(dirty, injected={"margin_detail": margin})
+        # 入参本就脏(2 行)——契约是**不再放大**，而非替上游清洗
+        assert out.height == 2, f"margin 把 2 行放大成了 {out.height} 行"
 
-def test_margin_does_not_square_amplify_dirty_daily():
-    """daily 已被上游污染成 2 行/股时，_attach_margin 不得再平方放大成 4 行/股。
+    _section_5_test_margin_does_not_square_amplify_dirty_daily()
 
-    生产链实测：hk_hold 重复让 daily 变 2 行/股 → `_attach_margin` 先从 daily 取
-    同日分母（继承 2 行）再 join 回 daily ⇒ **2×2=4 行/股**。探针实测
-    318 行 → 320 行（hk_hold）→ 324 行（margin），目标股票 1→2→4 行。
-    """
-    from factorzen.daily.data.flows import _attach_margin
-
-    dirty = pl.DataFrame({
-        "trade_date": [dt.date(2024, 1, 2)] * 2,
-        "ts_code": ["000001.SZ"] * 2,
-        "circ_mv": [1000.0, 1000.0],
-        "amount": [500.0, 500.0],
-    })
-    margin = pl.DataFrame({
-        "ts_code": ["000001.SZ"],
-        "trade_date": [dt.date(2024, 1, 2)],
-        "rzye": [1.0e8],
-        "rzmre": [1.0e7],
-        "rqyl": [1000.0],
-    })
-    with pytest.warns(UserWarning, match="重复"):
-        out = _attach_margin(dirty, injected={"margin_detail": margin})
-    # 入参本就脏(2 行)——契约是**不再放大**，而非替上游清洗
-    assert out.height == 2, f"margin 把 2 行放大成了 {out.height} 行"
 
 # ==== 来自 test_evaluation_contracts.py ====
-def test_compute_turnover_raises_on_missing_factor_column():
-    df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"]})
-    with pytest.raises(ValueError) as exc:
-        compute_turnover(df, factor_col="factor_clean")
-    msg = str(exc.value)
-    assert "factor_clean" in msg
-    assert "实际列" in msg
+def test_evaluation_contracts_suite():
+    """test_compute_turnover_raises_on_missing_factor_column；test_compute_turnover_raises_on_missing_key_columns；test_prepare_factor_df_error_lists_actual_columns；test_prepare_price_df_error_lists_actual_columns；test_every_registered_factor_declares_daily；这些估值/规模/流动性因子的 compute 确实读 daily_basic，故 daily 与 daily_basic 都要有。"""
+    # -- 原 test_compute_turnover_raises_on_missing_factor_column --
+    def _section_0_test_compute_turnover_raises_on_missing_factor_column():
+        df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"]})
+        with pytest.raises(ValueError) as exc:
+            compute_turnover(df, factor_col="factor_clean")
+        msg = str(exc.value)
+        assert "factor_clean" in msg
+        assert "实际列" in msg
 
+    _section_0_test_compute_turnover_raises_on_missing_factor_column()
 
-def test_compute_turnover_raises_on_missing_key_columns():
-    df = pl.DataFrame({"factor_clean": [1.0]})
-    with pytest.raises(ValueError) as exc:
-        compute_turnover(df, factor_col="factor_clean")
-    msg = str(exc.value)
-    assert "trade_date" in msg and "ts_code" in msg
+    # -- 原 test_compute_turnover_raises_on_missing_key_columns --
+    def _section_1_test_compute_turnover_raises_on_missing_key_columns():
+        df = pl.DataFrame({"factor_clean": [1.0]})
+        with pytest.raises(ValueError) as exc:
+            compute_turnover(df, factor_col="factor_clean")
+        msg = str(exc.value)
+        assert "trade_date" in msg and "ts_code" in msg
 
+    _section_1_test_compute_turnover_raises_on_missing_key_columns()
 
-def test_prepare_factor_df_error_lists_actual_columns():
-    df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"]})
-    with pytest.raises(ValueError) as exc:
-        _prepare_factor_df(df, "factor_clean")
-    msg = str(exc.value)
-    assert "factor_clean" in msg
-    assert "实际列" in msg
+    # -- 原 test_prepare_factor_df_error_lists_actual_columns --
+    def _section_2_test_prepare_factor_df_error_lists_actual_columns():
+        df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"]})
+        with pytest.raises(ValueError) as exc:
+            _prepare_factor_df(df, "factor_clean")
+        msg = str(exc.value)
+        assert "factor_clean" in msg
+        assert "实际列" in msg
 
+    _section_2_test_prepare_factor_df_error_lists_actual_columns()
 
-def test_prepare_price_df_error_lists_actual_columns():
-    df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"]})
-    with pytest.raises(ValueError) as exc:
-        _prepare_price_df(df)
-    msg = str(exc.value)
-    assert "close" in msg
-    assert "实际列" in msg
+    # -- 原 test_prepare_price_df_error_lists_actual_columns --
+    def _section_3_test_prepare_price_df_error_lists_actual_columns():
+        df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"]})
+        with pytest.raises(ValueError) as exc:
+            _prepare_price_df(df)
+        msg = str(exc.value)
+        assert "close" in msg
+        assert "实际列" in msg
+
+    _section_3_test_prepare_price_df_error_lists_actual_columns()
+
+    # -- 原 test_every_registered_factor_declares_daily --
+    def _section_4_test_every_registered_factor_declares_daily():
+        offenders = []
+        for name in list_factors():
+            factor = get_factor(name)
+            required = getattr(factor, "required_data", None) or []
+            if "daily" not in required:
+                offenders.append((name, getattr(factor, "category", "?"), list(required)))
+        assert not offenders, (
+            "以下因子的 required_data 漏声明 'daily'，评估管线算前向收益时会 raise "
+            "'daily data not declared'：" + "; ".join(f"{n}({c})={rd}" for n, c, rd in offenders)
+        )
+
+    _section_4_test_every_registered_factor_declares_daily()
+
+    # -- 原 test_valuation_factors_keep_daily_basic_and_add_daily --
+    def _section_5_test_valuation_factors_keep_daily_basic_and_add_daily():
+        for name in ("size_style", "value_style", "liquidity_style", "pe_ttm", "pb",
+                     "ep_ratio", "bm_ratio"):
+            required = getattr(get_factor(name), "required_data", None) or []
+            assert "daily" in required, f"{name} 需 ctx.daily 算前向收益"
+            assert "daily_basic" in required, f"{name} compute 读 daily_basic，不应移除声明"
+
+    _section_5_test_valuation_factors_keep_daily_basic_and_add_daily()
+
 
 # ==== 来自 test_factor_required_data_declares_daily.py ====
-def test_every_registered_factor_declares_daily():
-    offenders = []
-    for name in list_factors():
-        factor = get_factor(name)
-        required = getattr(factor, "required_data", None) or []
-        if "daily" not in required:
-            offenders.append((name, getattr(factor, "category", "?"), list(required)))
-    assert not offenders, (
-        "以下因子的 required_data 漏声明 'daily'，评估管线算前向收益时会 raise "
-        "'daily data not declared'：" + "; ".join(f"{n}({c})={rd}" for n, c, rd in offenders)
-    )
 
-
-def test_valuation_factors_keep_daily_basic_and_add_daily():
-    """这些估值/规模/流动性因子的 compute 确实读 daily_basic，故 daily 与 daily_basic 都要有。"""
-    for name in ("size_style", "value_style", "liquidity_style", "pe_ttm", "pb",
-                 "ep_ratio", "bm_ratio"):
-        required = getattr(get_factor(name), "required_data", None) or []
-        assert "daily" in required, f"{name} 需 ctx.daily 算前向收益"
-        assert "daily_basic" in required, f"{name} compute 读 daily_basic，不应移除声明"
 

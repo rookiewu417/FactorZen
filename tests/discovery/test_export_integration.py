@@ -37,7 +37,7 @@ from factorzen.markets.crypto.profile import build_crypto_profile
 from factorzen.pipelines.portfolio_build import run_portfolio
 from factorzen.risk.exposures import ExposureMatrix
 from factorzen.risk.model import RiskModelResult
-from tests.test_markets_crypto_mining import FakeCCXTBulk
+from tests.markets.test_crypto_mining import FakeCCXTBulk
 
 # ==== 来自 test_mine_export_alpha.py ====
 # tests/test_mine_export_alpha.py

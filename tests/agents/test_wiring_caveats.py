@@ -1,13 +1,9 @@
-# tests/test_agent_wiring.py
-"""接线测试：能力层(orchestrator) ↔ 接线层(pipeline/CLI) 之间不许漂移。
+"""合并自 agents 相关碎片测试（test_wiring_caveats.py）。
 
-背景：PR #60 的 patience/structured/heal_rounds 三个 workstream 在 orchestrator 里实现完毕、
-单测全绿，但 pipeline 与 CLI 从未把它们透传下去 —— 用户从 `fz mine agent/team` 根本启用不了。
-既有测试之所以看不出来，是因为它们**直接调 orchestrator**，绕过了 pipeline 和 CLI 两层。
-
-这里的测试一律从**最外层**（CLI parser / pipeline 入口）出发，断言参数真的抵达内层，
-而不是用 inspect.signature 检查形参是否存在（那种断言对「形参存在但调用方不传」零判别力）。
+test_agent_wiring.py：接线测试：能力层(orchestrator) ↔ 接线层(pipeline/CLI) 之间不许漂移
+test_agent_ashare_caveats.py：Workstream E：A股机制 + PIT 陷阱 Prompt 注入（研报优化方向①）
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -17,6 +13,7 @@ import numpy as np
 import polars as pl
 
 
+# ==== 来自 test_agent_wiring.py ====
 def _mock_daily() -> pl.DataFrame:
     rng = np.random.default_rng(1)
     days, d = [], dt.date(2022, 1, 3)
@@ -314,3 +311,38 @@ def test_rounds_log_records_tasks_for_traceability(tmp_path, monkeypatch):
     assert res.rounds_log[0]["tasks"] == [
         {"name": "mom5", "description": "5日动量", "rationale": "趋势"}
     ]
+
+# ==== 来自 test_agent_ashare_caveats.py ====
+def test_caveats_fragment_covers_key_mechanisms():
+    from factorzen.llm.prompt_fragments import ASHARE_CAVEATS
+    for kw in ["涨跌停", "停牌", "T+1", "PIT", "换手", "风险因子"]:
+        assert kw in ASHARE_CAVEATS, f"缺少 {kw}"
+
+
+def test_build_agent_messages_injects_caveats():
+    from factorzen.llm.generation import build_agent_messages
+    sys = build_agent_messages(["ts_mean"], ["close"], "", [])[0]["content"]
+    assert "涨跌停" in sys and "T+1" in sys
+
+
+def test_hypothesis_prompt_injects_caveats():
+    from factorzen.agents.roles.hypothesis import propose_hypotheses
+    cap: dict = {}
+
+    def fake(msgs):
+        cap["m"] = msgs
+        return '{"hypotheses":["x"]}'
+    propose_hypotheses(fake, known_invalid=[], known_valid=[])
+    assert "涨跌停" in cap["m"][0]["content"]
+
+
+def test_coder_prompt_injects_caveats():
+    from factorzen.agents.roles.coder import write_expressions
+    cap: dict = {}
+
+    def fake(msgs):
+        cap["m"] = msgs
+        return '{"expressions":["ts_mean(close,5)"]}'
+    write_expressions("动量", fake)
+    sys = cap["m"][0]["content"]
+    assert "PIT" in sys or "涨跌停" in sys

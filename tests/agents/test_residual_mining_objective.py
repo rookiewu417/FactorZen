@@ -21,7 +21,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-_SRC = Path(__file__).resolve().parents[1] / "src" / "factorzen"
+_SRC = Path(__file__).resolve().parents[2] / "src" / "factorzen"
 
 
 # ── 合成工具 ────────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import polars as pl
 
-_GOLDEN = json.loads((Path(__file__).parent / "golden_ashare_prompts.json").read_text())
+_GOLDEN = json.loads((Path(__file__).resolve().parent.parent / "golden_ashare_prompts.json").read_text())
 
 
 # ── 1.1 A 股逐字节零回归（golden 对照，改前捕获） ──────────────────────────────

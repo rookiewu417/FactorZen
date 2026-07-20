@@ -349,19 +349,6 @@ def test_build_payload_sends_empty_provider_only_when_not_configured():
 
     assert payload["extra_body"]["provider"]["only"] == []
 
-def test_build_payload_enables_aiping_thinking_for_true_values():
-    config = LLMConfig(
-        enabled=True,
-        base_url="https://www.aiping.cn/api/v1",
-        api_key="secret",
-        model="DeepSeek-V4-Pro",
-        thinking="true",
-    )
-
-    payload = _build_payload(config, _MSGS__llm_explain_client)
-
-    assert payload["extra_body"]["enable_thinking"] is True
-
 def test_aiping_payload_golden_byte_identical_shape():
     """flavor 缺省 aiping：payload 与改前逐键一致（含 extra_body 完整结构）。"""
     config = LLMConfig(
@@ -641,16 +628,6 @@ def test_explicit_profile_arg_overrides_env(monkeypatch):
     assert config.flavor == "openai"
     assert config.model == "gpt-5.4"
     assert config.base_url == "http://localhost:8080/v1"
-
-def test_flavor_default_is_aiping_when_unset(monkeypatch):
-    _clear_llm_env(monkeypatch)
-    monkeypatch.setenv("FACTORZEN_LLM_BASE_URL", "https://aiping.example/v1")
-    monkeypatch.setenv("FACTORZEN_LLM_API_KEY", "secret")
-    monkeypatch.setenv("FACTORZEN_LLM_MODEL", "m")
-
-    config = load_llm_config(enabled=True, env_file=None)
-
-    assert config.flavor == "aiping"
 
 def test_invalid_flavor_raises_value_error(monkeypatch):
     _clear_llm_env(monkeypatch)

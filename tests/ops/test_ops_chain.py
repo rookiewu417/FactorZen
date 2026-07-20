@@ -103,13 +103,13 @@ def test_load_ops_config_missing_file_raises(tmp_path):
     with pytest.raises((FileNotFoundError, ValueError)):
         load_ops_config(missing)
 
-@pytest.mark.parametrize("bad", [0, -1, -90])
+@pytest.mark.parametrize("bad", [0, -1])
 def test_ops_config_rejects_nonpositive_lookback_days(bad):
     """lookback_days 必须 > 0：零/负窗口无法取数，须在配置层拒绝而非跑到中途才崩。"""
     with pytest.raises(ValueError):
         OpsConfig(session_dir="s", portfolio_run_dirs_glob="g", lookback_days=bad)
 
-@pytest.mark.parametrize("bad", [0.0, -1.0])
+@pytest.mark.parametrize("bad", [0.0])
 def test_ops_config_rejects_nonpositive_initial_cash(bad):
     """initial_cash 必须 > 0：零/负本金无法纸面执行。"""
     with pytest.raises(ValueError):

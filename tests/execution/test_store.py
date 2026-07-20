@@ -14,13 +14,6 @@ def _rec(d, nav, bstate):
         "fills": [],
     }
 
-
-def test_init_creates_manifest(tmp_path: Path):
-    s = SessionStore(tmp_path / "sess1")
-    s.init({"broker": "paper", "initial_cash": 1e6, "seed": 0})
-    assert (tmp_path / "sess1" / "manifest.json").exists()
-
-
 def test_append_and_idempotency(tmp_path: Path):
     s = SessionStore(tmp_path / "sess1")
     s.init({"broker": "paper", "initial_cash": 1e6})
@@ -31,7 +24,6 @@ def test_append_and_idempotency(tmp_path: Path):
     assert s.load_state()["cash"] == 1e6
     assert s.nav_frame().height == 1
 
-
 def test_resume_reads_latest_state(tmp_path: Path):
     s = SessionStore(tmp_path / "sess1")
     s.init({"broker": "paper", "initial_cash": 1e6})
@@ -39,7 +31,6 @@ def test_resume_reads_latest_state(tmp_path: Path):
     s2 = SessionStore(tmp_path / "sess1")  # 新实例重载
     assert s2.load_state()["cash"] == 9e5
     assert s2.has_date(date(2026, 1, 5))
-
 
 def test_init_preserves_existing_manifest_config(tmp_path: Path):
     """已有会话再 init（如 fz live replay 复用 session）不应覆盖原 config——

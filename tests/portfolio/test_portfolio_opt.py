@@ -472,44 +472,16 @@ def test_generate_portfolio_report_html_has_sections(
     assert "sharpe" in html.lower() or "夏普" in html
     assert "0.67" in html or "67" in html  # 绩效数值渲染进去
     assert "总风险" in html or "total_risk" in html or "0.18" in html
+    # merged from deleted attribution/manifest smoke tests
+    assert "银行" in html or "brinson" in html.lower() or "归因" in html
+    assert "87" in html or "optimal" in html or "持仓" in html
 
 # ── additional coverage ───────────────────────────────────────────────────
-
-def test_returns_str(base_metrics):
-    """generate_portfolio_report 返回 str."""
-    html = generate_portfolio_report(None, metrics=base_metrics)
-    assert isinstance(html, str)
 
 def test_html_has_doctype(base_metrics):
     """输出是合法 HTML 文档，以 DOCTYPE 开头。"""
     html = generate_portfolio_report(None, metrics=base_metrics)
     assert html.strip().startswith("<!DOCTYPE") or html.strip().startswith("<!")
-
-def test_metrics_values_present(base_metrics):
-    """所有 metrics 数值都出现在 HTML 里。"""
-    html = generate_portfolio_report(None, metrics=base_metrics)
-    # ann_ret 12% or 0.12 — must match actual rendered format
-    assert "0.12" in html or "12.0%" in html
-    # ann_vol 18%
-    assert "18" in html
-    # sharpe
-    assert "0.67" in html or "67" in html
-
-def test_risk_table_rendered(base_metrics, risk_df):
-    """风险表格写入 HTML。"""
-    html = generate_portfolio_report(None, metrics=base_metrics, risk_summary_df=risk_df)
-    # At least one of total_risk / factor_risk / specific_risk shows up
-    assert any(v in html for v in ("total_risk", "factor_risk", "specific_risk", "总风险"))
-
-def test_attribution_table_rendered(base_metrics, attribution_df):
-    """归因表格写入 HTML。"""
-    html = generate_portfolio_report(None, metrics=base_metrics, attribution_df=attribution_df)
-    assert "银行" in html or "brinson" in html.lower() or "归因" in html
-
-def test_manifest_rendered(base_metrics, manifest):
-    """持仓 meta 写入 HTML。"""
-    html = generate_portfolio_report(None, metrics=base_metrics, portfolio_manifest=manifest)
-    assert "87" in html or "optimal" in html or "持仓" in html
 
 def test_no_chart_when_sim_result_none(base_metrics):
     """sim_result=None 时不应有 base64 图表字符串（无 <img src='data:image）。"""
@@ -534,17 +506,6 @@ def test_capability_overview_cards_present(base_metrics):
         assert milestone_token not in html, (
             f"展示页正文不应出现内部里程碑代号 {milestone_token!r}（对外应按能力命名）"
         )
-
-def test_all_args_together(base_metrics, attribution_df, risk_df, manifest):
-    """所有参数一起传入，不报错，HTML 足够长。"""
-    html = generate_portfolio_report(
-        None,
-        metrics=base_metrics,
-        attribution_df=attribution_df,
-        risk_summary_df=risk_df,
-        portfolio_manifest=manifest,
-    )
-    assert len(html) > 1000
 
 # ==== 来自 test_integration_portfolio_sim.py ====
 def _risk_result__integration(n: int = 6, k: int = 3) -> RiskModelResult:

@@ -24,7 +24,6 @@ from factorzen.intraday.sessions import (
 def _dt(h: int, m: int, day: int = 2) -> datetime:
     return datetime(2024, 1, day, h, m, 0)
 
-
 def _mini_frame() -> pl.DataFrame:
     """含竞价、午休边界、盘后、vol=0 的微型帧。"""
     rows = [
@@ -67,7 +66,6 @@ def _mini_frame() -> pl.DataFrame:
         }
     )
 
-
 class TestConstants:
     def test_label_convention_is_end(self) -> None:
         assert BAR_LABEL_CONVENTION == "end"
@@ -78,7 +76,6 @@ class TestConstants:
         assert ASHARE_BAR_FREQS["5min"].bars_per_day == 48
         assert ASHARE_BAR_FREQS["60min"].bars_per_day == 4
 
-
 class TestNormalizeFreq:
     def test_valid(self) -> None:
         assert normalize_freq("5min") == "5min"
@@ -86,7 +83,6 @@ class TestNormalizeFreq:
     def test_unknown_raises(self) -> None:
         with pytest.raises(ValueError, match="未知频率"):
             normalize_freq("7min")
-
 
 class TestCanonicalize:
     def test_drops_after_hours_keeps_boundaries(self) -> None:
@@ -101,7 +97,6 @@ class TestCanonicalize:
         assert (13, 1) in times
         assert (15, 0) in times
         assert out.height == df.height - 1
-
 
 class TestSessionBarIndex:
     def test_key_indices(self) -> None:
@@ -118,7 +113,6 @@ class TestSessionBarIndex:
         ).with_columns(session_bar_index().alias("idx"))
         idxs = df["idx"].to_list()
         assert idxs == [0, 1, 120, 121, 240, None]
-
 
 class TestResample5min:
     def test_auction_merges_into_0935(self) -> None:
@@ -195,7 +189,6 @@ class TestResample5min:
         ]
         assert (15, 5) not in times
 
-
 class TestResample30min:
     def test_morning_buckets(self) -> None:
         """30min：上午末桶标签 11:30。"""
@@ -222,7 +215,6 @@ class TestResample30min:
         assert (11, 30) in labels
         # 竞价进第一桶 end=10:00
         assert (10, 0) in labels
-
 
 class TestResample60min:
     def test_four_session_labels(self) -> None:
@@ -257,7 +249,6 @@ class TestResample60min:
             (t.hour, t.minute) for t in out["trade_time"].to_list()  # type: ignore[union-attr]
         )
         assert labels == [(10, 30), (11, 30), (14, 0), (15, 0)]
-
 
 class TestResample1min:
     def test_auction_into_0931_and_240_bars(self) -> None:
@@ -297,7 +288,6 @@ class TestResample1min:
         last = out.row(-1, named=True)
         assert last["trade_time"].hour == 15
         assert last["trade_time"].minute == 0
-
 
 class TestEdgeCases:
     def test_empty_frame(self) -> None:
@@ -356,32 +346,17 @@ def _make_minute_df() -> pl.DataFrame:
             )
     return pl.DataFrame(rows).with_columns(pl.col("trade_time").cast(pl.Datetime))
 
-
-def test_fwd_returns_columns():
-    df = compute_intraday_fwd_returns(_make_minute_df(), periods=[1, 5])
-    assert "fwd_ret_1bar" in df.columns
-    assert "fwd_ret_5bar" in df.columns
-
-
-def test_fwd_ret_1bar_last_row_is_null():
-    df = compute_intraday_fwd_returns(_make_minute_df(), periods=[1])
-    last_rows = df.filter(pl.col("ts_code") == "000001.SZ").sort("trade_time").tail(1)
-    assert last_rows["fwd_ret_1bar"][0] is None
-
-
 def test_fwd_ret_1bar_value():
     df = compute_intraday_fwd_returns(_make_minute_df(), periods=[1])
     row = df.filter((pl.col("ts_code") == "000001.SZ") & (pl.col("trade_time").dt.minute() == 30))
     expected = (10.1 - 10.0) / 10.0
     assert abs(row["fwd_ret_1bar"][0] - expected) < 1e-9
 
-
 def test_no_cross_stock_leakage():
     df = compute_intraday_fwd_returns(_make_minute_df(), periods=[1])
     for ts in ["000001.SZ", "000002.SZ", "000003.SZ"]:
         last_val = df.filter(pl.col("ts_code") == ts).sort("trade_time").tail(1)["fwd_ret_1bar"][0]
         assert last_val is None, f"{ts} 最后一行应为 null，实为 {last_val}"
-
 
 def test_fwd_return_does_not_cross_trading_day_boundary():
     df = pl.DataFrame(

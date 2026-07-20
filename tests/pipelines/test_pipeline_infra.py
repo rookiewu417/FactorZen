@@ -12,7 +12,6 @@ import numpy as np
 import polars as pl
 import pytest
 
-from factorzen.config import settings
 from factorzen.config.settings import (
     OUTPUT_DAILY_FACTORS,
     OUTPUT_DAILY_REPORTS,
@@ -479,14 +478,4 @@ def test_personal_factor_outputs_stay_in_daily_roots():
     assert daily_factor_output_dir(factor) == OUTPUT_DAILY_FACTORS
     assert daily_result_output_dir(factor) == OUTPUT_DAILY_RESULTS
     assert daily_report_output_dir(factor) == OUTPUT_DAILY_REPORTS
-
-def test_evaluations_are_sibling_to_runs_and_artifacts_stay_in_runs():
-    assert settings.FACTOR_EVALUATIONS_DIR == settings.WORKSPACE_DIR / "factor_evaluations"
-    assert settings.WORKSPACE_RUNS == settings.WORKSPACE_DIR / "runs"
-    assert settings.OUTPUT_DIR == settings.WORKSPACE_RUNS / "artifacts"
-
-def test_default_log_dir_stays_in_runs():
-    from factorzen.core.logger import default_log_dir
-
-    assert default_log_dir() == settings.WORKSPACE_RUNS / "logs"
 

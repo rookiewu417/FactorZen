@@ -1323,13 +1323,30 @@ def run_group_lift(
     }
 
 
-def _build_ret_panel(daily: pl.DataFrame, *, horizon: int = DEFAULT_HORIZON) -> pl.DataFrame:
-    """horizon 日前向收益面板（复刻 factor_combine 口径）。"""
+def _build_ret_panel(
+    daily: pl.DataFrame,
+    *,
+    horizon: int = DEFAULT_HORIZON,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
+) -> pl.DataFrame:
+    """horizon 日前向收益面板（复刻 factor_combine 口径）。
+
+    ``exec_lag`` / ``exec_price_col`` 透传给 ``compute_fwd_returns``，用于切到
+    **可实现**口径。默认 ``exec_lag=0`` 逐位等价于旧行为（close→close，
+    隐含「t 日收盘成交」）。
+
+    ⚠️ 默认口径**系统性高估**可实现收益：实测 csi500 上 lgbm 组合 top 桶年化超额
+    +35.20% 中隔夜段占 **100%**，而隔夜段不可交易（算信号需要 t 日收盘价）；
+    切到 ``exec_lag=1, exec_price_col="open_adj"`` 后只剩 +10.08%。
+    详见 ``compute_fwd_returns`` docstring 与 ``.artifacts/execution-timing.md``。
+    """
     from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
 
     price_col = "close_adj" if "close_adj" in daily.columns else "close"
     fwd = compute_fwd_returns(
         daily.sort(["ts_code", "trade_date"]), horizons=[horizon], price_col=price_col,
+        exec_lag=exec_lag, exec_price_col=exec_price_col,
     )
     return (
         fwd.select(["trade_date", "ts_code", pl.col(f"fwd_ret_{horizon}d").alias("ret")])

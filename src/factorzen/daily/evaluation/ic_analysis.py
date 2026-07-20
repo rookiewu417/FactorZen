@@ -57,6 +57,8 @@ def compute_fwd_returns(
     price_col: str = "close",
     code_col: str = "ts_code",
     date_col: str = "trade_date",
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
 ) -> pl.DataFrame:
     """预计算各时间窗口的前向持有期收益。
 
@@ -67,9 +69,30 @@ def compute_fwd_returns(
         price_col: 价格列名。存在时优先使用 close[t+h] / close[t] - 1。
         code_col: 股票代码列名。
         date_col: 日期列名。
+        exec_lag: **成交滞后**（交易日）。0 = t 日成交（默认，向后兼容）；
+            1 = t+1 日成交。见下方「为什么需要它」。
+        exec_price_col: 成交价格列。None → 沿用 ``price_col``。
 
     Returns:
         含 fwd_ret_{h}d 列的 DataFrame。
+
+    **为什么需要 exec_lag / exec_price_col**（2026-07-19 实测）：
+
+    默认口径 ``close[t+h]/close[t] − 1`` 隐含「**t 日收盘成交**」。但因子信号通常
+    需要 t 日收盘数据才能算出——**拿收盘价算信号、再用那个收盘价成交，不可实现**。
+    项目铁律本是「t 日算 → t+1 执行」（CLAUDE.md PIT 自查第 8 条）。
+
+    这个缺口不是学术洁癖：实测 csi500 上 lgbm 组合的 top 桶年化超额 **+35.20%** 中，
+    **隔夜段（close_t→open_{t+1}）占 100%**（+35.16%），日内段仅 +0.05%；
+    换成可实现的 ``exec_lag=1, exec_price_col="open_adj"``
+    （即 ``open[t+2]/open[t+1] − 1``）后只剩 **+10.08%**。
+    部分机制清楚：库含涨跌停叶，涨停股次日跳空可预测，但 t 日收盘已封死买不到。
+
+    ⇒ 用默认口径评估会**系统性高估**可实现收益。
+    产物见 ``.artifacts/execution-timing.md``。
+
+    **默认不变**（``exec_lag=0`` 且 ``exec_price_col=None`` 逐位等价于旧行为），
+    切换口径是调用方的显式决定。
     """
     if horizons is None:
         horizons = [1, 5, 10, 20]
@@ -81,14 +104,30 @@ def compute_fwd_returns(
             f"实际列为 {list(price_df.columns)}"
         )
 
+    if exec_lag < 0:
+        raise ValueError(f"compute_fwd_returns: exec_lag 须 ≥0，实际 {exec_lag}")
+    pcol = exec_price_col or price_col
+    if exec_price_col is not None and exec_price_col not in price_df.columns:
+        raise ValueError(
+            f"compute_fwd_returns: exec_price_col='{exec_price_col}' 不在列中；"
+            f"实际列为 {list(price_df.columns)}"
+        )
+
     df = price_df.sort([code_col, date_col])
     for h in horizons:
-        if price_col in df.columns:
-            future_price = pl.col(price_col).shift(-h).over(code_col)
-            df = df.with_columns((future_price / pl.col(price_col) - 1.0).alias(f"fwd_ret_{h}d"))
+        if pcol in df.columns:
+            # 进场价在 t+exec_lag，出场价在 t+exec_lag+h。
+            # exec_lag=0 时 entry 就是 t 日的 pcol，与旧实现逐位一致。
+            entry = (
+                pl.col(pcol) if exec_lag == 0
+                else pl.col(pcol).shift(-exec_lag).over(code_col)
+            )
+            exit_ = pl.col(pcol).shift(-(exec_lag + h)).over(code_col)
+            df = df.with_columns((exit_ / entry - 1.0).alias(f"fwd_ret_{h}d"))
         else:
+            # 单日收益回退路径：跳过 exec_lag 步后再复利 h 步
             compounded = pl.lit(1.0)
-            for step in range(1, h + 1):
+            for step in range(exec_lag + 1, exec_lag + h + 1):
                 compounded = compounded * (1.0 + pl.col(ret_col).shift(-step).over(code_col))
             df = df.with_columns((compounded - 1.0).alias(f"fwd_ret_{h}d"))
     return df

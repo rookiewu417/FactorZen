@@ -111,6 +111,22 @@ _GENERIC_CAVEATS = (
 )
 
 
+# 阈值/游程算子语义(仅当 op_names 含对应算子时注入,避免旧 golden 漂移)
+_THRESHOLD_STREAK_OPS = frozenset({"ts_count_gt", "ts_streak_gt", "ts_count_cross_up"})
+_THRESHOLD_STREAK_NOTE = (
+    "阈值/游程: ts_count_gt(x,y,w)=过去w日x>y占比[0,1]; "
+    "ts_streak_gt(x,y,w)=连续x>y天数截断w; "
+    "ts_count_cross_up(x,y,w)=过去w日x上穿y次数; y可为常数如0.0。\n"
+)
+
+
+def format_threshold_streak_ops_note(op_names: list[str] | set[str] | tuple[str, ...]) -> str:
+    """新算子语义说明。op_names 不含阈值/游程算子 → \"\"(A 股旧 golden 零回归)。"""
+    if not _THRESHOLD_STREAK_OPS.intersection(op_names):
+        return ""
+    return _THRESHOLD_STREAK_NOTE
+
+
 def format_library_covered(library_covered: list[str] | None) -> str:
     """Render the shared library-coverage hint for all LLM generation paths."""
     if not library_covered:

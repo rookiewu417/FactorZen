@@ -458,7 +458,10 @@ _SINGLE_TS_OPS = [
     "ts_mean", "delay", "ts_std", "ts_skew", "ts_decay_linear",
 ]
 
-_TWO_TS_OPS = ["ts_corr", "ts_cov"]
+_TWO_TS_OPS = [
+    "ts_corr", "ts_cov",
+    "ts_count_gt", "ts_streak_gt", "ts_count_cross_up",
+]
 
 # 嵌套混合：含 PR#61 老巢（test_parity_on_previously_working_shapes 同型）
 _NESTED_EXPRS = [

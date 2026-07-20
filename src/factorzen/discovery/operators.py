@@ -131,6 +131,63 @@ def _ts_cov(a: pl.Expr, b: pl.Expr, w: int | None) -> pl.Expr:
     return mab - ma * mb
 
 
+def _ts_count_gt(x: pl.Expr, y: pl.Expr, w: int | None) -> pl.Expr:
+    """过去 w 日 x>y 的占比 ∈[0,1]。null/NaN 对不计入分子分母;有效样本 < w/2 → null。
+
+    比较前 fill_nan(None):polars 中 NaN>x 恒 True,会泄漏假阳性。
+    实现 O(n):rolling_sum 分子/分母,无逐窗 Python 循环。
+    """
+    ww = int(w)  # type: ignore[arg-type]
+    xf = x.fill_nan(None)
+    yf = y.fill_nan(None)
+    valid = xf.is_not_null() & yf.is_not_null()
+    gt_flag = pl.when(valid).then((xf > yf).cast(pl.Float64)).otherwise(0.0)
+    valid_flag = valid.cast(pl.Float64)
+    num = gt_flag.rolling_sum(ww, min_samples=1).over("ts_code")
+    den = valid_flag.rolling_sum(ww, min_samples=1).over("ts_code")
+    thr = ww / 2.0
+    return pl.when(den >= thr).then(num / den).otherwise(None)
+
+
+def _ts_streak_gt(x: pl.Expr, y: pl.Expr, w: int | None) -> pl.Expr:
+    """截至当日连续 x>y 的天数,截断于 w(∈[0,w])。
+
+    当日 x>y 为假 → 0;x 或 y 为 null/NaN → null。
+    O(n):row_nr − last_break(forward_fill),无 O(n·w) 位移叠窗。
+    """
+    ww = int(w)  # type: ignore[arg-type]
+    xf = x.fill_nan(None)
+    yf = y.fill_nan(None)
+    valid = xf.is_not_null() & yf.is_not_null()
+    is_gt = valid & (xf > yf)
+    row_nr = pl.int_range(0, pl.len()).over("ts_code")
+    # 非 True(含 False 与 invalid)打断游程;invalid 当日输出 null,False 输出 0
+    breaker = pl.when(~is_gt).then(row_nr).otherwise(None)
+    last_break = breaker.forward_fill().over("ts_code").fill_null(-1)
+    raw = (row_nr - last_break).clip(upper_bound=ww)
+    return pl.when(~valid).then(None).when(~is_gt).then(pl.lit(0)).otherwise(raw)
+
+
+def _ts_count_cross_up(x: pl.Expr, y: pl.Expr, w: int | None) -> pl.Expr:
+    """过去 w 日内 x 上穿 y 的次数(昨日 x≤y 且今日 x>y)。
+
+    任一侧 null/NaN → 该日不构成上穿。O(n):shift + rolling_sum。
+    """
+    ww = int(w)  # type: ignore[arg-type]
+    xf = x.fill_nan(None)
+    yf = y.fill_nan(None)
+    px = xf.shift(1).over("ts_code")
+    py = yf.shift(1).over("ts_code")
+    both_ok = (
+        xf.is_not_null()
+        & yf.is_not_null()
+        & px.is_not_null()
+        & py.is_not_null()
+    )
+    cross = both_ok & (px <= py) & (xf > yf)
+    return cross.cast(pl.Float64).rolling_sum(ww, min_samples=1).over("ts_code")
+
+
 OPERATORS: dict[str, OperatorSpec] = {
     # ── 时序（.over("ts_code")）──
     "ts_mean": _ts("ts_mean", lambda x, w: x.rolling_mean(w, min_samples=_MIN).over("ts_code")),
@@ -153,6 +210,10 @@ OPERATORS: dict[str, OperatorSpec] = {
         _decay_linear(x, w).over("ts_code")),
     "ts_corr": _ts2("ts_corr", _ts_corr),
     "ts_cov": _ts2("ts_cov", _ts_cov),
+    # 阈值/游程(arity=2+window):离散状态类 alpha——占比/连续天数/上穿次数
+    "ts_count_gt": _ts2("ts_count_gt", _ts_count_gt),
+    "ts_streak_gt": _ts2("ts_streak_gt", _ts_streak_gt),
+    "ts_count_cross_up": _ts2("ts_count_cross_up", _ts_count_cross_up),
     "ts_median": _ts("ts_median", lambda x, w:
         x.rolling_median(w, min_samples=_MIN).over("ts_code")),
     "ts_zscore": _ts("ts_zscore", lambda x, w: _safe_div(

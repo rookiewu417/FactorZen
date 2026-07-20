@@ -17,13 +17,18 @@ def _syntax_prompt(leaf_budgets: dict[str, int] | None = None, *,
 
     ``market`` / ``leaf_names``：市场约束与叶子清单按市场注入（默认 ashare + A 股叶子，
     逐字节零回归）。crypto 等传各自的 leaf_names + market 触发对应 caveats。"""
-    from factorzen.llm.prompt_fragments import market_caveats
+    from factorzen.llm.prompt_fragments import (
+        format_threshold_streak_ops_note,
+        market_caveats,
+    )
     leaves = list(LEAF_FEATURES.keys()) if leaf_names is None else leaf_names
+    op_list = list(OPERATORS.keys())
     base = (
-        "可用算子: " + ", ".join(OPERATORS.keys()) + "\n"
+        "可用算子: " + ", ".join(op_list) + "\n"
         "可用特征(叶子): " + ", ".join(leaves) + "\n"
         "时序算子最后一个参数是整型窗口，如 ts_mean(close, 20)。\n"
-        '只输出 JSON: {"expressions": ["...", "..."]}。'
+        + format_threshold_streak_ops_note(op_list)
+        + '只输出 JSON: {"expressions": ["...", "..."]}。'
         "\n" + market_caveats(market)
     )
     hint = format_leaf_budget_hint(leaf_budgets)

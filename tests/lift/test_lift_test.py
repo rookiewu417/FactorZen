@@ -753,15 +753,16 @@ def test_mining_session_gray_zone_fields_in_manifest_contract():
 
     C1：reject 类别改为 lift_queue；n_gray_zone 计数字段名兼容保留。
     """
-    src = (Path(__file__).resolve().parents[1] / "src" / "factorzen"
+    # parents[2]：本文件在 tests/lift/，repo root 为上两级（迁入前为 tests/ 下 parents[1]）
+    src = (Path(__file__).resolve().parents[2] / "src" / "factorzen"
            / "discovery" / "mining_session.py").read_text(encoding="utf-8")
     assert "n_gray_zone" in src
     assert "REJECT_CATEGORY_LIFT_QUEUE" in src
     assert "is_lift_queue_candidate" in src
-    agents_man = (Path(__file__).resolve().parents[1] / "src" / "factorzen"
+    agents_man = (Path(__file__).resolve().parents[2] / "src" / "factorzen"
                   / "agents" / "manifest.py").read_text(encoding="utf-8")
     assert "n_gray_zone" in agents_man
-    nodes = (Path(__file__).resolve().parents[1] / "src" / "factorzen"
+    nodes = (Path(__file__).resolve().parents[2] / "src" / "factorzen"
              / "agents" / "nodes.py").read_text(encoding="utf-8")
     assert "REJECT_CATEGORY_LIFT_QUEUE" in nodes
     assert "(lift队列,待组合裁决)" in nodes

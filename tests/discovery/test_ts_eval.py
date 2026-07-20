@@ -1,23 +1,36 @@
-"""ts 节点分块求值：全 A OOM 路径的逐位 parity 与批次边界守卫。
+"""Merged discovery tests: test_ts_eval.py
 
-仅改 evaluate_materialized 对 ts 节点的物化执行方式（整股批次），语义与全帧
-with_columns 必须 Series.equals 级相同。测试用 monkeypatch 压低阈值激发分块路径。
+test_ts_chunk_eval.py：ts 节点分块求值：全 A OOM 路径逐位 parity 与批次边界
+test_discovery_intraday_keys.py：引擎日期键 dtype 分派：Datetime 帧过 DataBundle/quick_fitness 不炸
 """
+
 from __future__ import annotations
 
 import datetime as dt
 import math
+from datetime import (
+    date,
+    datetime,
+)
 
 import numpy as np
 import polars as pl
 import pytest
 
 from factorzen.discovery import expression as expression_mod
-from factorzen.discovery.expression import evaluate_materialized, parse_expr
+from factorzen.discovery.expression import (
+    evaluate_materialized,
+    parse_expr,
+)
 from factorzen.discovery.operators import OPERATORS
+from factorzen.discovery.scoring import (
+    DataBundle,
+    _cut_literal,
+    quick_fitness,
+)
 
+# ==== 来自 test_ts_chunk_eval.py ====
 # ── 数据工厂 ────────────────────────────────────────────────────────────────
-
 
 def _panel(
     n_stocks: int = 30,
@@ -68,12 +81,10 @@ def _panel(
         df = df.with_columns(pl.col("ts_code").cast(pl.Categorical))
     return df
 
-
 def _force_chunk(monkeypatch, *, threshold: int = 1000, target: int = 500) -> None:
     """压低阈值，使中等测试面板走分块路径。"""
     monkeypatch.setattr(expression_mod, "TS_CHUNK_ROWS_THRESHOLD", threshold)
     monkeypatch.setattr(expression_mod, "TS_CHUNK_TARGET_ROWS", target)
-
 
 def _eval_chunked_and_full(node, df, monkeypatch):
     """分块 on（低阈值）vs off（超高阈值）→ 两 Series。"""
@@ -83,7 +94,6 @@ def _eval_chunked_and_full(node, df, monkeypatch):
     monkeypatch.setattr(expression_mod, "TS_CHUNK_ROWS_THRESHOLD", 10**12)
     unchunked = evaluate_materialized(node, df)
     return chunked, unchunked
-
 
 # ── 1. 逐位 parity 矩阵 ─────────────────────────────────────────────────────
 
@@ -111,7 +121,6 @@ _NESTED_EXPRS = [
     "ts_cov(ret_1d, pb, 10)",
 ]
 
-
 @pytest.mark.parametrize("op", _SINGLE_TS_OPS)
 def test_parity_single_input_ts(op, monkeypatch):
     assert OPERATORS[op].category == "ts" and OPERATORS[op].arity == 1
@@ -121,7 +130,6 @@ def test_parity_single_input_ts(op, monkeypatch):
     chunked, unchunked = _eval_chunked_and_full(node, df, monkeypatch)
     assert chunked.equals(unchunked), f"{op}: chunked ≠ unchunked"
 
-
 @pytest.mark.parametrize("op", _TWO_TS_OPS)
 def test_parity_two_input_ts(op, monkeypatch):
     assert OPERATORS[op].category == "ts" and OPERATORS[op].arity == 2
@@ -130,14 +138,12 @@ def test_parity_two_input_ts(op, monkeypatch):
     chunked, unchunked = _eval_chunked_and_full(node, df, monkeypatch)
     assert chunked.equals(unchunked), f"{op}: chunked ≠ unchunked"
 
-
 @pytest.mark.parametrize("expr", _NESTED_EXPRS)
 def test_parity_nested_mixed(expr, monkeypatch):
     df = _panel(30, 80, unequal=True)
     node = parse_expr(expr)
     chunked, unchunked = _eval_chunked_and_full(node, df, monkeypatch)
     assert chunked.equals(unchunked), f"{expr}: chunked ≠ unchunked"
-
 
 def test_parity_categorical_ts_code(monkeypatch):
     """P4c：ts_code 为 Categorical 时 rle/分块仍须逐位相等。"""
@@ -146,9 +152,7 @@ def test_parity_categorical_ts_code(monkeypatch):
     chunked, unchunked = _eval_chunked_and_full(node, df, monkeypatch)
     assert chunked.equals(unchunked)
 
-
 # ── 2. 整股不切 ─────────────────────────────────────────────────────────────
-
 
 def test_whole_stock_never_split(monkeypatch):
     """单股行数 > 目标行数 → 该股独立成批，结果仍 parity。"""
@@ -192,9 +196,7 @@ def test_whole_stock_never_split(monkeypatch):
     unchunked = evaluate_materialized(node, df)
     assert chunked.equals(unchunked)
 
-
 # ── 3. 行序保持 ─────────────────────────────────────────────────────────────
-
 
 def test_row_order_preserved(monkeypatch):
     """输出 Series 与输入 df 行对齐；手算 delay(1) 交叉验证。"""
@@ -229,9 +231,7 @@ def test_row_order_preserved(monkeypatch):
     # 行序：with_row_index 顺序与输出对齐（按原 work 行）
     assert series.len() == df.height
 
-
 # ── 4. 阈值不触发 ───────────────────────────────────────────────────────────
-
 
 def test_threshold_skips_chunk_path(monkeypatch):
     """小帧 / 默认阈值：_materialize_ts_chunked 调用次数 = 0。"""
@@ -255,7 +255,6 @@ def test_threshold_skips_chunk_path(monkeypatch):
     _ = evaluate_materialized(node_cs, df)
     assert calls["n"] == 0
 
-
 def test_chunk_path_invoked_when_over_threshold(monkeypatch):
     """阈值压低后 ts 节点确实走分块函数。"""
     df = _panel(20, 60, unequal=True)
@@ -272,9 +271,7 @@ def test_chunk_path_invoked_when_over_threshold(monkeypatch):
     _ = evaluate_materialized(node, df)
     assert calls["n"] >= 1
 
-
 # ── 5. 批次边界算法单测 ─────────────────────────────────────────────────────
-
 
 def test_ts_stock_batches_greedy_pack():
     """贪心合批：不切开股票，累计逼近 target。"""
@@ -297,12 +294,10 @@ def test_ts_stock_batches_greedy_pack():
         part = codes[off: off + length]
         assert part == s.slice(off, length).to_list()
 
-
 def test_ts_stock_batches_single_stock_over_target():
     s = pl.Series(["X"] * 100)
     batches = expression_mod._ts_stock_batches(s, target_rows=30)
     assert batches == [(0, 100)]
-
 
 def test_cs_chunked_parity(monkeypatch):
     """cs 节点按日期段分块:分块 on/off 逐位相同,行序还原。"""
@@ -334,3 +329,39 @@ def test_cs_chunked_parity(monkeypatch):
         monkeypatch.setattr(ex, "TS_CHUNK_ROWS_THRESHOLD", 3_000_000)
         monkeypatch.setattr(ex, "TS_CHUNK_TARGET_ROWS", 1_500_000)
         assert chunked.equals(base), f"cs 分块 parity 失败: {expr_s}"
+
+# ==== 来自 test_discovery_intraday_keys.py ====
+def _intraday_daily(n_bars: int = 48, n_syms: int = 40) -> pl.DataFrame:
+    # ≥MIN_IC_SAMPLES(30) 个标的,否则 compute_rank_ic 跳过全部横截面 → IC 序列空
+    ts = [datetime(2026, 5, 1 + i // 24, i % 24, 0) for i in range(n_bars)]
+    rows = []
+    for si in range(n_syms):
+        base = 100.0 + si * 10
+        for i, t in enumerate(ts):
+            rows.append({"ts_code": f"C{si:02d}USDT", "trade_date": t,
+                         "close": base + i * 0.5, "vol": 1.0, "amount": 100.0})
+    return pl.DataFrame(rows).with_columns(pl.col("trade_date").cast(pl.Datetime("us")))
+
+def test_cut_literal_dispatch():
+    intraday = _intraday_daily()
+    daily = intraday.with_columns(pl.col("trade_date").cast(pl.Date))
+    assert _cut_literal(intraday, "20260501") == datetime(2026, 5, 1)
+    assert _cut_literal(daily, "20260501") == date(2026, 5, 1)
+
+def test_databundle_and_fitness_on_datetime_frame():
+    df = _intraday_daily()
+    bundle = DataBundle.build(df, train_ratio=0.7)
+    factor = df.select("trade_date", "ts_code",
+                       pl.col("close").alias("factor_value"))
+    res = quick_fitness(factor, bundle, "train")
+    assert res["n"] > 0  # 切分/过滤在 Datetime 键上正常工作
+
+def test_factor_values_eval_start_on_datetime_frame():
+    from factorzen.discovery.expression import parse_expr
+    from factorzen.discovery.mining_session import _factor_values
+    df = _intraday_daily()
+    leaf_map = {"close": "close", "vol": "vol", "amount": "amount"}
+    out = _factor_values(parse_expr("close", leaf_map), df, eval_start="20260502",
+                         leaf_map=leaf_map)
+    assert out["trade_date"].min() >= datetime(2026, 5, 2)
+

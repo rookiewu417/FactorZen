@@ -1,13 +1,40 @@
+"""Merged discovery tests: test_session.py
+
+test_discovery_session.py：run_session：产物/可复现、DSR 护栏、指纹合并、与 agent 预热一致
+test_discovery_crypto_session.py：run_session 吃 MarketProfile：crypto 无 close_adj 可挖掘，A 股默认不变
+test_discovery_leaf_injection.py：discovery 引擎 leaf 集/映射/搜索可注入，默认 A 股不变（MC1 T1/T2）
+"""
+
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import (
+    date,
+    timedelta,
+)
 from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
+
+from factorzen.discovery.expression import (
+    Feature,
+    compile_expr,
+    feature_names,
+    parse_expr,
+)
+from factorzen.discovery.mining_session import run_session
+from factorzen.discovery.operators import LEAF_FEATURES
+from factorzen.discovery.search.genetic import GeneticSearcher
+from factorzen.discovery.search.random_search import (
+    RandomSearcher,
+    random_expression,
+)
+from factorzen.markets.crypto.profile import build_crypto_profile
 
 
+# ==== 来自 test_discovery_session.py ====
 def _daily(seed=3, n_stocks=40, n_days=120):
     rng = np.random.default_rng(seed)
     start = date(2024, 1, 2)
@@ -27,7 +54,6 @@ def _daily(seed=3, n_stocks=40, n_days=120):
                          "amount": 1e7, "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4)})
     return pl.DataFrame(rows)
 
-
 def _mk_factor(vals_per_stock, n_days=5):
     """构造 [trade_date, ts_code, factor_value]：每只股票取 vals_per_stock[i]，每日相同。"""
     rows = []
@@ -36,7 +62,6 @@ def _mk_factor(vals_per_stock, n_days=5):
         for i, v in enumerate(vals_per_stock):
             rows.append({"trade_date": dt, "ts_code": f"{i:06d}.SH", "factor_value": float(v)})
     return pl.DataFrame(rows)
-
 
 def test_rank_fingerprint_merges_monotone_equivalents():
     """R5：截面 rank 指纹对单调(同向)变换一致 → 数学等价簇同指纹；反向/不同向不同指纹。"""
@@ -52,7 +77,6 @@ def test_rank_fingerprint_merges_monotone_equivalents():
     assert _rank_fingerprint(f_inc) != _rank_fingerprint(f_dec)       # 方向不同 → 区分
     assert _rank_fingerprint(f_inc) != _rank_fingerprint(f_other)     # 不同因子 → 区分
 
-
 def test_cross_section_variability_flags_degenerate():
     """R7：近常数因子截面变异占比≈0（被过滤）；有变异因子≈1（保留）。"""
     from factorzen.discovery.mining_session import _cross_section_variability
@@ -60,7 +84,6 @@ def test_cross_section_variability_flags_degenerate():
     varying = _mk_factor([((i * 37) % 40) + 0.5 for i in range(40)])
     assert _cross_section_variability(const) < 0.5
     assert _cross_section_variability(varying) > 0.5
-
 
 def test_oos_adjusted_fitness_demotes_valid_reversal():
     """R6：valid t-stat 与 train 反号时按 |valid_tstat| 扣分（同尺度），把 train 高/valid 反号降权。"""
@@ -70,7 +93,6 @@ def test_oos_adjusted_fitness_demotes_valid_reversal():
     assert _oos_adjusted_fitness(3.0, 3.0, 0.0) == 3.0     # valid 样本不足(tstat=0) → 不调整
     # 反号候选(train fitness 3.0→1.0) 应排到一致候选(2.0)之后
     assert _oos_adjusted_fitness(3.0, 3.0, -2.0) < _oos_adjusted_fitness(2.0, 2.0, 1.0)
-
 
 def test_run_session_respects_config_knobs(tmp_path):
     """cfg：去相关阈值不再写死——decorr_threshold=0.0 时 mc<0.0 恒 False → top-K 一个都选不进。"""
@@ -82,7 +104,6 @@ def test_run_session_respects_config_knobs(tmp_path):
     assert len(r_default["candidates"]) > 0        # 默认阈值 0.7 → 有候选
     assert len(r_strict["candidates"]) == 0        # 阈值 0.0 → 全被去相关门槛挡下
 
-
 def test_guard_passed_respects_dsr_alpha():
     """cfg：strict 口径下 DSR 阈值可配——收紧 dsr_alpha 让边界候选从 passed 变 not passed。
     （library 默认口径不含 DSR，dsr_alpha 不影响，故此测显式 gate="strict"。）"""
@@ -90,7 +111,6 @@ def test_guard_passed_respects_dsr_alpha():
     c = {"dsr_pvalue": 0.03, "holdout_ic": 0.05, "ic_ci_low": 0.02, "ic_train": 0.06}
     assert _guard_passed(c, dsr_alpha=0.05, gate="strict") is True     # 0.03 < 0.05 → 过
     assert _guard_passed(c, dsr_alpha=0.01, gate="strict") is False    # 0.03 ≥ 0.01 → 收紧后不过
-
 
 def test_guard_passed_criteria():
     """护栏软标记（2026-07 因子库化, 默认 library）= 真(holdout 与 train 同号) + 有信号
@@ -107,7 +127,6 @@ def test_guard_passed_criteria():
     # strict 口径仍按 DSR：0.2 ≥ 0.10 不过
     assert _guard_passed({**ok, "dsr_pvalue": 0.2}, gate="strict") is False
 
-
 def test_session_writes_passed_flag(tmp_path: Path):
     """R1 集成：每个候选带 bool passed，candidates.csv 有 passed 列；passed=True 者确满足护栏。"""
     import polars as pl
@@ -123,7 +142,6 @@ def test_session_writes_passed_flag(tmp_path: Path):
     df = pl.read_csv(Path(res["session_dir"]) / "candidates.csv")
     assert "passed" in df.columns
 
-
 def test_factor_values_eval_start_trims():
     from factorzen.discovery.expression import parse_expr
     from factorzen.discovery.mining_session import _factor_values
@@ -133,7 +151,6 @@ def test_factor_values_eval_start_trims():
     es = cutoff.strftime("%Y%m%d")
     out = _factor_values(parse_expr("close"), daily, eval_start=es)
     assert out["trade_date"].min() >= cutoff
-
 
 def test_session_runs_and_writes_artifacts(tmp_path: Path):
     from factorzen.discovery.mining_session import run_session
@@ -149,7 +166,6 @@ def test_session_runs_and_writes_artifacts(tmp_path: Path):
     for c in res["candidates"]:
         assert c["max_corr"] < 0.7  # 贪心去相关保证：top-K 互不近重复，max_corr 是真实测量
 
-
 def test_session_reproducible_same_seed(tmp_path: Path):
     from factorzen.discovery.mining_session import run_session
     a = run_session(_daily(), n_trials=20, top_k=5, seed=7, out_dir=str(tmp_path / "a"))
@@ -157,7 +173,6 @@ def test_session_reproducible_same_seed(tmp_path: Path):
     expr_a = [c["expression"] for c in a["candidates"]]
     expr_b = [c["expression"] for c in b["candidates"]]
     assert expr_a == expr_b
-
 
 def test_session_has_guard_metrics_and_holdout_isolated(tmp_path):
     from factorzen.discovery.mining_session import run_session
@@ -172,7 +187,6 @@ def test_session_has_guard_metrics_and_holdout_isolated(tmp_path):
         assert 0.0 <= c["pbo"] <= 1.0 or c["pbo"] != c["pbo"]  # [0,1] 或 nan
     # holdout 永久隔离：挖掘期数据严格早于 holdout（删除 daily=mining_df 会让此断言失败）
     assert res["mining_end"] < res["holdout_start"]
-
 
 def test_dsr_n_trials_same_source_as_sharpe_variance(tmp_path, monkeypatch):
     """R8：DSR 的 n_trials 必须与 sharpe_variance 同源（都来自存活集 scored），
@@ -198,7 +212,6 @@ def test_dsr_n_trials_same_source_as_sharpe_variance(tmp_path, monkeypatch):
     assert res["n_scored"] >= len(res["candidates"])    # 存活集 ⊇ top-K
     assert res["n_scored"] > 0
 
-
 def test_deflated_sharpe_train_n_vs_mining_window_n_flips_significance():
     """数值对照：DSR 显著性检验必须用候选自己的 train 段样本数(n_train)，不能用
     mining 全段交易日数(n_obs_mining)——后者系统性偏大（约 1.43x：500/350），且放大
@@ -211,7 +224,6 @@ def test_deflated_sharpe_train_n_vs_mining_window_n_flips_significance():
     _dsr_wrong, p_wrong = deflated_sharpe(sharpe, n_trials, 500, sharpe_variance=sharpe_var)
     assert p_correct > 0.05  # 正确：用 train 段真实样本数 → 不显著
     assert p_wrong < 0.05  # 错误：用放大的 mining 全段样本数 → 假显著（危险方向）
-
 
 def test_session_dsr_uses_candidate_own_train_n(tmp_path, monkeypatch):
     """集成测试：run_session 内对每个候选调用 deflated_pvalue() 时，传入的样本数
@@ -245,7 +257,6 @@ def test_session_dsr_uses_candidate_own_train_n(tmp_path, monkeypatch):
         assert n_obs_used == c["n_train"]          # 用的是候选自己的 train 段样本数
         assert n_obs_used < legacy_n_obs_mining     # 不是放大过的 mining 全段样本数（旧 bug）
 
-
 def test_genetic_dsr_n_spans_generations_not_just_survivors(tmp_path):
     """F6：genetic 的 DSR N 应反映跨代真实评估过的唯一表达式数（eval_cache），而非
     仅最终代存活集 len(scored)≈pop_size。elitism 使最终代最优即全程 argmax，选择实际
@@ -260,7 +271,6 @@ def test_genetic_dsr_n_spans_generations_not_just_survivors(tmp_path):
         "——反映跨代评估广度，而非只数最终代 pop_size"
     )
 
-
 def test_random_dsr_n_still_equals_scored(tmp_path, monkeypatch):
     """回归：random 路径 N 仍等于存活集大小（与 sharpe_variance 同源，R8 不变）。"""
     import factorzen.discovery.mining_session as ms
@@ -272,7 +282,6 @@ def test_random_dsr_n_still_equals_scored(tmp_path, monkeypatch):
                          method="random", holdout_ratio=0.2, out_dir=str(tmp_path))
     assert captured and len(set(captured)) == 1
     assert captured[0] == res["n_scored"]
-
 
 def test_run_session_and_agent_agree_reject_underwarmed(monkeypatch, tmp_path):
     """双路径一致：预热不足的表达式在 M1(run_session) 与 agent(evaluate_expressions) 都被拒。
@@ -324,3 +333,203 @@ def test_run_session_and_agent_agree_reject_underwarmed(monkeypatch, tmp_path):
     ares = evaluate_expressions(["ts_mean(close, 20)"], daily, bundle,
                                 eval_start=dates[3], eval_end=train_end)[0]
     assert ares["ic_train"] is None and "预热不足" in (ares["error"] or "")
+
+# ==== 来自 test_discovery_crypto_session.py ====
+def _synthetic_crypto_daily(n_sym: int = 40, n_days: int = 55, seed: int = 7) -> pl.DataFrame:
+    # 截面样本数需 ≥ MIN_IC_SAMPLES(30) 否则 compute_rank_ic 跳过该日 → IC 序列空
+    rng = np.random.default_rng(seed)
+    rows = []
+    start = date(2024, 1, 1)
+    for s in range(n_sym):
+        code = f"SYM{s:02d}USDT"
+        price = 100.0 + s
+        for d in range(n_days):
+            ret = rng.normal(0, 0.02)
+            price = max(1.0, price * (1 + ret))
+            vol = float(rng.uniform(50, 500))
+            rows.append({
+                "ts_code": code,
+                "trade_date": start + timedelta(days=d),
+                "open": price * (1 + rng.normal(0, 0.001)),
+                "high": price * 1.01,
+                "low": price * 0.99,
+                "close": price,
+                "vol": vol,
+                "amount": price * vol,
+                "funding_rate": float(rng.normal(0.0001, 0.0002)),
+                "open_interest": float(rng.uniform(1000, 5000)),
+            })
+    return pl.DataFrame(rows)
+
+def test_run_session_crypto_profile(tmp_path):
+    """crypto daily(无 close_adj) + crypto profile → 挖出带 holdout/DSR/PBO 的 candidates。"""
+    daily = _synthetic_crypto_daily()
+    profile = build_crypto_profile()
+    result = run_session(
+        daily,
+        n_trials=40,
+        top_k=5,
+        seed=1,
+        method="random",
+        out_dir=str(tmp_path),
+        profile=profile,
+    )
+    assert result["candidates"], "crypto 挖掘应产出至少一个候选"
+    sess = tmp_path / "session_1_random"
+    assert (sess / "candidates.csv").exists()
+    cand = pl.read_csv(sess / "candidates.csv")
+    # OOS + 防过拟合列齐全
+    for col in ["holdout_ic", "dsr_pvalue", "pbo", "ic_train", "ir_train"]:
+        assert col in cand.columns
+    # 候选表达式只用 crypto 叶子(含 funding_rate/open_interest 可能出现)
+    from factorzen.discovery.expression import feature_names, parse_expr
+    crypto_leaves = set(profile.factors.leaf_features().keys())
+    for expr in cand["expression"].to_list():
+        assert feature_names(parse_expr(expr, crypto_leaves)) <= crypto_leaves
+
+def test_run_session_ashare_default_unchanged(tmp_path):
+    """A 股默认路径(profile=None)：真产候选、只用 A 股叶子、护栏列齐全。
+
+    旧版只断言 `"candidates" in result`（字典必然有这个 key）与 CSV 文件存在，
+    并跑在 **10 只股票**上——`_MIN_CROSS_SAMPLES=30` 把每个截面整天丢弃，IC 恒空。
+    这条守卫是 CLAUDE.md 的「A 股零回归是底线」，判别力必须真实存在。
+    """
+    rng = np.random.default_rng(3)
+    rows = []
+    start_d = date(2024, 1, 1)
+    for s_i in range(40):        # ≥ _MIN_CROSS_SAMPLES(=30)，否则 IC 序列为空
+        code = f"{600000 + s_i:06d}.SH"
+        price = 10.0 + s_i
+        for d in range(120):
+            prev_price = price
+            price = max(1.0, price * (1 + rng.normal(0, 0.02)))
+            vol = float(rng.uniform(1e5, 1e6))
+            rows.append({
+                "ts_code": code, "trade_date": start_d + timedelta(days=d),
+                "pre_close": prev_price,
+                "open": price, "high": price * 1.01, "low": price * 0.99, "close": price,
+                "open_adj": price, "high_adj": price * 1.01, "low_adj": price * 0.99,
+                "close_adj": price, "vol": vol, "amount": price * vol,
+                "total_mv": price * 1e6, "circ_mv": price * 8e5, "pb": 1.5,
+                "pe_ttm": 15.0, "ps_ttm": 3.0, "dv_ttm": 2.0,
+            })
+    daily = pl.DataFrame(rows)
+    from factorzen.discovery.operators import BASIC_FEATURES
+
+    daily = daily.with_columns([
+        pl.lit(1.0).alias(c) for c in sorted(BASIC_FEATURES) if c not in daily.columns
+    ])
+    result = run_session(daily, n_trials=30, top_k=3, seed=2, out_dir=str(tmp_path))
+
+    # 与 crypto profile 那条测试对称：断言**非空**，而非 `"candidates" in result`
+    # ——后者是字典必然有的 key，恒真。
+    assert result["candidates"], "A 股默认路径应产出至少一个候选"
+
+    sess = tmp_path / "session_2_random"
+    assert (sess / "candidates.csv").exists()
+    cand = pl.read_csv(sess / "candidates.csv")
+    assert cand.height > 0, "A 股默认路径应产出候选（IC 全空时这里会是 0 行）"
+
+    # 护栏列齐全（与 crypto profile 那条测试对称）
+    for col in ["holdout_ic", "dsr_pvalue", "pbo", "ic_train", "ir_train", "passed"]:
+        assert col in cand.columns
+
+    # IC 真的被算出来了——全 NaN 说明截面被整天丢弃
+    ic = cand["ic_train"].to_list()
+    assert any(v == v and v != 0.0 for v in ic), f"ic_train 全为 nan/0：{ic}"
+
+    # 表达式只用 A 股叶子（profile=None 不该混入 crypto 叶子）
+    from factorzen.discovery.expression import feature_names, parse_expr
+    from factorzen.discovery.operators import LEAF_FEATURES
+
+    ashare_leaves = set(LEAF_FEATURES.keys())
+    for expr in cand["expression"].to_list():
+        assert feature_names(parse_expr(expr)) <= ashare_leaves
+    crypto_only = {"funding_rate", "open_interest"}
+    assert not (set().union(*(feature_names(parse_expr(e))
+                              for e in cand["expression"].to_list())) & crypto_only)
+
+def test_ashare_default_derives_ret_1d_from_close_adj():
+    """docstring 承诺的「仍用 close_adj 派生」必须真的被验证。
+
+    造一个 close 与 close_adj 显著不同的帧（模拟除权）：`ret_1d` 必须由 close_adj 算出。
+    旧测试通篇没碰过这件事。
+    """
+    from factorzen.discovery.derived import add_derived_columns
+
+    rows = []
+    for d in range(4):
+        rows.append({
+            "ts_code": "600000.SH", "trade_date": date(2024, 1, 1) + timedelta(days=d),
+            "pre_close": 10.0, "open": 10.0, "high": 10.1, "low": 9.9,
+            "close": 100.0 * (d + 1),          # 未复权价：乱跳
+            "close_adj": 10.0 * (1.10 ** d),   # 复权价：每日 +10%
+            "open_adj": 10.0, "high_adj": 10.1, "low_adj": 9.9,
+            "vol": 1e5, "amount": 1e6,
+        })
+    out = add_derived_columns(pl.DataFrame(rows))
+    ret = out["ret_1d"].to_list()
+
+    assert ret[0] is None
+    for v in ret[1:]:
+        assert v == pytest.approx(0.10, abs=1e-9), (
+            f"ret_1d={v}，应为 close_adj 的 10% 日涨幅；若由 close 派生会得到 1.0/0.5/…"
+        )
+
+# ==== 来自 test_discovery_leaf_injection.py ====
+_CRYPTO_LEAF_MAP = {
+    "close": "close", "vol": "vol", "funding_rate": "funding_rate",
+    "open_interest": "open_interest",
+}
+
+# ── T1: expression 注入 ───────────────────────────────────────────────────────
+def test_compile_default_ashare_unchanged():
+    """默认走 A 股 LEAF_FEATURES：close→close_adj。"""
+    expr = compile_expr(Feature("close"))
+    df = pl.DataFrame({"close_adj": [1.0, 2.0], "close": [9.0, 9.0]})
+    assert df.with_columns(expr.alias("x"))["x"].to_list() == [1.0, 2.0]
+
+def test_compile_with_crypto_leaf_map():
+    """注入 crypto leaf_map：close→close(无复权)，funding_rate 可编译。"""
+    df = pl.DataFrame({"close": [1.0, 2.0], "funding_rate": [0.01, 0.02]})
+    close_expr = compile_expr(Feature("close"), leaf_map=_CRYPTO_LEAF_MAP)
+    assert df.with_columns(close_expr.alias("x"))["x"].to_list() == [1.0, 2.0]
+    fr_expr = compile_expr(Feature("funding_rate"), leaf_map=_CRYPTO_LEAF_MAP)
+    assert df.with_columns(fr_expr.alias("x"))["x"].to_list() == [0.01, 0.02]
+
+def test_parse_with_crypto_leaves():
+    """注入 crypto leaves：funding_rate 合法解析；默认 A 股拒绝。"""
+    node = parse_expr("ts_mean(funding_rate, 3)", leaves=_CRYPTO_LEAF_MAP)
+    assert "funding_rate" in feature_names(node)
+    # 默认 A 股叶子集不含 funding_rate
+    import pytest
+    with pytest.raises(ValueError, match="未知叶子"):
+        parse_expr("funding_rate")
+
+# ── T2: 搜索注入 ──────────────────────────────────────────────────────────────
+def test_random_expression_uses_injected_leaves():
+    rng = np.random.default_rng(0)
+    crypto_leaves = list(_CRYPTO_LEAF_MAP.keys())
+    for _ in range(50):
+        node = random_expression(rng, max_depth=3, leaves=crypto_leaves)
+        assert feature_names(node) <= set(crypto_leaves)
+
+def test_random_expression_default_ashare():
+    rng = np.random.default_rng(0)
+    for _ in range(30):
+        node = random_expression(rng, max_depth=3)
+        assert feature_names(node) <= set(LEAF_FEATURES.keys())
+
+def test_random_searcher_leaves():
+    rng = np.random.default_rng(1)
+    s = RandomSearcher(rng, max_depth=3, leaves=list(_CRYPTO_LEAF_MAP.keys()))
+    for _ in range(30):
+        assert feature_names(s.propose()) <= set(_CRYPTO_LEAF_MAP.keys())
+
+def test_genetic_searcher_leaves():
+    rng = np.random.default_rng(2)
+    gs = GeneticSearcher(rng, max_depth=3, leaves=list(_CRYPTO_LEAF_MAP.keys()))
+    pop = gs.evolve(lambda n: -float(len(feature_names(n))), pop_size=12, generations=2)
+    for node in pop:
+        assert feature_names(node) <= set(_CRYPTO_LEAF_MAP.keys())
+

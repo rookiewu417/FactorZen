@@ -1,38 +1,159 @@
-"""集成测试：M1 挖掘（run_session）→ export-alpha → M4 组合构建（run_portfolio）产物契约贯通。
+"""Merged discovery tests: test_export_integration.py
 
-真实调用链路（不手写 candidates.csv / alpha 截面去顶替真实产物）：
-
-    discovery.mining_session.run_session()          → 真实落盘 candidates.csv + session_dir
-    discovery.export.read_candidate_expression()    → 真实解析 candidates.csv 取表达式（1-based rank）
-    discovery.export.export_alpha_cross_section()   → 真实计算某日截面 α，落 [ts_code, alpha] parquet
-    pipelines.portfolio_build.run_portfolio()        → 真实消费该 α 截面（对齐 codes 顺序）
-
-项目文档已记录过"mine search 产出的 candidates 不是 alpha 截面，需要 export-alpha 转换"
-这个已知的集成注意点；本测试验证这一步真实转换出的产物，字段名/shape 是否真的符合
-下游 run_portfolio() 的 alpha 参数期望（而不是靠人工检查代码"看起来应该对得上"）。
+test_mine_export_alpha.py：export-alpha 写两列 parquet，并按 rank 读候选表达式
+test_discovery_export.py：read_candidate_expression 的 require_passed 门禁与无 passed 列向后兼容
+test_integration_mine_export_validate.py：集成：run_session → export-alpha → run_portfolio 产物契约贯通
+test_markets_crypto_validation.py：crypto 上 bootstrap IC CI + DSR 防过拟合护栏有效（MC2）
 """
+
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from datetime import date, timedelta
+import math
+from dataclasses import (
+    dataclass,
+    field,
+)
+from datetime import (
+    date,
+    timedelta,
+)
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
-from factorzen.discovery.export import export_alpha_cross_section, read_candidate_expression
+from factorzen.discovery.export import (
+    export_alpha_cross_section,
+    read_candidate_expression,
+)
 from factorzen.discovery.mining_session import run_session
+from factorzen.discovery.scoring import ic_overfit_report
+from factorzen.markets.crypto.mining import (
+    build_crypto_daily,
+    validate_crypto_expression,
+)
+from factorzen.markets.crypto.profile import build_crypto_profile
 from factorzen.pipelines.portfolio_build import run_portfolio
 from factorzen.risk.exposures import ExposureMatrix
 from factorzen.risk.model import RiskModelResult
+from tests.test_markets_crypto_mining import FakeCCXTBulk
 
+# ==== 来自 test_mine_export_alpha.py ====
+# tests/test_mine_export_alpha.py
+
+def _make_daily_lf(n_stocks=8, n_days=60, seed=42) -> pl.LazyFrame:
+    rng = np.random.default_rng(seed)
+    start = date(2024, 1, 2)
+    days, d = [], start
+    while len(days) < n_days:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    rows = []
+    for s in [f"{i:06d}.SH" for i in range(n_stocks)]:
+        price = 10.0
+        for day in days:
+            price = float(max(price * (1 + rng.standard_normal() * 0.02), 0.1))
+            rows.append({"trade_date": day, "ts_code": s, "close": price,
+                         "open": price, "high": price, "low": price, "pre_close": price,
+                         "close_adj": price, "open_adj": price, "high_adj": price,
+                         "low_adj": price,
+                         "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6),
+                         "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4)})
+    return pl.DataFrame(rows).lazy()
+
+@dataclass
+class MockCtx:
+    start: str = "20240301"
+    end: str = "20240301"
+    required_data: list = field(default_factory=lambda: ["daily", "daily_basic"])
+    lookback_days: int = 40
+    universe: list | None = None
+    snapshot_mode: str = "daily"
+    _daily: pl.LazyFrame | None = None
+    _basic: pl.LazyFrame | None = None
+
+    @property
+    def daily(self) -> pl.LazyFrame:
+        return self._daily
+
+    @property
+    def daily_basic(self) -> pl.LazyFrame:
+        return self._basic if self._basic is not None else pl.DataFrame(
+            {"trade_date": [], "ts_code": []}).lazy()
+
+def test_export_alpha_writes_two_column_parquet(tmp_path):
+    """挖掘候选 + 指定日期 → 落 [ts_code, alpha] 两列截面 parquet：非空且值有限。"""
+    from factorzen.discovery.export import export_alpha_cross_section
+
+    ctx = MockCtx(_daily=_make_daily_lf())
+    out = tmp_path / "alpha.parquet"
+    p = export_alpha_cross_section("pct_change(close, 20)", ctx, "20240301", str(out))
+
+    assert p.exists()
+    df = pl.read_parquet(p)
+    # 恰有 ts_code + alpha 两列
+    assert df.columns == ["ts_code", "alpha"]
+    assert df.height > 0
+    # 值全部有限且非空
+    assert df["alpha"].is_finite().all()
+    assert df["alpha"].null_count() == 0
+    # 单日截面：每只股票至多一行
+    assert df["ts_code"].n_unique() == df.height
+
+def test_read_candidate_expression_by_rank(tmp_path):
+    """candidates.csv 按 rank 取表达式。"""
+    from factorzen.discovery.export import read_candidate_expression
+
+    # 用 polars 写，忠实复现 mining_session 产出的 candidates.csv（含逗号的表达式会被加引号）
+    pl.DataFrame({
+        "rank": [1, 2],
+        "n_trials": [100, 100],
+        "expression": ["rank(close)", "ts_mean(close, 5)"],
+    }).write_csv(tmp_path / "candidates.csv")
+    assert read_candidate_expression(str(tmp_path), 1) == "rank(close)"
+    assert read_candidate_expression(str(tmp_path), 2) == "ts_mean(close, 5)"
+
+# ==== 来自 test_discovery_export.py ====
+def _write_candidates_csv(tmp_path, *, with_passed=True):
+    import polars as pl
+    rows = [
+        {"rank": 1, "expression": "close", "passed": True},
+        {"rank": 2, "expression": "neg(close)", "passed": False},
+    ]
+    if not with_passed:
+        rows = [{k: v for k, v in r.items() if k != "passed"} for r in rows]
+    d = tmp_path / "sess"
+    d.mkdir()
+    pl.DataFrame(rows).write_csv(d / "candidates.csv")
+    return str(d)
+
+def test_read_candidate_require_passed_rejects_unpassed(tmp_path: Path):
+    """R1：require_passed=True 时，请求未过护栏的 rank 报错并提示 --all；过的正常返回。"""
+    import pytest
+
+    from factorzen.discovery.export import read_candidate_expression
+    sess = _write_candidates_csv(tmp_path)
+    assert read_candidate_expression(sess, rank=1, require_passed=True) == "close"       # 过
+    with pytest.raises(ValueError, match="--all"):
+        read_candidate_expression(sess, rank=2, require_passed=True)                     # 未过 → 拒
+    assert read_candidate_expression(sess, rank=2, require_passed=False) == "neg(close)"  # 逃生口
+
+def test_read_candidate_backward_compat_no_passed_column(tmp_path: Path):
+    """老 session 无 passed 列时 require_passed 不生效（不破坏向后兼容）。"""
+    from factorzen.discovery.export import read_candidate_expression
+    sess = _write_candidates_csv(tmp_path, with_passed=False)
+    assert read_candidate_expression(sess, rank=2, require_passed=True) == "neg(close)"
+
+# render_factor_file / export_candidate / exported/*.py 桥已废除（Batch 2）；
+# lookback 契约见 test_export_lookback.py → lookback_for_expression。
+
+# ==== 来自 test_integration_mine_export_validate.py ====
 _N_STOCKS = 30
-
 
 def _stock_codes(n_stocks: int = _N_STOCKS) -> list[str]:
     return [f"{i:06d}.SH" for i in range(n_stocks)]
-
 
 def _mining_daily(n_stocks: int = _N_STOCKS, n_days: int = 150, seed: int = 42) -> pl.DataFrame:
     """价量合成日线（不含基本面列），与 tests/test_discovery_session.py::_daily 同构：
@@ -57,7 +178,6 @@ def _mining_daily(n_stocks: int = _N_STOCKS, n_days: int = 150, seed: int = 42) 
                          "amount": 1e7, "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4)})
     return pl.DataFrame(rows)
 
-
 @dataclass
 class _MockFactorContext:
     """duck-type 满足 ExpressionFactor.compute(ctx) 的最小契约：daily/daily_basic/start。
@@ -79,7 +199,6 @@ class _MockFactorContext:
     def daily_basic(self) -> pl.LazyFrame:
         return pl.DataFrame({"trade_date": [], "ts_code": []}).lazy()
 
-
 def _risk_result_for_universe(codes: list[str], seed: int = 3) -> RiskModelResult:
     n = len(codes)
     rng = np.random.default_rng(seed)
@@ -95,14 +214,12 @@ def _risk_result_for_universe(codes: list[str], seed: int = 3) -> RiskModelResul
         factor_covariance=F, specific_risk=np.full(n, 0.1), factor_names=names,
     )
 
-
 def _run_mining_session(tmp_path: Path) -> tuple[pl.DataFrame, dict]:
     daily = _mining_daily()
     res = run_session(daily, n_trials=25, top_k=3, seed=42, method="random",
                       out_dir=str(tmp_path / "sessions"))
     assert len(res["candidates"]) > 0, "合成数据下 run_session 应至少产出 1 个候选"
     return daily, res
-
 
 def test_mine_session_to_export_alpha_cross_section(tmp_path: Path):
     """run_session() 真实产出 candidates.csv → read_candidate_expression() 真实解析
@@ -136,7 +253,6 @@ def test_mine_session_to_export_alpha_cross_section(tmp_path: Path):
     assert alpha_df["alpha"].null_count() == 0
     assert alpha_df["alpha"].is_finite().all()
     assert alpha_df["ts_code"].n_unique() == alpha_df.height, "单日截面每只股票至多一行"
-
 
 def test_mine_export_alpha_consumed_by_portfolio_build(tmp_path: Path):
     """再往前一步：export-alpha 产出的截面真实喂给 run_portfolio()，不报错、正常落盘。
@@ -191,3 +307,34 @@ def test_mine_export_alpha_consumed_by_portfolio_build(tmp_path: Path):
     # optimal_inaccurate 时求解器可能有轻微数值残差，容差放宽到 1e-2；核心诉求是
     # 排除"其实是 infeasible 兜底全零仓位"（那种情况下 sum 应为 0，而不是接近 1）。
     assert abs(float(weights_df["target_weight"].sum()) - 1.0) < 1e-2, "Σw 应接近 1（budget 约束）"
+
+# ==== 来自 test_markets_crypto_validation.py ====
+def _profile_syms():
+    fake = FakeCCXTBulk()
+    return build_crypto_profile(client=fake), fake.symbols
+
+def test_ic_overfit_report_market_agnostic():
+    """ic_overfit_report 吃 factor_df+daily(任意市场)，产出 IC/IR/DSR/CI。"""
+    profile, syms = _profile_syms()
+    daily = build_crypto_daily(profile.provider, syms, "20240101", "20240224")
+    daily = profile.factors.derived_columns(daily)
+    factor_df = daily.select(["trade_date", "ts_code"]).with_columns(
+        daily["ret_1d"].alias("factor_value")
+    )
+    rep = ic_overfit_report(factor_df, daily)
+    assert set(rep) >= {"ic_mean", "ir", "dsr_p", "ci_lo", "ci_hi", "n"}
+    assert rep["n"] > 0
+    assert all(math.isfinite(rep[k]) for k in ("ic_mean", "ir", "dsr_p"))
+    assert rep["ci_lo"] <= rep["ci_hi"]
+
+def test_validate_crypto_expression():
+    """crypto 单表达式防过拟合验证：bootstrap CI + DSR 在 crypto 上跑通。"""
+    profile, syms = _profile_syms()
+    rep = validate_crypto_expression(
+        profile, "ts_mean(ret_1d, 5)", syms, "20240101", "20240224"
+    )
+    assert rep["n"] > 0
+    assert math.isfinite(rep["ir"])
+    assert math.isfinite(rep["dsr_p"])
+    assert 0.0 <= rep["dsr_p"] <= 1.0
+

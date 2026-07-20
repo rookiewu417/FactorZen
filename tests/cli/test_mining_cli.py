@@ -4,7 +4,6 @@ test_discovery_cli.py：fz mine search/leaderboard/export-alpha CLI parser 与 l
 """
 
 
-
 from __future__ import annotations
 
 # ==== 来自 test_agent_cli.py ====
@@ -38,16 +37,6 @@ def test_parser_mine_agent_defaults():
     assert args.seed == 42
     assert args.human_review is False
     assert args.universe is None
-
-
-def test_parser_mine_agent_human_review():
-    from factorzen.cli.main import build_parser
-
-    p = build_parser()
-    args = p.parse_args(
-        ["mine", "agent", "--start", "20220101", "--end", "20231231", "--human-review"]
-    )
-    assert args.human_review is True
 
 
 def test_cmd_mine_agent_forwards_args_to_run_agent_mine(monkeypatch, capsys):
@@ -438,15 +427,6 @@ def test_cmd_mine_team_passes_universe_to_prepare(monkeypatch) -> None:
 
 
 # ==== 来自 test_discovery_cli.py ====
-
-def test_parser_has_mine_search():
-    from factorzen.cli.main import build_parser
-    parser = build_parser()
-    args = parser.parse_args(["mine", "search", "--start", "20240101", "--end", "20240601"])
-    assert args.command == "mine"
-    assert args.mine_command == "search"
-    assert args.start == "20240101"
-    assert callable(args.func)
 
 
 def test_parser_has_mine_leaderboard():

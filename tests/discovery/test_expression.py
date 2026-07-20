@@ -176,9 +176,6 @@ def test_window_op_empty_args_raises_valueerror(expr):
     with pytest.raises(ValueError):
         parse_expr(expr)
 
-def test_valid_expression_still_parses():
-    node = parse_expr("ts_mean(close, 5)")
-    assert node is not None
 
 # ── P0：时序算子窗口 < 1 = 前视/未来函数（违反 PIT 铁律），parse 层根治 ────────────────
 

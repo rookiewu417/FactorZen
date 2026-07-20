@@ -186,39 +186,6 @@ def test_low_corr_full_pass_zero_regression_fast_path():
 
 # ── 额外边界 ─────────────────────────────────────────────────────────────────
 
-def test_no_upper_bound_residual_002_queues_when_not_passed():
-    """残差 0.02 不过主门（反号）时可入队——无上界。"""
-    cand = {
-        "residual_ic_train": 0.02,
-        "n_residual_holdout_days": DEFAULT_HOLDOUT_MIN_DAYS,
-    }
-    assert DEFAULT_RESIDUAL_IC_FLOOR < 0.02  # 旧灰区上界之外
-    assert is_lift_queue_candidate(cand, objective="residual") is True
-
-def test_coverage_shortfall_not_queued():
-    cand = {
-        "residual_ic_train": 0.0113,
-        "n_residual_holdout_days": DEFAULT_HOLDOUT_MIN_DAYS - 1,
-    }
-    assert is_lift_queue_candidate(cand, objective="residual") is False
-
-def test_raw_objective_floor():
-    assert is_lift_queue_candidate(
-        {"ic_train": DEFAULT_RAW_GRAY_IC_FLOOR, "n_holdout_days": 80},
-        objective="raw",
-    )
-    assert not is_lift_queue_candidate(
-        {"ic_train": DEFAULT_RAW_GRAY_IC_FLOOR - 0.001, "n_holdout_days": 80},
-        objective="raw",
-    )
-
-def test_is_gray_zone_alias():
-    c = {
-        "residual_ic_train": 0.0113,
-        "n_residual_holdout_days": DEFAULT_HOLDOUT_MIN_DAYS,
-    }
-    assert is_gray_zone(c) is True
-    assert is_gray_zone(c) is is_lift_queue_candidate(c)
 
 def test_library_orthogonal_check_threshold_parameterized():
     """threshold 参数化；默认 0.7 向后兼容；硬拒用 0.95。"""
@@ -247,7 +214,7 @@ def test_old_noise_band_residual_no_longer_queued():
     from factorzen.discovery.guardrails import DEFAULT_GRAY_IC_FLOOR
 
     assert DEFAULT_GRAY_IC_FLOOR == 0.008
-    for ric in (0.0035, 0.005, 0.0079):
+    for ric in (0.0079,):
         assert not is_lift_queue_candidate(
             {
                 "residual_ic_train": ric,

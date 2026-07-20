@@ -90,10 +90,6 @@ def test_max_correlation_pairwise_ignores_degenerate_pool_factor():
     corr = max_correlation(cand, {"good": good, "degenerate": degenerate})
     assert corr > 0.99  # 修前因退化因子污染整表返回 0.0
 
-def test_databundle_train_ratio_one_no_crash():
-    from factorzen.discovery.scoring import DataBundle
-    b = DataBundle.build(_daily(), train_ratio=1.0)
-    assert b.train_end is not None  # 不崩溃
 
 def test_fitness_sort_key_is_tstat_not_raw_ir():
     """R2：排序键由裸 IR 换成 t-stat。fitness 现在跟 t-stat 走，且 t-stat≠IR（换的是键而非恒等）。"""

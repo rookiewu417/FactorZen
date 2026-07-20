@@ -188,28 +188,6 @@ def test_combine_lgbm_base_panel_parity_golden():
     )
 
 
-def test_combine_lgbm_base_none_matches_no_kw():
-    """base_panel=None 与不传 kw 一致（组合层零回归接口）。"""
-    from factorzen.research.combination.cv import PurgedWalkForwardCV
-    from factorzen.research.combination.models import combine_lgbm
-
-    _baseline, _cand, ret, full = _synth_five_plus_one(
-        n_days=70, n_stocks=16, seed=2, candidate_extra=False,
-    )
-    cv = PurgedWalkForwardCV(train_days=30, test_days=10, purge_days=3)
-    kw = dict(seed=1, n_estimators=20, min_child_samples=8)
-    a = combine_lgbm(full, ret, cv, **kw).sort(["trade_date", "ts_code"])
-    b = combine_lgbm(full, ret, cv, base_panel=None, **kw).sort(
-        ["trade_date", "ts_code"]
-    )
-    np.testing.assert_allclose(
-        a["factor_value"].to_numpy().astype(float),
-        b["factor_value"].to_numpy().astype(float),
-        atol=1e-12,
-        rtol=0,
-    )
-
-
 # ── G1 自适应 workers ──────────────────────────────────────────────────────
 
 

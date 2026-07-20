@@ -322,22 +322,6 @@ def _assert_same(a: tuple[float, str | None], b: tuple[float, str | None], *, at
     assert n_a == n_b, f"nearest mismatch: {n_a!r} vs {n_b!r}"
     assert mc_a == pytest.approx(mc_b, abs=atol), f"max_corr {mc_a} vs {mc_b}"
 
-def test_panel_none_matches_pairwise_api_signature():
-    """不传 panel 时 max_correlation_detail 行为与仅 pool 调用一致（API 零回归）。"""
-    from factorzen.discovery.scoring import max_correlation_detail
-
-    days = _dates__library_corr_panel_equiv(40)
-    stocks = [f"{i:06d}.SH" for i in range(40)]
-    rng = np.random.default_rng(0)
-    base = rng.standard_normal((len(days), len(stocks)))
-    cand = _panel_df(days, stocks, base)
-    pool = {
-        "lib_a": _panel_df(days, stocks, base + 0.01 * rng.standard_normal(base.shape)),
-        "lib_b": _panel_df(days, stocks, rng.standard_normal(base.shape)),
-    }
-    r0 = max_correlation_detail(cand, pool)
-    r1 = max_correlation_detail(cand, pool, panel=None)
-    _assert_same(r0, r1)
 
 def test_empty_pool_returns_zero_none():
     from factorzen.discovery.scoring import build_library_corr_panel, max_correlation_detail

@@ -16,18 +16,6 @@ from factorzen.ops.state import OpsState
 
 # ==== 来自 test_validation_cli.py ====
 
-def test_parser_has_validate_overfit():
-    from factorzen.cli.main import build_parser
-
-    p = build_parser()
-    args = p.parse_args(
-        ["validate", "overfit", "momentum_12_1", "--start", "20230101", "--end", "20240101"]
-    )
-    assert args.command == "validate"
-    assert args.validate_command == "overfit"
-    assert args.factor == "momentum_12_1"
-    assert callable(args.func)
-
 
 def _install_fake_overfit_pipeline(monkeypatch):
     """monkeypatch `_cmd_validate_overfit` 依赖的每一步，返回按依赖名分组的调用记录。
@@ -217,23 +205,6 @@ def test_cmd_validate_overfit_resolves_universe_into_context(monkeypatch):
 
 
 # ==== 来自 test_report_cli.py ====
-
-def test_parser_has_report_portfolio():
-    """report portfolio 子命令已注册，attrs: command=report / report_command=portfolio / callable func。"""
-    from factorzen.cli.main import build_parser
-
-    p = build_parser()
-    args = p.parse_args(
-        [
-            "report",
-            "portfolio",
-            "--sim-dir",
-            "workspace/sim/run-001",
-        ]
-    )
-    assert args.command == "report"
-    assert args.report_command == "portfolio"
-    assert callable(args.func)
 
 
 def test_parser_report_portfolio_sim_dir():

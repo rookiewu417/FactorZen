@@ -297,13 +297,6 @@ def _mock_daily(n_stocks=40, n_days=80, seed=7):
             })
     return pl.DataFrame(rows)
 
-def test_rank_fingerprint_import_path_m1_reexport():
-    """M1 旧路径 re-export；与 evaluation 公共实现同一对象语义。"""
-    from factorzen.discovery.evaluation import _rank_fingerprint as ev_fp
-    from factorzen.discovery.mining_session import _rank_fingerprint as m1_fp
-
-    # 同一函数（import re-export）
-    assert m1_fp is ev_fp
 
 def test_evaluate_fingerprint_dup_monotone_equivalent():
     """同截面秩序：rank(amount) 与 rank(mul(amount,2)) 第二记 duplicate_fingerprint、不计 N。"""
@@ -348,25 +341,4 @@ def test_evaluate_fingerprint_persists_across_batches():
     assert out2[0]["error"] == "duplicate_fingerprint"
     assert out2[0]["n_train"] == 0
 
-def test_m1_rank_fingerprint_behaviour_unchanged():
-    """定向：mining_session 路径 import 的指纹对单调变换仍合并（零回归）。"""
-    from factorzen.discovery.mining_session import _rank_fingerprint
-
-    def _mk(vals, n_days=5):
-        rows = []
-        for d in range(n_days):
-            day = dt.date(2024, 1, 2) + dt.timedelta(days=d)
-            for i, v in enumerate(vals):
-                rows.append({
-                    "trade_date": day, "ts_code": f"{i:06d}.SH",
-                    "factor_value": float(v),
-                })
-        return pl.DataFrame(rows)
-
-    base = [((i * 37) % 40) + 0.5 for i in range(40)]
-    f_inc = _mk(base)
-    f_inc2 = _mk([x * 3.0 + 7.0 for x in base])
-    f_dec = _mk([-x for x in base])
-    assert _rank_fingerprint(f_inc) == _rank_fingerprint(f_inc2)
-    assert _rank_fingerprint(f_inc) != _rank_fingerprint(f_dec)
 

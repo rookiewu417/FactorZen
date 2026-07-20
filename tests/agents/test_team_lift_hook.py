@@ -684,6 +684,24 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
     _tp6.mkdir(exist_ok=True)
     _section_6_test_write_team_manifest_includes_lift_fields(_tp6)
 
+    # -- P0: manifest params 须落成交口径（可复现铁律）--
+    def _section_7_test_team_manifest_params_carry_exec_convention(tmp_path):
+        from factorzen.agents.team_orchestrator import TeamResult
+
+        state = AgentState(seed=1)
+        res = TeamResult(state=state, candidates=[], n_trials=0)
+        path = write_team_manifest(
+            res, out_dir=str(tmp_path), run_id="r_exec",
+            params={"exec_lag": 1, "exec_price_col": "open_adj", "seed": 1},
+        )
+        man = json.loads(path.read_text(encoding="utf-8"))
+        assert man["params"]["exec_lag"] == 1
+        assert man["params"]["exec_price_col"] == "open_adj"
+
+    _tp7 = tmp_path / "_s7"
+    _tp7.mkdir(exist_ok=True)
+    _section_7_test_team_manifest_params_carry_exec_convention(_tp7)
+
 
 # ── 3. CLI 透传（parser 最外层，禁止 inspect.signature）─────────────────────
 

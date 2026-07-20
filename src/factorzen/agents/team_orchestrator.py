@@ -156,13 +156,13 @@ def _narrow_holdout_price_frame(holdout_df: pl.DataFrame) -> pl.DataFrame:
     """P5：长驻 holdout 只留键 + 价列（holdout_ic / residual hold_fwd 所需）。
 
     因子值走 warmup/session_prepped 扩窗求值；护栏不再依赖 holdout 全宽叶子。
+    保留 open_adj/open 以便 ``exec_price_col`` 可实现口径（缺则 compute_fwd_returns 会炸）。
     """
     cols = ["trade_date", "ts_code"]
-    if "close_adj" in holdout_df.columns:
-        cols.append("close_adj")
-    elif "close" in holdout_df.columns:
-        cols.append("close")
-    return holdout_df.select([c for c in cols if c in holdout_df.columns])
+    for c in ("close_adj", "close", "open_adj", "open"):
+        if c in holdout_df.columns:
+            cols.append(c)
+    return holdout_df.select(cols)
 
 
 def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
@@ -216,6 +216,8 @@ def _run_one_round(
     llm_workers: int = 1, residual_projector=None,
     run_id: str | None = None, campaign_id: str | None = None,
     prepped=None,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -472,6 +474,8 @@ def _run_one_round(
         objective=objective,
         residual_projector=residual_projector,  # session 级 QR，全量残差 train IC 快路径
         prepped=prepped,             # P5：session 同源 prep，跳过护栏再 prep 全帧
+        exec_lag=exec_lag,
+        exec_price_col=exec_price_col,
     )
     _print_rejections("mine-team", state)
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
@@ -956,6 +960,7 @@ def run_team_agent(
                 residual_projector=residual_projector,
                 run_id=session_run_id, campaign_id=session_campaign_id,
                 prepped=session_prepped,
+                exec_lag=exec_lag, exec_price_col=exec_price_col,
             )
         except LLMClientError as exc:
             llm_failures += 1

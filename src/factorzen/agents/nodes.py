@@ -222,6 +222,8 @@ def node_guardrails(
     objective: str = "residual",
     residual_projector=None,
     prepped=None,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
 ) -> AgentState:
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
 
@@ -298,7 +300,7 @@ def node_guardrails(
         library_orthogonal_check,
         max_correlation,
     )
-    from factorzen.validation.holdout import holdout_ic_result
+    from factorzen.validation.holdout import holdout_fwd_returns, holdout_ic_result
 
     leaf_map = profile.factors.leaf_features() if profile is not None else None
     passed = [a for a in state.attempts
@@ -421,7 +423,10 @@ def node_guardrails(
         try:
             node = parse_expr(a.expression, leaf_map)
             fdf_hold = _holdout_values(node)
-            hres = holdout_ic_result(fdf_hold, holdout_df)
+            hres = holdout_ic_result(
+                fdf_hold, holdout_df,
+                exec_lag=exec_lag, exec_price_col=exec_price_col,
+            )
             ic_h, ir_h, (ci_lo, ci_hi), n_h = hres.ic_mean, hres.ir, hres.ci, hres.n_days
             a.n_holdout_days = n_h
             # 传**带符号** IR：取绝对值由 basis.two_sided 在 deflated_pvalue 内部完成，
@@ -466,11 +471,10 @@ def node_guardrails(
                     )
                     a.residual_ic_train = residual_ic_tr  # type: ignore[attr-defined]
                 if _hold_fwd is None:
-                    from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
-                    _pc = ("close_adj" if "close_adj" in holdout_df.columns
-                           else "close")
-                    _hold_fwd = compute_fwd_returns(
-                        holdout_df.sort(["ts_code", "trade_date"]), price_col=_pc,
+                    # 与 train bundle / holdout 主门同源成交口径（禁止恒 close→close）
+                    _hold_fwd = holdout_fwd_returns(
+                        holdout_df,
+                        exec_lag=exec_lag, exec_price_col=exec_price_col,
                     )
                 r_h = compute_residual_ic(
                     fdf_hold, lib_panel, _hold_fwd, projector=projector,
@@ -617,11 +621,9 @@ def node_guardrails(
                 node_nk = parse_expr(a.expression, leaf_map)
                 fdf_hold_nk = _holdout_values(node_nk)
                 if _hold_fwd is None:
-                    from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
-                    _pc = ("close_adj" if "close_adj" in holdout_df.columns
-                           else "close")
-                    _hold_fwd = compute_fwd_returns(
-                        holdout_df.sort(["ts_code", "trade_date"]), price_col=_pc,
+                    _hold_fwd = holdout_fwd_returns(
+                        holdout_df,
+                        exec_lag=exec_lag, exec_price_col=exec_price_col,
                     )
                 r_h_nk = compute_residual_ic(
                     fdf_hold_nk, lib_panel, _hold_fwd, projector=projector,

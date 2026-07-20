@@ -166,7 +166,7 @@ def test_real_node_guardrails_records_ci_and_n_train(monkeypatch):
     from factorzen.validation.holdout import HoldoutICResult
     from factorzen.validation.multiple_testing import TrialLedger
     monkeypatch.setattr("factorzen.validation.holdout.holdout_ic_result",
-                        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
+                        lambda *a, **k: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
     monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
 
     daily = _mk_daily__final_basis_deflation()
@@ -293,7 +293,7 @@ def test_run_llm_agent_actually_finalizes(monkeypatch):
     from factorzen.agents.orchestrator import run_llm_agent
     from factorzen.validation.holdout import HoldoutICResult
     monkeypatch.setattr("factorzen.validation.holdout.holdout_ic_result",
-                        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
+                        lambda *a, **k: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
     monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
 
     # library_orthogonal=False：本测试对象是 finalize 记账；开着会加载真实 workspace 库,
@@ -321,7 +321,7 @@ def test_run_team_agent_actually_finalizes(tmp_path, monkeypatch):
     from factorzen.agents.team_orchestrator import run_team_agent
     from factorzen.validation.holdout import HoldoutICResult
     monkeypatch.setattr("factorzen.validation.holdout.holdout_ic_result",
-                        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
+                        lambda *a, **k: HoldoutICResult(0.05, 0.5, (0.01, 0.09), 300))
     monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
 
     st = {"k": -1}
@@ -621,7 +621,7 @@ def test_node_guardrails_session_decorr_boundary(
 
     monkeypatch.setattr(
         "factorzen.validation.holdout.holdout_ic_result",
-        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
+        lambda *a, **k: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
     )
     # 护栏定量门恒过
     import factorzen.discovery.guardrails as gmod

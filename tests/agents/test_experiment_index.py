@@ -202,7 +202,7 @@ def test_node_guardrails_marks_passed_before_decorrelation_cut(tmp_path):
     import factorzen.validation.holdout as hmod
     from factorzen.validation.holdout import HoldoutICResult
     orig = hmod.holdout_ic_result
-    hmod.holdout_ic_result = lambda fdf, hdf: HoldoutICResult(
+    hmod.holdout_ic_result = lambda *a, **k: HoldoutICResult(
         0.05, 0.5, (0.01, 0.09), n_days=100)
     try:
         node_guardrails(state, daily=daily, holdout_df=daily, bundle=bundle,

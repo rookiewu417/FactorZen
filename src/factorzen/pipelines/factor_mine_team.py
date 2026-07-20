@@ -95,6 +95,9 @@ def run_team_mine(
         "eval_start": eval_start,
         "hypotheses_per_round": hypotheses_per_round,
         "llm_workers": llm_workers,
+        # 成交口径（可复现铁律：不落盘则事后无法复现评估世界）
+        "exec_lag": exec_lag,
+        "exec_price_col": exec_price_col,
         **(data_window or {}),
         "command": command,
         "llm": _llm_meta(llm_fn),

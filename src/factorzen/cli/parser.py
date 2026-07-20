@@ -329,6 +329,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
     )
     _add_freq_arg(m_search)
+    _add_exec_convention_args(m_search)
     m_search.set_defaults(func=commands._cmd_mine_search)
 
     m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
@@ -407,6 +408,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         help="session 最多注入 ix_* 叶数（默认 12；仅 --intraday-scout）",
     )
     _add_freq_arg(m_agent)
+    _add_exec_convention_args(m_agent)
     m_agent.set_defaults(func=commands._cmd_mine_agent)
 
     m_team = mine_sub.add_parser("team", help="Multi-agent team factor mining")

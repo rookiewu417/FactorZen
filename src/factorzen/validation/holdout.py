@@ -41,10 +41,39 @@ class HoldoutICResult:
     n_days: int
 
 
-def holdout_ic_result(factor_df: pl.DataFrame, holdout_df: pl.DataFrame) -> HoldoutICResult:
+def holdout_fwd_returns(
+    holdout_df: pl.DataFrame,
+    *,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
+) -> pl.DataFrame:
+    """holdout 段前向收益（裸 IC / 残差 holdout 共用）。
+
+    ``exec_lag`` / ``exec_price_col`` 透传 ``compute_fwd_returns``。
+    默认 ``exec_lag=0`` 逐位等价旧 close→close 行为。
+    """
+    price_col = "close_adj" if "close_adj" in holdout_df.columns else "close"
+    return compute_fwd_returns(
+        holdout_df.sort(["ts_code", "trade_date"]),
+        price_col=price_col,
+        exec_lag=exec_lag,
+        exec_price_col=exec_price_col,
+    )
+
+
+def holdout_ic_result(
+    factor_df: pl.DataFrame,
+    holdout_df: pl.DataFrame,
+    *,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
+) -> HoldoutICResult:
     """top-K 候选在 holdout 段算 IC，并返回有效 IC 天数。
 
     空因子帧 / 无有效截面 → ``n_days=0``，``ic_mean/ir`` 为 nan（避免 0.0 哨兵被同号门误读）。
+
+    ``exec_lag`` / ``exec_price_col``：成交口径，透传给 ``compute_fwd_returns``。
+    默认 0 / None = close→close（与修复前逐位一致）。
     """
     if factor_df is None or factor_df.is_empty() or "factor_value" not in factor_df.columns:
         return HoldoutICResult(float("nan"), float("nan"), (float("nan"), float("nan")), 0)
@@ -54,8 +83,9 @@ def holdout_ic_result(factor_df: pl.DataFrame, holdout_df: pl.DataFrame) -> Hold
     if finite.is_empty():
         return HoldoutICResult(float("nan"), float("nan"), (float("nan"), float("nan")), 0)
 
-    price_col = "close_adj" if "close_adj" in holdout_df.columns else "close"
-    fwd = compute_fwd_returns(holdout_df.sort(["ts_code", "trade_date"]), price_col=price_col)
+    fwd = holdout_fwd_returns(
+        holdout_df, exec_lag=exec_lag, exec_price_col=exec_price_col,
+    )
     clean = cross_sectional_zscore(finite, col="factor_value").rename(
         {"factor_value_z": "factor_clean"}
     )
@@ -73,11 +103,19 @@ def holdout_ic_result(factor_df: pl.DataFrame, holdout_df: pl.DataFrame) -> Hold
     return HoldoutICResult(float(res.ic_mean), float(res.ir), ci, n_days)
 
 
-def holdout_ic(factor_df: pl.DataFrame, holdout_df: pl.DataFrame):
+def holdout_ic(
+    factor_df: pl.DataFrame,
+    holdout_df: pl.DataFrame,
+    *,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
+):
     """top-K 候选因子值在 holdout 段算 (ic_mean, ir, bootstrap_ci)。
 
     向后兼容 3-tuple；需要 ``n_days`` 时请用 `holdout_ic_result`。
     空/稀疏时 ic_mean 可能为 nan（不再静默 0.0）——与 coverage 守卫配套。
     """
-    r = holdout_ic_result(factor_df, holdout_df)
+    r = holdout_ic_result(
+        factor_df, holdout_df, exec_lag=exec_lag, exec_price_col=exec_price_col,
+    )
     return (r.ic_mean, r.ir, r.ci)

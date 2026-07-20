@@ -522,17 +522,18 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     # holdout 前向收益（残差 holdout IC 复用，避免每候选重算）
     _hold_fwd = None
     if eff_objective == "residual" and lib_panel is not None:
-        from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
-        _pc = "close_adj" if "close_adj" in holdout_df.columns else "close"
-        _hold_fwd = compute_fwd_returns(
-            holdout_df.sort(["ts_code", "trade_date"]), price_col=_pc,
-            exec_lag=exec_lag, exec_price_col=exec_price_col,
+        from factorzen.validation.holdout import holdout_fwd_returns
+        _hold_fwd = holdout_fwd_returns(
+            holdout_df, exec_lag=exec_lag, exec_price_col=exec_price_col,
         )
     for c in top:
         _maybe_gc()
         node = parse_expr(c["expression"], leaf_map)
         fdf_hold = _factor_values(node, warmup_daily, holdout_eval_start, leaf_map)
-        hres = holdout_ic_result(fdf_hold, holdout_df)
+        hres = holdout_ic_result(
+            fdf_hold, holdout_df,
+            exec_lag=exec_lag, exec_price_col=exec_price_col,
+        )
         h_ic, ci_lo, n_h = hres.ic_mean, hres.ci[0], hres.n_days
         # DSR 显著性检验须用该候选自己在 train 段的真实样本数(n_train)，
         # 不能用 mining 全段交易日数——后者比 train 段大约 1/train_ratio 倍，

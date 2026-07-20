@@ -30,52 +30,107 @@ def _factorzen_import_targets(path: Path) -> set[str]:
     return targets
 
 
-def test_lower_layers_do_not_depend_on_orchestration_layers() -> None:
-    """Dependency flow stays acyclic even when local imports are considered."""
-    forbidden = {
-        "agents": {"pipelines"},
-        "core": {"daily"},
-        "daily": {"discovery"},
-        "discovery": {"agents", "pipelines"},
-        "llm": {"agents"},
-    }
-    violations: list[str] = []
-    for source_layer, forbidden_targets in forbidden.items():
-        for path in sorted((PACKAGE_ROOT / source_layer).rglob("*.py")):
-            bad = _factorzen_import_targets(path) & forbidden_targets
-            for target in sorted(bad):
-                violations.append(f"{path.relative_to(PACKAGE_ROOT)} -> {target}")
+def test_architecture_dependencies_suite():
+    """Dependency flow stays acyclic even when local imports are considered.；No package cycle may be hidden behind a function-local import.；Runtime defaults must follow the configured roots; prose strings are irrelevant.；Parser declarations have their own seam instead of growing ``cli/main.py``."""
+    # -- 原 test_lower_layers_do_not_depend_on_orchestration_layers --
+    def _section_0_test_lower_layers_do_not_depend_on_orchestration_layers():
+        forbidden = {
+            "agents": {"pipelines"},
+            "core": {"daily"},
+            "daily": {"discovery"},
+            "discovery": {"agents", "pipelines"},
+            "llm": {"agents"},
+        }
+        violations: list[str] = []
+        for source_layer, forbidden_targets in forbidden.items():
+            for path in sorted((PACKAGE_ROOT / source_layer).rglob("*.py")):
+                bad = _factorzen_import_targets(path) & forbidden_targets
+                for target in sorted(bad):
+                    violations.append(f"{path.relative_to(PACKAGE_ROOT)} -> {target}")
 
-    assert violations == [], "forbidden FactorZen dependencies:\n" + "\n".join(violations)
+        assert violations == [], "forbidden FactorZen dependencies:\n" + "\n".join(violations)
 
+    _section_0_test_lower_layers_do_not_depend_on_orchestration_layers()
 
-def test_top_level_package_dependency_graph_is_acyclic() -> None:
-    """No package cycle may be hidden behind a function-local import."""
-    graph: dict[str, set[str]] = {}
-    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
-        source = path.relative_to(PACKAGE_ROOT).parts[0]
-        graph.setdefault(source, set()).update(_factorzen_import_targets(path) - {source})
+    # -- 原 test_top_level_package_dependency_graph_is_acyclic --
+    def _section_1_test_top_level_package_dependency_graph_is_acyclic():
+        graph: dict[str, set[str]] = {}
+        for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+            source = path.relative_to(PACKAGE_ROOT).parts[0]
+            graph.setdefault(source, set()).update(_factorzen_import_targets(path) - {source})
 
-    visiting: list[str] = []
-    visited: set[str] = set()
+        visiting: list[str] = []
+        visited: set[str] = set()
 
-    def visit(node: str) -> list[str] | None:
-        if node in visiting:
-            start = visiting.index(node)
-            return [*visiting[start:], node]
-        if node in visited:
+        def visit(node: str) -> list[str] | None:
+            if node in visiting:
+                start = visiting.index(node)
+                return [*visiting[start:], node]
+            if node in visited:
+                return None
+            visiting.append(node)
+            for target in sorted(graph.get(node, set())):
+                cycle = visit(target)
+                if cycle:
+                    return cycle
+            visiting.pop()
+            visited.add(node)
             return None
-        visiting.append(node)
-        for target in sorted(graph.get(node, set())):
-            cycle = visit(target)
-            if cycle:
-                return cycle
-        visiting.pop()
-        visited.add(node)
-        return None
 
-    found = next((cycle for node in sorted(graph) if (cycle := visit(node))), None)
-    assert found is None, "top-level FactorZen dependency cycle: " + " -> ".join(found or [])
+        found = next((cycle for node in sorted(graph) if (cycle := visit(node))), None)
+        assert found is None, "top-level FactorZen dependency cycle: " + " -> ".join(found or [])
+
+    _section_1_test_top_level_package_dependency_graph_is_acyclic()
+
+    # -- 原 test_runtime_artifact_path_defaults_derive_from_settings --
+    def _section_2_test_runtime_artifact_path_defaults_derive_from_settings():
+        violations: list[str] = []
+        for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+            if path == PACKAGE_ROOT / "config" / "settings.py":
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+            for node in ast.walk(tree):
+                candidates: list[ast.AST | None] = []
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    candidates.extend(node.args.defaults)
+                    candidates.extend(node.args.kw_defaults)
+                elif isinstance(node, ast.AnnAssign):
+                    if _looks_like_path_name(node.target):
+                        candidates.append(node.value)
+                elif isinstance(node, ast.Assign):
+                    if any(_looks_like_path_name(target) for target in node.targets):
+                        candidates.append(node.value)
+                elif isinstance(node, ast.Call):
+                    candidates.extend(kw.value for kw in node.keywords if kw.arg == "default")
+                    if isinstance(node.func, ast.Name) and node.func.id == "Path" and node.args:
+                        candidates.append(node.args[0])
+                    if (
+                        isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "get"
+                        and len(node.args) >= 2
+                    ):
+                        candidates.append(node.args[1])
+                if any(_is_artifact_path_literal(candidate) for candidate in candidates):
+                    violations.append(f"{path.relative_to(PACKAGE_ROOT)}:{node.lineno}")
+
+        assert violations == [], "hard-coded runtime artifact paths:\n" + "\n".join(violations)
+
+    _section_2_test_runtime_artifact_path_defaults_derive_from_settings()
+
+    # -- 原 test_cli_entrypoint_does_not_assemble_the_argparse_tree --
+    def _section_3_test_cli_entrypoint_does_not_assemble_the_argparse_tree():
+        path = PACKAGE_ROOT / "cli" / "main.py"
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        parser_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"add_parser", "add_argument", "add_subparsers"}
+        ]
+        assert parser_calls == []
+
+    _section_3_test_cli_entrypoint_does_not_assemble_the_argparse_tree()
 
 
 def _is_artifact_path_literal(node: ast.AST | None) -> bool:
@@ -90,49 +145,3 @@ def _looks_like_path_name(node: ast.AST) -> bool:
     )
 
 
-def test_runtime_artifact_path_defaults_derive_from_settings() -> None:
-    """Runtime defaults must follow the configured roots; prose strings are irrelevant."""
-    violations: list[str] = []
-    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
-        if path == PACKAGE_ROOT / "config" / "settings.py":
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
-        for node in ast.walk(tree):
-            candidates: list[ast.AST | None] = []
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                candidates.extend(node.args.defaults)
-                candidates.extend(node.args.kw_defaults)
-            elif isinstance(node, ast.AnnAssign):
-                if _looks_like_path_name(node.target):
-                    candidates.append(node.value)
-            elif isinstance(node, ast.Assign):
-                if any(_looks_like_path_name(target) for target in node.targets):
-                    candidates.append(node.value)
-            elif isinstance(node, ast.Call):
-                candidates.extend(kw.value for kw in node.keywords if kw.arg == "default")
-                if isinstance(node.func, ast.Name) and node.func.id == "Path" and node.args:
-                    candidates.append(node.args[0])
-                if (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "get"
-                    and len(node.args) >= 2
-                ):
-                    candidates.append(node.args[1])
-            if any(_is_artifact_path_literal(candidate) for candidate in candidates):
-                violations.append(f"{path.relative_to(PACKAGE_ROOT)}:{node.lineno}")
-
-    assert violations == [], "hard-coded runtime artifact paths:\n" + "\n".join(violations)
-
-
-def test_cli_entrypoint_does_not_assemble_the_argparse_tree() -> None:
-    """Parser declarations have their own seam instead of growing ``cli/main.py``."""
-    path = PACKAGE_ROOT / "cli" / "main.py"
-    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
-    parser_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"add_parser", "add_argument", "add_subparsers"}
-    ]
-    assert parser_calls == []

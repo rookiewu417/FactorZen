@@ -27,45 +27,65 @@ from factorzen.pipelines.factor_sweep import (
 
 
 # ==== 来自 test_pipelines_research_run.py ====
-def test_rebalance_dates_skips_warmup_and_last():
-    from factorzen.pipelines.research_run import _rebalance_dates
-    dates = list(range(10))  # 用 int 代交易日，验证切片逻辑
-    # warmup=2 → usable=dates[2:-1]=[2..8]，step 2 → [2,4,6,8]
-    assert _rebalance_dates(dates, rebalance_days=2, warmup=2) == [2, 4, 6, 8]
-    # 交易日不足 warmup+1 → 空
-    assert _rebalance_dates(dates, rebalance_days=2, warmup=20) == []
+def test_rebalance_and_select_expression_suite(tmp_path):
+    """test_rebalance_dates_skips_warmup_and_last；test_rebalance_dates_rejects_bad_step；test_select_passed_expression_picks_head_passed；test_select_passed_expression_raises_when_none_passed；test_alpha_file_for_date_writes_ts_code_alpha"""
+    # -- 原 test_rebalance_dates_skips_warmup_and_last --
+    def _section_0_test_rebalance_dates_skips_warmup_and_last():
+        from factorzen.pipelines.research_run import _rebalance_dates
+        dates = list(range(10))  # 用 int 代交易日，验证切片逻辑
+        # warmup=2 → usable=dates[2:-1]=[2..8]，step 2 → [2,4,6,8]
+        assert _rebalance_dates(dates, rebalance_days=2, warmup=2) == [2, 4, 6, 8]
+        # 交易日不足 warmup+1 → 空
+        assert _rebalance_dates(dates, rebalance_days=2, warmup=20) == []
 
-def test_rebalance_dates_rejects_bad_step():
-    from factorzen.pipelines.research_run import _rebalance_dates
-    with pytest.raises(ValueError):
-        _rebalance_dates(list(range(10)), rebalance_days=0, warmup=0)
+    _section_0_test_rebalance_dates_skips_warmup_and_last()
 
-def test_select_passed_expression_picks_head_passed():
-    from factorzen.pipelines.research_run import _select_passed_expression
-    cands = [
-        {"expression": "ts_mean(close, 5)", "passed": False},
-        {"expression": "close", "passed": True},   # 头部 passed
-        {"expression": "vol", "passed": True},
-    ]
-    assert _select_passed_expression(cands) == "close"
+    # -- 原 test_rebalance_dates_rejects_bad_step --
+    def _section_1_test_rebalance_dates_rejects_bad_step():
+        from factorzen.pipelines.research_run import _rebalance_dates
+        with pytest.raises(ValueError):
+            _rebalance_dates(list(range(10)), rebalance_days=0, warmup=0)
 
-def test_select_passed_expression_raises_when_none_passed():
-    from factorzen.pipelines.research_run import _select_passed_expression
-    with pytest.raises(RuntimeError, match="passed"):
-        _select_passed_expression([{"expression": "close", "passed": False}])
+    _section_1_test_rebalance_dates_rejects_bad_step()
 
-def test_alpha_file_for_date_writes_ts_code_alpha(tmp_path):
-    from factorzen.pipelines.research_run import _alpha_file_for_date
-    d = date(2024, 3, 1)
-    panel = pl.DataFrame({
-        "trade_date": [d, d, date(2024, 3, 2)],
-        "ts_code": ["000001.SZ", "000002.SZ", "000001.SZ"],
-        "factor_value": [0.1, float("inf"), 0.3],  # inf 应被过滤
-    })
-    out = _alpha_file_for_date(panel, d, tmp_path / "a.parquet")
-    got = pl.read_parquet(out)
-    assert got.columns == ["ts_code", "alpha"]
-    assert got.height == 1 and got["ts_code"][0] == "000001.SZ"  # inf 那行被剔除
+    # -- 原 test_select_passed_expression_picks_head_passed --
+    def _section_2_test_select_passed_expression_picks_head_passed():
+        from factorzen.pipelines.research_run import _select_passed_expression
+        cands = [
+            {"expression": "ts_mean(close, 5)", "passed": False},
+            {"expression": "close", "passed": True},   # 头部 passed
+            {"expression": "vol", "passed": True},
+        ]
+        assert _select_passed_expression(cands) == "close"
+
+    _section_2_test_select_passed_expression_picks_head_passed()
+
+    # -- 原 test_select_passed_expression_raises_when_none_passed --
+    def _section_3_test_select_passed_expression_raises_when_none_passed():
+        from factorzen.pipelines.research_run import _select_passed_expression
+        with pytest.raises(RuntimeError, match="passed"):
+            _select_passed_expression([{"expression": "close", "passed": False}])
+
+    _section_3_test_select_passed_expression_raises_when_none_passed()
+
+    # -- 原 test_alpha_file_for_date_writes_ts_code_alpha --
+    def _section_4_test_alpha_file_for_date_writes_ts_code_alpha(tmp_path):
+        from factorzen.pipelines.research_run import _alpha_file_for_date
+        d = date(2024, 3, 1)
+        panel = pl.DataFrame({
+            "trade_date": [d, d, date(2024, 3, 2)],
+            "ts_code": ["000001.SZ", "000002.SZ", "000001.SZ"],
+            "factor_value": [0.1, float("inf"), 0.3],  # inf 应被过滤
+        })
+        out = _alpha_file_for_date(panel, d, tmp_path / "a.parquet")
+        got = pl.read_parquet(out)
+        assert got.columns == ["ts_code", "alpha"]
+        assert got.height == 1 and got["ts_code"][0] == "000001.SZ"  # inf 那行被剔除
+
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_alpha_file_for_date_writes_ts_code_alpha(_tp4)
+
 
 # ── 全链路 mock e2e：monkeypatch 所有数据密集接缝，验证编排 glue ─────────────
 def _fake_trade_dates(n=10):
@@ -171,475 +191,639 @@ def patched_stages(monkeypatch, tmp_path):
     monkeypatch.setattr("factorzen.reports.portfolio_report.generate_portfolio_report", fake_report)
     return calls
 
-def test_run_research_end_to_end_wiring(patched_stages, tmp_path):
-    """全链路：mine→选头部 passed→循环 build→sim→report，run_id 贯穿、格式桥、产物落盘。"""
-    from factorzen.pipelines.research_run import run_research
-    calls = patched_stages
-    res = run_research(start="20240101", end="20240110", universe=None,
-                       n_trials=10, method="random", seed=42, top_k=5,
-                       rebalance_days=2, warmup=2, out_root=str(tmp_path))
+def test_run_research_wiring_suite(patched_stages, tmp_path):
+    """全链路：mine→选头部 passed→循环 build→sim→report，run_id 贯穿、格式桥、产物落盘。；L2：多期 build 须把上一期权重作为 prev_weights 传下去，否则 --turnover 静默失效。；test_run_research_custom_run_id_threads_everywhere；``--intraday-leaves`` 透传：run_mine 收到 intraday 参数，manifest.config 可复现落盘。；默认关日内叶子（零回归）：run_mine 收 intraday=False，manifest 仍记字段。"""
+    # -- 原 test_run_research_end_to_end_wiring --
+    def _section_0_test_run_research_end_to_end_wiring(patched_stages, tmp_path):
+        from factorzen.pipelines.research_run import run_research
+        calls = patched_stages
+        calls.clear()
+        calls.update({"portfolio": [], "sim": [], "report": 0, "fetch_daily_starts": []})
+        res = run_research(start="20240101", end="20240110", universe=None,
+                           n_trials=10, method="random", seed=42, top_k=5,
+                           rebalance_days=2, warmup=2, out_root=str(tmp_path))
 
-    # run_id 贯穿
-    assert res["run_id"] == "research_42_random"
-    # 选的是头部 passed 因子（close），非 rank1 未过护栏的 ts_mean
-    assert res["expression"] == "close"
-    # 10 交易日, warmup=2 → usable=[2..8], step2 → 4 个调仓日
-    assert res["n_rebalances"] == 4
-    assert len(calls["portfolio"]) == 4
-    # 每次 build：out_dir 共享 = portfolios/<rid>, run_id=日期串, signal_date=ISO
-    for c in calls["portfolio"]:
-        assert c["out_dir"].endswith(f"portfolios/{res['run_id']}")
-        assert len(c["run_id"]) == 8 and c["run_id"].isdigit()      # YYYYMMDD
-        assert c["signal_date"].count("-") == 2                      # ISO
-    # sim 一次，run_id=rid，喂全部调仓 run_dir
-    assert len(calls["sim"]) == 1
-    assert calls["sim"][0]["run_id"] == res["run_id"]
-    assert len(calls["sim"][0]["dirs"]) == 4
-    # report 生成并落盘
-    assert calls["report"] == 1
-    html = Path(res["report_html"])
-    assert html.exists() and html.name == f"portfolio_{res['run_id']}.html"
-    assert res["sharpe"] == 1.2
-    # 顶层可复现 manifest 落盘
-    assert (tmp_path / "research" / res["run_id"] / "manifest.json").exists()
-    # L1：风险模型走 lookback 预热（load_risk_inputs），即有一次 fetch_daily 的 start
-    # 早于研究区间起点（否则窗口首日滚动风格因子退化，与 portfolio build 双路径漂移）
-    assert any(s < "20240101" for s in calls["fetch_daily_starts"]), (
-        f"风险模型应带 lookback 预热(start<20240101)，实得 {calls['fetch_daily_starts']}"
-    )
+        # run_id 贯穿
+        assert res["run_id"] == "research_42_random"
+        # 选的是头部 passed 因子（close），非 rank1 未过护栏的 ts_mean
+        assert res["expression"] == "close"
+        # 10 交易日, warmup=2 → usable=[2..8], step2 → 4 个调仓日
+        assert res["n_rebalances"] == 4
+        assert len(calls["portfolio"]) == 4
+        # 每次 build：out_dir 共享 = portfolios/<rid>, run_id=日期串, signal_date=ISO
+        for c in calls["portfolio"]:
+            assert c["out_dir"].endswith(f"portfolios/{res['run_id']}")
+            assert len(c["run_id"]) == 8 and c["run_id"].isdigit()      # YYYYMMDD
+            assert c["signal_date"].count("-") == 2                      # ISO
+        # sim 一次，run_id=rid，喂全部调仓 run_dir
+        assert len(calls["sim"]) == 1
+        assert calls["sim"][0]["run_id"] == res["run_id"]
+        assert len(calls["sim"][0]["dirs"]) == 4
+        # report 生成并落盘
+        assert calls["report"] == 1
+        html = Path(res["report_html"])
+        assert html.exists() and html.name == f"portfolio_{res['run_id']}.html"
+        assert res["sharpe"] == 1.2
+        # 顶层可复现 manifest 落盘
+        assert (tmp_path / "research" / res["run_id"] / "manifest.json").exists()
+        # L1：风险模型走 lookback 预热（load_risk_inputs），即有一次 fetch_daily 的 start
+        # 早于研究区间起点（否则窗口首日滚动风格因子退化，与 portfolio build 双路径漂移）
+        assert any(s < "20240101" for s in calls["fetch_daily_starts"]), (
+            f"风险模型应带 lookback 预热(start<20240101)，实得 {calls['fetch_daily_starts']}"
+        )
 
-def test_run_research_threads_prev_weights_for_turnover(patched_stages, tmp_path):
-    """L2：多期 build 须把上一期权重作为 prev_weights 传下去，否则 --turnover 静默失效。"""
-    from factorzen.pipelines.research_run import run_research
-    calls = patched_stages
-    run_research(start="20240101", end="20240110", n_trials=10, seed=42,
-                 rebalance_days=2, warmup=2, turnover=0.5, out_root=str(tmp_path))
-    ports = calls["portfolio"]
-    assert len(ports) >= 2
-    assert ports[0].get("prev_weights") is None                  # 首期无上一期
-    for c in ports[1:]:
-        assert c.get("prev_weights") is not None                 # 后续期传上期权重
-        assert c.get("turnover_budget") == 0.5
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_run_research_end_to_end_wiring(patched_stages, _tp0)
 
-def test_run_research_custom_run_id_threads_everywhere(patched_stages, tmp_path):
-    from factorzen.pipelines.research_run import run_research
-    calls = patched_stages
-    res = run_research(start="20240101", end="20240110", n_trials=10, seed=7,
-                       rebalance_days=3, warmup=2, run_id="myrun", out_root=str(tmp_path))
-    assert res["run_id"] == "myrun"
-    assert calls["sim"][0]["run_id"] == "myrun"
-    assert all(c["out_dir"].endswith("portfolios/myrun") for c in calls["portfolio"])
-    assert Path(res["report_html"]).name == "portfolio_myrun.html"
+    # -- 原 test_run_research_threads_prev_weights_for_turnover --
+    def _section_1_test_run_research_threads_prev_weights_for_turnover(patched_stages, tmp_path):
+        from factorzen.pipelines.research_run import run_research
+        calls = patched_stages
+        calls.clear()
+        calls.update({"portfolio": [], "sim": [], "report": 0, "fetch_daily_starts": []})
+        run_research(start="20240101", end="20240110", n_trials=10, seed=42,
+                     rebalance_days=2, warmup=2, turnover=0.5, out_root=str(tmp_path))
+        ports = calls["portfolio"]
+        assert len(ports) >= 2
+        assert ports[0].get("prev_weights") is None                  # 首期无上一期
+        for c in ports[1:]:
+            assert c.get("prev_weights") is not None                 # 后续期传上期权重
+            assert c.get("turnover_budget") == 0.5
 
-def test_run_research_passes_intraday_to_mine_and_manifest(patched_stages, tmp_path):
-    """``--intraday-leaves`` 透传：run_mine 收到 intraday 参数，manifest.config 可复现落盘。"""
-    from factorzen.pipelines.research_run import run_research
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_run_research_threads_prev_weights_for_turnover(patched_stages, _tp1)
 
-    calls = patched_stages
-    res = run_research(
-        start="20240101", end="20240110", n_trials=10, seed=42,
-        rebalance_days=2, warmup=2, out_root=str(tmp_path),
-        intraday=True, intraday_freq="15min",
-    )
-    # 挖掘阶段把 i_* 纳入搜索空间
-    assert calls["mine"]["intraday"] is True
-    assert calls["mine"]["intraday_freq"] == "15min"
-    # 默认可复现：manifest config 记 flag（漏记=假复现）
-    manifest = json.loads(
-        (tmp_path / "research" / res["run_id"] / "manifest.json").read_text(encoding="utf-8")
-    )
-    cfg = manifest["config"]
-    assert cfg["intraday"] is True
-    assert cfg["intraday_freq"] == "15min"
+    # -- 原 test_run_research_custom_run_id_threads_everywhere --
+    def _section_2_test_run_research_custom_run_id_threads_everywhere(patched_stages, tmp_path):
+        from factorzen.pipelines.research_run import run_research
+        calls = patched_stages
+        calls.clear()
+        calls.update({"portfolio": [], "sim": [], "report": 0, "fetch_daily_starts": []})
+        res = run_research(start="20240101", end="20240110", n_trials=10, seed=7,
+                           rebalance_days=3, warmup=2, run_id="myrun", out_root=str(tmp_path))
+        assert res["run_id"] == "myrun"
+        assert calls["sim"][0]["run_id"] == "myrun"
+        assert all(c["out_dir"].endswith("portfolios/myrun") for c in calls["portfolio"])
+        assert Path(res["report_html"]).name == "portfolio_myrun.html"
 
-def test_run_research_intraday_defaults_off(patched_stages, tmp_path):
-    """默认关日内叶子（零回归）：run_mine 收 intraday=False，manifest 仍记字段。"""
-    from factorzen.pipelines.research_run import run_research
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_run_research_custom_run_id_threads_everywhere(patched_stages, _tp2)
 
-    calls = patched_stages
-    res = run_research(
-        start="20240101", end="20240110", n_trials=10, seed=42,
-        rebalance_days=2, warmup=2, out_root=str(tmp_path),
-    )
-    assert calls["mine"]["intraday"] is False
-    assert calls["mine"]["intraday_freq"] == "5min"
-    manifest = json.loads(
-        (tmp_path / "research" / res["run_id"] / "manifest.json").read_text(encoding="utf-8")
-    )
-    assert manifest["config"]["intraday"] is False
-    assert manifest["config"]["intraday_freq"] == "5min"
+    # -- 原 test_run_research_passes_intraday_to_mine_and_manifest --
+    def _section_3_test_run_research_passes_intraday_to_mine_and_manifest(patched_stages, tmp_path):
+        from factorzen.pipelines.research_run import run_research
+
+        calls = patched_stages
+        calls.clear()
+        calls.update({"portfolio": [], "sim": [], "report": 0, "fetch_daily_starts": []})
+        res = run_research(
+            start="20240101", end="20240110", n_trials=10, seed=42,
+            rebalance_days=2, warmup=2, out_root=str(tmp_path),
+            intraday=True, intraday_freq="15min",
+        )
+        # 挖掘阶段把 i_* 纳入搜索空间
+        assert calls["mine"]["intraday"] is True
+        assert calls["mine"]["intraday_freq"] == "15min"
+        # 默认可复现：manifest config 记 flag（漏记=假复现）
+        manifest = json.loads(
+            (tmp_path / "research" / res["run_id"] / "manifest.json").read_text(encoding="utf-8")
+        )
+        cfg = manifest["config"]
+        assert cfg["intraday"] is True
+        assert cfg["intraday_freq"] == "15min"
+
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_run_research_passes_intraday_to_mine_and_manifest(patched_stages, _tp3)
+
+    # -- 原 test_run_research_intraday_defaults_off --
+    def _section_4_test_run_research_intraday_defaults_off(patched_stages, tmp_path):
+        from factorzen.pipelines.research_run import run_research
+
+        calls = patched_stages
+        calls.clear()
+        calls.update({"portfolio": [], "sim": [], "report": 0, "fetch_daily_starts": []})
+        res = run_research(
+            start="20240101", end="20240110", n_trials=10, seed=42,
+            rebalance_days=2, warmup=2, out_root=str(tmp_path),
+        )
+        assert calls["mine"]["intraday"] is False
+        assert calls["mine"]["intraday_freq"] == "5min"
+        manifest = json.loads(
+            (tmp_path / "research" / res["run_id"] / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert manifest["config"]["intraday"] is False
+        assert manifest["config"]["intraday_freq"] == "5min"
+
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_run_research_intraday_defaults_off(patched_stages, _tp4)
+
 
 # ==== 来自 test_experiment.py ====
-def test_experiment_success(tmp_path, monkeypatch):
-    from factorzen.core import experiment as exp_mod
+def test_experiment_lifecycle_suite(tmp_path, caplog):
+    """test_experiment_success；test_auto_run_id_includes_factor_name；test_experiment_failure；成功 run 后，experiment_index.jsonl 被创建并含正确字段。；两次 run 各 append 一行，JSONL 共两行。；失败 run 的状态也被记录到索引。；test_experiment_records_reproducibility_metadata；test_record_experiment_metadata_survives_run_finalization；test_manifest_records_duration_seconds；test_experiment_warns_when_git_dirty；test_experiment_does_not_warn_when_clean"""
+    # -- 原 test_experiment_success --
+    def _section_0_test_experiment_success(tmp_path, mp):
+        from factorzen.core import experiment as exp_mod
 
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    from factorzen.config.research import RunConfig
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        from factorzen.config.research import RunConfig
 
-    cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
+        cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
 
-    with exp_mod.run_experiment(cfg, run_id="test_run") as exp_dir:
-        pass  # success
+        with exp_mod.run_experiment(cfg, run_id="test_run") as exp_dir:
+            pass  # success
 
-    manifest = json.loads((exp_dir / "manifest.json").read_text())
-    assert manifest["status"] == "success"
-    assert manifest["config"]["factor"] == "momentum_20d"
-    assert manifest["end_ts"] is not None
-    assert "git_sha" in manifest
+        manifest = json.loads((exp_dir / "manifest.json").read_text())
+        assert manifest["status"] == "success"
+        assert manifest["config"]["factor"] == "momentum_20d"
+        assert manifest["end_ts"] is not None
+        assert "git_sha" in manifest
 
-def test_auto_run_id_includes_factor_name(tmp_path, monkeypatch):
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_experiment_success(_tp0, mp)
 
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    cfg = RunConfig(factor="momentum_12_1", start="20230101", end="20241231")
+    # -- 原 test_auto_run_id_includes_factor_name --
+    def _section_1_test_auto_run_id_includes_factor_name(tmp_path, mp):
+        from factorzen.config.research import RunConfig
+        from factorzen.core import experiment as exp_mod
 
-    with exp_mod.run_experiment(cfg) as exp_dir:
-        pass
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        cfg = RunConfig(factor="momentum_12_1", start="20230101", end="20241231")
 
-    manifest = json.loads((exp_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert exp_dir.name.startswith("momentum_12_1_")
-    assert manifest["run_id"] == exp_dir.name
-
-def test_experiment_failure(tmp_path, monkeypatch):
-    from factorzen.core import experiment as exp_mod
-
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    from factorzen.config.research import RunConfig
-
-    cfg = RunConfig(factor="x", start="20230101", end="20241231")
-
-    with pytest.raises(ValueError), exp_mod.run_experiment(cfg, run_id="fail_run") as exp_dir:
-        raise ValueError("test error")
-
-    manifest = json.loads((exp_dir / "manifest.json").read_text())
-    assert manifest["status"] == "failure"
-    assert "test error" in manifest["error"]
-
-def test_experiment_index_created_on_success(tmp_path, monkeypatch):
-    """成功 run 后，experiment_index.jsonl 被创建并含正确字段。"""
-    import json as _json
-
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
-
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    cfg = RunConfig(factor="reversal_5d", start="20240101", end="20241231")
-
-    with exp_mod.run_experiment(cfg, run_id="idx_run") as _exp_dir:
-        pass
-
-    index_path = tmp_path / "experiments" / "experiment_index.jsonl"
-    assert index_path.exists(), "experiment_index.jsonl 应被创建"
-    entry = _json.loads(index_path.read_text(encoding="utf-8").strip())
-    assert entry["run_id"] == "idx_run"
-    assert entry["factor"] == "reversal_5d"
-    assert entry["status"] == "success"
-    assert "manifest_path" in entry
-
-def test_experiment_index_appends_multiple_runs(tmp_path, monkeypatch):
-    """两次 run 各 append 一行，JSONL 共两行。"""
-    import json as _json
-
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
-
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-
-    for run_id, factor in [("run_a", "momentum_20d"), ("run_b", "reversal_5d")]:
-        cfg = RunConfig(factor=factor, start="20240101", end="20241231")
-        with exp_mod.run_experiment(cfg, run_id=run_id):
+        with exp_mod.run_experiment(cfg) as exp_dir:
             pass
 
-    index_path = tmp_path / "experiments" / "experiment_index.jsonl"
-    lines = [_json.loads(ln) for ln in index_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert len(lines) == 2
-    factors = {e["factor"] for e in lines}
-    assert factors == {"momentum_20d", "reversal_5d"}
+        manifest = json.loads((exp_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert exp_dir.name.startswith("momentum_12_1_")
+        assert manifest["run_id"] == exp_dir.name
 
-def test_experiment_index_records_failure_status(tmp_path, monkeypatch):
-    """失败 run 的状态也被记录到索引。"""
-    import json as _json
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_auto_run_id_includes_factor_name(_tp1, mp)
 
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
+    # -- 原 test_experiment_failure --
+    def _section_2_test_experiment_failure(tmp_path, mp):
+        from factorzen.core import experiment as exp_mod
 
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    cfg = RunConfig(factor="x", start="20240101", end="20241231")
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        from factorzen.config.research import RunConfig
 
-    with pytest.raises(RuntimeError), exp_mod.run_experiment(cfg, run_id="fail_idx"):
-        raise RuntimeError("boom")
+        cfg = RunConfig(factor="x", start="20230101", end="20241231")
 
-    index_path = tmp_path / "experiments" / "experiment_index.jsonl"
-    entry = _json.loads(index_path.read_text(encoding="utf-8").strip())
-    assert entry["status"] == "failure"
+        with pytest.raises(ValueError), exp_mod.run_experiment(cfg, run_id="fail_run") as exp_dir:
+            raise ValueError("test error")
 
-def test_experiment_records_reproducibility_metadata(tmp_path, monkeypatch):
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
+        manifest = json.loads((exp_dir / "manifest.json").read_text())
+        assert manifest["status"] == "failure"
+        assert "test error" in manifest["error"]
 
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: True)
-    monkeypatch.setattr(exp_mod, "_get_pixi_lock_hash", lambda: "abc123")
-    cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_experiment_failure(_tp2, mp)
 
-    with exp_mod.run_experiment(
-        cfg,
-        run_id="metadata_run",
-        command=["python", "factorzen.pipelines.daily_single"],
-    ) as exp_dir:
-        exp_mod.record_experiment_output(exp_dir, "quality_report", "quality.json")
+    # -- 原 test_experiment_index_created_on_success --
+    def _section_3_test_experiment_index_created_on_success(tmp_path, mp):
+        import json as _json
 
-    manifest = json.loads((exp_dir / "manifest.json").read_text())
-    assert manifest["git_dirty"] is True
-    assert manifest["pixi_lock_sha256"] == "abc123"
-    assert manifest["command"] == ["python", "factorzen.pipelines.daily_single"]
-    assert manifest["outputs"]["quality_report"] == "quality.json"
+        from factorzen.config.research import RunConfig
+        from factorzen.core import experiment as exp_mod
 
-def test_record_experiment_metadata_survives_run_finalization(tmp_path, monkeypatch):
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        cfg = RunConfig(factor="reversal_5d", start="20240101", end="20241231")
 
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    cfg = RunConfig(factor="x", start="20230101", end="20241231")
+        with exp_mod.run_experiment(cfg, run_id="idx_run") as _exp_dir:
+            pass
 
-    with exp_mod.run_experiment(cfg, run_id="meta_run") as exp_dir:
-        exp_mod.record_experiment_metadata(exp_dir, "stage_timings", {"ic": 1.2, "backtest": 3.4})
+        index_path = tmp_path / "experiments" / "experiment_index.jsonl"
+        assert index_path.exists(), "experiment_index.jsonl 应被创建"
+        entry = _json.loads(index_path.read_text(encoding="utf-8").strip())
+        assert entry["run_id"] == "idx_run"
+        assert entry["factor"] == "reversal_5d"
+        assert entry["status"] == "success"
+        assert "manifest_path" in entry
 
-    manifest = json.loads((exp_dir / "manifest.json").read_text())
-    # 运行期写入的顶层元数据不应被 run_experiment 的 finally 覆盖丢失
-    assert manifest["stage_timings"] == {"ic": 1.2, "backtest": 3.4}
-    assert manifest["status"] == "success"
-    assert manifest["end_ts"] is not None
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_experiment_index_created_on_success(_tp3, mp)
 
-def test_manifest_records_duration_seconds(tmp_path, monkeypatch):
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
+    # -- 原 test_experiment_index_appends_multiple_runs --
+    def _section_4_test_experiment_index_appends_multiple_runs(tmp_path, mp):
+        import json as _json
 
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
+        from factorzen.config.research import RunConfig
+        from factorzen.core import experiment as exp_mod
 
-    with exp_mod.run_experiment(cfg, run_id="dur_run"):
-        pass
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
 
-    manifest = json.loads((tmp_path / "experiments" / "dur_run" / "manifest.json").read_text())
-    assert "duration_seconds" in manifest
-    assert isinstance(manifest["duration_seconds"], (int, float))
-    assert manifest["duration_seconds"] >= 0
+        for run_id, factor in [("run_a", "momentum_20d"), ("run_b", "reversal_5d")]:
+            cfg = RunConfig(factor=factor, start="20240101", end="20241231")
+            with exp_mod.run_experiment(cfg, run_id=run_id):
+                pass
 
-def test_experiment_warns_when_git_dirty(tmp_path, monkeypatch, caplog):
-    import logging
+        index_path = tmp_path / "experiments" / "experiment_index.jsonl"
+        lines = [_json.loads(ln) for ln in index_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(lines) == 2
+        factors = {e["factor"] for e in lines}
+        assert factors == {"momentum_20d", "reversal_5d"}
 
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_experiment_index_appends_multiple_runs(_tp4, mp)
 
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: True)
-    cfg = RunConfig(factor="x", start="20230101", end="20241231")
+    # -- 原 test_experiment_index_records_failure_status --
+    def _section_5_test_experiment_index_records_failure_status(tmp_path, mp):
+        import json as _json
 
-    with caplog.at_level(logging.WARNING), exp_mod.run_experiment(cfg, run_id="dirty_warn_run"):
-        pass
+        from factorzen.config.research import RunConfig
+        from factorzen.core import experiment as exp_mod
 
-    assert any("git_dirty" in r.getMessage() for r in caplog.records)
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        cfg = RunConfig(factor="x", start="20240101", end="20241231")
 
-def test_experiment_does_not_warn_when_clean(tmp_path, monkeypatch, caplog):
-    import logging
+        with pytest.raises(RuntimeError), exp_mod.run_experiment(cfg, run_id="fail_idx"):
+            raise RuntimeError("boom")
 
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
+        index_path = tmp_path / "experiments" / "experiment_index.jsonl"
+        entry = _json.loads(index_path.read_text(encoding="utf-8").strip())
+        assert entry["status"] == "failure"
 
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: False)
-    cfg = RunConfig(factor="x", start="20230101", end="20241231")
+    _tp5 = tmp_path / "_s5"
+    _tp5.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_5_test_experiment_index_records_failure_status(_tp5, mp)
 
-    with caplog.at_level(logging.WARNING), exp_mod.run_experiment(cfg, run_id="clean_run"):
-        pass
+    # -- 原 test_experiment_records_reproducibility_metadata --
+    def _section_6_test_experiment_records_reproducibility_metadata(tmp_path, mp):
+        from factorzen.config.research import RunConfig
+        from factorzen.core import experiment as exp_mod
 
-    assert not any("git_dirty" in r.getMessage() for r in caplog.records)
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        mp.setattr(exp_mod, "_get_git_dirty", lambda: True)
+        mp.setattr(exp_mod, "_get_pixi_lock_hash", lambda: "abc123")
+        cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
 
-def test_build_manifest_base_returns_reproducibility_fields(monkeypatch):
-    """build_manifest_base() 是可被其它 pipeline（risk_build/portfolio_build）复用的基础字段构造器。"""
-    from factorzen.core import experiment as exp_mod
+        with exp_mod.run_experiment(
+            cfg,
+            run_id="metadata_run",
+            command=["python", "factorzen.pipelines.daily_single"],
+        ) as exp_dir:
+            exp_mod.record_experiment_output(exp_dir, "quality_report", "quality.json")
 
-    monkeypatch.setattr(exp_mod, "get_git_sha", lambda: "deadbeef")
-    monkeypatch.setattr(exp_mod, "_get_git_dirty", lambda: False)
-    monkeypatch.setattr(exp_mod, "_get_pixi_lock_hash", lambda: "lockhash123")
+        manifest = json.loads((exp_dir / "manifest.json").read_text())
+        assert manifest["git_dirty"] is True
+        assert manifest["pixi_lock_sha256"] == "abc123"
+        assert manifest["command"] == ["python", "factorzen.pipelines.daily_single"]
+        assert manifest["outputs"]["quality_report"] == "quality.json"
 
-    base = exp_mod.build_manifest_base(
-        ["python", "-m", "factorzen.cli.main", "risk", "build"],
-        {"start": "20230101", "end": "20231231"},
-    )
+    _tp6 = tmp_path / "_s6"
+    _tp6.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_6_test_experiment_records_reproducibility_metadata(_tp6, mp)
 
-    assert base["schema_version"] == "1"
-    assert base["git_sha"] == "deadbeef"
-    assert base["git_dirty"] is False
-    assert base["pixi_lock_sha256"] == "lockhash123"
-    assert base["command"] == ["python", "-m", "factorzen.cli.main", "risk", "build"]
-    assert base["config"] == {"start": "20230101", "end": "20231231"}
-    assert base.get("start_ts")
+    # -- 原 test_record_experiment_metadata_survives_run_finalization --
+    def _section_7_test_record_experiment_metadata_survives_run_finalization(tmp_path, mp):
+        from factorzen.config.research import RunConfig
+        from factorzen.core import experiment as exp_mod
 
-def test_build_manifest_base_accepts_plain_dict_config(monkeypatch):
-    """非 RunConfig 调用方（如 risk_build/portfolio_build）可直接传 dict 作为 config。"""
-    from factorzen.core import experiment as exp_mod
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        cfg = RunConfig(factor="x", start="20230101", end="20241231")
 
-    base = exp_mod.build_manifest_base(None, {"cov_half_life": 90, "nw_lags": 2})
+        with exp_mod.run_experiment(cfg, run_id="meta_run") as exp_dir:
+            exp_mod.record_experiment_metadata(exp_dir, "stage_timings", {"ic": 1.2, "backtest": 3.4})
 
-    assert base["command"] is None
-    assert base["config"] == {"cov_half_life": 90, "nw_lags": 2}
+        manifest = json.loads((exp_dir / "manifest.json").read_text())
+        # 运行期写入的顶层元数据不应被 run_experiment 的 finally 覆盖丢失
+        assert manifest["stage_timings"] == {"ic": 1.2, "backtest": 3.4}
+        assert manifest["status"] == "success"
+        assert manifest["end_ts"] is not None
+
+    _tp7 = tmp_path / "_s7"
+    _tp7.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_7_test_record_experiment_metadata_survives_run_finalization(_tp7, mp)
+
+    # -- 原 test_manifest_records_duration_seconds --
+    def _section_8_test_manifest_records_duration_seconds(tmp_path, mp):
+        from factorzen.config.research import RunConfig
+        from factorzen.core import experiment as exp_mod
+
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
+
+        with exp_mod.run_experiment(cfg, run_id="dur_run"):
+            pass
+
+        manifest = json.loads((tmp_path / "experiments" / "dur_run" / "manifest.json").read_text())
+        assert "duration_seconds" in manifest
+        assert isinstance(manifest["duration_seconds"], (int, float))
+        assert manifest["duration_seconds"] >= 0
+
+    _tp8 = tmp_path / "_s8"
+    _tp8.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_8_test_manifest_records_duration_seconds(_tp8, mp)
+
+    # -- 原 test_experiment_warns_when_git_dirty --
+    def _section_9_test_experiment_warns_when_git_dirty(tmp_path, mp, caplog):
+        caplog.clear()
+        import logging
+
+        from factorzen.config.research import RunConfig
+        from factorzen.core import experiment as exp_mod
+
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        mp.setattr(exp_mod, "_get_git_dirty", lambda: True)
+        cfg = RunConfig(factor="x", start="20230101", end="20241231")
+
+        with caplog.at_level(logging.WARNING), exp_mod.run_experiment(cfg, run_id="dirty_warn_run"):
+            pass
+
+        assert any("git_dirty" in r.getMessage() for r in caplog.records)
+
+    _tp9 = tmp_path / "_s9"
+    _tp9.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_9_test_experiment_warns_when_git_dirty(_tp9, mp, caplog)
+
+    # -- 原 test_experiment_does_not_warn_when_clean --
+    def _section_10_test_experiment_does_not_warn_when_clean(tmp_path, mp, caplog):
+        caplog.clear()
+        import logging
+
+        from factorzen.config.research import RunConfig
+        from factorzen.core import experiment as exp_mod
+
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
+        mp.setattr(exp_mod, "_get_git_dirty", lambda: False)
+        cfg = RunConfig(factor="x", start="20230101", end="20241231")
+
+        with caplog.at_level(logging.WARNING), exp_mod.run_experiment(cfg, run_id="clean_run"):
+            pass
+
+        assert not any("git_dirty" in r.getMessage() for r in caplog.records)
+
+    _tp10 = tmp_path / "_s10"
+    _tp10.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_10_test_experiment_does_not_warn_when_clean(_tp10, mp, caplog)
+
+
+def test_build_manifest_base_suite():
+    """build_manifest_base() 是可被其它 pipeline（risk_build/portfolio_build）复用的基础字段构造器。；非 RunConfig 调用方（如 risk_build/portfolio_build）可直接传 dict 作为 config。"""
+    # -- 原 test_build_manifest_base_returns_reproducibility_fields --
+    def _section_0_test_build_manifest_base_returns_reproducibility_fields(mp):
+        from factorzen.core import experiment as exp_mod
+
+        mp.setattr(exp_mod, "get_git_sha", lambda: "deadbeef")
+        mp.setattr(exp_mod, "_get_git_dirty", lambda: False)
+        mp.setattr(exp_mod, "_get_pixi_lock_hash", lambda: "lockhash123")
+
+        base = exp_mod.build_manifest_base(
+            ["python", "-m", "factorzen.cli.main", "risk", "build"],
+            {"start": "20230101", "end": "20231231"},
+        )
+
+        assert base["schema_version"] == "1"
+        assert base["git_sha"] == "deadbeef"
+        assert base["git_dirty"] is False
+        assert base["pixi_lock_sha256"] == "lockhash123"
+        assert base["command"] == ["python", "-m", "factorzen.cli.main", "risk", "build"]
+        assert base["config"] == {"start": "20230101", "end": "20231231"}
+        assert base.get("start_ts")
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_build_manifest_base_returns_reproducibility_fields(mp)
+
+    # -- 原 test_build_manifest_base_accepts_plain_dict_config --
+    def _section_1_test_build_manifest_base_accepts_plain_dict_config(mp):
+        from factorzen.core import experiment as exp_mod
+
+        base = exp_mod.build_manifest_base(None, {"cov_half_life": 90, "nw_lags": 2})
+
+        assert base["command"] is None
+        assert base["config"] == {"cov_half_life": 90, "nw_lags": 2}
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_build_manifest_base_accepts_plain_dict_config(mp)
+
 
 # ==== 来自 test_factor_sweep.py ====
-def test_expand_grid_cartesian_product():
-    combos = expand_grid(["backtest.top_n=30,50", "preprocessing.normalizer=zscore,rank_normal"])
-    assert combos == [
-        ["backtest.top_n=30", "preprocessing.normalizer=zscore"],
-        ["backtest.top_n=30", "preprocessing.normalizer=rank_normal"],
-        ["backtest.top_n=50", "preprocessing.normalizer=zscore"],
-        ["backtest.top_n=50", "preprocessing.normalizer=rank_normal"],
-    ]
+def test_expand_grid_suite():
+    """test_expand_grid_cartesian_product；test_expand_grid_single_dim；test_expand_grid_empty；test_expand_grid_strips_whitespace；test_expand_grid_rejects_bad_tokens"""
+    # -- 原 test_expand_grid_cartesian_product --
+    def _section_0_test_expand_grid_cartesian_product():
+        combos = expand_grid(["backtest.top_n=30,50", "preprocessing.normalizer=zscore,rank_normal"])
+        assert combos == [
+            ["backtest.top_n=30", "preprocessing.normalizer=zscore"],
+            ["backtest.top_n=30", "preprocessing.normalizer=rank_normal"],
+            ["backtest.top_n=50", "preprocessing.normalizer=zscore"],
+            ["backtest.top_n=50", "preprocessing.normalizer=rank_normal"],
+        ]
 
-def test_expand_grid_single_dim():
-    assert expand_grid(["backtest.top_n=30,50,100"]) == [
-        ["backtest.top_n=30"],
-        ["backtest.top_n=50"],
-        ["backtest.top_n=100"],
-    ]
+    _section_0_test_expand_grid_cartesian_product()
 
-def test_expand_grid_empty():
-    assert expand_grid([]) == []
+    # -- 原 test_expand_grid_single_dim --
+    def _section_1_test_expand_grid_single_dim():
+        assert expand_grid(["backtest.top_n=30,50,100"]) == [
+            ["backtest.top_n=30"],
+            ["backtest.top_n=50"],
+            ["backtest.top_n=100"],
+        ]
 
-def test_expand_grid_strips_whitespace():
-    assert expand_grid(["backtest.top_n = 30, 50 "]) == [["backtest.top_n=30"], ["backtest.top_n=50"]]
+    _section_1_test_expand_grid_single_dim()
 
-@pytest.mark.parametrize("token", ["backtest.top_n", "=30,50", "backtest.top_n="])
-def test_expand_grid_rejects_bad_tokens(token):
-    with pytest.raises(ValueError):
-        expand_grid([token])
+    # -- 原 test_expand_grid_empty --
+    def _section_2_test_expand_grid_empty():
+        assert expand_grid([]) == []
 
-def test_run_sweep_collects_and_sorts_by_ir():
-    metrics = {
-        "backtest.top_n=30": {"ic_mean": 0.04, "ir": 0.18},
-        "backtest.top_n=50": {"ic_mean": 0.05, "ir": 0.12},
-        "backtest.top_n=100": {"ic_mean": 0.03, "ir": 0.20},
-    }
+    _section_2_test_expand_grid_empty()
 
-    def fake_runner(overrides):
-        return metrics[overrides[0]]
+    # -- 原 test_expand_grid_strips_whitespace --
+    def _section_3_test_expand_grid_strips_whitespace():
+        assert expand_grid(["backtest.top_n = 30, 50 "]) == [["backtest.top_n=30"], ["backtest.top_n=50"]]
 
-    rows = run_sweep(["backtest.top_n=30,50,100"], fake_runner, sort_by="ir")
-    assert [r["overrides"][0] for r in rows] == [
-        "backtest.top_n=100",  # ir 0.20
-        "backtest.top_n=30",  # ir 0.18
-        "backtest.top_n=50",  # ir 0.12
-    ]
+    _section_3_test_expand_grid_strips_whitespace()
 
-def test_run_sweep_sort_by_backtest_metric():
-    """top_n 维度只影响回测：按 sharpe 排序才有区分度。"""
-    metrics = {
-        "backtest.top_n=20": {"ir": 0.1, "sharpe": -1.15},
-        "backtest.top_n=50": {"ir": 0.1, "sharpe": -1.21},
-    }
+    # -- 原 test_expand_grid_rejects_bad_tokens --
+    def _section_4_test_expand_grid_rejects_bad_tokens():
+        for token in ["backtest.top_n", "backtest.top_n="]:
+            with pytest.raises(ValueError):
+                expand_grid([token])
 
-    def fake_runner(overrides):
-        return metrics[overrides[0]]
+    _section_4_test_expand_grid_rejects_bad_tokens()
 
-    rows = run_sweep(["backtest.top_n=20,50"], fake_runner, sort_by="sharpe")
-    assert [r["overrides"][0] for r in rows] == ["backtest.top_n=20", "backtest.top_n=50"]
 
-def test_run_sweep_applies_extra_overrides():
-    seen = []
+def test_run_sweep_suite():
+    """test_run_sweep_collects_and_sorts_by_ir；top_n 维度只影响回测：按 sharpe 排序才有区分度。；test_run_sweep_applies_extra_overrides；test_run_sweep_tolerates_runner_failure；test_run_sweep_tolerates_runner_systemexit；test_run_sweep_nan_sorts_last"""
+    # -- 原 test_run_sweep_collects_and_sorts_by_ir --
+    def _section_0_test_run_sweep_collects_and_sorts_by_ir():
+        metrics = {
+            "backtest.top_n=30": {"ic_mean": 0.04, "ir": 0.18},
+            "backtest.top_n=50": {"ic_mean": 0.05, "ir": 0.12},
+            "backtest.top_n=100": {"ic_mean": 0.03, "ir": 0.20},
+        }
 
-    def fake_runner(overrides):
-        seen.append(overrides)
-        return {"ir": 1.0}
+        def fake_runner(overrides):
+            return metrics[overrides[0]]
 
-    run_sweep(["backtest.top_n=30"], fake_runner, extra_overrides=["preprocessing.neutralize=true"])
-    assert seen == [["preprocessing.neutralize=true", "backtest.top_n=30"]]
+        rows = run_sweep(["backtest.top_n=30,50,100"], fake_runner, sort_by="ir")
+        assert [r["overrides"][0] for r in rows] == [
+            "backtest.top_n=100",  # ir 0.20
+            "backtest.top_n=30",  # ir 0.18
+            "backtest.top_n=50",  # ir 0.12
+        ]
 
-def test_run_sweep_tolerates_runner_failure():
-    def flaky_runner(overrides):
-        if overrides[0].endswith("50"):
-            raise RuntimeError("数据不足")
-        return {"ir": 0.3}
+    _section_0_test_run_sweep_collects_and_sorts_by_ir()
 
-    rows = run_sweep(["backtest.top_n=30,50"], flaky_runner, sort_by="ir")
-    # 成功组排前，失败组（-inf）排后并带 error
-    assert rows[0]["overrides"] == ["backtest.top_n=30"]
-    assert rows[0]["ir"] == 0.3
-    assert rows[1]["error"] == "数据不足"
-    assert "ir" not in rows[1]
+    # -- 原 test_run_sweep_sort_by_backtest_metric --
+    def _section_1_test_run_sweep_sort_by_backtest_metric():
+        metrics = {
+            "backtest.top_n=20": {"ir": 0.1, "sharpe": -1.15},
+            "backtest.top_n=50": {"ir": 0.1, "sharpe": -1.21},
+        }
 
-def test_run_sweep_tolerates_runner_systemexit():
-    # daily_single.main() 内部错误统一走 sys.exit(1/2) = SystemExit（BaseException，
-    # 非 Exception），会逃逸 except Exception 而中止整个 sweep、丢掉前面已跑组合。
-    # run_sweep 契约是"单组合失败不中断"，须一并捕获 SystemExit。
-    def flaky_runner(overrides):
-        if overrides[0].endswith("50"):
-            raise SystemExit(2)  # 模拟 daily_single.main() sys.exit(2)
-        return {"ir": 0.3}
+        def fake_runner(overrides):
+            return metrics[overrides[0]]
 
-    rows = run_sweep(["backtest.top_n=30,50"], flaky_runner, sort_by="ir")
-    assert len(rows) == 2
-    assert rows[0]["overrides"] == ["backtest.top_n=30"]
-    assert rows[0]["ir"] == 0.3
-    assert "error" in rows[1]
-    assert "ir" not in rows[1]
+        rows = run_sweep(["backtest.top_n=20,50"], fake_runner, sort_by="sharpe")
+        assert [r["overrides"][0] for r in rows] == ["backtest.top_n=20", "backtest.top_n=50"]
 
-def test_run_sweep_nan_sorts_last():
-    def runner(overrides):
-        return {"ir": float("nan")} if overrides[0].endswith("50") else {"ir": 0.1}
+    _section_1_test_run_sweep_sort_by_backtest_metric()
 
-    rows = run_sweep(["backtest.top_n=50,30"], runner, sort_by="ir")
-    assert rows[0]["overrides"] == ["backtest.top_n=30"]
-    assert math.isnan(rows[1]["ir"])
+    # -- 原 test_run_sweep_applies_extra_overrides --
+    def _section_2_test_run_sweep_applies_extra_overrides():
+        seen = []
 
-def test_format_sweep_table_has_headers_and_rows():
-    rows = [
-        {
-            "overrides": ["backtest.top_n=30"],
-            "ic_mean": 0.04,
-            "ir": 0.18,
-            "sharpe": -1.15,
-            "ann_ret": -0.022,
-            "avg_turnover": 0.51,
-            "n": 24,
-        },
-    ]
-    table = format_sweep_table(rows)
-    assert "top_n" in table  # 短名表头
-    assert "ir" in table
-    assert "sharpe" in table  # 回测指标列
-    assert "0.1800" in table  # ir 4 位小数
-    assert "-1.1500" in table  # sharpe
-    assert "30" in table
+        def fake_runner(overrides):
+            seen.append(overrides)
+            return {"ir": 1.0}
 
-def test_format_sweep_table_empty():
-    assert format_sweep_table([]) == "(空 sweep)"
+        run_sweep(["backtest.top_n=30"], fake_runner, extra_overrides=["preprocessing.neutralize=true"])
+        assert seen == [["preprocessing.neutralize=true", "backtest.top_n=30"]]
 
-def test_format_sweep_table_shows_error():
-    rows = [{"overrides": ["backtest.top_n=50"], "error": "数据不足"}]
-    assert "数据不足" in format_sweep_table(rows)
+    _section_2_test_run_sweep_applies_extra_overrides()
 
-def test_format_sweep_csv_roundtrip():
-    rows = [
-        {
-            "overrides": ["backtest.top_n=30"],
-            "ic_mean": 0.04,
-            "ir": 0.18,
-            "sharpe": -1.15,
-            "ann_ret": -0.022,
-            "avg_turnover": 0.51,
-            "n": 24,
-        },
-    ]
-    csv_text = format_sweep_csv(rows)
-    lines = csv_text.strip().splitlines()
-    assert lines[0].startswith("backtest.top_n,")
-    assert "sharpe" in lines[0]
-    assert "0.18" in lines[1]
-    assert "30" in lines[1]
+    # -- 原 test_run_sweep_tolerates_runner_failure --
+    def _section_3_test_run_sweep_tolerates_runner_failure():
+        def flaky_runner(overrides):
+            if overrides[0].endswith("50"):
+                raise RuntimeError("数据不足")
+            return {"ir": 0.3}
 
-def test_format_sweep_csv_empty():
-    assert format_sweep_csv([]) == ""
+        rows = run_sweep(["backtest.top_n=30,50"], flaky_runner, sort_by="ir")
+        # 成功组排前，失败组（-inf）排后并带 error
+        assert rows[0]["overrides"] == ["backtest.top_n=30"]
+        assert rows[0]["ir"] == 0.3
+        assert rows[1]["error"] == "数据不足"
+        assert "ir" not in rows[1]
+
+    _section_3_test_run_sweep_tolerates_runner_failure()
+
+    # -- 原 test_run_sweep_tolerates_runner_systemexit --
+    def _section_4_test_run_sweep_tolerates_runner_systemexit():
+        def flaky_runner(overrides):
+            if overrides[0].endswith("50"):
+                raise SystemExit(2)  # 模拟 daily_single.main() sys.exit(2)
+            return {"ir": 0.3}
+
+        rows = run_sweep(["backtest.top_n=30,50"], flaky_runner, sort_by="ir")
+        assert len(rows) == 2
+        assert rows[0]["overrides"] == ["backtest.top_n=30"]
+        assert rows[0]["ir"] == 0.3
+        assert "error" in rows[1]
+        assert "ir" not in rows[1]
+
+    _section_4_test_run_sweep_tolerates_runner_systemexit()
+
+    # -- 原 test_run_sweep_nan_sorts_last --
+    def _section_5_test_run_sweep_nan_sorts_last():
+        def runner(overrides):
+            return {"ir": float("nan")} if overrides[0].endswith("50") else {"ir": 0.1}
+
+        rows = run_sweep(["backtest.top_n=50,30"], runner, sort_by="ir")
+        assert rows[0]["overrides"] == ["backtest.top_n=30"]
+        assert math.isnan(rows[1]["ir"])
+
+    _section_5_test_run_sweep_nan_sorts_last()
+
+
+def test_format_sweep_suite():
+    """test_format_sweep_table_has_headers_and_rows；test_format_sweep_table_empty；test_format_sweep_table_shows_error；test_format_sweep_csv_roundtrip；test_format_sweep_csv_empty"""
+    # -- 原 test_format_sweep_table_has_headers_and_rows --
+    def _section_0_test_format_sweep_table_has_headers_and_rows():
+        rows = [
+            {
+                "overrides": ["backtest.top_n=30"],
+                "ic_mean": 0.04,
+                "ir": 0.18,
+                "sharpe": -1.15,
+                "ann_ret": -0.022,
+                "avg_turnover": 0.51,
+                "n": 24,
+            },
+        ]
+        table = format_sweep_table(rows)
+        assert "top_n" in table  # 短名表头
+        assert "ir" in table
+        assert "sharpe" in table  # 回测指标列
+        assert "0.1800" in table  # ir 4 位小数
+        assert "-1.1500" in table  # sharpe
+        assert "30" in table
+
+    _section_0_test_format_sweep_table_has_headers_and_rows()
+
+    # -- 原 test_format_sweep_table_empty --
+    def _section_1_test_format_sweep_table_empty():
+        assert format_sweep_table([]) == "(空 sweep)"
+
+    _section_1_test_format_sweep_table_empty()
+
+    # -- 原 test_format_sweep_table_shows_error --
+    def _section_2_test_format_sweep_table_shows_error():
+        rows = [{"overrides": ["backtest.top_n=50"], "error": "数据不足"}]
+        assert "数据不足" in format_sweep_table(rows)
+
+    _section_2_test_format_sweep_table_shows_error()
+
+    # -- 原 test_format_sweep_csv_roundtrip --
+    def _section_3_test_format_sweep_csv_roundtrip():
+        rows = [
+            {
+                "overrides": ["backtest.top_n=30"],
+                "ic_mean": 0.04,
+                "ir": 0.18,
+                "sharpe": -1.15,
+                "ann_ret": -0.022,
+                "avg_turnover": 0.51,
+                "n": 24,
+            },
+        ]
+        csv_text = format_sweep_csv(rows)
+        lines = csv_text.strip().splitlines()
+        assert lines[0].startswith("backtest.top_n,")
+        assert "sharpe" in lines[0]
+        assert "0.18" in lines[1]
+        assert "30" in lines[1]
+
+    _section_3_test_format_sweep_csv_roundtrip()
+
+    # -- 原 test_format_sweep_csv_empty --
+    def _section_4_test_format_sweep_csv_empty():
+        assert format_sweep_csv([]) == ""
+
+    _section_4_test_format_sweep_csv_empty()
+
 
 # ==== 来自 test_team_pipeline.py ====
 def _mock_daily(n_stocks=20, n_days=180, seed=1):

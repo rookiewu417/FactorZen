@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-_SRC = Path(__file__).resolve().parents[1] / "src" / "factorzen"
+_SRC = Path(__file__).resolve().parents[2] / "src" / "factorzen"
 
 
 # ── 合成数据 ────────────────────────────────────────────────────────────────

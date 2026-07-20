@@ -1,8 +1,9 @@
-﻿"""tests/test_data_audit.py — common/data_audit.py 单元测试。
-
-全量 mock：不读取文件系统，不调用 Tushare，不依赖本地 data/raw/ 数据。
+"""test_loader_daily_basic_cols.py：test_loader_daily_basic_cols
+test_data_quality.py：Tests for daily data quality reporting.
+test_data_audit.py：tests/test_data_audit.py — common/data_audit.py 单元测试。
+test_partition_repair.py：test_partition_repair
+test_storage.py：common/storage.py 的单元测试。
 """
-
 from __future__ import annotations
 
 from datetime import date
@@ -14,9 +15,103 @@ import pytest
 from factorzen.core.data_audit import (
     build_raw_data_audit,
 )
+from factorzen.core.storage import load_parquet, save_parquet
+from factorzen.dataio.partition_repair import merge_missing_partition_rows
 
+
+# ==== 来自 test_loader_daily_basic_cols.py ====
+def test_daily_basic_cols_include_new_fields():
+    from factorzen.core.loader import DAILY_BASIC_COLS
+    for f in ["turnover_rate", "turnover_rate_f", "volume_ratio", "float_share"]:
+        assert f in DAILY_BASIC_COLS, f"DAILY_BASIC_COLS missing {f}"
+    # 原有字段仍在
+    for f in ["trade_date", "ts_code", "pe_ttm", "pb", "total_mv", "circ_mv"]:
+        assert f in DAILY_BASIC_COLS
+
+# ==== 来自 test_data_quality.py ====
+def _base_daily() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2), date(2024, 1, 2), date(2024, 1, 3)],
+            "ts_code": ["000001.SZ", "000002.SZ", "000001.SZ"],
+            "open": [10.0, 20.0, 10.5],
+            "close": [10.2, 19.8, 10.6],
+        }
+    )
+
+def _base_factor() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2), date(2024, 1, 2)],
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            "factor_value": [1.0, None],
+        }
+    )
+
+def _base_clean() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2), date(2024, 1, 2)],
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            "factor_clean": [0.5, -0.5],
+        }
+    )
+
+def _base_returns() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2), date(2024, 1, 2)],
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            "fwd_ret_1d": [0.01, None],
+        }
+    )
+
+def test_quality_report_records_coverage_and_warnings():
+    from factorzen.core.data_quality import build_daily_quality_report
+
+    report = build_daily_quality_report(
+        daily_df=_base_daily(),
+        factor_df=_base_factor(),
+        clean_df=_base_clean(),
+        ret_df=_base_returns(),
+        universe_codes=["000001.SZ", "000002.SZ", "000003.SZ"],
+    )
+
+    assert report["status"] == "warning"
+    assert report["checks"]["factor_value"]["coverage"] == 0.5
+    assert report["checks"]["universe"]["coverage"] == pytest.approx(2 / 3)
+    assert report["warnings"]
+
+def test_quality_report_rejects_duplicate_daily_keys():
+    from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
+
+    duplicate_daily = pl.concat([_base_daily(), _base_daily().head(1)])
+
+    with pytest.raises(QualityCheckError, match="duplicate daily keys"):
+        build_daily_quality_report(
+            daily_df=duplicate_daily,
+            factor_df=_base_factor(),
+            clean_df=_base_clean(),
+            ret_df=_base_returns(),
+            universe_codes=["000001.SZ", "000002.SZ"],
+        )
+
+def test_quality_report_rejects_empty_clean_factor():
+    from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
+
+    empty_clean = _base_clean().with_columns(pl.lit(None).cast(pl.Float64).alias("factor_clean"))
+
+    with pytest.raises(QualityCheckError, match="factor_clean has no valid values"):
+        build_daily_quality_report(
+            daily_df=_base_daily(),
+            factor_df=_base_factor(),
+            clean_df=empty_clean,
+            ret_df=_base_returns(),
+            universe_codes=["000001.SZ", "000002.SZ"],
+        )
+
+# ==== 来自 test_data_audit.py ====
 # ── 辅助函数 ────────────────────────────────────────────────────────────────
-
 
 def _daily_df(dates: list[date], codes: list[str]) -> pl.DataFrame:
     rows = [(d, c) for d in dates for c in codes]
@@ -26,7 +121,6 @@ def _daily_df(dates: list[date], codes: list[str]) -> pl.DataFrame:
             "ts_code": [r[1] for r in rows],
         }
     )
-
 
 def _daily_basic_df(dates: list[date], codes: list[str], null_pb: bool = False) -> pl.DataFrame:
     rows = [(d, c) for d in dates for c in codes]
@@ -41,7 +135,6 @@ def _daily_basic_df(dates: list[date], codes: list[str], null_pb: bool = False) 
             "circ_mv": [5e8] * n,
         }
     )
-
 
 def _finance_df(ann_date_str: str, n: int = 5) -> pl.DataFrame:
     codes = [f"{i:06d}.SZ" for i in range(n)]
@@ -58,15 +151,12 @@ def _finance_df(ann_date_str: str, n: int = 5) -> pl.DataFrame:
         }
     )
 
-
 def _mock_load(df: pl.DataFrame):
     lf = MagicMock()
     lf.collect.return_value = df
     return lf
 
-
 # ── 1. 参数校验 ─────────────────────────────────────────────────────────────
-
 
 class TestInvalidDataType:
     def test_unsupported_type_returns_error(self):
@@ -74,9 +164,7 @@ class TestInvalidDataType:
         assert result["status"] == "error"
         assert any("unsupported" in e for e in result["errors"])
 
-
 # ── 2. 数据加载失败 ─────────────────────────────────────────────────────────
-
 
 class TestLoadFailure:
     def test_scan_exception_returns_error(self):
@@ -96,9 +184,7 @@ class TestLoadFailure:
         assert result["status"] == "error"
         assert any("empty" in e for e in result["errors"])
 
-
 # ── 3. daily — 日期缺口 ─────────────────────────────────────────────────────
-
 
 class TestDailyDateCoverage:
     _dates = [date(2023, 1, 3), date(2023, 1, 4), date(2023, 1, 5)]
@@ -140,9 +226,7 @@ class TestDailyDateCoverage:
         assert result["checks"]["date_coverage"]["missing_count"] == 24
         assert len(result["checks"]["date_coverage"]["missing_dates"]) == 20
 
-
 # ── 4. daily — 股票覆盖率 ───────────────────────────────────────────────────
-
 
 class TestDailyStockCoverage:
     _dates = [date(2023, 1, 3)]
@@ -194,9 +278,7 @@ class TestDailyStockCoverage:
         assert "coverage" not in sc
         assert "actual_codes" in sc
 
-
 # ── 5. daily_basic — 字段空值率 ─────────────────────────────────────────────
-
 
 class TestDailyBasicFieldNulls:
     _dates = [date(2023, 1, 3)]
@@ -238,9 +320,7 @@ class TestDailyBasicFieldNulls:
         assert result["checks"]["field_null_rates"]["circ_mv"].get("missing_column")
         assert any("circ_mv" in w for w in result["warnings"])
 
-
 # ── 6. finance — PIT 陈旧性 ─────────────────────────────────────────────────
-
 
 class TestFinancePITStaleness:
     def test_fresh_ann_date_ok(self):
@@ -279,9 +359,7 @@ class TestFinancePITStaleness:
             result = build_raw_data_audit(data_type="finance", start="20230101", end="20231231")
         assert result["checks"]["field_null_rates"]["roe"].get("missing_column")
 
-
 # ── 7. 输出格式 ─────────────────────────────────────────────────────────────
-
 
 class TestOutputSchema:
     def test_output_keys_always_present(self):
@@ -295,3 +373,153 @@ class TestOutputSchema:
         assert result["status"] in ("ok", "warning", "error")
         assert isinstance(result["warnings"], list)
         assert isinstance(result["errors"], list)
+
+# ==== 来自 test_partition_repair.py ====
+def test_merge_missing_rows_aligns_legacy_schema_without_overwriting_target(tmp_path):
+    source = tmp_path / "backup"
+    source.mkdir()
+    pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2), date(2024, 1, 3)],
+            "ts_code": ["000001.SZ", "000001.SZ"],
+            "pb": [1.0, 2.0],
+        }
+    ).write_parquet(source / "legacy.parquet")
+
+    raw = tmp_path / "raw"
+    current = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 3)],
+            "ts_code": ["000001.SZ"],
+            "pb": [9.0],
+            "turnover_rate": [3.0],
+        }
+    )
+    save_parquet(current, "daily_basic", base_dir=raw)
+
+    report = merge_missing_partition_rows(
+        source,
+        target_data_type="daily_basic",
+        base_dir=raw,
+        key_cols=("trade_date", "ts_code"),
+    )
+    merged = load_parquet("daily_basic", base_dir=raw).collect().sort("trade_date")
+
+    assert report.merged_rows == 1
+    assert merged.height == 2
+    assert merged["pb"].to_list() == [1.0, 9.0]
+    assert merged["turnover_rate"].to_list() == [None, 3.0]
+
+    again = merge_missing_partition_rows(
+        source,
+        target_data_type="daily_basic",
+        base_dir=raw,
+        key_cols=("trade_date", "ts_code"),
+    )
+    assert again.merged_rows == 0
+
+# ==== 来自 test_storage.py ====
+@pytest.fixture()
+def tmp_dir(tmp_path):
+    return tmp_path
+
+def _make_df(n: int = 10) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, d + 1) for d in range(n)],
+            "ts_code": [f"{i:06d}.SH" for i in range(n)],
+            "value": list(range(n)),
+        }
+    )
+
+def test_save_and_load_roundtrip(tmp_dir):
+    df = _make_df(5)
+    save_parquet(df, "test_data", base_dir=tmp_dir)
+    loaded = load_parquet("test_data", base_dir=tmp_dir).collect()
+    assert loaded.shape[0] == 5
+    assert set(loaded.columns).issuperset({"trade_date", "ts_code", "value"})
+
+def test_save_append_deduplicates(tmp_dir):
+    df1 = _make_df(5)
+    save_parquet(df1, "test_data", base_dir=tmp_dir, mode="append")
+    # 重复写入同样的数据
+    save_parquet(df1, "test_data", base_dir=tmp_dir, mode="append")
+    loaded = load_parquet("test_data", base_dir=tmp_dir).collect()
+    assert loaded.shape[0] == 5  # 去重后仍为 5 行
+
+def test_save_append_replaces_existing_business_key(tmp_dir):
+    original = _make_df(1)
+    updated = original.with_columns(pl.lit(99).alias("value"))
+
+    save_parquet(original, "test_data", base_dir=tmp_dir, mode="append")
+    save_parquet(updated, "test_data", base_dir=tmp_dir, mode="append")
+
+    loaded = load_parquet("test_data", base_dir=tmp_dir).collect()
+    assert loaded.height == 1
+    assert loaded["value"][0] == 99
+
+def test_save_overwrite_replaces(tmp_dir):
+    df1 = _make_df(5)
+    save_parquet(df1, "test_data", base_dir=tmp_dir, mode="overwrite")
+    df2 = _make_df(3)
+    save_parquet(df2, "test_data", base_dir=tmp_dir, mode="overwrite")
+    loaded = load_parquet("test_data", base_dir=tmp_dir).collect()
+    # overwrite 只覆盖同月分区；1月数据被覆盖为3行
+    assert loaded.shape[0] == 3
+
+def test_hive_partitions_created(tmp_dir):
+    df = _make_df(5)
+    save_parquet(df, "test_data", base_dir=tmp_dir)
+    # 应该创建 year=2024/month=01/data.parquet
+    assert (tmp_dir / "test_data" / "year=2024" / "month=01" / "data.parquet").exists()
+
+def test_load_with_date_filter(tmp_dir):
+    df = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 5), date(2024, 2, 10), date(2024, 3, 15)],
+            "ts_code": ["A", "B", "C"],
+            "value": [1, 2, 3],
+        }
+    )
+    save_parquet(df, "test_data", base_dir=tmp_dir)
+    loaded = load_parquet("test_data", start="20240201", end="20240228", base_dir=tmp_dir).collect()
+    assert loaded.shape[0] == 1
+    assert loaded["ts_code"][0] == "B"
+
+def test_load_datetime_end_boundary_includes_full_end_day(tmp_dir):
+    """Datetime 列（分钟 bar）end 边界须含截止日全天，而非只到当日 00:00。"""
+    from datetime import datetime
+
+    df = pl.DataFrame(
+        {
+            "trade_time": [
+                datetime(2024, 1, 30, 9, 31),
+                datetime(2024, 1, 31, 9, 31),   # 截止日盘中
+                datetime(2024, 1, 31, 15, 0),   # 截止日收盘
+                datetime(2024, 2, 1, 9, 31),    # 越界
+            ],
+            "ts_code": ["A", "A", "A", "A"],
+            "value": [1, 2, 3, 4],
+        }
+    )
+    save_parquet(df, "minute_test", date_col="trade_time", base_dir=tmp_dir)
+    loaded = load_parquet(
+        "minute_test", start="20240131", end="20240131", date_col="trade_time", base_dir=tmp_dir
+    ).collect()
+    vals = sorted(loaded["value"].to_list())
+    assert vals == [2, 3], (
+        f"应含 1/31 全天两根 bar，实得 {vals}（修复前 end=1/31 00:00 把盘中 bar 全排除）"
+    )
+
+def test_load_date_end_boundary_still_inclusive(tmp_dir):
+    """Date 列的 end 仍为闭区间（含截止日）。"""
+    df = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 30), date(2024, 1, 31), date(2024, 2, 1)],
+            "ts_code": ["A", "B", "C"],
+            "value": [1, 2, 3],
+        }
+    )
+    save_parquet(df, "test_data2", base_dir=tmp_dir)
+    loaded = load_parquet("test_data2", start="20240130", end="20240131", base_dir=tmp_dir).collect()
+    assert sorted(loaded["value"].to_list()) == [1, 2]

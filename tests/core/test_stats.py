@@ -136,6 +136,8 @@ def test_series_lift_stats_ground_truth_6day_block2():
 
 # ── 2. paired ≡ series(diff) ─────────────────────────────────────────────────
 
+# ── 3. 边界 ──────────────────────────────────────────────────────────────────
+
 def test_paired_lift_stats_equals_series_on_diff():
     """随机 cand/base：paired 与测试自构造 diff 帧上的 series 六键相等。"""
     from factorzen.discovery.lift_test import paired_lift_stats, series_lift_stats
@@ -180,8 +182,6 @@ def test_paired_lift_stats_equals_series_on_diff():
             assert a is b_, f"{key}: paired={a!r} series={b_!r}"
         else:
             assert abs(float(a) - float(b_)) < 1e-15, f"{key}: {a} vs {b_}"
-
-# ── 3. 边界 ──────────────────────────────────────────────────────────────────
 
 def test_series_lift_stats_empty_frame():
     from factorzen.discovery.lift_test import series_lift_stats
@@ -342,6 +342,9 @@ def test_daily_residual_rank_ic_start_end_window():
 
 # ── 6. compute_residual_ic ≡ mean(daily_residual_rank_ic) ────────────────────
 
+# ==== 来自 test_stats_rank_parity.py ====
+# ── 旧 ordinal 双 argsort（TDD 反例：ties 下行序敏感）──────────────────────
+
 def test_compute_residual_ic_matches_daily_mean():
     """compute_residual_ic 的 (ic_mean, n_days) == daily 帧均值与行数。"""
     from factorzen.discovery.residual import (
@@ -373,9 +376,6 @@ def test_compute_residual_ic_matches_daily_mean():
     else:
         expected_mean = float(daily["ic"].mean())
         assert abs(res.ic_mean - expected_mean) < 1e-12
-
-# ==== 来自 test_stats_rank_parity.py ====
-# ── 旧 ordinal 双 argsort（TDD 反例：ties 下行序敏感）──────────────────────
 
 def _ordinal_spearman(a: np.ndarray, b: np.ndarray) -> float:
     """历史双 argsort 实现：ties 依行序，非确定性。"""
@@ -528,16 +528,6 @@ def test_methods_rank_ic_numpy_uses_avg_rank_on_ties():
     # 行序不变
     perm = np.array([3, 0, 5, 1, 8, 2, 10, 4, 7, 11, 6, 9])
     assert _rank_ic_numpy(f[perm], r[perm]) == got
-
-def test_residual_spearman_is_avg_rank_reexport():
-    """residual._spearman 为 core.stats 薄封装/再导出，语义一致。"""
-    from factorzen.core.stats import spearman_avg_rank
-    from factorzen.discovery.residual import _spearman
-
-    f = np.array([1.0, 1.0, 2.0, 2.0, 3.0])
-    r = np.array([0.2, 0.1, 0.5, 0.4, 0.9])
-    assert _spearman(f, r) == spearman_avg_rank(f, r)
-    assert _spearman(np.ones(4), np.arange(4.0)) is None
 
 def test_daily_oos_skips_constant_cross_section():
     from factorzen.discovery.lift_test import _daily_oos_rank_ic

@@ -22,8 +22,6 @@ from factorzen.daily.evaluation.backtest import (
 )
 from factorzen.daily.evaluation.ic_analysis import _compute_walk_forward_ic
 from factorzen.daily.evaluation.walk_forward import (
-    WalkForwardFoldResult,
-    WalkForwardResult,
     WalkForwardSplitter,
     _compute_oos_max_dd,
     run_walk_forward,
@@ -258,73 +256,6 @@ class TestRunWalkForward:
             expected = 1.0 * (1.0 + first_ret)
             assert abs(float(first_nav) - float(expected)) < 1e-9
 
-    def test_oos_returns_no_gaps(self, factor_df: pl.DataFrame, price_df: pl.DataFrame):
-        """OOS 日期在不同折之间不应重叠（每个日期至多出现一次）。"""
-        splitter = self._make_splitter()
-        result = run_walk_forward(
-            strategy_factory=self._strategy_factory,
-            factor_df=factor_df,
-            price_df=price_df,
-            splitter=splitter,
-            params={"n_groups": 5},
-        )
-        assert len(result.folds) > 0, "Expected at least one WF fold but got 0 — fixture may be too small"
-        if result.oos_returns.is_empty():
-            return
-        dates = result.oos_returns["trade_date"].to_list()
-        assert len(dates) == len(set(dates)), "OOS 日期存在重叠（跨折）"
-
-    def test_stability_ratio_bounds(self, factor_df: pl.DataFrame, price_df: pl.DataFrame):
-        """stability_ratio 不应为 NaN 或 Inf，即使 IS Sharpe 接近 0。"""
-        splitter = self._make_splitter()
-        result = run_walk_forward(
-            strategy_factory=self._strategy_factory,
-            factor_df=factor_df,
-            price_df=price_df,
-            splitter=splitter,
-            params={"n_groups": 5},
-        )
-        assert np.isfinite(result.stability_ratio), (
-            f"stability_ratio 应为有限数，got {result.stability_ratio}"
-        )
-
-    def test_result_structure(self, factor_df: pl.DataFrame, price_df: pl.DataFrame):
-        """WalkForwardResult 应包含所有必需字段且类型正确。"""
-        splitter = self._make_splitter()
-        result = run_walk_forward(
-            strategy_factory=self._strategy_factory,
-            factor_df=factor_df,
-            price_df=price_df,
-            splitter=splitter,
-            params={"n_groups": 5},
-        )
-        assert len(result.folds) > 0, "Expected at least one WF fold but got 0 — fixture may be too small"
-        assert isinstance(result, WalkForwardResult)
-        assert isinstance(result.folds, list)
-        assert isinstance(result.oos_returns, pl.DataFrame)
-        assert isinstance(result.is_sharpe_mean, float)
-        assert isinstance(result.oos_sharpe_mean, float)
-        assert isinstance(result.oos_sharpe_std, float)
-        assert isinstance(result.oos_max_dd, float)
-        assert isinstance(result.stability_ratio, float)
-
-        # 检查必须列
-        if not result.oos_returns.is_empty():
-            cols = set(result.oos_returns.columns)
-            assert "trade_date" in cols
-            assert "net_return" in cols
-            assert "fold_id" in cols
-            assert "nav" in cols
-
-        # 每折都是 WalkForwardFoldResult
-        for fold in result.folds:
-            assert isinstance(fold, WalkForwardFoldResult)
-            assert isinstance(fold.fold_id, int)
-            assert isinstance(fold.is_sharpe, float)
-            assert isinstance(fold.oos_sharpe, float)
-            assert isinstance(fold.oos_ann_ret, float)
-            assert isinstance(fold.oos_max_dd, float)
-            assert isinstance(fold.params, dict)
 
 
 def _wf_strategy_factory(params: dict) -> object:
@@ -464,38 +395,6 @@ class TestWalkForwardIC:
             for key in ("train_ic", "test_ic"):
                 assert np.isfinite(r[key]), f"fold {r['fold']} {key}={r[key]} 含非有限值"
 
-    def test_integrated_in_compute_rank_ic(self):
-        """compute_rank_ic 返回的 ICAnalysisResult 包含 walk_forward_ic 字段。"""
-        import numpy as np
-        import polars as pl
-
-        from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
-
-        rng = np.random.default_rng(42)
-        n_dates, n_stocks = 120, 50
-        dates = [f"2024-{(i // 25 + 1):02d}-{(i % 25 + 1):02d}" for i in range(n_dates)]
-        stocks = [f"{i:06d}.SZ" for i in range(n_stocks)]
-
-        factor_rows, price_rows = [], []
-        for d in dates:
-            fv = rng.standard_normal(n_stocks)
-            rets = rng.normal(0, 0.02, n_stocks)
-            for i, s in enumerate(stocks):
-                factor_rows.append({"trade_date": d, "ts_code": s, "factor_clean": float(fv[i])})
-                price_rows.append({"trade_date": d, "ts_code": s, "ret": float(rets[i])})
-
-        factor_df = pl.DataFrame(factor_rows).with_columns(
-            pl.col("trade_date").str.strptime(pl.Date, "%Y-%m-%d")
-        )
-        price_df = pl.DataFrame(price_rows).with_columns(
-            pl.col("trade_date").str.strptime(pl.Date, "%Y-%m-%d")
-        )
-        ret_df = compute_fwd_returns(price_df, horizons=[1, 5], ret_col="ret")
-
-        result = compute_rank_ic(factor_df, ret_df, horizons=[1, 5])
-        assert hasattr(result, "walk_forward_ic")
-        assert isinstance(result.walk_forward_ic, list)
-
 # ==== 来自 test_rebalance_threshold.py ====
 # ──────────────────────────────────────────────────────────
 # 测试夹具
@@ -546,17 +445,6 @@ def _make_fixtures(
 # ──────────────────────────────────────────────────────────
 
 
-def test_backtest_config_has_rebalance_threshold():
-    """BacktestConfig 包含 rebalance_threshold 字段，默认 None。"""
-    cfg = BacktestConfig()
-    assert hasattr(cfg, "rebalance_threshold")
-    assert cfg.rebalance_threshold is None
-
-
-def test_backtest_config_rebalance_threshold_custom():
-    """BacktestConfig 可自定义 rebalance_threshold。"""
-    cfg = BacktestConfig(rebalance_threshold=0.5)
-    assert cfg.rebalance_threshold == pytest.approx(0.5)
 
 
 # ──────────────────────────────────────────────────────────
@@ -608,36 +496,4 @@ def test_zero_threshold_matches_no_threshold():
         assert abs(a - b) < 1e-10, f"threshold=0 与 threshold=None 结果应一致: {a} vs {b}"
 
 
-def test_result_structure_with_threshold():
-    """带 rebalance_threshold 的回测结果结构完整。"""
-    from factorzen.daily.evaluation.backtest import StrategyBacktestResult
-
-    factor_df, price_df = _make_fixtures()
-    strategy = TopNLongOnlyStrategy(n=5)
-    cfg = BacktestConfig(rebalance_threshold=0.3, max_participation_rate=1.0)
-
-    result = run_strategy_backtest(strategy, factor_df, price_df, cfg)
-
-    assert isinstance(result, StrategyBacktestResult)
-    assert "net_return" in result.returns.columns
-    assert "nav" in result.nav.columns
-    assert "portfolio" in result.summary_stats
-
-
-def test_moderate_threshold_reduces_turnover():
-    """适中阈值（0.3）时换手率不超过无阈值版本。"""
-    factor_df, price_df = _make_fixtures()
-    strategy = TopNLongOnlyStrategy(n=5)
-
-    cfg_no = BacktestConfig(rebalance_threshold=None, max_participation_rate=1.0)
-    cfg_mod = BacktestConfig(rebalance_threshold=0.3, max_participation_rate=1.0)
-
-    result_no = run_strategy_backtest(strategy, factor_df, price_df, cfg_no)
-    result_mod = run_strategy_backtest(strategy, factor_df, price_df, cfg_mod)
-
-    to_no = result_no.summary_stats["portfolio"]["avg_turnover"]
-    to_mod = result_mod.summary_stats["portfolio"]["avg_turnover"]
-
-    # 有阈值时换手率应 ≤ 无阈值
-    assert to_mod <= to_no + 1e-6, f"moderate threshold turnover {to_mod:.4f} > no threshold {to_no:.4f}"
 

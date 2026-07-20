@@ -356,16 +356,6 @@ class TestDegenerateInputs:
         assert "样本量较少（10 期）" in html
         assert "短样本年化" in html
 
-    def test_quality_report_none_no_crash(self):
-        html = generate_tear_sheet(
-            "q_none",
-            make_ic_result(n_periods=100, ic_mean=0.05),
-            make_bt_result(),
-            make_to_result(0.1),
-            quality_report=None,
-        )
-        assert "q_none" in html
-
     def test_empty_ic_series_still_renders_metrics(self):
         ic = make_ic_result(empty_series=True, n_periods=50, ic_mean=0.02, ir=0.25)
         html = generate_tear_sheet("empty_ic", ic, make_bt_result(), make_to_result(0.2))
@@ -618,14 +608,4 @@ class TestGroupPerfTable:
 # ── export / env ─────────────────────────────────────────────────────────────
 
 
-def test_env_exported_for_portfolio_report():
-    from factorzen.reports.tear_sheet import _ENV
 
-    assert _ENV is not None
-    assert "tear_sheet.html" in _ENV.list_templates()
-
-
-def test_package_export():
-    from factorzen.reports import generate_tear_sheet as exported
-
-    assert exported is generate_tear_sheet

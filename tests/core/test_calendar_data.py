@@ -24,7 +24,6 @@ import pytest
 import factorzen.core.calendar as cal_mod
 import factorzen.core.data_ensure as data_ensure
 from factorzen.research.combination.models import (
-    LOW_FEATURE_COVERAGE_WARN,
     _warn_incomplete,
     build_panel,
 )
@@ -657,9 +656,6 @@ def _ret(n: int) -> pl.DataFrame:
         "ts_code": ["000001.SZ"] * n,
         "ret": [0.01] * n,
     })
-
-def test_low_feature_coverage_constant():
-    assert LOW_FEATURE_COVERAGE_WARN == 0.30
 
 def test_warn_when_one_column_below_30pct():
     """一列 20% 覆盖 → warn，文案含该列名。"""

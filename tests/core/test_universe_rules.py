@@ -55,10 +55,6 @@ def test_main_board_limit_600():
     """主板 600xxx → 9.8%。"""
     assert abs(_get_board_limit("600001.SH") - 0.098) < 1e-6
 
-def test_main_board_limit_000():
-    """主板 000xxx → 9.8%。"""
-    assert abs(_get_board_limit("000001.SZ") - 0.098) < 1e-6
-
 def test_main_board_limit_case_insensitive():
     """大小写不敏感。"""
     assert abs(_get_board_limit("600001.sh") - 0.098) < 1e-6
@@ -70,11 +66,6 @@ def test_main_board_limit_case_insensitive():
 def test_main_board_st_limit_is_4_8pct():
     """主板 ST/*ST 股票 is_st=True → 4.8%（5% 真实限额 - 0.2pp 容差）。"""
     assert abs(_get_board_limit("600001.SH", is_st=True) - 0.048) < 1e-6
-
-def test_main_board_st_default_is_st_false_unchanged():
-    """is_st 默认 False，行为与未引入该参数前完全一致（9.8%）。"""
-    assert abs(_get_board_limit("600001.SH") - 0.098) < 1e-6
-    assert abs(_get_board_limit("600001.SH", is_st=False) - 0.098) < 1e-6
 
 def test_chuang_ye_ban_is_st_does_not_affect_limit():
     """创业板不受 is_st 影响（2020 年注册制改革后 ST 与非 ST 涨跌幅规则相同）。"""

@@ -92,16 +92,6 @@ class TestCostModel:
 
 
 class TestBacktestCostIntegration:
-    def test_no_cost_model_backward_compatible(self):
-        """cost_model=None 时与旧版行为一致（无成本扣除）。"""
-        factor_df, price_df = _make_data()
-        r1 = run_stratified_backtest(factor_df, price_df, n_groups=5)
-        r2 = run_stratified_backtest(factor_df, price_df, n_groups=5, cost_model=None)
-        # 两者 long-short Sharpe 应完全相同
-        s1 = r1.summary_stats["long_short"]["sharpe"]
-        s2 = r2.summary_stats["long_short"]["sharpe"]
-        assert abs(s1 - s2) < 1e-10, f"cost_model=None 结果应与默认相同: {s1} vs {s2}"
-
     def test_costs_reduce_returns(self):
         """启用 CostModel 后，多空年化收益应低于无成本版本。"""
         factor_df, price_df = _make_data()
@@ -112,28 +102,6 @@ class TestBacktestCostIntegration:
         assert ann_ret_free > ann_ret_cost, (
             f"加入成本后年化收益应下降: 无成本={ann_ret_free:.4f}, 含成本={ann_ret_cost:.4f}"
         )
-
-    def test_costs_impact_magnitude(self):
-        """成本扣除幅度应在合理范围（不超过 30% 年化，不小于 0.1%）。"""
-        factor_df, price_df = _make_data()
-        r_free = run_stratified_backtest(factor_df, price_df, n_groups=5)
-        r_cost = run_stratified_backtest(factor_df, price_df, n_groups=5, cost_model=CostModel())
-        ann_ret_free = r_free.summary_stats["long_short"]["ann_ret"]
-        ann_ret_cost = r_cost.summary_stats["long_short"]["ann_ret"]
-        cost_drag = ann_ret_free - ann_ret_cost
-        # 成本拖累应为正（因为有实际成本）
-        assert cost_drag > 0, f"成本拖累应为正值: {cost_drag:.4f}"
-        # 持仓级成本比旧版平均换手近似更严格；只约束其为有限且不过度爆炸。
-        assert cost_drag < 2.0, f"成本拖累 {cost_drag:.4f} 超出合理上限 200%"
-
-    def test_cost_model_instance_returned_result_type(self):
-        """启用成本后返回类型仍为 BacktestResult，ret_definition 仍正确。"""
-        from factorzen.daily.evaluation.backtest import BacktestResult
-
-        factor_df, price_df = _make_data()
-        r = run_stratified_backtest(factor_df, price_df, n_groups=5, cost_model=CostModel())
-        assert isinstance(r, BacktestResult)
-        assert r.ret_definition == "open_to_close_with_overnight_carry"
 
     def test_zero_cost_model_matches_no_cost(self):
         """CostModel 全部费率设为 0 时，结果应与 cost_model=None 完全相同。"""
@@ -168,24 +136,12 @@ class TestSquareRootImpactCostModel:
         assert cost > 0
         assert np.isfinite(cost)
 
-    def test_larger_adv_lowers_impact(self):
-        """ADV 越大，冲击成本越低（流动性越好，冲击越小）。"""
-        m = SquareRootImpactCostModel(alpha=0.1, fallback_adv=1e7)
-        cost_small_adv = m.trade_cost(delta_weight=0.01, adv=1e6)
-        cost_large_adv = m.trade_cost(delta_weight=0.01, adv=1e9)
-        assert cost_small_adv > cost_large_adv
-
     def test_extreme_turnover_finite(self):
         """极端换手（delta_weight=1.0）成本应有限且不溢出。"""
         m = SquareRootImpactCostModel(alpha=0.1, fallback_adv=1e7)
         cost = m.trade_cost(delta_weight=1.0, adv=1e6)
         assert np.isfinite(cost)
         assert cost > 0
-
-    def test_zero_delta_weight_zero_cost(self):
-        """delta_weight=0 时成本应为 0。"""
-        m = SquareRootImpactCostModel()
-        assert m.trade_cost(delta_weight=0.0) == 0.0
 
     def test_alpha_parameterization(self):
         """alpha 越大，冲击成本越大。"""

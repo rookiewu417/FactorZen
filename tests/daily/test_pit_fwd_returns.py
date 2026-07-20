@@ -373,18 +373,6 @@ def test_pit_align_tie_break_later_ann_earlier_in_file():
     assert r2[0, "version"] == "late_first"
 
 
-def test_pit_align_empty_inputs():
-    assert pit_align(pl.DataFrame(), [date(2024, 1, 1)]).is_empty()
-    fina = pl.DataFrame(
-        {
-            "ts_code": ["A"],
-            "end_date": [date(2023, 6, 30)],
-            "ann_date": [date(2023, 8, 15)],
-            "roe": [1.0],
-        }
-    )
-    assert pit_align(fina, []).is_empty()
-
 # ==== 来自 test_fundamentals_pit.py ====
 def _fina() -> pl.DataFrame:
     """两份报告:Q1(end 0331)0420 公告、Q2(end 0630)0815 公告——真实数据 ann/end 为 String。

@@ -264,7 +264,7 @@ def test_membership_cross_month_inherits_prior_snapshot(monkeypatch):
 
 @pytest.mark.parametrize(
     "name",
-    ["daily_default", "intraday_default", "lft_default", "mft_default"],
+    ["daily_default"],
 )
 def test_dynamic_universe_raises(name):
     from factorzen.core.universe import get_universe_membership

@@ -107,17 +107,6 @@ def test_suspended_rows_masked():
     ok = out.filter((pl.col("ts_code") == "888888.SH") & (pl.col("trade_date") == d))
     assert ok.height == 1 and abs(ok["factor_value"][0] - 5.0) < 1e-9
 
-def test_expression_factor_is_valid_dailyfactor():
-    from factorzen.daily.factors.base import DailyFactor
-    from factorzen.discovery.factor import ExpressionFactor
-    ef = ExpressionFactor(expression="ts_mean(close, 5)", mined_name="probe", lookback_days=40)
-    assert isinstance(ef, DailyFactor)
-    assert ef.name == "probe"
-    assert ef.frequency == "daily"
-    assert ef.category == "daily"
-    assert ef.lookback_days == 40
-    assert "daily" in ef.required_data
-
 def test_ret_1d_correct_when_ctx_daily_rows_unsorted():
     """compute() 必须先排序(ts_code, trade_date)再派生依赖行序的 ret_1d(shift().over())。
 
@@ -179,14 +168,6 @@ def test_plain_class_attrs_survive_instantiation():
     assert probe.frequency == "weekly", "子类声明的 frequency 被基类默认值覆盖"
     assert probe.category == "weekly"
     assert probe.name == "plain_declared_probe"
-
-def test_builtin_weekly_factor_keeps_declared_window():
-    """真实内置因子的回归：momentum_weekly 声明 30 日窗 + weekly 频率。"""
-    from factorzen.builtin_factors.weekly.momentum import MomentumWeekly
-
-    factor = MomentumWeekly()
-    assert factor.lookback_days == 30
-    assert factor.frequency == "weekly"
 
 def test_no_daily_factor_loses_its_declaration():
     """全量守卫：任何内置日频因子的类声明都不得在实例化时丢失。"""

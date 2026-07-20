@@ -153,8 +153,9 @@ def _no_namechange_by_default(monkeypatch):
 class TestSuspendedStockBlocking:
     """停牌股票（vol=0）不能买也不能卖。"""
 
-    def test_suspended_blocks_buy_via_apply_trade_constraints(self):
-        """Unit test: _apply_trade_constraints 直接检验停牌买入被阻。"""
+    def test_suspended_unit_suite(self):
+        """Unit test: _apply_trade_constraints 直接检验停牌买入被阻。；Unit test: _apply_trade_constraints 直接检验停牌卖出被阻。"""
+        # -- 原 test_suspended_blocks_buy_via_apply_trade_constraints --
         price_map = {
             "000001.SZ": {
                 "ts_code": "000001.SZ",
@@ -176,8 +177,7 @@ class TestSuspendedStockBlocking:
         assert filled == 0.0
         assert reason == "suspended"
 
-    def test_suspended_blocks_sell_via_apply_trade_constraints(self):
-        """Unit test: _apply_trade_constraints 直接检验停牌卖出被阻。"""
+        # -- 原 test_suspended_blocks_sell_via_apply_trade_constraints --
         price_map = {
             "000001.SZ": {
                 "ts_code": "000001.SZ",
@@ -199,8 +199,10 @@ class TestSuspendedStockBlocking:
         assert filled == 0.0
         assert reason == "suspended"
 
-    def test_suspended_blocks_buy_in_backtest(self):
-        """Integration test: 停牌日买入在完整回测中被阻。"""
+
+    def test_suspended_integration_suite(self):
+        """Integration test: 停牌日买入在完整回测中被阻。；Integration test: 停牌日卖出在完整回测中被阻。；Fast path (PrecomputedWeightsStrategy): 停牌阻止交易。"""
+        # -- 原 test_suspended_blocks_buy_in_backtest --
         prices = _make_prices(
             n_days=3,
             overrides={
@@ -222,8 +224,7 @@ class TestSuspendedStockBlocking:
         assert trade["filled_delta_weight"] == pytest.approx(0.0)
         assert trade["block_reason"] == "suspended"
 
-    def test_suspended_blocks_sell_in_backtest(self):
-        """Integration test: 停牌日卖出在完整回测中被阻。"""
+        # -- 原 test_suspended_blocks_sell_in_backtest --
         prices = _make_prices(
             n_days=4,
             overrides={
@@ -254,8 +255,7 @@ class TestSuspendedStockBlocking:
             assert trade["filled_delta_weight"] == pytest.approx(0.0)
             assert trade["block_reason"] == "suspended"
 
-    def test_suspended_blocks_in_fast_path(self):
-        """Fast path (PrecomputedWeightsStrategy): 停牌阻止交易。"""
+        # -- 原 test_suspended_blocks_in_fast_path --
         weights_by_date = {
             date(2024, 1, 1): pl.DataFrame(
                 {"ts_code": ["000001.SZ"], "target_weight": [1.0]}
@@ -301,8 +301,9 @@ class TestVolNoneNotTreatedAsSuspended:
     不视为停牌。本测试把该语义钉死为两条路径的统一行为。
     """
 
-    def test_slow_path_does_not_block_when_vol_is_none(self):
-        """慢路径单元测试：vol=None 的整笔交易不应被判定为停牌。"""
+    def test_vol_none_not_suspended_suite(self):
+        """慢路径单元测试：vol=None 的整笔交易不应被判定为停牌。；快速路径（PrecomputedWeightsStrategy）：vol=None 的判断须和慢路径一致。"""
+        # -- 原 test_slow_path_does_not_block_when_vol_is_none --
         prices = _make_prices(
             n_days=2,
             overrides={(1, "000001.SZ"): {"vol": None, "close": 11.0}},
@@ -318,8 +319,7 @@ class TestVolNoneNotTreatedAsSuspended:
         assert trade["block_reason"] == ""
         assert trade["filled_delta_weight"] == pytest.approx(1.0)
 
-    def test_fast_path_matches_slow_path_when_vol_is_none(self):
-        """快速路径（PrecomputedWeightsStrategy）：vol=None 的判断须和慢路径一致。"""
+        # -- 原 test_fast_path_matches_slow_path_when_vol_is_none --
         weights_by_date = {
             date(2024, 1, 1): pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [1.0]}),
         }
@@ -366,8 +366,9 @@ class TestVolNoneNotTreatedAsSuspended:
 class TestLimitUpBlocking:
     """涨停板阻止买入但允许卖出。"""
 
-    def test_limit_up_blocks_buy(self):
-        """涨停开盘: delta > 0 被阻。"""
+    def test_limit_up_unit_suite(self):
+        """涨停开盘: delta > 0 被阻。；涨停开盘: delta < 0 允许。；创业板涨停阈值为 19.8%。；创业板涨幅 9.8% 不触发涨停（阈值 19.8%）。"""
+        # -- 原 test_limit_up_blocks_buy --
         price_map = {
             "000001.SZ": {
                 "ts_code": "000001.SZ",
@@ -389,8 +390,7 @@ class TestLimitUpBlocking:
         assert filled == 0.0
         assert reason == "limit_up"
 
-    def test_limit_up_allows_sell(self):
-        """涨停开盘: delta < 0 允许。"""
+        # -- 原 test_limit_up_allows_sell --
         price_map = {
             "000001.SZ": {
                 "ts_code": "000001.SZ",
@@ -412,8 +412,7 @@ class TestLimitUpBlocking:
         assert filled == pytest.approx(-0.5)
         assert reason == ""
 
-    def test_gem_limit_up_uses_20pct_threshold(self):
-        """创业板涨停阈值为 19.8%。"""
+        # -- 原 test_gem_limit_up_uses_20pct_threshold --
         price_map = {
             "300001.SZ": {
                 "ts_code": "300001.SZ",
@@ -435,8 +434,7 @@ class TestLimitUpBlocking:
         assert filled == 0.0
         assert reason == "limit_up"
 
-    def test_gem_below_20pct_not_blocked(self):
-        """创业板涨幅 9.8% 不触发涨停（阈值 19.8%）。"""
+        # -- 原 test_gem_below_20pct_not_blocked --
         price_map = {
             "300001.SZ": {
                 "ts_code": "300001.SZ",
@@ -528,8 +526,9 @@ class TestSTBoardLimitInBacktest:
     正确判定为涨停，而同样涨幅的非 ST 股票不受影响（主板非 ST 阈值 9.8%）。
     """
 
-    def test_apply_trade_constraints_st_blocks_buy_at_5pct(self):
-        """慢路径单元测试：_apply_trade_constraints(is_st=True) 阻断 5% 涨幅买入。"""
+    def test_st_apply_unit_suite(self):
+        """慢路径单元测试：_apply_trade_constraints(is_st=True) 阻断 5% 涨幅买入。；同样 5% 涨幅，is_st=False（默认）不应触发涨停（主板阈值 9.8%）。"""
+        # -- 原 test_apply_trade_constraints_st_blocks_buy_at_5pct --
         open_price = 10.0 * 1.05  # 乘法构造，非字面量
         price_map = {
             "600001.SH": {
@@ -553,8 +552,7 @@ class TestSTBoardLimitInBacktest:
         assert filled == 0.0
         assert reason == "limit_up"
 
-    def test_apply_trade_constraints_non_st_same_5pct_not_blocked(self):
-        """同样 5% 涨幅，is_st=False（默认）不应触发涨停（主板阈值 9.8%）。"""
+        # -- 原 test_apply_trade_constraints_non_st_same_5pct_not_blocked --
         open_price = 10.0 * 1.05
         price_map = {
             "600001.SH": {
@@ -577,8 +575,10 @@ class TestSTBoardLimitInBacktest:
         assert filled == pytest.approx(0.5)
         assert reason == ""
 
-    def test_st_main_board_blocks_buy_in_slow_path_integration(self):
-        """慢路径完整回测：run_strategy_backtest(is_st_by_date=...) 应阻断 ST 主板 5% 涨幅买入。"""
+
+    def test_st_slow_path_suite(self):
+        """慢路径完整回测：run_strategy_backtest(is_st_by_date=...) 应阻断 ST 主板 5% 涨幅买入。；慢路径完整回测：不传 is_st_by_date 时同样 5% 涨幅不应被阻断（向后兼容）。"""
+        # -- 原 test_st_main_board_blocks_buy_in_slow_path_integration --
         open_px = 10.0 * 1.05
         prices = _make_prices(
             codes=["600001.SH"],
@@ -599,8 +599,7 @@ class TestSTBoardLimitInBacktest:
         assert trade["filled_delta_weight"] == pytest.approx(0.0)
         assert trade["block_reason"] == "limit_up"
 
-    def test_non_st_main_board_5pct_not_blocked_in_slow_path_integration(self):
-        """慢路径完整回测：不传 is_st_by_date 时同样 5% 涨幅不应被阻断（向后兼容）。"""
+        # -- 原 test_non_st_main_board_5pct_not_blocked_in_slow_path_integration --
         open_px = 10.0 * 1.05
         prices = _make_prices(
             codes=["600001.SH"],
@@ -621,8 +620,10 @@ class TestSTBoardLimitInBacktest:
         assert trade["filled_delta_weight"] == pytest.approx(1.0)
         assert trade["block_reason"] == ""
 
-    def test_st_main_board_blocks_buy_in_fast_path(self):
-        """快速路径（PrecomputedWeightsStrategy + is_st_by_date）：ST 主板 5% 涨幅应被阻断买入。"""
+
+    def test_st_fast_path_suite(self):
+        """快速路径（PrecomputedWeightsStrategy + is_st_by_date）：ST 主板 5% 涨幅应被阻断买入。；快速路径：不传 is_st_by_date 时同样 5% 涨幅不应被阻断（主板阈值 9.8%，向后兼容）。"""
+        # -- 原 test_st_main_board_blocks_buy_in_fast_path --
         weights_by_date = {
             date(2024, 1, 1): pl.DataFrame(
                 {"ts_code": ["600001.SH"], "target_weight": [1.0]}
@@ -657,8 +658,7 @@ class TestSTBoardLimitInBacktest:
             f"ST 主板 5% 涨幅应被快速路径阻断买入 (NAV≈1.0)，实际 NAV={nav_val:.8f}"
         )
 
-    def test_non_st_main_board_5pct_not_blocked_in_fast_path(self):
-        """快速路径：不传 is_st_by_date 时同样 5% 涨幅不应被阻断（主板阈值 9.8%，向后兼容）。"""
+        # -- 原 test_non_st_main_board_5pct_not_blocked_in_fast_path --
         weights_by_date = {
             date(2024, 1, 1): pl.DataFrame(
                 {"ts_code": ["600001.SH"], "target_weight": [1.0]}
@@ -698,8 +698,9 @@ class TestSTBoardLimitInBacktest:
 class TestLimitDownBlocking:
     """跌停板阻止卖出但允许买入。"""
 
-    def test_limit_down_blocks_sell(self):
-        """跌停开盘: delta < 0 被阻。"""
+    def test_limit_down_unit_suite(self):
+        """跌停开盘: delta < 0 被阻。；跌停开盘: delta > 0 允许。"""
+        # -- 原 test_limit_down_blocks_sell --
         price_map = {
             "000001.SZ": {
                 "ts_code": "000001.SZ",
@@ -721,8 +722,7 @@ class TestLimitDownBlocking:
         assert filled == 0.0
         assert reason == "limit_down"
 
-    def test_limit_down_allows_buy(self):
-        """跌停开盘: delta > 0 允许。"""
+        # -- 原 test_limit_down_allows_buy --
         price_map = {
             "000001.SZ": {
                 "ts_code": "000001.SZ",
@@ -774,8 +774,9 @@ class TestNewListingFiltering:
 class TestTPlus1Execution:
     """信号在 t 日生成，调仓在 t+1 日执行。"""
 
-    def test_no_same_day_execution(self):
-        """信号日本身不应有交易执行。"""
+    def test_tplus1_suite(self):
+        """信号日本身不应有交易执行。；收益序列从第一个执行日开始记录。"""
+        # -- 原 test_no_same_day_execution --
         prices = _make_prices(n_days=3)
         factors = _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)])
 
@@ -790,8 +791,7 @@ class TestTPlus1Execution:
         day1_trades = result.trades.filter(pl.col("trade_date") == date(2024, 1, 1))
         assert day1_trades.is_empty()
 
-    def test_returns_start_on_execution_date(self):
-        """收益序列从第一个执行日开始记录。"""
+        # -- 原 test_returns_start_on_execution_date --
         prices = _make_prices(n_days=3)
         factors = _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)])
 
@@ -815,7 +815,9 @@ class TestTPlus1Execution:
 class TestBenchmark:
     """验证 benchmark 工具的基本功能。"""
 
-    def test_benchmark_step_records_timing(self):
+    def test_benchmark_utils_suite(self):
+        """test_benchmark_step_records_timing；test_benchmark_report_total_elapsed；test_format_benchmark_report；test_benchmark_step_preserves_exceptions"""
+        # -- 原 test_benchmark_step_records_timing --
         from factorzen.core.benchmark import BenchmarkReport, benchmark_step
 
         report = BenchmarkReport()
@@ -833,7 +835,7 @@ class TestBenchmark:
         assert report.steps[0].name == "test_step"
         assert report.steps[0].elapsed_seconds > 0
 
-    def test_benchmark_report_total_elapsed(self):
+        # -- 原 test_benchmark_report_total_elapsed --
         from factorzen.core.benchmark import BenchmarkReport
 
         report = BenchmarkReport()
@@ -841,7 +843,7 @@ class TestBenchmark:
         report.add_step("b", 2.5, 200.0)
         assert report.total_elapsed == pytest.approx(4.0)
 
-    def test_format_benchmark_report(self):
+        # -- 原 test_format_benchmark_report --
         from factorzen.core.benchmark import BenchmarkReport, format_benchmark_report
 
         report = BenchmarkReport()
@@ -857,7 +859,7 @@ class TestBenchmark:
         assert output["steps"][1]["peak_memory_mb"] is None
         assert output["total_elapsed"] == pytest.approx(1.801)
 
-    def test_benchmark_step_preserves_exceptions(self):
+        # -- 原 test_benchmark_step_preserves_exceptions --
         from factorzen.core.benchmark import BenchmarkReport, benchmark_step
 
         report = BenchmarkReport()
@@ -881,8 +883,9 @@ class TestBenchmark:
 class TestCombinedEdgeCases:
     """组合边界情况。"""
 
-    def test_suspended_takes_priority_over_limit_up(self):
-        """停牌优先于涨停判断。"""
+    def test_combined_edge_suite(self):
+        """停牌优先于涨停判断。；正常交易量的股票不被停牌逻辑阻断。；零变动不应产生任何 block。"""
+        # -- 原 test_suspended_takes_priority_over_limit_up --
         price_map = {
             "000001.SZ": {
                 "ts_code": "000001.SZ",
@@ -904,8 +907,7 @@ class TestCombinedEdgeCases:
         assert filled == 0.0
         assert reason == "suspended"
 
-    def test_normal_vol_not_blocked_as_suspended(self):
-        """正常交易量的股票不被停牌逻辑阻断。"""
+        # -- 原 test_normal_vol_not_blocked_as_suspended --
         price_map = {
             "000001.SZ": {
                 "ts_code": "000001.SZ",
@@ -927,8 +929,7 @@ class TestCombinedEdgeCases:
         assert filled == pytest.approx(0.5)
         assert reason == ""
 
-    def test_zero_delta_returns_empty_reason(self):
-        """零变动不应产生任何 block。"""
+        # -- 原 test_zero_delta_returns_empty_reason --
         price_map = {
             "000001.SZ": {
                 "ts_code": "000001.SZ",
@@ -949,3 +950,5 @@ class TestCombinedEdgeCases:
         )
         assert filled == 0.0
         assert reason == ""
+
+

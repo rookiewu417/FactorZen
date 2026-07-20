@@ -856,7 +856,7 @@ def test_lift_baseline_reuses_session_pool_when_active_set_unchanged(
     monkeypatch, tmp_path: Path,
 ):
     """库 active 集与 session lib_pool 键集一致 → 钩子收到 lib_pool（免重物化）。"""
-    from tests.test_library_pool_compact import _write_lib
+    from tests.daily.test_library_pool_cache import _write_lib
 
     lib_root = tmp_path / "lib"
     _write_lib(lib_root, "ashare", [
@@ -904,7 +904,7 @@ def test_lift_baseline_reuses_even_with_unmaterializable_active(
     判据是库文件 hash 而非记录级键集:lift 自建走同函数同库,skip 相同,
     自建结果 ≡ lib_pool。键集比较在真实库上恒不成立(v25 探针实证)。
     """
-    from tests.test_library_pool_compact import _write_lib
+    from tests.daily.test_library_pool_cache import _write_lib
 
     lib_root = tmp_path / "lib"
     _write_lib(lib_root, "ashare", [
@@ -950,7 +950,7 @@ def test_lift_baseline_rebuilds_when_library_file_changed(
     monkeypatch, tmp_path: Path,
 ):
     """本 session upsert 改了库文件(hash 变)→ 钩子收到 None(基线须含新 active)。"""
-    from tests.test_library_pool_compact import _write_lib
+    from tests.daily.test_library_pool_cache import _write_lib
 
     lib_root = tmp_path / "lib"
     _write_lib(lib_root, "ashare", [

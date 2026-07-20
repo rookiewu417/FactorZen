@@ -1,19 +1,28 @@
-"""daily/data/context.py 的离线单测。
-
-FactorDataContext 仅依赖 load_parquet 与 calendar，全部 monkeypatch，
-不触碰真实 data/ 或 Tushare。重点覆盖复权 join、adj 缺失回退、universe 过滤、
-未声明数据报错、快照下采样与惰性缓存。
+"""
+test_daily_data_context.py：daily/data/context.py 的离线单测。
+test_flows_attach.py：资金流/北向日频叶子:attach_flows 按交易日 join,叶子注册,双路径门。
+test_evaluation_contracts.py：评估入口的数据契约(列校验 fail-fast)测试。
+test_factor_required_data_declares_daily.py：泛化回归守卫：所有注册因子的 required_data 必含 "daily"。
 """
 
+from __future__ import annotations
+
+import datetime as dt
 from datetime import date
 
 import polars as pl
 import pytest
 
+import factorzen.builtin_factors  # noqa: F401  触发因子注册
 from factorzen.daily.data import context as ctx_mod
 from factorzen.daily.data.context import FactorDataContext
+from factorzen.daily.data.flows import attach_flows
+from factorzen.daily.evaluation.backtest import _prepare_factor_df, _prepare_price_df
+from factorzen.daily.evaluation.turnover import compute_turnover
+from factorzen.daily.factors.registry import get_factor, list_factors
 
 
+# ==== 来自 test_daily_data_context.py ====
 def _daily_df() -> pl.DataFrame:
     return pl.DataFrame(
         {
@@ -274,3 +283,182 @@ def test_load_all_monthly_mode(patched, monkeypatch):
     )
     ctx.load_all()
     assert ctx._monthly_snapshot is not None
+
+# ==== 来自 test_flows_attach.py ====
+def _daily(dates: list[str], code="000001.SZ") -> pl.DataFrame:
+    return pl.DataFrame({
+        "trade_date": [dt.datetime.strptime(d, "%Y%m%d").date() for d in dates],
+        "ts_code": [code] * len(dates),
+        "close": [10.0] * len(dates),
+    })
+
+
+def _mf() -> pl.DataFrame:
+    return pl.DataFrame({
+        "ts_code": ["000001.SZ", "000001.SZ"],
+        "trade_date": [dt.date(2024, 1, 2), dt.date(2024, 1, 3)],
+        "net_mf_amount": [1234.5, -678.9],
+    })
+
+
+def _hk() -> pl.DataFrame:
+    return pl.DataFrame({
+        "ts_code": ["000001.SZ", "000001.SZ"],
+        "trade_date": [dt.date(2024, 1, 2), dt.date(2024, 1, 3)],
+        "ratio": [3.5, 3.6],
+    })
+
+
+def test_flows_join_by_trade_date():
+    """资金流/北向按 (trade_date, ts_code) 逐日 join;ratio 重命名为 north_ratio。"""
+    out = attach_flows(_daily(["20240102", "20240103"]),
+                       injected={"moneyflow": _mf(), "hk_hold": _hk()})
+    by = {r["trade_date"]: r for r in out.iter_rows(named=True)}
+    assert by[dt.date(2024, 1, 2)]["net_mf_amount"] == 1234.5
+    assert by[dt.date(2024, 1, 3)]["net_mf_amount"] == -678.9
+    assert by[dt.date(2024, 1, 2)]["north_ratio"] == 3.5      # ratio → north_ratio
+    assert "ratio" not in out.columns
+
+
+def test_missing_dates_get_null():
+    """flow 数据缺某天 → 该天叶子为 null(不崩、不错配到别的日子)。"""
+    out = attach_flows(_daily(["20240102", "20240110"]),
+                       injected={"moneyflow": _mf(), "hk_hold": _hk()})
+    by = {r["trade_date"]: r for r in out.iter_rows(named=True)}
+    assert by[dt.date(2024, 1, 10)]["net_mf_amount"] is None   # 无数据日
+    assert by[dt.date(2024, 1, 2)]["net_mf_amount"] == 1234.5
+
+
+def test_missing_source_returns_null_cols():
+    """无 flow 数据(注入空帧)→ 原样返回但补 net_mf_amount/north_ratio 为 null。
+
+    注入空帧而非 {},避免回落读盘(真实 moneyflow 已缓存时 {} 会拿到真数据,测试就不 hermetic)。
+    """
+    out = attach_flows(_daily(["20240102"]),
+                       injected={"moneyflow": pl.DataFrame(), "hk_hold": pl.DataFrame()})
+    assert "net_mf_amount" in out.columns and "north_ratio" in out.columns
+    assert out["net_mf_amount"][0] is None
+
+
+def test_flow_leaves_registered_and_gate():
+    """flow 叶子已注册、可解析,且触发 FLOW_FEATURES 门(物化路径会 attach)。"""
+    from factorzen.discovery.expression import feature_names, parse_expr
+    from factorzen.discovery.operators import FLOW_FEATURES, LEAF_FEATURES
+    assert "net_mf_amount" in FLOW_FEATURES and "north_ratio" in FLOW_FEATURES
+    for leaf in FLOW_FEATURES:
+        assert leaf in LEAF_FEATURES
+        feats = feature_names(parse_expr(f"rank({leaf})"))
+        assert leaf in feats
+        assert feats & FLOW_FEATURES   # 触发物化路径 attach 门
+
+
+def test_duplicate_source_rows_do_not_multiply_daily():
+    """源帧含重复 (trade_date, ts_code) 时，left-join 不得成倍放行 daily。
+
+    **实证根因（2026-07-19）**：`hk_hold` 在 2026-06-30 单日返回 4200 行/4061 只
+    （正常日 ~950 只北向标的），139 只带重复记录；`HK_HOLD_COLS` 又把 `exchange`
+    等区分列裁掉，事后无法分辨保留哪条（股本反推可证每对里恰有一条 ratio 与
+    vol/total_share 不自洽）。这些重复行流进因子面板后，在组合层
+    `_zscore_and_merge` 的链式 full join 下按 重复数^因子数 爆炸，实测打满 23GB。
+    """
+    daily = _daily(["20240102", "20240103"])
+    hk_dup = pl.DataFrame({
+        "ts_code": ["000001.SZ"] * 3,
+        "trade_date": [dt.date(2024, 1, 2)] * 2 + [dt.date(2024, 1, 3)],
+        "ratio": [1.2, 0.33, 0.5],   # 同键两条不同值：正是生产观测到的形态
+        "vol": [102592076, 4970305, 1000],
+    })
+    with pytest.warns(UserWarning, match="重复"):
+        out = attach_flows(daily, injected={"hk_hold": hk_dup})
+
+    assert out.height == daily.height, f"daily 被放大到 {out.height} 行"
+    assert out.select(["trade_date", "ts_code"]).unique().height == out.height
+    # keep="first" → 取到 1.2 那条（确定性，不随运行变化）
+    got = out.filter(pl.col("trade_date") == dt.date(2024, 1, 2))["north_ratio"][0]
+    assert got == 1.2
+
+
+def test_margin_does_not_square_amplify_dirty_daily():
+    """daily 已被上游污染成 2 行/股时，_attach_margin 不得再平方放大成 4 行/股。
+
+    生产链实测：hk_hold 重复让 daily 变 2 行/股 → `_attach_margin` 先从 daily 取
+    同日分母（继承 2 行）再 join 回 daily ⇒ **2×2=4 行/股**。探针实测
+    318 行 → 320 行（hk_hold）→ 324 行（margin），目标股票 1→2→4 行。
+    """
+    from factorzen.daily.data.flows import _attach_margin
+
+    dirty = pl.DataFrame({
+        "trade_date": [dt.date(2024, 1, 2)] * 2,
+        "ts_code": ["000001.SZ"] * 2,
+        "circ_mv": [1000.0, 1000.0],
+        "amount": [500.0, 500.0],
+    })
+    margin = pl.DataFrame({
+        "ts_code": ["000001.SZ"],
+        "trade_date": [dt.date(2024, 1, 2)],
+        "rzye": [1.0e8],
+        "rzmre": [1.0e7],
+        "rqyl": [1000.0],
+    })
+    with pytest.warns(UserWarning, match="重复"):
+        out = _attach_margin(dirty, injected={"margin_detail": margin})
+    # 入参本就脏(2 行)——契约是**不再放大**，而非替上游清洗
+    assert out.height == 2, f"margin 把 2 行放大成了 {out.height} 行"
+
+# ==== 来自 test_evaluation_contracts.py ====
+def test_compute_turnover_raises_on_missing_factor_column():
+    df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"]})
+    with pytest.raises(ValueError) as exc:
+        compute_turnover(df, factor_col="factor_clean")
+    msg = str(exc.value)
+    assert "factor_clean" in msg
+    assert "实际列" in msg
+
+
+def test_compute_turnover_raises_on_missing_key_columns():
+    df = pl.DataFrame({"factor_clean": [1.0]})
+    with pytest.raises(ValueError) as exc:
+        compute_turnover(df, factor_col="factor_clean")
+    msg = str(exc.value)
+    assert "trade_date" in msg and "ts_code" in msg
+
+
+def test_prepare_factor_df_error_lists_actual_columns():
+    df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"]})
+    with pytest.raises(ValueError) as exc:
+        _prepare_factor_df(df, "factor_clean")
+    msg = str(exc.value)
+    assert "factor_clean" in msg
+    assert "实际列" in msg
+
+
+def test_prepare_price_df_error_lists_actual_columns():
+    df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"]})
+    with pytest.raises(ValueError) as exc:
+        _prepare_price_df(df)
+    msg = str(exc.value)
+    assert "close" in msg
+    assert "实际列" in msg
+
+# ==== 来自 test_factor_required_data_declares_daily.py ====
+def test_every_registered_factor_declares_daily():
+    offenders = []
+    for name in list_factors():
+        factor = get_factor(name)
+        required = getattr(factor, "required_data", None) or []
+        if "daily" not in required:
+            offenders.append((name, getattr(factor, "category", "?"), list(required)))
+    assert not offenders, (
+        "以下因子的 required_data 漏声明 'daily'，评估管线算前向收益时会 raise "
+        "'daily data not declared'：" + "; ".join(f"{n}({c})={rd}" for n, c, rd in offenders)
+    )
+
+
+def test_valuation_factors_keep_daily_basic_and_add_daily():
+    """这些估值/规模/流动性因子的 compute 确实读 daily_basic，故 daily 与 daily_basic 都要有。"""
+    for name in ("size_style", "value_style", "liquidity_style", "pe_ttm", "pb",
+                 "ep_ratio", "bm_ratio"):
+        required = getattr(get_factor(name), "required_data", None) or []
+        assert "daily" in required, f"{name} 需 ctx.daily 算前向收益"
+        assert "daily_basic" in required, f"{name} compute 读 daily_basic，不应移除声明"
+

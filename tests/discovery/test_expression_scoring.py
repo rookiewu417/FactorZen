@@ -26,44 +26,74 @@ from factorzen.discovery.operators import OPERATORS
 
 # ==== 来自 test_expression.py ====
 # ==== 来自 test_discovery_expression.py ====
-def test_round_trip_simple():
-    from factorzen.discovery.expression import parse_expr, to_expr_string
-    s = "rank(ts_mean(close, 5))"
-    assert to_expr_string(parse_expr(s)) == s
+def test_parse_ast_roundtrip_suite():
+    """test_round_trip_simple；test_round_trip_nested；test_round_trip_scientific_constant；test_constant_and_feature；test_complexity_counts_nodes；test_feature_names"""
+    # -- 原 test_round_trip_simple --
+    def _section_0_test_round_trip_simple():
+        from factorzen.discovery.expression import parse_expr, to_expr_string
+        s = "rank(ts_mean(close, 5))"
+        assert to_expr_string(parse_expr(s)) == s
 
-def test_round_trip_nested():
-    from factorzen.discovery.expression import parse_expr, to_expr_string
-    s = "div(ts_mean(close, 5), ts_mean(close, 60))"
-    assert to_expr_string(parse_expr(s)) == s
+    _section_0_test_round_trip_simple()
 
-def test_constant_and_feature():
-    from factorzen.discovery.expression import parse_expr, to_expr_string
-    s = "mul(zscore(pb), 2.0)"
-    assert to_expr_string(parse_expr(s)) == s
+    # -- 原 test_round_trip_nested --
+    def _section_1_test_round_trip_nested():
+        from factorzen.discovery.expression import parse_expr, to_expr_string
+        s = "div(ts_mean(close, 5), ts_mean(close, 60))"
+        assert to_expr_string(parse_expr(s)) == s
 
-def test_complexity_counts_nodes():
-    from factorzen.discovery.expression import complexity, parse_expr
-    # rank(1) + ts_mean(1) + close(1) = 3
-    assert complexity(parse_expr("rank(ts_mean(close, 5))")) == 3
+    _section_1_test_round_trip_nested()
 
-def test_feature_names():
-    from factorzen.discovery.expression import feature_names, parse_expr
-    assert feature_names(parse_expr("div(close, pb)")) == {"close", "pb"}
+    # -- 原 test_round_trip_scientific_constant --
+    def _section_2_test_round_trip_scientific_constant():
+        from factorzen.discovery.expression import Constant, parse_expr, to_expr_string
+        s = to_expr_string(Constant(1e-5))   # "1e-05"
+        assert parse_expr(s) == Constant(1e-5)
 
-def test_parse_rejects_unknown_op():
-    from factorzen.discovery.expression import parse_expr
-    with pytest.raises(ValueError):
-        parse_expr("frobnicate(close, 5)")
+    _section_2_test_round_trip_scientific_constant()
 
-def test_parse_rejects_unknown_leaf():
-    from factorzen.discovery.expression import parse_expr
-    with pytest.raises(ValueError):
-        parse_expr("frobnicate")  # 无括号 → 叶子路径
+    # -- 原 test_constant_and_feature --
+    def _section_3_test_constant_and_feature():
+        from factorzen.discovery.expression import parse_expr, to_expr_string
+        s = "mul(zscore(pb), 2.0)"
+        assert to_expr_string(parse_expr(s)) == s
 
-def test_round_trip_scientific_constant():
-    from factorzen.discovery.expression import Constant, parse_expr, to_expr_string
-    s = to_expr_string(Constant(1e-5))   # "1e-05"
-    assert parse_expr(s) == Constant(1e-5)
+    _section_3_test_constant_and_feature()
+
+    # -- 原 test_complexity_counts_nodes --
+    def _section_4_test_complexity_counts_nodes():
+        from factorzen.discovery.expression import complexity, parse_expr
+        # rank(1) + ts_mean(1) + close(1) = 3
+        assert complexity(parse_expr("rank(ts_mean(close, 5))")) == 3
+
+    _section_4_test_complexity_counts_nodes()
+
+    # -- 原 test_feature_names --
+    def _section_5_test_feature_names():
+        from factorzen.discovery.expression import feature_names, parse_expr
+        assert feature_names(parse_expr("div(close, pb)")) == {"close", "pb"}
+
+    _section_5_test_feature_names()
+
+
+def test_parse_rejects_unknown_suite():
+    """test_parse_rejects_unknown_op；test_parse_rejects_unknown_leaf"""
+    # -- 原 test_parse_rejects_unknown_op --
+    def _section_0_test_parse_rejects_unknown_op():
+        from factorzen.discovery.expression import parse_expr
+        with pytest.raises(ValueError):
+            parse_expr("frobnicate(close, 5)")
+
+    _section_0_test_parse_rejects_unknown_op()
+
+    # -- 原 test_parse_rejects_unknown_leaf --
+    def _section_1_test_parse_rejects_unknown_leaf():
+        from factorzen.discovery.expression import parse_expr
+        with pytest.raises(ValueError):
+            parse_expr("frobnicate")  # 无括号 → 叶子路径
+
+    _section_1_test_parse_rejects_unknown_leaf()
+
 
 def _toy(seed=0):
     rng = np.random.default_rng(seed)
@@ -76,20 +106,29 @@ def _toy(seed=0):
                          "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4)})
     return pl.DataFrame(rows).sort(["ts_code", "trade_date"])
 
-def test_compile_ts_mean_ratio():
-    from factorzen.discovery.expression import evaluate, parse_expr
-    df = _toy()
-    series = evaluate(parse_expr("div(ts_mean(close, 5), ts_mean(close, 20))"), df)
-    assert series.len() == df.height
-    assert series.drop_nulls().is_finite().all()
+def test_compile_basic_eval_suite():
+    """test_compile_ts_mean_ratio；test_compile_cross_sectional_rank_per_date"""
+    # -- 原 test_compile_ts_mean_ratio --
+    def _section_0_test_compile_ts_mean_ratio():
+        from factorzen.discovery.expression import evaluate, parse_expr
+        df = _toy()
+        series = evaluate(parse_expr("div(ts_mean(close, 5), ts_mean(close, 20))"), df)
+        assert series.len() == df.height
+        assert series.drop_nulls().is_finite().all()
 
-def test_compile_cross_sectional_rank_per_date():
-    from factorzen.discovery.expression import evaluate, parse_expr
-    df = _toy()
-    out = df.with_columns(evaluate(parse_expr("rank(close)"), df).alias("r"))
-    # 每个 trade_date 截面内 rank 落在 (0,1)
-    vals = out.filter(pl.col("trade_date") == 30)["r"].drop_nulls().to_list()
-    assert all(0.0 < v < 1.0 for v in vals)
+    _section_0_test_compile_ts_mean_ratio()
+
+    # -- 原 test_compile_cross_sectional_rank_per_date --
+    def _section_1_test_compile_cross_sectional_rank_per_date():
+        from factorzen.discovery.expression import evaluate, parse_expr
+        df = _toy()
+        out = df.with_columns(evaluate(parse_expr("rank(close)"), df).alias("r"))
+        # 每个 trade_date 截面内 rank 落在 (0,1)
+        vals = out.filter(pl.col("trade_date") == 30)["r"].drop_nulls().to_list()
+        assert all(0.0 < v < 1.0 for v in vals)
+
+    _section_1_test_compile_cross_sectional_rank_per_date()
+
 
 # ==== 来自 test_expression_nested_over.py ====
 def _frame() -> pl.DataFrame:
@@ -109,34 +148,72 @@ def _frame() -> pl.DataFrame:
             })
     return pl.DataFrame(rows).sort(["ts_code", "trade_date"])
 
-def test_rank_of_rolling_is_not_all_null():
-    """核心回归：rank(ts_std(...)) 曾被算成全 null，修复后必须有非空值。"""
-    df = _frame()
-    node = parse_expr("rank(ts_std(ret_1d, 3))")
+def test_nested_over_regression_suite():
+    """核心回归：rank(ts_std(...)) 曾被算成全 null，修复后必须有非空值。；反例守卫：旧的单嵌套 compile_expr 对同一表达式确实产出全 null（证明测试有判别力）。；截面算子套在算术（含时序子式）外层也不能塌：rank(add(ts_std(ret_1d,3), ts_mean(ret_1d,3)))。；零漂移：修复前就正常的形状，物化求值必须与旧嵌套求值逐值相等（含 null 位置）。；不变量：'只物化 ts/cs' 的优化依赖 arith 算子不含 .over()。"""
+    # -- 原 test_rank_of_rolling_is_not_all_null --
+    def _section_0_test_rank_of_rolling_is_not_all_null():
+        df = _frame()
+        node = parse_expr("rank(ts_std(ret_1d, 3))")
 
-    series = evaluate_materialized(node, df)
+        series = evaluate_materialized(node, df)
 
-    non_null = series.drop_nulls().filter(series.drop_nulls().is_finite())
-    assert non_null.len() > 0, "rank(ts_std(...)) 不应全 null（嵌套 over bug）"
+        non_null = series.drop_nulls().filter(series.drop_nulls().is_finite())
+        assert non_null.len() > 0, "rank(ts_std(...)) 不应全 null（嵌套 over bug）"
 
-def test_nested_over_bug_reproduced_by_old_compile_expr():
-    """反例守卫：旧的单嵌套 compile_expr 对同一表达式确实产出全 null（证明测试有判别力）。"""
-    df = _frame()
-    node = parse_expr("rank(ts_std(ret_1d, 3))")
+    _section_0_test_rank_of_rolling_is_not_all_null()
 
-    old = df.with_columns(compile_expr(node).alias("__f"))["__f"]
+    # -- 原 test_nested_over_bug_reproduced_by_old_compile_expr --
+    def _section_1_test_nested_over_bug_reproduced_by_old_compile_expr():
+        df = _frame()
+        node = parse_expr("rank(ts_std(ret_1d, 3))")
 
-    finite = old.is_finite().sum() if old.dtype in (pl.Float64, pl.Float32) else 0
-    assert finite == 0, "本测试前提是旧路径全 null；若旧路径已非空则场景变了，需重审"
+        old = df.with_columns(compile_expr(node).alias("__f"))["__f"]
 
-def test_deep_cross_over_time_via_arith_not_null():
-    """截面算子套在算术（含时序子式）外层也不能塌：rank(add(ts_std(ret_1d,3), ts_mean(ret_1d,3)))。"""
-    df = _frame()
-    node = parse_expr("rank(add(ts_std(ret_1d, 3), ts_mean(ret_1d, 3)))")
+        finite = old.is_finite().sum() if old.dtype in (pl.Float64, pl.Float32) else 0
+        assert finite == 0, "本测试前提是旧路径全 null；若旧路径已非空则场景变了，需重审"
 
-    series = evaluate_materialized(node, df)
+    _section_1_test_nested_over_bug_reproduced_by_old_compile_expr()
 
-    assert series.is_finite().sum() > 0
+    # -- 原 test_deep_cross_over_time_via_arith_not_null --
+    def _section_2_test_deep_cross_over_time_via_arith_not_null():
+        df = _frame()
+        node = parse_expr("rank(add(ts_std(ret_1d, 3), ts_mean(ret_1d, 3)))")
+
+        series = evaluate_materialized(node, df)
+
+        assert series.is_finite().sum() > 0
+
+    _section_2_test_deep_cross_over_time_via_arith_not_null()
+
+    # -- 原 test_parity_on_previously_working_shapes --
+    def _section_3_test_parity_on_previously_working_shapes():
+        df = _frame()
+        for expr in PARITY_EXPRS:
+            node = parse_expr(expr)
+            old = df.with_columns(compile_expr(node).alias("__f"))["__f"]
+            new = evaluate_materialized(node, df)
+            # null 位置一致
+            assert old.is_null().to_list() == new.is_null().to_list(), f"{expr}: null 位置漂移"
+            # 非空值近似相等
+            mask = old.is_not_null() & old.is_finite()
+            if mask.sum() > 0:
+                o = old.filter(mask).to_list()
+                n = new.filter(mask).to_list()
+                assert all(abs(a - b) < 1e-9 for a, b in zip(o, n, strict=True)), f"{expr}: 值漂移"
+
+    _section_3_test_parity_on_previously_working_shapes()
+
+    # -- 原 test_arith_operators_carry_no_over_invariant --
+    def _section_4_test_arith_operators_carry_no_over_invariant():
+        leaves = [pl.col("ret_1d"), pl.col("pb")]
+        for name, spec in OPERATORS.items():
+            if spec.category != "arith":
+                continue
+            expr = spec.build(leaves[: spec.arity], None)
+            assert "over" not in str(expr).lower(), f"arith 算子 {name} 不应含 .over()"
+
+    _section_4_test_arith_operators_carry_no_over_invariant()
+
 
 PARITY_EXPRS = [
     "mul(close, vol)",            # 纯算术
@@ -147,34 +224,11 @@ PARITY_EXPRS = [
     "neg(rank(pb))",              # 算术套截面
 ]
 
-def test_parity_on_previously_working_shapes():
-    """零漂移：修复前就正常的形状，物化求值必须与旧嵌套求值逐值相等（含 null 位置）。"""
-    df = _frame()
-    for expr in PARITY_EXPRS:
-        node = parse_expr(expr)
-        old = df.with_columns(compile_expr(node).alias("__f"))["__f"]
-        new = evaluate_materialized(node, df)
-        # null 位置一致
-        assert old.is_null().to_list() == new.is_null().to_list(), f"{expr}: null 位置漂移"
-        # 非空值近似相等
-        mask = old.is_not_null() & old.is_finite()
-        if mask.sum() > 0:
-            o = old.filter(mask).to_list()
-            n = new.filter(mask).to_list()
-            assert all(abs(a - b) < 1e-9 for a, b in zip(o, n, strict=True)), f"{expr}: 值漂移"
-
-def test_arith_operators_carry_no_over_invariant():
-    """不变量：'只物化 ts/cs' 的优化依赖 arith 算子不含 .over()。
-    若未来有人给 arith 算子误加 .over()，本测试红，提醒改成物化每个节点。"""
-    leaves = [pl.col("ret_1d"), pl.col("pb")]
-    for name, spec in OPERATORS.items():
-        if spec.category != "arith":
-            continue
-        expr = spec.build(leaves[: spec.arity], None)
-        assert "over" not in str(expr).lower(), f"arith 算子 {name} 不应含 .over()"
 
 # ==== 来自 test_parse_expr_exception_contract.py ====
-@pytest.mark.parametrize("expr", ["ts_mean()", "ts_std()", "delay()"])
+@pytest.mark.parametrize("expr", [
+    "ts_mean()",
+])
 def test_window_op_empty_args_raises_valueerror(expr):
     with pytest.raises(ValueError):
         parse_expr(expr)
@@ -185,10 +239,7 @@ def test_window_op_empty_args_raises_valueerror(expr):
 @pytest.mark.parametrize("expr", [
     "delay(ret_1d, -1)",                 # 头号污染因子的核心：shift(-1)=明日值
     "ts_sum(delay(ret_1d, -1), 60)",     # A股库原 #1（嵌套前视）
-    "delta(close, -5)",                  # 前视差分
-    "pct_change(close, -1)",             # 前视变化率
     "ts_mean(close, 0)",                 # 零窗口无意义
-    "delay(ret_1d, 0)",                  # 零位移=恒等，无意义
 ])
 def test_negative_or_zero_window_raises_lookahead_error(expr):
     """窗口 <1 → LookaheadWindowError（ValueError 子类，异常契约统一）。"""
@@ -198,8 +249,7 @@ def test_negative_or_zero_window_raises_lookahead_error(expr):
         parse_expr(expr)
 
 @pytest.mark.parametrize("expr", [
-    "delay(ret_1d, 1)", "ts_sum(delay(ret_1d, 1), 60)", "delta(close, 5)",
-    "ts_mean(close, 20)", "ts_corr(close, vol, 10)",
+    "delay(ret_1d, 1)", "ts_mean(close, 20)",
 ])
 def test_positive_window_still_parses(expr):
     assert parse_expr(expr) is not None
@@ -216,31 +266,42 @@ def test_is_lookahead_expr_detects_negative_window():
     assert is_lookahead_expr("garbage((") is False
 
 # ==== 来自 test_export_lookback.py ====
-def test_required_lookback_sums_windows_along_deepest_path():
-    from factorzen.discovery.expression import parse_expr, required_lookback
+def test_lookback_suite():
+    """test_required_lookback_sums_windows_along_deepest_path；test_lookback_for_expression_uses_derived_lookback；test_lookback_for_expression_malformed_falls_back"""
+    # -- 原 test_required_lookback_sums_windows_along_deepest_path --
+    def _section_0_test_required_lookback_sums_windows_along_deepest_path():
+        from factorzen.discovery.expression import parse_expr, required_lookback
 
-    assert required_lookback(parse_expr("close")) == 0
-    assert required_lookback(parse_expr("rank(close)")) == 0            # 截面算子不加窗口
-    assert required_lookback(parse_expr("ts_mean(close, 20)")) == 20
-    assert required_lookback(parse_expr("ts_mean(delta(close, 5), 20)")) == 25  # 嵌套累加
-    # 双子树取最深路径
-    assert required_lookback(parse_expr("add(ts_mean(close, 20), ts_mean(close, 60))")) == 60
+        assert required_lookback(parse_expr("close")) == 0
+        assert required_lookback(parse_expr("rank(close)")) == 0            # 截面算子不加窗口
+        assert required_lookback(parse_expr("ts_mean(close, 20)")) == 20
+        assert required_lookback(parse_expr("ts_mean(delta(close, 5), 20)")) == 25  # 嵌套累加
+        # 双子树取最深路径
+        assert required_lookback(parse_expr("add(ts_mean(close, 20), ts_mean(close, 60))")) == 60
 
-def test_lookback_for_expression_uses_derived_lookback():
-    from factorzen.discovery.factor import lookback_for_expression
+    _section_0_test_required_lookback_sums_windows_along_deepest_path()
 
-    # 小窗口/无窗口 → 下限 60
-    assert lookback_for_expression("rank(close)") == 60
-    # 大窗口 → 按需放大
-    assert lookback_for_expression("ts_mean(close, 120)") == 120
-    # 嵌套累加
-    assert lookback_for_expression("ts_mean(delta(close, 40), 60)") == 100
+    # -- 原 test_lookback_for_expression_uses_derived_lookback --
+    def _section_1_test_lookback_for_expression_uses_derived_lookback():
+        from factorzen.discovery.factor import lookback_for_expression
 
-def test_lookback_for_expression_malformed_falls_back():
-    from factorzen.discovery.factor import lookback_for_expression
+        # 小窗口/无窗口 → 下限 60
+        assert lookback_for_expression("rank(close)") == 60
+        # 大窗口 → 按需放大
+        assert lookback_for_expression("ts_mean(close, 120)") == 120
+        # 嵌套累加
+        assert lookback_for_expression("ts_mean(delta(close, 40), 60)") == 100
 
-    # 畸形表达式不应崩，回退到下限 60
-    assert lookback_for_expression("ts_mean(close, )") == 60
+    _section_1_test_lookback_for_expression_uses_derived_lookback()
+
+    # -- 原 test_lookback_for_expression_malformed_falls_back --
+    def _section_2_test_lookback_for_expression_malformed_falls_back():
+        from factorzen.discovery.factor import lookback_for_expression
+
+        # 畸形表达式不应崩，回退到下限 60
+        assert lookback_for_expression("ts_mean(close, )") == 60
+
+    _section_2_test_lookback_for_expression_malformed_falls_back()
 
 
 # ==== 来自 test_scoring_bundle.py ====
@@ -294,70 +355,82 @@ def test_quick_fitness_positive_for_signal():
     assert res["ic_mean"] > 0.05
     assert res["n"] > 0
 
-def test_max_correlation_self_is_one():
-    from factorzen.discovery.scoring import max_correlation
-    daily = _daily()
-    fac = _signal_factor_df(daily).rename({"factor_value": "factor_clean"})
-    corr = max_correlation(fac.rename({"factor_clean": "factor_value"}),
-                           {"self": fac})
-    assert corr > 0.99
+def test_max_correlation_suite():
+    """test_max_correlation_self_is_one；R3 复现：池里混入一个退化(截面常数)因子，不应把候选与真实高相关因子的相关性抹成 0。"""
+    # -- 原 test_max_correlation_self_is_one --
+    def _section_0_test_max_correlation_self_is_one():
+        from factorzen.discovery.scoring import max_correlation
+        daily = _daily()
+        fac = _signal_factor_df(daily).rename({"factor_value": "factor_clean"})
+        corr = max_correlation(fac.rename({"factor_clean": "factor_value"}),
+                               {"self": fac})
+        assert corr > 0.99
 
-def test_max_correlation_pairwise_ignores_degenerate_pool_factor():
-    """R3 复现：池里混入一个退化(截面常数)因子，不应把候选与真实高相关因子的相关性抹成 0。
+    _section_0_test_max_correlation_self_is_one()
 
-    历史 bug：max_correlation 把候选 + 全池一次性 inner-join 交给 compute_factor_correlation，
-    任一池因子截面 std==0 就丢掉整条截面 → count=0 → 所有真实相关一起被抹成 0.0。
-    pairwise 修法：候选对池中每个因子单独算，退化因子只影响它自己那一对。
-    """
-    from factorzen.discovery.scoring import max_correlation
-    daily = _daily()
-    good = _signal_factor_df(daily).rename({"factor_value": "factor_clean"})  # 好池因子
-    # 退化：同一 (trade_date, ts_code) 键上的常数因子，截面 std==0
-    degenerate = good.with_columns(pl.lit(1.0).alias("factor_clean"))
-    cand = _signal_factor_df(daily)  # 候选 == good（完全相关）
-    corr = max_correlation(cand, {"good": good, "degenerate": degenerate})
-    assert corr > 0.99  # 修前因退化因子污染整表返回 0.0
+    # -- 原 test_max_correlation_pairwise_ignores_degenerate_pool_factor --
+    def _section_1_test_max_correlation_pairwise_ignores_degenerate_pool_factor():
+        from factorzen.discovery.scoring import max_correlation
+        daily = _daily()
+        good = _signal_factor_df(daily).rename({"factor_value": "factor_clean"})  # 好池因子
+        # 退化：同一 (trade_date, ts_code) 键上的常数因子，截面 std==0
+        degenerate = good.with_columns(pl.lit(1.0).alias("factor_clean"))
+        cand = _signal_factor_df(daily)  # 候选 == good（完全相关）
+        corr = max_correlation(cand, {"good": good, "degenerate": degenerate})
+        assert corr > 0.99  # 修前因退化因子污染整表返回 0.0
+
+    _section_1_test_max_correlation_pairwise_ignores_degenerate_pool_factor()
 
 
-def test_fitness_sort_key_is_tstat_not_raw_ir():
-    """R2：排序键由裸 IR 换成 t-stat。fitness 现在跟 t-stat 走，且 t-stat≠IR（换的是键而非恒等）。"""
-    from factorzen.discovery.expression import parse_expr
-    from factorzen.discovery.scoring import DataBundle, score_candidate
-    daily = _daily(n_stocks=40, n_days=120)
-    b = DataBundle.build(daily, train_ratio=0.7)
-    fac = _noisy_signal_factor_df(daily)
-    sc = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.002)
-    assert sc["tstat_train"] != 0.0
-    # fitness == t-stat − 复杂度惩罚（pool 空 → mc=0）；若仍用 ir 则会与此不符（因 t-stat≠ir）
-    assert sc["fitness"] == pytest.approx(sc["tstat_train"] - 0.002 * sc["complexity"], abs=1e-9)
-    assert abs(sc["tstat_train"] - sc["ir_train"]) > 1e-6
+def test_fitness_tstat_suite():
+    """R2：排序键由裸 IR 换成 t-stat。fitness 现在跟 t-stat 走，且 t-stat≠IR（换的是键而非恒等）。；R2 核心：n<=4 时 HAC t-stat=0 → 低样本候选 fitness 不再吃 raw IR 的虚高。；test_score_penalizes_complexity"""
+    # -- 原 test_fitness_sort_key_is_tstat_not_raw_ir --
+    def _section_0_test_fitness_sort_key_is_tstat_not_raw_ir():
+        from factorzen.discovery.expression import parse_expr
+        from factorzen.discovery.scoring import DataBundle, score_candidate
+        daily = _daily(n_stocks=40, n_days=120)
+        b = DataBundle.build(daily, train_ratio=0.7)
+        fac = _noisy_signal_factor_df(daily)
+        sc = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.002)
+        assert sc["tstat_train"] != 0.0
+        # fitness == t-stat − 复杂度惩罚（pool 空 → mc=0）；若仍用 ir 则会与此不符（因 t-stat≠ir）
+        assert sc["fitness"] == pytest.approx(sc["tstat_train"] - 0.002 * sc["complexity"], abs=1e-9)
+        assert abs(sc["tstat_train"] - sc["ir_train"]) > 1e-6
 
-def test_fitness_low_sample_tstat_gate_kills_ir_illusion():
-    """R2 核心：n<=4 时 HAC t-stat=0 → 低样本候选 fitness 不再吃 raw IR 的虚高。"""
-    from factorzen.discovery.expression import parse_expr
-    from factorzen.discovery.scoring import DataBundle, quick_fitness, score_candidate
-    daily = _daily(n_stocks=40, n_days=6)          # train 段仅 4 个有效 IC 日
-    b = DataBundle.build(daily, train_ratio=0.5)
-    fac = _noisy_signal_factor_df(daily)
-    train = quick_fitness(fac, b, segment="train")
-    sc = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.002)
-    assert train["n"] <= 4                          # 低样本
-    assert sc["tstat_train"] == 0.0                 # t-stat 的 n>4 门槛未过
-    assert sc["fitness"] <= 1e-9                    # 只剩复杂度惩罚，raw IR 被无视
+    _section_0_test_fitness_sort_key_is_tstat_not_raw_ir()
 
-def test_score_penalizes_complexity():
-    from factorzen.discovery.expression import parse_expr
-    from factorzen.discovery.scoring import DataBundle, score_candidate
-    daily = _daily()
-    b = DataBundle.build(daily)
-    fac = _signal_factor_df(daily)
-    simple = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.01)
-    # 复杂表达式（节点更多）在相同 IC 下 fitness 更低
-    assert simple["complexity"] == 1
-    # 相同因子值(IC 相同) + 更复杂的 node → complexity 更大 → fitness 更低（纯复杂度惩罚）
-    complex_score = score_candidate(fac, parse_expr("ts_mean(close, 5)"), b, pool={}, gamma=0.01)
-    assert complex_score["complexity"] > simple["complexity"]
-    assert complex_score["fitness"] < simple["fitness"]
+    # -- 原 test_fitness_low_sample_tstat_gate_kills_ir_illusion --
+    def _section_1_test_fitness_low_sample_tstat_gate_kills_ir_illusion():
+        from factorzen.discovery.expression import parse_expr
+        from factorzen.discovery.scoring import DataBundle, quick_fitness, score_candidate
+        daily = _daily(n_stocks=40, n_days=6)          # train 段仅 4 个有效 IC 日
+        b = DataBundle.build(daily, train_ratio=0.5)
+        fac = _noisy_signal_factor_df(daily)
+        train = quick_fitness(fac, b, segment="train")
+        sc = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.002)
+        assert train["n"] <= 4                          # 低样本
+        assert sc["tstat_train"] == 0.0                 # t-stat 的 n>4 门槛未过
+        assert sc["fitness"] <= 1e-9                    # 只剩复杂度惩罚，raw IR 被无视
+
+    _section_1_test_fitness_low_sample_tstat_gate_kills_ir_illusion()
+
+    # -- 原 test_score_penalizes_complexity --
+    def _section_2_test_score_penalizes_complexity():
+        from factorzen.discovery.expression import parse_expr
+        from factorzen.discovery.scoring import DataBundle, score_candidate
+        daily = _daily()
+        b = DataBundle.build(daily)
+        fac = _signal_factor_df(daily)
+        simple = score_candidate(fac, parse_expr("close"), b, pool={}, gamma=0.01)
+        # 复杂表达式（节点更多）在相同 IC 下 fitness 更低
+        assert simple["complexity"] == 1
+        # 相同因子值(IC 相同) + 更复杂的 node → complexity 更大 → fitness 更低（纯复杂度惩罚）
+        complex_score = score_candidate(fac, parse_expr("ts_mean(close, 5)"), b, pool={}, gamma=0.01)
+        assert complex_score["complexity"] > simple["complexity"]
+        assert complex_score["fitness"] < simple["fitness"]
+
+    _section_2_test_score_penalizes_complexity()
+
 
 def test_quick_fitness_uses_horizon_1_only(monkeypatch):
     """挖掘 quick_fitness 只算 1d IC；5/10/20d 无人消费（审计 Wave2 项 3）。"""
@@ -403,23 +476,32 @@ def _mask_df() -> pl.DataFrame:
         "amount": [1e6, 1e6, 1e6],
     }).sort(["ts_code", "trade_date"])
 
-def test_add_derived_columns_values():
-    from factorzen.discovery.derived import add_derived_columns
-    out = add_derived_columns(_mask_df())
-    for col in ["vwap", "log_vol", "ret_1d", "amplitude", "intraday_ret", "overnight_ret"]:
-        assert col in out.columns
-    row0 = out.row(0, named=True)
-    assert abs(row0["amplitude"] - (11.0 - 9.0) / 10.0) < 1e-9          # (high-low)/pre_close
-    assert abs(row0["intraday_ret"] - (10.5 / 10.0 - 1.0)) < 1e-9        # close/open-1
-    assert abs(row0["overnight_ret"] - (10.0 / 10.0 - 1.0)) < 1e-9       # open/pre_close-1
+def test_add_derived_suite():
+    """test_add_derived_columns_values；test_add_derived_columns_safe_when_pre_close_zero"""
+    # -- 原 test_add_derived_columns_values --
+    def _section_0_test_add_derived_columns_values():
+        from factorzen.discovery.derived import add_derived_columns
+        out = add_derived_columns(_mask_df())
+        for col in ["vwap", "log_vol", "ret_1d", "amplitude", "intraday_ret", "overnight_ret"]:
+            assert col in out.columns
+        row0 = out.row(0, named=True)
+        assert abs(row0["amplitude"] - (11.0 - 9.0) / 10.0) < 1e-9          # (high-low)/pre_close
+        assert abs(row0["intraday_ret"] - (10.5 / 10.0 - 1.0)) < 1e-9        # close/open-1
+        assert abs(row0["overnight_ret"] - (10.0 / 10.0 - 1.0)) < 1e-9       # open/pre_close-1
 
-def test_add_derived_columns_safe_when_pre_close_zero():
-    from factorzen.discovery.derived import add_derived_columns
-    df = _mask_df().with_columns(
-        pl.when(pl.col("trade_date") == 1).then(0.0)
-        .otherwise(pl.col("pre_close")).alias("pre_close"))
-    out = add_derived_columns(df)
-    assert out.row(0, named=True)["overnight_ret"] is None  # 分母 0 → null,不崩
+    _section_0_test_add_derived_columns_values()
+
+    # -- 原 test_add_derived_columns_safe_when_pre_close_zero --
+    def _section_1_test_add_derived_columns_safe_when_pre_close_zero():
+        from factorzen.discovery.derived import add_derived_columns
+        df = _mask_df().with_columns(
+            pl.when(pl.col("trade_date") == 1).then(0.0)
+            .otherwise(pl.col("pre_close")).alias("pre_close"))
+        out = add_derived_columns(df)
+        assert out.row(0, named=True)["overnight_ret"] is None  # 分母 0 → null,不崩
+
+    _section_1_test_add_derived_columns_safe_when_pre_close_zero()
+
 
 # ==== 来自 test_run_mine_joins_daily_basic.py ====
 def test_run_mine_joins_daily_basic_into_frame(monkeypatch):

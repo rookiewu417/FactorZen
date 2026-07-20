@@ -195,9 +195,13 @@ class TestBuildIntradayFeatures:
         p = pl.read_parquet(out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet")
         assert set(p["ts_code"].to_list()) == {"000001.SZ"}
 
-    def test_empty_month_skipped(self, tmp_path: Path) -> None:
-        src = tmp_path / "src"
-        out = tmp_path / "out"
+    def test_missing_empty_partition_suite(self, tmp_path):
+        """test_empty_month_skipped；coverage 缺月 → 仅补算缺月，已覆盖月跳过。；coverage 有月但分区文件缺失 → 不跳过，补算。"""
+        # -- 原 test_empty_month_skipped --
+        _tp0 = tmp_path / "_s0"
+        _tp0.mkdir(exist_ok=True)
+        src = _tp0 / "src"
+        out = _tp0 / "out"
         # 仅 1 月有数据
         frames = [
             _make_day_bars("000001.SZ", datetime(2024, 1, 2), n=20),
@@ -220,10 +224,70 @@ class TestBuildIntradayFeatures:
         assert "2024-02" not in r.months
         assert "2024-03" not in r.months
 
-    def test_covered_month_skipped_on_rerun(self, tmp_path: Path) -> None:
-        """已覆盖月（分区非空 + coverage + battery_hash）二次 build 跳过重算。"""
-        src = tmp_path / "src"
-        out = tmp_path / "out"
+        # -- 原 test_missing_month_still_computed --
+        _tp1 = tmp_path / "_s1"
+        _tp1.mkdir(exist_ok=True)
+        src = _tp1 / "src"
+        out = _tp1 / "out"
+        _build_mini_source(src)
+        build_intraday_features(
+            "20240101",
+            "20240131",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
+        jan_mtime = jan_path.stat().st_mtime_ns
+
+        r = build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        assert r.months == ["2024-02"]
+        assert jan_path.stat().st_mtime_ns == jan_mtime
+        m = read_manifest(version="v1", freq="5min", base_dir=out)
+        assert m is not None
+        assert set(m["coverage"]["months"]) == {"2024-01", "2024-02"}
+        assert partition_exists("v1/5min", 2024, 2, base_dir=out)
+
+        # -- 原 test_partition_missing_recomputes_even_if_in_coverage --
+        _tp2 = tmp_path / "_s2"
+        _tp2.mkdir(exist_ok=True)
+        src = _tp2 / "src"
+        out = _tp2 / "out"
+        _build_mini_source(src)
+        build_intraday_features(
+            "20240101",
+            "20240131",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
+        jan_path.unlink()
+
+        r = build_intraday_features(
+            "20240101",
+            "20240131",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        assert r.months == ["2024-01"]
+        assert jan_path.exists()
+
+
+    def test_skip_vs_force_suite(self, tmp_path):
+        """已覆盖月（分区非空 + coverage + battery_hash）二次 build 跳过重算。；--force 即使已覆盖也全量重算。"""
+        # -- 原 test_covered_month_skipped_on_rerun --
+        _tp0 = tmp_path / "_s0"
+        _tp0.mkdir(exist_ok=True)
+        src = _tp0 / "src"
+        out = _tp0 / "out"
         _build_mini_source(src)
         r1 = build_intraday_features(
             "20240101",
@@ -261,16 +325,47 @@ class TestBuildIntradayFeatures:
         assert jan_path.stat().st_mtime_ns == jan_mtime_1
         assert jan_path.read_bytes() == jan_bytes_1
 
-    def test_partially_covered_boundary_month_recomputed(self, tmp_path: Path) -> None:
-        """上游在边界月内补数后，增量 build 必须重算该月而非跳过。
+        # -- 原 test_force_recomputes_all_covered_months --
+        _tp1 = tmp_path / "_s1"
+        _tp1.mkdir(exist_ok=True)
+        src = _tp1 / "src"
+        out = _tp1 / "out"
+        _build_mini_source(src)
+        build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+        )
+        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
+        m1 = read_manifest(version="v1", freq="5min", base_dir=out)
+        assert m1 is not None
+        built_at_before = m1["built_at"]
 
-        回归锚（2026-07-19 实证）：月标签级 coverage 区分不了「整月已算」与
-        「算了前几天」。生产上特征面板停在 2026-04-10，而 ``status`` 把
-        2026-04 标为已覆盖，增量 build 跳过它，只有 ``--force`` 才补得上——
-        用户以为补齐了，实际 17 个分钟叶子在 holdout 段覆盖 0% 被全摘。
-        """
-        src = tmp_path / "src"
-        out = tmp_path / "out"
+        r = build_intraday_features(
+            "20240101",
+            "20240229",
+            source_dir=src,
+            out_dir=out,
+            min_bar_coverage=0.0,
+            force=True,
+        )
+        assert set(r.months) == {"2024-01", "2024-02"}
+        assert r.rows > 0
+        assert jan_path.exists()
+        m2 = read_manifest(version="v1", freq="5min", base_dir=out)
+        assert m2 is not None
+        assert m2["built_at"] != built_at_before
+
+
+    def test_boundary_month_suite(self, tmp_path):
+        """上游在边界月内补数后，增量 build 必须重算该月而非跳过。；老 manifest 缺逐月末日字段 → 只重算边界月，历史月仍跳过（迁移代价 O(1)）。"""
+        # -- 原 test_partially_covered_boundary_month_recomputed --
+        _tp0 = tmp_path / "_s0"
+        _tp0.mkdir(exist_ok=True)
+        src = _tp0 / "src"
+        out = _tp0 / "out"
         # ① 源湖此刻只有 2024-02 的前 2 天（模拟上游数据尚未到月末）
         frames = [
             _make_day_bars(code, datetime(2024, 2, d), n=20, base_px=px)
@@ -314,12 +409,11 @@ class TestBuildIntradayFeatures:
         )
         assert got["trade_date"].max() == date(2024, 2, 5)
 
-    def test_legacy_manifest_without_month_last_date_recomputes_boundary_only(
-        self, tmp_path: Path
-    ) -> None:
-        """老 manifest 缺逐月末日字段 → 只重算边界月，历史月仍跳过（迁移代价 O(1)）。"""
-        src = tmp_path / "src"
-        out = tmp_path / "out"
+        # -- 原 test_legacy_manifest_without_month_last_date_recomputes_boundary_only --
+        _tp1 = tmp_path / "_s1"
+        _tp1.mkdir(exist_ok=True)
+        src = _tp1 / "src"
+        out = _tp1 / "out"
         _build_mini_source(src)
         build_intraday_features(
             "20240101", "20240229", source_dir=src, out_dir=out, min_bar_coverage=0.0,
@@ -336,93 +430,6 @@ class TestBuildIntradayFeatures:
         # 只有边界月 2024-02 重算，2024-01 仍跳过
         assert r.months == ["2024-02"], r.months
 
-    def test_missing_month_still_computed(self, tmp_path: Path) -> None:
-        """coverage 缺月 → 仅补算缺月，已覆盖月跳过。"""
-        src = tmp_path / "src"
-        out = tmp_path / "out"
-        _build_mini_source(src)
-        build_intraday_features(
-            "20240101",
-            "20240131",
-            source_dir=src,
-            out_dir=out,
-            min_bar_coverage=0.0,
-        )
-        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
-        jan_mtime = jan_path.stat().st_mtime_ns
-
-        r = build_intraday_features(
-            "20240101",
-            "20240229",
-            source_dir=src,
-            out_dir=out,
-            min_bar_coverage=0.0,
-        )
-        assert r.months == ["2024-02"]
-        assert jan_path.stat().st_mtime_ns == jan_mtime
-        m = read_manifest(version="v1", freq="5min", base_dir=out)
-        assert m is not None
-        assert set(m["coverage"]["months"]) == {"2024-01", "2024-02"}
-        assert partition_exists("v1/5min", 2024, 2, base_dir=out)
-
-    def test_partition_missing_recomputes_even_if_in_coverage(
-        self, tmp_path: Path
-    ) -> None:
-        """coverage 有月但分区文件缺失 → 不跳过，补算。"""
-        src = tmp_path / "src"
-        out = tmp_path / "out"
-        _build_mini_source(src)
-        build_intraday_features(
-            "20240101",
-            "20240131",
-            source_dir=src,
-            out_dir=out,
-            min_bar_coverage=0.0,
-        )
-        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
-        jan_path.unlink()
-
-        r = build_intraday_features(
-            "20240101",
-            "20240131",
-            source_dir=src,
-            out_dir=out,
-            min_bar_coverage=0.0,
-        )
-        assert r.months == ["2024-01"]
-        assert jan_path.exists()
-
-    def test_force_recomputes_all_covered_months(self, tmp_path: Path) -> None:
-        """--force 即使已覆盖也全量重算。"""
-        src = tmp_path / "src"
-        out = tmp_path / "out"
-        _build_mini_source(src)
-        build_intraday_features(
-            "20240101",
-            "20240229",
-            source_dir=src,
-            out_dir=out,
-            min_bar_coverage=0.0,
-        )
-        jan_path = out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet"
-        m1 = read_manifest(version="v1", freq="5min", base_dir=out)
-        assert m1 is not None
-        built_at_before = m1["built_at"]
-
-        r = build_intraday_features(
-            "20240101",
-            "20240229",
-            source_dir=src,
-            out_dir=out,
-            min_bar_coverage=0.0,
-            force=True,
-        )
-        assert set(r.months) == {"2024-01", "2024-02"}
-        assert r.rows > 0
-        assert jan_path.exists()
-        m2 = read_manifest(version="v1", freq="5min", base_dir=out)
-        assert m2 is not None
-        assert m2["built_at"] != built_at_before
 
     def test_workers_two_matches_serial(self, tmp_path: Path) -> None:
         """workers=2 与 workers=1 对同两月输出逐值一致，manifest coverage 一致。"""

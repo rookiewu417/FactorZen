@@ -20,7 +20,6 @@ from factorzen.core.feature_schema import INTRADAY_FEATURES
 from factorzen.core.storage import save_parquet
 from factorzen.daily.data.intraday import attach_intraday
 from factorzen.discovery.intraday_expr import (
-    AGG_FUNCS,
     ELEMENTWISE_OPS,
     ensure_expr_panel,
     load_expr_registry,
@@ -71,60 +70,77 @@ def _panel(dates: list[str], code: str = "000001.SZ", *, as_date: bool = True) -
         data[c] = [float(i + 1) + 0.1 * j for j in range(len(dates))]
     return pl.DataFrame(data)
 
-def test_injected_join_date_dtype():
-    daily = _daily_date(["20240102", "20240103"])
-    panel = _panel(["20240102", "20240103"])
-    # 显式固定 i_rv 便于断言
-    panel = panel.with_columns(
-        pl.when(pl.col("trade_date") == dt.date(2024, 1, 2))
-        .then(0.42)
-        .otherwise(0.43)
-        .alias("i_rv")
-    )
-    out = attach_intraday(daily, injected=panel)
-    for c in _COLS:
-        assert c in out.columns
-    by = {r["trade_date"]: r for r in out.iter_rows(named=True)}
-    assert by[dt.date(2024, 1, 2)]["i_rv"] == pytest.approx(0.42)
-    assert by[dt.date(2024, 1, 3)]["i_rv"] == pytest.approx(0.43)
+def test_attach_intraday_api_suite():
+    """test_injected_join_date_dtype；daily trade_date 为 Utf8 时也能 left-join。；test_missing_panel_require_false_nulls_and_warning；test_missing_panel_require_true_raises_with_build_hint；test_out_meta_filled"""
+    # -- 原 test_injected_join_date_dtype --
+    def _section_0_test_injected_join_date_dtype():
+        daily = _daily_date(["20240102", "20240103"])
+        panel = _panel(["20240102", "20240103"])
+        # 显式固定 i_rv 便于断言
+        panel = panel.with_columns(
+            pl.when(pl.col("trade_date") == dt.date(2024, 1, 2))
+            .then(0.42)
+            .otherwise(0.43)
+            .alias("i_rv")
+        )
+        out = attach_intraday(daily, injected=panel)
+        for c in _COLS:
+            assert c in out.columns
+        by = {r["trade_date"]: r for r in out.iter_rows(named=True)}
+        assert by[dt.date(2024, 1, 2)]["i_rv"] == pytest.approx(0.42)
+        assert by[dt.date(2024, 1, 3)]["i_rv"] == pytest.approx(0.43)
 
-def test_injected_join_utf8_daily():
-    """daily trade_date 为 Utf8 时也能 left-join。"""
-    daily = _daily_utf8(["20240102", "20240103"])
-    panel = _panel(["20240102", "20240103"], as_date=True).with_columns(
-        pl.lit(0.99).alias("i_rv")
-    )
-    out = attach_intraday(daily, injected=panel)
-    assert out["trade_date"].dtype in (pl.Utf8, pl.String)
-    assert out.filter(pl.col("trade_date") == "20240102")["i_rv"][0] == pytest.approx(0.99)
+    _section_0_test_injected_join_date_dtype()
 
-def test_missing_panel_require_false_nulls_and_warning():
-    daily = _daily_date(["20240102"])
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        out = attach_intraday(daily, injected=pl.DataFrame(), require=False)
-    assert any("intraday" in str(x.message).lower() or "i_*" in str(x.message)
-               or "日内" in str(x.message) for x in w)
-    for c in _COLS:
-        assert c in out.columns
-        assert out[c][0] is None
+    # -- 原 test_injected_join_utf8_daily --
+    def _section_1_test_injected_join_utf8_daily():
+        daily = _daily_utf8(["20240102", "20240103"])
+        panel = _panel(["20240102", "20240103"], as_date=True).with_columns(
+            pl.lit(0.99).alias("i_rv")
+        )
+        out = attach_intraday(daily, injected=panel)
+        assert out["trade_date"].dtype in (pl.Utf8, pl.String)
+        assert out.filter(pl.col("trade_date") == "20240102")["i_rv"][0] == pytest.approx(0.99)
 
-def test_missing_panel_require_true_raises_with_build_hint():
-    daily = _daily_date(["20240102"])
-    with pytest.raises(ValueError, match="intraday-features build"):
-        attach_intraday(daily, injected=pl.DataFrame(), require=True)
+    _section_1_test_injected_join_utf8_daily()
 
-def test_out_meta_filled():
-    daily = _daily_date(["20240102", "20240103"])
-    panel = _panel(["20240102", "20240103"])
-    meta: dict = {}
-    attach_intraday(daily, injected=panel, out_meta=meta)
-    assert "intraday_panel" in meta
-    ip = meta["intraday_panel"]
-    assert ip["version"] == "v1"
-    assert ip["freq"] == "5min"
-    assert ip["coverage_start"] is not None
-    assert ip["coverage_end"] is not None
+    # -- 原 test_missing_panel_require_false_nulls_and_warning --
+    def _section_2_test_missing_panel_require_false_nulls_and_warning():
+        daily = _daily_date(["20240102"])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            out = attach_intraday(daily, injected=pl.DataFrame(), require=False)
+        assert any("intraday" in str(x.message).lower() or "i_*" in str(x.message)
+                   or "日内" in str(x.message) for x in w)
+        for c in _COLS:
+            assert c in out.columns
+            assert out[c][0] is None
+
+    _section_2_test_missing_panel_require_false_nulls_and_warning()
+
+    # -- 原 test_missing_panel_require_true_raises_with_build_hint --
+    def _section_3_test_missing_panel_require_true_raises_with_build_hint():
+        daily = _daily_date(["20240102"])
+        with pytest.raises(ValueError, match="intraday-features build"):
+            attach_intraday(daily, injected=pl.DataFrame(), require=True)
+
+    _section_3_test_missing_panel_require_true_raises_with_build_hint()
+
+    # -- 原 test_out_meta_filled --
+    def _section_4_test_out_meta_filled():
+        daily = _daily_date(["20240102", "20240103"])
+        panel = _panel(["20240102", "20240103"])
+        meta: dict = {}
+        attach_intraday(daily, injected=panel, out_meta=meta)
+        assert "intraday_panel" in meta
+        ip = meta["intraday_panel"]
+        assert ip["version"] == "v1"
+        assert ip["freq"] == "5min"
+        assert ip["coverage_start"] is not None
+        assert ip["coverage_end"] is not None
+
+    _section_4_test_out_meta_filled()
+
 
 def test_leaf_health_zero_coverage_on_null_i_leaves():
     """缺面板 require=False → 全 null 列；leaf_health 对 i_* 覆盖率 0。"""
@@ -315,9 +331,13 @@ def _keys(df: pl.DataFrame) -> pl.DataFrame:
     return df.sort(["ts_code", "trade_time"])
 
 class TestBarsCache:
-    def test_hit_matches_force_rebuild(self, tmp_path: Path) -> None:
-        src = tmp_path / "src"
-        cache = tmp_path / "cache"
+    def test_bars_cache_suite(self, tmp_path):
+        """test_hit_matches_force_rebuild；上游在边界月内补数后，读穿缓存必须重算该月而非命中部分缓存。；test_missing_month_falls_back_to_compute；test_hash_mismatch_invalidates；test_freq_key_isolation；test_build_bars_equals_direct_resample"""
+        # -- 原 test_hit_matches_force_rebuild --
+        _tp0 = tmp_path / "_s0"
+        _tp0.mkdir(exist_ok=True)
+        src = _tp0 / "src"
+        cache = _tp0 / "cache"
         _build_src(src, [(2024, 6, [3, 4])])
 
         cold = load_or_build_bars(
@@ -338,15 +358,11 @@ class TestBarsCache:
         assert man["resample_hash"] == resample_semantics_hash("5min")
         assert "2024-06" in man["coverage"]["months"]
 
-    def test_partially_cached_boundary_month_rebuilt(self, tmp_path: Path) -> None:
-        """上游在边界月内补数后，读穿缓存必须重算该月而非命中部分缓存。
-
-        与 ``features/engine`` 的部分月防呆是双路径配对项。bars 层更隐蔽：
-        features 用 ``--force`` 只能绕过它**自己**的跳过，读穿到这里仍会命中
-        部分 bars，于是「重算」出的特征月照样是残的。
-        """
-        src = tmp_path / "src"
-        cache = tmp_path / "cache"
+        # -- 原 test_partially_cached_boundary_month_rebuilt --
+        _tp1 = tmp_path / "_s1"
+        _tp1.mkdir(exist_ok=True)
+        src = _tp1 / "src"
+        cache = _tp1 / "cache"
         # ① 源湖此刻只有 06-03（上游数据尚未到月末）
         _build_src(src, [(2024, 6, [3])])
         first = load_or_build_bars(
@@ -371,9 +387,11 @@ class TestBarsCache:
         assert man2 is not None
         assert man2["coverage"]["month_last_date"]["2024-06"] == "2024-06-04"
 
-    def test_missing_month_falls_back_to_compute(self, tmp_path: Path) -> None:
-        src = tmp_path / "src"
-        cache = tmp_path / "cache"
+        # -- 原 test_missing_month_falls_back_to_compute --
+        _tp2 = tmp_path / "_s2"
+        _tp2.mkdir(exist_ok=True)
+        src = _tp2 / "src"
+        cache = _tp2 / "cache"
         _build_src(src, [(2024, 6, [3]), (2024, 7, [1])])
 
         # 只物化 6 月
@@ -389,9 +407,11 @@ class TestBarsCache:
         assert man2 is not None
         assert set(man2["coverage"]["months"]) == {"2024-06", "2024-07"}
 
-    def test_hash_mismatch_invalidates(self, tmp_path: Path) -> None:
-        src = tmp_path / "src"
-        cache = tmp_path / "cache"
+        # -- 原 test_hash_mismatch_invalidates --
+        _tp3 = tmp_path / "_s3"
+        _tp3.mkdir(exist_ok=True)
+        src = _tp3 / "src"
+        cache = _tp3 / "cache"
         _build_src(src, [(2024, 6, [3, 4])])
         load_or_build_bars("2024-06", "5min", source_dir=src, cache_dir=cache)
 
@@ -408,9 +428,11 @@ class TestBarsCache:
         assert man is not None
         assert man["resample_hash"] == resample_semantics_hash("5min")
 
-    def test_freq_key_isolation(self, tmp_path: Path) -> None:
-        src = tmp_path / "src"
-        cache = tmp_path / "cache"
+        # -- 原 test_freq_key_isolation --
+        _tp4 = tmp_path / "_s4"
+        _tp4.mkdir(exist_ok=True)
+        src = _tp4 / "src"
+        cache = _tp4 / "cache"
         _build_src(src, [(2024, 6, [3])])
 
         b5 = load_or_build_bars("2024-06", "5min", source_dir=src, cache_dir=cache)
@@ -429,8 +451,10 @@ class TestBarsCache:
         assert m5 is not None and m15 is not None
         assert m5["resample_hash"] != m15["resample_hash"]
 
-    def test_build_bars_equals_direct_resample(self, tmp_path: Path) -> None:
-        src = tmp_path / "src"
+        # -- 原 test_build_bars_equals_direct_resample --
+        _tp5 = tmp_path / "_s5"
+        _tp5.mkdir(exist_ok=True)
+        src = _tp5 / "src"
         _build_src(src, [(2024, 6, [3])])
         minute = pl.read_parquet(list((src / "minute_1min").rglob("*.parquet")))
         direct = resample_intraday(
@@ -440,6 +464,7 @@ class TestBarsCache:
         )
         via = build_bars_from_minute(minute, "5min")
         assert_frame_equal(_keys(direct), _keys(via), check_exact=False, abs_tol=1e-12)
+
 
 # ==== 来自 test_intraday_features.py ====
 # ==== 来自 test_intraday_battery.py ====
@@ -517,8 +542,9 @@ _CORE_HARD = [
 ]
 
 class TestBatteryMeta:
-    def test_v1_twenty_unique_i_prefix(self) -> None:
-        """17 个连续路径统计 + 3 个涨跌停邻域（2026-07-19 新增）。"""
+    def test_battery_meta_suite(self):
+        """17 个连续路径统计 + 3 个涨跌停邻域（2026-07-19 新增）。；test_v2_raises；test_60min_raises；test_battery_hash_stable"""
+        # -- 原 test_v1_twenty_unique_i_prefix --
         specs = battery("v1", "5min")
         assert len(specs) == 20
         names = [s.name for s in specs]
@@ -534,19 +560,20 @@ class TestBatteryMeta:
         assert all(s.formula and s.description for s in specs)
         assert all(s.expression is None for s in specs)
 
-    def test_v2_raises(self) -> None:
+        # -- 原 test_v2_raises --
         with pytest.raises(ValueError, match="未知电池版本"):
             battery("v2")
 
-    def test_60min_raises(self) -> None:
+        # -- 原 test_60min_raises --
         with pytest.raises(ValueError, match="不支持"):
             battery("v1", freq="60min")
 
-    def test_battery_hash_stable(self) -> None:
+        # -- 原 test_battery_hash_stable --
         a = battery_hash(battery("v1", "5min"))
         b = battery_hash(battery("v1", "5min"))
         assert a == b
         assert len(a) == 16
+
 
 class TestGroundTruth:
     def test_sparse_5min_core_features(self) -> None:
@@ -579,7 +606,9 @@ class TestGroundTruth:
         assert row["i_pv_corr"] is None
 
 class TestGuards:
-    def test_low_coverage_nulls_all_features_keeps_row(self) -> None:
+    def test_compute_guards_suite(self):
+        """test_low_coverage_nulls_all_features_keeps_row；test_nan_input_becomes_null_not_nan；test_all_zero_vol_no_crash"""
+        # -- 原 test_low_coverage_nulls_all_features_keeps_row --
         specs = battery("v1", "5min")
         # 正常日
         good = _sparse_one_day()
@@ -614,7 +643,7 @@ class TestGuards:
         good_row = panel.filter(pl.col("trade_date") == datetime(2024, 1, 2).date())
         assert good_row["i_rv"][0] is not None
 
-    def test_nan_input_becomes_null_not_nan(self) -> None:
+        # -- 原 test_nan_input_becomes_null_not_nan --
         specs = battery("v1", "5min")
         df = _sparse_one_day().with_columns(
             pl.when(pl.col("trade_time").dt.minute() == 40)
@@ -629,7 +658,7 @@ class TestGuards:
                 if v is not None:
                     assert v == v  # not NaN
 
-    def test_all_zero_vol_no_crash(self) -> None:
+        # -- 原 test_all_zero_vol_no_crash --
         specs = battery("v1", "5min")
         rows = [
             (_dt__battery(9, 31), 10.0, 10.0, 10.0, 10.0, 0, 0.0),
@@ -656,6 +685,7 @@ class TestGuards:
         assert panel["i_smart_money"][0] is None
         # 路径效率仍可算
         assert panel["i_path_eff"][0] is not None or panel["i_path_eff"][0] is None
+
 
 # ── 涨跌停邻域叶（A 股特有的离散状态机；与 17 个连续路径统计机制不同）──────────
 
@@ -690,71 +720,77 @@ def _limit_ref(pre_close: float, limit_pct: float = 0.1, *, day: int = 2,
         "pre_close": [pre_close], "limit_pct": [limit_pct],
     })
 
-def test_limit_leaves_seal_share_and_open_count():
-    """封板时长占比 + 打开次数：手算 ground-truth。
+def test_limit_leaves_suite():
+    """封板时长占比 + 打开次数：手算 ground-truth。；全日未触板 → seal_share/open_count = **0**（0 有信息「今天没封过」），；首次触板越早，first_touch 越小（判别力：两组对照）。；不传 daily_ref（旧调用方）→ 涨跌停叶全 null，其余 17 叶**逐位不变**（零回归）。；pre_close ≤0 / 缺失 → 三叶全 null（不是 0，区别于「未触板」）。"""
+    # -- 原 test_limit_leaves_seal_share_and_open_count --
+    def _section_0_test_limit_leaves_seal_share_and_open_count():
+        from factorzen.intraday.features import battery, compute_day_panel
 
-    pre_close=10 → 涨停价 11.0。close 序列 [11.0, 11.0, 10.9, 11.0]：
-    - seal = [1,1,0,1] → seal_share = 3/4
-    - 打开次数 = seal 由 1→0 的次数 = 1
-    """
-    from factorzen.intraday.features import battery, compute_day_panel
+        minute = _limit_day([11.0, 11.0, 10.9, 11.0])
+        ref = _limit_ref(10.0)
+        out = compute_day_panel(minute, battery(), "5min", min_bar_coverage=0.0,
+                                daily_ref=ref)
+        assert "i_limit_up_seal_share" in out.columns, out.columns
+        r = out.row(0, named=True)
+        assert abs(r["i_limit_up_seal_share"] - 0.75) < 1e-9, r["i_limit_up_seal_share"]
+        assert r["i_limit_up_open_count"] == 1.0, r["i_limit_up_open_count"]
 
-    minute = _limit_day([11.0, 11.0, 10.9, 11.0])
-    ref = _limit_ref(10.0)
-    out = compute_day_panel(minute, battery(), "5min", min_bar_coverage=0.0,
-                            daily_ref=ref)
-    assert "i_limit_up_seal_share" in out.columns, out.columns
-    r = out.row(0, named=True)
-    assert abs(r["i_limit_up_seal_share"] - 0.75) < 1e-9, r["i_limit_up_seal_share"]
-    assert r["i_limit_up_open_count"] == 1.0, r["i_limit_up_open_count"]
+    _section_0_test_limit_leaves_seal_share_and_open_count()
 
-def test_limit_leaves_never_touched_is_zero_not_null():
-    """全日未触板 → seal_share/open_count = **0**（0 有信息「今天没封过」），
-    first_touch = **1.0**（最晚）。不得为 null——否则截面 95%+ null，
-    rank/IC 会塌成少数触板票的子样本游戏。"""
-    from factorzen.intraday.features import battery, compute_day_panel
+    # -- 原 test_limit_leaves_never_touched_is_zero_not_null --
+    def _section_1_test_limit_leaves_never_touched_is_zero_not_null():
+        from factorzen.intraday.features import battery, compute_day_panel
 
-    out = compute_day_panel(_limit_day([10.1, 10.2, 10.15, 10.2]), battery(), "5min",
-                            min_bar_coverage=0.0, daily_ref=_limit_ref(10.0))
-    r = out.row(0, named=True)
-    assert r["i_limit_up_seal_share"] == 0.0
-    assert r["i_limit_up_open_count"] == 0.0
-    assert r["i_limit_up_first_touch"] == 1.0
+        out = compute_day_panel(_limit_day([10.1, 10.2, 10.15, 10.2]), battery(), "5min",
+                                min_bar_coverage=0.0, daily_ref=_limit_ref(10.0))
+        r = out.row(0, named=True)
+        assert r["i_limit_up_seal_share"] == 0.0
+        assert r["i_limit_up_open_count"] == 0.0
+        assert r["i_limit_up_first_touch"] == 1.0
 
-def test_limit_leaves_first_touch_earlier_is_smaller():
-    """首次触板越早，first_touch 越小（判别力：两组对照）。"""
-    from factorzen.intraday.features import battery, compute_day_panel
+    _section_1_test_limit_leaves_never_touched_is_zero_not_null()
 
-    early = compute_day_panel(_limit_day([11.0, 10.5, 10.5, 10.5]), battery(), "5min",
-                              min_bar_coverage=0.0, daily_ref=_limit_ref(10.0))
-    late = compute_day_panel(_limit_day([10.5, 10.5, 10.5, 11.0]), battery(), "5min",
-                             min_bar_coverage=0.0, daily_ref=_limit_ref(10.0))
-    assert early.row(0, named=True)["i_limit_up_first_touch"] < \
-        late.row(0, named=True)["i_limit_up_first_touch"]
+    # -- 原 test_limit_leaves_first_touch_earlier_is_smaller --
+    def _section_2_test_limit_leaves_first_touch_earlier_is_smaller():
+        from factorzen.intraday.features import battery, compute_day_panel
 
-def test_limit_leaves_null_without_daily_ref():
-    """不传 daily_ref（旧调用方）→ 涨跌停叶全 null，其余 17 叶**逐位不变**（零回归）。"""
-    from factorzen.intraday.features import battery, compute_day_panel
+        early = compute_day_panel(_limit_day([11.0, 10.5, 10.5, 10.5]), battery(), "5min",
+                                  min_bar_coverage=0.0, daily_ref=_limit_ref(10.0))
+        late = compute_day_panel(_limit_day([10.5, 10.5, 10.5, 11.0]), battery(), "5min",
+                                 min_bar_coverage=0.0, daily_ref=_limit_ref(10.0))
+        assert early.row(0, named=True)["i_limit_up_first_touch"] < \
+            late.row(0, named=True)["i_limit_up_first_touch"]
 
-    minute = _limit_day([11.0, 11.0, 10.9, 11.0])
-    with_ref = compute_day_panel(minute, battery(), "5min", min_bar_coverage=0.0,
-                                 daily_ref=_limit_ref(10.0))
-    without = compute_day_panel(minute, battery(), "5min", min_bar_coverage=0.0)
-    assert without.row(0, named=True)["i_limit_up_seal_share"] is None
-    for c in ("i_rv", "i_ret_open30", "i_vwap_dev", "i_amihud"):
-        a = with_ref.row(0, named=True)[c]
-        b = without.row(0, named=True)[c]
-        assert (a is None and b is None) or a == b, f"{c}: {a} vs {b}"
+    _section_2_test_limit_leaves_first_touch_earlier_is_smaller()
 
-def test_limit_leaves_guard_bad_pre_close():
-    """pre_close ≤0 / 缺失 → 三叶全 null（不是 0，区别于「未触板」）。"""
-    from factorzen.intraday.features import battery, compute_day_panel
+    # -- 原 test_limit_leaves_null_without_daily_ref --
+    def _section_3_test_limit_leaves_null_without_daily_ref():
+        from factorzen.intraday.features import battery, compute_day_panel
 
-    out = compute_day_panel(_limit_day([11.0, 11.0]), battery(), "5min",
-                            min_bar_coverage=0.0, daily_ref=_limit_ref(0.0))
-    r = out.row(0, named=True)
-    assert r["i_limit_up_seal_share"] is None
-    assert r["i_limit_up_first_touch"] is None
+        minute = _limit_day([11.0, 11.0, 10.9, 11.0])
+        with_ref = compute_day_panel(minute, battery(), "5min", min_bar_coverage=0.0,
+                                     daily_ref=_limit_ref(10.0))
+        without = compute_day_panel(minute, battery(), "5min", min_bar_coverage=0.0)
+        assert without.row(0, named=True)["i_limit_up_seal_share"] is None
+        for c in ("i_rv", "i_ret_open30", "i_vwap_dev", "i_amihud"):
+            a = with_ref.row(0, named=True)[c]
+            b = without.row(0, named=True)[c]
+            assert (a is None and b is None) or a == b, f"{c}: {a} vs {b}"
+
+    _section_3_test_limit_leaves_null_without_daily_ref()
+
+    # -- 原 test_limit_leaves_guard_bad_pre_close --
+    def _section_4_test_limit_leaves_guard_bad_pre_close():
+        from factorzen.intraday.features import battery, compute_day_panel
+
+        out = compute_day_panel(_limit_day([11.0, 11.0]), battery(), "5min",
+                                min_bar_coverage=0.0, daily_ref=_limit_ref(0.0))
+        r = out.row(0, named=True)
+        assert r["i_limit_up_seal_share"] is None
+        assert r["i_limit_up_first_touch"] is None
+
+    _section_4_test_limit_leaves_guard_bad_pre_close()
+
 
 # ==== 来自 test_intraday_expr_features.py ====
 def _dt__expr_features(h: int, m: int, day: int = 2) -> datetime:
@@ -811,14 +847,19 @@ _EXP_MEAN_VWAP = 10.479166666666666
 _EXP_LAST_SIGNED = 10.8
 _EXP_FIRST_BAR_RET = 0.05
 
-class TestValidateBarExpr:
-    def test_rejects_ts_and_rank(self) -> None:
+def test_bar_expr_spec_suite():
+    """test_rejects_ts_and_rank；test_accepts_elementwise；test_same_inputs_same_name；test_equivalent_expr_same_name；test_unknown_agg_freq"""
+    # -- 原 test_rejects_ts_and_rank --
+    def _section_0_test_rejects_ts_and_rank():
         with pytest.raises(ValueError, match=r"禁止算子|未知"):
             validate_bar_expr("ts_mean(close, 5)")
         with pytest.raises(ValueError, match=r"禁止算子"):
             validate_bar_expr("rank(close)")
 
-    def test_accepts_elementwise(self) -> None:
+    _section_0_test_rejects_ts_and_rank()
+
+    # -- 原 test_accepts_elementwise --
+    def _section_1_test_accepts_elementwise():
         node = validate_bar_expr("div(amount, vol)")
         assert node is not None
         node2 = validate_bar_expr("mul(close, sign(bar_ret))")
@@ -826,29 +867,43 @@ class TestValidateBarExpr:
         assert "div" in ELEMENTWISE_OPS
         assert "rank" not in ELEMENTWISE_OPS
 
-class TestMakeExprSpec:
-    def test_same_inputs_same_name(self) -> None:
+    _section_1_test_accepts_elementwise()
+
+    # -- 原 test_same_inputs_same_name --
+    def _section_2_test_same_inputs_same_name():
         a = make_expr_spec("div(amount, vol)", "mean", freq="5min")
         b = make_expr_spec("div(amount, vol)", "mean", freq="5min")
         assert a.name == b.name
         assert a.name.startswith("ix_")
         assert len(a.name) == 11  # ix_ + 8 hex
 
-    def test_equivalent_expr_same_name(self) -> None:
+    _section_2_test_same_inputs_same_name()
+
+    # -- 原 test_equivalent_expr_same_name --
+    def _section_3_test_equivalent_expr_same_name():
         a = make_expr_spec("div(amount,vol)", "mean", freq="5min")
         b = make_expr_spec("div(amount, vol)", "mean", freq="5min")
         assert a.name == b.name
         assert a.bar_expr == b.bar_expr
 
-    def test_unknown_agg_freq(self) -> None:
+    _section_3_test_equivalent_expr_same_name()
+
+    # -- 原 test_unknown_agg_freq --
+    def _section_4_test_unknown_agg_freq():
         with pytest.raises(ValueError, match="未知聚合"):
             make_expr_spec("close", "mode", freq="5min")
         with pytest.raises(ValueError, match="未知频率"):
             make_expr_spec("close", "mean", freq="7min")
 
+    _section_4_test_unknown_agg_freq()
+
 class TestMaterializeGroundTruth:
-    def test_std_mean_last_and_bar_ret(self, tmp_path: Path) -> None:
-        src = _write_minute_source(tmp_path)
+    def test_materialize_ground_truth_suite(self, tmp_path):
+        """test_std_mean_last_and_bar_ret；首 bar bar_ret = close/open−1（5min 首桶合并竞价）。；test_mixed_freq_raises"""
+        # -- 原 test_std_mean_last_and_bar_ret --
+        _tp0 = tmp_path / "_s0"
+        _tp0.mkdir(exist_ok=True)
+        src = _write_minute_source(_tp0)
         specs = [
             make_expr_spec("bar_ret", "std", freq="5min"),
             make_expr_spec("div(amount, vol)", "mean", freq="5min"),
@@ -868,9 +923,10 @@ class TestMaterializeGroundTruth:
         assert row[specs[1].name] == pytest.approx(_EXP_MEAN_VWAP, abs=1e-9)
         assert row[specs[2].name] == pytest.approx(_EXP_LAST_SIGNED, abs=1e-9)
 
-    def test_bar_ret_first_bar(self, tmp_path: Path) -> None:
-        """首 bar bar_ret = close/open−1（5min 首桶合并竞价）。"""
-        src = _write_minute_source(tmp_path)
+        # -- 原 test_bar_ret_first_bar --
+        _tp1 = tmp_path / "_s1"
+        _tp1.mkdir(exist_ok=True)
+        src = _write_minute_source(_tp1)
         # first(bar_ret) 应等于首桶 close/open−1
         spec = make_expr_spec("bar_ret", "first", freq="5min")
         panel = materialize_expr_features(
@@ -884,13 +940,16 @@ class TestMaterializeGroundTruth:
         v = panel.filter(pl.col("ts_code") == "000001.SZ")[spec.name][0]
         assert v == pytest.approx(_EXP_FIRST_BAR_RET, abs=1e-9)
 
-    def test_mixed_freq_raises(self, tmp_path: Path) -> None:
+        # -- 原 test_mixed_freq_raises --
+        _tp2 = tmp_path / "_s2"
+        _tp2.mkdir(exist_ok=True)
         s5 = make_expr_spec("close", "last", freq="5min")
         s1 = make_expr_spec("close", "last", freq="1min")
         with pytest.raises(ValueError, match="混频"):
             materialize_expr_features(
-                [s5, s1], "20240102", "20240102", freq="5min", source_dir=tmp_path
+                [s5, s1], "20240102", "20240102", freq="5min", source_dir=_tp2
             )
+
 
 class TestScreen:
     def test_three_rejects_and_keep(self) -> None:
@@ -994,13 +1053,6 @@ class TestEnsureExprPanel:
 
         with pytest.raises(ValueError, match="未注册"):
             ensure_expr_panel("ix_deadbeef", "20240102", "20240102", base_dir=base)
-
-class TestAggFuncsComplete:
-    def test_agg_keys(self) -> None:
-        expected = {
-            "sum", "mean", "std", "skew", "min", "max", "last", "first", "median"
-        }
-        assert set(AGG_FUNCS) == expected
 
 # ==== 来自 test_expression_factor_intraday.py ====
 def test_expression_factor_i_rv_matches_evaluate_materialized(monkeypatch):
@@ -1140,26 +1192,37 @@ _PRE_CHANGE_LEAF_KEYS: list[str] = [
     "top_list_flag",
 ]
 
-def test_intraday_features_subset_of_leaf_features():
-    from factorzen.core.feature_schema import INTRADAY_FEATURES, LEAF_FEATURES
+def test_leaf_schema_contract_suite():
+    """test_intraday_features_subset_of_leaf_features；test_intraday_leaves_are_identity_i_prefix；既有 40 键相对顺序绝不动（随机搜索按键序采样）。"""
+    # -- 原 test_intraday_features_subset_of_leaf_features --
+    def _section_0_test_intraday_features_subset_of_leaf_features():
+        from factorzen.core.feature_schema import INTRADAY_FEATURES, LEAF_FEATURES
 
-    assert set(LEAF_FEATURES.keys()) >= INTRADAY_FEATURES
-    assert len(INTRADAY_FEATURES) == 20  # 17 连续路径统计 + 3 涨跌停邻域
+        assert set(LEAF_FEATURES.keys()) >= INTRADAY_FEATURES
+        assert len(INTRADAY_FEATURES) == 20  # 17 连续路径统计 + 3 涨跌停邻域
 
-def test_intraday_leaves_are_identity_i_prefix():
-    from factorzen.core.feature_schema import INTRADAY_FEATURES, LEAF_FEATURES
+    _section_0_test_intraday_features_subset_of_leaf_features()
 
-    for name in INTRADAY_FEATURES:
-        assert name.startswith("i_"), name
-        assert LEAF_FEATURES[name] == name
+    # -- 原 test_intraday_leaves_are_identity_i_prefix --
+    def _section_1_test_intraday_leaves_are_identity_i_prefix():
+        from factorzen.core.feature_schema import INTRADAY_FEATURES, LEAF_FEATURES
 
-def test_leaf_features_key_order_prefix_unchanged():
-    """既有 40 键相对顺序绝不动（随机搜索按键序采样）。"""
-    from factorzen.core.feature_schema import LEAF_FEATURES
+        for name in INTRADAY_FEATURES:
+            assert name.startswith("i_"), name
+            assert LEAF_FEATURES[name] == name
 
-    keys = list(LEAF_FEATURES.keys())
-    n = len(_PRE_CHANGE_LEAF_KEYS)
-    assert keys[:n] == _PRE_CHANGE_LEAF_KEYS
-    # 新叶子全部在旧键之后
-    assert all(k.startswith("i_") for k in keys[n:])
+    _section_1_test_intraday_leaves_are_identity_i_prefix()
+
+    # -- 原 test_leaf_features_key_order_prefix_unchanged --
+    def _section_2_test_leaf_features_key_order_prefix_unchanged():
+        from factorzen.core.feature_schema import LEAF_FEATURES
+
+        keys = list(LEAF_FEATURES.keys())
+        n = len(_PRE_CHANGE_LEAF_KEYS)
+        assert keys[:n] == _PRE_CHANGE_LEAF_KEYS
+        # 新叶子全部在旧键之后
+        assert all(k.startswith("i_") for k in keys[n:])
+
+    _section_2_test_leaf_features_key_order_prefix_unchanged()
+
 

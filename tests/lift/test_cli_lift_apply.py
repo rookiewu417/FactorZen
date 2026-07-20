@@ -100,248 +100,275 @@ def _patch_lift_deps(monkeypatch, *, upsert_calls: list | None = None):
 # ── D2 / D3：lift-test 默认 dry-run / --apply / --se-mult ─────────────────────
 
 
-def test_lift_test_default_is_dry_run(tmp_path, monkeypatch):
-    """不带旗标时默认 dry-run，upsert_lift_admissions 不被调用。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
+def test_lift_test_dry_apply_suite(tmp_path, capsys):
+    """不带旗标时默认 dry-run，upsert_lift_admissions 不被调用。；--apply 时调用 upsert_lift_admissions 一次。；--apply 与 --dry-run 互斥，argparse 报错 exit 2。；--apply --se-mult 2.0 时 upsert 收到 se_mult==2.0。；dry-run 输出应引导用户加 --apply 写库。"""
+    # -- 原 test_lift_test_default_is_dry_run --
+    def _section_0_test_lift_test_default_is_dry_run(tmp_path, mp):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
 
-    run_dir = _write_gray_session(tmp_path)
-    upsert_calls: list = []
-    _patch_lift_deps(monkeypatch, upsert_calls=upsert_calls)
+        run_dir = _write_gray_session(tmp_path)
+        upsert_calls: list = []
+        _patch_lift_deps(mp, upsert_calls=upsert_calls)
 
-    args = build_parser().parse_args(
-        [
-            "factor-library",
-            "lift-test",
-            "--session",
-            str(run_dir),
-            "--market",
-            "ashare",
-            "--start",
-            "20200101",
-            "--end",
-            "20201231",
-            "--library-root",
-            str(tmp_path / "lib"),
-        ]
-    )
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert upsert_calls == []
-    man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
-    assert man["dry_run"] is True
-
-
-def test_lift_test_apply_writes_library(tmp_path, monkeypatch, capsys):
-    """--apply 时调用 upsert_lift_admissions 一次。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-
-    run_dir = _write_gray_session(tmp_path)
-    upsert_calls: list = []
-    _patch_lift_deps(monkeypatch, upsert_calls=upsert_calls)
-
-    args = build_parser().parse_args(
-        [
-            "factor-library",
-            "lift-test",
-            "--session",
-            str(run_dir),
-            "--market",
-            "ashare",
-            "--start",
-            "20200101",
-            "--end",
-            "20201231",
-            "--library-root",
-            str(tmp_path / "lib"),
-            "--apply",
-        ]
-    )
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert len(upsert_calls) == 1
-    man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
-    assert man["dry_run"] is False
-    out = capsys.readouterr().out
-    assert "入库" in out
-
-
-def test_lift_test_apply_and_dry_run_mutually_exclusive():
-    """--apply 与 --dry-run 互斥，argparse 报错 exit 2。"""
-    from factorzen.cli.main import build_parser
-
-    p = build_parser()
-    with pytest.raises(SystemExit) as ei:
-        p.parse_args(
+        args = build_parser().parse_args(
             [
                 "factor-library",
                 "lift-test",
                 "--session",
-                "workspace/x",
+                str(run_dir),
+                "--market",
+                "ashare",
                 "--start",
                 "20200101",
                 "--end",
                 "20201231",
-                "--apply",
-                "--dry-run",
+                "--library-root",
+                str(tmp_path / "lib"),
             ]
         )
-    assert ei.value.code == 2
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        assert upsert_calls == []
+        man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
+        assert man["dry_run"] is True
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_lift_test_default_is_dry_run(_tp0, mp)
 
-def test_lift_test_se_mult_forwarded(tmp_path, monkeypatch):
-    """--apply --se-mult 2.0 时 upsert 收到 se_mult==2.0。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
+    # -- 原 test_lift_test_apply_writes_library --
+    def _section_1_test_lift_test_apply_writes_library(tmp_path, mp, capsys):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
 
-    run_dir = _write_gray_session(tmp_path)
-    upsert_calls: list = []
-    _patch_lift_deps(monkeypatch, upsert_calls=upsert_calls)
+        run_dir = _write_gray_session(tmp_path)
+        upsert_calls: list = []
+        _patch_lift_deps(mp, upsert_calls=upsert_calls)
 
-    args = build_parser().parse_args(
-        [
-            "factor-library",
-            "lift-test",
-            "--session",
-            str(run_dir),
-            "--market",
-            "ashare",
-            "--start",
-            "20200101",
-            "--end",
-            "20201231",
-            "--library-root",
-            str(tmp_path / "lib"),
-            "--apply",
-            "--se-mult",
-            "2.0",
-        ]
-    )
-    assert args.se_mult == 2.0
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert len(upsert_calls) == 1
-    assert upsert_calls[0]["se_mult"] == 2.0
+        args = build_parser().parse_args(
+            [
+                "factor-library",
+                "lift-test",
+                "--session",
+                str(run_dir),
+                "--market",
+                "ashare",
+                "--start",
+                "20200101",
+                "--end",
+                "20201231",
+                "--library-root",
+                str(tmp_path / "lib"),
+                "--apply",
+            ]
+        )
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        assert len(upsert_calls) == 1
+        man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
+        assert man["dry_run"] is False
+        out = capsys.readouterr().out
+        assert "入库" in out
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_lift_test_apply_writes_library(_tp1, mp, capsys)
 
-def test_lift_test_dry_run_message_mentions_apply(tmp_path, monkeypatch, capsys):
-    """dry-run 输出应引导用户加 --apply 写库。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
+    # -- 原 test_lift_test_apply_and_dry_run_mutually_exclusive --
+    def _section_2_test_lift_test_apply_and_dry_run_mutually_exclusive():
+        from factorzen.cli.main import build_parser
 
-    run_dir = _write_gray_session(tmp_path)
-    _patch_lift_deps(monkeypatch)
+        p = build_parser()
+        with pytest.raises(SystemExit) as ei:
+            p.parse_args(
+                [
+                    "factor-library",
+                    "lift-test",
+                    "--session",
+                    "workspace/x",
+                    "--start",
+                    "20200101",
+                    "--end",
+                    "20201231",
+                    "--apply",
+                    "--dry-run",
+                ]
+            )
+        assert ei.value.code == 2
 
-    args = build_parser().parse_args(
-        [
-            "factor-library",
-            "lift-test",
-            "--session",
-            str(run_dir),
-            "--start",
-            "20200101",
-            "--end",
-            "20201231",
-            "--library-root",
-            str(tmp_path / "lib"),
-        ]
-    )
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "dry-run：通过" in out
-    assert "--apply" in out
+    _section_2_test_lift_test_apply_and_dry_run_mutually_exclusive()
+
+    # -- 原 test_lift_test_se_mult_forwarded --
+    def _section_3_test_lift_test_se_mult_forwarded(tmp_path, mp):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+
+        run_dir = _write_gray_session(tmp_path)
+        upsert_calls: list = []
+        _patch_lift_deps(mp, upsert_calls=upsert_calls)
+
+        args = build_parser().parse_args(
+            [
+                "factor-library",
+                "lift-test",
+                "--session",
+                str(run_dir),
+                "--market",
+                "ashare",
+                "--start",
+                "20200101",
+                "--end",
+                "20201231",
+                "--library-root",
+                str(tmp_path / "lib"),
+                "--apply",
+                "--se-mult",
+                "2.0",
+            ]
+        )
+        assert args.se_mult == 2.0
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        assert len(upsert_calls) == 1
+        assert upsert_calls[0]["se_mult"] == 2.0
+
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_lift_test_se_mult_forwarded(_tp3, mp)
+
+    # -- 原 test_lift_test_dry_run_message_mentions_apply --
+    def _section_4_test_lift_test_dry_run_message_mentions_apply(tmp_path, mp, capsys):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+
+        run_dir = _write_gray_session(tmp_path)
+        _patch_lift_deps(mp)
+
+        args = build_parser().parse_args(
+            [
+                "factor-library",
+                "lift-test",
+                "--session",
+                str(run_dir),
+                "--start",
+                "20200101",
+                "--end",
+                "20201231",
+                "--library-root",
+                str(tmp_path / "lib"),
+            ]
+        )
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "dry-run：通过" in out
+        assert "--apply" in out
+
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_lift_test_dry_run_message_mentions_apply(_tp4, mp, capsys)
 
 
 # ── D1：rebuild fail-loudly ──────────────────────────────────────────────────
 
 
-def test_rebuild_fail_loudly_on_lift_review_error(monkeypatch, capsys):
-    """lift_review_error 非 None → stderr 报错 + return 1。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-    from factorzen.discovery.factor_library import UpsertResult
+def test_rebuild_lift_review_exit_suite(capsys):
+    """lift_review_error 非 None → stderr 报错 + return 1。；lift_review_error=None → return 0。"""
+    # -- 原 test_rebuild_fail_loudly_on_lift_review_error --
+    def _section_0_test_rebuild_fail_loudly_on_lift_review_error(mp, capsys):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+        from factorzen.discovery.factor_library import UpsertResult
 
-    monkeypatch.setattr(
-        cli_main,
-        "_prepare_agent_mining_data",
-        lambda args: (_fake_daily(), None, {}),
-    )
+        mp.setattr(
+            cli_main,
+            "_prepare_agent_mining_data",
+            lambda args: (_fake_daily(), None, {}),
+        )
 
-    import factorzen.discovery.factor_library as fl
+        import factorzen.discovery.factor_library as fl
 
-    monkeypatch.setattr(fl, "collect_source_expressions", lambda market: [])
-    monkeypatch.setattr(
-        fl, "build_library_evaluator", lambda *a, **k: (lambda *x, **y: {}, None)
-    )
-    monkeypatch.setattr(
-        fl,
-        "rebuild",
-        lambda *a, **k: UpsertResult(
-            added=0, updated=0, correlated=0, skipped=0,
-            lift_review_error="RuntimeError: x",
-        ),
-    )
-
-    args = build_parser().parse_args(
-        [
-            "factor-library",
+        mp.setattr(fl, "collect_source_expressions", lambda market: [])
+        mp.setattr(
+            fl, "build_library_evaluator", lambda *a, **k: (lambda *x, **y: {}, None)
+        )
+        mp.setattr(
+            fl,
             "rebuild",
-            "--market",
-            "ashare",
-            "--start",
-            "20200101",
-            "--end",
-            "20201231",
-        ]
-    )
-    rc = cli_main._cmd_factor_library_rebuild(args)
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "lift 轨复审失败" in err
-    assert "RuntimeError: x" in err
-    assert "不完整" in err
+            lambda *a, **k: UpsertResult(
+                added=0, updated=0, correlated=0, skipped=0,
+                lift_review_error="RuntimeError: x",
+            ),
+        )
 
+        args = build_parser().parse_args(
+            [
+                "factor-library",
+                "rebuild",
+                "--market",
+                "ashare",
+                "--start",
+                "20200101",
+                "--end",
+                "20201231",
+            ]
+        )
+        rc = cli_main._cmd_factor_library_rebuild(args)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "lift 轨复审失败" in err
+        assert "RuntimeError: x" in err
+        assert "不完整" in err
 
-def test_rebuild_ok_when_no_lift_review_error(monkeypatch):
-    """lift_review_error=None → return 0。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-    from factorzen.discovery.factor_library import UpsertResult
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_rebuild_fail_loudly_on_lift_review_error(mp, capsys)
 
-    monkeypatch.setattr(
-        cli_main,
-        "_prepare_agent_mining_data",
-        lambda args: (_fake_daily(), None, {}),
-    )
+    # -- 原 test_rebuild_ok_when_no_lift_review_error --
+    def _section_1_test_rebuild_ok_when_no_lift_review_error(mp):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+        from factorzen.discovery.factor_library import UpsertResult
 
-    import factorzen.discovery.factor_library as fl
+        mp.setattr(
+            cli_main,
+            "_prepare_agent_mining_data",
+            lambda args: (_fake_daily(), None, {}),
+        )
 
-    monkeypatch.setattr(fl, "collect_source_expressions", lambda market: [])
-    monkeypatch.setattr(
-        fl, "build_library_evaluator", lambda *a, **k: (lambda *x, **y: {}, None)
-    )
-    monkeypatch.setattr(
-        fl,
-        "rebuild",
-        lambda *a, **k: UpsertResult(added=1, updated=0, correlated=0, skipped=0),
-    )
+        import factorzen.discovery.factor_library as fl
 
-    args = build_parser().parse_args(
-        [
-            "factor-library",
+        mp.setattr(fl, "collect_source_expressions", lambda market: [])
+        mp.setattr(
+            fl, "build_library_evaluator", lambda *a, **k: (lambda *x, **y: {}, None)
+        )
+        mp.setattr(
+            fl,
             "rebuild",
-            "--market",
-            "ashare",
-            "--start",
-            "20200101",
-            "--end",
-            "20201231",
-        ]
-    )
-    rc = cli_main._cmd_factor_library_rebuild(args)
-    assert rc == 0
+            lambda *a, **k: UpsertResult(added=1, updated=0, correlated=0, skipped=0),
+        )
+
+        args = build_parser().parse_args(
+            [
+                "factor-library",
+                "rebuild",
+                "--market",
+                "ashare",
+                "--start",
+                "20200101",
+                "--end",
+                "20201231",
+            ]
+        )
+        rc = cli_main._cmd_factor_library_rebuild(args)
+        assert rc == 0
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_rebuild_ok_when_no_lift_review_error(mp)
 
 
 # ==== 来自 test_cli_lift_w1w2.py ====
@@ -385,232 +412,385 @@ def _base_args(run_dir: Path, lib_root: Path, extra: list[str] | None = None):
     return args
 
 
-def test_cli_top_m_0_tests_all(tmp_path, monkeypatch):
-    """--top-m 0 → 全测。"""
-    import factorzen.cli.main as cli_main
-    import factorzen.discovery.lift_test as lt_mod
+def test_cli_top_m_truncation_suite(tmp_path, capsys):
+    """--top-m 0 → 全测。；默认 top_m=20：38 候选截到 20 进 run_lift_tests，stderr 截断告警。；显式 ``--top-m 10``：截断并打印告警行（no silent caps）。；parser 契约：不传 --top-m → args.top_m == 20；--top-m 0 为全测逃生口。"""
+    # -- 原 test_cli_top_m_0_tests_all --
+    def _section_0_test_cli_top_m_0_tests_all(tmp_path, mp):
+        import factorzen.cli.main as cli_main
+        import factorzen.discovery.lift_test as lt_mod
 
-    run_dir = _write_session(tmp_path, n=25)
-    lib_root = tmp_path / "lib"
-    lib_root.mkdir()
-    args = _base_args(run_dir, lib_root, extra=["--top-m", "0"])
+        run_dir = _write_session(tmp_path, n=25)
+        lib_root = tmp_path / "lib"
+        lib_root.mkdir()
+        args = _base_args(run_dir, lib_root, extra=["--top-m", "0"])
 
-    monkeypatch.setattr(
-        cli_main, "_prepare_agent_mining_data",
-        lambda a: (pl.DataFrame({
-            "trade_date": [date(2020, 1, 2)], "ts_code": ["000001.SZ"],
-            "close": [10.0], "close_adj": [10.0],
-        }), None, {}),
-    )
-    monkeypatch.setattr(
-        lt_mod, "filter_candidates_by_coverage",
-        lambda cands, **k: (list(cands), []),
-    )
-    monkeypatch.setattr(
-        lt_mod, "run_group_lift",
-        lambda queue, **k: {
-            "lift": 0.01, "lift_se": 0.001, "error": None,
-            "lift_metric": "residual_ic_v1",
-        },
-    )
-    called = {"n_cands": 0}
+        mp.setattr(
+            cli_main, "_prepare_agent_mining_data",
+            lambda a: (pl.DataFrame({
+                "trade_date": [date(2020, 1, 2)], "ts_code": ["000001.SZ"],
+                "close": [10.0], "close_adj": [10.0],
+            }), None, {}),
+        )
+        mp.setattr(
+            lt_mod, "filter_candidates_by_coverage",
+            lambda cands, **k: (list(cands), []),
+        )
+        mp.setattr(
+            lt_mod, "run_group_lift",
+            lambda queue, **k: {
+                "lift": 0.01, "lift_se": 0.001, "error": None,
+                "lift_metric": "residual_ic_v1",
+            },
+        )
+        called = {"n_cands": 0}
 
-    def fake_lift(gray, **kw):
-        called["n_cands"] = len(gray)
-        return [
-            {"expression": c.get("expression"), "lift": 0.0, "passed": False}
-            for c in gray
+        def fake_lift(gray, **kw):
+            called["n_cands"] = len(gray)
+            return [
+                {"expression": c.get("expression"), "lift": 0.0, "passed": False}
+                for c in gray
+            ]
+
+        mp.setattr(lt_mod, "run_lift_tests", fake_lift)
+        mp.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)
+
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        assert called["n_cands"] == 25
+        man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
+        assert "truncated_from" not in man or man.get("truncated_from") is None
+        assert man["top_m"] == 0
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_cli_top_m_0_tests_all(_tp0, mp)
+
+    # -- 原 test_cli_lift_top_m_default_truncates_to_20 --
+    def _section_1_test_cli_lift_top_m_default_truncates_to_20(tmp_path, mp, capsys):
+        import factorzen.cli.main as cli_main
+        import factorzen.discovery.lift_test as lt_mod
+        from factorzen.cli.main import build_parser
+        from tests._cli_lift_mocks import patch_cli_lift_pre_gates
+
+        # 唯一 expression 串（去重后仍 38 个）；mock lift 不物化
+        exprs = [f"add(rank(close), {i}.0)" for i in range(38)]
+        run_dir = _write_lift_queue_session(tmp_path, exprs)
+
+        mp.setattr(
+            cli_main, "_prepare_agent_mining_data",
+            lambda args: (_sparse_event_daily(n_days=5, n_stocks=2), None, {}),
+        )
+        patch_cli_lift_pre_gates(mp)
+        seen: dict = {}
+
+        def fake_lift(gray, **kw):
+            seen["n"] = len(gray)
+            seen["top_m"] = kw.get("top_m")
+            return [
+                {
+                    "expression": g["expression"], "lift": -0.0001, "baseline": 0.01,
+                    "passed": False, "n_input": len(gray),
+                    "n_selected": len(gray),
+                }
+                for g in gray
+            ]
+
+        mp.setattr(lt_mod, "run_lift_tests", fake_lift)
+
+        args = build_parser().parse_args([
+            "factor-library", "lift-test",
+            "--session", str(run_dir),
+            "--start", "20240102", "--end", "20240301",
+            "--library-root", str(tmp_path / "lib"),
+            "--dry-run",
+        ])
+        assert args.top_m == 20
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        assert seen["top_m"] is None  # CLI 已截断
+        assert seen["n"] == 20
+
+        err = capsys.readouterr().err
+        assert "--top-m=20" in err
+        assert "truncated_from=38" in err
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cli_lift_top_m_default_truncates_to_20(_tp1, mp, capsys)
+
+    # -- 原 test_cli_lift_top_m_explicit_truncates_with_warning --
+    def _section_2_test_cli_lift_top_m_explicit_truncates_with_warning(tmp_path, mp, capsys):
+        import factorzen.cli.main as cli_main
+        import factorzen.discovery.lift_test as lt_mod
+        from factorzen.cli.main import build_parser
+        from tests._cli_lift_mocks import patch_cli_lift_pre_gates
+
+        exprs = [f"add(rank(close), {i}.0)" for i in range(38)]
+        run_dir = _write_lift_queue_session(tmp_path, exprs)
+
+        mp.setattr(
+            cli_main, "_prepare_agent_mining_data",
+            lambda args: (_sparse_event_daily(n_days=5, n_stocks=2), None, {}),
+        )
+        patch_cli_lift_pre_gates(mp)
+        seen: dict = {}
+
+        def fake_lift(gray, **kw):
+            seen["top_m"] = kw.get("top_m")
+            seen["n_input"] = len(gray)
+            return [
+                {
+                    "expression": g["expression"], "lift": -0.0001, "baseline": 0.01,
+                    "passed": False, "n_input": len(gray), "n_selected": len(gray),
+                }
+                for g in gray
+            ]
+
+        mp.setattr(lt_mod, "run_lift_tests", fake_lift)
+
+        args = build_parser().parse_args([
+            "factor-library", "lift-test",
+            "--session", str(run_dir),
+            "--start", "20240102", "--end", "20240301",
+            "--library-root", str(tmp_path / "lib"),
+            "--top-m", "10",
+            "--dry-run",
+        ])
+        assert args.top_m == 10
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        assert seen["top_m"] is None  # CLI 已截断，run_lift_tests 收 kept
+        assert seen["n_input"] == 10
+
+        err = capsys.readouterr().err
+        assert "--top-m=10" in err
+        assert "截断" in err
+        assert "truncated_from=38" in err
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_cli_lift_top_m_explicit_truncates_with_warning(_tp2, mp, capsys)
+
+    # -- 原 test_cli_lift_parser_top_m_default_is_20 --
+    def _section_3_test_cli_lift_parser_top_m_default_is_20():
+        from factorzen.cli.main import build_parser
+
+        args = build_parser().parse_args([
+            "factor-library", "lift-test",
+            "--session", "workspace/x",
+            "--start", "20200101", "--end", "20201231",
+        ])
+        assert args.top_m == 20
+        args0 = build_parser().parse_args([
+            "factor-library", "lift-test",
+            "--session", "workspace/x",
+            "--start", "20200101", "--end", "20201231",
+            "--top-m", "0",
+        ])
+        assert args0.top_m == 0
+
+    _section_3_test_cli_lift_parser_top_m_default_is_20()
+
+
+def test_cli_group_coverage_pipeline_suite(tmp_path):
+    """组 lift 不过 → run_lift_tests 不被调用，manifest 有 lift_group。；覆盖 30 天剔除、200 天保留；dropped 进 manifest；低覆盖不进组门。"""
+    # -- 原 test_cli_group_gate_fail_skips_run_lift_tests --
+    def _section_0_test_cli_group_gate_fail_skips_run_lift_tests(tmp_path, mp):
+        import factorzen.cli.main as cli_main
+        import factorzen.discovery.lift_test as lt_mod
+
+        run_dir = _write_session(tmp_path, n=3)
+        lib_root = tmp_path / "lib"
+        lib_root.mkdir()
+        args = _base_args(run_dir, lib_root, extra=["--top-m", "0"])
+
+        mp.setattr(
+            cli_main, "_prepare_agent_mining_data",
+            lambda a: (pl.DataFrame({
+                "trade_date": [date(2020, 1, 2)], "ts_code": ["000001.SZ"],
+                "close": [10.0], "close_adj": [10.0],
+            }), None, {}),
+        )
+        mp.setattr(
+            lt_mod, "filter_candidates_by_coverage",
+            lambda cands, **k: (list(cands), []),
+        )
+        mp.setattr(
+            lt_mod, "run_group_lift",
+            lambda queue, **k: {
+                "lift": 0.0001, "lift_se": 0.01, "error": None,
+                "lift_metric": "residual_ic_v1",
+            },
+        )
+        # se_mult=1 → bar=max(0.001, 0.01)=0.01 > lift 0.0001 → 不过
+        lift_calls = []
+        mp.setattr(
+            lt_mod, "run_lift_tests",
+            lambda *a, **k: lift_calls.append(1) or [],
+        )
+        mp.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)
+
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        assert lift_calls == [], "组门不过不应调 run_lift_tests"
+        man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
+        assert man["lift_group"] is not None
+        assert man["lift_group"].get("lift") == 0.0001
+        assert all(
+            str(r.get("error") or "").startswith("group_gate")
+            for r in man["results"]
+        )
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_cli_group_gate_fail_skips_run_lift_tests(_tp0, mp)
+
+    # -- 原 test_cli_coverage_filter_before_group_gate --
+    def _section_1_test_cli_coverage_filter_before_group_gate(tmp_path, mp):
+        import factorzen.cli.main as cli_main
+        import factorzen.discovery.lift_test as lt_mod
+
+        run_dir = tmp_path / "run1"
+        run_dir.mkdir()
+        (run_dir / "manifest.json").write_text(json.dumps({
+            "attempts": [
+                {
+                    "expression": "low_cov",
+                    "reject_category": "lift_queue",
+                    "residual_ic_train": 0.02,
+                    "n_residual_holdout_days": 100,
+                },
+                {
+                    "expression": "high_cov",
+                    "reject_category": "lift_queue",
+                    "residual_ic_train": 0.015,
+                    "n_residual_holdout_days": 100,
+                },
+            ],
+            "candidates": [],
+        }), encoding="utf-8")
+        lib_root = tmp_path / "lib"
+        lib_root.mkdir()
+        args = _base_args(run_dir, lib_root, extra=["--top-m", "0"])
+
+        mp.setattr(
+            cli_main, "_prepare_agent_mining_data",
+            lambda a: (pl.DataFrame({
+                "trade_date": [date(2020, 1, 2)], "ts_code": ["000001.SZ"],
+                "close": [10.0], "close_adj": [10.0],
+            }), None, {}),
+        )
+
+        def mat(expr):
+            n = 30 if expr == "low_cov" else 200
+            return pl.DataFrame({
+                "trade_date": [date(2020, 1, 1 + (i % 28)) for i in range(n)],
+                "ts_code": ["000001.SZ"] * n,
+                "factor_value": [float(i) for i in range(n)],
+            })
+
+        # 不 mock filter——走真函数，但注入 materializer 经 memo 困难；
+        # 直接 mock filter 结果更稳，并断言组门只收 high_cov
+        def fake_filter(cands, **k):
+            kept, dropped = [], []
+            for c in cands:
+                if c.get("expression") == "low_cov":
+                    dropped.append({
+                        "expression": "low_cov", "n_oos_days": 30, "error": "holdout_coverage",
+                    })
+                else:
+                    kept.append(c)
+            return kept, dropped
+
+        mp.setattr(lt_mod, "filter_candidates_by_coverage", fake_filter)
+        group_queues = []
+
+        def fake_group(queue, **k):
+            group_queues.append([c.get("expression") for c in queue])
+            return {
+                "lift": 0.01, "lift_se": 0.001, "error": None,
+                "lift_metric": "residual_ic_v1",
+            }
+
+        mp.setattr(lt_mod, "run_group_lift", fake_group)
+        mp.setattr(
+            lt_mod, "run_lift_tests",
+            lambda gray, **k: [
+                {"expression": c.get("expression"), "lift": 0.002, "passed": False}
+                for c in gray
+            ],
+        )
+        mp.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)
+
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        assert group_queues == [["high_cov"]]
+        man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
+        assert any(d["expression"] == "low_cov" for d in man["lift_dropped_coverage"])
+        assert all(r.get("expression") != "low_cov" for r in man["results"])
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cli_coverage_filter_before_group_gate(_tp1, mp)
+
+
+def test_group_coverage_unit_suite():
+    """test_group_gate_ok_unit；test_filter_candidates_by_coverage_unit"""
+    # -- 原 test_group_gate_ok_unit --
+    def _section_0_test_group_gate_ok_unit():
+        from factorzen.discovery.lift_test import group_gate_ok
+
+        ok, bar = group_gate_ok(
+            {"lift": 0.01, "lift_se": 0.002, "error": None},
+            threshold=0.001, lift_se_mult=1.0,
+        )
+        assert ok is True
+        assert abs(bar - 0.002) < 1e-12
+
+        ok2, _ = group_gate_ok(
+            {"lift": 0.01, "lift_se": None, "error": None},
+            threshold=0.001, lift_se_mult=1.0,
+        )
+        assert ok2 is False  # SE 缺失不过
+
+        ok3, _ = group_gate_ok(
+            {"lift": 0.0005, "lift_se": 0.001, "error": None},
+            threshold=0.001, lift_se_mult=1.0,
+        )
+        assert ok3 is False
+
+    _section_0_test_group_gate_ok_unit()
+
+    # -- 原 test_filter_candidates_by_coverage_unit --
+    def _section_1_test_filter_candidates_by_coverage_unit():
+        from factorzen.discovery.lift_test import filter_candidates_by_coverage
+
+        def mat(expr):
+            n = 30 if expr == "low" else 200
+            return pl.DataFrame({
+                "trade_date": [f"2020{1 + i // 28:02d}{1 + i % 28:02d}" for i in range(n)],
+                "ts_code": ["000001.SZ"] * n,
+                "factor_value": [1.0] * n,
+            })
+
+        cands = [
+            {"expression": "low", "residual_ic_train": 0.02},
+            {"expression": "high", "residual_ic_train": 0.015},
         ]
+        kept, dropped = filter_candidates_by_coverage(
+            cands, materialize_candidate=mat, holdout_start=None,
+        )
+        assert [c["expression"] for c in kept] == ["high"]
+        assert dropped[0]["expression"] == "low"
+        assert dropped[0]["error"] == "holdout_coverage"
+        assert dropped[0]["n_oos_days"] == 30
 
-    monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
-    monkeypatch.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)
-
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert called["n_cands"] == 25
-    man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
-    assert "truncated_from" not in man or man.get("truncated_from") is None
-    assert man["top_m"] == 0
-
-
-def test_cli_group_gate_fail_skips_run_lift_tests(tmp_path, monkeypatch):
-    """组 lift 不过 → run_lift_tests 不被调用，manifest 有 lift_group。"""
-    import factorzen.cli.main as cli_main
-    import factorzen.discovery.lift_test as lt_mod
-
-    run_dir = _write_session(tmp_path, n=3)
-    lib_root = tmp_path / "lib"
-    lib_root.mkdir()
-    args = _base_args(run_dir, lib_root, extra=["--top-m", "0"])
-
-    monkeypatch.setattr(
-        cli_main, "_prepare_agent_mining_data",
-        lambda a: (pl.DataFrame({
-            "trade_date": [date(2020, 1, 2)], "ts_code": ["000001.SZ"],
-            "close": [10.0], "close_adj": [10.0],
-        }), None, {}),
-    )
-    monkeypatch.setattr(
-        lt_mod, "filter_candidates_by_coverage",
-        lambda cands, **k: (list(cands), []),
-    )
-    monkeypatch.setattr(
-        lt_mod, "run_group_lift",
-        lambda queue, **k: {
-            "lift": 0.0001, "lift_se": 0.01, "error": None,
-            "lift_metric": "residual_ic_v1",
-        },
-    )
-    # se_mult=1 → bar=max(0.001, 0.01)=0.01 > lift 0.0001 → 不过
-    lift_calls = []
-    monkeypatch.setattr(
-        lt_mod, "run_lift_tests",
-        lambda *a, **k: lift_calls.append(1) or [],
-    )
-    monkeypatch.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)
-
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert lift_calls == [], "组门不过不应调 run_lift_tests"
-    man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
-    assert man["lift_group"] is not None
-    assert man["lift_group"].get("lift") == 0.0001
-    assert all(
-        str(r.get("error") or "").startswith("group_gate")
-        for r in man["results"]
-    )
-
-
-def test_cli_coverage_filter_before_group_gate(tmp_path, monkeypatch):
-    """覆盖 30 天剔除、200 天保留；dropped 进 manifest；低覆盖不进组门。"""
-    import factorzen.cli.main as cli_main
-    import factorzen.discovery.lift_test as lt_mod
-
-    run_dir = tmp_path / "run1"
-    run_dir.mkdir()
-    (run_dir / "manifest.json").write_text(json.dumps({
-        "attempts": [
-            {
-                "expression": "low_cov",
-                "reject_category": "lift_queue",
-                "residual_ic_train": 0.02,
-                "n_residual_holdout_days": 100,
-            },
-            {
-                "expression": "high_cov",
-                "reject_category": "lift_queue",
-                "residual_ic_train": 0.015,
-                "n_residual_holdout_days": 100,
-            },
-        ],
-        "candidates": [],
-    }), encoding="utf-8")
-    lib_root = tmp_path / "lib"
-    lib_root.mkdir()
-    args = _base_args(run_dir, lib_root, extra=["--top-m", "0"])
-
-    monkeypatch.setattr(
-        cli_main, "_prepare_agent_mining_data",
-        lambda a: (pl.DataFrame({
-            "trade_date": [date(2020, 1, 2)], "ts_code": ["000001.SZ"],
-            "close": [10.0], "close_adj": [10.0],
-        }), None, {}),
-    )
-
-    def mat(expr):
-        n = 30 if expr == "low_cov" else 200
-        return pl.DataFrame({
-            "trade_date": [date(2020, 1, 1 + (i % 28)) for i in range(n)],
-            "ts_code": ["000001.SZ"] * n,
-            "factor_value": [float(i) for i in range(n)],
-        })
-
-    # 不 mock filter——走真函数，但注入 materializer 经 memo 困难；
-    # 直接 mock filter 结果更稳，并断言组门只收 high_cov
-    def fake_filter(cands, **k):
-        kept, dropped = [], []
-        for c in cands:
-            if c.get("expression") == "low_cov":
-                dropped.append({
-                    "expression": "low_cov", "n_oos_days": 30, "error": "holdout_coverage",
-                })
-            else:
-                kept.append(c)
-        return kept, dropped
-
-    monkeypatch.setattr(lt_mod, "filter_candidates_by_coverage", fake_filter)
-    group_queues = []
-
-    def fake_group(queue, **k):
-        group_queues.append([c.get("expression") for c in queue])
-        return {
-            "lift": 0.01, "lift_se": 0.001, "error": None,
-            "lift_metric": "residual_ic_v1",
-        }
-
-    monkeypatch.setattr(lt_mod, "run_group_lift", fake_group)
-    monkeypatch.setattr(
-        lt_mod, "run_lift_tests",
-        lambda gray, **k: [
-            {"expression": c.get("expression"), "lift": 0.002, "passed": False}
-            for c in gray
-        ],
-    )
-    monkeypatch.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)
-
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert group_queues == [["high_cov"]]
-    man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
-    assert any(d["expression"] == "low_cov" for d in man["lift_dropped_coverage"])
-    assert all(r.get("expression") != "low_cov" for r in man["results"])
-
-
-def test_group_gate_ok_unit():
-    from factorzen.discovery.lift_test import group_gate_ok
-
-    ok, bar = group_gate_ok(
-        {"lift": 0.01, "lift_se": 0.002, "error": None},
-        threshold=0.001, lift_se_mult=1.0,
-    )
-    assert ok is True
-    assert abs(bar - 0.002) < 1e-12
-
-    ok2, _ = group_gate_ok(
-        {"lift": 0.01, "lift_se": None, "error": None},
-        threshold=0.001, lift_se_mult=1.0,
-    )
-    assert ok2 is False  # SE 缺失不过
-
-    ok3, _ = group_gate_ok(
-        {"lift": 0.0005, "lift_se": 0.001, "error": None},
-        threshold=0.001, lift_se_mult=1.0,
-    )
-    assert ok3 is False
-
-
-def test_filter_candidates_by_coverage_unit():
-    from factorzen.discovery.lift_test import filter_candidates_by_coverage
-
-    def mat(expr):
-        n = 30 if expr == "low" else 200
-        return pl.DataFrame({
-            "trade_date": [f"2020{1 + i // 28:02d}{1 + i % 28:02d}" for i in range(n)],
-            "ts_code": ["000001.SZ"] * n,
-            "factor_value": [1.0] * n,
-        })
-
-    cands = [
-        {"expression": "low", "residual_ic_train": 0.02},
-        {"expression": "high", "residual_ic_train": 0.015},
-    ]
-    kept, dropped = filter_candidates_by_coverage(
-        cands, materialize_candidate=mat, holdout_start=None,
-    )
-    assert [c["expression"] for c in kept] == ["high"]
-    assert dropped[0]["expression"] == "low"
-    assert dropped[0]["error"] == "holdout_coverage"
-    assert dropped[0]["n_oos_days"] == 30
+    _section_1_test_filter_candidates_by_coverage_unit()
 
 
 def test_run_lift_tests_elapsed_s(monkeypatch):
@@ -874,125 +1054,6 @@ def test_cli_and_mine_team_share_prepare_fn(monkeypatch, tmp_path):
 # ── b. top_m 默认 20 截断 + --top-m 0 全测 + 显式截断告警 ────────────────────
 
 
-def test_cli_lift_top_m_default_truncates_to_20(tmp_path, monkeypatch, capsys):
-    """默认 top_m=20：38 候选截到 20 进 run_lift_tests，stderr 截断告警。"""
-    import factorzen.cli.main as cli_main
-    import factorzen.discovery.lift_test as lt_mod
-    from factorzen.cli.main import build_parser
-    from tests._cli_lift_mocks import patch_cli_lift_pre_gates
-
-    # 唯一 expression 串（去重后仍 38 个）；mock lift 不物化
-    exprs = [f"add(rank(close), {i}.0)" for i in range(38)]
-    run_dir = _write_lift_queue_session(tmp_path, exprs)
-
-    monkeypatch.setattr(
-        cli_main, "_prepare_agent_mining_data",
-        lambda args: (_sparse_event_daily(n_days=5, n_stocks=2), None, {}),
-    )
-    patch_cli_lift_pre_gates(monkeypatch)
-    seen: dict = {}
-
-    def fake_lift(gray, **kw):
-        seen["n"] = len(gray)
-        seen["top_m"] = kw.get("top_m")
-        return [
-            {
-                "expression": g["expression"], "lift": -0.0001, "baseline": 0.01,
-                "passed": False, "n_input": len(gray),
-                "n_selected": len(gray),
-            }
-            for g in gray
-        ]
-
-    monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
-
-    args = build_parser().parse_args([
-        "factor-library", "lift-test",
-        "--session", str(run_dir),
-        "--start", "20240102", "--end", "20240301",
-        "--library-root", str(tmp_path / "lib"),
-        "--dry-run",
-    ])
-    assert args.top_m == 20
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert seen["top_m"] is None  # CLI 已截断
-    assert seen["n"] == 20
-
-    err = capsys.readouterr().err
-    assert "--top-m=20" in err
-    assert "truncated_from=38" in err
-
-
-def test_cli_lift_top_m_explicit_truncates_with_warning(tmp_path, monkeypatch, capsys):
-    """显式 ``--top-m 10``：截断并打印告警行（no silent caps）。"""
-    import factorzen.cli.main as cli_main
-    import factorzen.discovery.lift_test as lt_mod
-    from factorzen.cli.main import build_parser
-    from tests._cli_lift_mocks import patch_cli_lift_pre_gates
-
-    exprs = [f"add(rank(close), {i}.0)" for i in range(38)]
-    run_dir = _write_lift_queue_session(tmp_path, exprs)
-
-    monkeypatch.setattr(
-        cli_main, "_prepare_agent_mining_data",
-        lambda args: (_sparse_event_daily(n_days=5, n_stocks=2), None, {}),
-    )
-    patch_cli_lift_pre_gates(monkeypatch)
-    seen: dict = {}
-
-    def fake_lift(gray, **kw):
-        seen["top_m"] = kw.get("top_m")
-        seen["n_input"] = len(gray)
-        return [
-            {
-                "expression": g["expression"], "lift": -0.0001, "baseline": 0.01,
-                "passed": False, "n_input": len(gray), "n_selected": len(gray),
-            }
-            for g in gray
-        ]
-
-    monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
-
-    args = build_parser().parse_args([
-        "factor-library", "lift-test",
-        "--session", str(run_dir),
-        "--start", "20240102", "--end", "20240301",
-        "--library-root", str(tmp_path / "lib"),
-        "--top-m", "10",
-        "--dry-run",
-    ])
-    assert args.top_m == 10
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert seen["top_m"] is None  # CLI 已截断，run_lift_tests 收 kept
-    assert seen["n_input"] == 10
-
-    err = capsys.readouterr().err
-    assert "--top-m=10" in err
-    assert "截断" in err
-    assert "truncated_from=38" in err
-
-
-def test_cli_lift_parser_top_m_default_is_20():
-    """parser 契约：不传 --top-m → args.top_m == 20；--top-m 0 为全测逃生口。"""
-    from factorzen.cli.main import build_parser
-
-    args = build_parser().parse_args([
-        "factor-library", "lift-test",
-        "--session", "workspace/x",
-        "--start", "20200101", "--end", "20201231",
-    ])
-    assert args.top_m == 20
-    args0 = build_parser().parse_args([
-        "factor-library", "lift-test",
-        "--session", "workspace/x",
-        "--start", "20200101", "--end", "20201231",
-        "--top-m", "0",
-    ])
-    assert args0.top_m == 0
-
-
 # ==== 来自 test_lift_date_alignment.py ====
 
 def _codes(n: int = 12) -> list[str]:
@@ -1016,167 +1077,173 @@ def _panels(dates: list, *, col: str = "factor_value", value_col: str = "ret"):
 # ── 1. join 形态对齐：Date 候选面板不得被静默丢空 ────────────────────────────
 
 
-def test_daily_oos_rank_ic_date_candidate_joins_utf8_returns():
-    """候选 pl.Date × 收益 Utf8(ISO)——生产真实组合，必须匹配上。"""
-    from factorzen.discovery.lift_test import _daily_oos_rank_ic
+def test_daily_oos_date_alignment_suite():
+    """候选 pl.Date × 收益 Utf8(ISO)——生产真实组合，必须匹配上。；两侧都 pl.Date 也必须匹配（cast 后形态须一致）。；窗界用 cli._lift_admission_str 的真实产出（YYYY-MM-DD）。；紧凑 YYYYMMDD 与带横杠 ISO 必须裁出同一日集（形态无关）。；端到端：pl.Date 候选面板下 admission_ic 必须是真实 IC，不是空帧 0.0。"""
+    # -- 原 test_daily_oos_rank_ic_date_candidate_joins_utf8_returns --
+    def _section_0_test_daily_oos_rank_ic_date_candidate_joins_utf8_returns():
+        from factorzen.discovery.lift_test import _daily_oos_rank_ic
 
-    days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7)]
-    fac, ret = _panels(days)
-    # 复刻 _build_ret_panel：收益侧显式 cast Utf8
-    ret = ret.with_columns(pl.col("trade_date").cast(pl.Utf8))
-    assert fac.schema["trade_date"] == pl.Date
+        days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7)]
+        fac, ret = _panels(days)
+        # 复刻 _build_ret_panel：收益侧显式 cast Utf8
+        ret = ret.with_columns(pl.col("trade_date").cast(pl.Utf8))
+        assert fac.schema["trade_date"] == pl.Date
 
-    out = _daily_oos_rank_ic(fac, ret)
-    assert out.height == 2, f"Date 候选面板被静默丢空: {out}"
-    # 因子与收益严格同序 → 每日 spearman = 1.0
-    assert all(abs(v - 1.0) < 1e-12 for v in out["ic"].to_list())
+        out = _daily_oos_rank_ic(fac, ret)
+        assert out.height == 2, f"Date 候选面板被静默丢空: {out}"
+        # 因子与收益严格同序 → 每日 spearman = 1.0
+        assert all(abs(v - 1.0) < 1e-12 for v in out["ic"].to_list())
 
+    _section_0_test_daily_oos_rank_ic_date_candidate_joins_utf8_returns()
 
-def test_daily_oos_rank_ic_both_date_panels():
-    """两侧都 pl.Date 也必须匹配（cast 后形态须一致）。"""
-    from factorzen.discovery.lift_test import _daily_oos_rank_ic
+    # -- 原 test_daily_oos_rank_ic_both_date_panels --
+    def _section_1_test_daily_oos_rank_ic_both_date_panels():
+        from factorzen.discovery.lift_test import _daily_oos_rank_ic
 
-    days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7)]
-    fac, ret = _panels(days)
-    out = _daily_oos_rank_ic(fac, ret)
-    assert out.height == 2, f"两侧 Date 被静默丢空: {out}"
+        days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7)]
+        fac, ret = _panels(days)
+        out = _daily_oos_rank_ic(fac, ret)
+        assert out.height == 2, f"两侧 Date 被静默丢空: {out}"
+
+    _section_1_test_daily_oos_rank_ic_both_date_panels()
+
+    # -- 原 test_admission_window_accepts_production_iso_bounds --
+    def _section_2_test_admission_window_accepts_production_iso_bounds():
+        from factorzen.cli.main import _lift_admission_str
+        from factorzen.discovery.lift_test import _daily_oos_rank_ic
+
+        days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7), dt.date(2026, 4, 15)]
+        fac, ret = _panels(days)
+        ret = ret.with_columns(pl.col("trade_date").cast(pl.Utf8))
+
+        end = _lift_admission_str(dt.date(2026, 4, 10))
+        assert end == "2026-04-10"  # 契约锚定：变了说明上游改了形态
+
+        out = _daily_oos_rank_ic(fac, ret, end=end)
+        # 4/5 与 4/7 在窗内，4/15 在窗外
+        assert out.height == 2, f"窗内日被误裁: {out}"
+
+        start = _lift_admission_str(dt.date(2026, 4, 6))
+        out2 = _daily_oos_rank_ic(fac, ret, start=start, end=end)
+        assert out2.height == 1, f"闭区间窗错行: {out2}"
+
+    _section_2_test_admission_window_accepts_production_iso_bounds()
+
+    # -- 原 test_admission_window_accepts_compact_bounds_equivalently --
+    def _section_3_test_admission_window_accepts_compact_bounds_equivalently():
+        from factorzen.discovery.lift_test import _daily_oos_rank_ic
+
+        days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7), dt.date(2026, 4, 15)]
+        fac, ret = _panels(days)
+        ret = ret.with_columns(pl.col("trade_date").cast(pl.Utf8))
+
+        iso = _daily_oos_rank_ic(fac, ret, end="2026-04-10")["ic"].to_list()
+        compact = _daily_oos_rank_ic(fac, ret, end="20260410")["ic"].to_list()
+        assert iso == compact and len(iso) == 2
+
+    _section_3_test_admission_window_accepts_compact_bounds_equivalently()
+
+    # -- 原 test_admission_ic_not_silently_zero_for_date_panels --
+    def _section_4_test_admission_ic_not_silently_zero_for_date_panels():
+        from factorzen.discovery.lift_test import _daily_oos_rank_ic, _mean_ic
+
+        days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7)]
+        fac, ret = _panels(days)
+        ret = ret.with_columns(pl.col("trade_date").cast(pl.Utf8))
+
+        admission_ic = _mean_ic(_daily_oos_rank_ic(fac, ret))
+        assert admission_ic != 0.0, "admission_ic 退化为空帧哨兵 0.0（方向权威失效）"
+        assert abs(admission_ic - 1.0) < 1e-12
+
+    _section_4_test_admission_ic_not_silently_zero_for_date_panels()
 
 
 # ── 2. admission 窗形态：生产窗串必须真的裁到正确日集 ────────────────────────
 
 
-def test_admission_window_accepts_production_iso_bounds():
-    """窗界用 cli._lift_admission_str 的真实产出（YYYY-MM-DD）。"""
-    from factorzen.cli.main import _lift_admission_str
-    from factorzen.discovery.lift_test import _daily_oos_rank_ic
-
-    days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7), dt.date(2026, 4, 15)]
-    fac, ret = _panels(days)
-    ret = ret.with_columns(pl.col("trade_date").cast(pl.Utf8))
-
-    end = _lift_admission_str(dt.date(2026, 4, 10))
-    assert end == "2026-04-10"  # 契约锚定：变了说明上游改了形态
-
-    out = _daily_oos_rank_ic(fac, ret, end=end)
-    # 4/5 与 4/7 在窗内，4/15 在窗外
-    assert out.height == 2, f"窗内日被误裁: {out}"
-
-    start = _lift_admission_str(dt.date(2026, 4, 6))
-    out2 = _daily_oos_rank_ic(fac, ret, start=start, end=end)
-    assert out2.height == 1, f"闭区间窗错行: {out2}"
-
-
-def test_admission_window_accepts_compact_bounds_equivalently():
-    """紧凑 YYYYMMDD 与带横杠 ISO 必须裁出同一日集（形态无关）。"""
-    from factorzen.discovery.lift_test import _daily_oos_rank_ic
-
-    days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7), dt.date(2026, 4, 15)]
-    fac, ret = _panels(days)
-    ret = ret.with_columns(pl.col("trade_date").cast(pl.Utf8))
-
-    iso = _daily_oos_rank_ic(fac, ret, end="2026-04-10")["ic"].to_list()
-    compact = _daily_oos_rank_ic(fac, ret, end="20260410")["ic"].to_list()
-    assert iso == compact and len(iso) == 2
-
-
 # ── 3. 残差侧同契约 ──────────────────────────────────────────────────────────
 
 
-def test_daily_residual_rank_ic_window_format_agnostic():
-    """残差日序列的窗过滤对两种日期形态等价，且输出 ISO。"""
-    from factorzen.discovery.residual import (
-        build_library_panel,
-        daily_residual_rank_ic,
-    )
+def test_residual_date_alignment_suite():
+    """残差日序列的窗过滤对两种日期形态等价，且输出 ISO。；候选 pl.Date × 收益 Utf8——残差引擎的生产真实组合，不得抛 SchemaError。"""
+    # -- 原 test_daily_residual_rank_ic_window_format_agnostic --
+    def _section_0_test_daily_residual_rank_ic_window_format_agnostic():
+        from factorzen.discovery.residual import (
+            build_library_panel,
+            daily_residual_rank_ic,
+        )
 
-    rng = np.random.default_rng(7)
-    days = [dt.date(2024, 2, 5), dt.date(2024, 2, 6), dt.date(2024, 2, 7)]
-    codes = _codes(45)
-    lib_m = rng.normal(0, 1, size=(3, 45))
-    cand_m = lib_m + rng.normal(0, 0.8, size=(3, 45))
-    fwd_m = cand_m + rng.normal(0, 0.3, size=(3, 45))
+        rng = np.random.default_rng(7)
+        days = [dt.date(2024, 2, 5), dt.date(2024, 2, 6), dt.date(2024, 2, 7)]
+        codes = _codes(45)
+        lib_m = rng.normal(0, 1, size=(3, 45))
+        cand_m = lib_m + rng.normal(0, 0.8, size=(3, 45))
+        fwd_m = cand_m + rng.normal(0, 0.3, size=(3, 45))
 
-    def _long(M, col):
-        return pl.DataFrame([
-            {"trade_date": d, "ts_code": c, col: float(M[i, j])}
-            for i, d in enumerate(days) for j, c in enumerate(codes)
-        ])
+        def _long(M, col):
+            return pl.DataFrame([
+                {"trade_date": d, "ts_code": c, col: float(M[i, j])}
+                for i, d in enumerate(days) for j, c in enumerate(codes)
+            ])
 
-    panel = build_library_panel({"lib": _long(lib_m, "factor_value")})
-    assert panel is not None
-    cand = _long(cand_m, "factor_value")
-    fwd = _long(fwd_m, "fwd_ret_1d")
+        panel = build_library_panel({"lib": _long(lib_m, "factor_value")})
+        assert panel is not None
+        cand = _long(cand_m, "factor_value")
+        fwd = _long(fwd_m, "fwd_ret_1d")
 
-    iso = daily_residual_rank_ic(
-        cand, panel, fwd, start="2024-02-06", end="2024-02-06",
-    )
-    compact = daily_residual_rank_ic(
-        cand, panel, fwd, start="20240206", end="20240206",
-    )
-    assert iso.height == 1, f"ISO 窗裁错: {iso}"
-    assert compact.height == 1, f"紧凑窗裁错: {compact}"
-    assert iso["ic"].to_list() == compact["ic"].to_list()
-    # 输出形态锚定 ISO（与 _lift_admission_str / 库内 scored_* 既有形态一致）
-    assert iso["trade_date"].to_list() == ["2024-02-06"]
+        iso = daily_residual_rank_ic(
+            cand, panel, fwd, start="2024-02-06", end="2024-02-06",
+        )
+        compact = daily_residual_rank_ic(
+            cand, panel, fwd, start="20240206", end="20240206",
+        )
+        assert iso.height == 1, f"ISO 窗裁错: {iso}"
+        assert compact.height == 1, f"紧凑窗裁错: {compact}"
+        assert iso["ic"].to_list() == compact["ic"].to_list()
+        # 输出形态锚定 ISO（与 _lift_admission_str / 库内 scored_* 既有形态一致）
+        assert iso["trade_date"].to_list() == ["2024-02-06"]
 
+    _section_0_test_daily_residual_rank_ic_window_format_agnostic()
 
-def test_daily_residual_rank_ic_joins_date_candidate_with_utf8_returns():
-    """候选 pl.Date × 收益 Utf8——残差引擎的生产真实组合，不得抛 SchemaError。
+    # -- 原 test_daily_residual_rank_ic_joins_date_candidate_with_utf8_returns --
+    def _section_1_test_daily_residual_rank_ic_joins_date_candidate_with_utf8_returns():
+        from factorzen.discovery.residual import (
+            build_library_panel,
+            daily_residual_rank_ic,
+        )
 
-    候选面板由 ``_materializer_from_prepped`` 产出（prepped 帧原生 pl.Date），
-    收益面板由 ``_build_ret_panel`` 显式 ``cast(pl.Utf8)``。旧实现直接 join
-    两个不同 dtype 的键 → ``SchemaError``（2026-07-15 apply 全灭事故同款）。
-    """
-    from factorzen.discovery.residual import (
-        build_library_panel,
-        daily_residual_rank_ic,
-    )
+        rng = np.random.default_rng(3)
+        days = [dt.date(2024, 2, 5), dt.date(2024, 2, 6), dt.date(2024, 2, 7)]
+        codes = _codes(45)
 
-    rng = np.random.default_rng(3)
-    days = [dt.date(2024, 2, 5), dt.date(2024, 2, 6), dt.date(2024, 2, 7)]
-    codes = _codes(45)
+        def _long(M, col):
+            return pl.DataFrame([
+                {"trade_date": d, "ts_code": c, col: float(M[i, j])}
+                for i, d in enumerate(days) for j, c in enumerate(codes)
+            ])
 
-    def _long(M, col):
-        return pl.DataFrame([
-            {"trade_date": d, "ts_code": c, col: float(M[i, j])}
-            for i, d in enumerate(days) for j, c in enumerate(codes)
-        ])
+        lib_m = rng.normal(0, 1, size=(3, 45))
+        cand_m = lib_m + rng.normal(0, 0.8, size=(3, 45))
+        fwd_m = cand_m + rng.normal(0, 0.3, size=(3, 45))
 
-    lib_m = rng.normal(0, 1, size=(3, 45))
-    cand_m = lib_m + rng.normal(0, 0.8, size=(3, 45))
-    fwd_m = cand_m + rng.normal(0, 0.3, size=(3, 45))
+        panel = build_library_panel({"lib": _long(lib_m, "factor_value")})
+        assert panel is not None
+        cand = _long(cand_m, "factor_value")
+        fwd_date = _long(fwd_m, "ret")
+        # 复刻 _build_ret_panel：收益侧 cast Utf8
+        fwd_utf8 = fwd_date.with_columns(pl.col("trade_date").cast(pl.Utf8))
+        assert cand.schema["trade_date"] == pl.Date
 
-    panel = build_library_panel({"lib": _long(lib_m, "factor_value")})
-    assert panel is not None
-    cand = _long(cand_m, "factor_value")
-    fwd_date = _long(fwd_m, "ret")
-    # 复刻 _build_ret_panel：收益侧 cast Utf8
-    fwd_utf8 = fwd_date.with_columns(pl.col("trade_date").cast(pl.Utf8))
-    assert cand.schema["trade_date"] == pl.Date
+        same = daily_residual_rank_ic(cand, panel, fwd_date, ret_col="ret")
+        mixed = daily_residual_rank_ic(cand, panel, fwd_utf8, ret_col="ret")
+        assert same.height == 3
+        assert mixed.height == 3, f"Date×Utf8 未对齐: {mixed}"
+        # 形态对齐不得改变数值
+        assert same["ic"].to_list() == mixed["ic"].to_list()
 
-    same = daily_residual_rank_ic(cand, panel, fwd_date, ret_col="ret")
-    mixed = daily_residual_rank_ic(cand, panel, fwd_utf8, ret_col="ret")
-    assert same.height == 3
-    assert mixed.height == 3, f"Date×Utf8 未对齐: {mixed}"
-    # 形态对齐不得改变数值
-    assert same["ic"].to_list() == mixed["ic"].to_list()
+    _section_1_test_daily_residual_rank_ic_joins_date_candidate_with_utf8_returns()
 
 
 # ── 4. 真实后果：admission_ic 不得因形态错配退化成 0.0 ───────────────────────
 
-
-def test_admission_ic_not_silently_zero_for_date_panels():
-    """端到端：pl.Date 候选面板下 admission_ic 必须是真实 IC，不是空帧 0.0。
-
-    这是库内 2 条 lift 轨记录 ``admission_ic == 0.0`` 的直接回归锚。
-    """
-    from factorzen.discovery.lift_test import _daily_oos_rank_ic, _mean_ic
-
-    days = [dt.date(2026, 4, 5), dt.date(2026, 4, 7)]
-    fac, ret = _panels(days)
-    ret = ret.with_columns(pl.col("trade_date").cast(pl.Utf8))
-
-    admission_ic = _mean_ic(_daily_oos_rank_ic(fac, ret))
-    assert admission_ic != 0.0, "admission_ic 退化为空帧哨兵 0.0（方向权威失效）"
-    assert abs(admission_ic - 1.0) < 1e-12
 

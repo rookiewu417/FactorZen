@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from factorzen.core.stats import spearman_avg_rank
 
@@ -145,30 +146,67 @@ def test_pit_ic_uses_factor_t_minus_1_and_ret_t(tmp_path):
 # ── 2. 幂等 ──────────────────────────────────────────────────────────────────
 
 
-def test_record_idempotent_skips_existing(tmp_path):
-    """同 (date, expression, universe) 重跑 → recorded=0、skipped_existing=N。"""
-    from factorzen.discovery.forward_track import record_forward_ics
+def test_record_idempotent_paths_suite(tmp_path):
+    """同 (date, expression, universe) 重跑 → recorded=0、skipped_existing=N。；注入 daily 单 universe 路径：行为等价旧路径（记 IC + 幂等）。"""
+    # -- 原 test_record_idempotent_skips_existing --
+    def _section_0_test_record_idempotent_skips_existing(tmp_path):
+        from factorzen.discovery.forward_track import record_forward_ics
 
-    daily, _d1, _d2, d3 = _daily_3day()
-    as_of = _yyyymmdd(d3)
-    _write_lib(tmp_path, "ashare", [
-        _lib_row("close", status="probation"),
-        _lib_row("open", status="active"),
-    ])
+        daily, _d1, _d2, d3 = _daily_3day()
+        as_of = _yyyymmdd(d3)
+        _write_lib(tmp_path, "ashare", [
+            _lib_row("close", status="probation"),
+            _lib_row("open", status="active"),
+        ])
 
-    out1 = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
-    )
-    assert out1["recorded"] == 2
-    assert out1["skipped_existing"] == 0
+        out1 = record_forward_ics(
+            "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
+        )
+        assert out1["recorded"] == 2
+        assert out1["skipped_existing"] == 0
 
-    out2 = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
-    )
-    assert out2["recorded"] == 0
-    assert out2["skipped_existing"] == 2
-    rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
-    assert len(rows) == 2
+        out2 = record_forward_ics(
+            "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
+        )
+        assert out2["recorded"] == 0
+        assert out2["skipped_existing"] == 2
+        rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
+        assert len(rows) == 2
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_record_idempotent_skips_existing(_tp0)
+
+    # -- 原 test_injected_daily_zero_regression_single_universe --
+    def _section_1_test_injected_daily_zero_regression_single_universe(tmp_path):
+        from factorzen.discovery.forward_track import record_forward_ics
+
+        daily, _d1, _d2, d3 = _daily_3day()
+        as_of = _yyyymmdd(d3)
+        expr = "close"
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", universe="csi300", ic_train=0.05),
+        ])
+        out = record_forward_ics(
+            "ashare", as_of, root=str(tmp_path), daily=daily, lookback_days=5,
+            now=as_of,
+        )
+        assert out["recorded"] == 1
+        assert out["failed"] == 0
+        rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
+        assert rows[0]["ic"] is not None
+        assert rows[0].get("universe") == "csi300"
+
+        out2 = record_forward_ics(
+            "ashare", as_of, root=str(tmp_path), daily=daily, lookback_days=5,
+            now=as_of,
+        )
+        assert out2["recorded"] == 0
+        assert out2["skipped_existing"] == 1
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_injected_daily_zero_regression_single_universe(_tp1)
 
 
 # ── 3. review 门槛 ───────────────────────────────────────────────────────────
@@ -193,128 +231,160 @@ def _seed_forward_ics(root: Path, market: str, expr: str, ics: list[float],
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def test_review_hold_when_n_lt_min_days(tmp_path):
-    from factorzen.discovery.forward_track import forward_review
+def test_forward_review_decision_matrix_suite(tmp_path):
+    """test_review_hold_when_n_lt_min_days；test_review_promote_significant_positive；test_review_demote_significant_negative；test_review_hold_near_zero"""
+    # -- 原 test_review_hold_when_n_lt_min_days --
+    def _section_0_test_review_hold_when_n_lt_min_days(tmp_path):
+        from factorzen.discovery.forward_track import forward_review
 
-    expr = "rank(close)"
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", ic_train=0.05, updated_at="2024-01-01"),
-    ])
-    _seed_forward_ics(tmp_path, "ashare", expr, [0.02] * 10)
+        expr = "rank(close)"
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", ic_train=0.05, updated_at="2024-01-01"),
+        ])
+        _seed_forward_ics(tmp_path, "ashare", expr, [0.02] * 10)
 
-    rows = forward_review("ashare", root=str(tmp_path), min_days=60)
-    assert len(rows) == 1
-    assert rows[0]["decision"] == "hold"
-    assert rows[0]["n_days"] == 10
-    assert rows[0]["reason"] in ("insufficient_days", None) or "insuff" in str(
-        rows[0].get("reason") or ""
-    )
+        rows = forward_review("ashare", root=str(tmp_path), min_days=60)
+        assert len(rows) == 1
+        assert rows[0]["decision"] == "hold"
+        assert rows[0]["n_days"] == 10
+        assert rows[0]["reason"] in ("insufficient_days", None) or "insuff" in str(
+            rows[0].get("reason") or ""
+        )
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_review_hold_when_n_lt_min_days(_tp0)
 
-def test_review_promote_significant_positive(tmp_path):
-    from factorzen.discovery.forward_track import forward_review
+    # -- 原 test_review_promote_significant_positive --
+    def _section_1_test_review_promote_significant_positive(tmp_path):
+        from factorzen.discovery.forward_track import forward_review
 
-    expr = "rank(close)"
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", ic_train=0.05, updated_at="2024-01-01"),
-    ])
-    # 强正 IC，块 SE 相对均值小 → promote
-    _seed_forward_ics(tmp_path, "ashare", expr, [0.05] * 80)
+        expr = "rank(close)"
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", ic_train=0.05, updated_at="2024-01-01"),
+        ])
+        # 强正 IC，块 SE 相对均值小 → promote
+        _seed_forward_ics(tmp_path, "ashare", expr, [0.05] * 80)
 
-    rows = forward_review(
-        "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
-    )
-    assert rows[0]["decision"] == "promote"
-    assert rows[0]["mean"] is not None and rows[0]["mean"] > 0
-    assert rows[0]["ci_low"] is not None and rows[0]["ci_low"] > 0
+        rows = forward_review(
+            "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
+        )
+        assert rows[0]["decision"] == "promote"
+        assert rows[0]["mean"] is not None and rows[0]["mean"] > 0
+        assert rows[0]["ci_low"] is not None and rows[0]["ci_low"] > 0
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_review_promote_significant_positive(_tp1)
 
-def test_review_demote_significant_negative(tmp_path):
-    from factorzen.discovery.forward_track import forward_review
+    # -- 原 test_review_demote_significant_negative --
+    def _section_2_test_review_demote_significant_negative(tmp_path):
+        from factorzen.discovery.forward_track import forward_review
 
-    expr = "rank(close)"
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", ic_train=0.05, updated_at="2024-01-01"),
-    ])
-    _seed_forward_ics(tmp_path, "ashare", expr, [-0.05] * 80)
+        expr = "rank(close)"
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", ic_train=0.05, updated_at="2024-01-01"),
+        ])
+        _seed_forward_ics(tmp_path, "ashare", expr, [-0.05] * 80)
 
-    rows = forward_review(
-        "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
-    )
-    assert rows[0]["decision"] == "demote"
+        rows = forward_review(
+            "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
+        )
+        assert rows[0]["decision"] == "demote"
 
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_review_demote_significant_negative(_tp2)
 
-def test_review_hold_near_zero(tmp_path):
-    from factorzen.discovery.forward_track import forward_review
+    # -- 原 test_review_hold_near_zero --
+    def _section_3_test_review_hold_near_zero(tmp_path):
+        from factorzen.discovery.forward_track import forward_review
 
-    expr = "rank(close)"
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", ic_train=0.05, updated_at="2024-01-01"),
-    ])
-    # 接近 0 且有噪声 → CI 跨 0 → hold
-    rng = np.random.default_rng(0)
-    ics = (rng.normal(0.0, 0.01, size=80)).tolist()
-    _seed_forward_ics(tmp_path, "ashare", expr, ics)
+        expr = "rank(close)"
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", ic_train=0.05, updated_at="2024-01-01"),
+        ])
+        # 接近 0 且有噪声 → CI 跨 0 → hold
+        rng = np.random.default_rng(0)
+        ics = (rng.normal(0.0, 0.01, size=80)).tolist()
+        _seed_forward_ics(tmp_path, "ashare", expr, ics)
 
-    rows = forward_review(
-        "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
-    )
-    assert rows[0]["decision"] == "hold"
+        rows = forward_review(
+            "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
+        )
+        assert rows[0]["decision"] == "hold"
+
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_review_hold_near_zero(_tp3)
 
 
 # ── 4. 负方向因子 ────────────────────────────────────────────────────────────
 
 
-def test_review_negative_ic_train_sign_flip_promote(tmp_path):
-    """ic_train<0 且 forward ic 全负 → adj 后为正 → promote。"""
-    from factorzen.discovery.forward_track import forward_review
+def test_forward_review_sign_suite(tmp_path):
+    """ic_train<0 且 forward ic 全负 → adj 后为正 → promote。；test_review_missing_sign_holds；admission_ic 优先于 ic_train：admission_ic>0 + forward 正 → promote（即使 ic_train 负）。"""
+    # -- 原 test_review_negative_ic_train_sign_flip_promote --
+    def _section_0_test_review_negative_ic_train_sign_flip_promote(tmp_path):
+        from factorzen.discovery.forward_track import forward_review
 
-    expr = "rank(volume)"
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", ic_train=-0.04, updated_at="2024-01-01"),
-    ])
-    _seed_forward_ics(tmp_path, "ashare", expr, [-0.05] * 80)
+        expr = "rank(volume)"
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", ic_train=-0.04, updated_at="2024-01-01"),
+        ])
+        _seed_forward_ics(tmp_path, "ashare", expr, [-0.05] * 80)
 
-    rows = forward_review(
-        "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
-    )
-    assert rows[0]["decision"] == "promote"
-    assert rows[0]["mean"] is not None and rows[0]["mean"] > 0
+        rows = forward_review(
+            "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
+        )
+        assert rows[0]["decision"] == "promote"
+        assert rows[0]["mean"] is not None and rows[0]["mean"] > 0
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_review_negative_ic_train_sign_flip_promote(_tp0)
 
-def test_review_missing_sign_holds(tmp_path):
-    from factorzen.discovery.forward_track import forward_review
+    # -- 原 test_review_missing_sign_holds --
+    def _section_1_test_review_missing_sign_holds(tmp_path):
+        from factorzen.discovery.forward_track import forward_review
 
-    expr = "rank(close)"
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", ic_train=None, updated_at="2024-01-01"),
-    ])
-    _seed_forward_ics(tmp_path, "ashare", expr, [0.05] * 80)
+        expr = "rank(close)"
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", ic_train=None, updated_at="2024-01-01"),
+        ])
+        _seed_forward_ics(tmp_path, "ashare", expr, [0.05] * 80)
 
-    rows = forward_review("ashare", root=str(tmp_path), min_days=60)
-    assert rows[0]["decision"] == "hold"
-    assert rows[0]["reason"] == "missing_sign"
+        rows = forward_review("ashare", root=str(tmp_path), min_days=60)
+        assert rows[0]["decision"] == "hold"
+        assert rows[0]["reason"] == "missing_sign"
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_review_missing_sign_holds(_tp1)
 
-def test_review_admission_ic_preferred_over_ic_train(tmp_path):
-    """admission_ic 优先于 ic_train：admission_ic>0 + forward 正 → promote（即使 ic_train 负）。"""
-    from factorzen.discovery.forward_track import forward_review
+    # -- 原 test_review_admission_ic_preferred_over_ic_train --
+    def _section_2_test_review_admission_ic_preferred_over_ic_train(tmp_path):
+        from factorzen.discovery.forward_track import forward_review
 
-    expr = "rank(close)"
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(
-            expr, status="probation", ic_train=-0.04, updated_at="2024-01-01",
-            admission_ic=0.05,
-        ),
-    ])
-    _seed_forward_ics(tmp_path, "ashare", expr, [0.05] * 80)
+        expr = "rank(close)"
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(
+                expr, status="probation", ic_train=-0.04, updated_at="2024-01-01",
+                admission_ic=0.05,
+            ),
+        ])
+        _seed_forward_ics(tmp_path, "ashare", expr, [0.05] * 80)
 
-    rows = forward_review(
-        "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
-    )
-    assert rows[0]["decision"] == "promote"
-    assert rows[0]["reason"] != "missing_sign"
-    assert rows[0]["mean"] is not None and rows[0]["mean"] > 0
+        rows = forward_review(
+            "ashare", root=str(tmp_path), min_days=60, se_mult=1.645, block_days=20,
+        )
+        assert rows[0]["decision"] == "promote"
+        assert rows[0]["reason"] != "missing_sign"
+        assert rows[0]["mean"] is not None and rows[0]["mean"] > 0
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_review_admission_ic_preferred_over_ic_train(_tp2)
 
 
 def test_e2e_lift_admission_ic_enables_promote_chain(tmp_path):
@@ -401,20 +471,51 @@ def test_e2e_lift_admission_ic_enables_promote_chain(tmp_path):
     assert by[bad_expr]["reason"] == "missing_sign"
 
 
-def test_factor_record_admission_ic_from_dict_compat():
-    """旧 FactorRecord 行（无 admission_ic）反序列化不得报错 → None。"""
-    from factorzen.discovery.factor_library import FactorRecord
+def test_forward_schema_roundtrip_suite(tmp_path):
+    """旧 FactorRecord 行（无 admission_ic）反序列化不得报错 → None。；forward_confirmed_at/forward_n_days 必须进 FactorRecord schema。"""
+    # -- 原 test_factor_record_admission_ic_from_dict_compat --
+    def _section_0_test_factor_record_admission_ic_from_dict_compat():
+        from factorzen.discovery.factor_library import FactorRecord
 
-    rec = FactorRecord.from_dict({
-        "expression": "rank(close)",
-        "market": "ashare",
-        "status": "probation",
-        "ic_train": None,
-    })
-    assert rec.admission_ic is None
-    d = rec.to_dict()
-    assert "admission_ic" in d
-    assert d["admission_ic"] is None
+        rec = FactorRecord.from_dict({
+            "expression": "rank(close)",
+            "market": "ashare",
+            "status": "probation",
+            "ic_train": None,
+        })
+        assert rec.admission_ic is None
+        d = rec.to_dict()
+        assert "admission_ic" in d
+        assert d["admission_ic"] is None
+
+    _section_0_test_factor_record_admission_ic_from_dict_compat()
+
+    # -- 原 test_forward_fields_survive_library_roundtrip --
+    def _section_1_test_forward_fields_survive_library_roundtrip(tmp_path):
+        from factorzen.discovery.factor_library import (
+            FactorRecord,
+            _save_library,
+            load_library,
+        )
+
+        rec = FactorRecord(
+            expression="rank(close)", market="ashare", status="active",
+            admission_track="lift", forward_confirmed_at="2026-07-14",
+            forward_n_days=75, added_at="2026-07-01", updated_at="2026-07-14",
+        )
+        _save_library("ashare", [rec], root=str(tmp_path))
+        back = load_library("ashare", root=str(tmp_path))
+        assert back[0].forward_confirmed_at == "2026-07-14"
+        assert back[0].forward_n_days == 75
+        # 再走一轮 load→save（模拟后续 upsert/rebuild 的写盘循环）
+        _save_library("ashare", back, root=str(tmp_path))
+        again = load_library("ashare", root=str(tmp_path))
+        assert again[0].forward_confirmed_at == "2026-07-14"
+        assert again[0].forward_n_days == 75
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_forward_fields_survive_library_roundtrip(_tp1)
 
 
 # ── 5. apply 状态机 ──────────────────────────────────────────────────────────
@@ -525,527 +626,532 @@ def test_review_filters_ics_before_updated_at(tmp_path):
 # ── 7. CLI 透传 ──────────────────────────────────────────────────────────────
 
 
-def test_cli_forward_track_parser_and_handler(tmp_path, monkeypatch, capsys):
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
+def test_cli_forward_track_happy_suite(tmp_path, capsys):
+    """test_cli_forward_track_parser_and_handler；test_cli_forward_track_date_override；test_cli_forward_review_parser_and_apply"""
+    # -- 原 test_cli_forward_track_parser_and_handler --
+    def _section_0_test_cli_forward_track_parser_and_handler(tmp_path, mp, capsys):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
 
-    calls = []
+        calls = []
 
-    def fake_record(market, as_of, **kw):
-        calls.append({"market": market, "as_of": as_of, **kw})
-        return {"recorded": 2, "skipped_existing": 1, "failed": 0}
+        def fake_record(market, as_of, **kw):
+            calls.append({"market": market, "as_of": as_of, **kw})
+            return {"recorded": 2, "skipped_existing": 1, "failed": 0}
 
-    monkeypatch.setattr(
-        "factorzen.discovery.forward_track.record_forward_ics", fake_record,
-    )
-    monkeypatch.setattr(
-        "factorzen.discovery.backtest_window.latest_data_date",
-        lambda m: date(2024, 6, 15),
-    )
-
-    args = build_parser().parse_args([
-        "factor-library", "forward-track",
-        "--market", "ashare",
-        "--root", str(tmp_path),
-    ])
-    rc = cli_main._cmd_factor_library_forward_track(args)
-    assert rc == 0
-    assert len(calls) == 1
-    assert calls[0]["market"] == "ashare"
-    assert calls[0]["as_of"] == "20240615"
-    assert calls[0]["root"] == str(tmp_path)
-    out = capsys.readouterr().out
-    assert "recorded" in out or "2" in out
-
-
-def test_cli_forward_track_date_override(tmp_path, monkeypatch):
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-
-    calls = []
-    monkeypatch.setattr(
-        "factorzen.discovery.forward_track.record_forward_ics",
-        lambda market, as_of, **kw: calls.append((market, as_of, kw)) or {
-            "recorded": 0, "skipped_existing": 0, "failed": 0,
-        },
-    )
-    args = build_parser().parse_args([
-        "factor-library", "forward-track",
-        "--market", "ashare",
-        "--date", "20240104",
-        "--root", str(tmp_path),
-    ])
-    rc = cli_main._cmd_factor_library_forward_track(args)
-    assert rc == 0
-    assert calls[0][1] == "20240104"
-
-
-def test_cli_forward_review_parser_and_apply(tmp_path, monkeypatch, capsys):
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-
-    calls = []
-
-    def fake_review(market, **kw):
-        calls.append({"market": market, **kw})
-        return [{
-            "expression": "rank(close)",
-            "decision": "promote",
-            "n_days": 80,
-            "mean": 0.04,
-            "se": 0.01,
-            "ci_low": 0.02,
-            "reason": None,
-        }]
-
-    monkeypatch.setattr(
-        "factorzen.discovery.forward_track.forward_review", fake_review,
-    )
-
-    args = build_parser().parse_args([
-        "factor-library", "forward-review",
-        "--market", "ashare",
-        "--min-days", "60",
-        "--se-mult", "1.645",
-        "--root", str(tmp_path),
-        "--apply",
-    ])
-    rc = cli_main._cmd_factor_library_forward_review(args)
-    assert rc == 0
-    assert calls[0]["apply"] is True
-    assert calls[0]["min_days"] == 60
-    assert math.isclose(calls[0]["se_mult"], 1.645)
-    assert calls[0]["root"] == str(tmp_path)
-    out = capsys.readouterr().out
-    assert "promote" in out
-
-
-def test_forward_fields_survive_library_roundtrip(tmp_path):
-    """forward_confirmed_at/forward_n_days 必须进 FactorRecord schema。
-
-    否则 from_dict 丢弃未知字段 → 任一次 load→save 循环把 apply 写入的
-    确认痕迹静默洗掉（本用例即该回归的锁）。
-    """
-    from factorzen.discovery.factor_library import (
-        FactorRecord,
-        _save_library,
-        load_library,
-    )
-
-    rec = FactorRecord(
-        expression="rank(close)", market="ashare", status="active",
-        admission_track="lift", forward_confirmed_at="2026-07-14",
-        forward_n_days=75, added_at="2026-07-01", updated_at="2026-07-14",
-    )
-    _save_library("ashare", [rec], root=str(tmp_path))
-    back = load_library("ashare", root=str(tmp_path))
-    assert back[0].forward_confirmed_at == "2026-07-14"
-    assert back[0].forward_n_days == 75
-    # 再走一轮 load→save（模拟后续 upsert/rebuild 的写盘循环）
-    _save_library("ashare", back, root=str(tmp_path))
-    again = load_library("ashare", root=str(tmp_path))
-    assert again[0].forward_confirmed_at == "2026-07-14"
-    assert again[0].forward_n_days == 75
-
-
-def test_assemble_universe_follows_admission_mode(monkeypatch, tmp_path):
-    """单一 universe 库：生产装配透传 record.universe（非全 A）。
-
-    首跑实测 n_stocks=5511（全 A）暴露：csi300 准入的因子在全 A 截面上的
-    forward IC 是另一个统计量，不能用于裁决。
-    """
-    from factorzen.discovery import forward_track as ft
-    from factorzen.discovery.factor_library import FactorRecord, _save_library
-
-    recs = [
-        FactorRecord(expression="rank(close)", market="ashare", status="active",
-                     universe="csi300", ic_train=0.02,
-                     added_at="2026-07-01", updated_at="2026-07-01"),
-        FactorRecord(expression="rank(vol)", market="ashare", status="probation",
-                     universe="csi300", ic_train=0.02,
-                     added_at="2026-07-01", updated_at="2026-07-01"),
-    ]
-    _save_library("ashare", recs, root=str(tmp_path))
-
-    captured: dict = {}
-
-    def fake_prepare(start, end, universe=None, lookback_days=None, **kw):
-        captured["universe"] = universe
-        raise RuntimeError("stop after capture")  # 只验证透传，不真装配
-
-    monkeypatch.setattr(ft, "prepare_mining_daily", fake_prepare)
-    import pytest as _pytest
-    with _pytest.raises(RuntimeError, match="stop after capture"):
-        ft.record_forward_ics(
-            "ashare", "20260605", root=str(tmp_path), now="20260605",
+        mp.setattr(
+            "factorzen.discovery.forward_track.record_forward_ics", fake_record,
         )
-    assert captured["universe"] == "csi300"
-
-    # 显式 --universe 覆盖各因子准入口径
-    with _pytest.raises(RuntimeError, match="stop after capture"):
-        ft.record_forward_ics(
-            "ashare", "20260605", root=str(tmp_path),
-            universe="csi800", now="20260605",
+        mp.setattr(
+            "factorzen.discovery.backtest_window.latest_data_date",
+            lambda m: date(2024, 6, 15),
         )
-    assert captured["universe"] == "csi800"
+
+        args = build_parser().parse_args([
+            "factor-library", "forward-track",
+            "--market", "ashare",
+            "--root", str(tmp_path),
+        ])
+        rc = cli_main._cmd_factor_library_forward_track(args)
+        assert rc == 0
+        assert len(calls) == 1
+        assert calls[0]["market"] == "ashare"
+        assert calls[0]["as_of"] == "20240615"
+        assert calls[0]["root"] == str(tmp_path)
+        out = capsys.readouterr().out
+        assert "recorded" in out or "2" in out
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_cli_forward_track_parser_and_handler(_tp0, mp, capsys)
+
+    # -- 原 test_cli_forward_track_date_override --
+    def _section_1_test_cli_forward_track_date_override(tmp_path, mp):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+
+        calls = []
+        mp.setattr(
+            "factorzen.discovery.forward_track.record_forward_ics",
+            lambda market, as_of, **kw: calls.append((market, as_of, kw)) or {
+                "recorded": 0, "skipped_existing": 0, "failed": 0,
+            },
+        )
+        args = build_parser().parse_args([
+            "factor-library", "forward-track",
+            "--market", "ashare",
+            "--date", "20240104",
+            "--root", str(tmp_path),
+        ])
+        rc = cli_main._cmd_factor_library_forward_track(args)
+        assert rc == 0
+        assert calls[0][1] == "20240104"
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cli_forward_track_date_override(_tp1, mp)
+
+    # -- 原 test_cli_forward_review_parser_and_apply --
+    def _section_2_test_cli_forward_review_parser_and_apply(tmp_path, mp, capsys):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+
+        calls = []
+
+        def fake_review(market, **kw):
+            calls.append({"market": market, **kw})
+            return [{
+                "expression": "rank(close)",
+                "decision": "promote",
+                "n_days": 80,
+                "mean": 0.04,
+                "se": 0.01,
+                "ci_low": 0.02,
+                "reason": None,
+            }]
+
+        mp.setattr(
+            "factorzen.discovery.forward_track.forward_review", fake_review,
+        )
+
+        args = build_parser().parse_args([
+            "factor-library", "forward-review",
+            "--market", "ashare",
+            "--min-days", "60",
+            "--se-mult", "1.645",
+            "--root", str(tmp_path),
+            "--apply",
+        ])
+        rc = cli_main._cmd_factor_library_forward_review(args)
+        assert rc == 0
+        assert calls[0]["apply"] is True
+        assert calls[0]["min_days"] == 60
+        assert math.isclose(calls[0]["se_mult"], 1.645)
+        assert calls[0]["root"] == str(tmp_path)
+        out = capsys.readouterr().out
+        assert "promote" in out
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_cli_forward_review_parser_and_apply(_tp2, mp, capsys)
+
+
+def test_forward_universe_scoping_suite(tmp_path):
+    """单一 universe 库：生产装配透传 record.universe（非全 A）。；混口径库：按 record.universe 分组装配，csi500 不在 csi300 众数截面上算 IC。；同 (date, expr) 不同 universe 的 row 都能写入；row 含 universe 字段。；同 expr 两套 universe IC：review 只取 rec.universe 对应序列，不混用。"""
+    # -- 原 test_assemble_universe_follows_admission_mode --
+    def _section_0_test_assemble_universe_follows_admission_mode(mp, tmp_path):
+        from factorzen.discovery import forward_track as ft
+        from factorzen.discovery.factor_library import FactorRecord, _save_library
+
+        recs = [
+            FactorRecord(expression="rank(close)", market="ashare", status="active",
+                         universe="csi300", ic_train=0.02,
+                         added_at="2026-07-01", updated_at="2026-07-01"),
+            FactorRecord(expression="rank(vol)", market="ashare", status="probation",
+                         universe="csi300", ic_train=0.02,
+                         added_at="2026-07-01", updated_at="2026-07-01"),
+        ]
+        _save_library("ashare", recs, root=str(tmp_path))
+
+        captured: dict = {}
+
+        def fake_prepare(start, end, universe=None, lookback_days=None, **kw):
+            captured["universe"] = universe
+            raise RuntimeError("stop after capture")  # 只验证透传，不真装配
+
+        mp.setattr(ft, "prepare_mining_daily", fake_prepare)
+        import pytest as _pytest
+        with _pytest.raises(RuntimeError, match="stop after capture"):
+            ft.record_forward_ics(
+                "ashare", "20260605", root=str(tmp_path), now="20260605",
+            )
+        assert captured["universe"] == "csi300"
+
+        # 显式 --universe 覆盖各因子准入口径
+        with _pytest.raises(RuntimeError, match="stop after capture"):
+            ft.record_forward_ics(
+                "ashare", "20260605", root=str(tmp_path),
+                universe="csi800", now="20260605",
+            )
+        assert captured["universe"] == "csi800"
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_assemble_universe_follows_admission_mode(mp, _tp0)
+
+    # -- 原 test_record_groups_by_universe_and_assembles_each --
+    def _section_1_test_record_groups_by_universe_and_assembles_each(mp, tmp_path):
+        from factorzen.discovery import forward_track as ft
+        from factorzen.discovery.factor_library import FactorRecord, _save_library
+
+        recs = [
+            FactorRecord(expression="close", market="ashare", status="probation",
+                         universe="csi300", ic_train=0.02,
+                         added_at="2024-01-01", updated_at="2024-01-01"),
+            FactorRecord(expression="open", market="ashare", status="probation",
+                         universe="csi300", ic_train=0.02,
+                         added_at="2024-01-01", updated_at="2024-01-01"),
+            FactorRecord(expression="high", market="ashare", status="active",
+                         universe="csi300", ic_train=0.02,
+                         added_at="2024-01-01", updated_at="2024-01-01"),
+            FactorRecord(expression="low", market="ashare", status="probation",
+                         universe="csi500", ic_train=0.02,
+                         added_at="2024-01-01", updated_at="2024-01-01"),
+        ]
+        _save_library("ashare", recs, root=str(tmp_path))
+
+        daily_300, _d1, _d2, d3 = _daily_3day()
+        # csi500 截面：仅 2 只股票、价序列不同，确保 IC 可与 csi300 区分
+        d1, d2, d3d = date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)
+        daily_500 = pl.DataFrame([
+            {"trade_date": d1, "ts_code": "600001.SH", "close": 5.0, "close_adj": 5.0,
+             "open": 5.0, "open_adj": 5.0, "high": 5.0, "high_adj": 5.0,
+             "low": 4.0, "low_adj": 4.0, "vol": 100.0, "amount": 1000.0},
+            {"trade_date": d1, "ts_code": "600002.SH", "close": 8.0, "close_adj": 8.0,
+             "open": 8.0, "open_adj": 8.0, "high": 8.0, "high_adj": 8.0,
+             "low": 7.0, "low_adj": 7.0, "vol": 100.0, "amount": 1000.0},
+            {"trade_date": d2, "ts_code": "600001.SH", "close": 6.0, "close_adj": 6.0,
+             "open": 6.0, "open_adj": 6.0, "high": 6.0, "high_adj": 6.0,
+             "low": 5.0, "low_adj": 5.0, "vol": 100.0, "amount": 1000.0},
+            {"trade_date": d2, "ts_code": "600002.SH", "close": 9.0, "close_adj": 9.0,
+             "open": 9.0, "open_adj": 9.0, "high": 9.0, "high_adj": 9.0,
+             "low": 8.0, "low_adj": 8.0, "vol": 100.0, "amount": 1000.0},
+            {"trade_date": d3d, "ts_code": "600001.SH", "close": 7.0, "close_adj": 7.0,
+             "open": 7.0, "open_adj": 7.0, "high": 7.0, "high_adj": 7.0,
+             "low": 6.0, "low_adj": 6.0, "vol": 100.0, "amount": 1000.0},
+            {"trade_date": d3d, "ts_code": "600002.SH", "close": 10.0, "close_adj": 10.0,
+             "open": 10.0, "open_adj": 10.0, "high": 10.0, "high_adj": 10.0,
+             "low": 9.0, "low_adj": 9.0, "vol": 100.0, "amount": 1000.0},
+        ])
+        as_of = _yyyymmdd(d3)
+        assemble_calls: list[dict] = []
+
+        def fake_assemble(market, as_of_arg, lookback_days, universe=None, expressions=None):
+            assemble_calls.append({
+                "market": market, "as_of": as_of_arg,
+                "lookback_days": lookback_days, "universe": universe,
+                "expressions": expressions,
+            })
+            if universe == "csi300":
+                return daily_300
+            if universe == "csi500":
+                return daily_500
+            raise AssertionError(f"unexpected universe {universe!r}")
+
+        mp.setattr(ft, "_assemble_daily", fake_assemble)
+
+        out = ft.record_forward_ics(
+            "ashare", as_of, root=str(tmp_path), now=as_of,
+        )
+        assert out["recorded"] == 4
+        assert out["failed"] == 0
+
+        # 每 universe 各装配一次
+        unis = sorted(c["universe"] for c in assemble_calls)
+        assert unis == ["csi300", "csi500"]
+        assert len(assemble_calls) == 2
+
+        rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
+        by = {(r["expression"], r.get("universe")): r for r in rows}
+        assert set(by) == {
+            ("close", "csi300"), ("open", "csi300"),
+            ("high", "csi300"), ("low", "csi500"),
+        }
+        # csi500 因子截面只有 2 只股票
+        assert by[("low", "csi500")]["n_stocks"] == 2
+        # csi300 因子截面 3 只
+        assert by[("close", "csi300")]["n_stocks"] == 3
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_record_groups_by_universe_and_assembles_each(mp, _tp1)
+
+    # -- 原 test_ledger_key_includes_universe --
+    def _section_2_test_ledger_key_includes_universe(tmp_path):
+        from factorzen.discovery.forward_track import record_forward_ics
+
+        daily, _d1, _d2, d3 = _daily_3day()
+        as_of = _yyyymmdd(d3)
+        expr = "close"
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", universe="csi300"),
+        ])
+        out1 = record_forward_ics(
+            "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
+        )
+        assert out1["recorded"] == 1
+        rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
+        assert rows[0].get("universe") == "csi300"
+
+        # 同 date/expr、另一 universe 的记录不得被幂等跳过
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", universe="csi500"),
+        ])
+        out2 = record_forward_ics(
+            "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
+        )
+        assert out2["recorded"] == 1
+        assert out2["skipped_existing"] == 0
+        rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
+        assert len(rows) == 2
+        unis = {r.get("universe") for r in rows}
+        assert unis == {"csi300", "csi500"}
+        assert all(r["expression"] == expr and r["date"] == as_of for r in rows)
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_ledger_key_includes_universe(_tp2)
+
+    # -- 原 test_review_filters_forward_ics_by_universe --
+    def _section_3_test_review_filters_forward_ics_by_universe(tmp_path):
+        from factorzen.discovery.forward_track import forward_review
+
+        expr = "rank(close)"
+        # csi500 record；ledger 混有 csi300（强正 80 天）与 csi500（仅 5 天）
+        _write_lib(tmp_path, "ashare", [
+            _lib_row(expr, status="probation", ic_train=0.05,
+                     updated_at="2024-01-01", universe="csi500"),
+        ])
+        path = tmp_path / "forward_track" / "ashare.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        start = date(2024, 3, 1)
+        for i in range(80):
+            d = _yyyymmdd(start + timedelta(days=i))
+            lines.append(json.dumps({
+                "date": d, "expression": expr, "ic": 0.05,
+                "n_stocks": 50, "status_at_record": "probation",
+                "universe": "csi300",
+            }))
+        for i in range(5):
+            d = _yyyymmdd(start + timedelta(days=i))
+            lines.append(json.dumps({
+                "date": d, "expression": expr, "ic": 0.01,
+                "n_stocks": 40, "status_at_record": "probation",
+                "universe": "csi500",
+            }))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        rows = forward_review("ashare", root=str(tmp_path), min_days=60)
+        assert len(rows) == 1
+        # 若混用 csi300 的 80 天会 promote；正确只计 csi500 的 5 天 → hold
+        assert rows[0]["n_days"] == 5
+        assert rows[0]["decision"] == "hold"
+        assert rows[0]["reason"] in ("insufficient_days", None) or "insuff" in str(
+            rows[0].get("reason") or ""
+        )
+
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_review_filters_forward_ics_by_universe(_tp3)
 
 
 # ── 8. S4/P6：按 universe 分组 + ledger 三元键 + review 不混截面 ─────────────
 
 
-def test_record_groups_by_universe_and_assembles_each(monkeypatch, tmp_path):
-    """混口径库：按 record.universe 分组装配，csi500 不在 csi300 众数截面上算 IC。"""
-    from factorzen.discovery import forward_track as ft
-    from factorzen.discovery.factor_library import FactorRecord, _save_library
-
-    recs = [
-        FactorRecord(expression="close", market="ashare", status="probation",
-                     universe="csi300", ic_train=0.02,
-                     added_at="2024-01-01", updated_at="2024-01-01"),
-        FactorRecord(expression="open", market="ashare", status="probation",
-                     universe="csi300", ic_train=0.02,
-                     added_at="2024-01-01", updated_at="2024-01-01"),
-        FactorRecord(expression="high", market="ashare", status="active",
-                     universe="csi300", ic_train=0.02,
-                     added_at="2024-01-01", updated_at="2024-01-01"),
-        FactorRecord(expression="low", market="ashare", status="probation",
-                     universe="csi500", ic_train=0.02,
-                     added_at="2024-01-01", updated_at="2024-01-01"),
-    ]
-    _save_library("ashare", recs, root=str(tmp_path))
-
-    daily_300, _d1, _d2, d3 = _daily_3day()
-    # csi500 截面：仅 2 只股票、价序列不同，确保 IC 可与 csi300 区分
-    d1, d2, d3d = date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)
-    daily_500 = pl.DataFrame([
-        {"trade_date": d1, "ts_code": "600001.SH", "close": 5.0, "close_adj": 5.0,
-         "open": 5.0, "open_adj": 5.0, "high": 5.0, "high_adj": 5.0,
-         "low": 4.0, "low_adj": 4.0, "vol": 100.0, "amount": 1000.0},
-        {"trade_date": d1, "ts_code": "600002.SH", "close": 8.0, "close_adj": 8.0,
-         "open": 8.0, "open_adj": 8.0, "high": 8.0, "high_adj": 8.0,
-         "low": 7.0, "low_adj": 7.0, "vol": 100.0, "amount": 1000.0},
-        {"trade_date": d2, "ts_code": "600001.SH", "close": 6.0, "close_adj": 6.0,
-         "open": 6.0, "open_adj": 6.0, "high": 6.0, "high_adj": 6.0,
-         "low": 5.0, "low_adj": 5.0, "vol": 100.0, "amount": 1000.0},
-        {"trade_date": d2, "ts_code": "600002.SH", "close": 9.0, "close_adj": 9.0,
-         "open": 9.0, "open_adj": 9.0, "high": 9.0, "high_adj": 9.0,
-         "low": 8.0, "low_adj": 8.0, "vol": 100.0, "amount": 1000.0},
-        {"trade_date": d3d, "ts_code": "600001.SH", "close": 7.0, "close_adj": 7.0,
-         "open": 7.0, "open_adj": 7.0, "high": 7.0, "high_adj": 7.0,
-         "low": 6.0, "low_adj": 6.0, "vol": 100.0, "amount": 1000.0},
-        {"trade_date": d3d, "ts_code": "600002.SH", "close": 10.0, "close_adj": 10.0,
-         "open": 10.0, "open_adj": 10.0, "high": 10.0, "high_adj": 10.0,
-         "low": 9.0, "low_adj": 9.0, "vol": 100.0, "amount": 1000.0},
-    ])
-    as_of = _yyyymmdd(d3)
-    assemble_calls: list[dict] = []
-
-    def fake_assemble(market, as_of_arg, lookback_days, universe=None, expressions=None):
-        assemble_calls.append({
-            "market": market, "as_of": as_of_arg,
-            "lookback_days": lookback_days, "universe": universe,
-            "expressions": expressions,
-        })
-        if universe == "csi300":
-            return daily_300
-        if universe == "csi500":
-            return daily_500
-        raise AssertionError(f"unexpected universe {universe!r}")
-
-    monkeypatch.setattr(ft, "_assemble_daily", fake_assemble)
-
-    out = ft.record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), now=as_of,
-    )
-    assert out["recorded"] == 4
-    assert out["failed"] == 0
-
-    # 每 universe 各装配一次
-    unis = sorted(c["universe"] for c in assemble_calls)
-    assert unis == ["csi300", "csi500"]
-    assert len(assemble_calls) == 2
-
-    rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
-    by = {(r["expression"], r.get("universe")): r for r in rows}
-    assert set(by) == {
-        ("close", "csi300"), ("open", "csi300"),
-        ("high", "csi300"), ("low", "csi500"),
-    }
-    # csi500 因子截面只有 2 只股票
-    assert by[("low", "csi500")]["n_stocks"] == 2
-    # csi300 因子截面 3 只
-    assert by[("close", "csi300")]["n_stocks"] == 3
-
-
-def test_ledger_key_includes_universe(tmp_path):
-    """同 (date, expr) 不同 universe 的 row 都能写入；row 含 universe 字段。"""
-    from factorzen.discovery.forward_track import record_forward_ics
-
-    daily, _d1, _d2, d3 = _daily_3day()
-    as_of = _yyyymmdd(d3)
-    expr = "close"
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", universe="csi300"),
-    ])
-    out1 = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
-    )
-    assert out1["recorded"] == 1
-    rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
-    assert rows[0].get("universe") == "csi300"
-
-    # 同 date/expr、另一 universe 的记录不得被幂等跳过
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", universe="csi500"),
-    ])
-    out2 = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
-    )
-    assert out2["recorded"] == 1
-    assert out2["skipped_existing"] == 0
-    rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
-    assert len(rows) == 2
-    unis = {r.get("universe") for r in rows}
-    assert unis == {"csi300", "csi500"}
-    assert all(r["expression"] == expr and r["date"] == as_of for r in rows)
-
-
-def test_review_filters_forward_ics_by_universe(tmp_path):
-    """同 expr 两套 universe IC：review 只取 rec.universe 对应序列，不混用。"""
-    from factorzen.discovery.forward_track import forward_review
-
-    expr = "rank(close)"
-    # csi500 record；ledger 混有 csi300（强正 80 天）与 csi500（仅 5 天）
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", ic_train=0.05,
-                 updated_at="2024-01-01", universe="csi500"),
-    ])
-    path = tmp_path / "forward_track" / "ashare.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = []
-    start = date(2024, 3, 1)
-    for i in range(80):
-        d = _yyyymmdd(start + timedelta(days=i))
-        lines.append(json.dumps({
-            "date": d, "expression": expr, "ic": 0.05,
-            "n_stocks": 50, "status_at_record": "probation",
-            "universe": "csi300",
-        }))
-    for i in range(5):
-        d = _yyyymmdd(start + timedelta(days=i))
-        lines.append(json.dumps({
-            "date": d, "expression": expr, "ic": 0.01,
-            "n_stocks": 40, "status_at_record": "probation",
-            "universe": "csi500",
-        }))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    rows = forward_review("ashare", root=str(tmp_path), min_days=60)
-    assert len(rows) == 1
-    # 若混用 csi300 的 80 天会 promote；正确只计 csi500 的 5 天 → hold
-    assert rows[0]["n_days"] == 5
-    assert rows[0]["decision"] == "hold"
-    assert rows[0]["reason"] in ("insufficient_days", None) or "insuff" in str(
-        rows[0].get("reason") or ""
-    )
-
-
 # ── 9. S5/P8：非 A 股 fail-closed + 全失败非零退出 ───────────────────────────
 
 
-def test_record_non_ashare_fail_closed(tmp_path):
-    """生产路径 daily=None 且 market!=ashare → 不得静默走 A 股装配。"""
-    import pytest
+def test_cli_forward_fail_closed_suite(tmp_path, capsys):
+    """生产路径 daily=None 且 market!=ashare → 不得静默走 A 股装配。；CLI crypto 无注入 → 返回码非 0（fail closed）。；全部 materialize 失败 → CLI return 1。；CLI --date 远古、无 --allow-backfill → 非零；带 --allow-backfill → 0。"""
+    # -- 原 test_record_non_ashare_fail_closed --
+    def _section_0_test_record_non_ashare_fail_closed(tmp_path):
+        import pytest
 
-    from factorzen.discovery.factor_library import FactorRecord, _save_library
-    from factorzen.discovery.forward_track import record_forward_ics
+        from factorzen.discovery.factor_library import FactorRecord, _save_library
+        from factorzen.discovery.forward_track import record_forward_ics
 
-    _save_library("crypto", [
-        FactorRecord(expression="close", market="crypto", status="probation",
-                     ic_train=0.02, added_at="2024-01-01", updated_at="2024-01-01"),
-    ], root=str(tmp_path))
+        _save_library("crypto", [
+            FactorRecord(expression="close", market="crypto", status="probation",
+                         ic_train=0.02, added_at="2024-01-01", updated_at="2024-01-01"),
+        ], root=str(tmp_path))
 
-    with pytest.raises(ValueError, match=r"fail closed|暂未接入"):
-        record_forward_ics(
-            "crypto", "20240104", root=str(tmp_path), daily=None, now="20240104",
+        with pytest.raises(ValueError, match=r"fail closed|暂未接入"):
+            record_forward_ics(
+                "crypto", "20240104", root=str(tmp_path), daily=None, now="20240104",
+            )
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_record_non_ashare_fail_closed(_tp0)
+
+    # -- 原 test_cli_forward_track_non_ashare_nonzero --
+    def _section_1_test_cli_forward_track_non_ashare_nonzero(tmp_path, mp, capsys):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+        from factorzen.discovery.factor_library import FactorRecord, _save_library
+
+        _save_library("crypto", [
+            FactorRecord(expression="close", market="crypto", status="probation",
+                         ic_train=0.02, added_at="2024-01-01", updated_at="2024-01-01"),
+        ], root=str(tmp_path))
+
+        args = build_parser().parse_args([
+            "factor-library", "forward-track",
+            "--market", "crypto",
+            "--date", "20240104",
+            "--root", str(tmp_path),
+        ])
+        rc = cli_main._cmd_factor_library_forward_track(args)
+        assert rc != 0
+        err = capsys.readouterr().err
+        assert "crypto" in err or "fail" in err.lower() or "暂未" in err
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cli_forward_track_non_ashare_nonzero(_tp1, mp, capsys)
+
+    # -- 原 test_cli_forward_track_all_failed_returns_1 --
+    def _section_2_test_cli_forward_track_all_failed_returns_1(tmp_path, mp, capsys):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+
+        mp.setattr(
+            "factorzen.discovery.forward_track.record_forward_ics",
+            lambda *a, **k: {"recorded": 3, "skipped_existing": 0, "failed": 3},
         )
+        args = build_parser().parse_args([
+            "factor-library", "forward-track",
+            "--market", "ashare",
+            "--date", "20240104",
+            "--root", str(tmp_path),
+        ])
+        rc = cli_main._cmd_factor_library_forward_track(args)
+        assert rc == 1
+        out = capsys.readouterr().out + capsys.readouterr().err
+        # 至少打印了结果摘要
+        assert "failed" in out or "3" in out
 
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_cli_forward_track_all_failed_returns_1(_tp2, mp, capsys)
 
-def test_cli_forward_track_non_ashare_nonzero(tmp_path, monkeypatch, capsys):
-    """CLI crypto 无注入 → 返回码非 0（fail closed）。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-    from factorzen.discovery.factor_library import FactorRecord, _save_library
+    # -- 原 test_cli_forward_track_stale_date_nonzero --
+    def _section_3_test_cli_forward_track_stale_date_nonzero(tmp_path, mp, capsys):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
 
-    _save_library("crypto", [
-        FactorRecord(expression="close", market="crypto", status="probation",
-                     ic_train=0.02, added_at="2024-01-01", updated_at="2024-01-01"),
-    ], root=str(tmp_path))
+        # 空库亦可：门禁在装配前，allow_backfill 后 to_eval 为空 → recorded=0 仍 0 退出
+        args_reject = build_parser().parse_args([
+            "factor-library", "forward-track",
+            "--market", "ashare",
+            "--date", "20200101",
+            "--root", str(tmp_path),
+        ])
+        rc_reject = cli_main._cmd_factor_library_forward_track(args_reject)
+        assert rc_reject != 0
+        err = capsys.readouterr().err
+        assert "回灌" in err or "backfill" in err.lower() or "max_backfill" in err or "失败" in err
 
-    args = build_parser().parse_args([
-        "factor-library", "forward-track",
-        "--market", "crypto",
-        "--date", "20240104",
-        "--root", str(tmp_path),
-    ])
-    rc = cli_main._cmd_factor_library_forward_track(args)
-    assert rc != 0
-    err = capsys.readouterr().err
-    assert "crypto" in err or "fail" in err.lower() or "暂未" in err
+        args_ok = build_parser().parse_args([
+            "factor-library", "forward-track",
+            "--market", "ashare",
+            "--date", "20200101",
+            "--allow-backfill",
+            "--root", str(tmp_path),
+        ])
+        rc_ok = cli_main._cmd_factor_library_forward_track(args_ok)
+        assert rc_ok == 0
 
-
-def test_cli_forward_track_all_failed_returns_1(tmp_path, monkeypatch, capsys):
-    """全部 materialize 失败 → CLI return 1。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-
-    monkeypatch.setattr(
-        "factorzen.discovery.forward_track.record_forward_ics",
-        lambda *a, **k: {"recorded": 3, "skipped_existing": 0, "failed": 3},
-    )
-    args = build_parser().parse_args([
-        "factor-library", "forward-track",
-        "--market", "ashare",
-        "--date", "20240104",
-        "--root", str(tmp_path),
-    ])
-    rc = cli_main._cmd_factor_library_forward_track(args)
-    assert rc == 1
-    out = capsys.readouterr().out + capsys.readouterr().err
-    # 至少打印了结果摘要
-    assert "failed" in out or "3" in out
-
-
-def test_injected_daily_zero_regression_single_universe(tmp_path):
-    """注入 daily 单 universe 路径：行为等价旧路径（记 IC + 幂等）。"""
-    from factorzen.discovery.forward_track import record_forward_ics
-
-    daily, _d1, _d2, d3 = _daily_3day()
-    as_of = _yyyymmdd(d3)
-    expr = "close"
-    _write_lib(tmp_path, "ashare", [
-        _lib_row(expr, status="probation", universe="csi300", ic_train=0.05),
-    ])
-    out = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily, lookback_days=5,
-        now=as_of,
-    )
-    assert out["recorded"] == 1
-    assert out["failed"] == 0
-    rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
-    assert rows[0]["ic"] is not None
-    assert rows[0].get("universe") == "csi300"
-
-    out2 = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily, lookback_days=5,
-        now=as_of,
-    )
-    assert out2["recorded"] == 0
-    assert out2["skipped_existing"] == 1
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_cli_forward_track_stale_date_nonzero(_tp3, mp, capsys)
 
 
 # ── 10. S6：wall-clock 反回灌 + provenance ───────────────────────────────────
 
 
-def test_reject_historical_backfill(tmp_path):
-    """as_of 距 now 过远 → ValueError；allow_backfill=True 时放行。"""
-    import pytest
+def test_asof_gate_and_provenance_suite(tmp_path):
+    """as_of 距 now 过远 → ValueError；allow_backfill=True 时放行。；as_of > now → 拒绝未来日。；lag ≤ max_backfill_days → 正常写入；row 含 recorded_at/git_sha/status_at_record。"""
+    # -- 原 test_reject_historical_backfill --
+    def _section_0_test_reject_historical_backfill(tmp_path):
+        import pytest
 
-    from factorzen.discovery.forward_track import record_forward_ics
+        from factorzen.discovery.forward_track import record_forward_ics
 
-    daily, _d1, _d2, _d3 = _daily_3day()
-    as_of = "20240101"
-    # daily 帧是 20240102–04；用 allow_backfill 路径时 as_of 需在帧内才有 IC，
-    # 此处只断言「反回灌」门禁：先拒旧日，再 allow 后不因门禁失败。
-    _write_lib(tmp_path, "ashare", [
-        _lib_row("close", status="probation"),
-    ])
+        daily, _d1, _d2, _d3 = _daily_3day()
+        as_of = "20240101"
+        # daily 帧是 20240102–04；用 allow_backfill 路径时 as_of 需在帧内才有 IC，
+        # 此处只断言「反回灌」门禁：先拒旧日，再 allow 后不因门禁失败。
+        _write_lib(tmp_path, "ashare", [
+            _lib_row("close", status="probation"),
+        ])
 
-    with pytest.raises(ValueError, match=r"回灌|max_backfill|allow-backfill"):
-        record_forward_ics(
+        with pytest.raises(ValueError, match=r"回灌|max_backfill|allow-backfill"):
+            record_forward_ics(
+                "ashare", as_of, root=str(tmp_path), daily=daily,
+                now="20240301",  # lag=60 > 10
+            )
+
+        # allow_backfill 跳过旧日拒绝（as_of 可能无前序交易日 → failed 可 >0，但不抛）
+        out = record_forward_ics(
             "ashare", as_of, root=str(tmp_path), daily=daily,
-            now="20240301",  # lag=60 > 10
+            now="20240301", allow_backfill=True,
         )
+        assert "error" not in out
+        assert out["recorded"] >= 1
 
-    # allow_backfill 跳过旧日拒绝（as_of 可能无前序交易日 → failed 可 >0，但不抛）
-    out = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily,
-        now="20240301", allow_backfill=True,
-    )
-    assert "error" not in out
-    assert out["recorded"] >= 1
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_reject_historical_backfill(_tp0)
 
+    # -- 原 test_reject_future_as_of --
+    def _section_1_test_reject_future_as_of(tmp_path):
+        import pytest
 
-def test_reject_future_as_of(tmp_path):
-    """as_of > now → 拒绝未来日。"""
-    import pytest
+        from factorzen.discovery.forward_track import record_forward_ics
 
-    from factorzen.discovery.forward_track import record_forward_ics
+        daily, _d1, _d2, _d3 = _daily_3day()
+        _write_lib(tmp_path, "ashare", [
+            _lib_row("close", status="probation"),
+        ])
 
-    daily, _d1, _d2, _d3 = _daily_3day()
-    _write_lib(tmp_path, "ashare", [
-        _lib_row("close", status="probation"),
-    ])
+        with pytest.raises(ValueError, match=r"未来|future"):
+            record_forward_ics(
+                "ashare", "20240310", root=str(tmp_path), daily=daily,
+                now="20240301",
+            )
 
-    with pytest.raises(ValueError, match=r"未来|future"):
-        record_forward_ics(
-            "ashare", "20240310", root=str(tmp_path), daily=daily,
-            now="20240301",
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_reject_future_as_of(_tp1)
+
+    # -- 原 test_fresh_record_writes_provenance --
+    def _section_2_test_fresh_record_writes_provenance(tmp_path):
+        from factorzen.discovery.forward_track import record_forward_ics
+
+        daily, _d1, _d2, d3 = _daily_3day()
+        as_of = _yyyymmdd(d3)  # 20240104
+        _write_lib(tmp_path, "ashare", [
+            _lib_row("close", status="probation"),
+        ])
+
+        out = record_forward_ics(
+            "ashare", as_of, root=str(tmp_path), daily=daily,
+            now="20240106",  # lag=2 ≤ 10
         )
+        assert out["recorded"] == 1
+        assert out["failed"] == 0
 
+        rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.get("recorded_at"), "recorded_at 必须非空"
+        assert row.get("git_sha"), "git_sha 必须非空"
+        assert row.get("status_at_record") == "probation"
+        assert row.get("as_of_lag_days") == 2
+        assert "T" in row["recorded_at"]  # ISO wall-clock
 
-def test_fresh_record_writes_provenance(tmp_path):
-    """lag ≤ max_backfill_days → 正常写入；row 含 recorded_at/git_sha/status_at_record。"""
-    from factorzen.discovery.forward_track import record_forward_ics
-
-    daily, _d1, _d2, d3 = _daily_3day()
-    as_of = _yyyymmdd(d3)  # 20240104
-    _write_lib(tmp_path, "ashare", [
-        _lib_row("close", status="probation"),
-    ])
-
-    out = record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily,
-        now="20240106",  # lag=2 ≤ 10
-    )
-    assert out["recorded"] == 1
-    assert out["failed"] == 0
-
-    rows = _read_jsonl(tmp_path / "forward_track" / "ashare.jsonl")
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.get("recorded_at"), "recorded_at 必须非空"
-    assert row.get("git_sha"), "git_sha 必须非空"
-    assert row.get("status_at_record") == "probation"
-    assert row.get("as_of_lag_days") == 2
-    assert "T" in row["recorded_at"]  # ISO wall-clock
-
-
-def test_cli_forward_track_stale_date_nonzero(tmp_path, monkeypatch, capsys):
-    """CLI --date 远古、无 --allow-backfill → 非零；带 --allow-backfill → 0。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-
-    # 空库亦可：门禁在装配前，allow_backfill 后 to_eval 为空 → recorded=0 仍 0 退出
-    args_reject = build_parser().parse_args([
-        "factor-library", "forward-track",
-        "--market", "ashare",
-        "--date", "20200101",
-        "--root", str(tmp_path),
-    ])
-    rc_reject = cli_main._cmd_factor_library_forward_track(args_reject)
-    assert rc_reject != 0
-    err = capsys.readouterr().err
-    assert "回灌" in err or "backfill" in err.lower() or "max_backfill" in err or "失败" in err
-
-    args_ok = build_parser().parse_args([
-        "factor-library", "forward-track",
-        "--market", "ashare",
-        "--date", "20200101",
-        "--allow-backfill",
-        "--root", str(tmp_path),
-    ])
-    rc_ok = cli_main._cmd_factor_library_forward_track(args_ok)
-    assert rc_ok == 0
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_fresh_record_writes_provenance(_tp2)
 
 

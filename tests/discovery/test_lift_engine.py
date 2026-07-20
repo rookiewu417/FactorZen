@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import polars as pl
+import pytest
 
 
 # ==== 来自 test_lift_eval_context.py ====
@@ -57,388 +58,404 @@ def _active_noise(dates, n_stocks, seed=0):
 # ── 1. 窗口裁剪改变结论 ──────────────────────────────────────────────────────
 
 
-def test_admission_window_flips_lift_sign():
-    """全窗 residual lift>0，admission 只看后半段 → lift<0；scored_* 落在窗内。"""
-    from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
+def test_admission_window_provenance_suite():
+    """全窗 residual lift>0，admission 只看后半段 → lift<0；scored_* 落在窗内。；run_group_lift 透传 admission 窗并写 provenance 字段。"""
+    # -- 原 test_admission_window_flips_lift_sign --
+    def _section_0_test_admission_window_flips_lift_sign():
+        from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
 
-    # n_stocks≥40：residual 日守卫 max(30, k+10)
-    n_days, n_stocks = 50, 40
-    dates = _dates__lift_eval_context(n_days)
-    # 前 30 日强、后 20 日弱 → 全窗 lift>0；admission 从 mid_late 起 → lift<0
-    mid_late = dates[30]
-    active = _active_noise(dates, n_stocks)
-    ret = _ret_by_stock_rank(dates, n_stocks)
+        # n_stocks≥40：residual 日守卫 max(30, k+10)
+        n_days, n_stocks = 50, 40
+        dates = _dates__lift_eval_context(n_days)
+        # 前 30 日强、后 20 日弱 → 全窗 lift>0；admission 从 mid_late 起 → lift<0
+        mid_late = dates[30]
+        active = _active_noise(dates, n_stocks)
+        ret = _ret_by_stock_rank(dates, n_stocks)
 
-    def cand_flip():
-        rows = []
-        for d in dates:
-            for s in range(n_stocks):
-                fv = float(s) if d < mid_late else -float(s)
-                rows.append({
-                    "trade_date": d, "ts_code": f"{s:04d}.SZ", "factor_value": fv,
-                })
-        return pl.DataFrame(rows)
+        def cand_flip():
+            rows = []
+            for d in dates:
+                for s in range(n_stocks):
+                    fv = float(s) if d < mid_late else -float(s)
+                    rows.append({
+                        "trade_date": d, "ts_code": f"{s:04d}.SZ", "factor_value": fv,
+                    })
+            return pl.DataFrame(rows)
 
-    cand = cand_flip()
+        cand = cand_flip()
 
-    common = dict(
-        gray_candidates=[{"expression": "flip_cand", "residual_ic_train": 0.006}],
-        market="ashare",
-        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=lambda e: cand,
-        threshold=0.001,
-        block_days=10,
-        top_m=10,
-        lift_workers=1,
-    )
+        common = dict(
+            gray_candidates=[{"expression": "flip_cand", "residual_ic_train": 0.006}],
+            market="ashare",
+            daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+            active_factor_dfs=active,
+            ret_df=ret,
+            materialize_candidate=lambda e: cand,
+            threshold=0.001,
+            block_days=10,
+            top_m=10,
+            lift_workers=1,
+        )
 
-    full = run_lift_tests(**common)
-    assert full[0]["error"] is None, full[0]
-    assert full[0]["lift"] is not None and full[0]["lift"] > 0, full[0]
+        full = run_lift_tests(**common)
+        assert full[0]["error"] is None, full[0]
+        assert full[0]["lift"] is not None and full[0]["lift"] > 0, full[0]
 
-    ctx = LiftEvalContext(
-        market="ashare",
-        prepped=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
-        leaf_map=None,
-        horizon=5,
-        admission_start=mid_late,
-        admission_end=None,
-    )
-    windowed = run_lift_tests(**common, ctx=ctx)
-    assert windowed[0]["error"] is None, windowed[0]
-    assert windowed[0]["lift"] is not None and windowed[0]["lift"] < 0, windowed[0]
-    assert full[0]["passed"] is True or full[0]["lift"] > 0
-    assert windowed[0]["lift"] < 0
+        ctx = LiftEvalContext(
+            market="ashare",
+            prepped=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+            leaf_map=None,
+            horizon=5,
+            admission_start=mid_late,
+            admission_end=None,
+        )
+        windowed = run_lift_tests(**common, ctx=ctx)
+        assert windowed[0]["error"] is None, windowed[0]
+        assert windowed[0]["lift"] is not None and windowed[0]["lift"] < 0, windowed[0]
+        assert full[0]["passed"] is True or full[0]["lift"] > 0
+        assert windowed[0]["lift"] < 0
 
-    assert windowed[0]["admission_start"] == mid_late
-    assert windowed[0]["admission_end"] is None
-    assert windowed[0]["scored_start"] is not None
-    assert windowed[0]["scored_end"] is not None
-    assert windowed[0]["scored_start"] >= _iso(mid_late)
-    assert windowed[0]["scored_end"] >= windowed[0]["scored_start"]
-    assert windowed[0]["horizon"] == 5
-    assert windowed[0]["baseline"] is None
-    assert windowed[0].get("lift_metric") == "residual_ic_v1"
+        assert windowed[0]["admission_start"] == mid_late
+        assert windowed[0]["admission_end"] is None
+        assert windowed[0]["scored_start"] is not None
+        assert windowed[0]["scored_end"] is not None
+        assert windowed[0]["scored_start"] >= _iso(mid_late)
+        assert windowed[0]["scored_end"] >= windowed[0]["scored_start"]
+        assert windowed[0]["horizon"] == 5
+        assert windowed[0]["baseline"] is None
+        assert windowed[0].get("lift_metric") == "residual_ic_v1"
+
+    _section_0_test_admission_window_flips_lift_sign()
+
+    # -- 原 test_group_lift_admission_window_and_provenance --
+    def _section_1_test_group_lift_admission_window_and_provenance():
+        from factorzen.discovery.lift_test import LiftEvalContext, run_group_lift
+
+        n_days, n_stocks = 50, 40
+        dates = _dates__lift_eval_context(n_days)
+        mid_late = dates[30]
+        active = _active_noise(dates, n_stocks, seed=4)
+        ret = _ret_by_stock_rank(dates, n_stocks)
+
+        def cand_flip():
+            rows = []
+            for d in dates:
+                for s in range(n_stocks):
+                    fv = float(s) if d < mid_late else -float(s)
+                    rows.append({
+                        "trade_date": d, "ts_code": f"{s:04d}.SZ", "factor_value": fv,
+                    })
+            return pl.DataFrame(rows)
+
+        cand = cand_flip()
+
+        ctx = LiftEvalContext(
+            market="ashare",
+            prepped=pl.DataFrame(),
+            leaf_map=None,
+            horizon=5,
+            admission_start=mid_late,
+            admission_end=None,
+        )
+
+        out = run_group_lift(
+            [{"expression": "g1", "residual_ic_train": 0.006}],
+            market="ashare",
+            daily=pl.DataFrame(),
+            active_factor_dfs=active,
+            ret_df=ret,
+            materialize_candidate=lambda e: cand,
+            ctx=ctx,
+            threshold=0.001,
+        )
+        assert out["error"] is None, out
+        assert out["lift"] is not None and out["lift"] < 0
+        assert out["admission_start"] == mid_late
+        assert out["scored_start"] is not None and out["scored_start"] >= _iso(mid_late)
+        assert out["horizon"] == 5
+        assert out["baseline"] is None
+        assert "base_daily" not in out
+        assert out.get("lift_metric") == "residual_ic_v1"
+
+    _section_1_test_group_lift_admission_window_and_provenance()
 
 
 # ── 2. 对称性：pool 与 materializer 共用同一 prepped ─────────────────────────
 
 
-def test_make_lift_context_shared_prepped_for_pool_and_materializer(monkeypatch):
-    """make_lift_context prep 一次；pool 与 materializer 收到同一 prepped 对象。"""
-    from factorzen.discovery import lift_test as lt
-    from factorzen.discovery.lift_test import make_lift_context, run_lift_tests
+def test_lift_ctx_wiring_suite():
+    """make_lift_context prep 一次；pool 与 materializer 收到同一 prepped 对象。；ctx 与显式 active/ret/materialize 同时给 → 用注入的。；ctx=None / 不传 ctx 同一 mock 输入结果一致。；ctx.horizon=1 时 _build_ret_panel 收到 horizon=1，结果行 horizon==1。"""
+    # -- 原 test_make_lift_context_shared_prepped_for_pool_and_materializer --
+    def _section_0_test_make_lift_context_shared_prepped_for_pool_and_materializer(mp):
+        from factorzen.discovery import lift_test as lt
+        from factorzen.discovery.lift_test import make_lift_context, run_lift_tests
 
-    class _Factors:
-        def derived_columns(self, df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(pl.lit(42.0).alias("probe_derived"))
+        class _Factors:
+            def derived_columns(self, df: pl.DataFrame) -> pl.DataFrame:
+                return df.with_columns(pl.lit(42.0).alias("probe_derived"))
 
-    profile = SimpleNamespace(name="mock_mkt", factors=_Factors())
+        profile = SimpleNamespace(name="mock_mkt", factors=_Factors())
 
-    daily = pl.DataFrame({
-        "trade_date": ["20240102", "20240103"],
-        "ts_code": ["000001.SZ", "000001.SZ"],
-        "close": [10.0, 10.5],
-        "open": [9.5, 10.0],
-        "high": [10.2, 10.6],
-        "low": [9.4, 9.9],
-        "vol": [1e6, 1.1e6],
-        "amount": [1e7, 1.1e7],
-    })
-
-    ctx = make_lift_context(
-        "mock_mkt", daily, profile=profile, leaf_map={"close": "close"},
-        horizon=3, admission_start="20240103",
-    )
-    assert "probe_derived" in ctx.prepped.columns
-    assert ctx.profile_name == "mock_mkt"
-    assert ctx.horizon == 3
-    assert ctx.admission_start == "20240103"
-    prepped_id = id(ctx.prepped)
-
-    captured: dict = {}
-
-    def fake_pool(market, daily_df, leaf_map, **kw):
-        captured["pool_id"] = id(daily_df)
-        captured["pool_has_probe"] = "probe_derived" in daily_df.columns
-        # 非空 active 让 run 继续；返回极简面板
-        return {
-            "lib_a": pl.DataFrame({
-                "trade_date": ["20240102", "20240103"],
-                "ts_code": ["000001.SZ", "000001.SZ"],
-                "factor_value": [0.1, 0.2],
-            }),
-        }
-
-    def spy_mat_from_prepped(prepped, leaf_map, **_kw):
-        captured["mat_id"] = id(prepped)
-        captured["mat_has_probe"] = "probe_derived" in prepped.columns
-
-        def _mat(expr: str):
-            return pl.DataFrame({
-                "trade_date": ["20240102", "20240103"],
-                "ts_code": ["000001.SZ", "000001.SZ"],
-                "factor_value": [0.3, 0.4],
-            })
-
-        return _mat
-
-    monkeypatch.setattr(
-        "factorzen.discovery.factor_library.build_library_pool", fake_pool,
-    )
-    monkeypatch.setattr(lt, "_materializer_from_prepped", spy_mat_from_prepped)
-
-    monkeypatch.setattr(
-        lt, "_build_ret_panel",
-        # **_kw 接住 exec_lag/exec_price_col 等后加 kwargs——桩签名写死
-        # 会在真实签名扩展时假报错（本会话已栽过两次）
-        lambda daily_df, *, horizon=5, **_kw: pl.DataFrame({
+        daily = pl.DataFrame({
             "trade_date": ["20240102", "20240103"],
             "ts_code": ["000001.SZ", "000001.SZ"],
-            "ret": [0.01, -0.01],
-        }),
-    )
+            "close": [10.0, 10.5],
+            "open": [9.5, 10.0],
+            "high": [10.2, 10.6],
+            "low": [9.4, 9.9],
+            "vol": [1e6, 1.1e6],
+            "amount": [1e7, 1.1e7],
+        })
 
-    # 短面板会 no_residual_days；本测只验证 prepped 共享，不关心 lift 值
-    run_lift_tests(
-        [{"expression": "rank(close)", "residual_ic_train": 0.006}],
-        market="mock_mkt",
-        daily=daily,
-        ctx=ctx,
-        top_m=1,
-        lift_workers=1,
-    )
+        ctx = make_lift_context(
+            "mock_mkt", daily, profile=profile, leaf_map={"close": "close"},
+            horizon=3, admission_start="20240103",
+        )
+        assert "probe_derived" in ctx.prepped.columns
+        assert ctx.profile_name == "mock_mkt"
+        assert ctx.horizon == 3
+        assert ctx.admission_start == "20240103"
+        prepped_id = id(ctx.prepped)
 
-    assert captured.get("pool_id") == prepped_id
-    assert captured.get("mat_id") == prepped_id
-    assert captured.get("pool_has_probe") is True
-    assert captured.get("mat_has_probe") is True
+        captured: dict = {}
+
+        def fake_pool(market, daily_df, leaf_map, **kw):
+            captured["pool_id"] = id(daily_df)
+            captured["pool_has_probe"] = "probe_derived" in daily_df.columns
+            # 非空 active 让 run 继续；返回极简面板
+            return {
+                "lib_a": pl.DataFrame({
+                    "trade_date": ["20240102", "20240103"],
+                    "ts_code": ["000001.SZ", "000001.SZ"],
+                    "factor_value": [0.1, 0.2],
+                }),
+            }
+
+        def spy_mat_from_prepped(prepped, leaf_map, **_kw):
+            captured["mat_id"] = id(prepped)
+            captured["mat_has_probe"] = "probe_derived" in prepped.columns
+
+            def _mat(expr: str):
+                return pl.DataFrame({
+                    "trade_date": ["20240102", "20240103"],
+                    "ts_code": ["000001.SZ", "000001.SZ"],
+                    "factor_value": [0.3, 0.4],
+                })
+
+            return _mat
+
+        mp.setattr(
+            "factorzen.discovery.factor_library.build_library_pool", fake_pool,
+        )
+        mp.setattr(lt, "_materializer_from_prepped", spy_mat_from_prepped)
+
+        mp.setattr(
+            lt, "_build_ret_panel",
+            # **_kw 接住 exec_lag/exec_price_col 等后加 kwargs——桩签名写死
+            # 会在真实签名扩展时假报错（本会话已栽过两次）
+            lambda daily_df, *, horizon=5, **_kw: pl.DataFrame({
+                "trade_date": ["20240102", "20240103"],
+                "ts_code": ["000001.SZ", "000001.SZ"],
+                "ret": [0.01, -0.01],
+            }),
+        )
+
+        # 短面板会 no_residual_days；本测只验证 prepped 共享，不关心 lift 值
+        run_lift_tests(
+            [{"expression": "rank(close)", "residual_ic_train": 0.006}],
+            market="mock_mkt",
+            daily=daily,
+            ctx=ctx,
+            top_m=1,
+            lift_workers=1,
+        )
+
+        assert captured.get("pool_id") == prepped_id
+        assert captured.get("mat_id") == prepped_id
+        assert captured.get("pool_has_probe") is True
+        assert captured.get("mat_has_probe") is True
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_make_lift_context_shared_prepped_for_pool_and_materializer(mp)
+
+    # -- 原 test_explicit_injection_overrides_ctx --
+    def _section_1_test_explicit_injection_overrides_ctx(mp):
+        from factorzen.discovery import lift_test as lt
+        from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
+
+        dates = _dates__lift_eval_context(40)
+        n_stocks = 40
+        active = _active_noise(dates, n_stocks, seed=1)
+        ret = _ret_by_stock_rank(dates, n_stocks)
+        cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s))
+
+        ctx = LiftEvalContext(
+            market="should_not_use",
+            prepped=pl.DataFrame({"trade_date": ["x"], "ts_code": ["y"], "close": [1.0]}),
+            leaf_map=None,
+            horizon=99,
+            admission_start=None,
+            admission_end=None,
+            library_root="/should/not/touch",
+        )
+
+        pool_called = {"n": 0}
+        mat_from_called = {"n": 0}
+        ret_build_called = {"n": 0}
+
+        mp.setattr(
+            "factorzen.discovery.factor_library.build_library_pool",
+            lambda *a, **k: pool_called.__setitem__("n", pool_called["n"] + 1) or {},
+        )
+        mp.setattr(
+            lt, "_materializer_from_prepped",
+            lambda *a, **k: (
+                mat_from_called.__setitem__("n", mat_from_called["n"] + 1)
+                or (lambda e: cand)
+            ),
+        )
+        mp.setattr(
+            lt, "_build_ret_panel",
+            lambda *a, **k: (
+                ret_build_called.__setitem__("n", ret_build_called["n"] + 1)
+                or ret
+            ),
+        )
+
+        injected_mat = {"n": 0}
+
+        def mat(expr):
+            injected_mat["n"] += 1
+            return cand
+
+        rows = run_lift_tests(
+            [{"expression": "c0", "residual_ic_train": 0.01}],
+            market="ashare",
+            daily=pl.DataFrame(),
+            ctx=ctx,
+            active_factor_dfs=active,
+            ret_df=ret,
+            materialize_candidate=mat,
+            horizon=5,  # 显式覆盖 ctx.horizon=99
+            lift_workers=1,
+        )
+
+        assert pool_called["n"] == 0
+        assert mat_from_called["n"] == 0
+        assert ret_build_called["n"] == 0
+        assert injected_mat["n"] == 1
+        assert rows[0]["horizon"] == 5  # 显式优先
+        assert rows[0]["error"] is None or rows[0]["lift"] is not None
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_explicit_injection_overrides_ctx(mp)
+
+    # -- 原 test_ctx_none_zero_regression_same_inputs --
+    def _section_2_test_ctx_none_zero_regression_same_inputs():
+        from factorzen.discovery.lift_test import run_lift_tests
+
+        dates = _dates__lift_eval_context(50)
+        n_stocks = 40
+        active = _active_noise(dates, n_stocks, seed=2)
+        ret = _ret_by_stock_rank(dates, n_stocks)
+        cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s) + 0.01 * hash(d) % 7)
+
+        kwargs = dict(
+            gray_candidates=[
+                {"expression": "c0", "residual_ic_train": 0.008},
+                {"expression": "c1", "residual_ic_train": 0.007},
+            ],
+            market="ashare",
+            daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+            active_factor_dfs=active,
+            ret_df=ret,
+            materialize_candidate=lambda e: cand,
+            top_m=10,
+            threshold=0.001,
+            block_days=10,
+            seed=0,
+            lift_workers=1,
+        )
+
+        a = run_lift_tests(**kwargs)
+        b = run_lift_tests(**kwargs, ctx=None)
+        assert len(a) == len(b) == 2
+        for ra, rb in zip(a, b, strict=True):
+            # elapsed_s 是墙钟遥测,两次调用必然不同;零回归只比结果字段
+            assert {k: v for k, v in ra.items() if k != "elapsed_s"} == {
+                k: v for k, v in rb.items() if k != "elapsed_s"
+            }
+        for r in a:
+            assert r["admission_start"] is None
+            assert r["admission_end"] is None
+            assert r["horizon"] == 5
+            assert "scored_start" in r and "scored_end" in r
+            assert r.get("lift_metric") == "residual_ic_v1"
+
+    _section_2_test_ctx_none_zero_regression_same_inputs()
+
+    # -- 原 test_ctx_horizon_passed_to_build_ret_panel --
+    def _section_3_test_ctx_horizon_passed_to_build_ret_panel(mp):
+        from factorzen.discovery import lift_test as lt
+        from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
+
+        dates = _dates__lift_eval_context(40)
+        n_stocks = 40
+        active = _active_noise(dates, n_stocks, seed=3)
+        ret = _ret_by_stock_rank(dates, n_stocks)
+        cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s))
+
+        seen = {}
+
+        def spy_ret(daily_df, *, horizon=5, exec_lag=0, exec_price_col=None):
+            # 默认口径必须原样传下来（exec_lag=0 = 历史行为）
+            seen["exec_lag"] = exec_lag
+            seen["exec_price_col"] = exec_price_col
+            seen["horizon"] = horizon
+            return ret
+
+        mp.setattr(lt, "_build_ret_panel", spy_ret)
+
+        ctx = LiftEvalContext(
+            market="ashare",
+            prepped=pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["x"], "close": [1.0]}),
+            leaf_map=None,
+            horizon=1,
+            admission_start=None,
+            admission_end=None,
+        )
+
+        rows = run_lift_tests(
+            [{"expression": "c0", "residual_ic_train": 0.01}],
+            market="ashare",
+            daily=pl.DataFrame(),
+            ctx=ctx,
+            active_factor_dfs=active,
+            # 不注入 ret_df → 走 _build_ret_panel
+            materialize_candidate=lambda e: cand,
+            lift_workers=1,
+            # 不传 horizon → 从 ctx 派生
+        )
+
+        assert seen.get("horizon") == 1
+        assert rows[0]["horizon"] == 1
+        # ctx 未指定成交口径 ⇒ 必须原样传下默认值（exec_lag=0 = 历史 close→close，
+        # 见 compute_fwd_returns docstring）。若这里变成 1，等于默认行为被悄悄改了。
+        assert seen.get("exec_lag") == 0
+        assert seen.get("exec_price_col") is None
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_ctx_horizon_passed_to_build_ret_panel(mp)
 
 
 # ── 3. 显式注入优先于 ctx ───────────────────────────────────────────────────
 
 
-def test_explicit_injection_overrides_ctx(monkeypatch):
-    """ctx 与显式 active/ret/materialize 同时给 → 用注入的。"""
-    from factorzen.discovery import lift_test as lt
-    from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
-
-    dates = _dates__lift_eval_context(40)
-    n_stocks = 40
-    active = _active_noise(dates, n_stocks, seed=1)
-    ret = _ret_by_stock_rank(dates, n_stocks)
-    cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s))
-
-    ctx = LiftEvalContext(
-        market="should_not_use",
-        prepped=pl.DataFrame({"trade_date": ["x"], "ts_code": ["y"], "close": [1.0]}),
-        leaf_map=None,
-        horizon=99,
-        admission_start=None,
-        admission_end=None,
-        library_root="/should/not/touch",
-    )
-
-    pool_called = {"n": 0}
-    mat_from_called = {"n": 0}
-    ret_build_called = {"n": 0}
-
-    monkeypatch.setattr(
-        "factorzen.discovery.factor_library.build_library_pool",
-        lambda *a, **k: pool_called.__setitem__("n", pool_called["n"] + 1) or {},
-    )
-    monkeypatch.setattr(
-        lt, "_materializer_from_prepped",
-        lambda *a, **k: (
-            mat_from_called.__setitem__("n", mat_from_called["n"] + 1)
-            or (lambda e: cand)
-        ),
-    )
-    monkeypatch.setattr(
-        lt, "_build_ret_panel",
-        lambda *a, **k: (
-            ret_build_called.__setitem__("n", ret_build_called["n"] + 1)
-            or ret
-        ),
-    )
-
-    injected_mat = {"n": 0}
-
-    def mat(expr):
-        injected_mat["n"] += 1
-        return cand
-
-    rows = run_lift_tests(
-        [{"expression": "c0", "residual_ic_train": 0.01}],
-        market="ashare",
-        daily=pl.DataFrame(),
-        ctx=ctx,
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=mat,
-        horizon=5,  # 显式覆盖 ctx.horizon=99
-        lift_workers=1,
-    )
-
-    assert pool_called["n"] == 0
-    assert mat_from_called["n"] == 0
-    assert ret_build_called["n"] == 0
-    assert injected_mat["n"] == 1
-    assert rows[0]["horizon"] == 5  # 显式优先
-    assert rows[0]["error"] is None or rows[0]["lift"] is not None
-
-
 # ── 4. 零回归：ctx=None ─────────────────────────────────────────────────────
-
-
-def test_ctx_none_zero_regression_same_inputs():
-    """ctx=None / 不传 ctx 同一 mock 输入结果一致。"""
-    from factorzen.discovery.lift_test import run_lift_tests
-
-    dates = _dates__lift_eval_context(50)
-    n_stocks = 40
-    active = _active_noise(dates, n_stocks, seed=2)
-    ret = _ret_by_stock_rank(dates, n_stocks)
-    cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s) + 0.01 * hash(d) % 7)
-
-    kwargs = dict(
-        gray_candidates=[
-            {"expression": "c0", "residual_ic_train": 0.008},
-            {"expression": "c1", "residual_ic_train": 0.007},
-        ],
-        market="ashare",
-        daily=pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=lambda e: cand,
-        top_m=10,
-        threshold=0.001,
-        block_days=10,
-        seed=0,
-        lift_workers=1,
-    )
-
-    a = run_lift_tests(**kwargs)
-    b = run_lift_tests(**kwargs, ctx=None)
-    assert len(a) == len(b) == 2
-    for ra, rb in zip(a, b, strict=True):
-        # elapsed_s 是墙钟遥测,两次调用必然不同;零回归只比结果字段
-        assert {k: v for k, v in ra.items() if k != "elapsed_s"} == {
-            k: v for k, v in rb.items() if k != "elapsed_s"
-        }
-    for r in a:
-        assert r["admission_start"] is None
-        assert r["admission_end"] is None
-        assert r["horizon"] == 5
-        assert "scored_start" in r and "scored_end" in r
-        assert r.get("lift_metric") == "residual_ic_v1"
 
 
 # ── 5. horizon 透传 ──────────────────────────────────────────────────────────
 
-
-def test_ctx_horizon_passed_to_build_ret_panel(monkeypatch):
-    """ctx.horizon=1 时 _build_ret_panel 收到 horizon=1，结果行 horizon==1。"""
-    from factorzen.discovery import lift_test as lt
-    from factorzen.discovery.lift_test import LiftEvalContext, run_lift_tests
-
-    dates = _dates__lift_eval_context(40)
-    n_stocks = 40
-    active = _active_noise(dates, n_stocks, seed=3)
-    ret = _ret_by_stock_rank(dates, n_stocks)
-    cand = _panel_from_values(dates, n_stocks, lambda d, s: float(s))
-
-    seen = {}
-
-    def spy_ret(daily_df, *, horizon=5, exec_lag=0, exec_price_col=None):
-        # 默认口径必须原样传下来（exec_lag=0 = 历史行为）
-        seen["exec_lag"] = exec_lag
-        seen["exec_price_col"] = exec_price_col
-        seen["horizon"] = horizon
-        return ret
-
-    monkeypatch.setattr(lt, "_build_ret_panel", spy_ret)
-
-    ctx = LiftEvalContext(
-        market="ashare",
-        prepped=pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["x"], "close": [1.0]}),
-        leaf_map=None,
-        horizon=1,
-        admission_start=None,
-        admission_end=None,
-    )
-
-    rows = run_lift_tests(
-        [{"expression": "c0", "residual_ic_train": 0.01}],
-        market="ashare",
-        daily=pl.DataFrame(),
-        ctx=ctx,
-        active_factor_dfs=active,
-        # 不注入 ret_df → 走 _build_ret_panel
-        materialize_candidate=lambda e: cand,
-        lift_workers=1,
-        # 不传 horizon → 从 ctx 派生
-    )
-
-    assert seen.get("horizon") == 1
-    assert rows[0]["horizon"] == 1
-    # ctx 未指定成交口径 ⇒ 必须原样传下默认值（exec_lag=0 = 历史 close→close，
-    # 见 compute_fwd_returns docstring）。若这里变成 1，等于默认行为被悄悄改了。
-    assert seen.get("exec_lag") == 0
-    assert seen.get("exec_price_col") is None
-
-
-def test_group_lift_admission_window_and_provenance():
-    """run_group_lift 透传 admission 窗并写 provenance 字段。"""
-    from factorzen.discovery.lift_test import LiftEvalContext, run_group_lift
-
-    n_days, n_stocks = 50, 40
-    dates = _dates__lift_eval_context(n_days)
-    mid_late = dates[30]
-    active = _active_noise(dates, n_stocks, seed=4)
-    ret = _ret_by_stock_rank(dates, n_stocks)
-
-    def cand_flip():
-        rows = []
-        for d in dates:
-            for s in range(n_stocks):
-                fv = float(s) if d < mid_late else -float(s)
-                rows.append({
-                    "trade_date": d, "ts_code": f"{s:04d}.SZ", "factor_value": fv,
-                })
-        return pl.DataFrame(rows)
-
-    cand = cand_flip()
-
-    ctx = LiftEvalContext(
-        market="ashare",
-        prepped=pl.DataFrame(),
-        leaf_map=None,
-        horizon=5,
-        admission_start=mid_late,
-        admission_end=None,
-    )
-
-    out = run_group_lift(
-        [{"expression": "g1", "residual_ic_train": 0.006}],
-        market="ashare",
-        daily=pl.DataFrame(),
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=lambda e: cand,
-        ctx=ctx,
-        threshold=0.001,
-    )
-    assert out["error"] is None, out
-    assert out["lift"] is not None and out["lift"] < 0
-    assert out["admission_start"] == mid_late
-    assert out["scored_start"] is not None and out["scored_start"] >= _iso(mid_late)
-    assert out["horizon"] == 5
-    assert out["baseline"] is None
-    assert "base_daily" not in out
-    assert out.get("lift_metric") == "residual_ic_v1"
 
 # ==== 来自 test_residual_lift_engine.py ====
 # ── 合成面板（≤100 股 × ≤300 日）───────────────────────────────────────────
@@ -621,97 +638,84 @@ def test_run_lift_tests_e2e_matches_independent_residual_ic():
 # ── 2. 共线 → 零增量 ────────────────────────────────────────────────────────
 
 
-def test_collinear_candidate_near_zero_lift():
-    """候选 = 2*f0+3 → 残差≈0 → |lift| < 1e-6，且**必须被拒**。
+def test_collinear_zero_lift_suite():
+    """候选 = 2*f0+3 → 残差≈0 → |lift| < 1e-6，且**必须被拒**。；大量级共线候选：残差是舍入噪声，绝不能被判为增量。；同一候选整体缩放不改变残差 IC 结论——退化判据必须是尺度不变的。"""
+    # -- 原 test_collinear_candidate_near_zero_lift --
+    def _section_0_test_collinear_candidate_near_zero_lift():
+        from factorzen.discovery.lift_test import lift_admission, run_lift_tests
 
-    经济含义才是重点：被库完全张成的候选零增量，绝不能入库。
-    lift≈0 只是中间量——真正的契约是 ``lift_admission`` 判 reject
-    （全零序列 SE=None → reject，见 ``series_lift_stats`` 全零守卫）。
-    """
-    from factorzen.discovery.lift_test import lift_admission, run_lift_tests
+        active, cand, ret = _synth_lib_cand_ret(
+            n_days=60, n_stocks=60, seed=11, mode="collinear",
+        )
+        rows = run_lift_tests(
+            [{"expression": "col_cand"}],
+            market="ashare",
+            daily=pl.DataFrame(),
+            active_factor_dfs=active,
+            ret_df=ret,
+            materialize_candidate=lambda e: cand,
+            lift_workers=1,
+            threshold=-1.0,
+        )
+        r = rows[0]
+        assert r["error"] is None, r
+        assert r["lift"] is not None
+        assert abs(float(r["lift"])) < 1e-6, r
+        # 阈值传 -1.0 时 passed 会为 True——所以 passed 不是准入契约，
+        # lift_admission 才是。共线候选必须拒（否则「数量取胜」会被冗余因子灌水）。
+        assert lift_admission(r, threshold=0.005, se_mult=1.0) == "reject", r
 
-    active, cand, ret = _synth_lib_cand_ret(
-        n_days=60, n_stocks=60, seed=11, mode="collinear",
-    )
-    rows = run_lift_tests(
-        [{"expression": "col_cand"}],
-        market="ashare",
-        daily=pl.DataFrame(),
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=lambda e: cand,
-        lift_workers=1,
-        threshold=-1.0,
-    )
-    r = rows[0]
-    assert r["error"] is None, r
-    assert r["lift"] is not None
-    assert abs(float(r["lift"])) < 1e-6, r
-    # 阈值传 -1.0 时 passed 会为 True——所以 passed 不是准入契约，
-    # lift_admission 才是。共线候选必须拒（否则「数量取胜」会被冗余因子灌水）。
-    assert lift_admission(r, threshold=0.005, se_mult=1.0) == "reject", r
+    _section_0_test_collinear_candidate_near_zero_lift()
 
+    # -- 原 test_large_magnitude_collinear_candidate_rejected --
+    def _section_1_test_large_magnitude_collinear_candidate_rejected():
+        from factorzen.discovery.lift_test import lift_admission, run_lift_tests
 
-def test_large_magnitude_collinear_candidate_rejected():
-    """大量级共线候选：残差是舍入噪声，绝不能被判为增量。
+        active, cand, ret = _synth_lib_cand_ret(
+            n_days=60, n_stocks=60, seed=11, mode="collinear_large_scale",
+        )
+        rows = run_lift_tests(
+            [{"expression": "big_col_cand"}],
+            market="ashare",
+            daily=pl.DataFrame(),
+            active_factor_dfs=active,
+            ret_df=ret,
+            materialize_candidate=lambda e: cand,
+            lift_workers=1,
+            threshold=-1.0,
+        )
+        r = rows[0]
+        # 经济含义与小量级分支同：零增量必拒
+        assert lift_admission(r, threshold=0.001, se_mult=1.0) == "reject", r
+        # 且 lift 本身不得把舍入噪声报成增量
+        assert r["lift"] is None or abs(float(r["lift"])) < 1e-6, r
 
-    回归锚（2026-07-19 实测的准入穿透）：``spearman_avg_rank`` 的退化守卫是
-    **绝对**阈值 ``std < 1e-12``，而残差是否退化取决于它**相对**原值的比例。
-    候选量级放大 1e7 后，同一条零增量候选的舍入残差（相对量级 ~1e-16）绝对 std
-    越过 1e-12，Spearman 在纯噪声上算出 60 天日 IC，得 lift=0.0188（阈值 18 倍）、
-    lift_admission=active——纯浮点噪声准入入库。
+    _section_1_test_large_magnitude_collinear_candidate_rejected()
 
-    与 ``test_collinear_candidate_near_zero_lift`` 是同一经济情形的两个数值分支，
-    契约必须一致：零增量 → 拒。
-    """
-    from factorzen.discovery.lift_test import lift_admission, run_lift_tests
+    # -- 原 test_degenerate_guard_scale_invariant --
+    def _section_2_test_degenerate_guard_scale_invariant():
+        from factorzen.discovery.residual import (
+            ResidualProjector,
+            build_library_panel,
+            daily_residual_rank_ic,
+        )
 
-    active, cand, ret = _synth_lib_cand_ret(
-        n_days=60, n_stocks=60, seed=11, mode="collinear_large_scale",
-    )
-    rows = run_lift_tests(
-        [{"expression": "big_col_cand"}],
-        market="ashare",
-        daily=pl.DataFrame(),
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=lambda e: cand,
-        lift_workers=1,
-        threshold=-1.0,
-    )
-    r = rows[0]
-    # 经济含义与小量级分支同：零增量必拒
-    assert lift_admission(r, threshold=0.001, se_mult=1.0) == "reject", r
-    # 且 lift 本身不得把舍入噪声报成增量
-    assert r["lift"] is None or abs(float(r["lift"])) < 1e-6, r
+        active, cand, ret = _synth_lib_cand_ret(
+            n_days=40, n_stocks=60, seed=3, mode="collinear_large_scale",
+        )
+        panel = build_library_panel(active)
+        proj = ResidualProjector.from_panel(panel)
 
+        big = daily_residual_rank_ic(cand, panel, ret, ret_col="ret", projector=proj)
+        small = daily_residual_rank_ic(
+            cand.with_columns(pl.col("factor_value") / 1e7),
+            panel, ret, ret_col="ret", projector=proj,
+        )
+        # 缩放不改变「无有效残差日」这一结论
+        assert big.height == small.height, (big.height, small.height)
+        assert big.is_empty(), f"大量级共线候选不应产出残差 IC 日，实得 {big.height} 天"
 
-def test_degenerate_guard_scale_invariant():
-    """同一候选整体缩放不改变残差 IC 结论——退化判据必须是尺度不变的。
-
-    这是上面那条穿透的**根因层**断言：小量级已被 1e-12 绝对守卫挡住，
-    放大后就该同样被挡。用两个量级跑同一逻辑候选做对拍。
-    """
-    from factorzen.discovery.residual import (
-        ResidualProjector,
-        build_library_panel,
-        daily_residual_rank_ic,
-    )
-
-    active, cand, ret = _synth_lib_cand_ret(
-        n_days=40, n_stocks=60, seed=3, mode="collinear_large_scale",
-    )
-    panel = build_library_panel(active)
-    proj = ResidualProjector.from_panel(panel)
-
-    big = daily_residual_rank_ic(cand, panel, ret, ret_col="ret", projector=proj)
-    small = daily_residual_rank_ic(
-        cand.with_columns(pl.col("factor_value") / 1e7),
-        panel, ret, ret_col="ret", projector=proj,
-    )
-    # 缩放不改变「无有效残差日」这一结论
-    assert big.height == small.height, (big.height, small.height)
-    assert big.is_empty(), f"大量级共线候选不应产出残差 IC 日，实得 {big.height} 天"
+    _section_2_test_degenerate_guard_scale_invariant()
 
 
 # ── 3. 正交强信号 → 正增量 ──────────────────────────────────────────────────
@@ -744,68 +748,73 @@ def test_orthogonal_strong_signal_positive_lift():
 # ── 4. no_residual_days ─────────────────────────────────────────────────────
 
 
-def test_no_residual_days_when_ts_codes_outside_library():
-    """候选 ts_code 全在库轴外 → error=no_residual_days 且 lift is None。"""
-    from factorzen.discovery.lift_test import run_lift_tests
+def test_lift_error_contract_suite():
+    """候选 ts_code 全在库轴外 → error=no_residual_days 且 lift is None。；active 非空但物化不出面板 → empty_library_panel。"""
+    # -- 原 test_no_residual_days_when_ts_codes_outside_library --
+    def _section_0_test_no_residual_days_when_ts_codes_outside_library():
+        from factorzen.discovery.lift_test import run_lift_tests
 
-    active, _cand, ret = _synth_lib_cand_ret(
-        n_days=40, n_stocks=40, seed=3, mode="orthogonal_signal",
-    )
-    dates = _dates__residual_lift_engine(40)
-    # 库外股票码
-    foreign = [f"9{i:03d}.SH" for i in range(40)]
-    M = np.random.default_rng(0).standard_normal((40, 40))
-    cand_out = _long_panel(dates, foreign, M)
+        active, _cand, ret = _synth_lib_cand_ret(
+            n_days=40, n_stocks=40, seed=3, mode="orthogonal_signal",
+        )
+        dates = _dates__residual_lift_engine(40)
+        # 库外股票码
+        foreign = [f"9{i:03d}.SH" for i in range(40)]
+        M = np.random.default_rng(0).standard_normal((40, 40))
+        cand_out = _long_panel(dates, foreign, M)
 
-    rows = run_lift_tests(
-        [{"expression": "out_of_axis"}],
-        market="ashare",
-        daily=pl.DataFrame(),
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=lambda e: cand_out,
-        lift_workers=1,
-    )
-    r = rows[0]
-    assert r["error"] == "no_residual_days", r
-    assert r["lift"] is None  # 不得为 0（历史事故：空序列静默写 0.0）
+        rows = run_lift_tests(
+            [{"expression": "out_of_axis"}],
+            market="ashare",
+            daily=pl.DataFrame(),
+            active_factor_dfs=active,
+            ret_df=ret,
+            materialize_candidate=lambda e: cand_out,
+            lift_workers=1,
+        )
+        r = rows[0]
+        assert r["error"] == "no_residual_days", r
+        assert r["lift"] is None  # 不得为 0（历史事故：空序列静默写 0.0）
+
+    _section_0_test_no_residual_days_when_ts_codes_outside_library()
+
+    # -- 原 test_empty_library_panel_error --
+    def _section_1_test_empty_library_panel_error():
+        from factorzen.discovery.lift_test import run_lift_tests
+
+        empty_df = pl.DataFrame(
+            schema={
+                "trade_date": pl.Utf8,
+                "ts_code": pl.Utf8,
+                "factor_value": pl.Float64,
+            },
+        )
+        # 非空 dict，值为空帧
+        active = {"ghost_f": empty_df}
+        dates = _dates__residual_lift_engine(20)
+        codes = _codes(40)
+        M = np.zeros((20, 40))
+        cand = _long_panel(dates, codes, M)
+        ret = _long_panel(dates, codes, M, col="ret")
+
+        rows = run_lift_tests(
+            [{"expression": "c0"}],
+            market="ashare",
+            daily=pl.DataFrame(),
+            active_factor_dfs=active,
+            ret_df=ret,
+            materialize_candidate=lambda e: cand,
+            lift_workers=1,
+        )
+        assert len(rows) == 1
+        assert rows[0]["error"] == "empty_library_panel"
+        assert rows[0]["lift"] is None
+        assert rows[0]["passed"] is False
+
+    _section_1_test_empty_library_panel_error()
 
 
 # ── 5. empty_library_panel ──────────────────────────────────────────────────
-
-
-def test_empty_library_panel_error():
-    """active 非空但物化不出面板 → empty_library_panel。"""
-    from factorzen.discovery.lift_test import run_lift_tests
-
-    empty_df = pl.DataFrame(
-        schema={
-            "trade_date": pl.Utf8,
-            "ts_code": pl.Utf8,
-            "factor_value": pl.Float64,
-        },
-    )
-    # 非空 dict，值为空帧
-    active = {"ghost_f": empty_df}
-    dates = _dates__residual_lift_engine(20)
-    codes = _codes(40)
-    M = np.zeros((20, 40))
-    cand = _long_panel(dates, codes, M)
-    ret = _long_panel(dates, codes, M, col="ret")
-
-    rows = run_lift_tests(
-        [{"expression": "c0"}],
-        market="ashare",
-        daily=pl.DataFrame(),
-        active_factor_dfs=active,
-        ret_df=ret,
-        materialize_candidate=lambda e: cand,
-        lift_workers=1,
-    )
-    assert len(rows) == 1
-    assert rows[0]["error"] == "empty_library_panel"
-    assert rows[0]["lift"] is None
-    assert rows[0]["passed"] is False
 
 
 # ── 6. 组门口径 ─────────────────────────────────────────────────────────────

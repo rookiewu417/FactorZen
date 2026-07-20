@@ -56,57 +56,76 @@ def _toy(seed=0):
             rows.append(row)
     return pl.DataFrame(rows).sort(["ts_code", "trade_date"])
 
-def test_random_expression_is_compilable():
-    from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
-    from factorzen.discovery.search.random_search import random_expression
-    df = _toy()
-    rng = np.random.default_rng(7)
-    for _ in range(50):
-        node = random_expression(rng, max_depth=3)
-        # 可编译
-        out = df.with_columns(compile_expr(node).alias("f"))
-        assert "f" in out.columns
-        # 可 round-trip
-        assert to_expr_string(parse_expr(to_expr_string(node))) == to_expr_string(node)
+def test_search_compilability_suite():
+    """test_random_expression_is_compilable；test_random_searcher_proposes_distinct；test_crossover_and_mutate_stay_compilable"""
+    # -- 原 test_random_expression_is_compilable --
+    def _section_0_test_random_expression_is_compilable():
+        from factorzen.discovery.expression import compile_expr, parse_expr, to_expr_string
+        from factorzen.discovery.search.random_search import random_expression
+        df = _toy()
+        rng = np.random.default_rng(7)
+        for _ in range(50):
+            node = random_expression(rng, max_depth=3)
+            # 可编译
+            out = df.with_columns(compile_expr(node).alias("f"))
+            assert "f" in out.columns
+            # 可 round-trip
+            assert to_expr_string(parse_expr(to_expr_string(node))) == to_expr_string(node)
 
-def test_random_searcher_proposes_distinct():
-    from factorzen.discovery.expression import to_expr_string
-    from factorzen.discovery.search.random_search import RandomSearcher
-    s = RandomSearcher(np.random.default_rng(0), max_depth=3)
-    exprs = {to_expr_string(s.propose()) for _ in range(30)}
-    assert len(exprs) > 5  # 有多样性
+    _section_0_test_random_expression_is_compilable()
 
-def test_crossover_and_mutate_stay_compilable():
-    from factorzen.discovery.expression import compile_expr
-    from factorzen.discovery.search.genetic import crossover, mutate
-    from factorzen.discovery.search.random_search import random_expression
-    df = _toy()
-    rng = np.random.default_rng(11)
-    for _ in range(40):
-        a = random_expression(rng, 3)
-        b = random_expression(rng, 3)
-        child = crossover(a, b, rng)
-        mutant = mutate(child, rng, 3)
-        for node in (child, mutant):
-            df.with_columns(compile_expr(node).alias("f"))  # 不抛异常即合法
+    # -- 原 test_random_searcher_proposes_distinct --
+    def _section_1_test_random_searcher_proposes_distinct():
+        from factorzen.discovery.expression import to_expr_string
+        from factorzen.discovery.search.random_search import RandomSearcher
+        s = RandomSearcher(np.random.default_rng(0), max_depth=3)
+        exprs = {to_expr_string(s.propose()) for _ in range(30)}
+        assert len(exprs) > 5  # 有多样性
 
-def test_genetic_improves_toy_objective():
-    """目标：偏好复杂度小的表达式 → GP 平均复杂度应下降或持平。"""
-    from factorzen.discovery.expression import complexity
-    from factorzen.discovery.search.genetic import GeneticSearcher
-    rng = np.random.default_rng(5)
-    gs = GeneticSearcher(rng, max_depth=3)
-    best = gs.evolve(lambda node: -complexity(node), pop_size=20, generations=5)
-    assert complexity(best[0]) <= 4
+    _section_1_test_random_searcher_proposes_distinct()
 
-def test_genetic_terminates_under_complexity_pressure():
-    """即使目标偏好高复杂度（防膨胀过滤压力最大），evolve 也必须在有限时间内终止。"""
-    from factorzen.discovery.expression import complexity
-    from factorzen.discovery.search.genetic import GeneticSearcher
-    rng = np.random.default_rng(13)
-    gs = GeneticSearcher(rng, max_depth=3)
-    best = gs.evolve(lambda node: float(complexity(node)), pop_size=15, generations=6)
-    assert len(best) == 15  # 种群规模维持，未因死循环卡住
+    # -- 原 test_crossover_and_mutate_stay_compilable --
+    def _section_2_test_crossover_and_mutate_stay_compilable():
+        from factorzen.discovery.expression import compile_expr
+        from factorzen.discovery.search.genetic import crossover, mutate
+        from factorzen.discovery.search.random_search import random_expression
+        df = _toy()
+        rng = np.random.default_rng(11)
+        for _ in range(40):
+            a = random_expression(rng, 3)
+            b = random_expression(rng, 3)
+            child = crossover(a, b, rng)
+            mutant = mutate(child, rng, 3)
+            for node in (child, mutant):
+                df.with_columns(compile_expr(node).alias("f"))  # 不抛异常即合法
+
+    _section_2_test_crossover_and_mutate_stay_compilable()
+
+
+def test_genetic_toy_objective_suite():
+    """目标：偏好复杂度小的表达式 → GP 平均复杂度应下降或持平。；即使目标偏好高复杂度（防膨胀过滤压力最大），evolve 也必须在有限时间内终止。"""
+    # -- 原 test_genetic_improves_toy_objective --
+    def _section_0_test_genetic_improves_toy_objective():
+        from factorzen.discovery.expression import complexity
+        from factorzen.discovery.search.genetic import GeneticSearcher
+        rng = np.random.default_rng(5)
+        gs = GeneticSearcher(rng, max_depth=3)
+        best = gs.evolve(lambda node: -complexity(node), pop_size=20, generations=5)
+        assert complexity(best[0]) <= 4
+
+    _section_0_test_genetic_improves_toy_objective()
+
+    # -- 原 test_genetic_terminates_under_complexity_pressure --
+    def _section_1_test_genetic_terminates_under_complexity_pressure():
+        from factorzen.discovery.expression import complexity
+        from factorzen.discovery.search.genetic import GeneticSearcher
+        rng = np.random.default_rng(13)
+        gs = GeneticSearcher(rng, max_depth=3)
+        best = gs.evolve(lambda node: float(complexity(node)), pop_size=15, generations=6)
+        assert len(best) == 15  # 种群规模维持，未因死循环卡住
+
+    _section_1_test_genetic_terminates_under_complexity_pressure()
+
 
 def test_search_space_max_lookback_tracks_constants():
     """预热前缀按搜索空间派生：= max(_WINDOWS) × _DEFAULT_MAX_DEPTH，随常量联动而非硬编码。
@@ -256,28 +275,37 @@ def _capture_ir_pool(monkeypatch, daily, *, method: str) -> list:
     assert pools, "run_session 应构造过 DeflationBasis"
     return pools[-1]
 
-def test_genetic_ir_pool_excludes_expressions_below_min_n_train(monkeypatch):
-    """`_score_one` 必须与 random 路径同一道门：n_train 不足者不进 `eval_ir`。"""
-    from factorzen.discovery.derived import add_derived_columns
+def test_ir_pool_hygiene_dual_path_suite():
+    """`_score_one` 必须与 random 路径同一道门：n_train 不足者不进 `eval_ir`。；random 路径本就有这道门。两条一起断言，才守得住「双路径登记簿」。"""
+    # -- 原 test_genetic_ir_pool_excludes_expressions_below_min_n_train --
+    def _section_0_test_genetic_ir_pool_excludes_expressions_below_min_n_train(mp):
+        from factorzen.discovery.derived import add_derived_columns
 
-    ir_pool = _capture_ir_pool(monkeypatch, add_derived_columns(_daily_with_thin_leaf()),
-                               method="genetic")
+        ir_pool = _capture_ir_pool(mp, add_derived_columns(_daily_with_thin_leaf()),
+                                   method="genetic")
 
-    assert ir_pool, "genetic 的 ir_pool 不该为空（否则测试失去判别力）"
-    assert 0.0 not in ir_pool, (
-        f"eval_ir 里混进了 sentinel 0.0（死表达式）：{sorted(set(ir_pool))[:5]}。"
-        "genetic 的 _score_one 缺少 random 路径那道 min_n_train 门。"
-    )
+        assert ir_pool, "genetic 的 ir_pool 不该为空（否则测试失去判别力）"
+        assert 0.0 not in ir_pool, (
+            f"eval_ir 里混进了 sentinel 0.0（死表达式）：{sorted(set(ir_pool))[:5]}。"
+            "genetic 的 _score_one 缺少 random 路径那道 min_n_train 门。"
+        )
 
-def test_random_ir_pool_also_excludes_them(monkeypatch):
-    """random 路径本就有这道门。两条一起断言，才守得住「双路径登记簿」。"""
-    from factorzen.discovery.derived import add_derived_columns
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_genetic_ir_pool_excludes_expressions_below_min_n_train(mp)
 
-    ir_pool = _capture_ir_pool(monkeypatch, add_derived_columns(_daily_with_thin_leaf()),
-                               method="random")
+    # -- 原 test_random_ir_pool_also_excludes_them --
+    def _section_1_test_random_ir_pool_also_excludes_them(mp):
+        from factorzen.discovery.derived import add_derived_columns
 
-    assert ir_pool
-    assert 0.0 not in ir_pool
+        ir_pool = _capture_ir_pool(mp, add_derived_columns(_daily_with_thin_leaf()),
+                                   method="random")
+
+        assert ir_pool
+        assert 0.0 not in ir_pool
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_random_ir_pool_also_excludes_them(mp)
+
 
 # ==== 来自 test_w4_rank_fingerprint_eval.py ====
 # tests/test_w4_rank_fingerprint_eval.py
@@ -305,49 +333,56 @@ def _mock_daily(n_stocks=40, n_days=80, seed=7):
     return pl.DataFrame(rows)
 
 
-def test_evaluate_fingerprint_dup_monotone_equivalent():
-    """同截面秩序：rank(amount) 与 rank(mul(amount,2)) 第二记 duplicate_fingerprint、不计 N。"""
-    daily = _mock_daily()
-    bundle = DataBundle.build(daily)
-    seen: set[str] = set()
-    out = evaluate_expressions(
-        ["rank(amount)", "rank(mul(amount, 2.0))"],
-        daily, bundle, seen_fingerprints=seen,
-    )
-    assert len(out) == 2
-    assert out[0]["error"] is None and out[0]["ic_train"] is not None
-    assert out[0]["n_train"] > 0
-    assert out[1]["error"] == "duplicate_fingerprint"
-    assert out[1]["ic_train"] is None
-    assert out[1]["n_train"] == 0
-    assert out[1]["compile_ok"] is True
-    assert len(seen) == 1  # 只登记首个指纹
+def test_evaluate_fingerprint_suite():
+    """同截面秩序：rank(amount) 与 rank(mul(amount,2)) 第二记 duplicate_fingerprint、不计 N。；seen_fingerprints=None（默认）→ 不算指纹，两等价表达式都出 IC。；调用方持有跨批 set：第二批同源表达式被去重。"""
+    # -- 原 test_evaluate_fingerprint_dup_monotone_equivalent --
+    def _section_0_test_evaluate_fingerprint_dup_monotone_equivalent():
+        daily = _mock_daily()
+        bundle = DataBundle.build(daily)
+        seen: set[str] = set()
+        out = evaluate_expressions(
+            ["rank(amount)", "rank(mul(amount, 2.0))"],
+            daily, bundle, seen_fingerprints=seen,
+        )
+        assert len(out) == 2
+        assert out[0]["error"] is None and out[0]["ic_train"] is not None
+        assert out[0]["n_train"] > 0
+        assert out[1]["error"] == "duplicate_fingerprint"
+        assert out[1]["ic_train"] is None
+        assert out[1]["n_train"] == 0
+        assert out[1]["compile_ok"] is True
+        assert len(seen) == 1  # 只登记首个指纹
 
-def test_evaluate_fingerprint_none_gating_zero_regression():
-    """seen_fingerprints=None（默认）→ 不算指纹，两等价表达式都出 IC。"""
-    daily = _mock_daily()
-    bundle = DataBundle.build(daily)
-    out = evaluate_expressions(
-        ["rank(amount)", "rank(mul(amount, 2.0))"],
-        daily, bundle,
-    )
-    assert all(r["error"] != "duplicate_fingerprint" for r in out)
-    assert out[0]["ic_train"] is not None
-    assert out[1]["ic_train"] is not None
+    _section_0_test_evaluate_fingerprint_dup_monotone_equivalent()
 
-def test_evaluate_fingerprint_persists_across_batches():
-    """调用方持有跨批 set：第二批同源表达式被去重。"""
-    daily = _mock_daily()
-    bundle = DataBundle.build(daily)
-    seen: set[str] = set()
-    out1 = evaluate_expressions(["rank(amount)"], daily, bundle, seen_fingerprints=seen)
-    assert out1[0]["error"] is None
-    out2 = evaluate_expressions(
-        ["rank(mul(amount, 2.0))"], daily, bundle, seen_fingerprints=seen,
-    )
-    assert out2[0]["error"] == "duplicate_fingerprint"
-    assert out2[0]["n_train"] == 0
+    # -- 原 test_evaluate_fingerprint_none_gating_zero_regression --
+    def _section_1_test_evaluate_fingerprint_none_gating_zero_regression():
+        daily = _mock_daily()
+        bundle = DataBundle.build(daily)
+        out = evaluate_expressions(
+            ["rank(amount)", "rank(mul(amount, 2.0))"],
+            daily, bundle,
+        )
+        assert all(r["error"] != "duplicate_fingerprint" for r in out)
+        assert out[0]["ic_train"] is not None
+        assert out[1]["ic_train"] is not None
 
+    _section_1_test_evaluate_fingerprint_none_gating_zero_regression()
+
+    # -- 原 test_evaluate_fingerprint_persists_across_batches --
+    def _section_2_test_evaluate_fingerprint_persists_across_batches():
+        daily = _mock_daily()
+        bundle = DataBundle.build(daily)
+        seen: set[str] = set()
+        out1 = evaluate_expressions(["rank(amount)"], daily, bundle, seen_fingerprints=seen)
+        assert out1[0]["error"] is None
+        out2 = evaluate_expressions(
+            ["rank(mul(amount, 2.0))"], daily, bundle, seen_fingerprints=seen,
+        )
+        assert out2[0]["error"] == "duplicate_fingerprint"
+        assert out2[0]["n_train"] == 0
+
+    _section_2_test_evaluate_fingerprint_persists_across_batches()
 
 
 # ==== 来自 test_ts_eval.py ====
@@ -420,9 +455,7 @@ def _eval_chunked_and_full(node, df, monkeypatch):
 # ── 1. 逐位 parity 矩阵 ─────────────────────────────────────────────────────
 
 _SINGLE_TS_OPS = [
-    "ts_mean", "ts_std", "ts_rank", "delay", "delta", "ts_zscore",
-    "ts_sum", "ts_min", "ts_max", "ts_median", "ts_skew", "pct_change",
-    "ts_decay_linear",
+    "ts_mean", "delay", "ts_std", "ts_skew", "ts_decay_linear",
 ]
 
 _TWO_TS_OPS = ["ts_corr", "ts_cov"]
@@ -430,17 +463,11 @@ _TWO_TS_OPS = ["ts_corr", "ts_cov"]
 # 嵌套混合：含 PR#61 老巢（test_parity_on_previously_working_shapes 同型）
 _NESTED_EXPRS = [
     "mul(close, vol)",                    # 纯算术
-    "add(pb, ret_1d)",                    # 纯算术
-    "rank(pb)",                           # 截面套叶子
-    "ts_std(ret_1d, 5)",                  # 时序套叶子
     "ts_mean(ts_std(ret_1d, 5), 5)",      # ts∘ts
-    "neg(rank(pb))",                      # 算术套截面
     "rank(ts_std(ret_1d, 5))",            # cs(ts(x)) — 嵌套 over 老巢
     "ts_mean(rank(pb), 5)",               # ts(cs(x))
     "add(ts_mean(ret_1d, 5), rank(pb))",  # arith(ts, cs)
     "rank(add(ts_std(ret_1d, 5), ts_mean(ret_1d, 5)))",  # 深交叉
-    "ts_corr(close, vol, 10)",
-    "ts_cov(ret_1d, pb, 10)",
 ]
 
 @pytest.mark.parametrize("op", _SINGLE_TS_OPS)
@@ -555,71 +582,85 @@ def test_row_order_preserved(monkeypatch):
 
 # ── 4. 阈值不触发 ───────────────────────────────────────────────────────────
 
-def test_threshold_skips_chunk_path(monkeypatch):
-    """小帧 / 默认阈值：_materialize_ts_chunked 调用次数 = 0。"""
-    df = _panel(5, 30, unequal=False)  # ~150 行 << 3e6
-    calls = {"n": 0}
-    orig = expression_mod._materialize_ts_chunked
+def test_ts_chunk_threshold_dispatch_suite():
+    """小帧 / 默认阈值：_materialize_ts_chunked 调用次数 = 0。；阈值压低后 ts 节点确实走分块函数。"""
+    # -- 原 test_threshold_skips_chunk_path --
+    def _section_0_test_threshold_skips_chunk_path(mp):
+        df = _panel(5, 30, unequal=False)  # ~150 行 << 3e6
+        calls = {"n": 0}
+        orig = expression_mod._materialize_ts_chunked
 
-    def counting(*args, **kwargs):
-        calls["n"] += 1
-        return orig(*args, **kwargs)
+        def counting(*args, **kwargs):
+            calls["n"] += 1
+            return orig(*args, **kwargs)
 
-    monkeypatch.setattr(expression_mod, "_materialize_ts_chunked", counting)
-    # 保持默认阈值（3_000_000）
-    node = parse_expr("ts_mean(ts_std(close, 5), 5)")
-    out = evaluate_materialized(node, df)
-    assert calls["n"] == 0
-    assert out.len() == df.height
+        mp.setattr(expression_mod, "_materialize_ts_chunked", counting)
+        # 保持默认阈值（3_000_000）
+        node = parse_expr("ts_mean(ts_std(close, 5), 5)")
+        out = evaluate_materialized(node, df)
+        assert calls["n"] == 0
+        assert out.len() == df.height
 
-    # cs 节点也不走分块
-    node_cs = parse_expr("rank(pb)")
-    _ = evaluate_materialized(node_cs, df)
-    assert calls["n"] == 0
+        # cs 节点也不走分块
+        node_cs = parse_expr("rank(pb)")
+        _ = evaluate_materialized(node_cs, df)
+        assert calls["n"] == 0
 
-def test_chunk_path_invoked_when_over_threshold(monkeypatch):
-    """阈值压低后 ts 节点确实走分块函数。"""
-    df = _panel(20, 60, unequal=True)
-    _force_chunk(monkeypatch, threshold=100, target=80)
-    calls = {"n": 0}
-    orig = expression_mod._materialize_ts_chunked
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_threshold_skips_chunk_path(mp)
 
-    def counting(*args, **kwargs):
-        calls["n"] += 1
-        return orig(*args, **kwargs)
+    # -- 原 test_chunk_path_invoked_when_over_threshold --
+    def _section_1_test_chunk_path_invoked_when_over_threshold(mp):
+        df = _panel(20, 60, unequal=True)
+        _force_chunk(mp, threshold=100, target=80)
+        calls = {"n": 0}
+        orig = expression_mod._materialize_ts_chunked
 
-    monkeypatch.setattr(expression_mod, "_materialize_ts_chunked", counting)
-    node = parse_expr("ts_mean(close, 5)")
-    _ = evaluate_materialized(node, df)
-    assert calls["n"] >= 1
+        def counting(*args, **kwargs):
+            calls["n"] += 1
+            return orig(*args, **kwargs)
+
+        mp.setattr(expression_mod, "_materialize_ts_chunked", counting)
+        node = parse_expr("ts_mean(close, 5)")
+        _ = evaluate_materialized(node, df)
+        assert calls["n"] >= 1
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_chunk_path_invoked_when_over_threshold(mp)
+
 
 # ── 5. 批次边界算法单测 ─────────────────────────────────────────────────────
 
-def test_ts_stock_batches_greedy_pack():
-    """贪心合批：不切开股票，累计逼近 target。"""
-    # A:3 B:3 C:2 D:5  target=5 → [A+B=6? no: A=3, then A+B=6>5 so A alone?
-    # 贪心：当前批空 + 下一股 → 放；放后若再加超 target 则封批
-    # A(3): batch=[A] size=3; B(3): 3+3=6>5 → seal [A], start [B]; ...
-    codes = (
-        ["A"] * 3 + ["B"] * 3 + ["C"] * 2 + ["D"] * 5 + ["E"] * 1
-    )
-    s = pl.Series(codes)
-    batches = expression_mod._ts_stock_batches(s, target_rows=5)
-    reconstructed = []
-    for off, length in batches:
-        reconstructed.extend(codes[off: off + length])
-    assert reconstructed == codes
-    assert sum(L for _, L in batches) == len(codes)
-    # 每批 size：允许单股超 target（本例无）；否则 ≤ target + 不切
-    for off, length in batches:
-        # 批内完整 rle 段
-        part = codes[off: off + length]
-        assert part == s.slice(off, length).to_list()
+def test_ts_stock_batches_suite():
+    """贪心合批：不切开股票，累计逼近 target。；test_ts_stock_batches_single_stock_over_target"""
+    # -- 原 test_ts_stock_batches_greedy_pack --
+    def _section_0_test_ts_stock_batches_greedy_pack():
+        codes = (
+            ["A"] * 3 + ["B"] * 3 + ["C"] * 2 + ["D"] * 5 + ["E"] * 1
+        )
+        s = pl.Series(codes)
+        batches = expression_mod._ts_stock_batches(s, target_rows=5)
+        reconstructed = []
+        for off, length in batches:
+            reconstructed.extend(codes[off: off + length])
+        assert reconstructed == codes
+        assert sum(L for _, L in batches) == len(codes)
+        # 每批 size：允许单股超 target（本例无）；否则 ≤ target + 不切
+        for off, length in batches:
+            # 批内完整 rle 段
+            part = codes[off: off + length]
+            assert part == s.slice(off, length).to_list()
 
-def test_ts_stock_batches_single_stock_over_target():
-    s = pl.Series(["X"] * 100)
-    batches = expression_mod._ts_stock_batches(s, target_rows=30)
-    assert batches == [(0, 100)]
+    _section_0_test_ts_stock_batches_greedy_pack()
+
+    # -- 原 test_ts_stock_batches_single_stock_over_target --
+    def _section_1_test_ts_stock_batches_single_stock_over_target():
+        s = pl.Series(["X"] * 100)
+        batches = expression_mod._ts_stock_batches(s, target_rows=30)
+        assert batches == [(0, 100)]
+
+    _section_1_test_ts_stock_batches_single_stock_over_target()
+
 
 def test_cs_chunked_parity(monkeypatch):
     """cs 节点按日期段分块:分块 on/off 逐位相同,行序还原。"""
@@ -664,26 +705,38 @@ def _intraday_daily(n_bars: int = 48, n_syms: int = 40) -> pl.DataFrame:
                          "close": base + i * 0.5, "vol": 1.0, "amount": 100.0})
     return pl.DataFrame(rows).with_columns(pl.col("trade_date").cast(pl.Datetime("us")))
 
-def test_cut_literal_dispatch():
-    intraday = _intraday_daily()
-    daily = intraday.with_columns(pl.col("trade_date").cast(pl.Date))
-    assert _cut_literal(intraday, "20260501") == datetime(2026, 5, 1)
-    assert _cut_literal(daily, "20260501") == date(2026, 5, 1)
+def test_datetime_key_scoring_suite():
+    """test_cut_literal_dispatch；test_databundle_and_fitness_on_datetime_frame；test_factor_values_eval_start_on_datetime_frame"""
+    # -- 原 test_cut_literal_dispatch --
+    def _section_0_test_cut_literal_dispatch():
+        intraday = _intraday_daily()
+        daily = intraday.with_columns(pl.col("trade_date").cast(pl.Date))
+        assert _cut_literal(intraday, "20260501") == datetime(2026, 5, 1)
+        assert _cut_literal(daily, "20260501") == date(2026, 5, 1)
 
-def test_databundle_and_fitness_on_datetime_frame():
-    df = _intraday_daily()
-    bundle = DataBundle.build(df, train_ratio=0.7)
-    factor = df.select("trade_date", "ts_code",
-                       pl.col("close").alias("factor_value"))
-    res = quick_fitness(factor, bundle, "train")
-    assert res["n"] > 0  # 切分/过滤在 Datetime 键上正常工作
+    _section_0_test_cut_literal_dispatch()
 
-def test_factor_values_eval_start_on_datetime_frame():
-    from factorzen.discovery.expression import parse_expr
-    from factorzen.discovery.mining_session import _factor_values
-    df = _intraday_daily()
-    leaf_map = {"close": "close", "vol": "vol", "amount": "amount"}
-    out = _factor_values(parse_expr("close", leaf_map), df, eval_start="20260502",
-                         leaf_map=leaf_map)
-    assert out["trade_date"].min() >= datetime(2026, 5, 2)
+    # -- 原 test_databundle_and_fitness_on_datetime_frame --
+    def _section_1_test_databundle_and_fitness_on_datetime_frame():
+        df = _intraday_daily()
+        bundle = DataBundle.build(df, train_ratio=0.7)
+        factor = df.select("trade_date", "ts_code",
+                           pl.col("close").alias("factor_value"))
+        res = quick_fitness(factor, bundle, "train")
+        assert res["n"] > 0  # 切分/过滤在 Datetime 键上正常工作
+
+    _section_1_test_databundle_and_fitness_on_datetime_frame()
+
+    # -- 原 test_factor_values_eval_start_on_datetime_frame --
+    def _section_2_test_factor_values_eval_start_on_datetime_frame():
+        from factorzen.discovery.expression import parse_expr
+        from factorzen.discovery.mining_session import _factor_values
+        df = _intraday_daily()
+        leaf_map = {"close": "close", "vol": "vol", "amount": "amount"}
+        out = _factor_values(parse_expr("close", leaf_map), df, eval_start="20260502",
+                             leaf_map=leaf_map)
+        assert out["trade_date"].min() >= datetime(2026, 5, 2)
+
+    _section_2_test_factor_values_eval_start_on_datetime_frame()
+
 

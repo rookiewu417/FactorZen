@@ -10,11 +10,11 @@ from __future__ import annotations
 import os
 import time
 from datetime import date, datetime
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import polars as pl
+import pytest
 
 import factorzen.core.loader as loader_module
 from factorzen.core.loader import (
@@ -135,14 +135,21 @@ def test_rate_limit_sleeps_when_called_too_soon(monkeypatch):
     assert slept and slept[0] > 0
 
 
-def test_str_to_date_parses_yyyymmdd():
-    df = pl.DataFrame({"d": ["20240115"]}).with_columns(_str_to_date(pl.col("d")))
-    assert df["d"].item() == date(2024, 1, 15)
+def test_str_to_date_suite():
+    """test_str_to_date_parses_yyyymmdd；test_str_to_date_invalid_becomes_null"""
+    # -- 原 test_str_to_date_parses_yyyymmdd --
+    def _section_0_test_str_to_date_parses_yyyymmdd():
+        df = pl.DataFrame({"d": ["20240115"]}).with_columns(_str_to_date(pl.col("d")))
+        assert df["d"].item() == date(2024, 1, 15)
 
+    _section_0_test_str_to_date_parses_yyyymmdd()
 
-def test_str_to_date_invalid_becomes_null():
-    df = pl.DataFrame({"d": ["not-a-date"]}).with_columns(_str_to_date(pl.col("d")))
-    assert df["d"].item() is None
+    # -- 原 test_str_to_date_invalid_becomes_null --
+    def _section_1_test_str_to_date_invalid_becomes_null():
+        df = pl.DataFrame({"d": ["not-a-date"]}).with_columns(_str_to_date(pl.col("d")))
+        assert df["d"].item() is None
+
+    _section_1_test_str_to_date_invalid_becomes_null()
 
 
 # ══════════════════════════════════════════════════════════
@@ -150,43 +157,51 @@ def test_str_to_date_invalid_becomes_null():
 # ══════════════════════════════════════════════════════════
 
 
-def test_fetch_trade_cal_normal():
-    mock_pro = MagicMock()
-    mock_pro.trade_cal.return_value = pd.DataFrame(
-        {"cal_date": ["20240102", "20240103"], "is_open": [1, 1]}
-    )
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-    ):
-        result = fetch_trade_cal("20240101", "20240131")
-    assert result.height == 2
-    assert result["cal_date"].dtype == pl.Date
+def test_fetch_trade_cal_suite():
+    """test_fetch_trade_cal_normal；_retry 返回空时（patch 绕过重试），返回空 DataFrame。；test_fetch_trade_cal_exception_reraises"""
+    # -- 原 test_fetch_trade_cal_normal --
+    def _section_0_test_fetch_trade_cal_normal():
+        mock_pro = MagicMock()
+        mock_pro.trade_cal.return_value = pd.DataFrame(
+            {"cal_date": ["20240102", "20240103"], "is_open": [1, 1]}
+        )
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+        ):
+            result = fetch_trade_cal("20240101", "20240131")
+        assert result.height == 2
+        assert result["cal_date"].dtype == pl.Date
 
+    _section_0_test_fetch_trade_cal_normal()
 
-def test_fetch_trade_cal_empty_returns_empty():
-    """_retry 返回空时（patch 绕过重试），返回空 DataFrame。"""
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_retry", return_value=pd.DataFrame()),
-    ):
-        result = fetch_trade_cal("20240101", "20240131")
-    assert result.is_empty()
+    # -- 原 test_fetch_trade_cal_empty_returns_empty --
+    def _section_1_test_fetch_trade_cal_empty_returns_empty():
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_retry", return_value=pd.DataFrame()),
+        ):
+            result = fetch_trade_cal("20240101", "20240131")
+        assert result.is_empty()
 
+    _section_1_test_fetch_trade_cal_empty_returns_empty()
 
-def test_fetch_trade_cal_exception_reraises():
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_retry", side_effect=RuntimeError("net down")),
-    ):
-        try:
-            fetch_trade_cal("20240101", "20240131")
-        except RuntimeError as e:
-            assert "net down" in str(e)
-        else:
-            raise AssertionError("应抛出 RuntimeError")
+    # -- 原 test_fetch_trade_cal_exception_reraises --
+    def _section_2_test_fetch_trade_cal_exception_reraises():
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_retry", side_effect=RuntimeError("net down")),
+        ):
+            try:
+                fetch_trade_cal("20240101", "20240131")
+            except RuntimeError as e:
+                assert "net down" in str(e)
+            else:
+                raise AssertionError("应抛出 RuntimeError")
+
+    _section_2_test_fetch_trade_cal_exception_reraises()
 
 
 # ══════════════════════════════════════════════════════════
@@ -194,109 +209,153 @@ def test_fetch_trade_cal_exception_reraises():
 # ══════════════════════════════════════════════════════════
 
 
-def test_fetch_daily_ts_codes_mode_returns_filtered_no_cache_write():
-    """子集(ts_codes)模式：直拉、按 ts_codes 过滤返回、不写共享全市场缓存（避免污染）。"""
-    mock_pro = MagicMock()
-    mock_pro.daily.return_value = _pd_ohlc(code="000001.SZ")
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet") as save,
-    ):
-        result = fetch_daily("20220101", "20220131", ts_codes=["000001.SZ"])
-    save.assert_not_called()  # 子集不写共享缓存
-    assert result.height == 1 and result["ts_code"][0] == "000001.SZ"
+def test_fetch_daily_modes_suite():
+    """子集(ts_codes)模式：直拉、按 ts_codes 过滤返回、不写共享全市场缓存（避免污染）。；子集模式：某只股票拉取异常应跳过并继续其余股票。；test_fetch_daily_basic_subset_mode_no_cache_write；test_fetch_daily_basic_market_mode"""
+    # -- 原 test_fetch_daily_ts_codes_mode_returns_filtered_no_cache_write --
+    def _section_0_test_fetch_daily_ts_codes_mode_returns_filtered_no_cache_write():
+        mock_pro = MagicMock()
+        mock_pro.daily.return_value = _pd_ohlc(code="000001.SZ")
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet") as save,
+        ):
+            result = fetch_daily("20220101", "20220131", ts_codes=["000001.SZ"])
+        save.assert_not_called()  # 子集不写共享缓存
+        assert result.height == 1 and result["ts_code"][0] == "000001.SZ"
+
+    _section_0_test_fetch_daily_ts_codes_mode_returns_filtered_no_cache_write()
+
+    # -- 原 test_fetch_daily_subset_per_stock_error_continues --
+    def _section_1_test_fetch_daily_subset_per_stock_error_continues():
+        mock_pro = MagicMock()
+
+        def _daily(ts_code, start_date, end_date):
+            if ts_code == "BAD.SZ":
+                raise RuntimeError("single stock error")
+            return _pd_ohlc(code=ts_code)
+
+        mock_pro.daily.side_effect = _daily
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet"),
+        ):
+            result = fetch_daily("20220101", "20220131", ts_codes=["BAD.SZ", "000002.SZ"])
+        codes = result["ts_code"].to_list()
+        assert "000002.SZ" in codes and "BAD.SZ" not in codes
+
+    _section_1_test_fetch_daily_subset_per_stock_error_continues()
+
+    # -- 原 test_fetch_daily_basic_subset_mode_no_cache_write --
+    def _section_2_test_fetch_daily_basic_subset_mode_no_cache_write():
+        mock_pro = MagicMock()
+        mock_pro.daily_basic.return_value = _pd_basic(code="000001.SZ")
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet") as save,
+        ):
+            result = fetch_daily_basic("20220101", "20220131", ts_codes=["000001.SZ"])
+        save.assert_not_called()
+        assert result.height == 1 and result["ts_code"][0] == "000001.SZ"
+
+    _section_2_test_fetch_daily_basic_subset_mode_no_cache_write()
+
+    # -- 原 test_fetch_daily_basic_market_mode --
+    def _section_3_test_fetch_daily_basic_market_mode():
+        mock_pro = MagicMock()
+        mock_pro.daily_basic.return_value = _pd_basic()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_daily_basic("20220101", "20220131")
+        save.assert_called_once()
+
+    _section_3_test_fetch_daily_basic_market_mode()
 
 
-def test_fetch_daily_market_mode_fetches_only_missing_dates():
-    mock_pro = MagicMock()
-    mock_pro.daily.return_value = _pd_ohlc()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates",
-                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_daily("20220101", "20220131")
-    # 缓存为空 → 两个交易日都缺失 → 各拉一次
-    assert mock_pro.daily.call_count == 2
-    save.assert_called_once()
+def test_fetch_daily_market_cache_suite():
+    """test_fetch_daily_market_mode_fetches_only_missing_dates；C1 核心：部分交易日已缓存时只拉缺失日，不再把部分年误判为整年完整。；所有交易日都已在缓存 → 不再拉取（交易日历覆盖审计）。；全市场模式下缺失日拉取全失败，不保存。"""
+    # -- 原 test_fetch_daily_market_mode_fetches_only_missing_dates --
+    def _section_0_test_fetch_daily_market_mode_fetches_only_missing_dates():
+        mock_pro = MagicMock()
+        mock_pro.daily.return_value = _pd_ohlc()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates",
+                         return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_daily("20220101", "20220131")
+        # 缓存为空 → 两个交易日都缺失 → 各拉一次
+        assert mock_pro.daily.call_count == 2
+        save.assert_called_once()
 
+    _section_0_test_fetch_daily_market_mode_fetches_only_missing_dates()
 
-def test_fetch_daily_market_mode_fetches_only_missing_when_partially_cached():
-    """C1 核心：部分交易日已缓存时只拉缺失日，不再把部分年误判为整年完整。"""
-    mock_pro = MagicMock()
-    mock_pro.daily.return_value = _pd_ohlc(trade_date="20220105")
-    cached = pl.DataFrame({"trade_date": [date(2022, 1, 4)], "ts_code": ["000001.SZ"]})
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates",
-                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
-        patch.object(loader_module, "save_parquet"),
-        patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
-    ):
-        fetch_daily("20220101", "20220131")
-    # 只有 1/5 缺失 → 只拉一次（1/4 已缓存不重拉）
-    assert mock_pro.daily.call_count == 1
-    assert mock_pro.daily.call_args.kwargs.get("trade_date") == "20220105"
+    # -- 原 test_fetch_daily_market_mode_fetches_only_missing_when_partially_cached --
+    def _section_1_test_fetch_daily_market_mode_fetches_only_missing_when_partially_cached():
+        mock_pro = MagicMock()
+        mock_pro.daily.return_value = _pd_ohlc(trade_date="20220105")
+        cached = pl.DataFrame({"trade_date": [date(2022, 1, 4)], "ts_code": ["000001.SZ"]})
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates",
+                         return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+            patch.object(loader_module, "save_parquet"),
+            patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
+        ):
+            fetch_daily("20220101", "20220131")
+        # 只有 1/5 缺失 → 只拉一次（1/4 已缓存不重拉）
+        assert mock_pro.daily.call_count == 1
+        assert mock_pro.daily.call_args.kwargs.get("trade_date") == "20220105"
 
+    _section_1_test_fetch_daily_market_mode_fetches_only_missing_when_partially_cached()
 
-def test_fetch_daily_market_mode_skips_when_fully_cached():
-    """所有交易日都已在缓存 → 不再拉取（交易日历覆盖审计）。"""
-    mock_pro = MagicMock()
-    cached = pl.DataFrame({
-        "trade_date": [date(2022, 1, 4), date(2022, 1, 5)],
-        "ts_code": ["000001.SZ", "000001.SZ"],
-    })
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates",
-                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
-    ):
-        fetch_daily("20220101", "20220131")
-    mock_pro.daily.assert_not_called()  # 全部已缓存 → 不拉
-    save.assert_not_called()
+    # -- 原 test_fetch_daily_market_mode_skips_when_fully_cached --
+    def _section_2_test_fetch_daily_market_mode_skips_when_fully_cached():
+        mock_pro = MagicMock()
+        cached = pl.DataFrame({
+            "trade_date": [date(2022, 1, 4), date(2022, 1, 5)],
+            "ts_code": ["000001.SZ", "000001.SZ"],
+        })
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates",
+                         return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
+        ):
+            fetch_daily("20220101", "20220131")
+        mock_pro.daily.assert_not_called()  # 全部已缓存 → 不拉
+        save.assert_not_called()
 
+    _section_2_test_fetch_daily_market_mode_skips_when_fully_cached()
 
-def test_fetch_daily_subset_per_stock_error_continues():
-    """子集模式：某只股票拉取异常应跳过并继续其余股票。"""
-    mock_pro = MagicMock()
+    # -- 原 test_fetch_daily_market_mode_no_data_skips_save --
+    def _section_3_test_fetch_daily_market_mode_no_data_skips_save():
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_retry", side_effect=RuntimeError("空")),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_daily("20220101", "20220131")
+        save.assert_not_called()
 
-    def _daily(ts_code, start_date, end_date):
-        if ts_code == "BAD.SZ":
-            raise RuntimeError("single stock error")
-        return _pd_ohlc(code=ts_code)
-
-    mock_pro.daily.side_effect = _daily
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet"),
-    ):
-        result = fetch_daily("20220101", "20220131", ts_codes=["BAD.SZ", "000002.SZ"])
-    codes = result["ts_code"].to_list()
-    assert "000002.SZ" in codes and "BAD.SZ" not in codes
-
-
-def test_fetch_daily_market_mode_no_data_skips_save():
-    """全市场模式下缺失日拉取全失败，不保存。"""
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_retry", side_effect=RuntimeError("空")),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_daily("20220101", "20220131")
-    save.assert_not_called()
+    _section_3_test_fetch_daily_market_mode_no_data_skips_save()
 
 
 # ══════════════════════════════════════════════════════════
@@ -304,64 +363,44 @@ def test_fetch_daily_market_mode_no_data_skips_save():
 # ══════════════════════════════════════════════════════════
 
 
-def test_fetch_daily_basic_subset_mode_no_cache_write():
-    mock_pro = MagicMock()
-    mock_pro.daily_basic.return_value = _pd_basic(code="000001.SZ")
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet") as save,
-    ):
-        result = fetch_daily_basic("20220101", "20220131", ts_codes=["000001.SZ"])
-    save.assert_not_called()
-    assert result.height == 1 and result["ts_code"][0] == "000001.SZ"
-
-
-def test_fetch_daily_basic_market_mode():
-    mock_pro = MagicMock()
-    mock_pro.daily_basic.return_value = _pd_basic()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_daily_basic("20220101", "20220131")
-    save.assert_called_once()
-
-
 # ══════════════════════════════════════════════════════════
 # fetch_adj_factor
 # ══════════════════════════════════════════════════════════
 
 
-def test_fetch_adj_factor_normal():
-    mock_pro = MagicMock()
-    mock_pro.adj_factor.return_value = _pd_adj()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_adj_factor("20220101", "20220131")
-    save.assert_called_once()
+def test_fetch_adj_factor_suite():
+    """test_fetch_adj_factor_normal；test_fetch_adj_factor_no_data_skips_save"""
+    # -- 原 test_fetch_adj_factor_normal --
+    def _section_0_test_fetch_adj_factor_normal():
+        mock_pro = MagicMock()
+        mock_pro.adj_factor.return_value = _pd_adj()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_adj_factor("20220101", "20220131")
+        save.assert_called_once()
 
+    _section_0_test_fetch_adj_factor_normal()
 
-def test_fetch_adj_factor_no_data_skips_save():
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_retry", side_effect=RuntimeError("空")),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_adj_factor("20220101", "20220131")
-    save.assert_not_called()
+    # -- 原 test_fetch_adj_factor_no_data_skips_save --
+    def _section_1_test_fetch_adj_factor_no_data_skips_save():
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_retry", side_effect=RuntimeError("空")),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_adj_factor("20220101", "20220131")
+        save.assert_not_called()
+
+    _section_1_test_fetch_adj_factor_no_data_skips_save()
 
 
 # ══════════════════════════════════════════════════════════
@@ -369,43 +408,52 @@ def test_fetch_adj_factor_no_data_skips_save():
 # ══════════════════════════════════════════════════════════
 
 
-def test_fetch_index_daily_normal():
-    mock_pro = MagicMock()
-    mock_pro.index_daily.return_value = _pd_ohlc(code="000300.SH")
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_index_daily("000300.SH", "20220101", "20220131")
-    save.assert_called_once()
+def test_fetch_index_daily_suite():
+    """test_fetch_index_daily_normal；test_fetch_index_daily_exception_skips_save；test_fetch_index_daily_cached_skips_api"""
+    # -- 原 test_fetch_index_daily_normal --
+    def _section_0_test_fetch_index_daily_normal():
+        mock_pro = MagicMock()
+        mock_pro.index_daily.return_value = _pd_ohlc(code="000300.SH")
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_index_daily("000300.SH", "20220101", "20220131")
+        save.assert_called_once()
 
+    _section_0_test_fetch_index_daily_normal()
 
-def test_fetch_index_daily_exception_skips_save():
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_retry", side_effect=RuntimeError("api error")),
-        patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_index_daily("000300.SH", "20220101", "20220131")
-    save.assert_not_called()
+    # -- 原 test_fetch_index_daily_exception_skips_save --
+    def _section_1_test_fetch_index_daily_exception_skips_save():
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_retry", side_effect=RuntimeError("api error")),
+            patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_index_daily("000300.SH", "20220101", "20220131")
+        save.assert_not_called()
 
+    _section_1_test_fetch_index_daily_exception_skips_save()
 
-def test_fetch_index_daily_cached_skips_api():
-    mock_pro = MagicMock()
-    cached = pl.DataFrame({"trade_date": [date(2022, 1, 4)], "ts_code": ["000300.SH"]})
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
-        patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
-    ):
-        fetch_index_daily("000300.SH", "20220101", "20220131")
-    mock_pro.index_daily.assert_not_called()
+    # -- 原 test_fetch_index_daily_cached_skips_api --
+    def _section_2_test_fetch_index_daily_cached_skips_api():
+        mock_pro = MagicMock()
+        cached = pl.DataFrame({"trade_date": [date(2022, 1, 4)], "ts_code": ["000300.SH"]})
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
+            patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
+        ):
+            fetch_index_daily("000300.SH", "20220101", "20220131")
+        mock_pro.index_daily.assert_not_called()
+
+    _section_2_test_fetch_index_daily_cached_skips_api()
 
 
 # ══════════════════════════════════════════════════════════
@@ -413,95 +461,102 @@ def test_fetch_index_daily_cached_skips_api():
 # ══════════════════════════════════════════════════════════
 
 
-def test_fetch_finance_merges_and_casts():
-    """财报多批返回含 String 数值列，应统一 cast 到 Float64 后合并去重。"""
-    df_pd = pd.DataFrame(
-        {
-            "ts_code": ["000001.SZ"],
-            "ann_date": ["20220430"],
-            "end_date": ["20220331"],
-            "roe": ["12.5"],  # String 数值 → 应被 cast
-        }
-    )
-    mock_pro = MagicMock()
-    mock_pro.fina_indicator.return_value = df_pd
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "partition_exists", return_value=False),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_finance("fina_indicator", "20220101", "20220331", ts_codes=["000001.SZ"])
-    saved_df = save.call_args.args[0]
-    assert saved_df["roe"].dtype == pl.Float64
-    assert saved_df["end_date"].dtype == pl.Date
+def test_fetch_finance_paths_suite():
+    """财报多批返回含 String 数值列，应统一 cast 到 Float64 后合并去重。；不同接口写入不同命名空间 finance_{api_name}，避免共用 finance 分区 schema 冲突。；完整性检查须用季末月(Q1=3)，数据以 end_date(3/6/9/12) 落盘；用季初月(1)永不命中。；ts_codes=None 时应调用 fetch_stock_basic 获取全市场代码。"""
+    # -- 原 test_fetch_finance_merges_and_casts --
+    def _section_0_test_fetch_finance_merges_and_casts():
+        df_pd = pd.DataFrame(
+            {
+                "ts_code": ["000001.SZ"],
+                "ann_date": ["20220430"],
+                "end_date": ["20220331"],
+                "roe": ["12.5"],  # String 数值 → 应被 cast
+            }
+        )
+        mock_pro = MagicMock()
+        mock_pro.fina_indicator.return_value = df_pd
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "partition_exists", return_value=False),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_finance("fina_indicator", "20220101", "20220331", ts_codes=["000001.SZ"])
+        saved_df = save.call_args.args[0]
+        assert saved_df["roe"].dtype == pl.Float64
+        assert saved_df["end_date"].dtype == pl.Date
 
+    _section_0_test_fetch_finance_merges_and_casts()
 
-def test_fetch_finance_namespaces_by_api_name():
-    """不同接口写入不同命名空间 finance_{api_name}，避免共用 finance 分区 schema 冲突。"""
-    mock_pro = MagicMock()
-    mock_pro.income.return_value = pd.DataFrame(
-        {"ts_code": ["000001.SZ"], "ann_date": ["20220430"], "end_date": ["20220331"]}
-    )
-    mock_pro.cashflow.return_value = pd.DataFrame(
-        {"ts_code": ["000001.SZ"], "ann_date": ["20220430"], "end_date": ["20220331"]}
-    )
-    saved_types: list[str] = []
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "partition_exists", return_value=False),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet",
-                     side_effect=lambda df, data_type, **k: saved_types.append(data_type)),
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_finance("income", "20220101", "20220331", ts_codes=["000001.SZ"])
-        fetch_finance("cashflow", "20220101", "20220331", ts_codes=["000001.SZ"])
-    assert "finance_income" in saved_types
-    assert "finance_cashflow" in saved_types
-    assert "finance" not in saved_types
+    # -- 原 test_fetch_finance_namespaces_by_api_name --
+    def _section_1_test_fetch_finance_namespaces_by_api_name():
+        mock_pro = MagicMock()
+        mock_pro.income.return_value = pd.DataFrame(
+            {"ts_code": ["000001.SZ"], "ann_date": ["20220430"], "end_date": ["20220331"]}
+        )
+        mock_pro.cashflow.return_value = pd.DataFrame(
+            {"ts_code": ["000001.SZ"], "ann_date": ["20220430"], "end_date": ["20220331"]}
+        )
+        saved_types: list[str] = []
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "partition_exists", return_value=False),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet",
+                         side_effect=lambda df, data_type, **k: saved_types.append(data_type)),
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_finance("income", "20220101", "20220331", ts_codes=["000001.SZ"])
+            fetch_finance("cashflow", "20220101", "20220331", ts_codes=["000001.SZ"])
+        assert "finance_income" in saved_types
+        assert "finance_cashflow" in saved_types
+        assert "finance" not in saved_types
 
+    _section_1_test_fetch_finance_namespaces_by_api_name()
 
-def test_fetch_finance_cache_check_uses_quarter_end_month():
-    """完整性检查须用季末月(Q1=3)，数据以 end_date(3/6/9/12) 落盘；用季初月(1)永不命中。"""
-    checked: list[tuple] = []
+    # -- 原 test_fetch_finance_cache_check_uses_quarter_end_month --
+    def _section_2_test_fetch_finance_cache_check_uses_quarter_end_month():
+        checked: list[tuple] = []
 
-    def _fake_partition_exists(data_type, year, month, **k):
-        checked.append((data_type, year, month))
-        return month == 3  # 只有季末月 3 有分区
+        def _fake_partition_exists(data_type, year, month, **k):
+            checked.append((data_type, year, month))
+            return month == 3  # 只有季末月 3 有分区
 
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "partition_exists", side_effect=_fake_partition_exists),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_finance("income", "20220101", "20220331", ts_codes=["000001.SZ"])
-    # 检查用了季末月 3（命中 → 跳过拉取），而非季初月 1
-    assert ("finance_income", 2022, 3) in checked
-    save.assert_not_called()  # 已缓存 → 不拉取
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "partition_exists", side_effect=_fake_partition_exists),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_finance("income", "20220101", "20220331", ts_codes=["000001.SZ"])
+        # 检查用了季末月 3（命中 → 跳过拉取），而非季初月 1
+        assert ("finance_income", 2022, 3) in checked
+        save.assert_not_called()  # 已缓存 → 不拉取
 
+    _section_2_test_fetch_finance_cache_check_uses_quarter_end_month()
 
-def test_fetch_finance_market_mode_uses_stock_basic():
-    """ts_codes=None 时应调用 fetch_stock_basic 获取全市场代码。"""
-    mock_pro = MagicMock()
-    mock_pro.income.return_value = pd.DataFrame(
-        {"ts_code": ["000001.SZ"], "ann_date": ["20220430"], "end_date": ["20220331"]}
-    )
-    basic = pl.DataFrame({"ts_code": ["000001.SZ", "000002.SZ"]})
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "partition_exists", return_value=False),
-        patch.object(loader_module, "fetch_stock_basic", return_value=basic) as fsb,
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet"),
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_finance("income", "20220101", "20220331")
-    fsb.assert_called_once()
+    # -- 原 test_fetch_finance_market_mode_uses_stock_basic --
+    def _section_3_test_fetch_finance_market_mode_uses_stock_basic():
+        mock_pro = MagicMock()
+        mock_pro.income.return_value = pd.DataFrame(
+            {"ts_code": ["000001.SZ"], "ann_date": ["20220430"], "end_date": ["20220331"]}
+        )
+        basic = pl.DataFrame({"ts_code": ["000001.SZ", "000002.SZ"]})
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "partition_exists", return_value=False),
+            patch.object(loader_module, "fetch_stock_basic", return_value=basic) as fsb,
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet"),
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_finance("income", "20220101", "20220331")
+        fsb.assert_called_once()
+
+    _section_3_test_fetch_finance_market_mode_uses_stock_basic()
 
 
 # ══════════════════════════════════════════════════════════
@@ -509,52 +564,64 @@ def test_fetch_finance_market_mode_uses_stock_basic():
 # ══════════════════════════════════════════════════════════
 
 
-def test_fetch_stock_basic_no_data_no_cache_returns_empty(tmp_path: Path):
-    """所有 status 拉取失败且无缓存 → 返回空 DataFrame。"""
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "DATA_CACHE", tmp_path),
-        patch.object(loader_module, "_retry", side_effect=RuntimeError("空")),
-    ):
-        result = fetch_stock_basic(list_status="L")
-    assert result.is_empty()
+def test_fetch_stock_basic_edge_suite(tmp_path):
+    """所有 status 拉取失败且无缓存 → 返回空 DataFrame。；拉取全失败但有（过期）缓存 → 回退读取缓存。；L,D 两个 status 分别拉取再按 ts_code 去重合并。"""
+    # -- 原 test_fetch_stock_basic_no_data_no_cache_returns_empty --
+    def _section_0_test_fetch_stock_basic_no_data_no_cache_returns_empty(tmp_path):
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_retry", side_effect=RuntimeError("空")),
+        ):
+            result = fetch_stock_basic(list_status="L")
+        assert result.is_empty()
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_fetch_stock_basic_no_data_no_cache_returns_empty(_tp0)
 
-def test_fetch_stock_basic_no_data_falls_back_to_stale_cache(tmp_path: Path):
-    """拉取全失败但有（过期）缓存 → 回退读取缓存。"""
-    cache_file = tmp_path / "stock_basic_L.parquet"
-    pl.DataFrame({"ts_code": ["000001.SZ"], "name": ["旧"]}).write_parquet(cache_file)
-    stale = time.time() - 30 * 86400
-    os.utime(cache_file, (stale, stale))
+    # -- 原 test_fetch_stock_basic_no_data_falls_back_to_stale_cache --
+    def _section_1_test_fetch_stock_basic_no_data_falls_back_to_stale_cache(tmp_path):
+        cache_file = tmp_path / "stock_basic_L.parquet"
+        pl.DataFrame({"ts_code": ["000001.SZ"], "name": ["旧"]}).write_parquet(cache_file)
+        stale = time.time() - 30 * 86400
+        os.utime(cache_file, (stale, stale))
 
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "DATA_CACHE", tmp_path),
-        patch.object(loader_module, "_retry", side_effect=RuntimeError("空")),
-    ):
-        result = fetch_stock_basic(list_status="L")
-    assert result["ts_code"].to_list() == ["000001.SZ"]
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_retry", side_effect=RuntimeError("空")),
+        ):
+            result = fetch_stock_basic(list_status="L")
+        assert result["ts_code"].to_list() == ["000001.SZ"]
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_fetch_stock_basic_no_data_falls_back_to_stale_cache(_tp1)
 
-def test_fetch_stock_basic_merges_multiple_statuses(tmp_path: Path):
-    """L,D 两个 status 分别拉取再按 ts_code 去重合并。"""
-    mock_pro = MagicMock()
+    # -- 原 test_fetch_stock_basic_merges_multiple_statuses --
+    def _section_2_test_fetch_stock_basic_merges_multiple_statuses(tmp_path):
+        mock_pro = MagicMock()
 
-    def _basic(list_status, fields):
-        if list_status == "L":
-            return _pd_stock_basic_status("000001.SZ")
-        return _pd_stock_basic_status("000002.SZ")
+        def _basic(list_status, fields):
+            if list_status == "L":
+                return _pd_stock_basic_status("000001.SZ")
+            return _pd_stock_basic_status("000002.SZ")
 
-    mock_pro.stock_basic.side_effect = _basic
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "DATA_CACHE", tmp_path),
-        patch.object(loader_module, "_rate_limit"),
-    ):
-        result = fetch_stock_basic(list_status="L,D")
-    assert set(result["ts_code"].to_list()) == {"000001.SZ", "000002.SZ"}
+        mock_pro.stock_basic.side_effect = _basic
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_rate_limit"),
+        ):
+            result = fetch_stock_basic(list_status="L,D")
+        assert set(result["ts_code"].to_list()) == {"000001.SZ", "000002.SZ"}
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_fetch_stock_basic_merges_multiple_statuses(_tp2)
 
 
 def _pd_stock_basic_status(code: str) -> pd.DataFrame:
@@ -615,127 +682,144 @@ def _pd_member_all(l1_code: str, l1_name: str, ts_code: str, name: str) -> pd.Da
     )
 
 
-def test_fetch_index_member_all_cache_hit_skips_api(tmp_path: Path):
-    """缓存新鲜时直接读取，不调用 Tushare（index_classify / index_member_all 均不调用）。"""
-    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
-    cache_file = tmp_path / "index_member_all.parquet"
-    pl.DataFrame({"ts_code": ["000001.SZ"], "l1_name": ["银行"]}).write_parquet(cache_file)
+def test_fetch_index_member_all_suite(tmp_path):
+    """缓存新鲜时直接读取，不调用 Tushare（index_classify / index_member_all 均不调用）。；无缓存：先枚举一级行业(index_classify)，再逐个拉取成分(index_member_all)，；无权限/网络失败且无缓存：优雅降级返回 None，不抛异常（不卡住调用方）。；拉取失败但存在（过期）缓存：回退读取缓存而非返回 None。；同一进程内重复调用应只真正拉取一次（index_classify/index_member_all；无 TUSHARE_TOKEN（离线 CI 场景）：init_tushare 内 ensure_token 抛错，"""
+    # -- 原 test_fetch_index_member_all_cache_hit_skips_api --
+    def _section_0_test_fetch_index_member_all_cache_hit_skips_api(tmp_path):
+        loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+        cache_file = tmp_path / "index_member_all.parquet"
+        pl.DataFrame({"ts_code": ["000001.SZ"], "l1_name": ["银行"]}).write_parquet(cache_file)
 
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "DATA_CACHE", tmp_path),
-    ):
-        result = fetch_index_member_all()
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+        ):
+            result = fetch_index_member_all()
 
-    mock_pro.index_classify.assert_not_called()
-    mock_pro.index_member_all.assert_not_called()
-    assert result is not None
-    assert result["ts_code"].to_list() == ["000001.SZ"]
+        mock_pro.index_classify.assert_not_called()
+        mock_pro.index_member_all.assert_not_called()
+        assert result is not None
+        assert result["ts_code"].to_list() == ["000001.SZ"]
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_fetch_index_member_all_cache_hit_skips_api(_tp0)
 
-def test_fetch_index_member_all_loops_l1_codes_and_caches(tmp_path: Path):
-    """无缓存：先枚举一级行业(index_classify)，再逐个拉取成分(index_member_all)，
-    合并、转换日期列、写入缓存。"""
-    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
-    mock_pro = MagicMock()
-    mock_pro.index_classify.return_value = _pd_l1_classify()
+    # -- 原 test_fetch_index_member_all_loops_l1_codes_and_caches --
+    def _section_1_test_fetch_index_member_all_loops_l1_codes_and_caches(tmp_path):
+        loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+        mock_pro = MagicMock()
+        mock_pro.index_classify.return_value = _pd_l1_classify()
 
-    def _member(l1_code, fields):
-        if l1_code == "801780.SI":
-            return _pd_member_all("801780.SI", "银行", "000001.SZ", "平安银行")
-        return _pd_member_all("801150.SI", "医药生物", "600196.SH", "复星医药")
+        def _member(l1_code, fields):
+            if l1_code == "801780.SI":
+                return _pd_member_all("801780.SI", "银行", "000001.SZ", "平安银行")
+            return _pd_member_all("801150.SI", "医药生物", "600196.SH", "复星医药")
 
-    mock_pro.index_member_all.side_effect = _member
+        mock_pro.index_member_all.side_effect = _member
 
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "DATA_CACHE", tmp_path),
-        patch.object(loader_module, "_rate_limit"),
-    ):
-        result = fetch_index_member_all()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_rate_limit"),
+        ):
+            result = fetch_index_member_all()
 
-    assert mock_pro.index_member_all.call_count == 2
-    assert result is not None
-    assert set(result["ts_code"].to_list()) == {"000001.SZ", "600196.SH"}
-    assert result["in_date"].dtype == pl.Date
-    assert result["out_date"].dtype == pl.Date
-    assert (tmp_path / "index_member_all.parquet").exists()
+        assert mock_pro.index_member_all.call_count == 2
+        assert result is not None
+        assert set(result["ts_code"].to_list()) == {"000001.SZ", "600196.SH"}
+        assert result["in_date"].dtype == pl.Date
+        assert result["out_date"].dtype == pl.Date
+        assert (tmp_path / "index_member_all.parquet").exists()
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_fetch_index_member_all_loops_l1_codes_and_caches(_tp1)
 
-def test_fetch_index_member_all_failure_no_cache_returns_none(tmp_path: Path):
-    """无权限/网络失败且无缓存：优雅降级返回 None，不抛异常（不卡住调用方）。"""
-    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "DATA_CACHE", tmp_path),
-        patch.object(
-            loader_module, "_retry", side_effect=RuntimeError("抱歉，您没有访问该接口的权限")
-        ),
-    ):
-        result = fetch_index_member_all()
+    # -- 原 test_fetch_index_member_all_failure_no_cache_returns_none --
+    def _section_2_test_fetch_index_member_all_failure_no_cache_returns_none(tmp_path):
+        loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(
+                loader_module, "_retry", side_effect=RuntimeError("抱歉，您没有访问该接口的权限")
+            ),
+        ):
+            result = fetch_index_member_all()
 
-    assert result is None
+        assert result is None
 
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_fetch_index_member_all_failure_no_cache_returns_none(_tp2)
 
-def test_fetch_index_member_all_failure_falls_back_to_stale_cache(tmp_path: Path):
-    """拉取失败但存在（过期）缓存：回退读取缓存而非返回 None。"""
-    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
-    cache_file = tmp_path / "index_member_all.parquet"
-    pl.DataFrame({"ts_code": ["000001.SZ"], "l1_name": ["银行"]}).write_parquet(cache_file)
-    stale = time.time() - 30 * 86400
-    os.utime(cache_file, (stale, stale))
+    # -- 原 test_fetch_index_member_all_failure_falls_back_to_stale_cache --
+    def _section_3_test_fetch_index_member_all_failure_falls_back_to_stale_cache(tmp_path):
+        loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+        cache_file = tmp_path / "index_member_all.parquet"
+        pl.DataFrame({"ts_code": ["000001.SZ"], "l1_name": ["银行"]}).write_parquet(cache_file)
+        stale = time.time() - 30 * 86400
+        os.utime(cache_file, (stale, stale))
 
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "DATA_CACHE", tmp_path),
-        patch.object(loader_module, "_retry", side_effect=RuntimeError("网络错误")),
-    ):
-        result = fetch_index_member_all()
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_retry", side_effect=RuntimeError("网络错误")),
+        ):
+            result = fetch_index_member_all()
 
-    assert result is not None
-    assert result["ts_code"].to_list() == ["000001.SZ"]
+        assert result is not None
+        assert result["ts_code"].to_list() == ["000001.SZ"]
 
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_fetch_index_member_all_failure_falls_back_to_stale_cache(_tp3)
 
-def test_fetch_index_member_all_reuses_in_process_cache_across_calls(tmp_path: Path):
-    """同一进程内重复调用应只真正拉取一次（index_classify/index_member_all
-    均只调一次），避免 RiskModel.build() 对长窗口每个交易日都重新从磁盘/网络
-    读取同一份全市场行业成分表。"""
-    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
-    mock_pro = MagicMock()
-    mock_pro.index_classify.return_value = _pd_l1_classify()
-    mock_pro.index_member_all.side_effect = lambda l1_code, fields: _pd_member_all(
-        l1_code, "行业", "000001.SZ", "平安银行"
-    )
+    # -- 原 test_fetch_index_member_all_reuses_in_process_cache_across_calls --
+    def _section_4_test_fetch_index_member_all_reuses_in_process_cache_across_calls(tmp_path):
+        loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+        mock_pro = MagicMock()
+        mock_pro.index_classify.return_value = _pd_l1_classify()
+        mock_pro.index_member_all.side_effect = lambda l1_code, fields: _pd_member_all(
+            l1_code, "行业", "000001.SZ", "平安银行"
+        )
 
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "DATA_CACHE", tmp_path),
-        patch.object(loader_module, "_rate_limit"),
-    ):
-        first = fetch_index_member_all()
-        second = fetch_index_member_all()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(loader_module, "_rate_limit"),
+        ):
+            first = fetch_index_member_all()
+            second = fetch_index_member_all()
 
-    assert mock_pro.index_classify.call_count == 1, "第二次调用不应再拉取 index_classify"
-    assert first is not None
-    assert second is first, "第二次调用应直接返回进程内缓存的同一个对象，而非重新拉取"
+        assert mock_pro.index_classify.call_count == 1, "第二次调用不应再拉取 index_classify"
+        assert first is not None
+        assert second is first, "第二次调用应直接返回进程内缓存的同一个对象，而非重新拉取"
 
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_fetch_index_member_all_reuses_in_process_cache_across_calls(_tp4)
 
-def test_fetch_index_member_all_no_token_returns_none_fast(tmp_path: Path):
-    """无 TUSHARE_TOKEN（离线 CI 场景）：init_tushare 内 ensure_token 抛错，
-    应被优雅捕获并立即返回 None，而不是抛异常或卡住。"""
-    loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
-    with (
-        patch.object(loader_module, "DATA_CACHE", tmp_path),
-        patch.object(
-            loader_module, "init_tushare", side_effect=RuntimeError("请设置 TUSHARE_TOKEN 环境变量")
-        ),
-    ):
-        result = fetch_index_member_all()
+    # -- 原 test_fetch_index_member_all_no_token_returns_none_fast --
+    def _section_5_test_fetch_index_member_all_no_token_returns_none_fast(tmp_path):
+        loader_module._INDEX_MEMBER_ALL_MEMORY_CACHE.clear()
+        with (
+            patch.object(loader_module, "DATA_CACHE", tmp_path),
+            patch.object(
+                loader_module, "init_tushare", side_effect=RuntimeError("请设置 TUSHARE_TOKEN 环境变量")
+            ),
+        ):
+            result = fetch_index_member_all()
 
-    assert result is None
+        assert result is None
+
+    _tp5 = tmp_path / "_s5"
+    _tp5.mkdir(exist_ok=True)
+    _section_5_test_fetch_index_member_all_no_token_returns_none_fast(_tp5)
 
 
 # ══════════════════════════════════════════════════════════
@@ -760,74 +844,83 @@ def _pd_margin(trade_date: str = "20220104", code: str = "000001.SZ") -> pd.Data
     )
 
 
-def test_fetch_margin_detail_market_mode_by_trade_date():
-    """全市场：按缺失交易日逐日 trade_date 拉取并 save_parquet(margin_detail)。"""
-    mock_pro = MagicMock()
-    mock_pro.margin_detail.return_value = _pd_margin()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates",
-                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_margin_detail("20220101", "20220131")
-    assert mock_pro.margin_detail.call_count == 2
-    for c in mock_pro.margin_detail.call_args_list:
-        assert "trade_date" in c.kwargs
-    save.assert_called_once()
-    assert save.call_args.kwargs.get("data_type") == "margin_detail"
+def test_fetch_margin_detail_suite():
+    """全市场：按缺失交易日逐日 trade_date 拉取并 save_parquet(margin_detail)。；幂等增量：已缓存交易日不重拉。；test_fetch_margin_detail_fully_cached_no_fetch；test_fetch_margin_detail_subset_no_cache_write"""
+    # -- 原 test_fetch_margin_detail_market_mode_by_trade_date --
+    def _section_0_test_fetch_margin_detail_market_mode_by_trade_date():
+        mock_pro = MagicMock()
+        mock_pro.margin_detail.return_value = _pd_margin()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates",
+                         return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_margin_detail("20220101", "20220131")
+        assert mock_pro.margin_detail.call_count == 2
+        for c in mock_pro.margin_detail.call_args_list:
+            assert "trade_date" in c.kwargs
+        save.assert_called_once()
+        assert save.call_args.kwargs.get("data_type") == "margin_detail"
 
+    _section_0_test_fetch_margin_detail_market_mode_by_trade_date()
 
-def test_fetch_margin_detail_incremental_skips_cached_dates():
-    """幂等增量：已缓存交易日不重拉。"""
-    mock_pro = MagicMock()
-    mock_pro.margin_detail.return_value = _pd_margin(trade_date="20220105")
-    cached = pl.DataFrame({"trade_date": [date(2022, 1, 4)], "ts_code": ["000001.SZ"]})
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates",
-                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
-        patch.object(loader_module, "save_parquet"),
-        patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
-    ):
-        fetch_margin_detail("20220101", "20220131")
-    assert mock_pro.margin_detail.call_count == 1
-    assert mock_pro.margin_detail.call_args.kwargs.get("trade_date") == "20220105"
+    # -- 原 test_fetch_margin_detail_incremental_skips_cached_dates --
+    def _section_1_test_fetch_margin_detail_incremental_skips_cached_dates():
+        mock_pro = MagicMock()
+        mock_pro.margin_detail.return_value = _pd_margin(trade_date="20220105")
+        cached = pl.DataFrame({"trade_date": [date(2022, 1, 4)], "ts_code": ["000001.SZ"]})
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates",
+                         return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+            patch.object(loader_module, "save_parquet"),
+            patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
+        ):
+            fetch_margin_detail("20220101", "20220131")
+        assert mock_pro.margin_detail.call_count == 1
+        assert mock_pro.margin_detail.call_args.kwargs.get("trade_date") == "20220105"
 
+    _section_1_test_fetch_margin_detail_incremental_skips_cached_dates()
 
-def test_fetch_margin_detail_fully_cached_no_fetch():
-    mock_pro = MagicMock()
-    cached = pl.DataFrame({
-        "trade_date": [date(2022, 1, 4), date(2022, 1, 5)],
-        "ts_code": ["000001.SZ", "000001.SZ"],
-    })
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates",
-                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
-    ):
-        fetch_margin_detail("20220101", "20220131")
-    mock_pro.margin_detail.assert_not_called()
-    save.assert_not_called()
+    # -- 原 test_fetch_margin_detail_fully_cached_no_fetch --
+    def _section_2_test_fetch_margin_detail_fully_cached_no_fetch():
+        mock_pro = MagicMock()
+        cached = pl.DataFrame({
+            "trade_date": [date(2022, 1, 4), date(2022, 1, 5)],
+            "ts_code": ["000001.SZ", "000001.SZ"],
+        })
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates",
+                         return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(cached)),
+        ):
+            fetch_margin_detail("20220101", "20220131")
+        mock_pro.margin_detail.assert_not_called()
+        save.assert_not_called()
 
+    _section_2_test_fetch_margin_detail_fully_cached_no_fetch()
 
-def test_fetch_margin_detail_subset_no_cache_write():
-    mock_pro = MagicMock()
-    mock_pro.margin_detail.return_value = _pd_margin(code="000001.SZ")
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet") as save,
-    ):
-        result = fetch_margin_detail("20220101", "20220131", ts_codes=["000001.SZ"])
-    save.assert_not_called()
-    assert result.height == 1 and result["ts_code"][0] == "000001.SZ"
+    # -- 原 test_fetch_margin_detail_subset_no_cache_write --
+    def _section_3_test_fetch_margin_detail_subset_no_cache_write():
+        mock_pro = MagicMock()
+        mock_pro.margin_detail.return_value = _pd_margin(code="000001.SZ")
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet") as save,
+        ):
+            result = fetch_margin_detail("20220101", "20220131", ts_codes=["000001.SZ"])
+        save.assert_not_called()
+        assert result.height == 1 and result["ts_code"][0] == "000001.SZ"
+
+    _section_3_test_fetch_margin_detail_subset_no_cache_write()
 
 
 # ══════════════════════════════════════════════════════════
@@ -846,160 +939,186 @@ def _pd_holder(code: str = "000001.SZ", ann: str = "20220430", end: str = "20220
     )
 
 
-def test_fetch_stk_holdernumber_market_mode_monthly_windows(tmp_path, monkeypatch):
-    """市场模式：按公告月窗口整市场拉（不带 ts_code），落盘并写 "YYYY-MM" 标记。"""
-    from factorzen.core.loader import fetch_stk_holdernumber
+def test_fetch_stk_holdernumber_suite(tmp_path):
+    """市场模式：按公告月窗口整市场拉（不带 ts_code），落盘并写 "YYYY-MM" 标记。；幂等：月窗口标记存在则跳过；旧版整年标记向后兼容视为覆盖该年。；子集模式（ts_codes）：逐股直拉直接返回，不写共享缓存、不写标记——；API 异常的窗口重试一次后放弃且**不写标记**（下次重跑补齐，不静默留洞）。；标记写入原子性：仅 .tmp 存在不算完成，仍会抓取。；无标记重跑同窗口：save 前 (ts_code,end_date) 与既有去重，结果无重复。"""
+    # -- 原 test_fetch_stk_holdernumber_market_mode_monthly_windows --
+    def _section_0_test_fetch_stk_holdernumber_market_mode_monthly_windows(tmp_path, mp):
+        from factorzen.core.loader import fetch_stk_holdernumber
 
-    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
-    mock_pro = MagicMock()
-    mock_pro.stk_holdernumber.return_value = _pd_holder()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_stk_holdernumber("20220101", "20220331")
-    # 3 个月窗口各一次调用，且不带 ts_code（整市场按公告窗口）
-    assert mock_pro.stk_holdernumber.call_count == 3
-    for c in mock_pro.stk_holdernumber.call_args_list:
-        assert "ts_code" not in c.kwargs
-        assert "start_date" in c.kwargs and "end_date" in c.kwargs
-    save.assert_called()
-    assert save.call_args.kwargs.get("data_type") == "stk_holdernumber"
-    saved = save.call_args.args[0]
-    assert "holder_num" in saved.columns
-    assert saved["end_date"].dtype == pl.Date
-    import json
-    windows = json.loads((tmp_path / "stk_holdernumber" / "_fetched_windows.json").read_text())
-    assert {w["window"] for w in windows} == {"2022-01", "2022-02", "2022-03"}
+        mp.setattr(loader_module, "DATA_RAW", tmp_path)
+        mock_pro = MagicMock()
+        mock_pro.stk_holdernumber.return_value = _pd_holder()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_stk_holdernumber("20220101", "20220331")
+        # 3 个月窗口各一次调用，且不带 ts_code（整市场按公告窗口）
+        assert mock_pro.stk_holdernumber.call_count == 3
+        for c in mock_pro.stk_holdernumber.call_args_list:
+            assert "ts_code" not in c.kwargs
+            assert "start_date" in c.kwargs and "end_date" in c.kwargs
+        save.assert_called()
+        assert save.call_args.kwargs.get("data_type") == "stk_holdernumber"
+        saved = save.call_args.args[0]
+        assert "holder_num" in saved.columns
+        assert saved["end_date"].dtype == pl.Date
+        import json
+        windows = json.loads((tmp_path / "stk_holdernumber" / "_fetched_windows.json").read_text())
+        assert {w["window"] for w in windows} == {"2022-01", "2022-02", "2022-03"}
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_fetch_stk_holdernumber_market_mode_monthly_windows(_tp0, mp)
 
-def test_fetch_stk_holdernumber_window_marker_skips(tmp_path, monkeypatch):
-    """幂等：月窗口标记存在则跳过；旧版整年标记向后兼容视为覆盖该年。"""
-    import json
+    # -- 原 test_fetch_stk_holdernumber_window_marker_skips --
+    def _section_1_test_fetch_stk_holdernumber_window_marker_skips(tmp_path, mp):
+        import json
 
-    from factorzen.core.loader import fetch_stk_holdernumber
+        from factorzen.core.loader import fetch_stk_holdernumber
 
-    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
-    marker_dir = tmp_path / "stk_holdernumber"
-    marker_dir.mkdir(parents=True)
-    (marker_dir / "_fetched_windows.json").write_text(
-        json.dumps([
-            {"year": 2022, "n_stocks": 1, "ts": "2026-01-01T00:00:00"},   # legacy 整年
-            {"window": "2023-01", "n_rows": 5, "ts": "2026-01-01T00:00:00"},
-        ])
-    )
-    mock_pro = MagicMock()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_stk_holdernumber("20220101", "20220331")   # legacy 年覆盖
-        fetch_stk_holdernumber("20230101", "20230131")   # 月标记覆盖
-    mock_pro.stk_holdernumber.assert_not_called()
-    save.assert_not_called()
+        mp.setattr(loader_module, "DATA_RAW", tmp_path)
+        marker_dir = tmp_path / "stk_holdernumber"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / "_fetched_windows.json").write_text(
+            json.dumps([
+                {"year": 2022, "n_stocks": 1, "ts": "2026-01-01T00:00:00"},   # legacy 整年
+                {"window": "2023-01", "n_rows": 5, "ts": "2026-01-01T00:00:00"},
+            ])
+        )
+        mock_pro = MagicMock()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_stk_holdernumber("20220101", "20220331")   # legacy 年覆盖
+            fetch_stk_holdernumber("20230101", "20230131")   # 月标记覆盖
+        mock_pro.stk_holdernumber.assert_not_called()
+        save.assert_not_called()
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_fetch_stk_holdernumber_window_marker_skips(_tp1, mp)
 
-def test_fetch_stk_holdernumber_subset_mode_no_shared_cache(tmp_path, monkeypatch):
-    """子集模式（ts_codes）：逐股直拉直接返回，不写共享缓存、不写标记——
-    部分数据写共享缓存会让完整性标记撒谎。"""
-    from factorzen.core.loader import fetch_stk_holdernumber
+    # -- 原 test_fetch_stk_holdernumber_subset_mode_no_shared_cache --
+    def _section_2_test_fetch_stk_holdernumber_subset_mode_no_shared_cache(tmp_path, mp):
+        from factorzen.core.loader import fetch_stk_holdernumber
 
-    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
-    mock_pro = MagicMock()
-    mock_pro.stk_holdernumber.return_value = _pd_holder()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet") as save,
-    ):
-        out = fetch_stk_holdernumber("20220101", "20220331", ts_codes=["000001.SZ"])
-    assert mock_pro.stk_holdernumber.call_args.kwargs.get("ts_code") == "000001.SZ"
-    assert not out.is_empty() and "holder_num" in out.columns
-    save.assert_not_called()
-    assert not (tmp_path / "stk_holdernumber" / "_fetched_windows.json").exists()
+        mp.setattr(loader_module, "DATA_RAW", tmp_path)
+        mock_pro = MagicMock()
+        mock_pro.stk_holdernumber.return_value = _pd_holder()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet") as save,
+        ):
+            out = fetch_stk_holdernumber("20220101", "20220331", ts_codes=["000001.SZ"])
+        assert mock_pro.stk_holdernumber.call_args.kwargs.get("ts_code") == "000001.SZ"
+        assert not out.is_empty() and "holder_num" in out.columns
+        save.assert_not_called()
+        assert not (tmp_path / "stk_holdernumber" / "_fetched_windows.json").exists()
 
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_fetch_stk_holdernumber_subset_mode_no_shared_cache(_tp2, mp)
 
-def test_fetch_stk_holdernumber_api_error_window_not_marked(tmp_path, monkeypatch):
-    """API 异常的窗口重试一次后放弃且**不写标记**（下次重跑补齐，不静默留洞）。"""
-    from factorzen.core.loader import fetch_stk_holdernumber
+    # -- 原 test_fetch_stk_holdernumber_api_error_window_not_marked --
+    def _section_3_test_fetch_stk_holdernumber_api_error_window_not_marked(tmp_path, mp):
+        from factorzen.core.loader import fetch_stk_holdernumber
 
-    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
-    monkeypatch.setattr(loader_module, "RETRY_DELAY", 0)
-    mock_pro = MagicMock()
-    mock_pro.stk_holdernumber.side_effect = RuntimeError("boom")
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_stk_holdernumber("20220101", "20220131")
-    assert mock_pro.stk_holdernumber.call_count == 2  # 重试一次
-    save.assert_not_called()
-    assert not (tmp_path / "stk_holdernumber" / "_fetched_windows.json").exists()
+        mp.setattr(loader_module, "DATA_RAW", tmp_path)
+        mp.setattr(loader_module, "RETRY_DELAY", 0)
+        mock_pro = MagicMock()
+        mock_pro.stk_holdernumber.side_effect = RuntimeError("boom")
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_stk_holdernumber("20220101", "20220131")
+        assert mock_pro.stk_holdernumber.call_count == 2  # 重试一次
+        save.assert_not_called()
+        assert not (tmp_path / "stk_holdernumber" / "_fetched_windows.json").exists()
 
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_fetch_stk_holdernumber_api_error_window_not_marked(_tp3, mp)
 
-def test_fetch_stk_holdernumber_tmp_marker_not_complete(tmp_path, monkeypatch):
-    """标记写入原子性：仅 .tmp 存在不算完成，仍会抓取。"""
-    from factorzen.core.loader import fetch_stk_holdernumber
+    # -- 原 test_fetch_stk_holdernumber_tmp_marker_not_complete --
+    def _section_4_test_fetch_stk_holdernumber_tmp_marker_not_complete(tmp_path, mp):
+        from factorzen.core.loader import fetch_stk_holdernumber
 
-    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
-    marker_dir = tmp_path / "stk_holdernumber"
-    marker_dir.mkdir(parents=True)
-    (marker_dir / "_fetched_windows.json.tmp").write_text("[]")
-    mock_pro = MagicMock()
-    mock_pro.stk_holdernumber.return_value = _pd_holder()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-        patch.object(loader_module, "fetch_stock_basic",
-                     return_value=pl.DataFrame({"ts_code": ["000001.SZ"]})),
-    ):
-        fetch_stk_holdernumber("20220101", "20220331")
-    mock_pro.stk_holdernumber.assert_called()
-    save.assert_called()
-    assert (marker_dir / "_fetched_windows.json").exists()
+        mp.setattr(loader_module, "DATA_RAW", tmp_path)
+        marker_dir = tmp_path / "stk_holdernumber"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / "_fetched_windows.json.tmp").write_text("[]")
+        mock_pro = MagicMock()
+        mock_pro.stk_holdernumber.return_value = _pd_holder()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+            patch.object(loader_module, "fetch_stock_basic",
+                         return_value=pl.DataFrame({"ts_code": ["000001.SZ"]})),
+        ):
+            fetch_stk_holdernumber("20220101", "20220331")
+        mock_pro.stk_holdernumber.assert_called()
+        save.assert_called()
+        assert (marker_dir / "_fetched_windows.json").exists()
 
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_fetch_stk_holdernumber_tmp_marker_not_complete(_tp4, mp)
 
-def test_fetch_stk_holdernumber_rerun_window_idempotent_upsert(tmp_path, monkeypatch):
-    """无标记重跑同窗口：save 前 (ts_code,end_date) 与既有去重，结果无重复。"""
-    import factorzen.core.storage as storage_mod
-    from factorzen.core.loader import fetch_stk_holdernumber
-    from factorzen.core.storage import load_parquet, save_parquet
+    # -- 原 test_fetch_stk_holdernumber_rerun_window_idempotent_upsert --
+    def _section_5_test_fetch_stk_holdernumber_rerun_window_idempotent_upsert(tmp_path, mp):
+        import factorzen.core.storage as storage_mod
+        from factorzen.core.loader import fetch_stk_holdernumber
+        from factorzen.core.storage import load_parquet, save_parquet
 
-    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
-    monkeypatch.setattr(storage_mod, "DATA_RAW", tmp_path)
+        mp.setattr(loader_module, "DATA_RAW", tmp_path)
+        mp.setattr(storage_mod, "DATA_RAW", tmp_path)
 
-    # 预置既有分区行（同一 key）
-    existing = pl.DataFrame({
-        "ts_code": ["000001.SZ"],
-        "ann_date": ["20220430"],
-        "end_date": [date(2022, 3, 31)],
-        "holder_num": [40000.0],
-    })
-    save_parquet(existing, data_type="stk_holdernumber", date_col="end_date", base_dir=tmp_path)
+        # 预置既有分区行（同一 key）
+        existing = pl.DataFrame({
+            "ts_code": ["000001.SZ"],
+            "ann_date": ["20220430"],
+            "end_date": [date(2022, 3, 31)],
+            "holder_num": [40000.0],
+        })
+        save_parquet(existing, data_type="stk_holdernumber", date_col="end_date", base_dir=tmp_path)
 
-    mock_pro = MagicMock()
-    mock_pro.stk_holdernumber.return_value = _pd_holder()  # holder_num=50000
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "fetch_stock_basic",
-                     return_value=pl.DataFrame({"ts_code": ["000001.SZ"]})),
-    ):
-        fetch_stk_holdernumber("20220101", "20220331")
+        mock_pro = MagicMock()
+        mock_pro.stk_holdernumber.return_value = _pd_holder()  # holder_num=50000
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "fetch_stock_basic",
+                         return_value=pl.DataFrame({"ts_code": ["000001.SZ"]})),
+        ):
+            fetch_stk_holdernumber("20220101", "20220331")
 
-    loaded = load_parquet(
-        "stk_holdernumber", start="20220101", end="20221231",
-        date_col="end_date", base_dir=tmp_path,
-    ).collect()
-    assert loaded.height == 1
-    assert loaded["holder_num"][0] == 50000.0  # keep last from re-fetch
+        loaded = load_parquet(
+            "stk_holdernumber", start="20220101", end="20221231",
+            date_col="end_date", base_dir=tmp_path,
+        ).collect()
+        assert loaded.height == 1
+        assert loaded["holder_num"][0] == 50000.0  # keep last from re-fetch
+
+    _tp5 = tmp_path / "_s5"
+    _tp5.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_5_test_fetch_stk_holdernumber_rerun_window_idempotent_upsert(_tp5, mp)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1029,191 +1148,206 @@ def _pd_top(trade_date: str = "20220104", code: str = "000001.SZ") -> pd.DataFra
     )
 
 
-def test_fetch_top_list_market_mode_by_trade_date():
-    """全市场：按缺失交易日逐日 trade_date 拉 top_list 并落盘。"""
-    from factorzen.core.loader import fetch_top_list
+def test_fetch_top_list_core_suite():
+    """全市场：按缺失交易日逐日 trade_date 拉 top_list 并落盘。；空日（无上榜）不算失败：应标记已拉、不抛异常。"""
+    # -- 原 test_fetch_top_list_market_mode_by_trade_date --
+    def _section_0_test_fetch_top_list_market_mode_by_trade_date():
+        from factorzen.core.loader import fetch_top_list
 
-    mock_pro = MagicMock()
-    mock_pro.top_list.return_value = _pd_top()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates",
-                     return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        fetch_top_list("20220101", "20220131")
-    assert mock_pro.top_list.call_count == 2
-    for c in mock_pro.top_list.call_args_list:
-        assert "trade_date" in c.kwargs
-    assert any(
-        (getattr(c, "kwargs", {}) or {}).get("data_type") == "top_list"
-        or (len(c.args) > 1 and c.args[1] == "top_list")
-        for c in save.call_args_list
-    ) or save.call_args.kwargs.get("data_type") == "top_list"
+        mock_pro = MagicMock()
+        mock_pro.top_list.return_value = _pd_top()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates",
+                         return_value=[date(2022, 1, 4), date(2022, 1, 5)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            fetch_top_list("20220101", "20220131")
+        assert mock_pro.top_list.call_count == 2
+        for c in mock_pro.top_list.call_args_list:
+            assert "trade_date" in c.kwargs
+        assert any(
+            (getattr(c, "kwargs", {}) or {}).get("data_type") == "top_list"
+            or (len(c.args) > 1 and c.args[1] == "top_list")
+            for c in save.call_args_list
+        ) or save.call_args.kwargs.get("data_type") == "top_list"
 
+    _section_0_test_fetch_top_list_market_mode_by_trade_date()
 
-def test_fetch_top_list_empty_day_not_failure():
-    """空日（无上榜）不算失败：应标记已拉、不抛异常。"""
-    from factorzen.core.loader import fetch_top_list
+    # -- 原 test_fetch_top_list_empty_day_not_failure --
+    def _section_1_test_fetch_top_list_empty_day_not_failure():
+        from factorzen.core.loader import fetch_top_list
 
-    mock_pro = MagicMock()
-    # 返回空 DataFrame（无上榜日）
-    mock_pro.top_list.return_value = pd.DataFrame()
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
-        patch.object(loader_module, "save_parquet") as save,
-        patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
-    ):
-        # 不应抛
-        fetch_top_list("20220101", "20220131")
-    # 空日应写入 sentinel / 标记，避免永久重拉
-    assert save.called or mock_pro.top_list.call_count == 1
+        mock_pro = MagicMock()
+        # 返回空 DataFrame（无上榜日）
+        mock_pro.top_list.return_value = pd.DataFrame()
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates", return_value=[date(2022, 1, 4)]),
+            patch.object(loader_module, "save_parquet") as save,
+            patch.object(loader_module, "load_parquet", return_value=_lf(pl.DataFrame())),
+        ):
+            # 不应抛
+            fetch_top_list("20220101", "20220131")
+        # 空日应写入 sentinel / 标记，避免永久重拉
+        assert save.called or mock_pro.top_list.call_count == 1
 
-
-def test_cast_top_list_schema_stabilizes_drift_and_sentinel(tmp_path):
-    """同列跨日推断类型漂移 + sentinel 行 → cast 后 save/load 往返无 SchemaError。"""
-    from factorzen.core.loader import (
-        _TOPLIST_EMPTY_CODE,
-        TOP_LIST_COLS,
-        TOP_LIST_SCHEMA,
-        _cast_top_list_schema,
-    )
-    from factorzen.core.storage import load_parquet, save_parquet
-
-    # 日1：全 null 数值/字符串列 → 推断为 Null
-    day_null = pl.DataFrame({
-        "trade_date": ["20240102"],
-        "ts_code": [_TOPLIST_EMPTY_CODE],
-        "name": [None],
-        "close": [None],
-        "pct_change": [None],
-        "turnover_rate": [None],
-        "amount": [None],
-        "l_sell": [None],
-        "l_buy": [None],
-        "l_amount": [None],
-        "net_amount": [None],
-        "net_rate": [None],
-        "amount_rate": [None],
-        "float_values": [None],
-        "reason": [None],
-    })
-    # 日2：真实行，String/Float64
-    day_real = pl.DataFrame({
-        "trade_date": ["20240103"],
-        "ts_code": ["000001.SZ"],
-        "name": ["平安银行"],
-        "close": [10.5],
-        "pct_change": [5.0],
-        "turnover_rate": [3.0],
-        "amount": [1e5],
-        "l_sell": [100.0],
-        "l_buy": [200.0],
-        "l_amount": [300.0],
-        "net_amount": [100.0],
-        "net_rate": [1.0],
-        "amount_rate": [2.0],
-        "float_values": [50.0],
-        "reason": ["涨幅偏离值达7%"],
-    })
-    # 未 cast 的 strict concat 会炸
-    try:
-        pl.concat([day_null, day_real])
-        uncast_ok = True
-    except pl.exceptions.SchemaError:
-        uncast_ok = False
-    assert not uncast_ok, "前置条件：未 cast 应 SchemaError"
-
-    casted = pl.concat([
-        _cast_top_list_schema(day_null),
-        _cast_top_list_schema(day_real),
-    ])
-    assert casted.schema == pl.Schema(TOP_LIST_SCHEMA) or all(
-        casted.schema[c] == TOP_LIST_SCHEMA[c] for c in TOP_LIST_COLS
-    )
-    assert casted["trade_date"].dtype == pl.Date
-
-    save_parquet(casted, data_type="top_list", base_dir=tmp_path)
-    # 跨分区 scan 往返
-    loaded = load_parquet("top_list", start="20240101", end="20240131", base_dir=tmp_path).collect()
-    assert loaded.height == 2
-    assert loaded["reason"].dtype == pl.String
-    assert loaded["net_amount"].dtype == pl.Float64
+    _section_1_test_fetch_top_list_empty_day_not_failure()
 
 
-def test_fetch_top_list_schema_error_rewrites_year(tmp_path, monkeypatch):
-    """混 schema 旧分区 load 触发 SchemaError → log 后重写该年（wipe + 重拉）。"""
-    from factorzen.core.loader import _TOPLIST_EMPTY_CODE, fetch_top_list
+def test_top_list_schema_suite(tmp_path):
+    """同列跨日推断类型漂移 + sentinel 行 → cast 后 save/load 往返无 SchemaError。；混 schema 旧分区 load 触发 SchemaError → log 后重写该年（wipe + 重拉）。"""
+    # -- 原 test_cast_top_list_schema_stabilizes_drift_and_sentinel --
+    def _section_0_test_cast_top_list_schema_stabilizes_drift_and_sentinel(tmp_path):
+        from factorzen.core.loader import (
+            _TOPLIST_EMPTY_CODE,
+            TOP_LIST_COLS,
+            TOP_LIST_SCHEMA,
+            _cast_top_list_schema,
+        )
+        from factorzen.core.storage import load_parquet, save_parquet
 
-    # 预置损坏 year=2024 分区（Null vs String 混）
-    ydir = tmp_path / "top_list" / "year=2024" / "month=01"
-    ydir.mkdir(parents=True)
-    pl.DataFrame({
-        "trade_date": [date(2024, 1, 2)],
-        "ts_code": [_TOPLIST_EMPTY_CODE],
-        "name": [None],
-        "close": [None],
-        "reason": [None],
-        "net_amount": [None],
-        "amount": [None],
-        "pct_change": [None],
-        "turnover_rate": [None],
-        "l_sell": [None],
-        "l_buy": [None],
-        "l_amount": [None],
-        "net_rate": [None],
-        "amount_rate": [None],
-        "float_values": [None],
-    }).write_parquet(ydir / "data.parquet")
-    ydir2 = tmp_path / "top_list" / "year=2024" / "month=02"
-    ydir2.mkdir(parents=True)
-    pl.DataFrame({
-        "trade_date": [date(2024, 2, 1)],
-        "ts_code": ["000001.SZ"],
-        "name": ["平安银行"],
-        "close": [10.0],
-        "reason": ["涨幅偏离"],
-        "net_amount": [100.0],
-        "amount": [1e5],
-        "pct_change": [1.0],
-        "turnover_rate": [1.0],
-        "l_sell": [1.0],
-        "l_buy": [1.0],
-        "l_amount": [1.0],
-        "net_rate": [1.0],
-        "amount_rate": [1.0],
-        "float_values": [1.0],
-    }).write_parquet(ydir2 / "data.parquet")
+        # 日1：全 null 数值/字符串列 → 推断为 Null
+        day_null = pl.DataFrame({
+            "trade_date": ["20240102"],
+            "ts_code": [_TOPLIST_EMPTY_CODE],
+            "name": [None],
+            "close": [None],
+            "pct_change": [None],
+            "turnover_rate": [None],
+            "amount": [None],
+            "l_sell": [None],
+            "l_buy": [None],
+            "l_amount": [None],
+            "net_amount": [None],
+            "net_rate": [None],
+            "amount_rate": [None],
+            "float_values": [None],
+            "reason": [None],
+        })
+        # 日2：真实行，String/Float64
+        day_real = pl.DataFrame({
+            "trade_date": ["20240103"],
+            "ts_code": ["000001.SZ"],
+            "name": ["平安银行"],
+            "close": [10.5],
+            "pct_change": [5.0],
+            "turnover_rate": [3.0],
+            "amount": [1e5],
+            "l_sell": [100.0],
+            "l_buy": [200.0],
+            "l_amount": [300.0],
+            "net_amount": [100.0],
+            "net_rate": [1.0],
+            "amount_rate": [2.0],
+            "float_values": [50.0],
+            "reason": ["涨幅偏离值达7%"],
+        })
+        # 未 cast 的 strict concat 会炸
+        try:
+            pl.concat([day_null, day_real])
+            uncast_ok = True
+        except pl.exceptions.SchemaError:
+            uncast_ok = False
+        assert not uncast_ok, "前置条件：未 cast 应 SchemaError"
 
-    # 确认 scan 会 SchemaError
-    import pytest
-    with pytest.raises(pl.exceptions.SchemaError):
-        pl.scan_parquet(str(tmp_path / "top_list" / "**/*.parquet")).collect()
+        casted = pl.concat([
+            _cast_top_list_schema(day_null),
+            _cast_top_list_schema(day_real),
+        ])
+        assert casted.schema == pl.Schema(TOP_LIST_SCHEMA) or all(
+            casted.schema[c] == TOP_LIST_SCHEMA[c] for c in TOP_LIST_COLS
+        )
+        assert casted["trade_date"].dtype == pl.Date
 
-    mock_pro = MagicMock()
-    mock_pro.top_list.return_value = _pd_top(trade_date="20240104")
-    monkeypatch.setattr(loader_module, "DATA_RAW", tmp_path)
-    # storage 也读 DATA_RAW
-    import factorzen.core.storage as storage_mod
-    monkeypatch.setattr(storage_mod, "DATA_RAW", tmp_path)
+        save_parquet(casted, data_type="top_list", base_dir=tmp_path)
+        # 跨分区 scan 往返
+        loaded = load_parquet("top_list", start="20240101", end="20240131", base_dir=tmp_path).collect()
+        assert loaded.height == 2
+        assert loaded["reason"].dtype == pl.String
+        assert loaded["net_amount"].dtype == pl.Float64
 
-    with (
-        patch.object(loader_module, "init_tushare", return_value=mock_pro),
-        patch.object(loader_module, "_rate_limit"),
-        patch.object(loader_module, "get_trade_dates",
-                     return_value=[date(2024, 1, 4)]),
-    ):
-        # 不应因旧分区 SchemaError 而崩溃；应 wipe 并重拉
-        fetch_top_list("20240101", "20240131")
-    assert mock_pro.top_list.call_count >= 1
-    # 重写后分区可扫描
-    reloaded = pl.scan_parquet(str(tmp_path / "top_list" / "**/*.parquet")).collect()
-    assert reloaded.height >= 1
-    assert reloaded["reason"].dtype == pl.String
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_cast_top_list_schema_stabilizes_drift_and_sentinel(_tp0)
+
+    # -- 原 test_fetch_top_list_schema_error_rewrites_year --
+    def _section_1_test_fetch_top_list_schema_error_rewrites_year(tmp_path, mp):
+        from factorzen.core.loader import _TOPLIST_EMPTY_CODE, fetch_top_list
+
+        # 预置损坏 year=2024 分区（Null vs String 混）
+        ydir = tmp_path / "top_list" / "year=2024" / "month=01"
+        ydir.mkdir(parents=True)
+        pl.DataFrame({
+            "trade_date": [date(2024, 1, 2)],
+            "ts_code": [_TOPLIST_EMPTY_CODE],
+            "name": [None],
+            "close": [None],
+            "reason": [None],
+            "net_amount": [None],
+            "amount": [None],
+            "pct_change": [None],
+            "turnover_rate": [None],
+            "l_sell": [None],
+            "l_buy": [None],
+            "l_amount": [None],
+            "net_rate": [None],
+            "amount_rate": [None],
+            "float_values": [None],
+        }).write_parquet(ydir / "data.parquet")
+        ydir2 = tmp_path / "top_list" / "year=2024" / "month=02"
+        ydir2.mkdir(parents=True)
+        pl.DataFrame({
+            "trade_date": [date(2024, 2, 1)],
+            "ts_code": ["000001.SZ"],
+            "name": ["平安银行"],
+            "close": [10.0],
+            "reason": ["涨幅偏离"],
+            "net_amount": [100.0],
+            "amount": [1e5],
+            "pct_change": [1.0],
+            "turnover_rate": [1.0],
+            "l_sell": [1.0],
+            "l_buy": [1.0],
+            "l_amount": [1.0],
+            "net_rate": [1.0],
+            "amount_rate": [1.0],
+            "float_values": [1.0],
+        }).write_parquet(ydir2 / "data.parquet")
+
+        # 确认 scan 会 SchemaError
+        import pytest
+        with pytest.raises(pl.exceptions.SchemaError):
+            pl.scan_parquet(str(tmp_path / "top_list" / "**/*.parquet")).collect()
+
+        mock_pro = MagicMock()
+        mock_pro.top_list.return_value = _pd_top(trade_date="20240104")
+        mp.setattr(loader_module, "DATA_RAW", tmp_path)
+        # storage 也读 DATA_RAW
+        import factorzen.core.storage as storage_mod
+        mp.setattr(storage_mod, "DATA_RAW", tmp_path)
+
+        with (
+            patch.object(loader_module, "init_tushare", return_value=mock_pro),
+            patch.object(loader_module, "_rate_limit"),
+            patch.object(loader_module, "get_trade_dates",
+                         return_value=[date(2024, 1, 4)]),
+        ):
+            # 不应因旧分区 SchemaError 而崩溃；应 wipe 并重拉
+            fetch_top_list("20240101", "20240131")
+        assert mock_pro.top_list.call_count >= 1
+        # 重写后分区可扫描
+        reloaded = pl.scan_parquet(str(tmp_path / "top_list" / "**/*.parquet")).collect()
+        assert reloaded.height >= 1
+        assert reloaded["reason"].dtype == pl.String
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_fetch_top_list_schema_error_rewrites_year(_tp1, mp)
 
 
 def test_holder_normalize_drops_junk_end_dates(tmp_path, monkeypatch):
@@ -1235,50 +1369,45 @@ def test_holder_normalize_drops_junk_end_dates(tmp_path, monkeypatch):
     assert out["ts_code"].to_list() == ["000001.SZ"]
 
 
-def test_hk_hold_clean_dedups_but_keeps_hk_rows():
-    """hk_hold 落盘前只去重，**不得按 exchange 过滤**。
+def test_hk_hold_clean_suite():
+    """hk_hold 落盘前只去重，**不得按 exchange 过滤**。；接口只返回 HK 的正常日，清洗后不得为空（否则该日永远被判缺失）。"""
+    # -- 原 test_hk_hold_clean_dedups_but_keeps_hk_rows --
+    def _section_0_test_hk_hold_clean_dedups_but_keeps_hk_rows():
+        from factorzen.core.loader import _hk_hold_clean
 
-    两条契约，都来自 2026-07-19 的实测：
+        # 同键两条不同值（生产形态：exchange 相同，code/name 不同）
+        df = pl.DataFrame({
+            "code": ["31019", "93019", "00001"],
+            "ts_code": ["603019.SH", "603019.SH", "00001.HK"],
+            "trade_date": [date(2026, 6, 30)] * 3,
+            "name": ["半導體", "中科曙光", "长和"],
+            "ratio": [1.20, 0.33, 5.0],
+            "vol": [102592076, 4970305, 999],
+            "exchange": ["SH", "SH", "HK"],
+        })
+        out = _hk_hold_clean(df)
 
-    1. **必须去重**：2026-06-30 单日返回 4200 行/4061 只（正常日 ~950），139 只带
-       重复 (ts_code, trade_date)。两条 exchange **都是 SH**，区分它们的是
-       `code`/`name`（``31019 半導體`` 与 ``93019 中科曙光`` 被数据源映射到同一个
-       ``603019.SH``）——上游 ts_code 映射错误。重复行流进 daily 后被
-       `_attach_margin` 平方放大，最终在组合层链式 join 下指数爆炸（23GB OOM）。
-    2. **不能滤掉 HK**：初版过滤 exchange in (SH,SZ)，随即发现是回归——多数交易日
-       接口**只返回 HK**（2026-07-15 全部 951 行皆 HK），滤掉就落盘 0 行 →
-       `_missing_trade_dates` 永远判该日缺失 → 每次调用都重抓，死循环烧 API 额度。
-    """
-    from factorzen.core.loader import _hk_hold_clean
+        assert out.height == 2, f"应去重成 2 行，实得 {out.height}"
+        assert out.select(["ts_code", "trade_date"]).unique().height == out.height
+        # HK 行必须留着，否则「只返回 HK」的正常日会落盘 0 行 → 缺失日死循环
+        assert "00001.HK" in out["ts_code"].to_list(), "HK 行被误滤，会导致重抓死循环"
 
-    # 同键两条不同值（生产形态：exchange 相同，code/name 不同）
-    df = pl.DataFrame({
-        "code": ["31019", "93019", "00001"],
-        "ts_code": ["603019.SH", "603019.SH", "00001.HK"],
-        "trade_date": [date(2026, 6, 30)] * 3,
-        "name": ["半導體", "中科曙光", "长和"],
-        "ratio": [1.20, 0.33, 5.0],
-        "vol": [102592076, 4970305, 999],
-        "exchange": ["SH", "SH", "HK"],
-    })
-    out = _hk_hold_clean(df)
+    _section_0_test_hk_hold_clean_dedups_but_keeps_hk_rows()
 
-    assert out.height == 2, f"应去重成 2 行，实得 {out.height}"
-    assert out.select(["ts_code", "trade_date"]).unique().height == out.height
-    # HK 行必须留着，否则「只返回 HK」的正常日会落盘 0 行 → 缺失日死循环
-    assert "00001.HK" in out["ts_code"].to_list(), "HK 行被误滤，会导致重抓死循环"
+    # -- 原 test_hk_hold_clean_keeps_hk_only_day_nonempty --
+    def _section_1_test_hk_hold_clean_keeps_hk_only_day_nonempty():
+        from factorzen.core.loader import _hk_hold_clean
+
+        df = pl.DataFrame({
+            "ts_code": ["00001.HK", "00002.HK"],
+            "trade_date": [date(2026, 7, 15)] * 2,
+            "ratio": [5.0, 6.0],
+            "vol": [100, 200],
+            "exchange": ["HK", "HK"],
+        })
+        out = _hk_hold_clean(df)
+        assert out.height == 2, "只含 HK 的正常日被清空 → _missing_trade_dates 死循环"
+
+    _section_1_test_hk_hold_clean_keeps_hk_only_day_nonempty()
 
 
-def test_hk_hold_clean_keeps_hk_only_day_nonempty():
-    """接口只返回 HK 的正常日，清洗后不得为空（否则该日永远被判缺失）。"""
-    from factorzen.core.loader import _hk_hold_clean
-
-    df = pl.DataFrame({
-        "ts_code": ["00001.HK", "00002.HK"],
-        "trade_date": [date(2026, 7, 15)] * 2,
-        "ratio": [5.0, 6.0],
-        "vol": [100, 200],
-        "exchange": ["HK", "HK"],
-    })
-    out = _hk_hold_clean(df)
-    assert out.height == 2, "只含 HK 的正常日被清空 → _missing_trade_dates 死循环"

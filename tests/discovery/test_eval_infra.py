@@ -99,57 +99,54 @@ def test_run_agent_mine_writes_manifest(tmp_path: Path):
     assert m["n_trials"] >= 1
     assert res["n_trials"] == m["n_trials"]
 
-def test_run_agent_mine_forwards_eval_start_clipping_warmup(tmp_path: Path):
-    """接线漂移回归：pipeline `run_agent_mine` 必须把 eval_start 透传给 `run_llm_agent`。
+def test_eval_start_warmup_forwarding_suite(tmp_path):
+    """接线漂移回归：pipeline `run_agent_mine` 必须把 eval_start 透传给 `run_llm_agent`。；接线漂移回归：pipeline `run_team_mine` 必须把 eval_start 透传给 `run_team_agent`。"""
+    # -- 原 test_run_agent_mine_forwards_eval_start_clipping_warmup --
+    def _section_0_test_run_agent_mine_forwards_eval_start_clipping_warmup(tmp_path):
+        daily = _mock_daily__agent_pipeline(n_days=180, seed=7)
+        dates = sorted(set(daily["trade_date"].to_list()))
+        eval_start = dates[40]                          # 前 40 个交易日作预热前缀
+        expr = "ts_mean(close,5)"
 
-    否则生产 `fz mine agent` 里 warmup-parity 修复完全失效——`daily` 由
-    `prepare_mining_daily` 带 60 天预热前缀，不透传 eval_start 时整帧（含预热段）
-    随 `split_holdout` 进 mining_df/DataBundle，预热噪声照旧灌进 train IC。
+        clip = run_agent_mine(daily, n_rounds=1, seed=42, out_dir=str(tmp_path / "clip"),
+                              llm_fn=_scripted_llm(), run_id="clip", export=False,
+                              eval_start=eval_start.strftime("%Y%m%d"))
+        noclip = run_agent_mine(daily, n_rounds=1, seed=42, out_dir=str(tmp_path / "noclip"),
+                                llm_fn=_scripted_llm(), run_id="noclip", export=False)
 
-    判别力（纯行为，读落盘 manifest 的 attempts）：同一含预热前缀的完整帧，
-    透传 eval_start 后 train 段裁到 eval_start，有效 IC 天数严格少于不透传
-    （不透传时 train 段从帧首起、覆盖预热段）。签名断言无判别力，故从 pipeline
-    最外层出发、以 n_train 的可观测差异为准。
-    """
-    daily = _mock_daily__agent_pipeline(n_days=180, seed=7)
-    dates = sorted(set(daily["trade_date"].to_list()))
-    eval_start = dates[40]                          # 前 40 个交易日作预热前缀
-    expr = "ts_mean(close,5)"
+        n_clip = _n_train_from_manifest(clip["run_dir"], expr)
+        n_noclip = _n_train_from_manifest(noclip["run_dir"], expr)
+        assert n_clip < n_noclip, (
+            f"eval_start 未透传/未裁预热段：clip n_train={n_clip} 应 < noclip n_train={n_noclip}")
 
-    clip = run_agent_mine(daily, n_rounds=1, seed=42, out_dir=str(tmp_path / "clip"),
-                          llm_fn=_scripted_llm(), run_id="clip", export=False,
-                          eval_start=eval_start.strftime("%Y%m%d"))
-    noclip = run_agent_mine(daily, n_rounds=1, seed=42, out_dir=str(tmp_path / "noclip"),
-                            llm_fn=_scripted_llm(), run_id="noclip", export=False)
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_run_agent_mine_forwards_eval_start_clipping_warmup(_tp0)
 
-    n_clip = _n_train_from_manifest(clip["run_dir"], expr)
-    n_noclip = _n_train_from_manifest(noclip["run_dir"], expr)
-    assert n_clip < n_noclip, (
-        f"eval_start 未透传/未裁预热段：clip n_train={n_clip} 应 < noclip n_train={n_noclip}")
+    # -- 原 test_run_team_mine_forwards_eval_start_clipping_warmup --
+    def _section_1_test_run_team_mine_forwards_eval_start_clipping_warmup(tmp_path):
+        daily = _mock_daily__agent_pipeline(n_days=180, seed=7)
+        dates = sorted(set(daily["trade_date"].to_list()))
+        eval_start = dates[40]
+        expr = "ts_mean(close, 5)"
 
-def test_run_team_mine_forwards_eval_start_clipping_warmup(tmp_path: Path):
-    """接线漂移回归：pipeline `run_team_mine` 必须把 eval_start 透传给 `run_team_agent`。
+        clip = run_team_mine(daily, n_rounds=1, seed=42, index_path=str(tmp_path / "i1.jsonl"),
+                             out_dir=str(tmp_path / "clip"), llm_fn=_scripted_team(expr),
+                             run_id="clip", export=False, heal_rounds=0,
+                             eval_start=eval_start.strftime("%Y%m%d"))
+        noclip = run_team_mine(daily, n_rounds=1, seed=42, index_path=str(tmp_path / "i2.jsonl"),
+                               out_dir=str(tmp_path / "noclip"), llm_fn=_scripted_team(expr),
+                               run_id="noclip", export=False, heal_rounds=0)
 
-    与 agent 单路径同理：不透传时生产 `fz mine team` 的 warmup-parity 修复失效。
-    判别力同上：透传后 train 段有效 IC 天数严格少于不透传。
-    """
-    daily = _mock_daily__agent_pipeline(n_days=180, seed=7)
-    dates = sorted(set(daily["trade_date"].to_list()))
-    eval_start = dates[40]
-    expr = "ts_mean(close, 5)"
+        n_clip = _n_train_from_manifest(clip["run_dir"], expr)
+        n_noclip = _n_train_from_manifest(noclip["run_dir"], expr)
+        assert n_clip < n_noclip, (
+            f"eval_start 未透传/未裁预热段：clip n_train={n_clip} 应 < noclip n_train={n_noclip}")
 
-    clip = run_team_mine(daily, n_rounds=1, seed=42, index_path=str(tmp_path / "i1.jsonl"),
-                         out_dir=str(tmp_path / "clip"), llm_fn=_scripted_team(expr),
-                         run_id="clip", export=False, heal_rounds=0,
-                         eval_start=eval_start.strftime("%Y%m%d"))
-    noclip = run_team_mine(daily, n_rounds=1, seed=42, index_path=str(tmp_path / "i2.jsonl"),
-                           out_dir=str(tmp_path / "noclip"), llm_fn=_scripted_team(expr),
-                           run_id="noclip", export=False, heal_rounds=0)
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_run_team_mine_forwards_eval_start_clipping_warmup(_tp1)
 
-    n_clip = _n_train_from_manifest(clip["run_dir"], expr)
-    n_noclip = _n_train_from_manifest(noclip["run_dir"], expr)
-    assert n_clip < n_noclip, (
-        f"eval_start 未透传/未裁预热段：clip n_train={n_clip} 应 < noclip n_train={n_noclip}")
 
 # ==== 来自 test_agent_evaluation.py ====
 # tests/test_agent_evaluation.py
@@ -173,23 +170,32 @@ def _mock_daily__agent_evaluation(n_stocks=40, n_days=120, seed=1):
                          "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6)})
     return pl.DataFrame(rows)
 
-def test_evaluate_valid_expressions():
-    daily = _mock_daily__agent_evaluation()
-    bundle = DataBundle.build(daily)
-    out = evaluate_expressions(["ts_mean(close,5)", "rank(vol)"], daily, bundle)
-    assert len(out) == 2
-    for r in out:
-        assert r["compile_ok"] is True
-        assert r["ic_train"] is not None        # 真算出了 IC（非 None）
-        assert isinstance(r["ic_train"], float)
+def test_evaluate_expressions_basic_suite():
+    """test_evaluate_valid_expressions；test_evaluate_rejects_illegal_expression"""
+    # -- 原 test_evaluate_valid_expressions --
+    def _section_0_test_evaluate_valid_expressions():
+        daily = _mock_daily__agent_evaluation()
+        bundle = DataBundle.build(daily)
+        out = evaluate_expressions(["ts_mean(close,5)", "rank(vol)"], daily, bundle)
+        assert len(out) == 2
+        for r in out:
+            assert r["compile_ok"] is True
+            assert r["ic_train"] is not None        # 真算出了 IC（非 None）
+            assert isinstance(r["ic_train"], float)
 
-def test_evaluate_rejects_illegal_expression():
-    daily = _mock_daily__agent_evaluation()
-    bundle = DataBundle.build(daily)
-    out = evaluate_expressions(["this_is_not_an_operator(close)", "ts_mean(close,5)"], daily, bundle)
-    assert out[0]["compile_ok"] is False and out[0]["error"]   # 非法被拒，记错误
-    assert out[0]["ic_train"] is None
-    assert out[1]["compile_ok"] is True                         # 合法的照常评估
+    _section_0_test_evaluate_valid_expressions()
+
+    # -- 原 test_evaluate_rejects_illegal_expression --
+    def _section_1_test_evaluate_rejects_illegal_expression():
+        daily = _mock_daily__agent_evaluation()
+        bundle = DataBundle.build(daily)
+        out = evaluate_expressions(["this_is_not_an_operator(close)", "ts_mean(close,5)"], daily, bundle)
+        assert out[0]["compile_ok"] is False and out[0]["error"]   # 非法被拒，记错误
+        assert out[0]["ic_train"] is None
+        assert out[1]["compile_ok"] is True                         # 合法的照常评估
+
+    _section_1_test_evaluate_rejects_illegal_expression()
+
 
 # ==== 来自 test_agent_eval_real_adj_and_leaves.py ====
 def _daily_with_adj_and_basic(n_stocks=40, n_days=120, seed=1):
@@ -218,47 +224,65 @@ def _daily_with_adj_and_basic(n_stocks=40, n_days=120, seed=1):
             })
     return pl.DataFrame(rows)
 
-def test_derived_and_basic_leaves_evaluable():
-    daily = _daily_with_adj_and_basic()
-    bundle = DataBundle.build(daily)
-    # ret_1d(派生)、total_mv(基本面)、amplitude(派生) —— 修复前评估帧缺这些列 → 报错
-    out = evaluate_expressions(["rank(ret_1d)", "rank(total_mv)", "rank(amplitude)"], daily, bundle)
-    for r in out:
-        assert r["compile_ok"], f"{r['expression']} 应可编译"
-        assert r["error"] is None, f"{r['expression']} 不应报错，实得 {r['error']}"
-        assert r["ic_train"] is not None, f"{r['expression']} 应算出 IC"
+def test_agent_leaves_and_adj_suite():
+    """test_derived_and_basic_leaves_evaluable；close_adj 明显≠close 时，ret_1d 须用 close_adj 计算，而非被 close 冒充。"""
+    # -- 原 test_derived_and_basic_leaves_evaluable --
+    def _section_0_test_derived_and_basic_leaves_evaluable():
+        daily = _daily_with_adj_and_basic()
+        bundle = DataBundle.build(daily)
+        # ret_1d(派生)、total_mv(基本面)、amplitude(派生) —— 修复前评估帧缺这些列 → 报错
+        out = evaluate_expressions(["rank(ret_1d)", "rank(total_mv)", "rank(amplitude)"], daily, bundle)
+        for r in out:
+            assert r["compile_ok"], f"{r['expression']} 应可编译"
+            assert r["error"] is None, f"{r['expression']} 不应报错，实得 {r['error']}"
+            assert r["ic_train"] is not None, f"{r['expression']} 应算出 IC"
 
-def test_uses_real_close_adj_not_faked_from_close():
-    """close_adj 明显≠close 时，ret_1d 须用 close_adj 计算，而非被 close 冒充。"""
-    from factorzen.discovery.evaluation import _preprocess_daily
+    _section_0_test_derived_and_basic_leaves_evaluable()
 
-    daily = _daily_with_adj_and_basic(n_stocks=2, n_days=10)
-    prepped = _preprocess_daily(daily)
-    # ret_1d 由 close_adj 算；close_adj=close×2 是等比缩放，比率与 close 算的相同，
-    # 但关键是 prep 未把 close 覆盖成 close_adj —— close_adj 仍是 close 的 2 倍。
-    a = prepped.filter(pl.col("close_adj").is_not_null()).select(
-        (pl.col("close_adj") / pl.col("close")).alias("r"))["r"]
-    assert all(abs(v - 2.0) < 1e-9 for v in a.to_list()), "close_adj 不应被未复权 close 覆盖"
+    # -- 原 test_uses_real_close_adj_not_faked_from_close --
+    def _section_1_test_uses_real_close_adj_not_faked_from_close():
+        from factorzen.discovery.evaluation import _preprocess_daily
+
+        daily = _daily_with_adj_and_basic(n_stocks=2, n_days=10)
+        prepped = _preprocess_daily(daily)
+        # ret_1d 由 close_adj 算；close_adj=close×2 是等比缩放，比率与 close 算的相同，
+        # 但关键是 prep 未把 close 覆盖成 close_adj —— close_adj 仍是 close 的 2 倍。
+        a = prepped.filter(pl.col("close_adj").is_not_null()).select(
+            (pl.col("close_adj") / pl.col("close")).alias("r"))["r"]
+        assert all(abs(v - 2.0) < 1e-9 for v in a.to_list()), "close_adj 不应被未复权 close 覆盖"
+
+    _section_1_test_uses_real_close_adj_not_faked_from_close()
+
 
 # ==== 来自 test_agent_candidates_csv.py ====
-def test_agent_candidates_csv_df_has_rank_passed():
-    from factorzen.discovery.export import agent_candidates_csv_df
+def test_agent_candidates_csv_suite(tmp_path):
+    """test_agent_candidates_csv_df_has_rank_passed；read_candidate_expression（export-alpha 用）能读 Agent candidates.csv，不再报缺 rank。"""
+    # -- 原 test_agent_candidates_csv_df_has_rank_passed --
+    def _section_0_test_agent_candidates_csv_df_has_rank_passed():
+        from factorzen.discovery.export import agent_candidates_csv_df
 
-    df = agent_candidates_csv_df([{"expression": "rank(close)", "holdout_ic": 0.1, "dsr": 0.6}])
-    assert "rank" in df.columns and "passed" in df.columns and "expression" in df.columns
-    assert df["rank"].to_list() == [1]
-    assert df["passed"].to_list() == [True]
+        df = agent_candidates_csv_df([{"expression": "rank(close)", "holdout_ic": 0.1, "dsr": 0.6}])
+        assert "rank" in df.columns and "passed" in df.columns and "expression" in df.columns
+        assert df["rank"].to_list() == [1]
+        assert df["passed"].to_list() == [True]
 
-def test_export_alpha_reads_agent_candidates(tmp_path: Path):
-    """read_candidate_expression（export-alpha 用）能读 Agent candidates.csv，不再报缺 rank。"""
-    from factorzen.discovery.export import agent_candidates_csv_df, read_candidate_expression
+    _section_0_test_agent_candidates_csv_df_has_rank_passed()
 
-    cands = [{"expression": "rank(close)", "holdout_ic": 0.1, "dsr": 0.6},
-             {"expression": "ts_mean(vol, 5)", "holdout_ic": 0.05, "dsr": 0.4}]
-    agent_candidates_csv_df(cands).write_csv(tmp_path / "candidates.csv")
+    # -- 原 test_export_alpha_reads_agent_candidates --
+    def _section_1_test_export_alpha_reads_agent_candidates(tmp_path):
+        from factorzen.discovery.export import agent_candidates_csv_df, read_candidate_expression
 
-    assert read_candidate_expression(str(tmp_path), rank=1, require_passed=True) == "rank(close)"
-    assert read_candidate_expression(str(tmp_path), rank=2, require_passed=True) == "ts_mean(vol, 5)"
+        cands = [{"expression": "rank(close)", "holdout_ic": 0.1, "dsr": 0.6},
+                 {"expression": "ts_mean(vol, 5)", "holdout_ic": 0.05, "dsr": 0.4}]
+        agent_candidates_csv_df(cands).write_csv(tmp_path / "candidates.csv")
+
+        assert read_candidate_expression(str(tmp_path), rank=1, require_passed=True) == "rank(close)"
+        assert read_candidate_expression(str(tmp_path), rank=2, require_passed=True) == "ts_mean(vol, 5)"
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_export_alpha_reads_agent_candidates(_tp1)
+
 
 # ==== 来自 test_deflation_recipe_parity.py ====
 # tests/test_deflation_recipe_parity.py
@@ -267,47 +291,55 @@ _SRC = Path(__file__).resolve().parents[2] / "src" / "factorzen"
 
 # ── 共享配方的语义 ──────────────────────────────────────────────────────────
 
-def test_basis_uses_population_variance_and_pool_size():
-    """N 与 sharpe_variance 必须同源（R8）：都来自同一批 trial 的 IR 池。"""
-    pool = [0.20, 0.10, -0.13, 0.05]
-    basis = DeflationBasis.from_ir_pool(pool)
+def test_deflation_basis_suite():
+    """N 与 sharpe_variance 必须同源（R8）：都来自同一批 trial 的 IR 池。；池大小 < 2 时经验方差无意义，退化为 1.0（与 M1 既有行为一致）。；死表达式(None)与 nan/inf 不得进池——它们会同时污染方差与计数。；一个畸形 IR 不得静默废掉整个 session 的护栏。；test_deflated_pvalue_delegates_with_basis"""
+    # -- 原 test_basis_uses_population_variance_and_pool_size --
+    def _section_0_test_basis_uses_population_variance_and_pool_size():
+        pool = [0.20, 0.10, -0.13, 0.05]
+        basis = DeflationBasis.from_ir_pool(pool)
 
-    assert basis.n_trials == 4
-    assert basis.sharpe_variance == pytest.approx(float(np.var(np.asarray(pool))))
+        assert basis.n_trials == 4
+        assert basis.sharpe_variance == pytest.approx(float(np.var(np.asarray(pool))))
 
-def test_basis_degenerates_to_unit_variance_for_single_trial():
-    """池大小 < 2 时经验方差无意义，退化为 1.0（与 M1 既有行为一致）。"""
-    assert DeflationBasis.from_ir_pool([0.3]).sharpe_variance == 1.0
-    assert DeflationBasis.from_ir_pool([]).sharpe_variance == 1.0
-    assert DeflationBasis.from_ir_pool([]).n_trials == 0
+    _section_0_test_basis_uses_population_variance_and_pool_size()
 
-def test_basis_drops_none_and_nonfinite():
-    """死表达式(None)与 nan/inf 不得进池——它们会同时污染方差与计数。"""
-    basis = DeflationBasis.from_ir_pool([0.2, None, float("nan"), 0.1, float("inf")])
+    # -- 原 test_basis_degenerates_to_unit_variance_for_single_trial --
+    def _section_1_test_basis_degenerates_to_unit_variance_for_single_trial():
+        assert DeflationBasis.from_ir_pool([0.3]).sharpe_variance == 1.0
+        assert DeflationBasis.from_ir_pool([]).sharpe_variance == 1.0
+        assert DeflationBasis.from_ir_pool([]).n_trials == 0
 
-    assert basis.n_trials == 2
-    assert basis.sharpe_variance == pytest.approx(float(np.var(np.asarray([0.2, 0.1]))))
+    _section_1_test_basis_degenerates_to_unit_variance_for_single_trial()
 
-def test_nan_in_pool_does_not_poison_every_candidate():
-    """一个畸形 IR 不得静默废掉整个 session 的护栏。
+    # -- 原 test_basis_drops_none_and_nonfinite --
+    def _section_2_test_basis_drops_none_and_nonfinite():
+        basis = DeflationBasis.from_ir_pool([0.2, None, float("nan"), 0.1, float("inf")])
 
-    旧的 M1 写法 `np.array([...]).var()` 遇 nan → `sharpe_variance=nan`
-    → `expected_max_sharpe` 的 `sharpe_variance <= 0` 判否（nan 比较恒 False）→ `sqrt(nan)`
-    → `sr0=nan` → 所有候选的 `dsr_pvalue=nan` → `guardrail_passed` 因 nan 检查一律判否。
-    **整批候选被静默拒绝，且看不出原因。** `from_ir_pool` 剔除非有限值后不再如此。
-    """
-    basis = DeflationBasis.from_ir_pool([0.42, float("nan"), 0.18, -0.13])
+        assert basis.n_trials == 2
+        assert basis.sharpe_variance == pytest.approx(float(np.var(np.asarray([0.2, 0.1]))))
 
-    assert basis.sharpe_variance == basis.sharpe_variance, "sharpe_variance 不得是 nan"
-    assert basis.n_trials == 3
-    _dsr, p = deflated_pvalue(0.42, basis, 305)
-    assert p == p and 0.0 <= p <= 1.0, "p 值必须可用，而非被 nan 传染"
+    _section_2_test_basis_drops_none_and_nonfinite()
 
-def test_deflated_pvalue_delegates_with_basis():
-    basis = DeflationBasis.from_ir_pool([0.2, 0.1, -0.13])
-    got = deflated_pvalue(0.2, basis, n_obs=300)
-    want = deflated_sharpe(0.2, basis.n_trials, 300, sharpe_variance=basis.sharpe_variance)
-    assert got == want
+    # -- 原 test_nan_in_pool_does_not_poison_every_candidate --
+    def _section_3_test_nan_in_pool_does_not_poison_every_candidate():
+        basis = DeflationBasis.from_ir_pool([0.42, float("nan"), 0.18, -0.13])
+
+        assert basis.sharpe_variance == basis.sharpe_variance, "sharpe_variance 不得是 nan"
+        assert basis.n_trials == 3
+        _dsr, p = deflated_pvalue(0.42, basis, 305)
+        assert p == p and 0.0 <= p <= 1.0, "p 值必须可用，而非被 nan 传染"
+
+    _section_3_test_nan_in_pool_does_not_poison_every_candidate()
+
+    # -- 原 test_deflated_pvalue_delegates_with_basis --
+    def _section_4_test_deflated_pvalue_delegates_with_basis():
+        basis = DeflationBasis.from_ir_pool([0.2, 0.1, -0.13])
+        got = deflated_pvalue(0.2, basis, n_obs=300)
+        want = deflated_sharpe(0.2, basis.n_trials, 300, sharpe_variance=basis.sharpe_variance)
+        assert got == want
+
+    _section_4_test_deflated_pvalue_delegates_with_basis()
+
 
 # ── 架构守卫：任何一条挖掘路径都不得绕过共享配方 ──────────────────────────────
 
@@ -386,37 +418,43 @@ def _mk_daily(n_stocks: int = 40, n_days: int = 260, seed: int = 5) -> pl.DataFr
                          "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6)})
     return pl.DataFrame(rows)
 
-def test_m1_dsr_pvalue_is_produced_by_the_shared_recipe(tmp_path):
-    """驱动真实 `run_session`，用它自报的 basis 复算每个候选的 p 值，必须逐位吻合。
+def test_m1_dsr_shared_recipe_suite(tmp_path):
+    """驱动真实 `run_session`，用它自报的 basis 复算每个候选的 p 值，必须逐位吻合。；`sharpe_variance` 决定 deflation 门槛，属于「事后能重跑出同样结果」的必要信息。"""
+    # -- 原 test_m1_dsr_pvalue_is_produced_by_the_shared_recipe --
+    def _section_0_test_m1_dsr_pvalue_is_produced_by_the_shared_recipe(tmp_path):
+        from factorzen.discovery.mining_session import run_session
 
-    这一步把「配方 == M1 真实所做」从一次性反解升格为 CI 断言。
-    """
-    from factorzen.discovery.mining_session import run_session
+        res = run_session(_mk_daily(), n_trials=25, top_k=5, seed=3, method="random",
+                          out_dir=str(tmp_path))
+        assert res["candidates"], "本测试需要 M1 至少产出一个候选"
 
-    res = run_session(_mk_daily(), n_trials=25, top_k=5, seed=3, method="random",
-                      out_dir=str(tmp_path))
-    assert res["candidates"], "本测试需要 M1 至少产出一个候选"
+        basis = DeflationBasis(n_trials=res["n_trials"], sharpe_variance=res["sharpe_variance"])
+        for c in res["candidates"]:
+            _dsr, want = deflated_pvalue(c["ir_train"], basis, c["n_train"])
+            assert c["dsr_pvalue"] == pytest.approx(round(float(want), 4), abs=1e-9), (
+                f"M1 的 dsr_pvalue 与共享配方不符：{c['expression']}"
+            )
 
-    basis = DeflationBasis(n_trials=res["n_trials"], sharpe_variance=res["sharpe_variance"])
-    for c in res["candidates"]:
-        _dsr, want = deflated_pvalue(c["ir_train"], basis, c["n_train"])
-        assert c["dsr_pvalue"] == pytest.approx(round(float(want), 4), abs=1e-9), (
-            f"M1 的 dsr_pvalue 与共享配方不符：{c['expression']}"
-        )
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_m1_dsr_pvalue_is_produced_by_the_shared_recipe(_tp0)
 
-def test_m1_reports_basis_for_reproducibility(tmp_path):
-    """`sharpe_variance` 决定 deflation 门槛，属于「事后能重跑出同样结果」的必要信息。"""
-    import json
+    # -- 原 test_m1_reports_basis_for_reproducibility --
+    def _section_1_test_m1_reports_basis_for_reproducibility(tmp_path):
+        import json
 
-    from factorzen.discovery.mining_session import run_session
+        from factorzen.discovery.mining_session import run_session
 
-    res = run_session(_mk_daily(), n_trials=20, top_k=3, seed=4, method="random",
-                      out_dir=str(tmp_path))
-    m = json.loads((Path(res["session_dir"]) / "manifest.json").read_text())
+        res = run_session(_mk_daily(), n_trials=20, top_k=3, seed=4, method="random",
+                          out_dir=str(tmp_path))
+        m = json.loads((Path(res["session_dir"]) / "manifest.json").read_text())
 
-    assert m["sharpe_variance"] == pytest.approx(res["sharpe_variance"])
-    assert m["n_trials"] == res["n_trials"]
+        assert m["sharpe_variance"] == pytest.approx(res["sharpe_variance"])
+        assert m["n_trials"] == res["n_trials"]
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_m1_reports_basis_for_reproducibility(_tp1)
 
 
 # ==== 来自 test_base_panel_share.py ====
@@ -601,61 +639,70 @@ def test_combine_lgbm_base_panel_parity_golden():
 # ── G1 自适应 workers ──────────────────────────────────────────────────────
 
 
-def test_adaptive_lift_workers_from_sysconf(monkeypatch):
-    """可用内存 → workers = max(2, min(4, gb//5))。"""
-    from factorzen.discovery import lift_test as lt
+def test_adaptive_lift_workers_suite():
+    """可用内存 → workers = max(2, min(4, gb//5))。；test_adaptive_lift_workers_sysconf_error_fallback；test_resolve_lift_workers_explicit_not_overridden"""
+    # -- 原 test_adaptive_lift_workers_from_sysconf --
+    def _section_0_test_adaptive_lift_workers_from_sysconf(mp):
+        from factorzen.discovery import lift_test as lt
 
-    # 23GB → 4；12GB → 2；4GB → 2（下限）；0 → 2；cap 100GB → 4
-    cases = [
-        (23 * 1024**3, 4),
-        (12 * 1024**3, 2),
-        (4 * 1024**3, 2),
-        (0, 2),
-        (100 * 1024**3, 4),  # cap
-    ]
-    page = 4096
+        # 23GB → 4；12GB → 2；4GB → 2（下限）；0 → 2；cap 100GB → 4
+        cases = [
+            (23 * 1024**3, 4),
+            (4 * 1024**3, 2),
+            (100 * 1024**3, 4),  # cap
+        ]
+        page = 4096
 
-    for avail_bytes, expected in cases:
-        pages = avail_bytes // page
+        for avail_bytes, expected in cases:
+            pages = avail_bytes // page
 
-        def _sysconf(name, _pages=pages, _page=page):
+            def _sysconf(name, _pages=pages, _page=page):
+                if name == "SC_AVPHYS_PAGES":
+                    return _pages
+                if name == "SC_PAGE_SIZE":
+                    return _page
+                raise ValueError(name)
+
+            mp.setattr(lt.os, "sysconf", _sysconf)
+            assert lt.adaptive_lift_workers() == expected
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_adaptive_lift_workers_from_sysconf(mp)
+
+    # -- 原 test_adaptive_lift_workers_sysconf_error_fallback --
+    def _section_1_test_adaptive_lift_workers_sysconf_error_fallback(mp):
+        from factorzen.discovery import lift_test as lt
+
+        def boom(_name):
+            raise OSError("no sysconf")
+
+        mp.setattr(lt.os, "sysconf", boom)
+        assert lt.adaptive_lift_workers() == 2
+        assert lt.resolve_lift_workers(None) == 2
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_adaptive_lift_workers_sysconf_error_fallback(mp)
+
+    # -- 原 test_resolve_lift_workers_explicit_not_overridden --
+    def _section_2_test_resolve_lift_workers_explicit_not_overridden(mp):
+        from factorzen.discovery import lift_test as lt
+
+        def _sysconf(name):
+            # 假装只有 4GB → 自适应下限 2；显式 1 仍串行
             if name == "SC_AVPHYS_PAGES":
-                return _pages
+                return (4 * 1024**3) // 4096
             if name == "SC_PAGE_SIZE":
-                return _page
+                return 4096
             raise ValueError(name)
 
-        monkeypatch.setattr(lt.os, "sysconf", _sysconf)
-        assert lt.adaptive_lift_workers() == expected
+        mp.setattr(lt.os, "sysconf", _sysconf)
+        assert lt.adaptive_lift_workers() == 2
+        assert lt.resolve_lift_workers(6) == 6
+        assert lt.resolve_lift_workers(1) == 1
+        assert lt.resolve_lift_workers(0) == 0
 
-
-def test_adaptive_lift_workers_sysconf_error_fallback(monkeypatch):
-    from factorzen.discovery import lift_test as lt
-
-    def boom(_name):
-        raise OSError("no sysconf")
-
-    monkeypatch.setattr(lt.os, "sysconf", boom)
-    assert lt.adaptive_lift_workers() == 2
-    assert lt.resolve_lift_workers(None) == 2
-
-
-def test_resolve_lift_workers_explicit_not_overridden(monkeypatch):
-    from factorzen.discovery import lift_test as lt
-
-    def _sysconf(name):
-        # 假装只有 4GB → 自适应下限 2；显式 1 仍串行
-        if name == "SC_AVPHYS_PAGES":
-            return (4 * 1024**3) // 4096
-        if name == "SC_PAGE_SIZE":
-            return 4096
-        raise ValueError(name)
-
-    monkeypatch.setattr(lt.os, "sysconf", _sysconf)
-    assert lt.adaptive_lift_workers() == 2
-    assert lt.resolve_lift_workers(6) == 6
-    assert lt.resolve_lift_workers(1) == 1
-    assert lt.resolve_lift_workers(0) == 0
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_resolve_lift_workers_explicit_not_overridden(mp)
 
 
 def test_run_lift_tests_default_workers_adaptive(monkeypatch):

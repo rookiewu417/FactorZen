@@ -183,162 +183,182 @@ def test_paired_lift_stats_equals_series_on_diff():
         else:
             assert abs(float(a) - float(b_)) < 1e-15, f"{key}: {a} vs {b_}"
 
-def test_series_lift_stats_empty_frame():
-    from factorzen.discovery.lift_test import series_lift_stats
+def test_series_lift_edges_suite():
+    """test_series_lift_stats_empty_frame；n_blocks=1 → SE=None；半段：中位归前半 → second=None。；全零：lift=0.0、SE=None、半段仍按块切分非 None（有两半时）。；乱序输入与排序后结果一致。"""
+    # -- 原 test_series_lift_stats_empty_frame --
+    def _section_0_test_series_lift_stats_empty_frame():
+        from factorzen.discovery.lift_test import series_lift_stats
 
-    empty = series_lift_stats(_empty_ic(), block_days=20)
-    assert empty == {
-        "lift": None,
-        "lift_se": None,
-        "n_blocks": 0,
-        "n_days": 0,
-        "lift_first_half": None,
-        "lift_second_half": None,
-    }
-    assert series_lift_stats(None, block_days=20) == empty  # type: ignore[arg-type]
+        empty = series_lift_stats(_empty_ic(), block_days=20)
+        assert empty == {
+            "lift": None,
+            "lift_se": None,
+            "n_blocks": 0,
+            "n_days": 0,
+            "lift_first_half": None,
+            "lift_second_half": None,
+        }
+        assert series_lift_stats(None, block_days=20) == empty  # type: ignore[arg-type]
 
-def test_series_lift_stats_single_block_se_none():
-    """n_blocks=1 → SE=None；半段：中位归前半 → second=None。"""
-    from factorzen.discovery.lift_test import series_lift_stats
+    _section_0_test_series_lift_stats_empty_frame()
 
-    ics = [0.02, 0.04, -0.01]
-    dates = ["20240101", "20240102", "20240103"]
-    stats = series_lift_stats(_ic_df(dates, ics), block_days=20)
-    assert stats["n_blocks"] == 1
-    assert stats["n_days"] == 3
-    assert stats["lift_se"] is None
-    assert abs(stats["lift"] - float(np.mean(ics))) < 1e-12
-    assert abs(stats["lift_first_half"] - float(np.mean(ics))) < 1e-12
-    assert stats["lift_second_half"] is None
+    # -- 原 test_series_lift_stats_single_block_se_none --
+    def _section_1_test_series_lift_stats_single_block_se_none():
+        from factorzen.discovery.lift_test import series_lift_stats
 
-def test_series_lift_stats_all_zero_guard():
-    """全零：lift=0.0、SE=None、半段仍按块切分非 None（有两半时）。"""
-    from factorzen.discovery.lift_test import series_lift_stats
+        ics = [0.02, 0.04, -0.01]
+        dates = ["20240101", "20240102", "20240103"]
+        stats = series_lift_stats(_ic_df(dates, ics), block_days=20)
+        assert stats["n_blocks"] == 1
+        assert stats["n_days"] == 3
+        assert stats["lift_se"] is None
+        assert abs(stats["lift"] - float(np.mean(ics))) < 1e-12
+        assert abs(stats["lift_first_half"] - float(np.mean(ics))) < 1e-12
+        assert stats["lift_second_half"] is None
 
-    ics = [0.0] * 6
-    dates = [f"2024010{i}" for i in range(1, 7)]
-    stats = series_lift_stats(_ic_df(dates, ics), block_days=2)
-    assert stats["lift"] == 0.0
-    assert stats["lift_se"] is None
-    assert stats["n_blocks"] == 3
-    assert stats["n_days"] == 6
-    # mid=2 → 前 4 日、后 2 日均值均为 0.0
-    assert stats["lift_first_half"] == 0.0
-    assert stats["lift_second_half"] == 0.0
+    _section_1_test_series_lift_stats_single_block_se_none()
 
-def test_series_lift_stats_unsorted_dates_same_as_sorted():
-    """乱序输入与排序后结果一致。"""
-    from factorzen.discovery.lift_test import series_lift_stats
+    # -- 原 test_series_lift_stats_all_zero_guard --
+    def _section_2_test_series_lift_stats_all_zero_guard():
+        from factorzen.discovery.lift_test import series_lift_stats
 
-    ics = [0.01, 0.03, -0.02, 0.04, 0.00, 0.02]
-    dates = [f"2024010{i}" for i in range(1, 7)]
-    ordered = series_lift_stats(_ic_df(dates, ics), block_days=2)
+        ics = [0.0] * 6
+        dates = [f"2024010{i}" for i in range(1, 7)]
+        stats = series_lift_stats(_ic_df(dates, ics), block_days=2)
+        assert stats["lift"] == 0.0
+        assert stats["lift_se"] is None
+        assert stats["n_blocks"] == 3
+        assert stats["n_days"] == 6
+        # mid=2 → 前 4 日、后 2 日均值均为 0.0
+        assert stats["lift_first_half"] == 0.0
+        assert stats["lift_second_half"] == 0.0
 
-    perm = [4, 0, 5, 2, 1, 3]
-    shuffled_dates = [dates[i] for i in perm]
-    shuffled_ics = [ics[i] for i in perm]
-    shuffled = series_lift_stats(_ic_df(shuffled_dates, shuffled_ics), block_days=2)
+    _section_2_test_series_lift_stats_all_zero_guard()
 
-    for key in (
-        "lift",
-        "lift_se",
-        "n_blocks",
-        "n_days",
-        "lift_first_half",
-        "lift_second_half",
-    ):
-        a, b = ordered[key], shuffled[key]
-        if a is None or b is None:
-            assert a is b
-        else:
-            assert abs(float(a) - float(b)) < 1e-15
+    # -- 原 test_series_lift_stats_unsorted_dates_same_as_sorted --
+    def _section_3_test_series_lift_stats_unsorted_dates_same_as_sorted():
+        from factorzen.discovery.lift_test import series_lift_stats
+
+        ics = [0.01, 0.03, -0.02, 0.04, 0.00, 0.02]
+        dates = [f"2024010{i}" for i in range(1, 7)]
+        ordered = series_lift_stats(_ic_df(dates, ics), block_days=2)
+
+        perm = [4, 0, 5, 2, 1, 3]
+        shuffled_dates = [dates[i] for i in perm]
+        shuffled_ics = [ics[i] for i in perm]
+        shuffled = series_lift_stats(_ic_df(shuffled_dates, shuffled_ics), block_days=2)
+
+        for key in (
+            "lift",
+            "lift_se",
+            "n_blocks",
+            "n_days",
+            "lift_first_half",
+            "lift_second_half",
+        ):
+            a, b = ordered[key], shuffled[key]
+            if a is None or b is None:
+                assert a is b
+            else:
+                assert abs(float(a) - float(b)) < 1e-15
+
+    _section_3_test_series_lift_stats_unsorted_dates_same_as_sorted()
+
 
 # ── 4. daily_residual_rank_ic 独立验证 ───────────────────────────────────────
 
-def test_daily_residual_rank_ic_matches_independent_lstsq():
-    """k=1、45 股×3 日：候选=库线性组合+正交分量；独立 lstsq+spearman 逐日对齐。"""
-    from factorzen.discovery.residual import (
-        build_library_panel,
-        daily_residual_rank_ic,
-    )
-
-    rng = np.random.default_rng(7)
-    dates = [dt.date(2024, 1, 2), dt.date(2024, 1, 3), dt.date(2024, 1, 4)]
-    codes = _codes(45)
-    n_d, n_s = 3, 45
-
-    # 库因子 + 与之正交的独立 alpha（Gram-Schmidt 近似：减投影后加噪声）
-    f1 = rng.normal(0, 1, size=(n_d, n_s))
-    alpha_raw = rng.normal(0, 1, size=(n_d, n_s))
-    alpha = np.empty_like(alpha_raw)
-    for i in range(n_d):
-        # 截面去与 f1 的线性相关，保留正交增量
-        x = f1[i]
-        a = alpha_raw[i]
-        coef = float(np.dot(a, x) / np.dot(x, x))
-        alpha[i] = a - coef * x
-
-    # 候选 = 0.5*库 + 正交分量
-    cand_m = 0.5 * f1 + alpha
-    # 收益跟正交分量走 → 残差 IC 应显著非零
-    noise = rng.normal(0, 0.3, size=(n_d, n_s))
-    fwd_m = alpha + noise
-
-    lib_pool = {"lib_f1": _panel_long(f1, dates, codes)}
-    panel = build_library_panel(lib_pool)
-    assert panel is not None and panel.k == 1
-
-    cand = _panel_long(cand_m, dates, codes)
-    fwd = _panel_long(fwd_m, dates, codes, col="fwd_ret_1d")
-
-    got = daily_residual_rank_ic(cand, panel, fwd)
-    assert got.columns == ["trade_date", "ic"]
-    assert got["trade_date"].dtype == pl.Utf8
-    assert got.height == 3
-    # 升序
-    assert got["trade_date"].to_list() == sorted(got["trade_date"].to_list())
-
-    expected = _independent_daily_residual_ic(cand, panel, fwd)
-    assert set(expected) == set(got["trade_date"].to_list())
-    for row in got.iter_rows(named=True):
-        exp = expected[row["trade_date"]]
-        assert abs(row["ic"] - exp) < 1e-12, (
-            f"{row['trade_date']}: got={row['ic']} expected={exp}"
+def test_daily_residual_rank_ic_suite():
+    """k=1、45 股×3 日：候选=库线性组合+正交分量；独立 lstsq+spearman 逐日对齐。；3 日裁中间 1 日闭区间窗 → 仅剩该日。"""
+    # -- 原 test_daily_residual_rank_ic_matches_independent_lstsq --
+    def _section_0_test_daily_residual_rank_ic_matches_independent_lstsq():
+        from factorzen.discovery.residual import (
+            build_library_panel,
+            daily_residual_rank_ic,
         )
+
+        rng = np.random.default_rng(7)
+        dates = [dt.date(2024, 1, 2), dt.date(2024, 1, 3), dt.date(2024, 1, 4)]
+        codes = _codes(45)
+        n_d, n_s = 3, 45
+
+        # 库因子 + 与之正交的独立 alpha（Gram-Schmidt 近似：减投影后加噪声）
+        f1 = rng.normal(0, 1, size=(n_d, n_s))
+        alpha_raw = rng.normal(0, 1, size=(n_d, n_s))
+        alpha = np.empty_like(alpha_raw)
+        for i in range(n_d):
+            # 截面去与 f1 的线性相关，保留正交增量
+            x = f1[i]
+            a = alpha_raw[i]
+            coef = float(np.dot(a, x) / np.dot(x, x))
+            alpha[i] = a - coef * x
+
+        # 候选 = 0.5*库 + 正交分量
+        cand_m = 0.5 * f1 + alpha
+        # 收益跟正交分量走 → 残差 IC 应显著非零
+        noise = rng.normal(0, 0.3, size=(n_d, n_s))
+        fwd_m = alpha + noise
+
+        lib_pool = {"lib_f1": _panel_long(f1, dates, codes)}
+        panel = build_library_panel(lib_pool)
+        assert panel is not None and panel.k == 1
+
+        cand = _panel_long(cand_m, dates, codes)
+        fwd = _panel_long(fwd_m, dates, codes, col="fwd_ret_1d")
+
+        got = daily_residual_rank_ic(cand, panel, fwd)
+        assert got.columns == ["trade_date", "ic"]
+        assert got["trade_date"].dtype == pl.Utf8
+        assert got.height == 3
+        # 升序
+        assert got["trade_date"].to_list() == sorted(got["trade_date"].to_list())
+
+        expected = _independent_daily_residual_ic(cand, panel, fwd)
+        assert set(expected) == set(got["trade_date"].to_list())
+        for row in got.iter_rows(named=True):
+            exp = expected[row["trade_date"]]
+            assert abs(row["ic"] - exp) < 1e-12, (
+                f"{row['trade_date']}: got={row['ic']} expected={exp}"
+            )
+
+    _section_0_test_daily_residual_rank_ic_matches_independent_lstsq()
+
+    # -- 原 test_daily_residual_rank_ic_start_end_window --
+    def _section_1_test_daily_residual_rank_ic_start_end_window():
+        from factorzen.discovery.residual import (
+            build_library_panel,
+            daily_residual_rank_ic,
+        )
+
+        rng = np.random.default_rng(11)
+        dates = [dt.date(2024, 2, 5), dt.date(2024, 2, 6), dt.date(2024, 2, 7)]
+        codes = _codes(45)
+        f1 = rng.normal(0, 1, size=(3, 45))
+        cand_m = f1 + rng.normal(0, 0.5, size=(3, 45))
+        fwd_m = cand_m + rng.normal(0, 0.2, size=(3, 45))
+
+        panel = build_library_panel({"lib_f1": _panel_long(f1, dates, codes)})
+        assert panel is not None
+        cand = _panel_long(cand_m, dates, codes)
+        fwd = _panel_long(fwd_m, dates, codes, col="fwd_ret_1d")
+
+        # 窗界两种形态等价（生产窗串是 ISO，历史调用方可能传紧凑）
+        iso = daily_residual_rank_ic(
+            cand, panel, fwd, start="2024-02-06", end="2024-02-06",
+        )
+        compact = daily_residual_rank_ic(
+            cand, panel, fwd, start="20240206", end="20240206",
+        )
+        assert iso.height == 1
+        assert compact.height == 1
+        assert iso["ic"].to_list() == compact["ic"].to_list()
+        # 输出形态锚定 ISO
+        assert iso["trade_date"].to_list() == ["2024-02-06"]
+
+    _section_1_test_daily_residual_rank_ic_start_end_window()
+
 
 # ── 5. start/end 裁剪 ────────────────────────────────────────────────────────
 
-def test_daily_residual_rank_ic_start_end_window():
-    """3 日裁中间 1 日闭区间窗 → 仅剩该日。"""
-    from factorzen.discovery.residual import (
-        build_library_panel,
-        daily_residual_rank_ic,
-    )
-
-    rng = np.random.default_rng(11)
-    dates = [dt.date(2024, 2, 5), dt.date(2024, 2, 6), dt.date(2024, 2, 7)]
-    codes = _codes(45)
-    f1 = rng.normal(0, 1, size=(3, 45))
-    cand_m = f1 + rng.normal(0, 0.5, size=(3, 45))
-    fwd_m = cand_m + rng.normal(0, 0.2, size=(3, 45))
-
-    panel = build_library_panel({"lib_f1": _panel_long(f1, dates, codes)})
-    assert panel is not None
-    cand = _panel_long(cand_m, dates, codes)
-    fwd = _panel_long(fwd_m, dates, codes, col="fwd_ret_1d")
-
-    # 窗界两种形态等价（生产窗串是 ISO，历史调用方可能传紧凑）
-    iso = daily_residual_rank_ic(
-        cand, panel, fwd, start="2024-02-06", end="2024-02-06",
-    )
-    compact = daily_residual_rank_ic(
-        cand, panel, fwd, start="20240206", end="20240206",
-    )
-    assert iso.height == 1
-    assert compact.height == 1
-    assert iso["ic"].to_list() == compact["ic"].to_list()
-    # 输出形态锚定 ISO
-    assert iso["trade_date"].to_list() == ["2024-02-06"]
 
 # ── 6. compute_residual_ic ≡ mean(daily_residual_rank_ic) ────────────────────
 
@@ -412,136 +432,167 @@ def _panel_with_ties(n_days: int = 5, n_stocks: int = 12, seed: int = 0):
 
 # ── core.stats 单元 ────────────────────────────────────────────────────────
 
-def test_avg_rank_ties_average_and_one_based():
-    from factorzen.core.stats import avg_rank
+def test_spearman_avg_rank_unit_suite():
+    """test_avg_rank_ties_average_and_one_based；含 ties 时打乱行序结果完全相等（修复后）；旧 ordinal 会变。；test_spearman_avg_rank_matches_polars_average；test_spearman_avg_rank_degenerate_guards"""
+    # -- 原 test_avg_rank_ties_average_and_one_based --
+    def _section_0_test_avg_rank_ties_average_and_one_based():
+        from factorzen.core.stats import avg_rank
 
-    x = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 3.0])
-    # ranks: 1,1,1 → avg 2.0; 2,2 → avg 4.5; 3 → 6.0
-    got = avg_rank(x)
-    np.testing.assert_allclose(got, [2.0, 2.0, 2.0, 4.5, 4.5, 6.0])
+        x = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 3.0])
+        # ranks: 1,1,1 → avg 2.0; 2,2 → avg 4.5; 3 → 6.0
+        got = avg_rank(x)
+        np.testing.assert_allclose(got, [2.0, 2.0, 2.0, 4.5, 4.5, 6.0])
 
-def test_spearman_avg_rank_row_order_invariant_on_ties():
-    """含 ties 时打乱行序结果完全相等（修复后）；旧 ordinal 会变。"""
-    from factorzen.core.stats import spearman_avg_rank
+    _section_0_test_avg_rank_ties_average_and_one_based()
 
-    f = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 3.0])
-    r = np.array([0.1, 0.2, 0.15, 0.5, 0.4, 0.9])
-    base = spearman_avg_rank(f, r)
-    assert base is not None
+    # -- 原 test_spearman_avg_rank_row_order_invariant_on_ties --
+    def _section_1_test_spearman_avg_rank_row_order_invariant_on_ties():
+        from factorzen.core.stats import spearman_avg_rank
 
-    rng = np.random.default_rng(0)
-    for _ in range(20):
-        perm = rng.permutation(f.size)
-        got = spearman_avg_rank(f[perm], r[perm])
-        assert got == base, f"avg-rank 行序敏感: {got} vs {base}"
+        f = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 3.0])
+        r = np.array([0.1, 0.2, 0.15, 0.5, 0.4, 0.9])
+        base = spearman_avg_rank(f, r)
+        assert base is not None
 
-    # TDD 反例：旧 ordinal 对同一配对打乱行序后结果会变
-    ord_same_pair = set()
-    for _ in range(30):
-        perm = rng.permutation(f.size)
-        ord_same_pair.add(_ordinal_spearman(f[perm], r[perm]))
-    assert len(ord_same_pair) > 1, "旧 ordinal 应在 ties 下随行序变化（TDD 反例）"
+        rng = np.random.default_rng(0)
+        for _ in range(20):
+            perm = rng.permutation(f.size)
+            got = spearman_avg_rank(f[perm], r[perm])
+            assert got == base, f"avg-rank 行序敏感: {got} vs {base}"
 
-def test_spearman_avg_rank_matches_polars_average():
-    from factorzen.core.stats import spearman_avg_rank
+        # TDD 反例：旧 ordinal 对同一配对打乱行序后结果会变
+        ord_same_pair = set()
+        for _ in range(30):
+            perm = rng.permutation(f.size)
+            ord_same_pair.add(_ordinal_spearman(f[perm], r[perm]))
+        assert len(ord_same_pair) > 1, "旧 ordinal 应在 ties 下随行序变化（TDD 反例）"
 
-    rng = np.random.default_rng(7)
-    # 无 ties
-    a = rng.standard_normal(80)
-    b = 0.5 * a + rng.standard_normal(80)
-    assert abs(spearman_avg_rank(a, b) - _polars_spearman(a, b)) < 1e-12
+    _section_1_test_spearman_avg_rank_row_order_invariant_on_ties()
 
-    # 含 ties
-    a_t = rng.choice([0.0, 1.0, 1.0, 2.0, 3.0, 3.0], size=60).astype(float)
-    b_t = 0.4 * a_t + rng.normal(0, 1.0, size=60)
-    assert abs(spearman_avg_rank(a_t, b_t) - _polars_spearman(a_t, b_t)) < 1e-12
+    # -- 原 test_spearman_avg_rank_matches_polars_average --
+    def _section_2_test_spearman_avg_rank_matches_polars_average():
+        from factorzen.core.stats import spearman_avg_rank
 
-def test_spearman_avg_rank_degenerate_guards():
-    from factorzen.core.stats import spearman_avg_rank
+        rng = np.random.default_rng(7)
+        # 无 ties
+        a = rng.standard_normal(80)
+        b = 0.5 * a + rng.standard_normal(80)
+        assert abs(spearman_avg_rank(a, b) - _polars_spearman(a, b)) < 1e-12
 
-    assert spearman_avg_rank(np.array([1.0]), np.array([2.0])) is None
-    assert spearman_avg_rank(np.array([]), np.array([])) is None
-    # 常数列
-    assert spearman_avg_rank(np.ones(10), np.arange(10, dtype=float)) is None
-    assert spearman_avg_rank(np.arange(10, dtype=float), np.ones(10)) is None
-    # 双侧常数
-    assert spearman_avg_rank(np.ones(5), np.ones(5)) is None
+        # 含 ties
+        a_t = rng.choice([0.0, 1.0, 1.0, 2.0, 3.0, 3.0], size=60).astype(float)
+        b_t = 0.4 * a_t + rng.normal(0, 1.0, size=60)
+        assert abs(spearman_avg_rank(a_t, b_t) - _polars_spearman(a_t, b_t)) < 1e-12
+
+    _section_2_test_spearman_avg_rank_matches_polars_average()
+
+    # -- 原 test_spearman_avg_rank_degenerate_guards --
+    def _section_3_test_spearman_avg_rank_degenerate_guards():
+        from factorzen.core.stats import spearman_avg_rank
+
+        assert spearman_avg_rank(np.array([1.0]), np.array([2.0])) is None
+        assert spearman_avg_rank(np.array([]), np.array([])) is None
+        # 常数列
+        assert spearman_avg_rank(np.ones(10), np.arange(10, dtype=float)) is None
+        assert spearman_avg_rank(np.arange(10, dtype=float), np.ones(10)) is None
+        # 双侧常数
+        assert spearman_avg_rank(np.ones(5), np.ones(5)) is None
+
+    _section_3_test_spearman_avg_rank_degenerate_guards()
+
 
 # ── 四消费方：行序不变 + lift/experiment parity ───────────────────────────
 
-def test_daily_oos_rank_ic_row_order_invariant_with_ties():
-    """修复后 lift_test 日 IC 不随截面行序变化。"""
-    from factorzen.discovery.lift_test import _daily_oos_rank_ic
+def test_consumer_row_order_parity_suite():
+    """修复后 lift_test 日 IC 不随截面行序变化。；test_evaluate_oos_row_order_invariant_with_ties；同一小面板：lift_test 日 IC 序列与 experiment rank_ic_mean 分量一致。；test_methods_rank_ic_numpy_uses_avg_rank_on_ties；test_daily_oos_skips_constant_cross_section"""
+    # -- 原 test_daily_oos_rank_ic_row_order_invariant_with_ties --
+    def _section_0_test_daily_oos_rank_ic_row_order_invariant_with_ties():
+        from factorzen.discovery.lift_test import _daily_oos_rank_ic
 
-    combined, ret_df = _panel_with_ties()
-    base = _daily_oos_rank_ic(combined, ret_df)
-    assert base.height > 0
+        combined, ret_df = _panel_with_ties()
+        base = _daily_oos_rank_ic(combined, ret_df)
+        assert base.height > 0
 
-    shuffled = (
-        combined.with_row_index("_i")
-        .with_columns((pl.col("_i") * 17 % 97).alias("_k"))
-        .sort(["trade_date", "_k"])
-        .drop(["_i", "_k"])
-    )
-    got = _daily_oos_rank_ic(shuffled, ret_df)
-    assert got["trade_date"].to_list() == base["trade_date"].to_list()
-    np.testing.assert_allclose(
-        got["ic"].to_numpy(), base["ic"].to_numpy(), rtol=0, atol=0,
-    )
+        shuffled = (
+            combined.with_row_index("_i")
+            .with_columns((pl.col("_i") * 17 % 97).alias("_k"))
+            .sort(["trade_date", "_k"])
+            .drop(["_i", "_k"])
+        )
+        got = _daily_oos_rank_ic(shuffled, ret_df)
+        assert got["trade_date"].to_list() == base["trade_date"].to_list()
+        np.testing.assert_allclose(
+            got["ic"].to_numpy(), base["ic"].to_numpy(), rtol=0, atol=0,
+        )
 
-def test_evaluate_oos_row_order_invariant_with_ties():
-    from factorzen.research.combination.experiment import _evaluate_oos
+    _section_0_test_daily_oos_rank_ic_row_order_invariant_with_ties()
 
-    combined, ret_df = _panel_with_ties()
-    base = _evaluate_oos(combined, ret_df)["rank_ic_mean"]
-    shuffled = (
-        combined.with_row_index("_i")
-        .with_columns((pl.col("_i") * 13 % 89).alias("_k"))
-        .sort(["trade_date", "_k"])
-        .drop(["_i", "_k"])
-    )
-    got = _evaluate_oos(shuffled, ret_df)["rank_ic_mean"]
-    assert got == base
+    # -- 原 test_evaluate_oos_row_order_invariant_with_ties --
+    def _section_1_test_evaluate_oos_row_order_invariant_with_ties():
+        from factorzen.research.combination.experiment import _evaluate_oos
 
-def test_lift_and_evaluate_oos_daily_ic_parity_with_ties():
-    """同一小面板：lift_test 日 IC 序列与 experiment rank_ic_mean 分量一致。"""
-    from factorzen.discovery.lift_test import _daily_oos_rank_ic
-    from factorzen.research.combination.experiment import _evaluate_oos
+        combined, ret_df = _panel_with_ties()
+        base = _evaluate_oos(combined, ret_df)["rank_ic_mean"]
+        shuffled = (
+            combined.with_row_index("_i")
+            .with_columns((pl.col("_i") * 13 % 89).alias("_k"))
+            .sort(["trade_date", "_k"])
+            .drop(["_i", "_k"])
+        )
+        got = _evaluate_oos(shuffled, ret_df)["rank_ic_mean"]
+        assert got == base
 
-    combined, ret_df = _panel_with_ties(n_days=8, n_stocks=20, seed=11)
-    daily = _daily_oos_rank_ic(combined, ret_df)
-    mean_daily = float(daily["ic"].mean())
-    ref = float(_evaluate_oos(combined, ret_df)["rank_ic_mean"])
-    assert abs(mean_daily - ref) < 1e-12
+    _section_1_test_evaluate_oos_row_order_invariant_with_ties()
 
-def test_methods_rank_ic_numpy_uses_avg_rank_on_ties():
-    from factorzen.core.stats import spearman_avg_rank
-    from factorzen.research.combination.methods import _rank_ic_numpy
+    # -- 原 test_lift_and_evaluate_oos_daily_ic_parity_with_ties --
+    def _section_2_test_lift_and_evaluate_oos_daily_ic_parity_with_ties():
+        from factorzen.discovery.lift_test import _daily_oos_rank_ic
+        from factorzen.research.combination.experiment import _evaluate_oos
 
-    f = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0, 5.0, 6.0])
-    r = np.array([0.1, 0.2, 0.15, 0.5, 0.4, 0.9, 0.85, 1.1, 1.0, 1.3, 1.2, 1.5])
-    got = _rank_ic_numpy(f, r)
-    exp = spearman_avg_rank(f, r)
-    assert got is not None and exp is not None
-    assert got == exp
+        combined, ret_df = _panel_with_ties(n_days=8, n_stocks=20, seed=11)
+        daily = _daily_oos_rank_ic(combined, ret_df)
+        mean_daily = float(daily["ic"].mean())
+        ref = float(_evaluate_oos(combined, ret_df)["rank_ic_mean"])
+        assert abs(mean_daily - ref) < 1e-12
 
-    # 行序不变
-    perm = np.array([3, 0, 5, 1, 8, 2, 10, 4, 7, 11, 6, 9])
-    assert _rank_ic_numpy(f[perm], r[perm]) == got
+    _section_2_test_lift_and_evaluate_oos_daily_ic_parity_with_ties()
 
-def test_daily_oos_skips_constant_cross_section():
-    from factorzen.discovery.lift_test import _daily_oos_rank_ic
+    # -- 原 test_methods_rank_ic_numpy_uses_avg_rank_on_ties --
+    def _section_3_test_methods_rank_ic_numpy_uses_avg_rank_on_ties():
+        from factorzen.core.stats import spearman_avg_rank
+        from factorzen.research.combination.methods import _rank_ic_numpy
 
-    dates = ["20240101", "20240102"]
-    codes = [f"{i:04d}.SZ" for i in range(12)]
-    rows_f, rows_r = [], []
-    for d in dates:
-        for s, code in enumerate(codes):
-            rows_f.append({
-                "trade_date": d, "ts_code": code, "factor_value": 1.0,  # 常数
-            })
-            rows_r.append({
-                "trade_date": d, "ts_code": code, "ret": float(s),
-            })
-    daily = _daily_oos_rank_ic(pl.DataFrame(rows_f), pl.DataFrame(rows_r))
-    assert daily.is_empty()
+        f = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0, 5.0, 6.0])
+        r = np.array([0.1, 0.2, 0.15, 0.5, 0.4, 0.9, 0.85, 1.1, 1.0, 1.3, 1.2, 1.5])
+        got = _rank_ic_numpy(f, r)
+        exp = spearman_avg_rank(f, r)
+        assert got is not None and exp is not None
+        assert got == exp
+
+        # 行序不变
+        perm = np.array([3, 0, 5, 1, 8, 2, 10, 4, 7, 11, 6, 9])
+        assert _rank_ic_numpy(f[perm], r[perm]) == got
+
+    _section_3_test_methods_rank_ic_numpy_uses_avg_rank_on_ties()
+
+    # -- 原 test_daily_oos_skips_constant_cross_section --
+    def _section_4_test_daily_oos_skips_constant_cross_section():
+        from factorzen.discovery.lift_test import _daily_oos_rank_ic
+
+        dates = ["20240101", "20240102"]
+        codes = [f"{i:04d}.SZ" for i in range(12)]
+        rows_f, rows_r = [], []
+        for d in dates:
+            for s, code in enumerate(codes):
+                rows_f.append({
+                    "trade_date": d, "ts_code": code, "factor_value": 1.0,  # 常数
+                })
+                rows_r.append({
+                    "trade_date": d, "ts_code": code, "ret": float(s),
+                })
+        daily = _daily_oos_rank_ic(pl.DataFrame(rows_f), pl.DataFrame(rows_r))
+        assert daily.is_empty()
+
+    _section_4_test_daily_oos_skips_constant_cross_section()
+
+

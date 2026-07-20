@@ -192,70 +192,76 @@ def _codes_on(mem: pl.DataFrame, trade_date: str) -> set[str]:
     )
 
 
-def test_membership_query_window_independent(monkeypatch):
-    """同一 trade_date 成分不随查询 start 漂移（复审反例：6/1 起 vs 6/20 起）。
+def test_membership_window_behavior_suite():
+    """同一 trade_date 成分不随查询 start 漂移（复审反例：6/1 起 vs 6/20 起）。；月中调样在生效日当天切换，不再整月冻结在月初成分。；某月无 snapshot 时交易日成分继承上一有数据月份，不为空。"""
+    # -- 原 test_membership_query_window_independent --
+    def _section_0_test_membership_query_window_independent(mp):
+        mp.setattr(
+            "factorzen.core.calendar.get_trade_dates", _mock_trade_dates_midmonth
+        )
+        mp.setattr(
+            "factorzen.core.universe._load_index_members", _members_midmonth_resample
+        )
+        mp.setattr(
+            "factorzen.core.universe._batch_index_membership",
+            _batch_from_daily(_members_midmonth_resample),
+        )
+        from factorzen.core.universe import get_universe_membership
 
-    旧实现 first-of-month + start-clamp：窗 [6/1,6/30] 的 6/20 得 OLD，
-    窗 [6/20,6/30] 的 6/20 得 NEW —— 必须修复为二者相等且均为 NEW。
-    """
-    monkeypatch.setattr(
-        "factorzen.core.calendar.get_trade_dates", _mock_trade_dates_midmonth
-    )
-    monkeypatch.setattr(
-        "factorzen.core.universe._load_index_members", _members_midmonth_resample
-    )
-    monkeypatch.setattr(
-        "factorzen.core.universe._batch_index_membership",
-        _batch_from_daily(_members_midmonth_resample),
-    )
-    from factorzen.core.universe import get_universe_membership
+        full = get_universe_membership("20240601", "20240630", "csi300")
+        late = get_universe_membership("20240620", "20240630", "csi300")
 
-    full = get_universe_membership("20240601", "20240630", "csi300")
-    late = get_universe_membership("20240620", "20240630", "csi300")
+        full_620 = _codes_on(full, "20240620")
+        late_620 = _codes_on(late, "20240620")
+        assert full_620 == late_620
+        assert full_620 == set(_NEW_MEMBERS)
 
-    full_620 = _codes_on(full, "20240620")
-    late_620 = _codes_on(late, "20240620")
-    assert full_620 == late_620
-    assert full_620 == set(_NEW_MEMBERS)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_membership_query_window_independent(mp)
 
+    # -- 原 test_membership_midmonth_resample_switches_on_effective_date --
+    def _section_1_test_membership_midmonth_resample_switches_on_effective_date(mp):
+        mp.setattr(
+            "factorzen.core.calendar.get_trade_dates", _mock_trade_dates_midmonth
+        )
+        mp.setattr(
+            "factorzen.core.universe._load_index_members", _members_midmonth_resample
+        )
+        mp.setattr(
+            "factorzen.core.universe._batch_index_membership",
+            _batch_from_daily(_members_midmonth_resample),
+        )
+        from factorzen.core.universe import get_universe_membership
 
-def test_membership_midmonth_resample_switches_on_effective_date(monkeypatch):
-    """月中调样在生效日当天切换，不再整月冻结在月初成分。"""
-    monkeypatch.setattr(
-        "factorzen.core.calendar.get_trade_dates", _mock_trade_dates_midmonth
-    )
-    monkeypatch.setattr(
-        "factorzen.core.universe._load_index_members", _members_midmonth_resample
-    )
-    monkeypatch.setattr(
-        "factorzen.core.universe._batch_index_membership",
-        _batch_from_daily(_members_midmonth_resample),
-    )
-    from factorzen.core.universe import get_universe_membership
+        mem = get_universe_membership("20240601", "20240630", "csi300")
+        assert _codes_on(mem, "20240614") == set(_OLD_MEMBERS)
+        assert _codes_on(mem, "20240617") == set(_NEW_MEMBERS)
 
-    mem = get_universe_membership("20240601", "20240630", "csi300")
-    assert _codes_on(mem, "20240614") == set(_OLD_MEMBERS)
-    assert _codes_on(mem, "20240617") == set(_NEW_MEMBERS)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_membership_midmonth_resample_switches_on_effective_date(mp)
 
+    # -- 原 test_membership_cross_month_inherits_prior_snapshot --
+    def _section_2_test_membership_cross_month_inherits_prior_snapshot(mp):
+        mp.setattr(
+            "factorzen.core.calendar.get_trade_dates", _mock_trade_dates_midmonth
+        )
+        mp.setattr(
+            "factorzen.core.universe._load_index_members",
+            _members_cross_month_inherit,
+        )
+        mp.setattr(
+            "factorzen.core.universe._batch_index_membership",
+            _batch_from_daily(_members_cross_month_inherit),
+        )
+        from factorzen.core.universe import get_universe_membership
 
-def test_membership_cross_month_inherits_prior_snapshot(monkeypatch):
-    """某月无 snapshot 时交易日成分继承上一有数据月份，不为空。"""
-    monkeypatch.setattr(
-        "factorzen.core.calendar.get_trade_dates", _mock_trade_dates_midmonth
-    )
-    monkeypatch.setattr(
-        "factorzen.core.universe._load_index_members",
-        _members_cross_month_inherit,
-    )
-    monkeypatch.setattr(
-        "factorzen.core.universe._batch_index_membership",
-        _batch_from_daily(_members_cross_month_inherit),
-    )
-    from factorzen.core.universe import get_universe_membership
+        mem = get_universe_membership("20240501", "20240630", "csi300")
+        for d in ("20240510", "20240531", "20240603", "20240620", "20240628"):
+            assert _codes_on(mem, d) == set(_MAY_MEMBERS), f"empty or wrong on {d}"
 
-    mem = get_universe_membership("20240501", "20240630", "csi300")
-    for d in ("20240510", "20240531", "20240603", "20240620", "20240628"):
-        assert _codes_on(mem, d) == set(_MAY_MEMBERS), f"empty or wrong on {d}"
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_membership_cross_month_inherits_prior_snapshot(mp)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 6b. 动态池 ValueError
@@ -409,102 +415,115 @@ def _patch_prepare_stack(monkeypatch, daily: pl.DataFrame, *, end_universe=None)
     return fm, _FakeCtx
 
 
-def test_delist_from_index_keeps_jan_rows(monkeypatch):
-    """调出反例：A 1 月在成分、2 月调出；期末快照=2 月不含 A。
+def test_prepare_pit_marking_suite():
+    """调出反例：A 1 月在成分、2 月调出；期末快照=2 月不含 A。；调入反例：C 2 月才调入 → 1 月 in_universe=False。；并集股票的原始行（含非成分日/预热段）全部保留。"""
+    # -- 原 test_delist_from_index_keeps_jan_rows --
+    def _section_0_test_delist_from_index_keeps_jan_rows(mp):
+        daily = _synthetic_daily_frame()
+        fm, FakeCtx = _patch_prepare_stack(
+            mp, daily, end_universe=["B.SZ", "C.SZ"]
+        )
 
-    修复后：A 的 1 月行 in_universe=True，2 月 False；行仍保留。
-    """
-    daily = _synthetic_daily_frame()
-    fm, FakeCtx = _patch_prepare_stack(
-        monkeypatch, daily, end_universe=["B.SZ", "C.SZ"]
-    )
+        out = fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
 
-    out = fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
+        assert "in_universe" in out.columns
+        # 并集 = {A,B,C}（窗口内曾在成分内）
+        assert set(FakeCtx.last_kw["universe"]) == {"A.SZ", "B.SZ", "C.SZ"}
 
-    assert "in_universe" in out.columns
-    # 并集 = {A,B,C}（窗口内曾在成分内）
-    assert set(FakeCtx.last_kw["universe"]) == {"A.SZ", "B.SZ", "C.SZ"}
+        a = out.filter(pl.col("ts_code") == "A.SZ")
+        a_jan = a.filter(pl.col("trade_date").is_in(_JAN_DATES))
+        a_feb = a.filter(pl.col("trade_date").is_in(_FEB_DATES))
+        assert a_jan.height == 3
+        assert a_jan["in_universe"].all()
+        assert a_feb.height == 3
+        assert not a_feb["in_universe"].any()
 
-    a = out.filter(pl.col("ts_code") == "A.SZ")
-    a_jan = a.filter(pl.col("trade_date").is_in(_JAN_DATES))
-    a_feb = a.filter(pl.col("trade_date").is_in(_FEB_DATES))
-    assert a_jan.height == 3
-    assert a_jan["in_universe"].all()
-    assert a_feb.height == 3
-    assert not a_feb["in_universe"].any()
+        # 预热行保留且 in_universe=False
+        warm = a.filter(pl.col("trade_date") == date(2023, 12, 29))
+        assert warm.height == 1
+        assert not warm["in_universe"].item()
 
-    # 预热行保留且 in_universe=False
-    warm = a.filter(pl.col("trade_date") == date(2023, 12, 29))
-    assert warm.height == 1
-    assert not warm["in_universe"].item()
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_delist_from_index_keeps_jan_rows(mp)
 
+    # -- 原 test_new_entrant_excluded_in_jan --
+    def _section_1_test_new_entrant_excluded_in_jan(mp):
+        daily = _synthetic_daily_frame()
+        fm, _ = _patch_prepare_stack(mp, daily)
 
-def test_new_entrant_excluded_in_jan(monkeypatch):
-    """调入反例：C 2 月才调入 → 1 月 in_universe=False。"""
-    daily = _synthetic_daily_frame()
-    fm, _ = _patch_prepare_stack(monkeypatch, daily)
+        out = fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
+        c_jan = out.filter(
+            (pl.col("ts_code") == "C.SZ") & pl.col("trade_date").is_in(_JAN_DATES)
+        )
+        c_feb = out.filter(
+            (pl.col("ts_code") == "C.SZ") & pl.col("trade_date").is_in(_FEB_DATES)
+        )
+        assert not c_jan["in_universe"].any()
+        assert c_feb["in_universe"].all()
 
-    out = fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
-    c_jan = out.filter(
-        (pl.col("ts_code") == "C.SZ") & pl.col("trade_date").is_in(_JAN_DATES)
-    )
-    c_feb = out.filter(
-        (pl.col("ts_code") == "C.SZ") & pl.col("trade_date").is_in(_FEB_DATES)
-    )
-    assert not c_jan["in_universe"].any()
-    assert c_feb["in_universe"].all()
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_new_entrant_excluded_in_jan(mp)
 
+    # -- 原 test_continuity_rows_preserved --
+    def _section_2_test_continuity_rows_preserved(mp):
+        daily = _synthetic_daily_frame()
+        n_raw = daily.height  # 3 股 × 7 日
+        fm, _ = _patch_prepare_stack(mp, daily)
 
-def test_continuity_rows_preserved(monkeypatch):
-    """并集股票的原始行（含非成分日/预热段）全部保留。"""
-    daily = _synthetic_daily_frame()
-    n_raw = daily.height  # 3 股 × 7 日
-    fm, _ = _patch_prepare_stack(monkeypatch, daily)
+        out = fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
+        assert out.height == n_raw
+        # 仅标记不同
+        assert out["in_universe"].dtype == pl.Boolean
+        assert 0 < out["in_universe"].sum() < out.height
 
-    out = fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
-    assert out.height == n_raw
-    # 仅标记不同
-    assert out["in_universe"].dtype == pl.Boolean
-    assert 0 < out["in_universe"].sum() < out.height
-
-
-def test_membership_failure_fails_closed(monkeypatch):
-    """命名指数 membership 构造抛异常 → fail closed，拒绝静态回退。"""
-    daily = _synthetic_daily_frame()
-    fm, _ = _patch_prepare_stack(
-        monkeypatch, daily, end_universe=["B.SZ", "C.SZ"]
-    )
-
-    def _boom(*a, **k):
-        raise RuntimeError("mock membership failure")
-
-    monkeypatch.setattr(
-        "factorzen.core.universe.get_universe_membership", _boom
-    )
-
-    with pytest.raises(ValueError, match=r"PIT membership|look-ahead|拒绝回退"):
-        fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_continuity_rows_preserved(mp)
 
 
-def test_membership_empty_named_index_fails_closed(monkeypatch):
-    """命名指数 membership 返回空 → fail closed，拒绝 as-of 回退。"""
-    daily = _synthetic_daily_frame()
-    fm, _ = _patch_prepare_stack(
-        monkeypatch, daily, end_universe=["B.SZ", "C.SZ"]
-    )
+def test_membership_fail_closed_suite():
+    """命名指数 membership 构造抛异常 → fail closed，拒绝静态回退。；命名指数 membership 返回空 → fail closed，拒绝 as-of 回退。"""
+    # -- 原 test_membership_failure_fails_closed --
+    def _section_0_test_membership_failure_fails_closed(mp):
+        daily = _synthetic_daily_frame()
+        fm, _ = _patch_prepare_stack(
+            mp, daily, end_universe=["B.SZ", "C.SZ"]
+        )
 
-    monkeypatch.setattr(
-        "factorzen.core.universe.get_universe_membership",
-        lambda *a, **k: pl.DataFrame(
-            {
-                "trade_date": pl.Series([], dtype=pl.Utf8),
-                "ts_code": pl.Series([], dtype=pl.Utf8),
-            }
-        ),
-    )
+        def _boom(*a, **k):
+            raise RuntimeError("mock membership failure")
 
-    with pytest.raises(ValueError, match=r"空|未回补|拒绝|as-of|PIT"):
-        fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
+        mp.setattr(
+            "factorzen.core.universe.get_universe_membership", _boom
+        )
+
+        with pytest.raises(ValueError, match=r"PIT membership|look-ahead|拒绝回退"):
+            fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_membership_failure_fails_closed(mp)
+
+    # -- 原 test_membership_empty_named_index_fails_closed --
+    def _section_1_test_membership_empty_named_index_fails_closed(mp):
+        daily = _synthetic_daily_frame()
+        fm, _ = _patch_prepare_stack(
+            mp, daily, end_universe=["B.SZ", "C.SZ"]
+        )
+
+        mp.setattr(
+            "factorzen.core.universe.get_universe_membership",
+            lambda *a, **k: pl.DataFrame(
+                {
+                    "trade_date": pl.Series([], dtype=pl.Utf8),
+                    "ts_code": pl.Series([], dtype=pl.Utf8),
+                }
+            ),
+        )
+
+        with pytest.raises(ValueError, match=r"空|未回补|拒绝|as-of|PIT"):
+            fm.prepare_mining_daily("20240102", "20240205", universe="csi300")
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_membership_empty_named_index_fails_closed(mp)
 
 
 def test_all_a_empty_membership_still_succeeds(monkeypatch):
@@ -540,95 +559,103 @@ def test_all_a_empty_membership_still_succeeds(monkeypatch):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_eval_frame_filters_in_universe_false():
-    """评估截面不含 in_universe=False 行。"""
-    from factorzen.discovery.evaluation import _factor_df_from_prepped
-    from factorzen.discovery.expression import parse_expr
+def test_eval_frame_in_universe_suite():
+    """评估截面不含 in_universe=False 行。；无 in_universe 列时评估帧不过滤（零回归）。；M1 路径 _factor_values 同样过滤 in_universe=False。"""
+    # -- 原 test_eval_frame_filters_in_universe_false --
+    def _section_0_test_eval_frame_filters_in_universe_false():
+        from factorzen.discovery.evaluation import _factor_df_from_prepped
+        from factorzen.discovery.expression import parse_expr
 
-    days = _JAN_DATES + _FEB_DATES
-    rows = []
-    for c, in_u_jan in [("A.SZ", True), ("C.SZ", False)]:
-        for d in days:
-            in_u = in_u_jan if d in _JAN_DATES else (c == "C.SZ")
-            rows.append(
-                {
-                    "trade_date": d,
-                    "ts_code": c,
-                    "close": 10.0,
-                    "close_adj": 10.0,
-                    "open": 10.0,
-                    "high": 11.0,
-                    "low": 9.0,
-                    "vol": 1e5,
-                    "amount": 1e6,
-                    "in_universe": in_u if d in _JAN_DATES else (c != "A.SZ"),
-                }
-            )
-    # 简化：A 全程 True，C 全程 False
-    prepped = pl.DataFrame(
-        {
-            "trade_date": days * 2,
-            "ts_code": ["A.SZ"] * len(days) + ["C.SZ"] * len(days),
-            "close": [10.0] * (len(days) * 2),
-            "close_adj": [10.0] * (len(days) * 2),
-            "open": [10.0] * (len(days) * 2),
-            "high": [11.0] * (len(days) * 2),
-            "low": [9.0] * (len(days) * 2),
-            "vol": [1e5] * (len(days) * 2),
-            "amount": [1e6] * (len(days) * 2),
-            "in_universe": [True] * len(days) + [False] * len(days),
-        }
-    )
-    node = parse_expr("close")
-    fdf = _factor_df_from_prepped(node, prepped, eval_start=date(2024, 1, 2))
-    assert set(fdf["ts_code"].unique().to_list()) == {"A.SZ"}
-    assert "in_universe" not in fdf.columns
+        days = _JAN_DATES + _FEB_DATES
+        rows = []
+        for c, in_u_jan in [("A.SZ", True), ("C.SZ", False)]:
+            for d in days:
+                in_u = in_u_jan if d in _JAN_DATES else (c == "C.SZ")
+                rows.append(
+                    {
+                        "trade_date": d,
+                        "ts_code": c,
+                        "close": 10.0,
+                        "close_adj": 10.0,
+                        "open": 10.0,
+                        "high": 11.0,
+                        "low": 9.0,
+                        "vol": 1e5,
+                        "amount": 1e6,
+                        "in_universe": in_u if d in _JAN_DATES else (c != "A.SZ"),
+                    }
+                )
+        # 简化：A 全程 True，C 全程 False
+        prepped = pl.DataFrame(
+            {
+                "trade_date": days * 2,
+                "ts_code": ["A.SZ"] * len(days) + ["C.SZ"] * len(days),
+                "close": [10.0] * (len(days) * 2),
+                "close_adj": [10.0] * (len(days) * 2),
+                "open": [10.0] * (len(days) * 2),
+                "high": [11.0] * (len(days) * 2),
+                "low": [9.0] * (len(days) * 2),
+                "vol": [1e5] * (len(days) * 2),
+                "amount": [1e6] * (len(days) * 2),
+                "in_universe": [True] * len(days) + [False] * len(days),
+            }
+        )
+        node = parse_expr("close")
+        fdf = _factor_df_from_prepped(node, prepped, eval_start=date(2024, 1, 2))
+        assert set(fdf["ts_code"].unique().to_list()) == {"A.SZ"}
+        assert "in_universe" not in fdf.columns
+
+    _section_0_test_eval_frame_filters_in_universe_false()
+
+    # -- 原 test_eval_frame_no_in_universe_column_zero_regression --
+    def _section_1_test_eval_frame_no_in_universe_column_zero_regression():
+        from factorzen.discovery.evaluation import _factor_df_from_prepped
+        from factorzen.discovery.expression import parse_expr
+
+        days = _JAN_DATES
+        prepped = pl.DataFrame(
+            {
+                "trade_date": days * 2,
+                "ts_code": ["A.SZ"] * len(days) + ["C.SZ"] * len(days),
+                "close": [10.0] * (len(days) * 2),
+                "close_adj": [10.0] * (len(days) * 2),
+                "open": [10.0] * (len(days) * 2),
+                "high": [11.0] * (len(days) * 2),
+                "low": [9.0] * (len(days) * 2),
+                "vol": [1e5] * (len(days) * 2),
+                "amount": [1e6] * (len(days) * 2),
+            }
+        )
+        node = parse_expr("close")
+        fdf = _factor_df_from_prepped(node, prepped, eval_start=date(2024, 1, 2))
+        assert set(fdf["ts_code"].unique().to_list()) == {"A.SZ", "C.SZ"}
+
+    _section_1_test_eval_frame_no_in_universe_column_zero_regression()
+
+    # -- 原 test_m1_factor_values_filters_in_universe --
+    def _section_2_test_m1_factor_values_filters_in_universe():
+        from factorzen.discovery.expression import parse_expr
+        from factorzen.discovery.mining_session import _factor_values
+
+        days = _JAN_DATES
+        daily = pl.DataFrame(
+            {
+                "trade_date": days * 2,
+                "ts_code": ["A.SZ"] * len(days) + ["C.SZ"] * len(days),
+                "close": [10.0] * (len(days) * 2),
+                "close_adj": [10.0] * (len(days) * 2),
+                "open": [10.0] * (len(days) * 2),
+                "high": [11.0] * (len(days) * 2),
+                "low": [9.0] * (len(days) * 2),
+                "vol": [1e5] * (len(days) * 2),
+                "amount": [1e6] * (len(days) * 2),
+                "in_universe": [True] * len(days) + [False] * len(days),
+            }
+        )
+        node = parse_expr("close")
+        fdf = _factor_values(node, daily, eval_start="20240102")
+        assert set(fdf["ts_code"].unique().to_list()) == {"A.SZ"}
+
+    _section_2_test_m1_factor_values_filters_in_universe()
 
 
-def test_eval_frame_no_in_universe_column_zero_regression():
-    """无 in_universe 列时评估帧不过滤（零回归）。"""
-    from factorzen.discovery.evaluation import _factor_df_from_prepped
-    from factorzen.discovery.expression import parse_expr
-
-    days = _JAN_DATES
-    prepped = pl.DataFrame(
-        {
-            "trade_date": days * 2,
-            "ts_code": ["A.SZ"] * len(days) + ["C.SZ"] * len(days),
-            "close": [10.0] * (len(days) * 2),
-            "close_adj": [10.0] * (len(days) * 2),
-            "open": [10.0] * (len(days) * 2),
-            "high": [11.0] * (len(days) * 2),
-            "low": [9.0] * (len(days) * 2),
-            "vol": [1e5] * (len(days) * 2),
-            "amount": [1e6] * (len(days) * 2),
-        }
-    )
-    node = parse_expr("close")
-    fdf = _factor_df_from_prepped(node, prepped, eval_start=date(2024, 1, 2))
-    assert set(fdf["ts_code"].unique().to_list()) == {"A.SZ", "C.SZ"}
-
-
-def test_m1_factor_values_filters_in_universe():
-    """M1 路径 _factor_values 同样过滤 in_universe=False。"""
-    from factorzen.discovery.expression import parse_expr
-    from factorzen.discovery.mining_session import _factor_values
-
-    days = _JAN_DATES
-    daily = pl.DataFrame(
-        {
-            "trade_date": days * 2,
-            "ts_code": ["A.SZ"] * len(days) + ["C.SZ"] * len(days),
-            "close": [10.0] * (len(days) * 2),
-            "close_adj": [10.0] * (len(days) * 2),
-            "open": [10.0] * (len(days) * 2),
-            "high": [11.0] * (len(days) * 2),
-            "low": [9.0] * (len(days) * 2),
-            "vol": [1e5] * (len(days) * 2),
-            "amount": [1e6] * (len(days) * 2),
-            "in_universe": [True] * len(days) + [False] * len(days),
-        }
-    )
-    node = parse_expr("close")
-    fdf = _factor_values(node, daily, eval_start="20240102")
-    assert set(fdf["ts_code"].unique().to_list()) == {"A.SZ"}

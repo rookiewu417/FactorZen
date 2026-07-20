@@ -143,3 +143,114 @@ def test_lift_ret_panel_threads_exec_args():
     vals = got["ret"].to_list()
     assert vals[0] == pytest.approx(0.25, abs=1e-12)   # 25/20
     assert vals[1] == pytest.approx(1.00, abs=1e-12)   # 50/25
+
+
+# ── 接线层：参数必须真的一路传到底 ────────────────────────────────
+# 记忆库有一条老坑「能力层↔接线层漂移」：功能实现完 + 单测绿，但 pipeline
+# 没透传，用户用不了。且 `inspect.signature` 断言零判别力——必须从外层出发
+# 用**可观测的数值差异**验证。
+
+def test_databundle_threads_exec_args():
+    """`DataBundle.build` 必须透传，否则护栏仍在评不可实现的收益。
+
+    close 恒定 ⇒ close 口径的 fwd 必为 0；open 变化 ⇒ 传对了才非 0。
+    """
+    from factorzen.discovery.scoring import DataBundle
+
+    df = pl.DataFrame({
+        "ts_code": ["X"] * 6,
+        "trade_date": [f"2024-01-{i + 1:02d}" for i in range(6)],
+        "close": [100.0] * 6,
+        "close_adj": [100.0] * 6,
+        "open_adj": [10.0, 20.0, 25.0, 50.0, 60.0, 70.0],
+    })
+    base = DataBundle.build(df)
+    assert all(v == pytest.approx(0.0)
+               for v in base.fwd_returns["fwd_ret_1d"].drop_nulls().to_list())
+
+    got = DataBundle.build(df, exec_lag=1, exec_price_col="open_adj")
+    v = got.fwd_returns["fwd_ret_1d"].to_list()
+    assert v[0] == pytest.approx(0.25, abs=1e-12)   # open[2]/open[1] = 25/20
+    assert v[1] == pytest.approx(1.00, abs=1e-12)   # open[3]/open[2] = 50/25
+
+
+def test_lift_context_carries_exec_args():
+    """`make_lift_context` 必须把口径写进 ctx，供 lift 裁决读取。"""
+    from factorzen.discovery.lift_test import make_lift_context
+
+    df = pl.DataFrame({
+        "ts_code": ["X", "X"],
+        "trade_date": ["2024-01-01", "2024-01-02"],
+        "close": [1.0, 2.0],
+    })
+    d = make_lift_context("ashare", df, prepped=df)
+    assert d.exec_lag == 0 and d.exec_price_col is None      # 默认不变
+
+    c = make_lift_context("ashare", df, prepped=df,
+                          exec_lag=1, exec_price_col="open_adj")
+    assert c.exec_lag == 1 and c.exec_price_col == "open_adj"
+
+
+def test_run_session_accepts_exec_args():
+    """`run_session` 必须接住两个参数（挖掘入口）。
+
+    ⚠️ 这条**只验证形参存在**，判别力弱于上面两条（那两条比对真实数值）。
+    之所以不真跑挖掘：run_session 需要完整行情帧 + 护栏 + 库，成本过高。
+    `bind_partial` 在形参不存在时会抛 TypeError，故仍能抓到「签名漏加」，
+    但**抓不到「加了形参却没往下传」**——那一层由 DataBundle / lift ctx
+    两条数值测试覆盖，三条合起来才把链路钉住。
+    """
+    import inspect
+
+    from factorzen.discovery.mining_session import run_session
+
+    sig = inspect.signature(run_session)
+    bound = sig.bind_partial(
+        pl.DataFrame({"ts_code": [], "trade_date": [], "close": []}),
+        n_trials=1, top_k=1, seed=0, exec_lag=1, exec_price_col="open_adj",
+    )
+    assert bound.arguments["exec_lag"] == 1
+    assert bound.arguments["exec_price_col"] == "open_adj"
+
+
+def test_session_end_auto_lift_accepts_exec_args():
+    """`_session_end_auto_lift` 必须接住口径——它是 lift 裁决的入口。
+
+    ⚠️ 这条来自一次真实漏洞：`make_lift_context` 的调用点**不在**
+    `run_team_agent` 里而在本函数，最初误以为同作用域，被 ruff F821 抓到。
+    若该函数恰好有同名局部变量，就会**静默传错值**——准入用一个口径、
+    lift 裁决用另一个，而测试全绿。故显式钉住签名。
+    """
+    import inspect
+
+    from factorzen.agents.team_orchestrator import _session_end_auto_lift
+
+    sig = inspect.signature(_session_end_auto_lift)
+    assert "exec_lag" in sig.parameters
+    assert "exec_price_col" in sig.parameters
+    assert sig.parameters["exec_lag"].default == 0
+    assert sig.parameters["exec_price_col"].default is None
+
+
+def test_cli_parser_exposes_exec_flags():
+    """`fz mine team` 必须暴露两个旗标，且默认值 = 历史行为。
+
+    从**最外层**（parser）出发验证，这是「能力层↔接线层漂移」的正确测法。
+    """
+    from factorzen.cli.parser import build_parser
+
+    class _Stub:
+        def __getattr__(self, _n):
+            return lambda *a, **k: 0
+
+    p = build_parser(_Stub())
+    ns = p.parse_args(["mine", "team", "--start", "20200101", "--end", "20201231"])
+    assert ns.exec_lag == 0
+    assert ns.exec_price_col is None
+
+    ns2 = p.parse_args([
+        "mine", "team", "--start", "20200101", "--end", "20201231",
+        "--exec-lag", "1", "--exec-price-col", "open_adj",
+    ])
+    assert ns2.exec_lag == 1
+    assert ns2.exec_price_col == "open_adj"

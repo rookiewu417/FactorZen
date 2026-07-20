@@ -512,6 +512,10 @@ class LiftEvalContext:
     profile_name: str | None = None
     python_universe: str | None = None
     python_market: str = "ashare"
+    # 成交口径：0 = t 日收盘成交（默认，向后兼容但**不可实现**）；
+    # 1 + "open_adj" = t+1 开盘成交（可实现）。见 compute_fwd_returns docstring。
+    exec_lag: int = 0
+    exec_price_col: str | None = None
 
 
 def make_lift_context(
@@ -527,6 +531,8 @@ def make_lift_context(
     prepped: pl.DataFrame | None = None,
     python_universe: str | None = None,
     python_market: str = "ashare",
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
 ) -> LiftEvalContext:
     """构造 ``LiftEvalContext``：``_preprocess_daily(daily, profile)`` 恰好一次并 sort。
 
@@ -557,6 +563,8 @@ def make_lift_context(
         profile_name=profile_name,
         python_universe=python_universe,
         python_market=python_market,
+        exec_lag=int(exec_lag),
+        exec_price_col=exec_price_col,
     )
 
 
@@ -971,7 +979,11 @@ def run_lift_tests(
 
     if ret_df is None:
         ret_src = ctx.prepped if ctx is not None else daily
-        ret_df = _build_ret_panel(ret_src, horizon=_horizon)
+        ret_df = _build_ret_panel(
+            ret_src, horizon=_horizon,
+            exec_lag=(ctx.exec_lag if ctx is not None else 0),
+            exec_price_col=(ctx.exec_price_col if ctx is not None else None),
+        )
 
     if materialize_candidate is None:
         if ctx is not None:
@@ -1195,7 +1207,11 @@ def run_group_lift(
 
     if ret_df is None:
         ret_src = ctx.prepped if ctx is not None else daily
-        ret_df = _build_ret_panel(ret_src, horizon=_horizon)
+        ret_df = _build_ret_panel(
+            ret_src, horizon=_horizon,
+            exec_lag=(ctx.exec_lag if ctx is not None else 0),
+            exec_price_col=(ctx.exec_price_col if ctx is not None else None),
+        )
 
     if materialize_candidate is None:
         if ctx is not None:

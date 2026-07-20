@@ -237,7 +237,15 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 update_library: bool = True, library_root: str | None = None,
                 library_universe: str | None = None, horizon: int = 1,
                 library_orthogonal: bool = True,
-                objective: str = "residual") -> dict:
+                objective: str = "residual",
+                exec_lag: int = 0,
+                exec_price_col: str | None = None) -> dict:
+    """``exec_lag`` / ``exec_price_col``：**成交口径**，贯穿护栏与 holdout。
+
+    默认 0 = t 日收盘成交（向后兼容，但**不可实现**——算信号需要 t 日收盘价）；
+    ``1 + "open_adj"`` = t+1 开盘成交（可实现）。
+    见 ``daily.evaluation.ic_analysis.compute_fwd_returns`` docstring 的实测对照。
+    """
     t0 = time.perf_counter()
     rng = np.random.default_rng(seed)
     daily = daily.sort(["ts_code", "trade_date"])
@@ -280,7 +288,10 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     leaf_map = _filtered_map if _filtered_map is not None else leaf_map
 
     daily = mining_df  # 后续挖掘全部只用 mining 段（DataBundle/搜索/去相关）
-    bundle = DataBundle.build(daily, train_ratio=train_ratio)
+    bundle = DataBundle.build(
+        daily, train_ratio=train_ratio,
+        exec_lag=exec_lag, exec_price_col=exec_price_col,
+    )
 
     # eval_cache 提到 method 分支之前，供 genetic 统计真实评估数
     eval_cache: dict[str, float] = {}
@@ -515,6 +526,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
         _pc = "close_adj" if "close_adj" in holdout_df.columns else "close"
         _hold_fwd = compute_fwd_returns(
             holdout_df.sort(["ts_code", "trade_date"]), price_col=_pc,
+            exec_lag=exec_lag, exec_price_col=exec_price_col,
         )
     for c in top:
         _maybe_gc()

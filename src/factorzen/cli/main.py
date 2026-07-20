@@ -952,6 +952,9 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
         scout_freq=getattr(args, "intraday_freq", "5min") or "5min",
         pool_cache_dir=pool_cache_dir,
+        # 成交口径：默认 0 = 历史行为（close→close，隐含 t 日收盘成交，不可实现）
+        exec_lag=int(getattr(args, "exec_lag", 0) or 0),
+        exec_price_col=getattr(args, "exec_price_col", None),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0

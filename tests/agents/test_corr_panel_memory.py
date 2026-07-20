@@ -74,75 +74,82 @@ def _to_compact(pool: dict[str, pl.DataFrame]):
 # ── 1. 等价 ground truth ─────────────────────────────────────────────────────
 
 
-def test_dict_pool_panel_matches_pairwise():
-    """legacy dict 分支：present=None 面板 vs 逐对 f64 精确一致。"""
-    from factorzen.discovery.scoring import build_library_corr_panel, max_correlation_detail
+def test_pool_panel_ground_truth_suite():
+    """legacy dict 分支：present=None 面板 vs 逐对 f64 精确一致。；CompactLibraryPool 分支：present=None 面板 vs 逐对 f64 精确一致。；单日截面 + 库因子截面常数(std=0)：panel 与逐对一致。；库帧缺行（覆盖不齐）不因一次对齐互相污染。"""
+    # -- 原 test_dict_pool_panel_matches_pairwise --
+    def _section_0_test_dict_pool_panel_matches_pairwise():
+        from factorzen.discovery.scoring import build_library_corr_panel, max_correlation_detail
 
-    cand, pool, _, _ = _mk_pool_and_cand(seed=1, null_frac=0.08)
-    pairwise = max_correlation_detail(cand, pool)
-    panel = build_library_corr_panel(pool)
-    assert panel is not None
-    assert panel.present is None
-    matrixed = max_correlation_detail(cand, pool, panel=panel)
-    _assert_same(pairwise, matrixed)
+        cand, pool, _, _ = _mk_pool_and_cand(seed=1, null_frac=0.08)
+        pairwise = max_correlation_detail(cand, pool)
+        panel = build_library_corr_panel(pool)
+        assert panel is not None
+        assert panel.present is None
+        matrixed = max_correlation_detail(cand, pool, panel=panel)
+        _assert_same(pairwise, matrixed)
 
+    _section_0_test_dict_pool_panel_matches_pairwise()
 
-def test_compact_pool_panel_matches_pairwise():
-    """CompactLibraryPool 分支：present=None 面板 vs 逐对 f64 精确一致。"""
-    from factorzen.discovery.scoring import build_library_corr_panel, max_correlation_detail
+    # -- 原 test_compact_pool_panel_matches_pairwise --
+    def _section_1_test_compact_pool_panel_matches_pairwise():
+        from factorzen.discovery.scoring import build_library_corr_panel, max_correlation_detail
 
-    cand, pool, _, _ = _mk_pool_and_cand(seed=2, null_frac=0.06)
-    compact = _to_compact(pool)
-    pairwise = max_correlation_detail(cand, pool)
-    panel = build_library_corr_panel(compact)
-    assert panel is not None
-    assert panel.present is None
-    matrixed = max_correlation_detail(cand, compact, panel=panel)
-    _assert_same(pairwise, matrixed)
+        cand, pool, _, _ = _mk_pool_and_cand(seed=2, null_frac=0.06)
+        compact = _to_compact(pool)
+        pairwise = max_correlation_detail(cand, pool)
+        panel = build_library_corr_panel(compact)
+        assert panel is not None
+        assert panel.present is None
+        matrixed = max_correlation_detail(cand, compact, panel=panel)
+        _assert_same(pairwise, matrixed)
 
+    _section_1_test_compact_pool_panel_matches_pairwise()
 
-def test_single_day_and_degenerate_still_equiv():
-    """单日截面 + 库因子截面常数(std=0)：panel 与逐对一致。"""
-    from factorzen.discovery.scoring import build_library_corr_panel, max_correlation_detail
+    # -- 原 test_single_day_and_degenerate_still_equiv --
+    def _section_2_test_single_day_and_degenerate_still_equiv():
+        from factorzen.discovery.scoring import build_library_corr_panel, max_correlation_detail
 
-    cand, pool, _, _ = _mk_pool_and_cand(
-        n_days=1, n_stocks=40, seed=3, single_day=True, degenerate_lib=True,
-    )
-    # 单日但 n_stocks>=30 才有有效相关；退化因子得 0，高相关 lib_a 应胜出
-    pairwise = max_correlation_detail(cand, pool)
-    panel = build_library_corr_panel(pool)
-    assert panel is not None and panel.present is None
-    _assert_same(pairwise, max_correlation_detail(cand, pool, panel=panel))
-
-    compact = _to_compact(pool)
-    panel_c = build_library_corr_panel(compact)
-    assert panel_c is not None and panel_c.present is None
-    _assert_same(pairwise, max_correlation_detail(cand, compact, panel=panel_c))
-
-
-def test_missing_lib_rows_independent_pairs():
-    """库帧缺行（覆盖不齐）不因一次对齐互相污染。"""
-    from factorzen.discovery.scoring import build_library_corr_panel, max_correlation_detail
-
-    n_days, n_stocks = 35, 50
-    days = _dates(n_days)
-    stocks = [f"{i:06d}.SH" for i in range(n_stocks)]
-    rng = np.random.default_rng(11)
-    base = rng.standard_normal((n_days, n_stocks))
-    null_a = np.zeros((n_days, n_stocks), dtype=bool)
-    null_a[:, 30:] = True
-    null_b = np.zeros((n_days, n_stocks), dtype=bool)
-    null_b[:, :15] = True
-    cand = _panel_df(days, stocks, base)
-    pool = {
-        "a": _panel_df(days, stocks, base + 0.02 * rng.standard_normal(base.shape), null_mask=null_a),
-        "b": _panel_df(days, stocks, rng.standard_normal(base.shape), null_mask=null_b),
-    }
-    pairwise = max_correlation_detail(cand, pool)
-    for p in (pool, _to_compact(pool)):
-        panel = build_library_corr_panel(p)
+        cand, pool, _, _ = _mk_pool_and_cand(
+            n_days=1, n_stocks=40, seed=3, single_day=True, degenerate_lib=True,
+        )
+        # 单日但 n_stocks>=30 才有有效相关；退化因子得 0，高相关 lib_a 应胜出
+        pairwise = max_correlation_detail(cand, pool)
+        panel = build_library_corr_panel(pool)
         assert panel is not None and panel.present is None
-        _assert_same(pairwise, max_correlation_detail(cand, p, panel=panel))
+        _assert_same(pairwise, max_correlation_detail(cand, pool, panel=panel))
+
+        compact = _to_compact(pool)
+        panel_c = build_library_corr_panel(compact)
+        assert panel_c is not None and panel_c.present is None
+        _assert_same(pairwise, max_correlation_detail(cand, compact, panel=panel_c))
+
+    _section_2_test_single_day_and_degenerate_still_equiv()
+
+    # -- 原 test_missing_lib_rows_independent_pairs --
+    def _section_3_test_missing_lib_rows_independent_pairs():
+        from factorzen.discovery.scoring import build_library_corr_panel, max_correlation_detail
+
+        n_days, n_stocks = 35, 50
+        days = _dates(n_days)
+        stocks = [f"{i:06d}.SH" for i in range(n_stocks)]
+        rng = np.random.default_rng(11)
+        base = rng.standard_normal((n_days, n_stocks))
+        null_a = np.zeros((n_days, n_stocks), dtype=bool)
+        null_a[:, 30:] = True
+        null_b = np.zeros((n_days, n_stocks), dtype=bool)
+        null_b[:, :15] = True
+        cand = _panel_df(days, stocks, base)
+        pool = {
+            "a": _panel_df(days, stocks, base + 0.02 * rng.standard_normal(base.shape), null_mask=null_a),
+            "b": _panel_df(days, stocks, rng.standard_normal(base.shape), null_mask=null_b),
+        }
+        pairwise = max_correlation_detail(cand, pool)
+        for p in (pool, _to_compact(pool)):
+            panel = build_library_corr_panel(p)
+            assert panel is not None and panel.present is None
+            _assert_same(pairwise, max_correlation_detail(cand, p, panel=panel))
+
+    _section_3_test_missing_lib_rows_independent_pairs()
 
 
 # ── 2. f32 模式 ──────────────────────────────────────────────────────────────
@@ -251,7 +258,6 @@ def test_candidate_nan_poisons_day_panel_and_pairwise():
 
 
 # ── 5. present_block ─────────────────────────────────────────────────────────
-
 
 
 # ── 6. 刀 1：residual_projector 复用 lib_panel，不重调 build_library_panel ───
@@ -402,226 +408,242 @@ def _assert_block_equal(a: tuple, b: tuple) -> None:
     np.testing.assert_array_equal(va[~nan_a], vb[~nan_b])
 
 
-def test_lazy_wide_tripartite_bit_identical(monkeypatch):
-    """lazy vs 物化 vs 逐对：f64 逐位一致；覆盖 null/单日/退化/NaN 毒化。"""
-    from factorzen.discovery import scoring as scoring_mod
-    from factorzen.discovery.scoring import (
-        LazyWideCorrGrid,
-        LibraryCorrPanel,
-        build_library_corr_panel,
-        max_correlation_detail,
-    )
+def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
+    """默认阈值下小池仍返回 LibraryCorrPanel(f64 物化)。；lazy vs 物化 vs 逐对：f64 逐位一致；覆盖 null/单日/退化/NaN 毒化。；lazy.block 与物化.block 在多切窗（含 0 起/尾/单日）vals/pres 逐位等价。；lazy 下 CORR_PANEL_CHUNK_BYTES=1(blk=1) 与极大(单块)与默认逐位一致。；f32 wide + lazy 与 f32 物化 LibraryCorrPanel 结果逐位一致（同源升 f64）。；结构守卫：_wide is pool.wide；block 后无缓存大数组属性；打印 lazy 提示。"""
+    # -- 原 test_lazy_wide_default_threshold_still_materializes --
+    def _section_0_test_lazy_wide_default_threshold_still_materializes():
+        from factorzen.discovery.scoring import LibraryCorrPanel, build_library_corr_panel
 
-    cases = [
-        dict(seed=20, null_frac=0.08),
-        dict(seed=21, n_days=1, n_stocks=40, single_day=True, degenerate_lib=True),
-        dict(seed=22, null_frac=0.12),
-    ]
-    for kw in cases:
-        cand, pool, _, _ = _mk_pool_and_cand(**kw)
+        _, pool, _, _ = _mk_pool_and_cand(seed=33, n_days=30, n_stocks=30)
         compact = _to_compact(pool)
+        panel = build_library_corr_panel(compact)
+        assert isinstance(panel, LibraryCorrPanel)
+        assert panel.values.dtype == np.float64
+        assert panel.present is None
 
-        # 物化（默认阈值）
+    _section_0_test_lazy_wide_default_threshold_still_materializes()
+
+    # -- 原 test_lazy_wide_tripartite_bit_identical --
+    def _section_1_test_lazy_wide_tripartite_bit_identical(monkeypatch):
+        from factorzen.discovery import scoring as scoring_mod
+        from factorzen.discovery.scoring import (
+            LazyWideCorrGrid,
+            LibraryCorrPanel,
+            build_library_corr_panel,
+            max_correlation_detail,
+        )
+
+        cases = [
+            dict(seed=20, null_frac=0.08),
+            dict(seed=21, n_days=1, n_stocks=40, single_day=True, degenerate_lib=True),
+            dict(seed=22, null_frac=0.12),
+        ]
+        for kw in cases:
+            cand, pool, _, _ = _mk_pool_and_cand(**kw)
+            compact = _to_compact(pool)
+
+            # 物化（默认阈值）
+            mat = build_library_corr_panel(compact)
+            assert isinstance(mat, LibraryCorrPanel)
+            assert mat.values.dtype == np.float64
+
+            # lazy（阈值压到 1）
+            monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+            lazy = build_library_corr_panel(compact)
+            assert isinstance(lazy, LazyWideCorrGrid)
+            assert lazy.present is None
+            assert not hasattr(lazy, "values") or getattr(lazy, "values", None) is None
+
+            pairwise = max_correlation_detail(cand, pool)
+            out_mat = max_correlation_detail(cand, compact, panel=mat)
+            out_lazy = max_correlation_detail(cand, compact, panel=lazy)
+            # lazy ↔ 物化：同一散射语义，f64 逐位一致（==）
+            assert out_lazy == out_mat
+            assert out_lazy[0] == out_mat[0]
+            assert out_lazy[1] == out_mat[1]
+            # 与逐对 ground truth：沿用既有 panel 红线（_assert_same / atol=1e-12）
+            # （矩阵路径 vs compute_factor_correlation 求和顺序可差 ULP，既有测试同）
+            _assert_same(pairwise, out_lazy)
+            _assert_same(pairwise, out_mat)
+            monkeypatch.setattr(
+                scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD",
+                scoring_mod.CORR_PANEL_F32_BYTES_THRESHOLD,
+            )
+
+        # NaN 候选毒化：与既有 fixture 语义一致
+        n_stocks = 40
+        days = _dates(3)
+        stocks = [f"{i:06d}.SH" for i in range(n_stocks)]
+        rng = np.random.default_rng(99)
+        v = rng.standard_normal((3, n_stocks))
+        null_d1 = np.zeros((3, n_stocks), dtype=bool)
+        null_d1[1, 10:] = True
+        cand_vals = v.copy()
+        cand_vals[0, 0] = np.nan
+        cand = _panel_df(days, stocks, cand_vals, null_mask=null_d1)
+        lib = _panel_df(days, stocks, v + 0.01, null_mask=null_d1)
+        pool = {"lib": lib}
+        compact = _to_compact(pool)
         mat = build_library_corr_panel(compact)
-        assert isinstance(mat, LibraryCorrPanel)
-        assert mat.values.dtype == np.float64
-
-        # lazy（阈值压到 1）
         monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
         lazy = build_library_corr_panel(compact)
         assert isinstance(lazy, LazyWideCorrGrid)
-        assert lazy.present is None
-        assert not hasattr(lazy, "values") or getattr(lazy, "values", None) is None
-
         pairwise = max_correlation_detail(cand, pool)
-        out_mat = max_correlation_detail(cand, compact, panel=mat)
         out_lazy = max_correlation_detail(cand, compact, panel=lazy)
-        # lazy ↔ 物化：同一散射语义，f64 逐位一致（==）
+        out_mat = max_correlation_detail(cand, compact, panel=mat)
+        assert out_lazy == out_mat
+        _assert_same(pairwise, out_lazy)
+        _assert_same(pairwise, out_mat)
+
+    monkeypatch.undo()
+    _section_1_test_lazy_wide_tripartite_bit_identical(monkeypatch)
+
+    # -- 原 test_lazy_wide_block_equiv_windows --
+    def _section_2_test_lazy_wide_block_equiv_windows(monkeypatch):
+        from factorzen.discovery import scoring as scoring_mod
+        from factorzen.discovery.scoring import (
+            LazyWideCorrGrid,
+            LibraryCorrPanel,
+            build_library_corr_panel,
+        )
+
+        _, pool, _, _ = _mk_pool_and_cand(seed=30, n_days=25, n_stocks=35, null_frac=0.1)
+        compact = _to_compact(pool)
+        mat = build_library_corr_panel(compact)
+        assert isinstance(mat, LibraryCorrPanel)
+        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+        lazy = build_library_corr_panel(compact)
+        assert isinstance(lazy, LazyWideCorrGrid)
+
+        n_d = len(mat.dates)
+        windows = [(0, n_d), (0, 1), (n_d - 1, n_d), (3, 12), (5, 6), (0, 5), (10, n_d)]
+        for d0, d1 in windows:
+            _assert_block_equal(lazy.block(d0, d1), mat.block(d0, d1))
+            # present_block 兼容路径
+            np.testing.assert_array_equal(
+                lazy.present_block(d0, d1), mat.present_block(d0, d1),
+            )
+
+    monkeypatch.undo()
+    _section_2_test_lazy_wide_block_equiv_windows(monkeypatch)
+
+    # -- 原 test_lazy_wide_chunk_boundaries_bit_identical --
+    def _section_3_test_lazy_wide_chunk_boundaries_bit_identical(monkeypatch):
+        from factorzen.discovery import scoring as scoring_mod
+        from factorzen.discovery.scoring import (
+            LazyWideCorrGrid,
+            build_library_corr_panel,
+            max_correlation_detail,
+        )
+
+        cand, pool, _, _ = _mk_pool_and_cand(seed=31, n_days=50, n_stocks=40)
+        compact = _to_compact(pool)
+        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+        lazy = build_library_corr_panel(compact)
+        assert isinstance(lazy, LazyWideCorrGrid)
+
+        default = max_correlation_detail(cand, compact, panel=lazy)
+
+        monkeypatch.setattr(scoring_mod, "CORR_PANEL_CHUNK_BYTES", 1)
+        blk1 = max_correlation_detail(cand, compact, panel=lazy)
+        assert blk1 == default
+        assert blk1[0] == default[0]
+        assert blk1[1] == default[1]
+
+        monkeypatch.setattr(scoring_mod, "CORR_PANEL_CHUNK_BYTES", 10**18)
+        one = max_correlation_detail(cand, compact, panel=lazy)
+        assert one == default
+        assert one[0] == default[0]
+        assert one[1] == default[1]
+
+    monkeypatch.undo()
+    _section_3_test_lazy_wide_chunk_boundaries_bit_identical(monkeypatch)
+
+    # -- 原 test_lazy_wide_f32_source_bit_identical_vs_f32_panel --
+    def _section_4_test_lazy_wide_f32_source_bit_identical_vs_f32_panel(monkeypatch):
+        from factorzen.discovery import scoring as scoring_mod
+        from factorzen.discovery.scoring import (
+            LazyWideCorrGrid,
+            LibraryCorrPanel,
+            build_library_corr_panel,
+            max_correlation_detail,
+        )
+        from factorzen.research.combination.pool import CompactLibraryPool
+
+        cand, pool, _, _ = _mk_pool_and_cand(seed=32, n_days=40, n_stocks=40, null_frac=0.07)
+        compact = _to_compact(pool)
+        # 值列压 f32（模拟 POOL_VALUE_F32 大池存储）
+        f32_exprs = [
+            pl.col(n).cast(pl.Float32) for n in compact.factor_names
+        ]
+        wide_f32 = compact.wide.with_columns(f32_exprs)
+        pool_f32 = CompactLibraryPool(wide_f32, compact.factor_names)
+        assert all(pool_f32.wide[n].dtype == pl.Float32 for n in pool_f32.factor_names)
+
+        # f32 物化面板：lazy 阈值抬高，f32 阈值压到 1
+        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 10**18)
+        monkeypatch.setattr(scoring_mod, "CORR_PANEL_F32_BYTES_THRESHOLD", 1)
+        mat_f32 = build_library_corr_panel(pool_f32)
+        assert isinstance(mat_f32, LibraryCorrPanel)
+        assert mat_f32.values.dtype == np.float32
+        assert mat_f32.present is None
+
+        # lazy：阈值压到 1
+        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+        lazy = build_library_corr_panel(pool_f32)
+        assert isinstance(lazy, LazyWideCorrGrid)
+
+        out_mat = max_correlation_detail(cand, pool_f32, panel=mat_f32)
+        out_lazy = max_correlation_detail(cand, pool_f32, panel=lazy)
         assert out_lazy == out_mat
         assert out_lazy[0] == out_mat[0]
         assert out_lazy[1] == out_mat[1]
-        # 与逐对 ground truth：沿用既有 panel 红线（_assert_same / atol=1e-12）
-        # （矩阵路径 vs compute_factor_correlation 求和顺序可差 ULP，既有测试同）
-        _assert_same(pairwise, out_lazy)
-        _assert_same(pairwise, out_mat)
-        monkeypatch.setattr(
-            scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD",
-            scoring_mod.CORR_PANEL_F32_BYTES_THRESHOLD,
-        )
 
-    # NaN 候选毒化：与既有 fixture 语义一致
-    n_stocks = 40
-    days = _dates(3)
-    stocks = [f"{i:06d}.SH" for i in range(n_stocks)]
-    rng = np.random.default_rng(99)
-    v = rng.standard_normal((3, n_stocks))
-    null_d1 = np.zeros((3, n_stocks), dtype=bool)
-    null_d1[1, 10:] = True
-    cand_vals = v.copy()
-    cand_vals[0, 0] = np.nan
-    cand = _panel_df(days, stocks, cand_vals, null_mask=null_d1)
-    lib = _panel_df(days, stocks, v + 0.01, null_mask=null_d1)
-    pool = {"lib": lib}
-    compact = _to_compact(pool)
-    mat = build_library_corr_panel(compact)
-    monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
-    lazy = build_library_corr_panel(compact)
-    assert isinstance(lazy, LazyWideCorrGrid)
-    pairwise = max_correlation_detail(cand, pool)
-    out_lazy = max_correlation_detail(cand, compact, panel=lazy)
-    out_mat = max_correlation_detail(cand, compact, panel=mat)
-    assert out_lazy == out_mat
-    _assert_same(pairwise, out_lazy)
-    _assert_same(pairwise, out_mat)
+        # block 也逐位一致
+        n_d = len(mat_f32.dates)
+        _assert_block_equal(lazy.block(0, n_d), mat_f32.block(0, n_d))
 
+    monkeypatch.undo()
+    _section_4_test_lazy_wide_f32_source_bit_identical_vs_f32_panel(monkeypatch)
 
-def test_lazy_wide_block_equiv_windows(monkeypatch):
-    """lazy.block 与物化.block 在多切窗（含 0 起/尾/单日）vals/pres 逐位等价。"""
-    from factorzen.discovery import scoring as scoring_mod
-    from factorzen.discovery.scoring import (
-        LazyWideCorrGrid,
-        LibraryCorrPanel,
-        build_library_corr_panel,
-    )
+    # -- 原 test_lazy_wide_holds_wide_ref_no_big_cache --
+    def _section_5_test_lazy_wide_holds_wide_ref_no_big_cache(monkeypatch, capsys):
+        from factorzen.discovery import scoring as scoring_mod
+        from factorzen.discovery.scoring import LazyWideCorrGrid, build_library_corr_panel
 
-    _, pool, _, _ = _mk_pool_and_cand(seed=30, n_days=25, n_stocks=35, null_frac=0.1)
-    compact = _to_compact(pool)
-    mat = build_library_corr_panel(compact)
-    assert isinstance(mat, LibraryCorrPanel)
-    monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
-    lazy = build_library_corr_panel(compact)
-    assert isinstance(lazy, LazyWideCorrGrid)
+        _, pool, _, _ = _mk_pool_and_cand(seed=34, n_days=20, n_stocks=30)
+        compact = _to_compact(pool)
+        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+        lazy = build_library_corr_panel(compact)
+        assert isinstance(lazy, LazyWideCorrGrid)
+        assert lazy._wide is compact.wide  # 引用非复制
 
-    n_d = len(mat.dates)
-    windows = [(0, n_d), (0, 1), (n_d - 1, n_d), (3, 12), (5, 6), (0, 5), (10, n_d)]
-    for d0, d1 in windows:
-        _assert_block_equal(lazy.block(d0, d1), mat.block(d0, d1))
-        # present_block 兼容路径
-        np.testing.assert_array_equal(
-            lazy.present_block(d0, d1), mat.present_block(d0, d1),
-        )
+        out = capsys.readouterr().out
+        assert "lazy-wide" in out and "corr-panel" in out and "免物化" in out
+
+        n_d = len(lazy.dates)
+        n_s = len(lazy.stocks)
+        n_f = len(lazy.names)
+        # 块预算：临时块上限量级（允许 2× 余量）
+        blk = max(1, min(n_d, 3))
+        budget = n_s * n_f * blk * 8 * 2
+
+        vals, pres = lazy.block(0, blk)
+        # 返回临时块在预算附近（非整网格）
+        full_grid = n_d * n_s * n_f * 8
+        assert vals.nbytes <= budget * 2
+        assert vals.nbytes < full_grid or n_d <= blk  # 非整网格常驻
+        # block 后不新增大数组属性（slots 固定；无 values 缓存）
+        assert set(LazyWideCorrGrid.__slots__) == {
+            "_day_starts", "_di_by_day", "_row_by_day", "_si_by_day", "_wide",
+            "date_idx", "dates", "names", "present", "stock_idx", "stocks",
+        }
+        assert not hasattr(lazy, "values")
+        # 行级索引 O(n_rows)，不是 (n_d,n_s,n_f) 值网格
+        assert lazy._row_by_day.ndim == 1 and lazy._si_by_day.ndim == 1
+        del vals, pres
+
+    monkeypatch.undo()
+    _section_5_test_lazy_wide_holds_wide_ref_no_big_cache(monkeypatch, capsys)
 
 
-def test_lazy_wide_chunk_boundaries_bit_identical(monkeypatch):
-    """lazy 下 CORR_PANEL_CHUNK_BYTES=1(blk=1) 与极大(单块)与默认逐位一致。"""
-    from factorzen.discovery import scoring as scoring_mod
-    from factorzen.discovery.scoring import (
-        LazyWideCorrGrid,
-        build_library_corr_panel,
-        max_correlation_detail,
-    )
-
-    cand, pool, _, _ = _mk_pool_and_cand(seed=31, n_days=50, n_stocks=40)
-    compact = _to_compact(pool)
-    monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
-    lazy = build_library_corr_panel(compact)
-    assert isinstance(lazy, LazyWideCorrGrid)
-
-    default = max_correlation_detail(cand, compact, panel=lazy)
-
-    monkeypatch.setattr(scoring_mod, "CORR_PANEL_CHUNK_BYTES", 1)
-    blk1 = max_correlation_detail(cand, compact, panel=lazy)
-    assert blk1 == default
-    assert blk1[0] == default[0]
-    assert blk1[1] == default[1]
-
-    monkeypatch.setattr(scoring_mod, "CORR_PANEL_CHUNK_BYTES", 10**18)
-    one = max_correlation_detail(cand, compact, panel=lazy)
-    assert one == default
-    assert one[0] == default[0]
-    assert one[1] == default[1]
-
-
-def test_lazy_wide_f32_source_bit_identical_vs_f32_panel(monkeypatch):
-    """f32 wide + lazy 与 f32 物化 LibraryCorrPanel 结果逐位一致（同源升 f64）。"""
-    from factorzen.discovery import scoring as scoring_mod
-    from factorzen.discovery.scoring import (
-        LazyWideCorrGrid,
-        LibraryCorrPanel,
-        build_library_corr_panel,
-        max_correlation_detail,
-    )
-    from factorzen.research.combination.pool import CompactLibraryPool
-
-    cand, pool, _, _ = _mk_pool_and_cand(seed=32, n_days=40, n_stocks=40, null_frac=0.07)
-    compact = _to_compact(pool)
-    # 值列压 f32（模拟 POOL_VALUE_F32 大池存储）
-    f32_exprs = [
-        pl.col(n).cast(pl.Float32) for n in compact.factor_names
-    ]
-    wide_f32 = compact.wide.with_columns(f32_exprs)
-    pool_f32 = CompactLibraryPool(wide_f32, compact.factor_names)
-    assert all(pool_f32.wide[n].dtype == pl.Float32 for n in pool_f32.factor_names)
-
-    # f32 物化面板：lazy 阈值抬高，f32 阈值压到 1
-    monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 10**18)
-    monkeypatch.setattr(scoring_mod, "CORR_PANEL_F32_BYTES_THRESHOLD", 1)
-    mat_f32 = build_library_corr_panel(pool_f32)
-    assert isinstance(mat_f32, LibraryCorrPanel)
-    assert mat_f32.values.dtype == np.float32
-    assert mat_f32.present is None
-
-    # lazy：阈值压到 1
-    monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
-    lazy = build_library_corr_panel(pool_f32)
-    assert isinstance(lazy, LazyWideCorrGrid)
-
-    out_mat = max_correlation_detail(cand, pool_f32, panel=mat_f32)
-    out_lazy = max_correlation_detail(cand, pool_f32, panel=lazy)
-    assert out_lazy == out_mat
-    assert out_lazy[0] == out_mat[0]
-    assert out_lazy[1] == out_mat[1]
-
-    # block 也逐位一致
-    n_d = len(mat_f32.dates)
-    _assert_block_equal(lazy.block(0, n_d), mat_f32.block(0, n_d))
-
-
-def test_lazy_wide_default_threshold_still_materializes():
-    """默认阈值下小池仍返回 LibraryCorrPanel(f64 物化)。"""
-    from factorzen.discovery.scoring import LibraryCorrPanel, build_library_corr_panel
-
-    _, pool, _, _ = _mk_pool_and_cand(seed=33, n_days=30, n_stocks=30)
-    compact = _to_compact(pool)
-    panel = build_library_corr_panel(compact)
-    assert isinstance(panel, LibraryCorrPanel)
-    assert panel.values.dtype == np.float64
-    assert panel.present is None
-
-
-def test_lazy_wide_holds_wide_ref_no_big_cache(monkeypatch, capsys):
-    """结构守卫：_wide is pool.wide；block 后无缓存大数组属性；打印 lazy 提示。"""
-    from factorzen.discovery import scoring as scoring_mod
-    from factorzen.discovery.scoring import LazyWideCorrGrid, build_library_corr_panel
-
-    _, pool, _, _ = _mk_pool_and_cand(seed=34, n_days=20, n_stocks=30)
-    compact = _to_compact(pool)
-    monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
-    lazy = build_library_corr_panel(compact)
-    assert isinstance(lazy, LazyWideCorrGrid)
-    assert lazy._wide is compact.wide  # 引用非复制
-
-    out = capsys.readouterr().out
-    assert "lazy-wide" in out and "corr-panel" in out and "免物化" in out
-
-    n_d = len(lazy.dates)
-    n_s = len(lazy.stocks)
-    n_f = len(lazy.names)
-    # 块预算：临时块上限量级（允许 2× 余量）
-    blk = max(1, min(n_d, 3))
-    budget = n_s * n_f * blk * 8 * 2
-
-    vals, pres = lazy.block(0, blk)
-    # 返回临时块在预算附近（非整网格）
-    full_grid = n_d * n_s * n_f * 8
-    assert vals.nbytes <= budget * 2
-    assert vals.nbytes < full_grid or n_d <= blk  # 非整网格常驻
-    # block 后不新增大数组属性（slots 固定；无 values 缓存）
-    assert set(LazyWideCorrGrid.__slots__) == {
-        "_day_starts", "_di_by_day", "_row_by_day", "_si_by_day", "_wide",
-        "date_idx", "dates", "names", "present", "stock_idx", "stocks",
-    }
-    assert not hasattr(lazy, "values")
-    # 行级索引 O(n_rows)，不是 (n_d,n_s,n_f) 值网格
-    assert lazy._row_by_day.ndim == 1 and lazy._si_by_day.ndim == 1
-    del vals, pres

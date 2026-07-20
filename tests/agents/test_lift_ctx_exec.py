@@ -30,72 +30,65 @@ def _px(closes: list[float], opens: list[float] | None = None) -> pl.DataFrame:
     return pl.DataFrame(d)
 
 
-def test_default_unchanged_close_to_close():
-    """默认（exec_lag=0）必须逐位等于 close[t+h]/close[t] − 1。
+def test_exec_convention_compute_suite():
+    """默认（exec_lag=0）必须逐位等于 close[t+h]/close[t] − 1。；exec_lag=1 ⇒ 用 price[t+2]/price[t+1] − 1。；exec_price_col='open' ⇒ 完全走 open 列，close 不参与。；h=2 且 exec_lag=1 ⇒ price[t+3]/price[t+1] − 1。；shift 必须按 ts_code 分组——跨股票串价会污染边界日。"""
+    # -- 原 test_default_unchanged_close_to_close --
+    def _section_0_test_default_unchanged_close_to_close():
+        df = compute_fwd_returns(_px([100.0, 110.0, 121.0]), horizons=[1])
+        got = df["fwd_ret_1d"].to_list()
+        assert got[0] == pytest.approx(0.10, abs=1e-12)
+        assert got[1] == pytest.approx(0.10, abs=1e-12)
+        assert got[2] is None  # 末日无前向价
 
-    价格取 100/110/121（每步 +10%）⇒ h=1 的前两个值都必须恰好是 0.10。
-    这个期望值由构造决定，与被测函数无关。
-    """
-    df = compute_fwd_returns(_px([100.0, 110.0, 121.0]), horizons=[1])
-    got = df["fwd_ret_1d"].to_list()
-    assert got[0] == pytest.approx(0.10, abs=1e-12)
-    assert got[1] == pytest.approx(0.10, abs=1e-12)
-    assert got[2] is None  # 末日无前向价
+    _section_0_test_default_unchanged_close_to_close()
 
+    # -- 原 test_exec_lag_shifts_entry_and_exit --
+    def _section_1_test_exec_lag_shifts_entry_and_exit():
+        px = _px([100.0, 200.0, 210.0, 420.0])
+        base = compute_fwd_returns(px, horizons=[1])["fwd_ret_1d"].to_list()
+        lag1 = compute_fwd_returns(px, horizons=[1], exec_lag=1)["fwd_ret_1d"].to_list()
 
-def test_exec_lag_shifts_entry_and_exit():
-    """exec_lag=1 ⇒ 用 price[t+2]/price[t+1] − 1。
+        assert base[0] == pytest.approx(1.00, abs=1e-12)   # 200/100 − 1
+        assert lag1[0] == pytest.approx(0.05, abs=1e-12)   # 210/200 − 1
+        assert lag1[1] == pytest.approx(1.00, abs=1e-12)   # 420/210 − 1
+        assert lag1[2] is None and lag1[3] is None         # 尾部越界
 
-    close = 100/110/121/133.1（每步 +10%）：
-    - t=0 的 h=1 应是 121/110 − 1 = 0.10（而非 110/100）
-    构造上每步都是 +10%，无法区分——**故意换成非等比序列**：
-    close = 100/200/210/420 ⇒ t=0 的 exec_lag=1 值 = 210/200 − 1 = **0.05**
-    （对比默认 exec_lag=0 的 200/100 − 1 = 1.00），两者显著不同才有判别力。
-    """
-    px = _px([100.0, 200.0, 210.0, 420.0])
-    base = compute_fwd_returns(px, horizons=[1])["fwd_ret_1d"].to_list()
-    lag1 = compute_fwd_returns(px, horizons=[1], exec_lag=1)["fwd_ret_1d"].to_list()
+    _section_1_test_exec_lag_shifts_entry_and_exit()
 
-    assert base[0] == pytest.approx(1.00, abs=1e-12)   # 200/100 − 1
-    assert lag1[0] == pytest.approx(0.05, abs=1e-12)   # 210/200 − 1
-    assert lag1[1] == pytest.approx(1.00, abs=1e-12)   # 420/210 − 1
-    assert lag1[2] is None and lag1[3] is None         # 尾部越界
+    # -- 原 test_exec_price_col_uses_open --
+    def _section_2_test_exec_price_col_uses_open():
+        px = _px([999.0, 999.0, 999.0, 999.0], opens=[10.0, 20.0, 25.0, 50.0])
+        got = compute_fwd_returns(
+            px, horizons=[1], exec_lag=1, exec_price_col="open")["fwd_ret_1d"].to_list()
+        assert got[0] == pytest.approx(0.25, abs=1e-12)   # open[2]/open[1] = 25/20
+        assert got[1] == pytest.approx(1.00, abs=1e-12)   # open[3]/open[2] = 50/25
 
+    _section_2_test_exec_price_col_uses_open()
 
-def test_exec_price_col_uses_open():
-    """exec_price_col='open' ⇒ 完全走 open 列，close 不参与。
+    # -- 原 test_horizon_and_lag_compose --
+    def _section_3_test_horizon_and_lag_compose():
+        px = _px([1.0, 2.0, 4.0, 6.0, 12.0])
+        got = compute_fwd_returns(px, horizons=[2], exec_lag=1)["fwd_ret_2d"].to_list()
+        assert got[0] == pytest.approx(2.00, abs=1e-12)   # 6/2 − 1
+        assert got[1] == pytest.approx(2.00, abs=1e-12)   # 12/4 − 1
 
-    open = 10/20/25/50，close 故意设成毫不相关的常数 999 ——
-    若实现误用了 close，结果会全是 0，测试立刻失败。
-    """
-    px = _px([999.0, 999.0, 999.0, 999.0], opens=[10.0, 20.0, 25.0, 50.0])
-    got = compute_fwd_returns(
-        px, horizons=[1], exec_lag=1, exec_price_col="open")["fwd_ret_1d"].to_list()
-    assert got[0] == pytest.approx(0.25, abs=1e-12)   # open[2]/open[1] = 25/20
-    assert got[1] == pytest.approx(1.00, abs=1e-12)   # open[3]/open[2] = 50/25
+    _section_3_test_horizon_and_lag_compose()
 
+    # -- 原 test_per_code_isolation --
+    def _section_4_test_per_code_isolation():
+        df = pl.DataFrame({
+            "ts_code": ["A", "A", "B", "B"],
+            "trade_date": ["2024-01-01", "2024-01-02"] * 2,
+            "close": [10.0, 20.0, 100.0, 300.0],
+        })
+        got = compute_fwd_returns(df, horizons=[1]).sort(["ts_code", "trade_date"])
+        v = got["fwd_ret_1d"].to_list()
+        assert v[0] == pytest.approx(1.0)   # A: 20/10
+        assert v[1] is None                 # A 末日，**不得**借用 B 的价格
+        assert v[2] == pytest.approx(2.0)   # B: 300/100
+        assert v[3] is None
 
-def test_horizon_and_lag_compose():
-    """h=2 且 exec_lag=1 ⇒ price[t+3]/price[t+1] − 1。"""
-    px = _px([1.0, 2.0, 4.0, 6.0, 12.0])
-    got = compute_fwd_returns(px, horizons=[2], exec_lag=1)["fwd_ret_2d"].to_list()
-    assert got[0] == pytest.approx(2.00, abs=1e-12)   # 6/2 − 1
-    assert got[1] == pytest.approx(2.00, abs=1e-12)   # 12/4 − 1
-
-
-def test_per_code_isolation():
-    """shift 必须按 ts_code 分组——跨股票串价会污染边界日。"""
-    df = pl.DataFrame({
-        "ts_code": ["A", "A", "B", "B"],
-        "trade_date": ["2024-01-01", "2024-01-02"] * 2,
-        "close": [10.0, 20.0, 100.0, 300.0],
-    })
-    got = compute_fwd_returns(df, horizons=[1]).sort(["ts_code", "trade_date"])
-    v = got["fwd_ret_1d"].to_list()
-    assert v[0] == pytest.approx(1.0)   # A: 20/10
-    assert v[1] is None                 # A 末日，**不得**借用 B 的价格
-    assert v[2] == pytest.approx(2.0)   # B: 300/100
-    assert v[3] is None
+    _section_4_test_per_code_isolation()
 
 
 def test_ret_col_fallback_respects_lag():
@@ -122,26 +115,103 @@ def test_invalid_args_raise():
         compute_fwd_returns(px, horizons=[1], exec_price_col="nope")
 
 
-def test_lift_ret_panel_threads_exec_args():
-    """`_build_ret_panel` 必须把两个参数透传下去，而不是吞掉。
+def test_exec_wiring_signature_suite():
+    """`_build_ret_panel` 必须把两个参数透传下去，而不是吞掉。；`DataBundle.build` 必须透传，否则护栏仍在评不可实现的收益。；`make_lift_context` 必须把口径写进 ctx，供 lift 裁决读取。；`_session_end_auto_lift` 必须接住口径——它是 lift 裁决的入口。；`fz mine team` 必须暴露两个旗标，且默认值 = 历史行为。"""
+    # -- 原 test_lift_ret_panel_threads_exec_args --
+    def _section_0_test_lift_ret_panel_threads_exec_args():
+        from factorzen.discovery.lift_test import _build_ret_panel
 
-    用 open 列与 close 列**取值完全不同**的构造，若未透传则结果会等于 close 版。
-    """
-    from factorzen.discovery.lift_test import _build_ret_panel
+        df = pl.DataFrame({
+            "ts_code": ["X"] * 4,
+            "trade_date": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
+            "close": [100.0, 100.0, 100.0, 100.0],   # close 恒定 ⇒ close 口径必为 0
+            "open_adj": [10.0, 20.0, 25.0, 50.0],
+        })
+        base = _build_ret_panel(df, horizon=1)
+        assert all(v == pytest.approx(0.0) for v in base["ret"].to_list())
 
-    df = pl.DataFrame({
-        "ts_code": ["X"] * 4,
-        "trade_date": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
-        "close": [100.0, 100.0, 100.0, 100.0],   # close 恒定 ⇒ close 口径必为 0
-        "open_adj": [10.0, 20.0, 25.0, 50.0],
-    })
-    base = _build_ret_panel(df, horizon=1)
-    assert all(v == pytest.approx(0.0) for v in base["ret"].to_list())
+        got = _build_ret_panel(df, horizon=1, exec_lag=1, exec_price_col="open_adj")
+        vals = got["ret"].to_list()
+        assert vals[0] == pytest.approx(0.25, abs=1e-12)   # 25/20
+        assert vals[1] == pytest.approx(1.00, abs=1e-12)   # 50/25
 
-    got = _build_ret_panel(df, horizon=1, exec_lag=1, exec_price_col="open_adj")
-    vals = got["ret"].to_list()
-    assert vals[0] == pytest.approx(0.25, abs=1e-12)   # 25/20
-    assert vals[1] == pytest.approx(1.00, abs=1e-12)   # 50/25
+    _section_0_test_lift_ret_panel_threads_exec_args()
+
+    # -- 原 test_databundle_threads_exec_args --
+    def _section_1_test_databundle_threads_exec_args():
+        from factorzen.discovery.scoring import DataBundle
+
+        df = pl.DataFrame({
+            "ts_code": ["X"] * 6,
+            "trade_date": [f"2024-01-{i + 1:02d}" for i in range(6)],
+            "close": [100.0] * 6,
+            "close_adj": [100.0] * 6,
+            "open_adj": [10.0, 20.0, 25.0, 50.0, 60.0, 70.0],
+        })
+        base = DataBundle.build(df)
+        assert all(v == pytest.approx(0.0)
+                   for v in base.fwd_returns["fwd_ret_1d"].drop_nulls().to_list())
+
+        got = DataBundle.build(df, exec_lag=1, exec_price_col="open_adj")
+        v = got.fwd_returns["fwd_ret_1d"].to_list()
+        assert v[0] == pytest.approx(0.25, abs=1e-12)   # open[2]/open[1] = 25/20
+        assert v[1] == pytest.approx(1.00, abs=1e-12)   # open[3]/open[2] = 50/25
+
+    _section_1_test_databundle_threads_exec_args()
+
+    # -- 原 test_lift_context_carries_exec_args --
+    def _section_2_test_lift_context_carries_exec_args():
+        from factorzen.discovery.lift_test import make_lift_context
+
+        df = pl.DataFrame({
+            "ts_code": ["X", "X"],
+            "trade_date": ["2024-01-01", "2024-01-02"],
+            "close": [1.0, 2.0],
+        })
+        d = make_lift_context("ashare", df, prepped=df)
+        assert d.exec_lag == 0 and d.exec_price_col is None      # 默认不变
+
+        c = make_lift_context("ashare", df, prepped=df,
+                              exec_lag=1, exec_price_col="open_adj")
+        assert c.exec_lag == 1 and c.exec_price_col == "open_adj"
+
+    _section_2_test_lift_context_carries_exec_args()
+
+    # -- 原 test_session_end_auto_lift_accepts_exec_args --
+    def _section_3_test_session_end_auto_lift_accepts_exec_args():
+        import inspect
+
+        from factorzen.agents.team_orchestrator import _session_end_auto_lift
+
+        sig = inspect.signature(_session_end_auto_lift)
+        assert "exec_lag" in sig.parameters
+        assert "exec_price_col" in sig.parameters
+        assert sig.parameters["exec_lag"].default == 0
+        assert sig.parameters["exec_price_col"].default is None
+
+    _section_3_test_session_end_auto_lift_accepts_exec_args()
+
+    # -- 原 test_cli_parser_exposes_exec_flags --
+    def _section_4_test_cli_parser_exposes_exec_flags():
+        from factorzen.cli.parser import build_parser
+
+        class _Stub:
+            def __getattr__(self, _n):
+                return lambda *a, **k: 0
+
+        p = build_parser(_Stub())
+        ns = p.parse_args(["mine", "team", "--start", "20200101", "--end", "20201231"])
+        assert ns.exec_lag == 0
+        assert ns.exec_price_col is None
+
+        ns2 = p.parse_args([
+            "mine", "team", "--start", "20200101", "--end", "20201231",
+            "--exec-lag", "1", "--exec-price-col", "open_adj",
+        ])
+        assert ns2.exec_lag == 1
+        assert ns2.exec_price_col == "open_adj"
+
+    _section_4_test_cli_parser_exposes_exec_flags()
 
 
 # ── 接线层：参数必须真的一路传到底 ────────────────────────────────
@@ -149,89 +219,6 @@ def test_lift_ret_panel_threads_exec_args():
 # 没透传，用户用不了。且 `inspect.signature` 断言零判别力——必须从外层出发
 # 用**可观测的数值差异**验证。
 
-def test_databundle_threads_exec_args():
-    """`DataBundle.build` 必须透传，否则护栏仍在评不可实现的收益。
-
-    close 恒定 ⇒ close 口径的 fwd 必为 0；open 变化 ⇒ 传对了才非 0。
-    """
-    from factorzen.discovery.scoring import DataBundle
-
-    df = pl.DataFrame({
-        "ts_code": ["X"] * 6,
-        "trade_date": [f"2024-01-{i + 1:02d}" for i in range(6)],
-        "close": [100.0] * 6,
-        "close_adj": [100.0] * 6,
-        "open_adj": [10.0, 20.0, 25.0, 50.0, 60.0, 70.0],
-    })
-    base = DataBundle.build(df)
-    assert all(v == pytest.approx(0.0)
-               for v in base.fwd_returns["fwd_ret_1d"].drop_nulls().to_list())
-
-    got = DataBundle.build(df, exec_lag=1, exec_price_col="open_adj")
-    v = got.fwd_returns["fwd_ret_1d"].to_list()
-    assert v[0] == pytest.approx(0.25, abs=1e-12)   # open[2]/open[1] = 25/20
-    assert v[1] == pytest.approx(1.00, abs=1e-12)   # open[3]/open[2] = 50/25
-
-
-def test_lift_context_carries_exec_args():
-    """`make_lift_context` 必须把口径写进 ctx，供 lift 裁决读取。"""
-    from factorzen.discovery.lift_test import make_lift_context
-
-    df = pl.DataFrame({
-        "ts_code": ["X", "X"],
-        "trade_date": ["2024-01-01", "2024-01-02"],
-        "close": [1.0, 2.0],
-    })
-    d = make_lift_context("ashare", df, prepped=df)
-    assert d.exec_lag == 0 and d.exec_price_col is None      # 默认不变
-
-    c = make_lift_context("ashare", df, prepped=df,
-                          exec_lag=1, exec_price_col="open_adj")
-    assert c.exec_lag == 1 and c.exec_price_col == "open_adj"
-
-
-
-def test_session_end_auto_lift_accepts_exec_args():
-    """`_session_end_auto_lift` 必须接住口径——它是 lift 裁决的入口。
-
-    ⚠️ 这条来自一次真实漏洞：`make_lift_context` 的调用点**不在**
-    `run_team_agent` 里而在本函数，最初误以为同作用域，被 ruff F821 抓到。
-    若该函数恰好有同名局部变量，就会**静默传错值**——准入用一个口径、
-    lift 裁决用另一个，而测试全绿。故显式钉住签名。
-    """
-    import inspect
-
-    from factorzen.agents.team_orchestrator import _session_end_auto_lift
-
-    sig = inspect.signature(_session_end_auto_lift)
-    assert "exec_lag" in sig.parameters
-    assert "exec_price_col" in sig.parameters
-    assert sig.parameters["exec_lag"].default == 0
-    assert sig.parameters["exec_price_col"].default is None
-
-
-def test_cli_parser_exposes_exec_flags():
-    """`fz mine team` 必须暴露两个旗标，且默认值 = 历史行为。
-
-    从**最外层**（parser）出发验证，这是「能力层↔接线层漂移」的正确测法。
-    """
-    from factorzen.cli.parser import build_parser
-
-    class _Stub:
-        def __getattr__(self, _n):
-            return lambda *a, **k: 0
-
-    p = build_parser(_Stub())
-    ns = p.parse_args(["mine", "team", "--start", "20200101", "--end", "20201231"])
-    assert ns.exec_lag == 0
-    assert ns.exec_price_col is None
-
-    ns2 = p.parse_args([
-        "mine", "team", "--start", "20200101", "--end", "20201231",
-        "--exec-lag", "1", "--exec-price-col", "open_adj",
-    ])
-    assert ns2.exec_lag == 1
-    assert ns2.exec_price_col == "open_adj"
 
 # ==== 来自 test_lift_ctx_wiring.py ====
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -367,211 +354,252 @@ def _fake_daily_full() -> pl.DataFrame:
 # ── 1. team hook 窗口落盘 ────────────────────────────────────────────────────
 
 
-def test_team_hook_admission_window_in_ctx_and_meta(monkeypatch):
-    """组测收到的 ctx.admission_start == holdout 首日；meta 含 admission_start/end/horizon。"""
-    from factorzen.agents.team_orchestrator import _session_end_auto_lift
-    from factorzen.discovery.lift_test import DEFAULT_HORIZON
+def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
+    """组测收到的 ctx.admission_start == holdout 首日；meta 含 admission_start/end/horizon。；显式 materialize_candidate 注入时不构造默认 / prepped materializer。；库内 lift 记录 horizon=10 → 默认 runner 调 run_lift_tests 时 ctx.horizon==10。；装配返回 None → 现有空帧报错路径不变（exit 1）。；manifest 含 holdout_start → run_lift_tests 收到推导出的 admission_start。"""
+    # -- 原 test_team_hook_admission_window_in_ctx_and_meta --
+    def _section_0_test_team_hook_admission_window_in_ctx_and_meta(monkeypatch):
+        from factorzen.agents.team_orchestrator import _session_end_auto_lift
+        from factorzen.discovery.lift_test import DEFAULT_HORIZON
 
-    state = _state_with_lift_queue(["ts_mean(close, 5)"])
-    daily, holdout, mat = _holdout_and_mat()
-    captured: dict = {}
+        state = _state_with_lift_queue(["ts_mean(close, 5)"])
+        daily, holdout, mat = _holdout_and_mat()
+        captured: dict = {}
 
-    def fake_group(*a, **k):
-        captured["group_kw"] = k
-        return {
-            "lift": 0.01, "lift_se": 0.001, "error": None,
-            "n_candidates": 1, "expressions": ["ts_mean(close, 5)"],
-        }
+        def fake_group(*a, **k):
+            captured["group_kw"] = k
+            return {
+                "lift": 0.01, "lift_se": 0.001, "error": None,
+                "n_candidates": 1, "expressions": ["ts_mean(close, 5)"],
+            }
 
-    def fake_per(*a, **k):
-        captured["per_kw"] = k
-        return [{
-            "expression": "ts_mean(close, 5)",
-            "lift": 0.008, "lift_se": 0.001,
-            "lift_second_half": 0.004, "baseline": 0.02, "passed": True,
-        }]
+        def fake_per(*a, **k):
+            captured["per_kw"] = k
+            return [{
+                "expression": "ts_mean(close, 5)",
+                "lift": 0.008, "lift_se": 0.001,
+                "lift_second_half": 0.004, "baseline": 0.02, "passed": True,
+            }]
 
-    def fake_upsert(rows, *, market, **kw):
-        captured["upsert_meta"] = kw.get("meta") or {}
-        return {"added_active": 1, "added_probation": 0, "rejected": 0, "errors": []}
+        def fake_upsert(rows, *, market, **kw):
+            captured["upsert_meta"] = kw.get("meta") or {}
+            return {"added_active": 1, "added_probation": 0, "rejected": 0, "errors": []}
 
-    monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-    monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
-    monkeypatch.setattr(
-        "factorzen.discovery.factor_library.upsert_lift_admissions",
-        fake_upsert, raising=False,
-    )
+        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
+        monkeypatch.setattr(
+            "factorzen.discovery.factor_library.upsert_lift_admissions",
+            fake_upsert, raising=False,
+        )
 
-    meta = _session_end_auto_lift(
-        state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
-        market="ashare", library_root="/tmp/lib", seed=1,
-        materialize_candidate=mat,
-        active_factor_dfs={"base": _panel(100)},
-        ret_df=_panel(100).rename({"factor_value": "ret"}),
-        horizon=DEFAULT_HORIZON,
-    )
+        meta = _session_end_auto_lift(
+            state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
+            market="ashare", library_root="/tmp/lib", seed=1,
+            materialize_candidate=mat,
+            active_factor_dfs={"base": _panel(100)},
+            ret_df=_panel(100).rename({"factor_value": "ret"}),
+            horizon=DEFAULT_HORIZON,
+        )
 
-    hs = holdout["trade_date"].min()
-    he = holdout["trade_date"].max()
-    gctx = captured["group_kw"]["ctx"]
-    assert gctx is not None
-    assert _as_ymd(gctx.admission_start) == _as_ymd(hs)
-    assert _as_ymd(gctx.admission_end) == _as_ymd(he)
-    assert gctx.horizon == DEFAULT_HORIZON
+        hs = holdout["trade_date"].min()
+        he = holdout["trade_date"].max()
+        gctx = captured["group_kw"]["ctx"]
+        assert gctx is not None
+        assert _as_ymd(gctx.admission_start) == _as_ymd(hs)
+        assert _as_ymd(gctx.admission_end) == _as_ymd(he)
+        assert gctx.horizon == DEFAULT_HORIZON
 
-    pctx = captured["per_kw"]["ctx"]
-    assert _as_ymd(pctx.admission_start) == _as_ymd(hs)
-    assert pctx.horizon == DEFAULT_HORIZON
+        pctx = captured["per_kw"]["ctx"]
+        assert _as_ymd(pctx.admission_start) == _as_ymd(hs)
+        assert pctx.horizon == DEFAULT_HORIZON
 
-    assert _as_ymd(meta.get("admission_start")) == _as_ymd(hs)
-    assert _as_ymd(meta.get("admission_end")) == _as_ymd(he)
-    assert meta.get("horizon") == DEFAULT_HORIZON
+        assert _as_ymd(meta.get("admission_start")) == _as_ymd(hs)
+        assert _as_ymd(meta.get("admission_end")) == _as_ymd(he)
+        assert meta.get("horizon") == DEFAULT_HORIZON
 
-    um = captured["upsert_meta"]
-    assert um.get("horizon") == DEFAULT_HORIZON
+        um = captured["upsert_meta"]
+        assert um.get("horizon") == DEFAULT_HORIZON
+
+    _section_0_test_team_hook_admission_window_in_ctx_and_meta(monkeypatch)
+
+    # -- 原 test_team_hook_injected_materializer_skips_default --
+    def _section_1_test_team_hook_injected_materializer_skips_default(monkeypatch):
+        from factorzen.agents.team_orchestrator import _session_end_auto_lift
+
+        state = _state_with_lift_queue(["ts_mean(close, 5)"])
+        daily, holdout, mat = _holdout_and_mat()
+        calls: list[str] = []
+
+        def boom_default(*a, **k):
+            calls.append("default")
+            raise AssertionError("不应构造 _default_materializer")
+
+        def boom_prepped(*a, **k):
+            calls.append("prepped")
+            raise AssertionError("注入路径不应构造 _materializer_from_prepped")
+
+        monkeypatch.setattr(
+            "factorzen.discovery.lift_test._default_materializer", boom_default,
+        )
+        monkeypatch.setattr(
+            "factorzen.discovery.lift_test._materializer_from_prepped", boom_prepped,
+        )
+
+        def fake_group(*a, **k):
+            return {
+                "lift": 0.0, "lift_se": 0.1, "error": None,
+                "expressions": ["ts_mean(close, 5)"],
+            }
+
+        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+
+        meta = _session_end_auto_lift(
+            state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
+            market="ashare", library_root="/tmp/lib", seed=1,
+            materialize_candidate=mat,
+            active_factor_dfs={"base": _panel(100)},
+            horizon=1,
+        )
+        assert calls == [], f"注入 materialize 时不应构造默认 mat，got {calls}"
+        assert meta.get("lift_error") is None
+
+    monkeypatch.undo()
+    _section_1_test_team_hook_injected_materializer_skips_default(monkeypatch)
+
+    # -- 原 test_cli_rebuild_wires_daily_and_record_horizon --
+    def _section_2_test_cli_rebuild_wires_daily_and_record_horizon(tmp_path, monkeypatch):
+        import factorzen.cli.main as cli_main
+        import factorzen.discovery.factor_library as fl
+        import factorzen.discovery.lift_test as lt_mod
+        from factorzen.cli.main import build_parser
+        from factorzen.discovery.factor_library import FactorRecord, _save_library
+
+        lib_root = tmp_path / "lib"
+        lib_root.mkdir()
+        _save_library(
+            "ashare",
+            [
+                FactorRecord(
+                    expression="rank(vol)", market="ashare", status="active",
+                    admission_track="lift", ic_train=0.01, holdout_ic=0.0,
+                    lift=0.01, lift_se=0.001, lift_second_half=0.005,
+                    horizon=10,  # 与全局默认 5 不同
+                    added_at="2026-07-02", updated_at="2026-07-02",
+                ),
+            ],
+            root=str(lib_root),
+        )
+
+        captured: list[dict] = []
+
+        def fake_lift(cands, **kw):
+            captured.append(kw)
+            expr = cands[0]["expression"] if cands else "x"
+            return [{
+                "expression": expr,
+                "lift": 0.006, "lift_se": 0.001,
+                "lift_second_half": 0.003, "baseline": 0.05, "passed": True,
+            }]
+
+        patch_cli_lift_pre_gates(monkeypatch)
+        monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
+        monkeypatch.setattr(
+            cli_main, "_prepare_agent_mining_data",
+            lambda args: (_fake_daily_full(), None, {}),
+        )
+        monkeypatch.setattr(fl, "collect_source_expressions", lambda market: [])
+        monkeypatch.setattr(
+            fl, "build_library_evaluator",
+            lambda *a, **k: (lambda exprs: [], None),
+        )
+        # rebuild 落库根指向 tmp
+        orig_rebuild = fl.rebuild
+
+        def rebuild_to_tmp(*a, **kw):
+            kw.setdefault("root", str(lib_root))
+            return orig_rebuild(*a, **kw)
+
+        monkeypatch.setattr(fl, "rebuild", rebuild_to_tmp)
+
+        args = build_parser().parse_args([
+            "factor-library", "rebuild",
+            "--market", "ashare",
+            "--start", "20200101",
+            "--end", "20201231",
+        ])
+        # 强制 root：rebuild 默认 DEFAULT_ROOT；上面 monkeypatch 已 setdefault root
+        # 但 CLI 未传 root——依赖 monkeypatch 包装
+        rc = cli_main._cmd_factor_library_rebuild(args)
+        assert rc == 0, "lift_review_error 应为 None 且 exit 0"
+        assert captured, "默认 runner 应调用 run_lift_tests"
+        ctx = captured[0].get("ctx")
+        assert ctx is not None, "应传 ctx"
+        assert ctx.horizon == 10, f"复审 horizon 应取 rec.horizon=10，got {ctx.horizon}"
+
+    monkeypatch.undo()
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_cli_rebuild_wires_daily_and_record_horizon(_tp2, monkeypatch)
+
+    # -- 原 test_cli_rebuild_missing_daily_still_errors --
+    def _section_3_test_cli_rebuild_missing_daily_still_errors(monkeypatch, capsys):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+
+        monkeypatch.setattr(
+            cli_main, "_prepare_agent_mining_data",
+            lambda args: (None, None, {}),
+        )
+        args = build_parser().parse_args([
+            "factor-library", "rebuild",
+            "--market", "ashare",
+            "--start", "20200101",
+            "--end", "20201231",
+        ])
+        rc = cli_main._cmd_factor_library_rebuild(args)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "挖掘帧为空" in err
+
+    monkeypatch.undo()
+    _section_3_test_cli_rebuild_missing_daily_still_errors(monkeypatch, capsys)
+
+    # -- 原 test_lift_test_admission_from_manifest --
+    def _section_4_test_lift_test_admission_from_manifest(tmp_path, monkeypatch):
+        import factorzen.cli.main as cli_main
+        from factorzen.cli.main import build_parser
+
+        run_dir = _write_gray_session(tmp_path, holdout_start="20200901")
+        captured: list = []
+        _patch_lift_test_capture(monkeypatch, captured)
+
+        args = build_parser().parse_args([
+            "factor-library", "lift-test",
+            "--session", str(run_dir),
+            "--market", "ashare",
+            "--start", "20200101",
+            "--end", "20201231",
+            "--library-root", str(tmp_path / "lib"),
+        ])
+        rc = cli_main._cmd_factor_library_lift_test(args)
+        assert rc == 0
+        assert captured
+        ctx = captured[0].get("ctx")
+        assert ctx is not None
+        assert _as_ymd(ctx.admission_start) == "20200901"
+
+    monkeypatch.undo()
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_lift_test_admission_from_manifest(_tp4, monkeypatch)
 
 
 # ── 2. hook 注入优先 ─────────────────────────────────────────────────────────
 
 
-def test_team_hook_injected_materializer_skips_default(monkeypatch):
-    """显式 materialize_candidate 注入时不构造默认 / prepped materializer。"""
-    from factorzen.agents.team_orchestrator import _session_end_auto_lift
-
-    state = _state_with_lift_queue(["ts_mean(close, 5)"])
-    daily, holdout, mat = _holdout_and_mat()
-    calls: list[str] = []
-
-    def boom_default(*a, **k):
-        calls.append("default")
-        raise AssertionError("不应构造 _default_materializer")
-
-    def boom_prepped(*a, **k):
-        calls.append("prepped")
-        raise AssertionError("注入路径不应构造 _materializer_from_prepped")
-
-    monkeypatch.setattr(
-        "factorzen.discovery.lift_test._default_materializer", boom_default,
-    )
-    monkeypatch.setattr(
-        "factorzen.discovery.lift_test._materializer_from_prepped", boom_prepped,
-    )
-
-    def fake_group(*a, **k):
-        return {
-            "lift": 0.0, "lift_se": 0.1, "error": None,
-            "expressions": ["ts_mean(close, 5)"],
-        }
-
-    monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-
-    meta = _session_end_auto_lift(
-        state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
-        market="ashare", library_root="/tmp/lib", seed=1,
-        materialize_candidate=mat,
-        active_factor_dfs={"base": _panel(100)},
-        horizon=1,
-    )
-    assert calls == [], f"注入 materialize 时不应构造默认 mat，got {calls}"
-    assert meta.get("lift_error") is None
-
-
 # ── 3. CLI rebuild 接通（rec.horizon 进 ctx）──────────────────────────────────
 
 
-def test_cli_rebuild_wires_daily_and_record_horizon(tmp_path, monkeypatch):
-    """库内 lift 记录 horizon=10 → 默认 runner 调 run_lift_tests 时 ctx.horizon==10。"""
-    import factorzen.cli.main as cli_main
-    import factorzen.discovery.factor_library as fl
-    import factorzen.discovery.lift_test as lt_mod
-    from factorzen.cli.main import build_parser
-    from factorzen.discovery.factor_library import FactorRecord, _save_library
-
-    lib_root = tmp_path / "lib"
-    lib_root.mkdir()
-    _save_library(
-        "ashare",
-        [
-            FactorRecord(
-                expression="rank(vol)", market="ashare", status="active",
-                admission_track="lift", ic_train=0.01, holdout_ic=0.0,
-                lift=0.01, lift_se=0.001, lift_second_half=0.005,
-                horizon=10,  # 与全局默认 5 不同
-                added_at="2026-07-02", updated_at="2026-07-02",
-            ),
-        ],
-        root=str(lib_root),
-    )
-
-    captured: list[dict] = []
-
-    def fake_lift(cands, **kw):
-        captured.append(kw)
-        expr = cands[0]["expression"] if cands else "x"
-        return [{
-            "expression": expr,
-            "lift": 0.006, "lift_se": 0.001,
-            "lift_second_half": 0.003, "baseline": 0.05, "passed": True,
-        }]
-
-    patch_cli_lift_pre_gates(monkeypatch)
-    monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
-    monkeypatch.setattr(
-        cli_main, "_prepare_agent_mining_data",
-        lambda args: (_fake_daily_full(), None, {}),
-    )
-    monkeypatch.setattr(fl, "collect_source_expressions", lambda market: [])
-    monkeypatch.setattr(
-        fl, "build_library_evaluator",
-        lambda *a, **k: (lambda exprs: [], None),
-    )
-    # rebuild 落库根指向 tmp
-    orig_rebuild = fl.rebuild
-
-    def rebuild_to_tmp(*a, **kw):
-        kw.setdefault("root", str(lib_root))
-        return orig_rebuild(*a, **kw)
-
-    monkeypatch.setattr(fl, "rebuild", rebuild_to_tmp)
-
-    args = build_parser().parse_args([
-        "factor-library", "rebuild",
-        "--market", "ashare",
-        "--start", "20200101",
-        "--end", "20201231",
-    ])
-    # 强制 root：rebuild 默认 DEFAULT_ROOT；上面 monkeypatch 已 setdefault root
-    # 但 CLI 未传 root——依赖 monkeypatch 包装
-    rc = cli_main._cmd_factor_library_rebuild(args)
-    assert rc == 0, "lift_review_error 应为 None 且 exit 0"
-    assert captured, "默认 runner 应调用 run_lift_tests"
-    ctx = captured[0].get("ctx")
-    assert ctx is not None, "应传 ctx"
-    assert ctx.horizon == 10, f"复审 horizon 应取 rec.horizon=10，got {ctx.horizon}"
-
-
 # ── 4. CLI rebuild 缺 daily 回归 ─────────────────────────────────────────────
-
-
-def test_cli_rebuild_missing_daily_still_errors(monkeypatch, capsys):
-    """装配返回 None → 现有空帧报错路径不变（exit 1）。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-
-    monkeypatch.setattr(
-        cli_main, "_prepare_agent_mining_data",
-        lambda args: (None, None, {}),
-    )
-    args = build_parser().parse_args([
-        "factor-library", "rebuild",
-        "--market", "ashare",
-        "--start", "20200101",
-        "--end", "20201231",
-    ])
-    rc = cli_main._cmd_factor_library_rebuild(args)
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "挖掘帧为空" in err
 
 
 # ── 5. lift-test 窗口推导 ────────────────────────────────────────────────────
@@ -597,31 +625,6 @@ def _patch_lift_test_capture(monkeypatch, captured: list):
 
     patch_cli_lift_pre_gates(monkeypatch)
     monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
-
-
-def test_lift_test_admission_from_manifest(tmp_path, monkeypatch):
-    """manifest 含 holdout_start → run_lift_tests 收到推导出的 admission_start。"""
-    import factorzen.cli.main as cli_main
-    from factorzen.cli.main import build_parser
-
-    run_dir = _write_gray_session(tmp_path, holdout_start="20200901")
-    captured: list = []
-    _patch_lift_test_capture(monkeypatch, captured)
-
-    args = build_parser().parse_args([
-        "factor-library", "lift-test",
-        "--session", str(run_dir),
-        "--market", "ashare",
-        "--start", "20200101",
-        "--end", "20201231",
-        "--library-root", str(tmp_path / "lib"),
-    ])
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert captured
-    ctx = captured[0].get("ctx")
-    assert ctx is not None
-    assert _as_ymd(ctx.admission_start) == "20200901"
 
 
 def test_lift_test_admission_flag_overrides_manifest(tmp_path, monkeypatch):

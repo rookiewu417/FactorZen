@@ -29,91 +29,102 @@ from factorzen.daily.evaluation.walk_forward import (
 
 
 # ==== 来自 test_strategy_registry.py ====
-def test_builtin_strategy_registry_builds_supported_strategies():
-    from factorzen.daily.evaluation.backtest import (
-        FactorWeightedStrategy,
-        OptimizerStrategy,
-        QuantileLongShortStrategy,
-        TopNLongOnlyStrategy,
-    )
-    from factorzen.daily.evaluation.strategy_registry import build_strategy
+def test_strategy_registry_suite(tmp_path, monkeypatch):
+    """test_builtin_strategy_registry_builds_supported_strategies；test_strategy_registry_imports_custom_strategy_from_dotted_path"""
+    # -- 原 test_builtin_strategy_registry_builds_supported_strategies --
+    def _section_0_test_builtin_strategy_registry_builds_supported_strategies():
+        from factorzen.daily.evaluation.backtest import (
+            FactorWeightedStrategy,
+            OptimizerStrategy,
+            QuantileLongShortStrategy,
+            TopNLongOnlyStrategy,
+        )
+        from factorzen.daily.evaluation.strategy_registry import build_strategy
 
-    topn = build_strategy("topn_long_only", {"top_n": 12})
-    quantile = build_strategy("quantile_long_short", {"quantiles": 4})
-    weighted = build_strategy(
-        "factor_weighted",
-        {"long_only": True, "gross_exposure": 1.0, "long_exposure": 0.8},
-    )
+        topn = build_strategy("topn_long_only", {"top_n": 12})
+        quantile = build_strategy("quantile_long_short", {"quantiles": 4})
+        weighted = build_strategy(
+            "factor_weighted",
+            {"long_only": True, "gross_exposure": 1.0, "long_exposure": 0.8},
+        )
 
-    assert isinstance(topn, TopNLongOnlyStrategy)
-    assert topn.n == 12
-    assert isinstance(quantile, QuantileLongShortStrategy)
-    assert quantile.n_groups == 4
-    assert isinstance(weighted, FactorWeightedStrategy)
-    assert weighted.long_only is True
-    assert weighted.long_exposure == 0.8
+        assert isinstance(topn, TopNLongOnlyStrategy)
+        assert topn.n == 12
+        assert isinstance(quantile, QuantileLongShortStrategy)
+        assert quantile.n_groups == 4
+        assert isinstance(weighted, FactorWeightedStrategy)
+        assert weighted.long_only is True
+        assert weighted.long_exposure == 0.8
 
-    optimizer = build_strategy(
-        "optimizer_strategy",
-        {
-            "optimizer": "mean_variance",
-            "risk_aversion": 2.0,
-            "lookback_days": 40,
-            "cov_estimator": "ledoit_wolf",
-            "long_only": True,
-            "top_n": 80,
-            "max_weight": 0.08,
-            "gross_exposure": 1.0,
-            "net_exposure": 1.0,
-        },
-    )
+        optimizer = build_strategy(
+            "optimizer_strategy",
+            {
+                "optimizer": "mean_variance",
+                "risk_aversion": 2.0,
+                "lookback_days": 40,
+                "cov_estimator": "ledoit_wolf",
+                "long_only": True,
+                "top_n": 80,
+                "max_weight": 0.08,
+                "gross_exposure": 1.0,
+                "net_exposure": 1.0,
+            },
+        )
 
-    assert isinstance(optimizer, OptimizerStrategy)
-    assert optimizer.lookback_days == 40
-    assert optimizer.cov_estimator == "ledoit_wolf"
-    assert optimizer.long_only is True
-    assert optimizer.top_n == 80
-    assert optimizer.constraints.max_weight == 0.08
+        assert isinstance(optimizer, OptimizerStrategy)
+        assert optimizer.lookback_days == 40
+        assert optimizer.cov_estimator == "ledoit_wolf"
+        assert optimizer.long_only is True
+        assert optimizer.top_n == 80
+        assert optimizer.constraints.max_weight == 0.08
+
+    _section_0_test_builtin_strategy_registry_builds_supported_strategies()
+
+    # -- 原 test_strategy_registry_imports_custom_strategy_from_dotted_path --
+    def _section_1_test_strategy_registry_imports_custom_strategy_from_dotted_path(tmp_path, monkeypatch):
+        module_path = tmp_path / "custom_strategy.py"
+        module_path.write_text(
+            dedent(
+                """
+                import polars as pl
+
+                from factorzen.daily.evaluation.backtest import Strategy
 
 
-def test_strategy_registry_imports_custom_strategy_from_dotted_path(tmp_path, monkeypatch):
-    module_path = tmp_path / "custom_strategy.py"
-    module_path.write_text(
-        dedent(
-            """
-            import polars as pl
+                class CustomStrategy(Strategy):
+                    name = "custom"
 
-            from factorzen.daily.evaluation.backtest import Strategy
+                    def __init__(self, multiplier: int) -> None:
+                        self.multiplier = multiplier
 
+                    @classmethod
+                    def from_config(cls, config):
+                        return cls(multiplier=config["multiplier"])
 
-            class CustomStrategy(Strategy):
-                name = "custom"
+                    def generate_weights(self, context):
+                        return pl.DataFrame(
+                            {"ts_code": [], "target_weight": []},
+                            schema={"ts_code": pl.Utf8, "target_weight": pl.Float64},
+                        )
+                """
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        sys.modules.pop("custom_strategy", None)
 
-                def __init__(self, multiplier: int) -> None:
-                    self.multiplier = multiplier
+        from factorzen.daily.evaluation.strategy_registry import build_strategy
 
-                @classmethod
-                def from_config(cls, config):
-                    return cls(multiplier=config["multiplier"])
+        strategy = build_strategy("custom_strategy.CustomStrategy", {"multiplier": 3})
 
-                def generate_weights(self, context):
-                    return pl.DataFrame(
-                        {"ts_code": [], "target_weight": []},
-                        schema={"ts_code": pl.Utf8, "target_weight": pl.Float64},
-                    )
-            """
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("custom_strategy", None)
+        assert strategy.name == "custom"
+        assert strategy.multiplier == 3
 
-    from factorzen.daily.evaluation.strategy_registry import build_strategy
+    monkeypatch.undo()
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_strategy_registry_imports_custom_strategy_from_dotted_path(_tp1, monkeypatch)
 
-    strategy = build_strategy("custom_strategy.CustomStrategy", {"multiplier": 3})
-
-    assert strategy.name == "custom"
-    assert strategy.multiplier == 3
 
 # ==== 来自 test_walk_forward_strategy.py ====
 # ── 测试夹具 ─────────────────────────────────────────────────────────────────
@@ -163,8 +174,9 @@ def price_df(factor_df: pl.DataFrame) -> pl.DataFrame:
 
 
 class TestWalkForwardSplitter:
-    def test_n_splits_formula(self):
-        """n_splits(total_days) 应与 split(dates) 实际返回折数一致。"""
+    def test_walk_forward_splitter_suite(self):
+        """n_splits(total_days) 应与 split(dates) 实际返回折数一致。；每折历史观察期末尾索引 + embargo_days <= 未来验证期首索引。；总日数不足时返回空列表，不崩溃。；展开窗口：每折历史观察期从 dates[0] 开始。"""
+        # -- 原 test_n_splits_formula --
         splitter = WalkForwardSplitter(
             train_days=100, test_days=30, step_days=30, embargo_days=5
         )
@@ -176,8 +188,7 @@ class TestWalkForwardSplitter:
             f"n_splits({total_days})={estimated} 与 split 实际折数={actual} 不一致"
         )
 
-    def test_embargo_prevents_leakage(self):
-        """每折历史观察期末尾索引 + embargo_days <= 未来验证期首索引。"""
+        # -- 原 test_embargo_prevents_leakage --
         splitter = WalkForwardSplitter(
             train_days=100, test_days=30, step_days=30, embargo_days=5
         )
@@ -196,8 +207,7 @@ class TestWalkForwardSplitter:
                 f"test_start_idx={test_start_idx}"
             )
 
-    def test_empty_when_too_short(self):
-        """总日数不足时返回空列表，不崩溃。"""
+        # -- 原 test_empty_when_too_short --
         splitter = WalkForwardSplitter(
             train_days=200, test_days=50, step_days=50, embargo_days=10
         )
@@ -206,8 +216,7 @@ class TestWalkForwardSplitter:
         result = splitter.split(dates)
         assert result == []
 
-    def test_train_always_from_zero(self):
-        """展开窗口：每折历史观察期从 dates[0] 开始。"""
+        # -- 原 test_train_always_from_zero --
         splitter = WalkForwardSplitter(
             train_days=80, test_days=20, step_days=20, embargo_days=5
         )
@@ -255,7 +264,6 @@ class TestRunWalkForward:
             first_ret = result.oos_returns.sort("trade_date")["net_return"][0]
             expected = 1.0 * (1.0 + first_ret)
             assert abs(float(first_nav) - float(expected)) < 1e-9
-
 
 
 def _wf_strategy_factory(params: dict) -> object:
@@ -348,8 +356,9 @@ def test_run_walk_forward_search_passes_is_st_by_date_to_all_backtest_calls(
 
 # ==== 来自 test_walk_forward.py ====
 class TestWalkForwardIC:
-    def test_returns_list_of_dicts(self):
-        """返回值应为 list of dict，每个 dict 含 fold / train_ic / test_ic。"""
+    def test_walk_forward_ic_suite(self):
+        """返回值应为 list of dict，每个 dict 含 fold / train_ic / test_ic。；足够长的序列应返回至少 2 个、至多 n_folds 个结果（末折可能因数据不足跳过）。；每折的 train_ic 基于越来越长的历史（expanding window），fold 编号递增。；样本过少时返回空列表，不崩溃。"""
+        # -- 原 test_returns_list_of_dicts --
         ic = np.random.default_rng(0).normal(0.03, 0.08, 200)
         result = _compute_walk_forward_ic(ic, n_folds=5, embargo=5)
         assert isinstance(result, list)
@@ -359,24 +368,22 @@ class TestWalkForwardIC:
             assert "train_ic" in item
             assert "test_ic" in item
 
-    def test_fold_count(self):
-        """足够长的序列应返回至少 2 个、至多 n_folds 个结果（末折可能因数据不足跳过）。"""
+        # -- 原 test_fold_count --
         ic = np.random.default_rng(1).normal(0.02, 0.07, 300)
         result = _compute_walk_forward_ic(ic, n_folds=5, embargo=5)
         assert 2 <= len(result) <= 5
 
-    def test_train_set_grows_over_folds(self):
-        """每折的 train_ic 基于越来越长的历史（expanding window），fold 编号递增。"""
+        # -- 原 test_train_set_grows_over_folds --
         ic = np.random.default_rng(2).normal(0.03, 0.08, 250)
         result = _compute_walk_forward_ic(ic, n_folds=5, embargo=5)
         folds = [r["fold"] for r in result]
         assert folds == sorted(folds), "fold 编号应递增"
 
-    def test_too_short_returns_empty(self):
-        """样本过少时返回空列表，不崩溃。"""
+        # -- 原 test_too_short_returns_empty --
         ic = np.array([0.03, 0.02, 0.05])
         result = _compute_walk_forward_ic(ic, n_folds=5, embargo=5)
         assert result == []
+
 
     def test_embargo_prevents_leakage(self):
         """embargo > 0 时，test 序列开头与 train 末尾之间有间隔。"""
@@ -445,55 +452,57 @@ def _make_fixtures(
 # ──────────────────────────────────────────────────────────
 
 
-
-
 # ──────────────────────────────────────────────────────────
 # 高阈值 → 换手率应降低（几乎不调仓）
 # ──────────────────────────────────────────────────────────
 
 
-def test_high_threshold_reduces_turnover():
-    """rebalance_threshold 很大时，几乎每期都跳过调仓，换手率应显著低于无阈值。"""
-    factor_df, price_df = _make_fixtures()
-    strategy = TopNLongOnlyStrategy(n=5)
+def test_rebalance_threshold_suite():
+    """rebalance_threshold 很大时，几乎每期都跳过调仓，换手率应显著低于无阈值。；rebalance_threshold=0 时，每期换手率 > 0 → 永不跳过，结果应与 None 完全相同。"""
+    # -- 原 test_high_threshold_reduces_turnover --
+    def _section_0_test_high_threshold_reduces_turnover():
+        factor_df, price_df = _make_fixtures()
+        strategy = TopNLongOnlyStrategy(n=5)
 
-    cfg_no_threshold = BacktestConfig(
-        rebalance_threshold=None,
-        max_participation_rate=1.0,
-    )
-    cfg_high_threshold = BacktestConfig(
-        rebalance_threshold=100.0,  # 极大阈值，几乎永远不触发调仓
-        max_participation_rate=1.0,
-    )
+        cfg_no_threshold = BacktestConfig(
+            rebalance_threshold=None,
+            max_participation_rate=1.0,
+        )
+        cfg_high_threshold = BacktestConfig(
+            rebalance_threshold=100.0,  # 极大阈值，几乎永远不触发调仓
+            max_participation_rate=1.0,
+        )
 
-    result_no = run_strategy_backtest(strategy, factor_df, price_df, cfg_no_threshold)
-    result_high = run_strategy_backtest(strategy, factor_df, price_df, cfg_high_threshold)
+        result_no = run_strategy_backtest(strategy, factor_df, price_df, cfg_no_threshold)
+        result_high = run_strategy_backtest(strategy, factor_df, price_df, cfg_high_threshold)
 
-    turnover_no = result_no.summary_stats["portfolio"]["avg_turnover"]
-    turnover_high = result_high.summary_stats["portfolio"]["avg_turnover"]
+        turnover_no = result_no.summary_stats["portfolio"]["avg_turnover"]
+        turnover_high = result_high.summary_stats["portfolio"]["avg_turnover"]
 
-    assert turnover_high <= turnover_no + 1e-6, (
-        f"高阈值换手率 {turnover_high:.4f} 应 ≤ 无阈值换手率 {turnover_no:.4f}"
-    )
+        assert turnover_high <= turnover_no + 1e-6, (
+            f"高阈值换手率 {turnover_high:.4f} 应 ≤ 无阈值换手率 {turnover_no:.4f}"
+        )
 
+    _section_0_test_high_threshold_reduces_turnover()
 
-def test_zero_threshold_matches_no_threshold():
-    """rebalance_threshold=0 时，每期换手率 > 0 → 永不跳过，结果应与 None 完全相同。"""
-    factor_df, price_df = _make_fixtures()
-    strategy = TopNLongOnlyStrategy(n=5)
+    # -- 原 test_zero_threshold_matches_no_threshold --
+    def _section_1_test_zero_threshold_matches_no_threshold():
+        factor_df, price_df = _make_fixtures()
+        strategy = TopNLongOnlyStrategy(n=5)
 
-    cfg_none = BacktestConfig(rebalance_threshold=None, max_participation_rate=1.0)
-    cfg_zero = BacktestConfig(rebalance_threshold=0.0, max_participation_rate=1.0)
+        cfg_none = BacktestConfig(rebalance_threshold=None, max_participation_rate=1.0)
+        cfg_zero = BacktestConfig(rebalance_threshold=0.0, max_participation_rate=1.0)
 
-    result_none = run_strategy_backtest(strategy, factor_df, price_df, cfg_none)
-    result_zero = run_strategy_backtest(strategy, factor_df, price_df, cfg_zero)
+        result_none = run_strategy_backtest(strategy, factor_df, price_df, cfg_none)
+        result_zero = run_strategy_backtest(strategy, factor_df, price_df, cfg_zero)
 
-    nav_none = result_none.nav["nav"].to_list()
-    nav_zero = result_zero.nav["nav"].to_list()
+        nav_none = result_none.nav["nav"].to_list()
+        nav_zero = result_zero.nav["nav"].to_list()
 
-    assert len(nav_none) == len(nav_zero)
-    for a, b in zip(nav_none, nav_zero, strict=True):
-        assert abs(a - b) < 1e-10, f"threshold=0 与 threshold=None 结果应一致: {a} vs {b}"
+        assert len(nav_none) == len(nav_zero)
+        for a, b in zip(nav_none, nav_zero, strict=True):
+            assert abs(a - b) < 1e-10, f"threshold=0 与 threshold=None 结果应一致: {a} vs {b}"
 
+    _section_1_test_zero_threshold_matches_no_threshold()
 
 

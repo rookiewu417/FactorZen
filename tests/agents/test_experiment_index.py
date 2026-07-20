@@ -39,101 +39,119 @@ def _rec__index_contract(expr: str, *, passed: bool, verdict: str | None = "keep
 # ── F4：known_valid 必须按 |holdout_ic| 排序 ────────────────────────────────
 
 
-def test_known_valid_ranks_by_abs_holdout_ic_so_reversal_factors_survive(tmp_path):
-    """护栏明确接纳负 IC 反转因子（`guardrail_passed` 的 same_sign + ci_high<0 分支）。
+def test_known_valid_rank_suite(tmp_path):
+    """护栏明确接纳负 IC 反转因子（`guardrail_passed` 的 same_sign + ci_high<0 分支）。；回归：known_invalid 一直用 abs()，本次不动。"""
+    # -- 原 test_known_valid_ranks_by_abs_holdout_ic_so_reversal_factors_survive --
+    def _section_0_test_known_valid_ranks_by_abs_holdout_ic_so_reversal_factors_survive(tmp_path):
+        idx = _idx(tmp_path)
+        idx.append([
+            _rec__index_contract("reversal", passed=True, holdout_ic=-0.09),      # |IC| 最大，方向为负
+            *[_rec__index_contract(f"weak_long_{i}", passed=True, holdout_ic=0.01 + 0.01 * i) for i in range(5)],
+        ])
 
-    带符号降序会把**最强的反转因子**（holdout_ic=-0.09，|IC| 最大）排到最后，
-    top-k 截断时被弱多头挤出「已验证有效，可借鉴其思路方向」清单——系统性把 LLM
-    的借鉴方向偏离反转因子族。
-    """
-    idx = _idx(tmp_path)
-    idx.append([
-        _rec__index_contract("reversal", passed=True, holdout_ic=-0.09),      # |IC| 最大，方向为负
-        *[_rec__index_contract(f"weak_long_{i}", passed=True, holdout_ic=0.01 + 0.01 * i) for i in range(5)],
-    ])
+        valid = idx.known_valid(k=5)
 
-    valid = idx.known_valid(k=5)
+        assert "reversal" in valid, f"最强的反转因子被挤出 known_valid: {valid}"
+        assert valid[0] == "reversal", "按 |holdout_ic| 排序时反转因子应排第一"
 
-    assert "reversal" in valid, f"最强的反转因子被挤出 known_valid: {valid}"
-    assert valid[0] == "reversal", "按 |holdout_ic| 排序时反转因子应排第一"
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_known_valid_ranks_by_abs_holdout_ic_so_reversal_factors_survive(_tp0)
 
+    # -- 原 test_known_invalid_still_ranks_by_abs_ic_train --
+    def _section_1_test_known_invalid_still_ranks_by_abs_ic_train(tmp_path):
+        idx = _idx(tmp_path)
+        idx.append([
+            _rec__index_contract("useless", passed=False, ic_train=0.001),
+            _rec__index_contract("strong_neg", passed=False, ic_train=-0.08),
+        ])
+        assert idx.known_invalid(k=1) == ["useless"], "最没用的（|IC| 最小）优先"
 
-def test_known_invalid_still_ranks_by_abs_ic_train(tmp_path):
-    """回归：known_invalid 一直用 abs()，本次不动。"""
-    idx = _idx(tmp_path)
-    idx.append([
-        _rec__index_contract("useless", passed=False, ic_train=0.001),
-        _rec__index_contract("strong_neg", passed=False, ic_train=-0.08),
-    ])
-    assert idx.known_invalid(k=1) == ["useless"], "最没用的（|IC| 最小）优先"
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_known_invalid_still_ranks_by_abs_ic_train(_tp1)
 
 
 # ── passed_guardrails 是事实，不是决策 ──────────────────────────────────────
 
 
-def test_decorrelated_factor_is_passed_but_not_reusable(tmp_path):
-    """去相关剔除的因子**确实过了定量护栏**，只是与已有候选高度相关、不入候选池。
+def test_passed_fact_vs_reusable_suite(tmp_path):
+    """去相关剔除的因子**确实过了定量护栏**，只是与已有候选高度相关、不入候选池。；Critic 说「方向要换」，却同时以 passed=True 进 known_valid 当「已验证有效可借鉴」；commit 1e0bda4 靠 mutate passed_guardrails=False 来实现；现在改由 verdict 判定，；`revise_expr` = 方向对、表达式需改 → 思路仍值得借鉴，保留在 known_valid。；P0：前视因子（负窗口）即便历史误记 passed，也绝不进 known_valid/known_invalid 喂回 LLM；老 index 没有 decorrelated 字段；缺失应视为 False，不得让整条记录消失。"""
+    # -- 原 test_decorrelated_factor_is_passed_but_not_reusable --
+    def _section_0_test_decorrelated_factor_is_passed_but_not_reusable(tmp_path):
+        idx = _idx(tmp_path)
+        idx.append([_rec__index_contract("decorr", passed=True, verdict="keep",
+                         holdout_ic=0.06, decorrelated=True)])
 
-    把它标成 `passed=False` 会让它落进 `known_invalid`，被当作「已验证无效」喂给 LLM
-    ——语义污染，比 Critic drop 更隐蔽（drop 至少是显式判定）。
-    """
-    idx = _idx(tmp_path)
-    idx.append([_rec__index_contract("decorr", passed=True, verdict="keep",
-                     holdout_ic=0.06, decorrelated=True)])
+        assert "decorr" not in idx.known_valid(k=5), "与已有候选重复，不该被借鉴"
+        assert "decorr" not in idx.known_invalid(k=5), "它过了护栏，不是无效因子"
 
-    assert "decorr" not in idx.known_valid(k=5), "与已有候选重复，不该被借鉴"
-    assert "decorr" not in idx.known_invalid(k=5), "它过了护栏，不是无效因子"
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_decorrelated_factor_is_passed_but_not_reusable(_tp0)
 
+    # -- 原 test_revise_hypothesis_candidate_is_passed_but_not_reusable --
+    def _section_1_test_revise_hypothesis_candidate_is_passed_but_not_reusable(tmp_path):
+        idx = _idx(tmp_path)
+        idx.append([_rec__index_contract("wrong_dir", passed=True, verdict="revise_hypothesis", holdout_ic=0.07)])
 
-def test_revise_hypothesis_candidate_is_passed_but_not_reusable(tmp_path):
-    """Critic 说「方向要换」，却同时以 passed=True 进 known_valid 当「已验证有效可借鉴」
-    ——与同时喂进 feedback 的「换方向」自相矛盾。"""
-    idx = _idx(tmp_path)
-    idx.append([_rec__index_contract("wrong_dir", passed=True, verdict="revise_hypothesis", holdout_ic=0.07)])
+        assert "wrong_dir" not in idx.known_valid(k=5)
+        assert "wrong_dir" not in idx.known_invalid(k=5), "它过了护栏，不是无效因子"
 
-    assert "wrong_dir" not in idx.known_valid(k=5)
-    assert "wrong_dir" not in idx.known_invalid(k=5), "它过了护栏，不是无效因子"
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_revise_hypothesis_candidate_is_passed_but_not_reusable(_tp1)
 
+    # -- 原 test_dropped_candidate_is_passed_but_not_reusable --
+    def _section_2_test_dropped_candidate_is_passed_but_not_reusable(tmp_path):
+        idx = _idx(tmp_path)
+        idx.append([_rec__index_contract("dropped", passed=True, verdict="drop", holdout_ic=0.08)])
 
-def test_dropped_candidate_is_passed_but_not_reusable(tmp_path):
-    """commit 1e0bda4 靠 mutate passed_guardrails=False 来实现；现在改由 verdict 判定，
-    `passed` 保持它的事实值。否决回路的语义不变（drop 的因子不会被借鉴）。"""
-    idx = _idx(tmp_path)
-    idx.append([_rec__index_contract("dropped", passed=True, verdict="drop", holdout_ic=0.08)])
+        assert "dropped" not in idx.known_valid(k=5), "被 Critic drop 的因子不得进 known_valid"
+        assert "dropped" not in idx.known_invalid(k=5), "它过了护栏，不是无效因子"
 
-    assert "dropped" not in idx.known_valid(k=5), "被 Critic drop 的因子不得进 known_valid"
-    assert "dropped" not in idx.known_invalid(k=5), "它过了护栏，不是无效因子"
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_dropped_candidate_is_passed_but_not_reusable(_tp2)
 
+    # -- 原 test_revise_expr_candidate_stays_reusable --
+    def _section_3_test_revise_expr_candidate_stays_reusable(tmp_path):
+        idx = _idx(tmp_path)
+        idx.append([_rec__index_contract("right_dir", passed=True, verdict="revise_expr", holdout_ic=0.07)])
+        assert "right_dir" in idx.known_valid(k=5)
 
-def test_revise_expr_candidate_stays_reusable(tmp_path):
-    """`revise_expr` = 方向对、表达式需改 → 思路仍值得借鉴，保留在 known_valid。"""
-    idx = _idx(tmp_path)
-    idx.append([_rec__index_contract("right_dir", passed=True, verdict="revise_expr", holdout_ic=0.07)])
-    assert "right_dir" in idx.known_valid(k=5)
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_revise_expr_candidate_stays_reusable(_tp3)
 
+    # -- 原 test_lookahead_factor_never_fed_back_to_llm --
+    def _section_4_test_lookahead_factor_never_fed_back_to_llm(tmp_path):
+        idx = _idx(tmp_path)
+        idx.append([
+            _rec__index_contract("ts_sum(delay(ret_1d, -1), 60)", passed=True, holdout_ic=0.09),   # 前视，原库 #1
+            _rec__index_contract("neg(ret_1d)", passed=True, holdout_ic=0.04),                      # 干净，应保留
+            _rec__index_contract("delta(close, -5)", passed=False, ic_train=0.02),                  # 前视且未过护栏
+        ])
+        valid = idx.known_valid(k=5)
+        invalid = idx.known_invalid(k=5)
+        assert not any(is_lookahead_expr(e) for e in valid), f"known_valid 混入前视: {valid}"
+        assert not any(is_lookahead_expr(e) for e in invalid), f"known_invalid 混入前视: {invalid}"
+        assert "neg(ret_1d)" in valid, "干净因子仍应可借鉴"
 
-def test_lookahead_factor_never_fed_back_to_llm(tmp_path):
-    """P0：前视因子（负窗口）即便历史误记 passed，也绝不进 known_valid/known_invalid 喂回 LLM
-    ——否则引导 LLM 继续生成前视。parse 层根治新生成，这里堵历史产物回灌口子。干净同伴不受影响。"""
-    idx = _idx(tmp_path)
-    idx.append([
-        _rec__index_contract("ts_sum(delay(ret_1d, -1), 60)", passed=True, holdout_ic=0.09),   # 前视，原库 #1
-        _rec__index_contract("neg(ret_1d)", passed=True, holdout_ic=0.04),                      # 干净，应保留
-        _rec__index_contract("delta(close, -5)", passed=False, ic_train=0.02),                  # 前视且未过护栏
-    ])
-    valid = idx.known_valid(k=5)
-    invalid = idx.known_invalid(k=5)
-    assert not any(is_lookahead_expr(e) for e in valid), f"known_valid 混入前视: {valid}"
-    assert not any(is_lookahead_expr(e) for e in invalid), f"known_invalid 混入前视: {invalid}"
-    assert "neg(ret_1d)" in valid, "干净因子仍应可借鉴"
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_lookahead_factor_never_fed_back_to_llm(_tp4)
 
+    # -- 原 test_legacy_records_without_new_fields_still_readable --
+    def _section_5_test_legacy_records_without_new_fields_still_readable(tmp_path):
+        idx = _idx(tmp_path)
+        idx.append([{"expression": "old", "passed": True, "verdict": "keep",
+                     "holdout_ic": 0.05, "ic_train": 0.03, "run_id": "t"}])
+        assert "old" in idx.known_valid(k=5)
 
-def test_legacy_records_without_new_fields_still_readable(tmp_path):
-    """老 index 没有 decorrelated 字段；缺失应视为 False，不得让整条记录消失。"""
-    idx = _idx(tmp_path)
-    idx.append([{"expression": "old", "passed": True, "verdict": "keep",
-                 "holdout_ic": 0.05, "ic_train": 0.03, "run_id": "t"}])
-    assert "old" in idx.known_valid(k=5)
+    _tp5 = tmp_path / "_s5"
+    _tp5.mkdir(exist_ok=True)
+    _section_5_test_legacy_records_without_new_fields_still_readable(_tp5)
 
 
 # ── 契约不变量：事实字段不可被决策 mutate ────────────────────────────────────
@@ -275,13 +293,6 @@ def test_concurrent_process_appends_no_corruption(tmp_path):
     assert len(ExperimentIndex(path).load()) == n_proc * _PER_PROC
 
 
-def test_append_empty_is_noop(tmp_path):
-    from factorzen.agents.experiment_index import ExperimentIndex
-    path = tmp_path / "idx.jsonl"
-    idx = ExperimentIndex(str(path))
-    idx.append([])
-    assert not path.exists() or path.read_text() == ""
-
 # ==== 来自 test_index_last_wins.py ====
 def _rec__last_wins(expr: str, *, passed: bool, ic: float, holdout: float | None = None,
          verdict: str | None = None, decorrelated: bool = False) -> dict:
@@ -298,86 +309,107 @@ def _write(path, records):
     path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
 
 
-def test_later_record_overrides_earlier_for_same_expression(tmp_path):
-    """收尾降级：先写 passed=True，后写 passed=False → 不得再出现在 known_valid。"""
-    p = tmp_path / "idx.jsonl"
-    _write(p, [
-        _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.05),   # 早轮结论
-        _rec__last_wins("rank(neg(pb))", passed=False, ic=0.02, holdout=0.05),  # 收尾复核后的更正
-    ])
-    index = ExperimentIndex(str(p))
+def test_last_wins_override_suite(tmp_path):
+    """收尾降级：先写 passed=True，后写 passed=False → 不得再出现在 known_valid。；反向断言：后写 passed=True 也必须覆盖先写的 False，否则「后写覆盖」是假的。；覆盖判定按**归一化**表达式，而非裸字符串——否则空格差异就能绕过。；判别力：别把「后写覆盖」实现成「只留最后一条记录」。；不同数据窗口的同名表达式互不覆盖——族边界优先于时间顺序。；去重不该让「见过的表达式」漏掉任何一个。"""
+    # -- 原 test_later_record_overrides_earlier_for_same_expression --
+    def _section_0_test_later_record_overrides_earlier_for_same_expression(tmp_path):
+        p = tmp_path / "idx.jsonl"
+        _write(p, [
+            _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.05),   # 早轮结论
+            _rec__last_wins("rank(neg(pb))", passed=False, ic=0.02, holdout=0.05),  # 收尾复核后的更正
+        ])
+        index = ExperimentIndex(str(p))
 
-    assert index.known_valid(data_window=_WINDOW) == [], "被降级的因子不该还算「已验证有效」"
-    assert "rank(neg(pb))" in index.known_invalid(data_window=_WINDOW)
+        assert index.known_valid(data_window=_WINDOW) == [], "被降级的因子不该还算「已验证有效」"
+        assert "rank(neg(pb))" in index.known_invalid(data_window=_WINDOW)
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_later_record_overrides_earlier_for_same_expression(_tp0)
 
-def test_override_works_in_the_other_direction_too(tmp_path):
-    """反向断言：后写 passed=True 也必须覆盖先写的 False，否则「后写覆盖」是假的。"""
-    p = tmp_path / "idx.jsonl"
-    _write(p, [
-        _rec__last_wins("rank(neg(pb))", passed=False, ic=0.02, holdout=0.05),
-        _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.05),
-    ])
-    index = ExperimentIndex(str(p))
+    # -- 原 test_override_works_in_the_other_direction_too --
+    def _section_1_test_override_works_in_the_other_direction_too(tmp_path):
+        p = tmp_path / "idx.jsonl"
+        _write(p, [
+            _rec__last_wins("rank(neg(pb))", passed=False, ic=0.02, holdout=0.05),
+            _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.05),
+        ])
+        index = ExperimentIndex(str(p))
 
-    assert index.known_valid(data_window=_WINDOW) == ["rank(neg(pb))"]
-    assert index.known_invalid(data_window=_WINDOW) == []
+        assert index.known_valid(data_window=_WINDOW) == ["rank(neg(pb))"]
+        assert index.known_invalid(data_window=_WINDOW) == []
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_override_works_in_the_other_direction_too(_tp1)
 
-def test_override_matches_on_normalized_expression(tmp_path):
-    """覆盖判定按**归一化**表达式，而非裸字符串——否则空格差异就能绕过。"""
-    p = tmp_path / "idx.jsonl"
-    _write(p, [
-        _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.05),
-        _rec__last_wins("rank( neg( pb ) )", passed=False, ic=0.02, holdout=0.05),
-    ])
-    index = ExperimentIndex(str(p))
+    # -- 原 test_override_matches_on_normalized_expression --
+    def _section_2_test_override_matches_on_normalized_expression(tmp_path):
+        p = tmp_path / "idx.jsonl"
+        _write(p, [
+            _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.05),
+            _rec__last_wins("rank( neg( pb ) )", passed=False, ic=0.02, holdout=0.05),
+        ])
+        index = ExperimentIndex(str(p))
 
-    assert index.known_valid(data_window=_WINDOW) == []
+        assert index.known_valid(data_window=_WINDOW) == []
 
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_override_matches_on_normalized_expression(_tp2)
 
-def test_distinct_expressions_are_not_collapsed(tmp_path):
-    """判别力：别把「后写覆盖」实现成「只留最后一条记录」。"""
-    p = tmp_path / "idx.jsonl"
-    _write(p, [
-        _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.09),
-        _rec__last_wins("rank(neg(pe_ttm))", passed=True, ic=0.03, holdout=0.05),
-    ])
-    index = ExperimentIndex(str(p))
+    # -- 原 test_distinct_expressions_are_not_collapsed --
+    def _section_3_test_distinct_expressions_are_not_collapsed(tmp_path):
+        p = tmp_path / "idx.jsonl"
+        _write(p, [
+            _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.09),
+            _rec__last_wins("rank(neg(pe_ttm))", passed=True, ic=0.03, holdout=0.05),
+        ])
+        index = ExperimentIndex(str(p))
 
-    assert sorted(index.known_valid(data_window=_WINDOW)) == [
-        "rank(neg(pb))", "rank(neg(pe_ttm))"
-    ]
+        assert sorted(index.known_valid(data_window=_WINDOW)) == [
+            "rank(neg(pb))", "rank(neg(pe_ttm))"
+        ]
 
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_distinct_expressions_are_not_collapsed(_tp3)
 
-def test_override_is_scoped_per_data_window(tmp_path):
-    """不同数据窗口的同名表达式互不覆盖——族边界优先于时间顺序。"""
-    p = tmp_path / "idx.jsonl"
-    other = dict(_WINDOW, end="20241231")
-    r_old = _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.05)
-    r_new = _rec__last_wins("rank(neg(pb))", passed=False, ic=0.02, holdout=0.05)
-    r_new["data_window"] = other
-    _write(p, [r_old, r_new])
-    index = ExperimentIndex(str(p))
+    # -- 原 test_override_is_scoped_per_data_window --
+    def _section_4_test_override_is_scoped_per_data_window(tmp_path):
+        p = tmp_path / "idx.jsonl"
+        other = dict(_WINDOW, end="20241231")
+        r_old = _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02, holdout=0.05)
+        r_new = _rec__last_wins("rank(neg(pb))", passed=False, ic=0.02, holdout=0.05)
+        r_new["data_window"] = other
+        _write(p, [r_old, r_new])
+        index = ExperimentIndex(str(p))
 
-    assert index.known_valid(data_window=_WINDOW) == ["rank(neg(pb))"], \
-        "另一个窗口的 False 不该影响本窗口"
-    assert index.known_valid(data_window=other) == []
+        assert index.known_valid(data_window=_WINDOW) == ["rank(neg(pb))"], \
+            "另一个窗口的 False 不该影响本窗口"
+        assert index.known_valid(data_window=other) == []
 
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_override_is_scoped_per_data_window(_tp4)
 
-def test_seen_expressions_unaffected_by_dedup(tmp_path):
-    """去重不该让「见过的表达式」漏掉任何一个。"""
-    p = tmp_path / "idx.jsonl"
-    _write(p, [
-        _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02),
-        _rec__last_wins("rank(neg(pb))", passed=False, ic=0.02),
-        _rec__last_wins("rank(neg(pe_ttm))", passed=False, ic=0.01),
-    ])
-    index = ExperimentIndex(str(p))
+    # -- 原 test_seen_expressions_unaffected_by_dedup --
+    def _section_5_test_seen_expressions_unaffected_by_dedup(tmp_path):
+        p = tmp_path / "idx.jsonl"
+        _write(p, [
+            _rec__last_wins("rank(neg(pb))", passed=True, ic=0.02),
+            _rec__last_wins("rank(neg(pb))", passed=False, ic=0.02),
+            _rec__last_wins("rank(neg(pe_ttm))", passed=False, ic=0.01),
+        ])
+        index = ExperimentIndex(str(p))
 
-    assert index.seen_expressions(data_window=_WINDOW) == {
-        "rank(neg(pb))", "rank(neg(pe_ttm))"
-    }
+        assert index.seen_expressions(data_window=_WINDOW) == {
+            "rank(neg(pb))", "rank(neg(pe_ttm))"
+        }
+
+    _tp5 = tmp_path / "_s5"
+    _tp5.mkdir(exist_ok=True)
+    _section_5_test_seen_expressions_unaffected_by_dedup(_tp5)
 
 
 # ── 接线守卫：收尾降级后，team 必须把更正写回 index ──────────────────────
@@ -481,86 +513,114 @@ def _attempt(expr: str, *, ir: float = 0.3, passed: bool = True,
 # ── 前提字段：没有它们，将来永远无法重建历史 IR 池 ────────────────────────────
 
 
-def test_record_persists_ir_train_and_n_train(tmp_path):
-    """DSR 的 deflation 池要的是 **IR**，不是 IC。`record()` 此前只落 `ic_train`。
+def test_window_scoping_suite(tmp_path, caplog):
+    """DSR 的 deflation 池要的是 **IR**，不是 IC。`record()` 此前只落 `ic_train`。；test_record_persists_data_window；一个窗口上「已验证有效」的因子，换个窗口未必成立——不得跨窗口喂给 LLM。；test_seen_and_known_lists_filter_by_window；不传 data_window → 不过滤（向后兼容既有调用方与老 index）。；老记录不知道来自哪个窗口 → 过滤时保守排除，并告警一次（不静默丢数据）。；不过滤时老记录照常可见——排除只发生在显式按窗口查询时。"""
+    # -- 原 test_record_persists_ir_train_and_n_train --
+    def _section_0_test_record_persists_ir_train_and_n_train(tmp_path):
+        idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
+        record(idx, [_attempt("rank(close)", ir=0.42)], run_id="r1", data_window=_W1)
 
-    这两个字段不承诺任何统计立场，只是「将来若要做跨 session N 累积」的前提条件
-    （届时须与 sharpe_variance 同源地并入同一个 DeflationBasis，见 R8）。
-    """
-    idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
-    record(idx, [_attempt("rank(close)", ir=0.42)], run_id="r1", data_window=_W1)
+        r = idx.load()[0]
+        assert r["ir_train"] == 0.42
+        assert r["n_train"] == 300
 
-    r = idx.load()[0]
-    assert r["ir_train"] == 0.42
-    assert r["n_train"] == 300
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_record_persists_ir_train_and_n_train(_tp0)
 
+    # -- 原 test_record_persists_data_window --
+    def _section_1_test_record_persists_data_window(tmp_path):
+        idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
+        record(idx, [_attempt("rank(close)")], run_id="r1", data_window=_W1)
 
-def test_record_persists_data_window(tmp_path):
-    idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
-    record(idx, [_attempt("rank(close)")], run_id="r1", data_window=_W1)
+        assert idx.load()[0]["data_window"] == _W1
 
-    assert idx.load()[0]["data_window"] == _W1
+    caplog.clear()
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_record_persists_data_window(_tp1)
+
+    # -- 原 test_recall_is_scoped_to_the_data_window --
+    def _section_2_test_recall_is_scoped_to_the_data_window(tmp_path):
+        idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
+        record(idx, [_attempt("in_window", ir=0.4)], run_id="r1", data_window=_W1)
+        record(idx, [_attempt("other_window", ir=0.4)], run_id="r2", data_window=_W2)
+
+        rec = recall(idx, k=5, data_window=_W1)
+
+        assert "in_window" in rec.seen
+        assert "other_window" not in rec.seen, "跨窗口的历史不该进本窗口的去重集"
+        assert "other_window" not in rec.known_valid
+
+    caplog.clear()
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_recall_is_scoped_to_the_data_window(_tp2)
+
+    # -- 原 test_seen_and_known_lists_filter_by_window --
+    def _section_3_test_seen_and_known_lists_filter_by_window(tmp_path):
+        idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
+        record(idx, [_attempt("w1_valid", ir=0.4)], run_id="r1", data_window=_W1)
+        record(idx, [_attempt("w2_invalid", ir=0.01, passed=False)], run_id="r2", data_window=_W2)
+
+        assert idx.known_valid(k=5, data_window=_W1) == ["w1_valid"]
+        assert idx.known_valid(k=5, data_window=_W2) == []
+        assert idx.known_invalid(k=5, data_window=_W1) == []
+        assert idx.known_invalid(k=5, data_window=_W2) == ["w2_invalid"]
+
+    caplog.clear()
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_seen_and_known_lists_filter_by_window(_tp3)
+
+    # -- 原 test_no_window_means_no_filtering --
+    def _section_4_test_no_window_means_no_filtering(tmp_path):
+        idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
+        record(idx, [_attempt("a", ir=0.4)], run_id="r1", data_window=_W1)
+        record(idx, [_attempt("b", ir=0.4)], run_id="r2", data_window=_W2)
+
+        assert idx.seen_expressions() == {"a", "b"}
+        assert set(idx.known_valid(k=5)) == {"a", "b"}
+
+    caplog.clear()
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_no_window_means_no_filtering(_tp4)
+
+    # -- 原 test_legacy_records_without_window_are_excluded_when_filtering --
+    def _section_5_test_legacy_records_without_window_are_excluded_when_filtering(tmp_path, caplog):
+        idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
+        idx.append([{"expression": "legacy", "passed": True, "verdict": "keep",
+                     "ic_train": 0.05, "holdout_ic": 0.04, "run_id": "old"}])
+        record(idx, [_attempt("fresh", ir=0.4)], run_id="r1", data_window=_W1)
+
+        with caplog.at_level(logging.WARNING, logger="factorzen.agents.experiment_index"):
+            valid = idx.known_valid(k=5, data_window=_W1)
+
+        assert valid == ["fresh"], "无窗口标记的老记录不得混进本窗口的召回"
+        assert any("data_window" in r.getMessage() for r in caplog.records), \
+            "排除老记录必须告警，不能静默"
+
+    caplog.clear()
+    _tp5 = tmp_path / "_s5"
+    _tp5.mkdir(exist_ok=True)
+    _section_5_test_legacy_records_without_window_are_excluded_when_filtering(_tp5, caplog)
+
+    # -- 原 test_legacy_records_visible_when_not_filtering --
+    def _section_6_test_legacy_records_visible_when_not_filtering(tmp_path):
+        idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
+        idx.append([{"expression": "legacy", "passed": True, "verdict": "keep",
+                     "ic_train": 0.05, "holdout_ic": 0.04, "run_id": "old"}])
+
+        assert idx.known_valid(k=5) == ["legacy"]
+
+    caplog.clear()
+    _tp6 = tmp_path / "_s6"
+    _tp6.mkdir(exist_ok=True)
+    _section_6_test_legacy_records_visible_when_not_filtering(_tp6)
 
 
 # ── 按窗口分族 ──────────────────────────────────────────────────────────────
-
-
-def test_recall_is_scoped_to_the_data_window(tmp_path):
-    """一个窗口上「已验证有效」的因子，换个窗口未必成立——不得跨窗口喂给 LLM。"""
-    idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
-    record(idx, [_attempt("in_window", ir=0.4)], run_id="r1", data_window=_W1)
-    record(idx, [_attempt("other_window", ir=0.4)], run_id="r2", data_window=_W2)
-
-    rec = recall(idx, k=5, data_window=_W1)
-
-    assert "in_window" in rec.seen
-    assert "other_window" not in rec.seen, "跨窗口的历史不该进本窗口的去重集"
-    assert "other_window" not in rec.known_valid
-
-
-def test_seen_and_known_lists_filter_by_window(tmp_path):
-    idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
-    record(idx, [_attempt("w1_valid", ir=0.4)], run_id="r1", data_window=_W1)
-    record(idx, [_attempt("w2_invalid", ir=0.01, passed=False)], run_id="r2", data_window=_W2)
-
-    assert idx.known_valid(k=5, data_window=_W1) == ["w1_valid"]
-    assert idx.known_valid(k=5, data_window=_W2) == []
-    assert idx.known_invalid(k=5, data_window=_W1) == []
-    assert idx.known_invalid(k=5, data_window=_W2) == ["w2_invalid"]
-
-
-def test_no_window_means_no_filtering(tmp_path):
-    """不传 data_window → 不过滤（向后兼容既有调用方与老 index）。"""
-    idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
-    record(idx, [_attempt("a", ir=0.4)], run_id="r1", data_window=_W1)
-    record(idx, [_attempt("b", ir=0.4)], run_id="r2", data_window=_W2)
-
-    assert idx.seen_expressions() == {"a", "b"}
-    assert set(idx.known_valid(k=5)) == {"a", "b"}
-
-
-def test_legacy_records_without_window_are_excluded_when_filtering(tmp_path, caplog):
-    """老记录不知道来自哪个窗口 → 过滤时保守排除，并告警一次（不静默丢数据）。"""
-    idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
-    idx.append([{"expression": "legacy", "passed": True, "verdict": "keep",
-                 "ic_train": 0.05, "holdout_ic": 0.04, "run_id": "old"}])
-    record(idx, [_attempt("fresh", ir=0.4)], run_id="r1", data_window=_W1)
-
-    with caplog.at_level(logging.WARNING, logger="factorzen.agents.experiment_index"):
-        valid = idx.known_valid(k=5, data_window=_W1)
-
-    assert valid == ["fresh"], "无窗口标记的老记录不得混进本窗口的召回"
-    assert any("data_window" in r.getMessage() for r in caplog.records), \
-        "排除老记录必须告警，不能静默"
-
-
-def test_legacy_records_visible_when_not_filtering(tmp_path):
-    """不过滤时老记录照常可见——排除只发生在显式按窗口查询时。"""
-    idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
-    idx.append([{"expression": "legacy", "passed": True, "verdict": "keep",
-                 "ic_train": 0.05, "holdout_ic": 0.04, "run_id": "old"}])
-
-    assert idx.known_valid(k=5) == ["legacy"]
 
 
 # ── 端到端接线：能力实现了不算，team 路径得真的传下去 ────────────────────────
@@ -620,17 +680,40 @@ def _recs():
     ]
 
 
+def test_index_smoke_load_suite(tmp_path):
+    """test_seen_expressions_normalized；test_load_missing_file_empty；test_append_empty_is_noop"""
+    # -- 原 test_seen_expressions_normalized --
+    def _section_0_test_seen_expressions_normalized(tmp_path):
+        idx = ExperimentIndex(str(tmp_path / "exp.jsonl"))
+        idx.append(_recs())
+        seen = idx.seen_expressions()
+        # 归一化形式（带空格）应能匹配无空格原始查询
+        assert "ts_mean(close, 5)" in seen           # 归一化后带空格
+        assert "rank(vol)" in seen
 
-def test_seen_expressions_normalized(tmp_path: Path):
-    idx = ExperimentIndex(str(tmp_path / "exp.jsonl"))
-    idx.append(_recs())
-    seen = idx.seen_expressions()
-    # 归一化形式（带空格）应能匹配无空格原始查询
-    assert "ts_mean(close, 5)" in seen           # 归一化后带空格
-    assert "rank(vol)" in seen
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_seen_expressions_normalized(_tp0)
+
+    # -- 原 test_load_missing_file_empty --
+    def _section_1_test_load_missing_file_empty(tmp_path):
+        idx = ExperimentIndex(str(tmp_path / "nope.jsonl"))
+        assert idx.load() == [] and idx.seen_expressions() == set()
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_load_missing_file_empty(_tp1)
+
+    # -- 原 test_append_empty_is_noop --
+    def _section_2_test_append_empty_is_noop(tmp_path):
+        from factorzen.agents.experiment_index import ExperimentIndex
+        path = tmp_path / "idx.jsonl"
+        idx = ExperimentIndex(str(path))
+        idx.append([])
+        assert not path.exists() or path.read_text() == ""
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_append_empty_is_noop(_tp2)
 
 
-
-def test_load_missing_file_empty(tmp_path: Path):
-    idx = ExperimentIndex(str(tmp_path / "nope.jsonl"))
-    assert idx.load() == [] and idx.seen_expressions() == set()

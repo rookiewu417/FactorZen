@@ -57,50 +57,200 @@ def _write_lib(root: Path, market: str, records: list[dict]) -> None:
 # ── 1. build_library_pool ────────────────────────────────────────────────────
 
 
-def test_build_library_pool_materializes_active_skips_bad_and_correlated(tmp_path):
-    """2 条可物化 active + 1 非法 + 1 correlated(默认不取) → pool 恰含 2 项。"""
-    from factorzen.discovery.factor_library import build_library_pool
+def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
+    """2 条可物化 active + 1 非法 + 1 correlated(默认不取) → pool 恰含 2 项。；test_build_library_pool_missing_file_returns_empty；一条坏记录不得崩整个 pool——异常契约。；与库因子数学等价 → library_correlated，不占候选位。；库相关拒绝后，同批后续正交候选仍可入池（top_k 预算内）。；M1 与 nodes 都必须构建 LibraryCorrPanel 并传给 library_orthogonal_check。"""
+    # -- 原 test_build_library_pool_materializes_active_skips_bad_and_correlated --
+    def _section_0_test_build_library_pool_materializes_active_skips_bad_and_correlated(tmp_path):
+        from factorzen.discovery.factor_library import build_library_pool
 
-    daily = _mk_daily()
-    _write_lib(tmp_path, "ashare", [
-        {"expression": "rank(close)", "market": "ashare", "status": "active",
-         "ic_train": 0.05},
-        {"expression": "rank(vol)", "market": "ashare", "status": "active",
-         "ic_train": 0.03},
-        {"expression": "not_a_real_op(close, 1)", "market": "ashare", "status": "active",
-         "ic_train": 0.09},
-        {"expression": "rank(amount)", "market": "ashare", "status": "correlated",
-         "ic_train": 0.08},
-    ])
-    pool = build_library_pool("ashare", daily, root=str(tmp_path))
-    assert set(pool.keys()) == {"rank(close)", "rank(vol)"}
-    for fdf in pool.values():
-        assert set(fdf.columns) >= {"trade_date", "ts_code", "factor_value"}
-        assert fdf.height > 0
-        assert fdf["factor_value"].null_count() < fdf.height
+        daily = _mk_daily()
+        _write_lib(tmp_path, "ashare", [
+            {"expression": "rank(close)", "market": "ashare", "status": "active",
+             "ic_train": 0.05},
+            {"expression": "rank(vol)", "market": "ashare", "status": "active",
+             "ic_train": 0.03},
+            {"expression": "not_a_real_op(close, 1)", "market": "ashare", "status": "active",
+             "ic_train": 0.09},
+            {"expression": "rank(amount)", "market": "ashare", "status": "correlated",
+             "ic_train": 0.08},
+        ])
+        pool = build_library_pool("ashare", daily, root=str(tmp_path))
+        assert set(pool.keys()) == {"rank(close)", "rank(vol)"}
+        for fdf in pool.values():
+            assert set(fdf.columns) >= {"trade_date", "ts_code", "factor_value"}
+            assert fdf.height > 0
+            assert fdf["factor_value"].null_count() < fdf.height
 
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    _section_0_test_build_library_pool_materializes_active_skips_bad_and_correlated(_tp0)
 
-def test_build_library_pool_missing_file_returns_empty(tmp_path):
-    from factorzen.discovery.factor_library import build_library_pool
+    # -- 原 test_build_library_pool_missing_file_returns_empty --
+    def _section_1_test_build_library_pool_missing_file_returns_empty(tmp_path):
+        from factorzen.discovery.factor_library import build_library_pool
 
-    pool = build_library_pool("ashare", _mk_daily(), root=str(tmp_path / "no_such"))
-    assert pool == {}
+        pool = build_library_pool("ashare", _mk_daily(), root=str(tmp_path / "no_such"))
+        assert pool == {}
 
+    monkeypatch.undo()
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_build_library_pool_missing_file_returns_empty(_tp1)
 
-def test_build_library_pool_bad_record_does_not_crash(tmp_path):
-    """一条坏记录不得崩整个 pool——异常契约。"""
-    from factorzen.discovery.factor_library import build_library_pool
+    # -- 原 test_build_library_pool_bad_record_does_not_crash --
+    def _section_2_test_build_library_pool_bad_record_does_not_crash(tmp_path):
+        from factorzen.discovery.factor_library import build_library_pool
 
-    daily = _mk_daily()
-    _write_lib(tmp_path, "ashare", [
-        {"expression": "((((broken", "market": "ashare", "status": "active",
-         "ic_train": 0.1},
-        {"expression": "rank(close)", "market": "ashare", "status": "active",
-         "ic_train": 0.04},
-    ])
-    pool = build_library_pool("ashare", daily, root=str(tmp_path))
-    assert "rank(close)" in pool
-    assert len(pool) == 1
+        daily = _mk_daily()
+        _write_lib(tmp_path, "ashare", [
+            {"expression": "((((broken", "market": "ashare", "status": "active",
+             "ic_train": 0.1},
+            {"expression": "rank(close)", "market": "ashare", "status": "active",
+             "ic_train": 0.04},
+        ])
+        pool = build_library_pool("ashare", daily, root=str(tmp_path))
+        assert "rank(close)" in pool
+        assert len(pool) == 1
+
+    monkeypatch.undo()
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_build_library_pool_bad_record_does_not_crash(_tp2)
+
+    # -- 原 test_node_guardrails_rejects_library_correlated --
+    def _section_3_test_node_guardrails_rejects_library_correlated(tmp_path, monkeypatch):
+        from factorzen.agents.nodes import node_guardrails
+        from factorzen.agents.state import AgentState
+        from factorzen.discovery.factor_library import build_library_pool
+        from factorzen.discovery.guardrails import REJECT_CATEGORY_LIBRARY_CORRELATED
+        from factorzen.discovery.scoring import DataBundle
+        from factorzen.validation.holdout import HoldoutICResult
+        from factorzen.validation.multiple_testing import TrialLedger
+
+        daily = _mk_daily()
+        bundle = DataBundle.build(daily)
+        _write_lib(tmp_path, "ashare", [
+            {"expression": "rank(close)", "market": "ashare", "status": "active",
+             "ic_train": 0.06},
+        ])
+        lib_pool = build_library_pool("ashare", daily, root=str(tmp_path))
+        assert "rank(close)" in lib_pool
+
+        # holdout 固定过关；session 池为空 → session 去相关不干扰
+        monkeypatch.setattr(
+            "factorzen.validation.holdout.holdout_ic_result",
+            lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
+        )
+
+        # nodes 在函数内 from scoring import——patch 源模块即可在 import 时拿到 wrap
+        seen_panel = {"n": 0, "with_panel": 0}
+        import factorzen.discovery.scoring as scoring_mod
+        _orig = scoring_mod.library_orthogonal_check
+
+        def _wrap(factor_df, lib_pool, *, threshold=0.7, panel=None):
+            seen_panel["n"] += 1
+            if panel is not None:
+                seen_panel["with_panel"] += 1
+            return _orig(factor_df, lib_pool, threshold=threshold, panel=panel)
+
+        monkeypatch.setattr(scoring_mod, "library_orthogonal_check", _wrap)
+
+        state = AgentState(seed=1)
+        _seed_attempt(state, "rank(close)")          # 与库等价 → 应拒
+        _seed_attempt(state, "rank(vol)", ic=0.04)   # 与库近似正交 → 应入池
+
+        node_guardrails(
+            state, daily=daily, holdout_df=daily, bundle=bundle,
+            ledger=TrialLedger(), top_k=5, lib_pool=lib_pool,
+        )
+
+        rejected = next(a for a in state.attempts if a.expression == "rank(close)")
+        assert rejected.passed_guardrails is True, "过了定量护栏的事实须保留"
+        assert rejected.reject_category == REJECT_CATEGORY_LIBRARY_CORRELATED
+        assert rejected.reject_reason and "与库内因子重复" in rejected.reject_reason
+        assert "rank(close)" not in {c["expression"] for c in state.candidates}
+
+        kept = [c for c in state.candidates if c["expression"] == "rank(vol)"]
+        assert len(kept) == 1
+        assert "max_corr_library" in kept[0]
+        assert kept[0]["max_corr_library"] < 0.7
+        assert seen_panel["n"] >= 1
+        assert seen_panel["with_panel"] == seen_panel["n"], "nodes 须把 LibraryCorrPanel 传入库相关检查"
+
+    monkeypatch.undo()
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_node_guardrails_rejects_library_correlated(_tp3, monkeypatch)
+
+    # -- 原 test_node_guardrails_library_reject_frees_slot_for_orthogonal --
+    def _section_4_test_node_guardrails_library_reject_frees_slot_for_orthogonal(tmp_path, monkeypatch):
+        from factorzen.agents.nodes import node_guardrails
+        from factorzen.agents.state import AgentState
+        from factorzen.discovery.factor_library import build_library_pool
+        from factorzen.discovery.scoring import DataBundle
+        from factorzen.validation.holdout import HoldoutICResult
+        from factorzen.validation.multiple_testing import TrialLedger
+
+        daily = _mk_daily()
+        bundle = DataBundle.build(daily)
+        _write_lib(tmp_path, "ashare", [
+            {"expression": "rank(close)", "market": "ashare", "status": "active",
+             "ic_train": 0.06},
+        ])
+        lib_pool = build_library_pool("ashare", daily, root=str(tmp_path))
+        monkeypatch.setattr(
+            "factorzen.validation.holdout.holdout_ic_result",
+            lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
+        )
+
+        state = AgentState(seed=1)
+        _seed_attempt(state, "rank(close)", ic=0.08)
+        _seed_attempt(state, "rank(vol)", ic=0.04)
+
+        node_guardrails(
+            state, daily=daily, holdout_df=daily, bundle=bundle,
+            ledger=TrialLedger(), top_k=2, lib_pool=lib_pool,
+        )
+        assert [c["expression"] for c in state.candidates] == ["rank(vol)"]
+        assert state.n_library_correlated_rejects >= 1
+
+    monkeypatch.undo()
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_node_guardrails_library_reject_frees_slot_for_orthogonal(_tp4, monkeypatch)
+
+    # -- 原 test_dual_path_wires_library_corr_panel --
+    def _section_5_test_dual_path_wires_library_corr_panel():
+        for rel in ("agents/nodes.py", "discovery/mining_session.py"):
+            src = (_SRC__library_orthogonal_mining / rel).read_text(encoding="utf-8-sig")
+            assert "build_library_corr_panel" in src, f"{rel} 未构建 corr panel"
+            assert "panel=" in src or "panel =" in src, f"{rel} 未把 panel 传给库相关检查"
+            tree = ast.parse(src)
+            called = set()
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Call):
+                    if isinstance(n.func, ast.Name):
+                        called.add(n.func.id)
+                    elif isinstance(n.func, ast.Attribute):
+                        called.add(n.func.attr)
+            assert "build_library_corr_panel" in called, f"{rel} 未调用 build_library_corr_panel"
+            # 至少一次 library_orthogonal_check 带 panel 关键字
+            has_panel_kw = False
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Call):
+                    fname = None
+                    if isinstance(n.func, ast.Name):
+                        fname = n.func.id
+                    elif isinstance(n.func, ast.Attribute):
+                        fname = n.func.attr
+                    if fname == "library_orthogonal_check" and any(
+                        kw.arg == "panel" for kw in n.keywords
+                    ):
+                        has_panel_kw = True
+            assert has_panel_kw, f"{rel} 的 library_orthogonal_check 未传 panel="
+
+    monkeypatch.undo()
+    _section_5_test_dual_path_wires_library_corr_panel()
 
 
 # ── 2. team / node_guardrails 库级去相关 ─────────────────────────────────────
@@ -115,133 +265,7 @@ def _seed_attempt(state, expr: str, *, ic: float = 0.05, ir: float = 0.4, n: int
     ))
 
 
-def test_node_guardrails_rejects_library_correlated(tmp_path, monkeypatch):
-    """与库因子数学等价 → library_correlated，不占候选位。"""
-    from factorzen.agents.nodes import node_guardrails
-    from factorzen.agents.state import AgentState
-    from factorzen.discovery.factor_library import build_library_pool
-    from factorzen.discovery.guardrails import REJECT_CATEGORY_LIBRARY_CORRELATED
-    from factorzen.discovery.scoring import DataBundle
-    from factorzen.validation.holdout import HoldoutICResult
-    from factorzen.validation.multiple_testing import TrialLedger
-
-    daily = _mk_daily()
-    bundle = DataBundle.build(daily)
-    _write_lib(tmp_path, "ashare", [
-        {"expression": "rank(close)", "market": "ashare", "status": "active",
-         "ic_train": 0.06},
-    ])
-    lib_pool = build_library_pool("ashare", daily, root=str(tmp_path))
-    assert "rank(close)" in lib_pool
-
-    # holdout 固定过关；session 池为空 → session 去相关不干扰
-    monkeypatch.setattr(
-        "factorzen.validation.holdout.holdout_ic_result",
-        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
-    )
-
-    # nodes 在函数内 from scoring import——patch 源模块即可在 import 时拿到 wrap
-    seen_panel = {"n": 0, "with_panel": 0}
-    import factorzen.discovery.scoring as scoring_mod
-    _orig = scoring_mod.library_orthogonal_check
-
-    def _wrap(factor_df, lib_pool, *, threshold=0.7, panel=None):
-        seen_panel["n"] += 1
-        if panel is not None:
-            seen_panel["with_panel"] += 1
-        return _orig(factor_df, lib_pool, threshold=threshold, panel=panel)
-
-    monkeypatch.setattr(scoring_mod, "library_orthogonal_check", _wrap)
-
-    state = AgentState(seed=1)
-    _seed_attempt(state, "rank(close)")          # 与库等价 → 应拒
-    _seed_attempt(state, "rank(vol)", ic=0.04)   # 与库近似正交 → 应入池
-
-    node_guardrails(
-        state, daily=daily, holdout_df=daily, bundle=bundle,
-        ledger=TrialLedger(), top_k=5, lib_pool=lib_pool,
-    )
-
-    rejected = next(a for a in state.attempts if a.expression == "rank(close)")
-    assert rejected.passed_guardrails is True, "过了定量护栏的事实须保留"
-    assert rejected.reject_category == REJECT_CATEGORY_LIBRARY_CORRELATED
-    assert rejected.reject_reason and "与库内因子重复" in rejected.reject_reason
-    assert "rank(close)" not in {c["expression"] for c in state.candidates}
-
-    kept = [c for c in state.candidates if c["expression"] == "rank(vol)"]
-    assert len(kept) == 1
-    assert "max_corr_library" in kept[0]
-    assert kept[0]["max_corr_library"] < 0.7
-    assert seen_panel["n"] >= 1
-    assert seen_panel["with_panel"] == seen_panel["n"], "nodes 须把 LibraryCorrPanel 传入库相关检查"
-
-
-def test_node_guardrails_library_reject_frees_slot_for_orthogonal(tmp_path, monkeypatch):
-    """库相关拒绝后，同批后续正交候选仍可入池（top_k 预算内）。"""
-    from factorzen.agents.nodes import node_guardrails
-    from factorzen.agents.state import AgentState
-    from factorzen.discovery.factor_library import build_library_pool
-    from factorzen.discovery.scoring import DataBundle
-    from factorzen.validation.holdout import HoldoutICResult
-    from factorzen.validation.multiple_testing import TrialLedger
-
-    daily = _mk_daily()
-    bundle = DataBundle.build(daily)
-    _write_lib(tmp_path, "ashare", [
-        {"expression": "rank(close)", "market": "ashare", "status": "active",
-         "ic_train": 0.06},
-    ])
-    lib_pool = build_library_pool("ashare", daily, root=str(tmp_path))
-    monkeypatch.setattr(
-        "factorzen.validation.holdout.holdout_ic_result",
-        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
-    )
-
-    state = AgentState(seed=1)
-    _seed_attempt(state, "rank(close)", ic=0.08)
-    _seed_attempt(state, "rank(vol)", ic=0.04)
-
-    node_guardrails(
-        state, daily=daily, holdout_df=daily, bundle=bundle,
-        ledger=TrialLedger(), top_k=2, lib_pool=lib_pool,
-    )
-    assert [c["expression"] for c in state.candidates] == ["rank(vol)"]
-    assert state.n_library_correlated_rejects >= 1
-
-
 # ── 3. M1 / team 架构守卫：共用相关函数 ──────────────────────────────────────
-
-
-
-def test_dual_path_wires_library_corr_panel():
-    """M1 与 nodes 都必须构建 LibraryCorrPanel 并传给 library_orthogonal_check。"""
-    for rel in ("agents/nodes.py", "discovery/mining_session.py"):
-        src = (_SRC__library_orthogonal_mining / rel).read_text(encoding="utf-8-sig")
-        assert "build_library_corr_panel" in src, f"{rel} 未构建 corr panel"
-        assert "panel=" in src or "panel =" in src, f"{rel} 未把 panel 传给库相关检查"
-        tree = ast.parse(src)
-        called = set()
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Call):
-                if isinstance(n.func, ast.Name):
-                    called.add(n.func.id)
-                elif isinstance(n.func, ast.Attribute):
-                    called.add(n.func.attr)
-        assert "build_library_corr_panel" in called, f"{rel} 未调用 build_library_corr_panel"
-        # 至少一次 library_orthogonal_check 带 panel 关键字
-        has_panel_kw = False
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Call):
-                fname = None
-                if isinstance(n.func, ast.Name):
-                    fname = n.func.id
-                elif isinstance(n.func, ast.Attribute):
-                    fname = n.func.attr
-                if fname == "library_orthogonal_check" and any(
-                    kw.arg == "panel" for kw in n.keywords
-                ):
-                    has_panel_kw = True
-        assert has_panel_kw, f"{rel} 的 library_orthogonal_check 未传 panel="
 
 
 def test_m1_greedy_skips_library_correlated(tmp_path, monkeypatch):
@@ -338,114 +362,129 @@ def test_empty_library_pool_zero_regression_m1(tmp_path, monkeypatch):
 # ── 5. prompt 注入 ───────────────────────────────────────────────────────────
 
 
-def test_hypothesis_prompt_injects_library_covered():
-    from factorzen.agents.roles import hypothesis as hyp_mod
+def test_library_prompt_invalid_suite(tmp_path):
+    """test_hypothesis_prompt_injects_library_covered；无 library_covered 时 user prompt 与只传 known 的旧形状一致（无「库内已有」段）。；双路径（hypothesis / build_agent_messages）共用 format_library_covered。；test_known_invalid_excludes_library_correlated；lift_queue（与旧 gray_zone）不得进 known_invalid 负例回灌。；test_cli_no_library_orthogonal_flag"""
+    # -- 原 test_hypothesis_prompt_injects_library_covered --
+    def _section_0_test_hypothesis_prompt_injects_library_covered():
+        from factorzen.agents.roles import hypothesis as hyp_mod
 
-    cap: dict = {}
+        cap: dict = {}
 
-    def fake(msgs):
-        cap["user"] = msgs[1]["content"]
-        return json.dumps({"hypotheses": ["x"]})
+        def fake(msgs):
+            cap["user"] = msgs[1]["content"]
+            return json.dumps({"hypotheses": ["x"]})
 
-    hyp_mod.propose_hypotheses(
-        fake, known_invalid=[], known_valid=[],
-        library_covered=["rank(close)", "ts_mean(vol, 20)"],
-    )
-    user = cap["user"]
-    assert "库内已有" in user
-    assert "rank(close)" in user
-    assert "正交" in user
+        hyp_mod.propose_hypotheses(
+            fake, known_invalid=[], known_valid=[],
+            library_covered=["rank(close)", "ts_mean(vol, 20)"],
+        )
+        user = cap["user"]
+        assert "库内已有" in user
+        assert "rank(close)" in user
+        assert "正交" in user
 
+    _section_0_test_hypothesis_prompt_injects_library_covered()
 
-def test_hypothesis_prompt_no_library_byte_stable():
-    """无 library_covered 时 user prompt 与只传 known 的旧形状一致（无「库内已有」段）。"""
-    from factorzen.agents.roles import hypothesis as hyp_mod
+    # -- 原 test_hypothesis_prompt_no_library_byte_stable --
+    def _section_1_test_hypothesis_prompt_no_library_byte_stable():
+        from factorzen.agents.roles import hypothesis as hyp_mod
 
-    cap: dict = {}
+        cap: dict = {}
 
-    def fake(msgs):
-        cap["user"] = msgs[1]["content"]
-        return '{"hypotheses":["x"]}'
+        def fake(msgs):
+            cap["user"] = msgs[1]["content"]
+            return '{"hypotheses":["x"]}'
 
-    hyp_mod.propose_hypotheses(fake, known_invalid=["a"], known_valid=["b"], n=1)
-    user = cap["user"]
-    assert "库内已有" not in user
-    assert "a" in user and "b" in user
+        hyp_mod.propose_hypotheses(fake, known_invalid=["a"], known_valid=["b"], n=1)
+        user = cap["user"]
+        assert "库内已有" not in user
+        assert "a" in user and "b" in user
 
+    _section_1_test_hypothesis_prompt_no_library_byte_stable()
 
-def test_format_library_covered_shared_architecture_guard():
-    """双路径（hypothesis / build_agent_messages）共用 format_library_covered。"""
-    from factorzen.agents.roles import hypothesis as hyp_mod
-    from factorzen.llm import generation as gen_mod
-    from factorzen.llm.prompt_fragments import format_library_covered
+    # -- 原 test_format_library_covered_shared_architecture_guard --
+    def _section_2_test_format_library_covered_shared_architecture_guard():
+        from factorzen.agents.roles import hypothesis as hyp_mod
+        from factorzen.llm import generation as gen_mod
+        from factorzen.llm.prompt_fragments import format_library_covered
 
-    assert "format_library_covered" in inspect.getsource(hyp_mod.propose_hypotheses)
-    assert "format_library_covered" in inspect.getsource(gen_mod.build_agent_messages)
-    text = format_library_covered(["rank(close)"])
-    assert "库内已有" in text and "rank(close)" in text
-    assert format_library_covered(None) == ""
-    assert format_library_covered([]) == ""
+        assert "format_library_covered" in inspect.getsource(hyp_mod.propose_hypotheses)
+        assert "format_library_covered" in inspect.getsource(gen_mod.build_agent_messages)
+        text = format_library_covered(["rank(close)"])
+        assert "库内已有" in text and "rank(close)" in text
+        assert format_library_covered(None) == ""
+        assert format_library_covered([]) == ""
+
+    _section_2_test_format_library_covered_shared_architecture_guard()
+
+    # -- 原 test_known_invalid_excludes_library_correlated --
+    def _section_3_test_known_invalid_excludes_library_correlated(tmp_path):
+        from factorzen.agents.experiment_index import ExperimentIndex
+        from factorzen.discovery.guardrails import REJECT_CATEGORY_LIBRARY_CORRELATED
+
+        idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
+        idx.append([
+            {"expression": "rank(close)", "passed": False, "compile_ok": True,
+             "ic_train": 0.01, "reject_category": REJECT_CATEGORY_LIBRARY_CORRELATED,
+             "reject_reason": "与库内因子重复(corr=0.96, 最相近=rank(close))"},
+            {"expression": "rank(vol)", "passed": False, "compile_ok": True,
+             "ic_train": 0.001},
+        ])
+        inv = idx.known_invalid(k=5)
+        assert "rank(close)" not in inv
+        assert "rank(vol)" in inv
+
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_known_invalid_excludes_library_correlated(_tp3)
+
+    # -- 原 test_known_invalid_excludes_lift_queue --
+    def _section_4_test_known_invalid_excludes_lift_queue(tmp_path):
+        from factorzen.agents.experiment_index import ExperimentIndex
+        from factorzen.discovery.guardrails import (
+            REJECT_CATEGORY_GRAY_ZONE,
+            REJECT_CATEGORY_LIFT_QUEUE,
+        )
+
+        idx = ExperimentIndex(str(tmp_path / "e_lq.jsonl"))
+        idx.append([
+            {"expression": "rank(amount)", "passed": False, "compile_ok": True,
+             "ic_train": 0.008, "reject_category": REJECT_CATEGORY_LIFT_QUEUE,
+             "reject_reason": "残差holdout反号(lift队列,待组合裁决)"},
+            {"expression": "rank(open)", "passed": False, "compile_ok": True,
+             "ic_train": 0.007, "reject_category": REJECT_CATEGORY_GRAY_ZONE,
+             "reject_reason": "旧灰区兼容"},
+            {"expression": "rank(vol)", "passed": False, "compile_ok": True,
+             "ic_train": 0.001},
+        ])
+        inv = idx.known_invalid(k=5)
+        assert "rank(amount)" not in inv
+        assert "rank(open)" not in inv
+        assert "rank(vol)" in inv
+
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_known_invalid_excludes_lift_queue(_tp4)
+
+    # -- 原 test_cli_no_library_orthogonal_flag --
+    def _section_5_test_cli_no_library_orthogonal_flag():
+        from factorzen.cli.main import build_parser
+
+        parser = build_parser()
+        for cmd in ("search", "agent", "team"):
+            args = parser.parse_args(
+                ["mine", cmd, "--start", "20240101", "--end", "20240601",
+                 "--no-library-orthogonal"]
+            )
+            assert args.no_library_orthogonal is True
+
+    _section_5_test_cli_no_library_orthogonal_flag()
 
 
 # ── 6. known_invalid 排除 library_correlated ─────────────────────────────────
 
 
-def test_known_invalid_excludes_library_correlated(tmp_path):
-    from factorzen.agents.experiment_index import ExperimentIndex
-    from factorzen.discovery.guardrails import REJECT_CATEGORY_LIBRARY_CORRELATED
-
-    idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
-    idx.append([
-        {"expression": "rank(close)", "passed": False, "compile_ok": True,
-         "ic_train": 0.01, "reject_category": REJECT_CATEGORY_LIBRARY_CORRELATED,
-         "reject_reason": "与库内因子重复(corr=0.96, 最相近=rank(close))"},
-        {"expression": "rank(vol)", "passed": False, "compile_ok": True,
-         "ic_train": 0.001},
-    ])
-    inv = idx.known_invalid(k=5)
-    assert "rank(close)" not in inv
-    assert "rank(vol)" in inv
-
-
-def test_known_invalid_excludes_lift_queue(tmp_path):
-    """lift_queue（与旧 gray_zone）不得进 known_invalid 负例回灌。"""
-    from factorzen.agents.experiment_index import ExperimentIndex
-    from factorzen.discovery.guardrails import (
-        REJECT_CATEGORY_GRAY_ZONE,
-        REJECT_CATEGORY_LIFT_QUEUE,
-    )
-
-    idx = ExperimentIndex(str(tmp_path / "e_lq.jsonl"))
-    idx.append([
-        {"expression": "rank(amount)", "passed": False, "compile_ok": True,
-         "ic_train": 0.008, "reject_category": REJECT_CATEGORY_LIFT_QUEUE,
-         "reject_reason": "残差holdout反号(lift队列,待组合裁决)"},
-        {"expression": "rank(open)", "passed": False, "compile_ok": True,
-         "ic_train": 0.007, "reject_category": REJECT_CATEGORY_GRAY_ZONE,
-         "reject_reason": "旧灰区兼容"},
-        {"expression": "rank(vol)", "passed": False, "compile_ok": True,
-         "ic_train": 0.001},
-    ])
-    inv = idx.known_invalid(k=5)
-    assert "rank(amount)" not in inv
-    assert "rank(open)" not in inv
-    assert "rank(vol)" in inv
-
-
 # ── 7. CLI / 常量 ────────────────────────────────────────────────────────────
-
-
-def test_cli_no_library_orthogonal_flag():
-    from factorzen.cli.main import build_parser
-
-    parser = build_parser()
-    for cmd in ("search", "agent", "team"):
-        args = parser.parse_args(
-            ["mine", cmd, "--start", "20240101", "--end", "20240601",
-             "--no-library-orthogonal"]
-        )
-        assert args.no_library_orthogonal is True
-
 
 
 def test_recall_accepts_library_covered():
@@ -512,200 +551,219 @@ def _raw_rank_ic(factor: pl.DataFrame, fwd: pl.DataFrame) -> float:
 # ── 1. 正交候选 ─────────────────────────────────────────────────────────────
 
 
-def test_orthogonal_candidate_residual_ic_near_raw():
-    """候选 = 独立 alpha + 噪声 → residual_ic ≈ raw_ic（差 < 0.3×|raw|）。"""
-    from factorzen.discovery.residual import build_library_panel, compute_residual_ic
+def test_residual_objective_suite(tmp_path, monkeypatch):
+    """候选 = 独立 alpha + 噪声 → residual_ic ≈ raw_ic（差 < 0.3×|raw|）。；候选 = 库线性组合 + 微噪声（raw 强）→ residual ≈ 0。；0.7×库 + 0.3×独立 alpha → residual 显著 < raw 且 > floor。；test_empty_library_resolves_to_raw；空库 + objective=residual → 行为与 raw 一致（无 residual 字段强制门）。；某日候选有效行 < k+10 → 不进序列；全日不足 → NaN + n_days=0。；n_days=0 走覆盖门 → 死因含覆盖不足（残差口径）。"""
+    # -- 原 test_orthogonal_candidate_residual_ic_near_raw --
+    def _section_0_test_orthogonal_candidate_residual_ic_near_raw():
+        from factorzen.discovery.residual import build_library_panel, compute_residual_ic
 
-    rng = np.random.default_rng(11)
-    dates, codes = _dates(60), _codes(50)
-    # 库因子：与收益弱相关的方向
-    lib_sig = rng.normal(0, 1, size=(len(dates), len(codes)))
-    # 独立 alpha：与收益强相关，与库无关
-    alpha = rng.normal(0, 1, size=(len(dates), len(codes)))
-    fwd = _fwd_from_signal(alpha, dates, codes, rng, noise=0.3)
-    lib_pool = {
-        "lib_f1": _panel_from_matrix(lib_sig, dates, codes),
-        "lib_f2": _panel_from_matrix(rng.normal(0, 1, size=lib_sig.shape), dates, codes),
-    }
-    cand = _panel_from_matrix(alpha + rng.normal(0, 0.05, size=alpha.shape), dates, codes)
-    panel = build_library_panel(lib_pool)
-    assert panel is not None and panel.k == 2
-    raw = _raw_rank_ic(cand, fwd)
-    res = compute_residual_ic(cand, panel, fwd)
-    assert res.n_days > 0 and res.ic_mean == res.ic_mean
-    assert abs(res.ic_mean - raw) < 0.3 * abs(raw) + 1e-6, (
-        f"正交候选 residual={res.ic_mean:.4f} raw={raw:.4f}"
-    )
+        rng = np.random.default_rng(11)
+        dates, codes = _dates(60), _codes(50)
+        # 库因子：与收益弱相关的方向
+        lib_sig = rng.normal(0, 1, size=(len(dates), len(codes)))
+        # 独立 alpha：与收益强相关，与库无关
+        alpha = rng.normal(0, 1, size=(len(dates), len(codes)))
+        fwd = _fwd_from_signal(alpha, dates, codes, rng, noise=0.3)
+        lib_pool = {
+            "lib_f1": _panel_from_matrix(lib_sig, dates, codes),
+            "lib_f2": _panel_from_matrix(rng.normal(0, 1, size=lib_sig.shape), dates, codes),
+        }
+        cand = _panel_from_matrix(alpha + rng.normal(0, 0.05, size=alpha.shape), dates, codes)
+        panel = build_library_panel(lib_pool)
+        assert panel is not None and panel.k == 2
+        raw = _raw_rank_ic(cand, fwd)
+        res = compute_residual_ic(cand, panel, fwd)
+        assert res.n_days > 0 and res.ic_mean == res.ic_mean
+        assert abs(res.ic_mean - raw) < 0.3 * abs(raw) + 1e-6, (
+            f"正交候选 residual={res.ic_mean:.4f} raw={raw:.4f}"
+        )
+
+    _section_0_test_orthogonal_candidate_residual_ic_near_raw()
+
+    # -- 原 test_redundant_candidate_residual_ic_near_zero --
+    def _section_1_test_redundant_candidate_residual_ic_near_zero():
+        from factorzen.discovery.residual import build_library_panel, compute_residual_ic
+
+        rng = np.random.default_rng(22)
+        dates, codes = _dates(60), _codes(50)
+        f1 = rng.normal(0, 1, size=(len(dates), len(codes)))
+        f2 = rng.normal(0, 1, size=f1.shape)
+        combo = 0.6 * f1 + 0.4 * f2
+        cand = combo + rng.normal(0, 0.01, size=f1.shape)
+        # 收益跟 combo 走 → raw IC 强
+        fwd = _fwd_from_signal(combo, dates, codes, rng, noise=0.2)
+        lib_pool = {
+            "lib_f1": _panel_from_matrix(f1, dates, codes),
+            "lib_f2": _panel_from_matrix(f2, dates, codes),
+        }
+        panel = build_library_panel(lib_pool)
+        raw = _raw_rank_ic(_panel_from_matrix(cand, dates, codes), fwd)
+        res = compute_residual_ic(_panel_from_matrix(cand, dates, codes), panel, fwd)
+        assert abs(raw) > 0.15, f"构造失败：raw 应强，得 {raw}"
+        assert abs(res.ic_mean) < 0.05, f"冗余残差应≈0，得 residual={res.ic_mean:.4f}"
+
+    monkeypatch.undo()
+    _section_1_test_redundant_candidate_residual_ic_near_zero()
+
+    # -- 原 test_mixed_candidate_residual_between_raw_and_floor --
+    def _section_2_test_mixed_candidate_residual_between_raw_and_floor():
+        from factorzen.discovery.guardrails import DEFAULT_RESIDUAL_IC_FLOOR
+        from factorzen.discovery.residual import build_library_panel, compute_residual_ic
+
+        rng = np.random.default_rng(33)
+        dates, codes = _dates(70), _codes(50)
+        f1 = rng.normal(0, 1, size=(len(dates), len(codes)))
+        alpha = rng.normal(0, 1, size=f1.shape)
+        cand = 0.7 * f1 + 0.3 * alpha
+        # 收益跟整候选走 → raw 强；残差应保留 alpha 分量
+        fwd = _fwd_from_signal(cand, dates, codes, rng, noise=0.25)
+        lib_pool = {"lib_f1": _panel_from_matrix(f1, dates, codes)}
+        panel = build_library_panel(lib_pool)
+        fdf = _panel_from_matrix(cand, dates, codes)
+        raw = _raw_rank_ic(fdf, fwd)
+        res = compute_residual_ic(fdf, panel, fwd)
+        assert res.n_days > 0
+        assert abs(res.ic_mean) < abs(raw) - 0.02, (
+            f"混合：residual 应显著 < raw；r={res.ic_mean:.4f} raw={raw:.4f}"
+        )
+        assert abs(res.ic_mean) > DEFAULT_RESIDUAL_IC_FLOOR, (
+            f"混合：residual 应 > floor；r={res.ic_mean:.4f}"
+        )
+
+    monkeypatch.undo()
+    _section_2_test_mixed_candidate_residual_between_raw_and_floor()
+
+    # -- 原 test_empty_library_resolves_to_raw --
+    def _section_3_test_empty_library_resolves_to_raw():
+        from factorzen.discovery.residual import build_library_panel, resolve_objective
+
+        assert resolve_objective("residual", lib_nonempty=False) == "raw"
+        assert resolve_objective("raw", lib_nonempty=True) == "raw"
+        assert resolve_objective("residual", lib_nonempty=True) == "residual"
+        assert resolve_objective(None, lib_nonempty=True) == "residual"
+        assert resolve_objective(None, lib_nonempty=False) == "raw"
+        assert build_library_panel({}) is None
+        assert build_library_panel(None) is None
+
+    monkeypatch.undo()
+    _section_3_test_empty_library_resolves_to_raw()
+
+    # -- 原 test_empty_library_node_guardrails_zero_regression --
+    def _section_4_test_empty_library_node_guardrails_zero_regression(tmp_path, monkeypatch):
+        from factorzen.agents.nodes import node_guardrails
+        from factorzen.agents.state import AgentState, AttemptRecord
+        from factorzen.discovery.scoring import DataBundle
+        from factorzen.validation.holdout import HoldoutICResult
+        from factorzen.validation.multiple_testing import TrialLedger
+
+        rng = np.random.default_rng(1)
+        dates, codes = _dates(40), _codes(35)
+        # 构造简单 daily 帧
+        rows = []
+        for c in codes:
+            base = 10.0
+            for i, d in enumerate(dates):
+                px = base * (1 + 0.001 * i) + rng.normal(0, 0.05)
+                rows.append({
+                    "trade_date": d, "ts_code": c,
+                    "close": px, "open": px, "high": px * 1.01, "low": px * 0.99,
+                    "close_adj": px, "open_adj": px, "high_adj": px * 1.01, "low_adj": px * 0.99,
+                    "pre_close": px, "vol": 1e6, "amount": 1e7,
+                })
+        daily = pl.DataFrame(rows)
+        bundle = DataBundle.build(daily)
+        monkeypatch.setattr(
+            "factorzen.validation.holdout.holdout_ic_result",
+            lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
+        )
+        state = AgentState(seed=1)
+        state.attempts.append(AttemptRecord(
+            iteration=0, hypothesis="h", expression="rank(close)",
+            compile_ok=True, ic_train=0.05, passed_guardrails=False,
+            critic_verdict=None, error=None, ir_train=0.4, turnover=0.3, n_train=80,
+        ))
+        node_guardrails(
+            state, daily=daily, holdout_df=daily, bundle=bundle,
+            ledger=TrialLedger(), top_k=3, lib_pool={}, objective="residual",
+        )
+        assert len(state.candidates) == 1
+        c = state.candidates[0]
+        # 空库 residual 退化：不应以残差字段作为准入门槛
+        assert c["holdout_ic"] == pytest.approx(0.05)
+        assert "residual_ic_train" not in c or c.get("residual_ic_train") is None
+
+    monkeypatch.undo()
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    _section_4_test_empty_library_node_guardrails_zero_regression(_tp4, monkeypatch)
+
+    # -- 原 test_day_guard_skips_thin_cross_section --
+    def _section_5_test_day_guard_skips_thin_cross_section():
+        from factorzen.discovery.residual import (
+            _day_min_samples,
+            build_library_panel,
+            compute_residual_ic,
+        )
+
+        dates = _dates(10)
+        codes = _codes(40)
+        k = 5
+        # k+10 = 15；只给每只股票 8 个有效值 → 全日跳过
+        rng = np.random.default_rng(5)
+        lib_pool = {}
+        for j in range(k):
+            M = rng.normal(0, 1, size=(len(dates), len(codes)))
+            lib_pool[f"f{j}"] = _panel_from_matrix(M, dates, codes)
+        # 候选只在前 8 只股票有值
+        thin = np.full((len(dates), len(codes)), np.nan)
+        thin[:, :8] = rng.normal(0, 1, size=(len(dates), 8))
+        cand = _panel_from_matrix(thin, dates, codes)
+        # drop nan rows for panel (factor_value filter)
+        cand = cand.filter(pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
+        fwd_M = rng.normal(0, 1, size=(len(dates), len(codes)))
+        fwd = _panel_from_matrix(fwd_M, dates, codes, name="fwd_ret_1d")
+        panel = build_library_panel(lib_pool)
+        assert _day_min_samples(k) == max(30, k + 10)
+        res = compute_residual_ic(cand, panel, fwd)
+        assert res.n_days == 0
+        assert res.ic_mean != res.ic_mean  # NaN
+
+    monkeypatch.undo()
+    _section_5_test_day_guard_skips_thin_cross_section()
+
+    # -- 原 test_day_guard_coverage_reason_text --
+    def _section_6_test_day_guard_coverage_reason_text():
+        from factorzen.discovery.guardrails import (
+            DEFAULT_HOLDOUT_MIN_DAYS,
+            DEFAULT_RESIDUAL_IC_FLOOR,
+            acceptance_reasons,
+        )
+
+        reasons = acceptance_reasons(
+            gate="library",
+            ic_train=0.05,
+            holdout_ic=float("nan"),
+            ic_floor=DEFAULT_RESIDUAL_IC_FLOOR,
+            holdout_n_days=0,
+            holdout_min_days=DEFAULT_HOLDOUT_MIN_DAYS,
+            reason_style="residual",
+        )
+        assert any("覆盖不足" in r for r in reasons)
+
+    monkeypatch.undo()
+    _section_6_test_day_guard_coverage_reason_text()
 
 
 # ── 2. 冗余候选 ─────────────────────────────────────────────────────────────
 
 
-def test_redundant_candidate_residual_ic_near_zero():
-    """候选 = 库线性组合 + 微噪声（raw 强）→ residual ≈ 0。"""
-    from factorzen.discovery.residual import build_library_panel, compute_residual_ic
-
-    rng = np.random.default_rng(22)
-    dates, codes = _dates(60), _codes(50)
-    f1 = rng.normal(0, 1, size=(len(dates), len(codes)))
-    f2 = rng.normal(0, 1, size=f1.shape)
-    combo = 0.6 * f1 + 0.4 * f2
-    cand = combo + rng.normal(0, 0.01, size=f1.shape)
-    # 收益跟 combo 走 → raw IC 强
-    fwd = _fwd_from_signal(combo, dates, codes, rng, noise=0.2)
-    lib_pool = {
-        "lib_f1": _panel_from_matrix(f1, dates, codes),
-        "lib_f2": _panel_from_matrix(f2, dates, codes),
-    }
-    panel = build_library_panel(lib_pool)
-    raw = _raw_rank_ic(_panel_from_matrix(cand, dates, codes), fwd)
-    res = compute_residual_ic(_panel_from_matrix(cand, dates, codes), panel, fwd)
-    assert abs(raw) > 0.15, f"构造失败：raw 应强，得 {raw}"
-    assert abs(res.ic_mean) < 0.05, f"冗余残差应≈0，得 residual={res.ic_mean:.4f}"
-
-
 # ── 3. 混合候选 ─────────────────────────────────────────────────────────────
-
-
-def test_mixed_candidate_residual_between_raw_and_floor():
-    """0.7×库 + 0.3×独立 alpha → residual 显著 < raw 且 > floor。"""
-    from factorzen.discovery.guardrails import DEFAULT_RESIDUAL_IC_FLOOR
-    from factorzen.discovery.residual import build_library_panel, compute_residual_ic
-
-    rng = np.random.default_rng(33)
-    dates, codes = _dates(70), _codes(50)
-    f1 = rng.normal(0, 1, size=(len(dates), len(codes)))
-    alpha = rng.normal(0, 1, size=f1.shape)
-    cand = 0.7 * f1 + 0.3 * alpha
-    # 收益跟整候选走 → raw 强；残差应保留 alpha 分量
-    fwd = _fwd_from_signal(cand, dates, codes, rng, noise=0.25)
-    lib_pool = {"lib_f1": _panel_from_matrix(f1, dates, codes)}
-    panel = build_library_panel(lib_pool)
-    fdf = _panel_from_matrix(cand, dates, codes)
-    raw = _raw_rank_ic(fdf, fwd)
-    res = compute_residual_ic(fdf, panel, fwd)
-    assert res.n_days > 0
-    assert abs(res.ic_mean) < abs(raw) - 0.02, (
-        f"混合：residual 应显著 < raw；r={res.ic_mean:.4f} raw={raw:.4f}"
-    )
-    assert abs(res.ic_mean) > DEFAULT_RESIDUAL_IC_FLOOR, (
-        f"混合：residual 应 > floor；r={res.ic_mean:.4f}"
-    )
 
 
 # ── 4. 空库退化 ─────────────────────────────────────────────────────────────
 
 
-def test_empty_library_resolves_to_raw():
-    from factorzen.discovery.residual import build_library_panel, resolve_objective
-
-    assert resolve_objective("residual", lib_nonempty=False) == "raw"
-    assert resolve_objective("raw", lib_nonempty=True) == "raw"
-    assert resolve_objective("residual", lib_nonempty=True) == "residual"
-    assert resolve_objective(None, lib_nonempty=True) == "residual"
-    assert resolve_objective(None, lib_nonempty=False) == "raw"
-    assert build_library_panel({}) is None
-    assert build_library_panel(None) is None
-
-
-def test_empty_library_node_guardrails_zero_regression(tmp_path, monkeypatch):
-    """空库 + objective=residual → 行为与 raw 一致（无 residual 字段强制门）。"""
-    from factorzen.agents.nodes import node_guardrails
-    from factorzen.agents.state import AgentState, AttemptRecord
-    from factorzen.discovery.scoring import DataBundle
-    from factorzen.validation.holdout import HoldoutICResult
-    from factorzen.validation.multiple_testing import TrialLedger
-
-    rng = np.random.default_rng(1)
-    dates, codes = _dates(40), _codes(35)
-    # 构造简单 daily 帧
-    rows = []
-    for c in codes:
-        base = 10.0
-        for i, d in enumerate(dates):
-            px = base * (1 + 0.001 * i) + rng.normal(0, 0.05)
-            rows.append({
-                "trade_date": d, "ts_code": c,
-                "close": px, "open": px, "high": px * 1.01, "low": px * 0.99,
-                "close_adj": px, "open_adj": px, "high_adj": px * 1.01, "low_adj": px * 0.99,
-                "pre_close": px, "vol": 1e6, "amount": 1e7,
-            })
-    daily = pl.DataFrame(rows)
-    bundle = DataBundle.build(daily)
-    monkeypatch.setattr(
-        "factorzen.validation.holdout.holdout_ic_result",
-        lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
-    )
-    state = AgentState(seed=1)
-    state.attempts.append(AttemptRecord(
-        iteration=0, hypothesis="h", expression="rank(close)",
-        compile_ok=True, ic_train=0.05, passed_guardrails=False,
-        critic_verdict=None, error=None, ir_train=0.4, turnover=0.3, n_train=80,
-    ))
-    node_guardrails(
-        state, daily=daily, holdout_df=daily, bundle=bundle,
-        ledger=TrialLedger(), top_k=3, lib_pool={}, objective="residual",
-    )
-    assert len(state.candidates) == 1
-    c = state.candidates[0]
-    # 空库 residual 退化：不应以残差字段作为准入门槛
-    assert c["holdout_ic"] == pytest.approx(0.05)
-    assert "residual_ic_train" not in c or c.get("residual_ic_train") is None
-
-
 # ── 5. 日守卫 ───────────────────────────────────────────────────────────────
-
-
-def test_day_guard_skips_thin_cross_section():
-    """某日候选有效行 < k+10 → 不进序列；全日不足 → NaN + n_days=0。"""
-    from factorzen.discovery.residual import (
-        _day_min_samples,
-        build_library_panel,
-        compute_residual_ic,
-    )
-
-    dates = _dates(10)
-    codes = _codes(40)
-    k = 5
-    # k+10 = 15；只给每只股票 8 个有效值 → 全日跳过
-    rng = np.random.default_rng(5)
-    lib_pool = {}
-    for j in range(k):
-        M = rng.normal(0, 1, size=(len(dates), len(codes)))
-        lib_pool[f"f{j}"] = _panel_from_matrix(M, dates, codes)
-    # 候选只在前 8 只股票有值
-    thin = np.full((len(dates), len(codes)), np.nan)
-    thin[:, :8] = rng.normal(0, 1, size=(len(dates), 8))
-    cand = _panel_from_matrix(thin, dates, codes)
-    # drop nan rows for panel (factor_value filter)
-    cand = cand.filter(pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
-    fwd_M = rng.normal(0, 1, size=(len(dates), len(codes)))
-    fwd = _panel_from_matrix(fwd_M, dates, codes, name="fwd_ret_1d")
-    panel = build_library_panel(lib_pool)
-    assert _day_min_samples(k) == max(30, k + 10)
-    res = compute_residual_ic(cand, panel, fwd)
-    assert res.n_days == 0
-    assert res.ic_mean != res.ic_mean  # NaN
-
-
-def test_day_guard_coverage_reason_text():
-    """n_days=0 走覆盖门 → 死因含覆盖不足（残差口径）。"""
-    from factorzen.discovery.guardrails import (
-        DEFAULT_HOLDOUT_MIN_DAYS,
-        DEFAULT_RESIDUAL_IC_FLOOR,
-        acceptance_reasons,
-    )
-
-    reasons = acceptance_reasons(
-        gate="library",
-        ic_train=0.05,
-        holdout_ic=float("nan"),
-        ic_floor=DEFAULT_RESIDUAL_IC_FLOOR,
-        holdout_n_days=0,
-        holdout_min_days=DEFAULT_HOLDOUT_MIN_DAYS,
-        reason_style="residual",
-    )
-    assert any("覆盖不足" in r for r in reasons)
 
 
 def test_residual_weak_and_sign_reason_text():
@@ -825,43 +883,51 @@ def test_residual_shared_function_architecture_guard():
 # ── 8. CLI 透传 ─────────────────────────────────────────────────────────────
 
 
-def test_cli_objective_flag_on_three_mine_commands():
-    from factorzen.cli.main import build_parser
+def test_library_mining_wiring_suite():
+    """test_cli_objective_flag_on_three_mine_commands；capability↔wiring：run_session / run_team_agent / run_llm_agent 接收 objective。；test_default_residual_ic_floor_constant"""
+    # -- 原 test_cli_objective_flag_on_three_mine_commands --
+    def _section_0_test_cli_objective_flag_on_three_mine_commands():
+        from factorzen.cli.main import build_parser
 
-    parser = build_parser()
-    for cmd in ("search", "agent", "team"):
-        args = parser.parse_args(
-            ["mine", cmd, "--start", "20240101", "--end", "20240601",
-             "--objective", "raw"]
+        parser = build_parser()
+        for cmd in ("search", "agent", "team"):
+            args = parser.parse_args(
+                ["mine", cmd, "--start", "20240101", "--end", "20240601",
+                 "--objective", "raw"]
+            )
+            assert args.objective == "raw"
+            args2 = parser.parse_args(
+                ["mine", cmd, "--start", "20240101", "--end", "20240601"]
+            )
+            assert args2.objective == "residual"
+
+    _section_0_test_cli_objective_flag_on_three_mine_commands()
+
+    # -- 原 test_cli_objective_wired_to_run_session_signature --
+    def _section_1_test_cli_objective_wired_to_run_session_signature():
+        from factorzen.agents.orchestrator import run_llm_agent
+        from factorzen.agents.team_orchestrator import run_team_agent
+        from factorzen.discovery.mining_session import run_session
+
+        for fn in (run_session, run_team_agent, run_llm_agent):
+            params = inspect.signature(fn).parameters
+            assert "objective" in params, f"{fn.__name__} 缺 objective 参数"
+            # 默认 residual
+            default = params["objective"].default
+            assert default in ("residual", None) or default == "residual"
+
+    _section_1_test_cli_objective_wired_to_run_session_signature()
+
+    # -- 原 test_default_residual_ic_floor_constant --
+    def _section_2_test_default_residual_ic_floor_constant():
+        from factorzen.discovery.guardrails import (
+            DEFAULT_IC_FLOOR,
+            DEFAULT_RESIDUAL_IC_FLOOR,
         )
-        assert args.objective == "raw"
-        args2 = parser.parse_args(
-            ["mine", cmd, "--start", "20240101", "--end", "20240601"]
-        )
-        assert args2.objective == "residual"
+        assert DEFAULT_RESIDUAL_IC_FLOOR == 0.010
+        assert DEFAULT_RESIDUAL_IC_FLOOR < DEFAULT_IC_FLOOR
 
-
-def test_cli_objective_wired_to_run_session_signature():
-    """capability↔wiring：run_session / run_team_agent / run_llm_agent 接收 objective。"""
-    from factorzen.agents.orchestrator import run_llm_agent
-    from factorzen.agents.team_orchestrator import run_team_agent
-    from factorzen.discovery.mining_session import run_session
-
-    for fn in (run_session, run_team_agent, run_llm_agent):
-        params = inspect.signature(fn).parameters
-        assert "objective" in params, f"{fn.__name__} 缺 objective 参数"
-        # 默认 residual
-        default = params["objective"].default
-        assert default in ("residual", None) or default == "residual"
-
-
-def test_default_residual_ic_floor_constant():
-    from factorzen.discovery.guardrails import (
-        DEFAULT_IC_FLOOR,
-        DEFAULT_RESIDUAL_IC_FLOOR,
-    )
-    assert DEFAULT_RESIDUAL_IC_FLOOR == 0.010
-    assert DEFAULT_RESIDUAL_IC_FLOOR < DEFAULT_IC_FLOOR
+    _section_2_test_default_residual_ic_floor_constant()
 
 
 # ── 9. 冗余候选在护栏层被残差门拒绝（集成）────────────────────────────────

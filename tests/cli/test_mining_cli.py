@@ -485,7 +485,8 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
                       min_n_train=5, dsr_alpha=0.05, update_library=True,
                       library_orthogonal=True, objective="residual",
                       intraday=False, intraday_freq="5min",
-                      intraday_expr_leaves=None):
+                      intraday_expr_leaves=None,
+                      exec_lag=0, exec_price_col=None):
         captured.update(
             start=start,
             end=end,

@@ -726,6 +726,7 @@ FIXTURE_INDEX_CSI500 = "000905.SH"
 
 # ── index members ──────────────────────────────────────────────────────────
 
+@needs_tushare
 def test_csi_index_live_suite():
     """CSI300 成分股应返回 200-350 只股票（而非全 A 股 ~5500 只）。；CSI800 = CSI300 ∪ CSI500，去重后数量应 ≈ CSI300 + CSI500。"""
     # -- 原 test_get_index_members_csi300 --

@@ -190,7 +190,9 @@ def test_make_lift_context_shared_prepped_for_pool_and_materializer(monkeypatch)
 
     monkeypatch.setattr(
         lt, "_build_ret_panel",
-        lambda daily_df, *, horizon=5: pl.DataFrame({
+        # **_kw 接住 exec_lag/exec_price_col 等后加 kwargs——桩签名写死
+        # 会在真实签名扩展时假报错（本会话已栽过两次）
+        lambda daily_df, *, horizon=5, **_kw: pl.DataFrame({
             "trade_date": ["20240102", "20240103"],
             "ts_code": ["000001.SZ", "000001.SZ"],
             "ret": [0.01, -0.01],
@@ -348,7 +350,10 @@ def test_ctx_horizon_passed_to_build_ret_panel(monkeypatch):
 
     seen = {}
 
-    def spy_ret(daily_df, *, horizon=5):
+    def spy_ret(daily_df, *, horizon=5, exec_lag=0, exec_price_col=None):
+        # 默认口径必须原样传下来（exec_lag=0 = 历史行为）
+        seen["exec_lag"] = exec_lag
+        seen["exec_price_col"] = exec_price_col
         seen["horizon"] = horizon
         return ret
 
@@ -377,6 +382,10 @@ def test_ctx_horizon_passed_to_build_ret_panel(monkeypatch):
 
     assert seen.get("horizon") == 1
     assert rows[0]["horizon"] == 1
+    # ctx 未指定成交口径 ⇒ 必须原样传下默认值（exec_lag=0 = 历史 close→close，
+    # 见 compute_fwd_returns docstring）。若这里变成 1，等于默认行为被悄悄改了。
+    assert seen.get("exec_lag") == 0
+    assert seen.get("exec_price_col") is None
 
 
 def test_group_lift_admission_window_and_provenance():

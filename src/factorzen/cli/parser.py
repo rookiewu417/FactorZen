@@ -70,6 +70,33 @@ def _add_freq_arg(p: argparse.ArgumentParser) -> None:
                    help="bar 粒度(仅 crypto;ashare 只支持 daily)")
 
 
+def _add_exec_convention_args(p: argparse.ArgumentParser) -> None:
+    """成交口径旗标：把「信号什么时候能真的成交」变成显式选择。
+
+    默认 ``--exec-lag 0`` 沿用历史口径 ``close[t+1]/close[t]``——它隐含
+    「t 日收盘成交」，而算信号本身需要 t 日收盘价，**实际不可实现**。
+    项目铁律是「t 日算 → t+1 执行」(CLAUDE.md PIT 自查第 8 条)。
+
+    实测代价（csi500，库 120 active，lgbm 组合 top 桶年化超额）：
+    默认口径 +35.20%，其中**隔夜段 close_t→open_{t+1} 占 100%**（日内仅 +0.05%）；
+    换成 ``--exec-lag 1 --exec-price-col open_adj``（即 open[t+2]/open[t+1]）
+    只剩 **+10.08%**。部分机制：库含涨跌停叶，涨停股次日跳空可预测，
+    但 t 日收盘已封死买不到。
+
+    ⇒ 默认口径**系统性高估**可实现收益；要评判能真正成交的 alpha 请显式开启。
+    """
+    p.add_argument(
+        "--exec-lag", dest="exec_lag", type=int, default=0,
+        help="成交滞后(交易日)。0=t 日成交(默认,向后兼容但不可实现)；"
+             "1=t+1 成交(配 --exec-price-col open_adj 即可实现口径)",
+    )
+    p.add_argument(
+        "--exec-price-col", dest="exec_price_col", default=None,
+        help="成交价格列(如 open_adj)。缺省沿用收盘价；"
+             "与 --exec-lag 1 合用 = open[t+2]/open[t+1]",
+    )
+
+
 def build_parser(commands: Any) -> argparse.ArgumentParser:
     from factorzen.discovery.guardrails import DEFAULT_DSR_ALPHA  # 护栏阈值单一真源，防漂移
 
@@ -459,6 +486,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "--pool-subproc", dest="pool_subproc", action="store_true",
         help="池构建放子进程，退出全额归还内存；等效 env FACTORZEN_POOL_SUBPROC=1",
     )
+    _add_exec_convention_args(m_team)
     _add_freq_arg(m_team)
     m_team.set_defaults(func=commands._cmd_mine_team)
 

@@ -669,6 +669,10 @@ def run_team_agent(
     scout_freq: str = "5min",
     scout_base_dir: str | Path | None = None,  # 测试隔离 registry/缓存；生产 None
     pool_cache_dir: str | None = None,
+    # 成交口径：0 = t 日收盘成交（默认，向后兼容但**不可实现**——算信号需 t 日收盘价）；
+    # 1 + "open_adj" = t+1 开盘成交（可实现）。贯穿护栏 / holdout / lift 裁决。
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -825,7 +829,10 @@ def run_team_agent(
     assert _holdout_start2 == holdout_start, (
         f"holdout 边界漂移: 预池路径 {holdout_start} vs 切分 {_holdout_start2}"
     )
-    bundle = DataBundle.build(mining_df)
+    # 成交口径贯穿护栏：quick_fitness / residual_ic / pool_pbo / ic_overfit
+    # 全部基于 bundle.fwd_returns，故这里传错等于整轮护栏评的是另一种收益。
+    bundle = DataBundle.build(
+        mining_df, exec_lag=exec_lag, exec_price_col=exec_price_col)
     _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
     # P5：holdout 长驻窄投影（键+价）；因子求值走 warmup/session_prepped。
@@ -1078,6 +1085,9 @@ def run_team_agent(
         run_id=session_run_id,
         horizon=horizon,
         index=index,  # lift 拒绝写回 experiment_index（None-gating 在钩子内）
+        # 成交口径须与护栏/holdout 同源，否则准入用一个口径、lift 裁决用另一个
+        exec_lag=exec_lag,
+        exec_price_col=exec_price_col,
     )
 
     # ── session 末：被准入/probation 因子引用的 ix_* 永久化 ─────────────────
@@ -1226,6 +1236,8 @@ def _session_end_auto_lift(
     ret_df=None,
     run_id: str | None = None,
     index=None,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
 ) -> dict:
     """session 末：lift 队列 → 覆盖把关 → 组门 → 逐候选 → upsert。
 
@@ -1280,6 +1292,9 @@ def _session_end_auto_lift(
             # python 型候选/基线物化口径（三 lift 消费方同口径，改一查三）
             python_universe=(data_window or {}).get("universe"),
             python_market=market,
+            # 成交口径须与护栏/holdout 一致，否则准入用一个口径、lift 裁决用另一个
+            exec_lag=exec_lag,
+            exec_price_col=exec_price_col,
         )
         meta["admission_start"] = adm_start
         meta["admission_end"] = adm_end

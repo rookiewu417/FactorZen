@@ -34,13 +34,28 @@ class DataBundle:
     train_end: str  # "YYYYMMDD"，train 段含此日及之前
 
     @classmethod
-    def build(cls, daily: pl.DataFrame, train_ratio: float = 0.7) -> DataBundle:
+    def build(
+        cls,
+        daily: pl.DataFrame,
+        train_ratio: float = 0.7,
+        *,
+        exec_lag: int = 0,
+        exec_price_col: str | None = None,
+    ) -> DataBundle:
+        """``exec_lag`` / ``exec_price_col`` 透传给 ``compute_fwd_returns``。
+
+        默认 ``exec_lag=0`` 逐位等价旧行为（close→close，隐含「t 日收盘成交」）。
+        传 ``exec_lag=1, exec_price_col="open_adj"`` 切到**可实现**口径——
+        护栏（quick_fitness / residual_ic / pool_pbo / ic_overfit）随之改为
+        评判「t+1 开盘可成交」的收益。详见 ``compute_fwd_returns`` docstring。
+        """
         daily = daily.sort(["ts_code", "trade_date"])
         # compute_fwd_returns 在整表 with_columns 后原样返回（正式 IC decay 仍需全列语义）；
         # 挖掘 bundle 只消费键 + fwd_ret_*（quick_fitness / residual_ic / pool_pbo / ic_overfit），
         # 在此 select 收窄，消灭一份近全宽 mining 副本。不动 compute_fwd_returns 本身。
         fwd = compute_fwd_returns(
             daily, price_col="close_adj" if "close_adj" in daily.columns else "close",
+            exec_lag=exec_lag, exec_price_col=exec_price_col,
         )
         fwd_cols = [c for c in fwd.columns if c.startswith("fwd_ret_")]
         fwd = fwd.select(["trade_date", "ts_code", *fwd_cols])

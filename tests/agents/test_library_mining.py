@@ -92,7 +92,6 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
         pool = build_library_pool("ashare", _mk_daily(), root=str(tmp_path / "no_such"))
         assert pool == {}
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
     _section_1_test_build_library_pool_missing_file_returns_empty(_tp1)
@@ -112,13 +111,12 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
         assert "rank(close)" in pool
         assert len(pool) == 1
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
     _section_2_test_build_library_pool_bad_record_does_not_crash(_tp2)
 
     # -- 原 test_node_guardrails_rejects_library_correlated --
-    def _section_3_test_node_guardrails_rejects_library_correlated(tmp_path, monkeypatch):
+    def _section_3_test_node_guardrails_rejects_library_correlated(tmp_path, mp):
         from factorzen.agents.nodes import node_guardrails
         from factorzen.agents.state import AgentState
         from factorzen.discovery.factor_library import build_library_pool
@@ -137,7 +135,7 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
         assert "rank(close)" in lib_pool
 
         # holdout 固定过关；session 池为空 → session 去相关不干扰
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.validation.holdout.holdout_ic_result",
             lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
         )
@@ -153,7 +151,7 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
                 seen_panel["with_panel"] += 1
             return _orig(factor_df, lib_pool, threshold=threshold, panel=panel)
 
-        monkeypatch.setattr(scoring_mod, "library_orthogonal_check", _wrap)
+        mp.setattr(scoring_mod, "library_orthogonal_check", _wrap)
 
         state = AgentState(seed=1)
         _seed_attempt(state, "rank(close)")          # 与库等价 → 应拒
@@ -177,13 +175,13 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
         assert seen_panel["n"] >= 1
         assert seen_panel["with_panel"] == seen_panel["n"], "nodes 须把 LibraryCorrPanel 传入库相关检查"
 
-    monkeypatch.undo()
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)
-    _section_3_test_node_guardrails_rejects_library_correlated(_tp3, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_node_guardrails_rejects_library_correlated(_tp3, mp)
 
     # -- 原 test_node_guardrails_library_reject_frees_slot_for_orthogonal --
-    def _section_4_test_node_guardrails_library_reject_frees_slot_for_orthogonal(tmp_path, monkeypatch):
+    def _section_4_test_node_guardrails_library_reject_frees_slot_for_orthogonal(tmp_path, mp):
         from factorzen.agents.nodes import node_guardrails
         from factorzen.agents.state import AgentState
         from factorzen.discovery.factor_library import build_library_pool
@@ -198,7 +196,7 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
              "ic_train": 0.06},
         ])
         lib_pool = build_library_pool("ashare", daily, root=str(tmp_path))
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.validation.holdout.holdout_ic_result",
             lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
         )
@@ -214,10 +212,10 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
         assert [c["expression"] for c in state.candidates] == ["rank(vol)"]
         assert state.n_library_correlated_rejects >= 1
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_node_guardrails_library_reject_frees_slot_for_orthogonal(_tp4, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_node_guardrails_library_reject_frees_slot_for_orthogonal(_tp4, mp)
 
     # -- 原 test_dual_path_wires_library_corr_panel --
     def _section_5_test_dual_path_wires_library_corr_panel():
@@ -249,7 +247,6 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
                         has_panel_kw = True
             assert has_panel_kw, f"{rel} 的 library_orthogonal_check 未传 panel="
 
-    monkeypatch.undo()
     _section_5_test_dual_path_wires_library_corr_panel()
 
 
@@ -602,7 +599,6 @@ def test_residual_objective_suite(tmp_path, monkeypatch):
         assert abs(raw) > 0.15, f"构造失败：raw 应强，得 {raw}"
         assert abs(res.ic_mean) < 0.05, f"冗余残差应≈0，得 residual={res.ic_mean:.4f}"
 
-    monkeypatch.undo()
     _section_1_test_redundant_candidate_residual_ic_near_zero()
 
     # -- 原 test_mixed_candidate_residual_between_raw_and_floor --
@@ -630,7 +626,6 @@ def test_residual_objective_suite(tmp_path, monkeypatch):
             f"混合：residual 应 > floor；r={res.ic_mean:.4f}"
         )
 
-    monkeypatch.undo()
     _section_2_test_mixed_candidate_residual_between_raw_and_floor()
 
     # -- 原 test_empty_library_resolves_to_raw --
@@ -645,11 +640,10 @@ def test_residual_objective_suite(tmp_path, monkeypatch):
         assert build_library_panel({}) is None
         assert build_library_panel(None) is None
 
-    monkeypatch.undo()
     _section_3_test_empty_library_resolves_to_raw()
 
     # -- 原 test_empty_library_node_guardrails_zero_regression --
-    def _section_4_test_empty_library_node_guardrails_zero_regression(tmp_path, monkeypatch):
+    def _section_4_test_empty_library_node_guardrails_zero_regression(tmp_path, mp):
         from factorzen.agents.nodes import node_guardrails
         from factorzen.agents.state import AgentState, AttemptRecord
         from factorzen.discovery.scoring import DataBundle
@@ -672,7 +666,7 @@ def test_residual_objective_suite(tmp_path, monkeypatch):
                 })
         daily = pl.DataFrame(rows)
         bundle = DataBundle.build(daily)
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.validation.holdout.holdout_ic_result",
             lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
         )
@@ -692,10 +686,10 @@ def test_residual_objective_suite(tmp_path, monkeypatch):
         assert c["holdout_ic"] == pytest.approx(0.05)
         assert "residual_ic_train" not in c or c.get("residual_ic_train") is None
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_empty_library_node_guardrails_zero_regression(_tp4, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_empty_library_node_guardrails_zero_regression(_tp4, mp)
 
     # -- 原 test_day_guard_skips_thin_cross_section --
     def _section_5_test_day_guard_skips_thin_cross_section():
@@ -728,7 +722,6 @@ def test_residual_objective_suite(tmp_path, monkeypatch):
         assert res.n_days == 0
         assert res.ic_mean != res.ic_mean  # NaN
 
-    monkeypatch.undo()
     _section_5_test_day_guard_skips_thin_cross_section()
 
     # -- 原 test_day_guard_coverage_reason_text --
@@ -750,7 +743,6 @@ def test_residual_objective_suite(tmp_path, monkeypatch):
         )
         assert any("覆盖不足" in r for r in reasons)
 
-    monkeypatch.undo()
     _section_6_test_day_guard_coverage_reason_text()
 
 

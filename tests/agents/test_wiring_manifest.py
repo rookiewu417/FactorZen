@@ -65,7 +65,7 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
     _section_0_test_parser_defaults_are_zero_regression()
 
     # -- 原 test_cmd_mine_agent_forwards_patience_and_heal_rounds --
-    def _section_1_test_cmd_mine_agent_forwards_patience_and_heal_rounds(monkeypatch):
+    def _section_1_test_cmd_mine_agent_forwards_patience_and_heal_rounds(mp):
         from factorzen.cli import main as cli
 
         captured: dict = {}
@@ -78,8 +78,8 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
             captured.update(kw)
             return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
 
-        monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
-        monkeypatch.setattr("factorzen.pipelines.factor_mine_agent.run_agent_mine",
+        mp.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
+        mp.setattr("factorzen.pipelines.factor_mine_agent.run_agent_mine",
                             fake_run_agent_mine)
 
         rc = cli.main(["mine", "agent", "--start", "20220101", "--end", "20231231",
@@ -90,11 +90,11 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
         assert captured["heal_rounds"] == 1
         assert captured["prepare_lookback"] == AGENT_WARMUP_LOOKBACK
 
-    monkeypatch.undo()
-    _section_1_test_cmd_mine_agent_forwards_patience_and_heal_rounds(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cmd_mine_agent_forwards_patience_and_heal_rounds(mp)
 
     # -- 原 test_cmd_mine_team_forwards_structured_patience_heal_rounds --
-    def _section_2_test_cmd_mine_team_forwards_structured_patience_heal_rounds(monkeypatch):
+    def _section_2_test_cmd_mine_team_forwards_structured_patience_heal_rounds(mp):
         from factorzen.cli import main as cli
 
         captured: dict = {}
@@ -107,8 +107,8 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
             captured.update(kw)
             return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
 
-        monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
-        monkeypatch.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_run_team_mine)
+        mp.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
+        mp.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_run_team_mine)
 
         rc = cli.main(["mine", "team", "--start", "20220101", "--end", "20231231",
                        "--structured", "--patience", "2", "--heal-rounds", "0"])
@@ -117,11 +117,11 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
         assert captured["patience"] == 2
         assert captured["heal_rounds"] == 0
 
-    monkeypatch.undo()
-    _section_2_test_cmd_mine_team_forwards_structured_patience_heal_rounds(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_cmd_mine_team_forwards_structured_patience_heal_rounds(mp)
 
     # -- 原 test_run_agent_mine_forwards_to_orchestrator --
-    def _section_3_test_run_agent_mine_forwards_to_orchestrator(monkeypatch, tmp_path):
+    def _section_3_test_run_agent_mine_forwards_to_orchestrator(mp, tmp_path):
         from factorzen.agents.orchestrator import AgentResult
         from factorzen.agents.state import AgentState
         from factorzen.pipelines import factor_mine_agent as fma
@@ -132,20 +132,20 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
             captured.update(kw)
             return AgentResult(state=AgentState(seed=1), candidates=[], n_trials=0)
 
-        monkeypatch.setattr(fma, "run_llm_agent", fake_run_llm_agent)
+        mp.setattr(fma, "run_llm_agent", fake_run_llm_agent)
 
         fma.run_agent_mine(_mock_daily__wiring_caveats(), n_rounds=1, seed=1, llm_fn=lambda _m: "{}",
                            out_dir=str(tmp_path), patience=3, heal_rounds=1, export=False)
         assert captured["patience"] == 3
         assert captured["heal_rounds"] == 1
 
-    monkeypatch.undo()
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)
-    _section_3_test_run_agent_mine_forwards_to_orchestrator(monkeypatch, _tp3)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_run_agent_mine_forwards_to_orchestrator(mp, _tp3)
 
     # -- 原 test_run_team_mine_forwards_to_orchestrator --
-    def _section_4_test_run_team_mine_forwards_to_orchestrator(monkeypatch, tmp_path):
+    def _section_4_test_run_team_mine_forwards_to_orchestrator(mp, tmp_path):
         from factorzen.agents.state import AgentState
         from factorzen.agents.team_orchestrator import TeamResult
         from factorzen.pipelines import factor_mine_team as fmt
@@ -156,7 +156,7 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
             captured.update(kw)
             return TeamResult(state=AgentState(seed=1), candidates=[], n_trials=0)
 
-        monkeypatch.setattr(fmt, "run_team_agent", fake_run_team_agent)
+        mp.setattr(fmt, "run_team_agent", fake_run_team_agent)
 
         fmt.run_team_mine(_mock_daily__wiring_caveats(), n_rounds=1, seed=1, index_path=str(tmp_path / "e.jsonl"),
                           llm_fn=lambda _m: "{}", out_dir=str(tmp_path),
@@ -165,10 +165,10 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
         assert captured["patience"] == 2
         assert captured["heal_rounds"] == 0
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_run_team_mine_forwards_to_orchestrator(monkeypatch, _tp4)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_run_team_mine_forwards_to_orchestrator(mp, _tp4)
 
 
 # ─────────────────────────── CLI → pipeline ───────────────────────────
@@ -202,7 +202,7 @@ def test_team_manifest_records_new_params(monkeypatch, tmp_path):
 def test_structured_decompose_wiring_suite(tmp_path, monkeypatch):
     """structured=True：假设先经 decompose_tasks 拆成任务，每个任务各自驱动一次 Coder。；LLM 分解失败（空 tasks）→ 降级为对整条假设写表达式，不静默空转。；零回归：structured=False（默认）不得调用 decompose_tasks，不增加 LLM 调用。；实验溯源：structured 轮次的 rounds_log 要留下 task 清单。"""
     # -- 原 test_structured_decomposes_hypothesis_and_drives_coder_per_task --
-    def _section_0_test_structured_decomposes_hypothesis_and_drives_coder_per_task(tmp_path, monkeypatch):
+    def _section_0_test_structured_decomposes_hypothesis_and_drives_coder_per_task(tmp_path, mp):
         from factorzen.agents import team_orchestrator as to
 
         decompose_calls: list[str] = []
@@ -217,8 +217,8 @@ def test_structured_decompose_wiring_suite(tmp_path, monkeypatch):
             write_calls.append(hypothesis)
             return [f"ts_mean(close,{5 * len(write_calls)})"]
 
-        monkeypatch.setattr(to, "decompose_tasks", fake_decompose)
-        monkeypatch.setattr(to, "write_expressions", fake_write)
+        mp.setattr(to, "decompose_tasks", fake_decompose)
+        mp.setattr(to, "write_expressions", fake_write)
 
         seq = [json.dumps({"hypotheses": [{"direction": "动量", "mechanism": "m",
                                            "expected_sign": 1, "falsification": "f"}]}),
@@ -240,21 +240,22 @@ def test_structured_decompose_wiring_suite(tmp_path, monkeypatch):
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    _section_0_test_structured_decomposes_hypothesis_and_drives_coder_per_task(_tp0, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_structured_decomposes_hypothesis_and_drives_coder_per_task(_tp0, mp)
 
     # -- 原 test_decompose_returning_empty_falls_back_to_whole_hypothesis --
-    def _section_1_test_decompose_returning_empty_falls_back_to_whole_hypothesis(tmp_path, monkeypatch):
+    def _section_1_test_decompose_returning_empty_falls_back_to_whole_hypothesis(tmp_path, mp):
         from factorzen.agents import team_orchestrator as to
 
         write_calls: list[str] = []
 
-        monkeypatch.setattr(to, "decompose_tasks", lambda h, f: [])
+        mp.setattr(to, "decompose_tasks", lambda h, f: [])
 
         def fake_write(hypothesis, llm_fn, *, avoid=None, **_kw):
             write_calls.append(hypothesis)
             return ["ts_mean(close,5)"]
 
-        monkeypatch.setattr(to, "write_expressions", fake_write)
+        mp.setattr(to, "write_expressions", fake_write)
 
         seq = [json.dumps({"hypotheses": [{"direction": "动量", "mechanism": "m",
                                            "expected_sign": 1, "falsification": "f"}]}),
@@ -272,17 +273,17 @@ def test_structured_decompose_wiring_suite(tmp_path, monkeypatch):
         assert len(write_calls) == 1
         assert "动量" in write_calls[0]
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
-    _section_1_test_decompose_returning_empty_falls_back_to_whole_hypothesis(_tp1, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_decompose_returning_empty_falls_back_to_whole_hypothesis(_tp1, mp)
 
     # -- 原 test_non_structured_path_does_not_decompose --
-    def _section_2_test_non_structured_path_does_not_decompose(tmp_path, monkeypatch):
+    def _section_2_test_non_structured_path_does_not_decompose(tmp_path, mp):
         from factorzen.agents import team_orchestrator as to
 
         calls: list[str] = []
-        monkeypatch.setattr(to, "decompose_tasks",
+        mp.setattr(to, "decompose_tasks",
                             lambda h, f: calls.append(h) or [])  # type: ignore[func-returns-value]
 
         seq = [json.dumps({"hypotheses": ["动量"]}),
@@ -300,19 +301,19 @@ def test_structured_decompose_wiring_suite(tmp_path, monkeypatch):
 
         assert calls == []
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
-    _section_2_test_non_structured_path_does_not_decompose(_tp2, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_non_structured_path_does_not_decompose(_tp2, mp)
 
     # -- 原 test_rounds_log_records_tasks_for_traceability --
-    def _section_3_test_rounds_log_records_tasks_for_traceability(tmp_path, monkeypatch):
+    def _section_3_test_rounds_log_records_tasks_for_traceability(tmp_path, mp):
         from factorzen.agents import team_orchestrator as to
 
-        monkeypatch.setattr(to, "decompose_tasks",
+        mp.setattr(to, "decompose_tasks",
                             lambda h, f: [{"name": "mom5", "description": "5日动量",
                                            "rationale": "趋势"}])
-        monkeypatch.setattr(to, "write_expressions",
+        mp.setattr(to, "write_expressions",
                             lambda h, f, *, avoid=None, **_kw: ["ts_mean(close,5)"])
 
         seq = [json.dumps({"hypotheses": [{"direction": "动量", "mechanism": "m",
@@ -332,10 +333,10 @@ def test_structured_decompose_wiring_suite(tmp_path, monkeypatch):
             {"name": "mom5", "description": "5日动量", "rationale": "趋势"}
         ]
 
-    monkeypatch.undo()
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)
-    _section_3_test_rounds_log_records_tasks_for_traceability(_tp3, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_rounds_log_records_tasks_for_traceability(_tp3, mp)
 
 
 # ==== 来自 test_agent_ashare_caveats.py ====
@@ -423,7 +424,6 @@ def test_manifest_repro_suite(tmp_path, monkeypatch):
         assert p["market"] == "ashare"
         assert p["command"] == "fz mine agent --start 20220101"
 
-    monkeypatch.undo()
     _section_1_test_manifest_records_data_window()
 
     # -- 原 test_manifest_records_llm_identity_when_injected --
@@ -436,18 +436,17 @@ def test_manifest_repro_suite(tmp_path, monkeypatch):
 
         assert p["llm"] == {"injected": True}
 
-    monkeypatch.undo()
     _section_2_test_manifest_records_llm_identity_when_injected()
 
     # -- 原 test_llm_meta_reads_model_and_provider_from_config --
-    def _section_3_test_llm_meta_reads_model_and_provider_from_config(monkeypatch):
+    def _section_3_test_llm_meta_reads_model_and_provider_from_config(mp):
         from factorzen.llm.config import LLMConfig
         from factorzen.pipelines import factor_mine_agent as mod
 
         fake = LLMConfig(enabled=True, base_url="https://x/v1", api_key="sk-SECRET-TOKEN-XYZ",
                          model="DeepSeek-V4-Pro", provider="DeepSeek", temperature=0.2,
                          flavor="aiping", profile=None)
-        monkeypatch.setattr(mod, "load_llm_config", lambda **_kw: fake)
+        mp.setattr(mod, "load_llm_config", lambda **_kw: fake)
 
         meta = mod._llm_meta(None)
 
@@ -459,11 +458,11 @@ def test_manifest_repro_suite(tmp_path, monkeypatch):
         assert "api_key" not in meta, "凭据不得进 manifest"
         assert fake.api_key not in json.dumps(meta, ensure_ascii=False)
 
-    monkeypatch.undo()
-    _section_3_test_llm_meta_reads_model_and_provider_from_config(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_llm_meta_reads_model_and_provider_from_config(mp)
 
     # -- 原 test_llm_meta_records_profile_and_flavor_for_openai_gateway --
-    def _section_4_test_llm_meta_records_profile_and_flavor_for_openai_gateway(monkeypatch):
+    def _section_4_test_llm_meta_records_profile_and_flavor_for_openai_gateway(mp):
         from factorzen.llm.config import LLMConfig
         from factorzen.pipelines import factor_mine_agent as mod
 
@@ -475,7 +474,7 @@ def test_manifest_repro_suite(tmp_path, monkeypatch):
             flavor="openai",
             profile="sub2api",
         )
-        monkeypatch.setattr(mod, "load_llm_config", lambda **_kw: fake)
+        mp.setattr(mod, "load_llm_config", lambda **_kw: fake)
 
         meta = mod._llm_meta(None)
 
@@ -485,8 +484,8 @@ def test_manifest_repro_suite(tmp_path, monkeypatch):
         assert "api_key" not in meta
         assert "sk-PLACEHOLDER" not in json.dumps(meta, ensure_ascii=False)
 
-    monkeypatch.undo()
-    _section_4_test_llm_meta_records_profile_and_flavor_for_openai_gateway(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_llm_meta_records_profile_and_flavor_for_openai_gateway(mp)
 
 
 # ==== 来自 test_mining_manifest_reproducibility.py ====
@@ -748,11 +747,11 @@ def _patch_prepare_stack(monkeypatch, daily: pl.DataFrame, *, end_universe=None)
 def test_membership_manifest_suite(monkeypatch, tmp_path):
     """out_meta 传入 + membership 成功 → mode=pit、hash 与直算一致、n_rows 正确。；membership 构造抛异常 → fail closed（不再写 asof_fallback 可入库 meta）。；universe=None → mode=None（未过滤）。；out_meta=None → 不炸、行为与任务 H 一致（回归）。；CLI 装配 prep_meta → data_window → agent manifest.params 含 membership_mode/hash。"""
     # -- 原 test_out_meta_pit_success --
-    def _section_0_test_out_meta_pit_success(monkeypatch):
+    def _section_0_test_out_meta_pit_success(mp):
         from factorzen.core.universe import get_universe_membership, membership_hash
 
         daily = _synthetic_daily_frame()
-        fm, _ = _patch_prepare_stack(monkeypatch, daily)
+        fm, _ = _patch_prepare_stack(mp, daily)
 
         out_meta: dict = {}
         out = fm.prepare_mining_daily(
@@ -769,19 +768,20 @@ def test_membership_manifest_suite(monkeypatch, tmp_path):
         assert out_meta["membership_n_rows"] == mem.height
         assert out_meta["membership_n_rows"] > 0
 
-    _section_0_test_out_meta_pit_success(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_out_meta_pit_success(mp)
 
     # -- 原 test_out_meta_membership_failure_fails_closed --
-    def _section_1_test_out_meta_membership_failure_fails_closed(monkeypatch):
+    def _section_1_test_out_meta_membership_failure_fails_closed(mp):
         daily = _synthetic_daily_frame()
         fm, _ = _patch_prepare_stack(
-            monkeypatch, daily, end_universe=["B.SZ", "C.SZ"]
+            mp, daily, end_universe=["B.SZ", "C.SZ"]
         )
 
         def _boom(*a, **k):
             raise RuntimeError("mock membership failure")
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.core.universe.get_universe_membership", _boom
         )
 
@@ -793,13 +793,13 @@ def test_membership_manifest_suite(monkeypatch, tmp_path):
         # 抛错前未写入可入库 meta（fail closed 不落 asof_fallback 产物）
         assert out_meta == {}
 
-    monkeypatch.undo()
-    _section_1_test_out_meta_membership_failure_fails_closed(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_out_meta_membership_failure_fails_closed(mp)
 
     # -- 原 test_out_meta_universe_none --
-    def _section_2_test_out_meta_universe_none(monkeypatch):
+    def _section_2_test_out_meta_universe_none(mp):
         daily = _synthetic_daily_frame()
-        fm, _ = _patch_prepare_stack(monkeypatch, daily)
+        fm, _ = _patch_prepare_stack(mp, daily)
 
         out_meta: dict = {}
         out = fm.prepare_mining_daily(
@@ -812,14 +812,14 @@ def test_membership_manifest_suite(monkeypatch, tmp_path):
         assert out_meta.get("membership_n_rows") is None
         assert out_meta["universe"] is None
 
-    monkeypatch.undo()
-    _section_2_test_out_meta_universe_none(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_out_meta_universe_none(mp)
 
     # -- 原 test_out_meta_none_no_crash_behavior_unchanged --
-    def _section_3_test_out_meta_none_no_crash_behavior_unchanged(monkeypatch):
+    def _section_3_test_out_meta_none_no_crash_behavior_unchanged(mp):
         daily = _synthetic_daily_frame()
         n_raw = daily.height
-        fm, FakeCtx = _patch_prepare_stack(monkeypatch, daily)
+        fm, FakeCtx = _patch_prepare_stack(mp, daily)
 
         out = fm.prepare_mining_daily(
             "20240102", "20240205", universe="csi300", out_meta=None
@@ -833,17 +833,17 @@ def test_membership_manifest_suite(monkeypatch, tmp_path):
         assert a.filter(pl.col("trade_date").is_in(_JAN_DATES))["in_universe"].all()
         assert not a.filter(pl.col("trade_date").is_in(_FEB_DATES))["in_universe"].any()
 
-    monkeypatch.undo()
-    _section_3_test_out_meta_none_no_crash_behavior_unchanged(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_out_meta_none_no_crash_behavior_unchanged(mp)
 
     # -- 原 test_agent_manifest_includes_membership_fields --
-    def _section_4_test_agent_manifest_includes_membership_fields(monkeypatch, tmp_path):
+    def _section_4_test_agent_manifest_includes_membership_fields(mp, tmp_path):
         from factorzen.cli import main as cli_main
         from factorzen.core.universe import get_universe_membership, membership_hash
         from factorzen.pipelines.factor_mine_agent import run_agent_mine
 
         daily = _synthetic_daily_frame()
-        _patch_prepare_stack(monkeypatch, daily)
+        _patch_prepare_stack(mp, daily)
 
         args = SimpleNamespace(
             market="ashare",
@@ -886,7 +886,7 @@ def test_membership_manifest_suite(monkeypatch, tmp_path):
             )
 
         # 评估路径 mock 掉，避免合成帧不够评估维度
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.orchestrator.run_llm_agent",
             lambda *a, **k: _FakeAgentResult(),
         )
@@ -913,10 +913,10 @@ def test_membership_manifest_suite(monkeypatch, tmp_path):
         assert params["universe"] == "csi300"
         assert params["start"] == "20240102"
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_agent_manifest_includes_membership_fields(monkeypatch, _tp4)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_agent_manifest_includes_membership_fields(mp, _tp4)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

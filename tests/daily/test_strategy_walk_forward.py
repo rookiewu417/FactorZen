@@ -81,7 +81,7 @@ def test_strategy_registry_suite(tmp_path, monkeypatch):
     _section_0_test_builtin_strategy_registry_builds_supported_strategies()
 
     # -- 原 test_strategy_registry_imports_custom_strategy_from_dotted_path --
-    def _section_1_test_strategy_registry_imports_custom_strategy_from_dotted_path(tmp_path, monkeypatch):
+    def _section_1_test_strategy_registry_imports_custom_strategy_from_dotted_path(tmp_path, mp):
         module_path = tmp_path / "custom_strategy.py"
         module_path.write_text(
             dedent(
@@ -110,7 +110,7 @@ def test_strategy_registry_suite(tmp_path, monkeypatch):
             ),
             encoding="utf-8",
         )
-        monkeypatch.syspath_prepend(str(tmp_path))
+        mp.syspath_prepend(str(tmp_path))
         sys.modules.pop("custom_strategy", None)
 
         from factorzen.daily.evaluation.strategy_registry import build_strategy
@@ -120,10 +120,10 @@ def test_strategy_registry_suite(tmp_path, monkeypatch):
         assert strategy.name == "custom"
         assert strategy.multiplier == 3
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
-    _section_1_test_strategy_registry_imports_custom_strategy_from_dotted_path(_tp1, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_strategy_registry_imports_custom_strategy_from_dotted_path(_tp1, mp)
 
 
 # ==== 来自 test_walk_forward_strategy.py ====

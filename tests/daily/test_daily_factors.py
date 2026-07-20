@@ -513,12 +513,12 @@ def _make_finance_lf(n_stocks: int = 20) -> pl.LazyFrame:
 def test_special_event_factor_suite(ctx, monkeypatch):
     """test_asset_growth；When finance data unavailable, factor returns empty DataFrame gracefully.；test_qlib_alpha158_factor_returns_factorzen_schema；test_qlib_init_uses_low_memory_defaults；test_qlib_alpha360_factor_returns_factorzen_schema"""
     # -- 原 test_asset_growth --
-    def _section_0_test_asset_growth(ctx, monkeypatch):
+    def _section_0_test_asset_growth(ctx, mp):
         import factorzen.builtin_factors.monthly.asset_growth as ag_mod
         from factorzen.builtin_factors.monthly.asset_growth import AssetGrowthMonthly
 
         synthetic_lf = _make_finance_lf()
-        monkeypatch.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
+        mp.setattr(ag_mod, "scan_parquet", lambda _: synthetic_lf)
 
         factor = AssetGrowthMonthly()
         assert isinstance(factor, DailyFactor)
@@ -528,28 +528,29 @@ def test_special_event_factor_suite(ctx, monkeypatch):
         non_null = result["factor_value"].drop_nulls().to_numpy()
         assert np.all(np.isfinite(non_null)), "Asset growth should be finite"
 
-    _section_0_test_asset_growth(ctx, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_asset_growth(ctx, mp)
 
     # -- 原 test_asset_growth_empty_when_no_finance --
-    def _section_1_test_asset_growth_empty_when_no_finance(ctx, monkeypatch):
+    def _section_1_test_asset_growth_empty_when_no_finance(ctx, mp):
         import factorzen.builtin_factors.monthly.asset_growth as ag_mod
         from factorzen.builtin_factors.monthly.asset_growth import AssetGrowthMonthly
 
         def _raise(_):
             raise FileNotFoundError("no data")
 
-        monkeypatch.setattr(ag_mod, "scan_parquet", _raise)
+        mp.setattr(ag_mod, "scan_parquet", _raise)
 
         factor = AssetGrowthMonthly()
         result = factor.compute(ctx)
         assert isinstance(result, pl.DataFrame)
         assert result.is_empty()
 
-    monkeypatch.undo()
-    _section_1_test_asset_growth_empty_when_no_finance(ctx, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_asset_growth_empty_when_no_finance(ctx, mp)
 
     # -- 原 test_qlib_alpha158_factor_returns_factorzen_schema --
-    def _section_2_test_qlib_alpha158_factor_returns_factorzen_schema(ctx, monkeypatch):
+    def _section_2_test_qlib_alpha158_factor_returns_factorzen_schema(ctx, mp):
         import factorzen.builtin_factors.qlib.handler as qlib_mod
         from factorzen.builtin_factors.qlib.handler import QlibAlpha158Kmid
 
@@ -562,18 +563,18 @@ def test_special_event_factor_suite(ctx, monkeypatch):
                 "KMID": [0.1, -0.2],
             }
         )
-        monkeypatch.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
+        mp.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
 
         result = QlibAlpha158Kmid().compute(ctx)
 
         assert result.columns == ["trade_date", "ts_code", "factor_value"]
         assert result["factor_value"].to_list() == [0.1, -0.2]
 
-    monkeypatch.undo()
-    _section_2_test_qlib_alpha158_factor_returns_factorzen_schema(ctx, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_qlib_alpha158_factor_returns_factorzen_schema(ctx, mp)
 
     # -- 原 test_qlib_init_uses_low_memory_defaults --
-    def _section_3_test_qlib_init_uses_low_memory_defaults(monkeypatch):
+    def _section_3_test_qlib_init_uses_low_memory_defaults(mp):
         import factorzen.builtin_factors.qlib.handler as qlib_mod
 
         init_calls = []
@@ -581,11 +582,11 @@ def test_special_event_factor_suite(ctx, monkeypatch):
         fake_qlib = types.SimpleNamespace(init=lambda **kwargs: init_calls.append(kwargs))
         fake_constant = types.SimpleNamespace(REG_CN="cn")
 
-        monkeypatch.setattr(qlib_mod, "_QLIB_INITIALIZED", False)
-        monkeypatch.delenv("QLIB_KERNELS", raising=False)
-        monkeypatch.delenv("QLIB_JOBLIB_BACKEND", raising=False)
-        monkeypatch.setitem(sys.modules, "qlib", fake_qlib)
-        monkeypatch.setitem(sys.modules, "qlib.constant", fake_constant)
+        mp.setattr(qlib_mod, "_QLIB_INITIALIZED", False)
+        mp.delenv("QLIB_KERNELS", raising=False)
+        mp.delenv("QLIB_JOBLIB_BACKEND", raising=False)
+        mp.setitem(sys.modules, "qlib", fake_qlib)
+        mp.setitem(sys.modules, "qlib.constant", fake_constant)
 
         qlib_mod._init_qlib("provider")
 
@@ -598,11 +599,11 @@ def test_special_event_factor_suite(ctx, monkeypatch):
             }
         ]
 
-    monkeypatch.undo()
-    _section_3_test_qlib_init_uses_low_memory_defaults(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_qlib_init_uses_low_memory_defaults(mp)
 
     # -- 原 test_qlib_alpha360_factor_returns_factorzen_schema --
-    def _section_4_test_qlib_alpha360_factor_returns_factorzen_schema(ctx, monkeypatch):
+    def _section_4_test_qlib_alpha360_factor_returns_factorzen_schema(ctx, mp):
         import factorzen.builtin_factors.qlib.handler as qlib_mod
         from factorzen.builtin_factors.qlib.handler import QlibAlpha360Close0
 
@@ -613,14 +614,14 @@ def test_special_event_factor_suite(ctx, monkeypatch):
                 "CLOSE0": [1.0, 1.0],
             }
         )
-        monkeypatch.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
+        mp.setattr(qlib_mod, "load_qlib_feature_frame", lambda *args, **kwargs: qlib_df)
 
         result = QlibAlpha360Close0().compute(ctx)
 
         assert result.columns == ["trade_date", "ts_code", "factor_value"]
         assert result["factor_value"].to_list() == [1.0, 1.0]
 
-    monkeypatch.undo()
-    _section_4_test_qlib_alpha360_factor_returns_factorzen_schema(ctx, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_qlib_alpha360_factor_returns_factorzen_schema(ctx, mp)
 
 

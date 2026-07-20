@@ -105,7 +105,6 @@ def test_python_kind_identity_suite(tmp_path, monkeypatch):
         # 确定性：多次一致
         assert default_name_for_expression(expr) == default_name_for_expression(expr)
 
-    monkeypatch.undo()
     _section_1_test_python_identity_helpers_deterministic()
 
     # -- 原 test_save_library_backfills_name_idempotent --
@@ -140,7 +139,6 @@ def test_python_kind_identity_suite(tmp_path, monkeypatch):
         names_after = {r.expression: r.name for r in lib2}
         assert names_before == names_after
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
     _section_2_test_save_library_backfills_name_idempotent(_tp2)
@@ -193,11 +191,10 @@ def test_python_kind_identity_suite(tmp_path, monkeypatch):
         assert rec2.name == "custom_name"
         assert rec2.impl == "custom_impl"
 
-    monkeypatch.undo()
     _section_3_test_record_from_candidate_python_identity_and_explicit_keys()
 
     # -- 原 test_materialize_python_panel_offline --
-    def _section_4_test_materialize_python_panel_offline(monkeypatch):
+    def _section_4_test_materialize_python_panel_offline(mp):
         from datetime import datetime
 
         from factorzen.daily.factors.base import DailyFactor
@@ -231,9 +228,9 @@ def test_python_kind_identity_suite(tmp_path, monkeypatch):
         # 先正常 import 再 patch，避免 string-target 首次导入陷阱
         import factorzen.daily.factors.registry as reg_mod
 
-        monkeypatch.setattr(reg_mod, "get_factor", lambda name: FakeFactor)
+        mp.setattr(reg_mod, "get_factor", lambda name: FakeFactor)
         # 离线：不碰 membership / tushare
-        monkeypatch.setattr(
+        mp.setattr(
             pyf, "_load_universe_codes",
             lambda start, end, universe: ["000000.SH", "000001.SH"],
         )
@@ -249,7 +246,7 @@ def test_python_kind_identity_suite(tmp_path, monkeypatch):
             )
             return d.strftime("%Y%m%d")
 
-        monkeypatch.setattr(
+        mp.setattr(
             ctx_mod.FactorDataContext, "expanded_start", property(_fake_expanded),
         )
 
@@ -281,7 +278,7 @@ def test_python_kind_identity_suite(tmp_path, monkeypatch):
         def _boom(name):
             raise KeyError(name)
 
-        monkeypatch.setattr(reg_mod, "get_factor", _boom)
+        mp.setattr(reg_mod, "get_factor", _boom)
         with pytest.raises(ValueError, match=r"未注册|not registered|未知"):
             materialize_python_panel(
                 "no_such", start, end, "csi300", market="ashare", use_cache=False,
@@ -290,8 +287,8 @@ def test_python_kind_identity_suite(tmp_path, monkeypatch):
         # restore property ref unused
         _ = real_expanded
 
-    monkeypatch.undo()
-    _section_4_test_materialize_python_panel_offline(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_materialize_python_panel_offline(mp)
 
 
 # ── 2. identity helpers ──────────────────────────────────────────────────────
@@ -864,9 +861,9 @@ def _patch_materialize_offline(monkeypatch, factor_cls, tmp_path: Path):
 def test_panel_cache_suite(tmp_path, monkeypatch):
     """首调 compute 1 次；二调 0 次且 frame 相等。；改写 .py 源码 → impl_sha 变 → 重算（不命中旧缓存）。；损坏 parquet → 重算不崩、坏文件被清。；use_cache=False 全程不读不写。；type() 动态类无源文件 → 不缓存不崩。；空面板不写缓存：数据未回补的空结果落盘会在回补后持续命中（文件存在≠数据完整）。"""
     # -- 原 test_panel_cache_hit_skips_recompute --
-    def _section_0_test_panel_cache_hit_skips_recompute(tmp_path, monkeypatch):
+    def _section_0_test_panel_cache_hit_skips_recompute(tmp_path, mp):
         factor_cls = _install_factor_module(tmp_path, "hit_factor", _FACTOR_BODY)
-        pyf = _patch_materialize_offline(monkeypatch, factor_cls, tmp_path)
+        pyf = _patch_materialize_offline(mp, factor_cls, tmp_path)
 
         # 通过模块全局计数
         mod = sys.modules[factor_cls.__module__]
@@ -891,10 +888,11 @@ def test_panel_cache_suite(tmp_path, monkeypatch):
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    _section_0_test_panel_cache_hit_skips_recompute(_tp0, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_panel_cache_hit_skips_recompute(_tp0, mp)
 
     # -- 原 test_panel_cache_source_change_busts_key --
-    def _section_1_test_panel_cache_source_change_busts_key(tmp_path, monkeypatch):
+    def _section_1_test_panel_cache_source_change_busts_key(tmp_path, mp):
         from factorzen.discovery.python_factor import _impl_source_sha, _panel_cache_key
 
         mod_path = tmp_path / "bust_factor.py"
@@ -913,7 +911,7 @@ def test_panel_cache_suite(tmp_path, monkeypatch):
         mod1 = _load()
         sha1 = _impl_source_sha(mod1.CachedFactor)
         assert sha1 is not None
-        pyf = _patch_materialize_offline(monkeypatch, mod1.CachedFactor, tmp_path)
+        pyf = _patch_materialize_offline(mp, mod1.CachedFactor, tmp_path)
 
         start, end = "20240110", "20240115"
         out1 = pyf.materialize_python_panel(
@@ -939,7 +937,7 @@ def test_panel_cache_suite(tmp_path, monkeypatch):
 
         import factorzen.daily.factors.registry as reg_mod
 
-        monkeypatch.setattr(reg_mod, "get_factor", lambda name: mod2.CachedFactor)
+        mp.setattr(reg_mod, "get_factor", lambda name: mod2.CachedFactor)
 
         out2 = pyf.materialize_python_panel(
             "cached_factor", start, end, "csi300", market="ashare",
@@ -949,15 +947,15 @@ def test_panel_cache_suite(tmp_path, monkeypatch):
         assert set(out2.columns) == {"trade_date", "ts_code", "factor_value"}
         assert out2.height == out1.height
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
-    _section_1_test_panel_cache_source_change_busts_key(_tp1, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_panel_cache_source_change_busts_key(_tp1, mp)
 
     # -- 原 test_panel_cache_corrupt_recomputes --
-    def _section_2_test_panel_cache_corrupt_recomputes(tmp_path, monkeypatch):
+    def _section_2_test_panel_cache_corrupt_recomputes(tmp_path, mp):
         factor_cls = _install_factor_module(tmp_path, "corrupt_factor", _FACTOR_BODY)
-        pyf = _patch_materialize_offline(monkeypatch, factor_cls, tmp_path)
+        pyf = _patch_materialize_offline(mp, factor_cls, tmp_path)
         mod = sys.modules[factor_cls.__module__]
 
         start, end = "20240110", "20240115"
@@ -982,15 +980,15 @@ def test_panel_cache_suite(tmp_path, monkeypatch):
         reloaded = pl.read_parquet(bad)
         assert {"trade_date", "ts_code", "factor_value"}.issubset(set(reloaded.columns))
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
-    _section_2_test_panel_cache_corrupt_recomputes(_tp2, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_panel_cache_corrupt_recomputes(_tp2, mp)
 
     # -- 原 test_panel_cache_use_cache_false --
-    def _section_3_test_panel_cache_use_cache_false(tmp_path, monkeypatch):
+    def _section_3_test_panel_cache_use_cache_false(tmp_path, mp):
         factor_cls = _install_factor_module(tmp_path, "nocache_factor", _FACTOR_BODY)
-        pyf = _patch_materialize_offline(monkeypatch, factor_cls, tmp_path)
+        pyf = _patch_materialize_offline(mp, factor_cls, tmp_path)
         mod = sys.modules[factor_cls.__module__]
 
         start, end = "20240110", "20240115"
@@ -1004,13 +1002,13 @@ def test_panel_cache_suite(tmp_path, monkeypatch):
         cache_root = tmp_path / "cache" / "python_factor_panels"
         assert not cache_root.exists() or not any(cache_root.rglob("*.parquet"))
 
-    monkeypatch.undo()
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)
-    _section_3_test_panel_cache_use_cache_false(_tp3, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_panel_cache_use_cache_false(_tp3, mp)
 
     # -- 原 test_panel_cache_dynamic_class_no_cache --
-    def _section_4_test_panel_cache_dynamic_class_no_cache(tmp_path, monkeypatch):
+    def _section_4_test_panel_cache_dynamic_class_no_cache(tmp_path, mp):
         from factorzen.daily.factors.base import DailyFactor
 
         count = {"n": 0}
@@ -1045,7 +1043,7 @@ def test_panel_cache_suite(tmp_path, monkeypatch):
         # type() 类通常 getsourcefile → None
         assert py_impl_sha_is_none(Dyn)
 
-        pyf = _patch_materialize_offline(monkeypatch, Dyn, tmp_path)
+        pyf = _patch_materialize_offline(mp, Dyn, tmp_path)
         start, end = "20240110", "20240115"
         out1 = pyf.materialize_python_panel(
             "dyn_factor", start, end, "csi300", market="ashare", use_cache=True,
@@ -1058,17 +1056,17 @@ def test_panel_cache_suite(tmp_path, monkeypatch):
         cache_root = tmp_path / "cache" / "python_factor_panels"
         assert not cache_root.exists() or not any(cache_root.rglob("*.parquet"))
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_panel_cache_dynamic_class_no_cache(_tp4, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_panel_cache_dynamic_class_no_cache(_tp4, mp)
 
     # -- 原 test_panel_cache_skips_empty_panel --
-    def _section_5_test_panel_cache_skips_empty_panel(tmp_path, monkeypatch):
+    def _section_5_test_panel_cache_skips_empty_panel(tmp_path, mp):
         import sys as _sys
 
         factor_cls = _install_factor_module(tmp_path, "empty_factor", _EMPTY_FACTOR_BODY)
-        pyf = _patch_materialize_offline(monkeypatch, factor_cls, tmp_path)
+        pyf = _patch_materialize_offline(mp, factor_cls, tmp_path)
         mod = _sys.modules[factor_cls.__module__]
 
         out1 = pyf.materialize_python_panel(
@@ -1087,10 +1085,10 @@ def test_panel_cache_suite(tmp_path, monkeypatch):
         assert out2.is_empty()
         assert mod._COMPUTE_COUNT == 2  # 无缓存可命中 → 重算
 
-    monkeypatch.undo()
     _tp5 = tmp_path / "_s5"
     _tp5.mkdir(exist_ok=True)
-    _section_5_test_panel_cache_skips_empty_panel(_tp5, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_5_test_panel_cache_skips_empty_panel(_tp5, mp)
 
 
 def py_impl_sha_is_none(cls) -> bool:

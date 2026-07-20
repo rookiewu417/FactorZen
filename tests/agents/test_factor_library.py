@@ -258,46 +258,47 @@ def test_decorrelation_upsert_suite(tmp_path):
 def test_default_window_suite(monkeypatch):
     """test_default_window_end_is_latest_start_back_years；test_default_window_today_caps_end；test_default_window_crypto_floor；test_default_window_raises_when_cache_missing"""
     # -- 原 test_default_window_end_is_latest_start_back_years --
-    def _section_0_test_default_window_end_is_latest_start_back_years(monkeypatch):
+    def _section_0_test_default_window_end_is_latest_start_back_years(mp):
         import factorzen.discovery.backtest_window as bw
-        monkeypatch.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
+        mp.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
         start, end = bw.default_window("ashare", years=6)
         assert end == "20260630"
         assert start == "20200630"
 
-    _section_0_test_default_window_end_is_latest_start_back_years(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_default_window_end_is_latest_start_back_years(mp)
 
     # -- 原 test_default_window_today_caps_end --
-    def _section_1_test_default_window_today_caps_end(monkeypatch):
+    def _section_1_test_default_window_today_caps_end(mp):
         import factorzen.discovery.backtest_window as bw
-        monkeypatch.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
+        mp.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
         start, end = bw.default_window("ashare", years=6, today=date(2025, 1, 15))
         assert end == "20250115"                          # today 更早 → 封顶
         assert start == "20190115"
 
-    monkeypatch.undo()
-    _section_1_test_default_window_today_caps_end(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_default_window_today_caps_end(mp)
 
     # -- 原 test_default_window_crypto_floor --
-    def _section_2_test_default_window_crypto_floor(monkeypatch):
+    def _section_2_test_default_window_crypto_floor(mp):
         import factorzen.discovery.backtest_window as bw
-        monkeypatch.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
+        mp.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
         start, end = bw.default_window("crypto", years=6)
         assert start == "20210101"                         # crypto 起点下限 20210101
         assert end == "20260630"
 
-    monkeypatch.undo()
-    _section_2_test_default_window_crypto_floor(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_default_window_crypto_floor(mp)
 
     # -- 原 test_default_window_raises_when_cache_missing --
-    def _section_3_test_default_window_raises_when_cache_missing(monkeypatch):
+    def _section_3_test_default_window_raises_when_cache_missing(mp):
         import factorzen.discovery.backtest_window as bw
-        monkeypatch.setattr(bw, "latest_data_date", lambda m: None)
+        mp.setattr(bw, "latest_data_date", lambda m: None)
         with pytest.raises(ValueError):
             bw.default_window("ashare")
 
-    monkeypatch.undo()
-    _section_3_test_default_window_raises_when_cache_missing(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_default_window_raises_when_cache_missing(mp)
 
 
 def test_latest_data_date_scans_partitions(tmp_path, monkeypatch):

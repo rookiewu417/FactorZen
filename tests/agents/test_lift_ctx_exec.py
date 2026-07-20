@@ -357,7 +357,7 @@ def _fake_daily_full() -> pl.DataFrame:
 def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
     """组测收到的 ctx.admission_start == holdout 首日；meta 含 admission_start/end/horizon。；显式 materialize_candidate 注入时不构造默认 / prepped materializer。；库内 lift 记录 horizon=10 → 默认 runner 调 run_lift_tests 时 ctx.horizon==10。；装配返回 None → 现有空帧报错路径不变（exit 1）。；manifest 含 holdout_start → run_lift_tests 收到推导出的 admission_start。"""
     # -- 原 test_team_hook_admission_window_in_ctx_and_meta --
-    def _section_0_test_team_hook_admission_window_in_ctx_and_meta(monkeypatch):
+    def _section_0_test_team_hook_admission_window_in_ctx_and_meta(mp):
         from factorzen.agents.team_orchestrator import _session_end_auto_lift
         from factorzen.discovery.lift_test import DEFAULT_HORIZON
 
@@ -384,9 +384,9 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
             captured["upsert_meta"] = kw.get("meta") or {}
             return {"added_active": 1, "added_probation": 0, "rejected": 0, "errors": []}
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
-        monkeypatch.setattr(
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
+        mp.setattr(
             "factorzen.discovery.factor_library.upsert_lift_admissions",
             fake_upsert, raising=False,
         )
@@ -419,10 +419,11 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
         um = captured["upsert_meta"]
         assert um.get("horizon") == DEFAULT_HORIZON
 
-    _section_0_test_team_hook_admission_window_in_ctx_and_meta(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_team_hook_admission_window_in_ctx_and_meta(mp)
 
     # -- 原 test_team_hook_injected_materializer_skips_default --
-    def _section_1_test_team_hook_injected_materializer_skips_default(monkeypatch):
+    def _section_1_test_team_hook_injected_materializer_skips_default(mp):
         from factorzen.agents.team_orchestrator import _session_end_auto_lift
 
         state = _state_with_lift_queue(["ts_mean(close, 5)"])
@@ -437,10 +438,10 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
             calls.append("prepped")
             raise AssertionError("注入路径不应构造 _materializer_from_prepped")
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.lift_test._default_materializer", boom_default,
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.lift_test._materializer_from_prepped", boom_prepped,
         )
 
@@ -450,7 +451,7 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
                 "expressions": ["ts_mean(close, 5)"],
             }
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
 
         meta = _session_end_auto_lift(
             state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
@@ -462,11 +463,11 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
         assert calls == [], f"注入 materialize 时不应构造默认 mat，got {calls}"
         assert meta.get("lift_error") is None
 
-    monkeypatch.undo()
-    _section_1_test_team_hook_injected_materializer_skips_default(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_team_hook_injected_materializer_skips_default(mp)
 
     # -- 原 test_cli_rebuild_wires_daily_and_record_horizon --
-    def _section_2_test_cli_rebuild_wires_daily_and_record_horizon(tmp_path, monkeypatch):
+    def _section_2_test_cli_rebuild_wires_daily_and_record_horizon(tmp_path, mp):
         import factorzen.cli.main as cli_main
         import factorzen.discovery.factor_library as fl
         import factorzen.discovery.lift_test as lt_mod
@@ -500,14 +501,14 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
                 "lift_second_half": 0.003, "baseline": 0.05, "passed": True,
             }]
 
-        patch_cli_lift_pre_gates(monkeypatch)
-        monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
-        monkeypatch.setattr(
+        patch_cli_lift_pre_gates(mp)
+        mp.setattr(lt_mod, "run_lift_tests", fake_lift)
+        mp.setattr(
             cli_main, "_prepare_agent_mining_data",
             lambda args: (_fake_daily_full(), None, {}),
         )
-        monkeypatch.setattr(fl, "collect_source_expressions", lambda market: [])
-        monkeypatch.setattr(
+        mp.setattr(fl, "collect_source_expressions", lambda market: [])
+        mp.setattr(
             fl, "build_library_evaluator",
             lambda *a, **k: (lambda exprs: [], None),
         )
@@ -518,7 +519,7 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
             kw.setdefault("root", str(lib_root))
             return orig_rebuild(*a, **kw)
 
-        monkeypatch.setattr(fl, "rebuild", rebuild_to_tmp)
+        mp.setattr(fl, "rebuild", rebuild_to_tmp)
 
         args = build_parser().parse_args([
             "factor-library", "rebuild",
@@ -526,8 +527,8 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
             "--start", "20200101",
             "--end", "20201231",
         ])
-        # 强制 root：rebuild 默认 DEFAULT_ROOT；上面 monkeypatch 已 setdefault root
-        # 但 CLI 未传 root——依赖 monkeypatch 包装
+        # 强制 root：rebuild 默认 DEFAULT_ROOT；上面 mp 已 setdefault root
+        # 但 CLI 未传 root——依赖 mp 包装
         rc = cli_main._cmd_factor_library_rebuild(args)
         assert rc == 0, "lift_review_error 应为 None 且 exit 0"
         assert captured, "默认 runner 应调用 run_lift_tests"
@@ -535,17 +536,17 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
         assert ctx is not None, "应传 ctx"
         assert ctx.horizon == 10, f"复审 horizon 应取 rec.horizon=10，got {ctx.horizon}"
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
-    _section_2_test_cli_rebuild_wires_daily_and_record_horizon(_tp2, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_cli_rebuild_wires_daily_and_record_horizon(_tp2, mp)
 
     # -- 原 test_cli_rebuild_missing_daily_still_errors --
-    def _section_3_test_cli_rebuild_missing_daily_still_errors(monkeypatch, capsys):
+    def _section_3_test_cli_rebuild_missing_daily_still_errors(mp, capsys):
         import factorzen.cli.main as cli_main
         from factorzen.cli.main import build_parser
 
-        monkeypatch.setattr(
+        mp.setattr(
             cli_main, "_prepare_agent_mining_data",
             lambda args: (None, None, {}),
         )
@@ -560,17 +561,17 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
         err = capsys.readouterr().err
         assert "挖掘帧为空" in err
 
-    monkeypatch.undo()
-    _section_3_test_cli_rebuild_missing_daily_still_errors(monkeypatch, capsys)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_cli_rebuild_missing_daily_still_errors(mp, capsys)
 
     # -- 原 test_lift_test_admission_from_manifest --
-    def _section_4_test_lift_test_admission_from_manifest(tmp_path, monkeypatch):
+    def _section_4_test_lift_test_admission_from_manifest(tmp_path, mp):
         import factorzen.cli.main as cli_main
         from factorzen.cli.main import build_parser
 
         run_dir = _write_gray_session(tmp_path, holdout_start="20200901")
         captured: list = []
-        _patch_lift_test_capture(monkeypatch, captured)
+        _patch_lift_test_capture(mp, captured)
 
         args = build_parser().parse_args([
             "factor-library", "lift-test",
@@ -587,10 +588,10 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
         assert ctx is not None
         assert _as_ymd(ctx.admission_start) == "20200901"
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_lift_test_admission_from_manifest(_tp4, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_lift_test_admission_from_manifest(_tp4, mp)
 
 
 # ── 2. hook 注入优先 ─────────────────────────────────────────────────────────

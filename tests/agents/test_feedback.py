@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.memory import family_groups, negative_recall
 from factorzen.agents.orchestrator import _summarize_feedback
@@ -662,11 +664,10 @@ def test_library_covered_family_suite(tmp_path, monkeypatch):
         assert format_library_covered(None) == ""
         assert format_library_covered(["a", "b"]) == "库内已有(追求与其正交,换方向): a；b"
 
-    monkeypatch.undo()
     _section_1_test_format_library_covered_unchanged()
 
     # -- 原 test_round_exhausted_filter_in_rounds_log --
-    def _section_2_test_round_exhausted_filter_in_rounds_log(tmp_path, monkeypatch):
+    def _section_2_test_round_exhausted_filter_in_rounds_log(tmp_path, mp):
         import datetime as dt
 
         import numpy as np
@@ -675,7 +676,7 @@ def test_library_covered_family_suite(tmp_path, monkeypatch):
         from factorzen.agents.roles import librarian as lib_mod
         from factorzen.agents.team_orchestrator import run_team_agent
 
-        monkeypatch.setattr(lib_mod, "EXHAUSTED_MIN_TRIES", 2)
+        mp.setattr(lib_mod, "EXHAUSTED_MIN_TRIES", 2)
 
         # 预置 index：holder_num_chg 挖穿
         idx_path = tmp_path / "experiment_index.jsonl"
@@ -738,13 +739,13 @@ def test_library_covered_family_suite(tmp_path, monkeypatch):
         # 两条纯 exhausted 应被过滤
         assert result.rounds_log[0]["n_exhausted_filtered"] >= 1
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
-    _section_2_test_round_exhausted_filter_in_rounds_log(_tp2, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_round_exhausted_filter_in_rounds_log(_tp2, mp)
 
     # -- 原 test_m5_library_crowded_injected_via_orchestrator --
-    def _section_3_test_m5_library_crowded_injected_via_orchestrator(tmp_path, monkeypatch):
+    def _section_3_test_m5_library_crowded_injected_via_orchestrator(tmp_path):
         import datetime as dt
 
         import numpy as np
@@ -808,10 +809,9 @@ def test_library_covered_family_suite(tmp_path, monkeypatch):
         # 拥挤叶子文案应出现在生成 prompt
         assert "拥挤" in all_text or "close(" in all_text
 
-    monkeypatch.undo()
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)
-    _section_3_test_m5_library_crowded_injected_via_orchestrator(_tp3, monkeypatch)
+    _section_3_test_m5_library_crowded_injected_via_orchestrator(_tp3)
 
 
 # ── C wiring + D M5 dual-path behavioral ─────────────────────────────────────

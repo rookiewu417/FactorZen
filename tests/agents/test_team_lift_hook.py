@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from factorzen.agents.state import AgentState, AttemptRecord
 from factorzen.agents.team_orchestrator import (
@@ -92,7 +93,7 @@ def _panel(n_dates: int, n_stocks: int = 10, start=dt.date(2022, 1, 3)):
 def test_full_residual_slot_suite(monkeypatch):
     """多表达式 top_k=1：非 top-K 且 |residual|≥gray floor → lift_queue；全体带 residual_ic_train。；W1b：非 top-K train residual ≥ floor 但 holdout 覆盖 <60 天 → 不入队。；泄漏 A 回归：裸 IC 高残差低 vs 裸 IC 低残差高 → 后者进验收槽（top_k=1）。"""
     # -- 原 test_full_residual_marks_nontopk_lift_queue --
-    def _section_0_test_full_residual_marks_nontopk_lift_queue(monkeypatch):
+    def _section_0_test_full_residual_marks_nontopk_lift_queue(mp):
         from factorzen.agents.nodes import node_guardrails
         from factorzen.discovery.residual import ResidualICResult
         from factorzen.discovery.scoring import DataBundle
@@ -130,21 +131,21 @@ def test_full_residual_slot_suite(monkeypatch):
             # holdout 残差补算：覆盖充足
             return ResidualICResult(0.01, n_days=80)
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.residual.compute_residual_ic", fake_ric,
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.validation.holdout.holdout_ic_result",
             lambda *a, **k: type("H", (), {
                 "ic_mean": 0.01, "ir": 0.5, "ci": (0.0, 0.02), "n_days": 80,
             })(),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.scoring.library_orthogonal_check",
             lambda *a, **k: (True, 0.1, None),
         )
         # 主门一律不过 → top-K 与非 top-K 均走 is_lift_queue（统一后缀待组合裁决）
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.guardrails.acceptance_reasons",
             lambda **kw: ["残差IC太弱"],
         )
@@ -175,10 +176,11 @@ def test_full_residual_slot_suite(monkeypatch):
             for a in state.attempts
         )
 
-    _section_0_test_full_residual_marks_nontopk_lift_queue(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_full_residual_marks_nontopk_lift_queue(mp)
 
     # -- 原 test_nontopk_holdout_coverage_shortfall_not_queued --
-    def _section_1_test_nontopk_holdout_coverage_shortfall_not_queued(monkeypatch):
+    def _section_1_test_nontopk_holdout_coverage_shortfall_not_queued(mp):
         from factorzen.agents.nodes import node_guardrails
         from factorzen.discovery.residual import ResidualICResult
         from factorzen.discovery.scoring import DataBundle
@@ -212,20 +214,20 @@ def test_full_residual_slot_suite(monkeypatch):
             # holdout 补算：覆盖不足
             return ResidualICResult(0.01, n_days=30)
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.residual.compute_residual_ic", fake_ric,
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.validation.holdout.holdout_ic_result",
             lambda *a, **k: type("H", (), {
                 "ic_mean": 0.01, "ir": 0.5, "ci": (0.0, 0.02), "n_days": 80,
             })(),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.scoring.library_orthogonal_check",
             lambda *a, **k: (True, 0.1, None),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.guardrails.acceptance_reasons",
             lambda **kw: ["残差IC太弱"],
         )
@@ -243,11 +245,11 @@ def test_full_residual_slot_suite(monkeypatch):
             f"覆盖不足应不入队: {low.reject_category=} {low.reject_reason=}"
         )
 
-    monkeypatch.undo()
-    _section_1_test_nontopk_holdout_coverage_shortfall_not_queued(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_nontopk_holdout_coverage_shortfall_not_queued(mp)
 
     # -- 原 test_slot_key_prefers_high_residual_over_high_raw_ic --
-    def _section_2_test_slot_key_prefers_high_residual_over_high_raw_ic(monkeypatch):
+    def _section_2_test_slot_key_prefers_high_residual_over_high_raw_ic(mp):
         from factorzen.agents.nodes import node_guardrails
         from factorzen.discovery.residual import ResidualICResult
         from factorzen.discovery.scoring import DataBundle
@@ -289,7 +291,7 @@ def test_full_residual_slot_suite(monkeypatch):
             # holdout residual for the selected slot candidate
             return ResidualICResult(0.02, n_days=90)
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.residual.compute_residual_ic", fake_ric,
         )
 
@@ -310,7 +312,7 @@ def test_full_residual_slot_suite(monkeypatch):
                 evaluated.append(expression)
             return _orig_parse(expression, leaf_map)
 
-        monkeypatch.setattr("factorzen.agents.nodes.parse_expr", tracking_parse)
+        mp.setattr("factorzen.agents.nodes.parse_expr", tracking_parse)
 
         # 避免 holdout/护栏炸：mock holdout_ic_result + library check + acceptance
 
@@ -320,19 +322,19 @@ def test_full_residual_slot_suite(monkeypatch):
             ci = (0.01, 0.03)
             n_days = 80
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.validation.holdout.holdout_ic_result",
             lambda *a, **k: _HRes(),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.scoring.library_orthogonal_check",
             lambda *a, **k: (True, 0.1, None),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.guardrails.acceptance_reasons",
             lambda **kw: [],
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.scoring.max_correlation",
             lambda *a, **k: 0.0,
         )
@@ -351,8 +353,8 @@ def test_full_residual_slot_suite(monkeypatch):
         # 低残差高裸 IC 不应进候选（top_k=1 且按 residual 排序）
         assert all(c["expression"] != high_raw_low_res for c in state.candidates)
 
-    monkeypatch.undo()
-    _section_2_test_slot_key_prefers_high_residual_over_high_raw_ic(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_slot_key_prefers_high_residual_over_high_raw_ic(mp)
 
 
 # ── 2. session 末 lift 钩子 ─────────────────────────────────────────────────
@@ -393,7 +395,7 @@ def _holdout_and_mat(n_days=120):
 def test_lift_hook_session_suite(monkeypatch, tmp_path):
     """组门不过 → 不跑逐候选且 upsert 未被调用。；组门 SE 缺失/非有限 = 区间证据不完整 → 拒，不跑逐候选（不再按 0 处理）。；组门过 → 逐候选进 manifest、upsert 收到正确行。；钩子内部异常 → 返回 lift_error，不向外抛；run_team_agent 仍完成。；物化后 OOS 天数不足 → lift_dropped_coverage，不进 lift。；同一 expression 多 attempt → 队列去重。；test_write_team_manifest_includes_lift_fields"""
     # -- 原 test_lift_hook_group_fail_skips_per_candidate --
-    def _section_0_test_lift_hook_group_fail_skips_per_candidate(monkeypatch):
+    def _section_0_test_lift_hook_group_fail_skips_per_candidate(mp):
         state = _state_with_lift_queue(["ts_mean(close, 5)", "rank(vol)"])
         daily, holdout, mat = _holdout_and_mat()
 
@@ -414,9 +416,9 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
             calls["upsert"] += 1
             return {"added_active": 0, "added_probation": 0, "rejected": 0, "errors": []}
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
-        monkeypatch.setattr(
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
+        mp.setattr(
             "factorzen.discovery.factor_library.upsert_lift_admissions",
             fake_upsert, raising=False,
         )
@@ -437,10 +439,11 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
         assert meta["lift_results"] == []
         assert meta["n_lift_evaluated"] == 1
 
-    _section_0_test_lift_hook_group_fail_skips_per_candidate(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_lift_hook_group_fail_skips_per_candidate(mp)
 
     # -- 原 test_lift_hook_group_se_not_finite_fails_gate --
-    def _section_1_test_lift_hook_group_se_not_finite_fails_gate(monkeypatch):
+    def _section_1_test_lift_hook_group_se_not_finite_fails_gate(mp):
         for bad_se in (None, float("nan")):
             state = _state_with_lift_queue(["ts_mean(close, 5)", "rank(vol)"])
             daily, holdout, mat = _holdout_and_mat()
@@ -456,8 +459,8 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
                 _c["per"] += 1
                 return []
 
-            monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-            monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
+            mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+            mp.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
 
             meta = _session_end_auto_lift(
                 state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
@@ -471,11 +474,11 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
             assert calls["per"] == 0, f"SE={bad_se!r} 时组门应拒、不跑逐候选"
             assert meta["lift_results"] == []
 
-    monkeypatch.undo()
-    _section_1_test_lift_hook_group_se_not_finite_fails_gate(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_lift_hook_group_se_not_finite_fails_gate(mp)
 
     # -- 原 test_lift_hook_group_pass_runs_per_and_upsert --
-    def _section_2_test_lift_hook_group_pass_runs_per_and_upsert(monkeypatch):
+    def _section_2_test_lift_hook_group_pass_runs_per_and_upsert(mp):
         state = _state_with_lift_queue(["ts_mean(close, 5)"])
         daily, holdout, mat = _holdout_and_mat()
 
@@ -498,9 +501,9 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
             upsert_rows.extend(rows)
             return {"added_active": 1, "added_probation": 0, "rejected": 0, "errors": []}
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
-        monkeypatch.setattr(
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
+        mp.setattr(
             "factorzen.discovery.factor_library.upsert_lift_admissions",
             fake_upsert, raising=False,
         )
@@ -517,18 +520,18 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
         assert meta["n_lift_evaluated"] == 2  # group + 1 per
         assert upsert_rows and upsert_rows[0]["expression"] == "ts_mean(close, 5)"
 
-    monkeypatch.undo()
-    _section_2_test_lift_hook_group_pass_runs_per_and_upsert(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_lift_hook_group_pass_runs_per_and_upsert(mp)
 
     # -- 原 test_lift_hook_exception_does_not_kill_session --
-    def _section_3_test_lift_hook_exception_does_not_kill_session(monkeypatch, tmp_path):
+    def _section_3_test_lift_hook_exception_does_not_kill_session(mp, tmp_path):
         state = _state_with_lift_queue(["ts_mean(close, 5)"])
         daily, holdout, mat = _holdout_and_mat()
 
         def boom_group(*a, **k):
             raise RuntimeError("lift exploded")
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", boom_group)
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", boom_group)
 
         meta = _session_end_auto_lift(
             state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
@@ -562,7 +565,7 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
                 "lift_error": "RuntimeError: simulated",
             }
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.team_orchestrator._session_end_auto_lift", boom_hook,
         )
         res = run_team_agent(
@@ -573,13 +576,13 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
         assert res.state.iteration == 1
         assert res.lift_error == "RuntimeError: simulated"
 
-    monkeypatch.undo()
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)
-    _section_3_test_lift_hook_exception_does_not_kill_session(monkeypatch, _tp3)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_lift_hook_exception_does_not_kill_session(mp, _tp3)
 
     # -- 原 test_lift_hook_drops_low_oos_coverage --
-    def _section_4_test_lift_hook_drops_low_oos_coverage(monkeypatch):
+    def _section_4_test_lift_hook_drops_low_oos_coverage(mp):
         state = _state_with_lift_queue(["ts_mean(close, 5)", "rank(vol)"])
         daily = _mock_daily(n_days=120)
         # holdout 起点靠后
@@ -593,12 +596,12 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
             group_calls.append(list(queue))
             return {"lift": 0.01, "lift_se": 0.001, "error": None, "expressions": []}
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-        monkeypatch.setattr(
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr(
             "factorzen.discovery.lift_test.run_lift_tests",
             lambda *a, **k: [],
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.factor_library.upsert_lift_admissions",
             lambda *a, **k: {"added_active": 0, "added_probation": 0, "rejected": 0, "errors": []},
             raising=False,
@@ -626,11 +629,11 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
         assert all(c["expression"] != "ts_mean(close, 5)" for c in group_calls[0])
         assert any(c["expression"] == "rank(vol)" for c in group_calls[0])
 
-    monkeypatch.undo()
-    _section_4_test_lift_hook_drops_low_oos_coverage(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_lift_hook_drops_low_oos_coverage(mp)
 
     # -- 原 test_lift_hook_dedupes_expressions --
-    def _section_5_test_lift_hook_dedupes_expressions(monkeypatch):
+    def _section_5_test_lift_hook_dedupes_expressions(mp):
         state = _state_with_lift_queue(["ts_mean(close, 5)", "ts_mean(close, 5)"])
         assert len(state.attempts) == 2
         daily, holdout, mat = _holdout_and_mat()
@@ -640,7 +643,7 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
             seen_n.append(len(queue))
             return {"lift": 0.0, "lift_se": 0.1, "error": None}
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
         meta = _session_end_auto_lift(
             state, daily=daily, holdout_df=holdout, profile=None, ctx=_FakeCtx(),
             market="ashare", library_root="/tmp", seed=0,
@@ -651,8 +654,8 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
         assert meta["n_lift_queue"] == 1
         assert seen_n == [1]
 
-    monkeypatch.undo()
-    _section_5_test_lift_hook_dedupes_expressions(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_5_test_lift_hook_dedupes_expressions(mp)
 
     # -- 原 test_write_team_manifest_includes_lift_fields --
     def _section_6_test_write_team_manifest_includes_lift_fields(tmp_path):
@@ -677,7 +680,6 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
         assert man["lift_admissions"]["added_active"] == 1
         assert man["n_gray_zone"] == 0  # 旧字段仍在
 
-    monkeypatch.undo()
     _tp6 = tmp_path / "_s6"
     _tp6.mkdir(exist_ok=True)
     _section_6_test_write_team_manifest_includes_lift_fields(_tp6)
@@ -689,7 +691,7 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
 def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
     """从 CLI parser 最外层出发：--no-auto-lift/--lift-se-mult 两段透传。；test_cli_auto_lift_default_is_on；test_auto_lift_false_skips_expensive_path；P5：auto-lift 必须用传入的 mining horizon，禁止硬编码 DEFAULT_HORIZON=5。；库 active 集与 session lib_pool 键集一致 → 钩子收到 lib_pool（免重物化）。；库含无法物化的 active(记录 87→物化 84 类比)且文件未变 → 仍复用。；本 session upsert 改了库文件(hash 变)→ 钩子收到 None(基线须含新 active)。"""
     # -- 原 test_cli_no_auto_lift_forwards_to_run_team_agent --
-    def _section_0_test_cli_no_auto_lift_forwards_to_run_team_agent(monkeypatch, tmp_path):
+    def _section_0_test_cli_no_auto_lift_forwards_to_run_team_agent(tmp_path):
         from factorzen.cli import main as cli
 
         fake_daily = pl.DataFrame({
@@ -698,69 +700,69 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
             "close": [10.0], "open": [10.0], "high": [10.0], "low": [10.0],
             "vol": [1e6], "amount": [1e7],
         })
-        monkeypatch.setattr(
-            "factorzen.cli.main._prepare_agent_mining_data",
-            lambda args: (fake_daily, None, {}),
-        )
+        # 段1：CLI → run_team_mine kwargs（独立 context，不污染段2）
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "factorzen.cli.main._prepare_agent_mining_data",
+                lambda args: (fake_daily, None, {}),
+            )
 
-        # parser 契约
-        p = cli.build_parser()
-        args = p.parse_args([
-            "mine", "team", "--start", "20220101", "--end", "20231231",
-            "--no-auto-lift", "--lift-se-mult", "1.5",
-        ])
-        assert args.no_auto_lift is True
-        assert args.lift_se_mult == 1.5
+            # parser 契约
+            p = cli.build_parser()
+            args = p.parse_args([
+                "mine", "team", "--start", "20220101", "--end", "20231231",
+                "--no-auto-lift", "--lift-se-mult", "1.5",
+            ])
+            assert args.no_auto_lift is True
+            assert args.lift_se_mult == 1.5
 
-        # 段1：CLI → run_team_mine kwargs
-        mine_kw: dict = {}
+            mine_kw: dict = {}
 
-        def fake_mine(daily, **kw):
-            mine_kw.update(kw)
-            return {"n_candidates": 0, "n_trials": 0, "run_dir": "tmp"}
+            def fake_mine(daily, **kw):
+                mine_kw.update(kw)
+                return {"n_candidates": 0, "n_trials": 0, "run_dir": "tmp"}
 
-        monkeypatch.setattr(
-            "factorzen.pipelines.factor_mine_team.run_team_mine", fake_mine,
-        )
-        rc = cli.main([
-            "mine", "team", "--start", "20220101", "--end", "20231231",
-            "--no-auto-lift", "--lift-se-mult", "1.5",
-        ])
-        assert rc == 0
-        assert mine_kw.get("auto_lift") is False
-        assert mine_kw.get("lift_se_mult") == 1.5
+            mp.setattr(
+                "factorzen.pipelines.factor_mine_team.run_team_mine", fake_mine,
+            )
+            rc = cli.main([
+                "mine", "team", "--start", "20220101", "--end", "20231231",
+                "--no-auto-lift", "--lift-se-mult", "1.5",
+            ])
+            assert rc == 0
+            assert mine_kw.get("auto_lift") is False
+            assert mine_kw.get("lift_se_mult") == 1.5
 
-        # 段2：真 run_team_mine → run_team_agent 同名转发（段1 patch 了 run_team_mine，
-        # 这里必须先撤销再取真函数，否则调到 fake_mine 上）
-        monkeypatch.undo()
-        import factorzen.pipelines.factor_mine_team as pmt
+        # 段2：真 run_team_mine → run_team_agent 同名转发（独立 context，不用 undo）
+        with pytest.MonkeyPatch.context() as mp:
+            import factorzen.pipelines.factor_mine_team as pmt
 
-        agent_kw: dict = {}
+            agent_kw: dict = {}
 
-        def recording_agent(*a, **kw):
-            agent_kw.update(kw)
-            from factorzen.agents.team_orchestrator import TeamResult
-            return TeamResult(state=AgentState(seed=0), candidates=[], n_trials=0)
+            def recording_agent(*a, **kw):
+                agent_kw.update(kw)
+                from factorzen.agents.team_orchestrator import TeamResult
+                return TeamResult(state=AgentState(seed=0), candidates=[], n_trials=0)
 
-        monkeypatch.setattr(
-            "factorzen.pipelines.factor_mine_team.run_team_agent", recording_agent,
-        )
-        # 测试封闭性：CI 无 FACTORZEN_LLM_*——注入 llm_fn 绕开配置加载,并主动清 env
-        # 证明不依赖本地 .env（此前本地绿/CI 红的正是这条泄漏）。
-        for _k in [k for k in os.environ if k.startswith("FACTORZEN_LLM")]:
-            monkeypatch.delenv(_k, raising=False)
-        pmt.run_team_mine(
-            fake_daily, n_rounds=1, seed=1, index_path=str(tmp_path / "x.jsonl"),
-            out_dir=str(tmp_path / "mt"), export=False,
-            llm_fn=lambda messages: "{}",
-            auto_lift=False, lift_se_mult=1.5,
-        )
-        assert agent_kw.get("auto_lift") is False
-        assert agent_kw.get("lift_se_mult") == 1.5
+            mp.setattr(
+                "factorzen.pipelines.factor_mine_team.run_team_agent", recording_agent,
+            )
+            # 测试封闭性：CI 无 FACTORZEN_LLM_*——注入 llm_fn 绕开配置加载,并主动清 env
+            # 证明不依赖本地 .env（此前本地绿/CI 红的正是这条泄漏）。
+            for _k in [k for k in os.environ if k.startswith("FACTORZEN_LLM")]:
+                mp.delenv(_k, raising=False)
+            pmt.run_team_mine(
+                fake_daily, n_rounds=1, seed=1, index_path=str(tmp_path / "x.jsonl"),
+                out_dir=str(tmp_path / "mt"), export=False,
+                llm_fn=lambda messages: "{}",
+                auto_lift=False, lift_se_mult=1.5,
+            )
+            assert agent_kw.get("auto_lift") is False
+            assert agent_kw.get("lift_se_mult") == 1.5
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    _section_0_test_cli_no_auto_lift_forwards_to_run_team_agent(monkeypatch, _tp0)
+    _section_0_test_cli_no_auto_lift_forwards_to_run_team_agent(_tp0)
 
     # -- 原 test_cli_auto_lift_default_is_on --
     def _section_1_test_cli_auto_lift_default_is_on():
@@ -773,17 +775,16 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
         assert getattr(args, "no_auto_lift", False) is False
         assert args.lift_se_mult == 1.0
 
-    monkeypatch.undo()
     _section_1_test_cli_auto_lift_default_is_on()
 
     # -- 原 test_auto_lift_false_skips_expensive_path --
-    def _section_2_test_auto_lift_false_skips_expensive_path(monkeypatch):
+    def _section_2_test_auto_lift_false_skips_expensive_path(mp):
         state = _state_with_lift_queue(["ts_mean(close, 5)"])
         daily = _mock_daily(n_days=60)
         holdout = daily.tail(30)
         called = {"g": 0}
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.lift_test.run_group_lift",
             lambda *a, **k: called.__setitem__("g", called["g"] + 1) or {},
         )
@@ -796,11 +797,11 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
         assert called["g"] == 0
         assert meta["n_lift_evaluated"] == 0
 
-    monkeypatch.undo()
-    _section_2_test_auto_lift_false_skips_expensive_path(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_auto_lift_false_skips_expensive_path(mp)
 
     # -- 原 test_session_end_auto_lift_uses_explicit_horizon --
-    def _section_3_test_session_end_auto_lift_uses_explicit_horizon(monkeypatch):
+    def _section_3_test_session_end_auto_lift_uses_explicit_horizon(mp):
         state = _state_with_lift_queue(["ts_mean(close, 5)"])
         daily, holdout, mat = _holdout_and_mat()
         captured: dict = {}
@@ -824,9 +825,9 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
             captured["upsert_meta"] = kw.get("meta") or {}
             return {"added_active": 1, "added_probation": 0, "rejected": 0, "errors": []}
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
-        monkeypatch.setattr(
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
+        mp.setattr(
             "factorzen.discovery.factor_library.upsert_lift_admissions",
             fake_upsert, raising=False,
         )
@@ -857,11 +858,11 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
         )
         assert meta3.get("horizon") == 3
 
-    monkeypatch.undo()
-    _section_3_test_session_end_auto_lift_uses_explicit_horizon(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_session_end_auto_lift_uses_explicit_horizon(mp)
 
     # -- 原 test_lift_baseline_reuses_session_pool_when_active_set_unchanged --
-    def _section_4_test_lift_baseline_reuses_session_pool_when_active_set_unchanged(monkeypatch, tmp_path):
+    def _section_4_test_lift_baseline_reuses_session_pool_when_active_set_unchanged(mp, tmp_path):
         from tests.daily.test_factor_library import _write_lib
 
         lib_root = tmp_path / "lib"
@@ -876,7 +877,7 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
             captured.update(k)
             return _lift_baseline_spy_meta()
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.team_orchestrator._session_end_auto_lift", spy_hook,
         )
 
@@ -901,13 +902,13 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
         assert baseline is not None, "库 active 集未变时应复用 session lib_pool"
         assert set(baseline.keys()) == {"rank(close)"}
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_lift_baseline_reuses_session_pool_when_active_set_unchanged(monkeypatch, _tp4)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_lift_baseline_reuses_session_pool_when_active_set_unchanged(mp, _tp4)
 
     # -- 原 test_lift_baseline_reuses_even_with_unmaterializable_active --
-    def _section_5_test_lift_baseline_reuses_even_with_unmaterializable_active(monkeypatch, tmp_path):
+    def _section_5_test_lift_baseline_reuses_even_with_unmaterializable_active(mp, tmp_path):
         from tests.daily.test_factor_library import _write_lib
 
         lib_root = tmp_path / "lib"
@@ -924,7 +925,7 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
             captured.update(k)
             return _lift_baseline_spy_meta()
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.team_orchestrator._session_end_auto_lift", spy_hook,
         )
 
@@ -949,13 +950,13 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
         assert baseline is not None, "库文件未变时应复用(skip 因子 lift 自建同样 skip)"
         assert set(baseline.keys()) == {"rank(close)"}
 
-    monkeypatch.undo()
     _tp5 = tmp_path / "_s5"
     _tp5.mkdir(exist_ok=True)
-    _section_5_test_lift_baseline_reuses_even_with_unmaterializable_active(monkeypatch, _tp5)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_5_test_lift_baseline_reuses_even_with_unmaterializable_active(mp, _tp5)
 
     # -- 原 test_lift_baseline_rebuilds_when_library_file_changed --
-    def _section_6_test_lift_baseline_rebuilds_when_library_file_changed(monkeypatch, tmp_path):
+    def _section_6_test_lift_baseline_rebuilds_when_library_file_changed(mp, tmp_path):
         from tests.daily.test_factor_library import _write_lib
 
         lib_root = tmp_path / "lib"
@@ -979,10 +980,10 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
                     "status": "active", "ic_train": 0.06,
                 }, ensure_ascii=False) + "\n")
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.team_orchestrator._session_end_auto_lift", spy_hook,
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.team_orchestrator._library_upsert_team", fake_upsert,
         )
 
@@ -1007,10 +1008,10 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
             "库文件已变(upsert 新增 active)时必须回退 lift 自建基线"
         )
 
-    monkeypatch.undo()
     _tp6 = tmp_path / "_s6"
     _tp6.mkdir(exist_ok=True)
-    _section_6_test_lift_baseline_rebuilds_when_library_file_changed(monkeypatch, _tp6)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_6_test_lift_baseline_rebuilds_when_library_file_changed(mp, _tp6)
 
 
 def _lift_baseline_spy_meta() -> dict:

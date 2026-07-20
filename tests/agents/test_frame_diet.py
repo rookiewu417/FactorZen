@@ -179,17 +179,17 @@ def _prep_inputs():
 def test_p1_slim_whitelist_suite(monkeypatch):
     """test_p1_slim_whitelist_column_snapshot；test_p1_slim_false_keeps_dead_weight；跨叶子族表达式在 slim/fat 上 factor_value 全等（公共列语义）。"""
     # -- 原 test_p1_slim_whitelist_column_snapshot --
-    def _section_0_test_p1_slim_whitelist_column_snapshot(monkeypatch):
+    def _section_0_test_p1_slim_whitelist_column_snapshot(mp):
         import factorzen.daily.data.context as ctx_mod
         import factorzen.discovery.preparation as prep
         from factorzen.core.feature_schema import BASIC_FEATURES
 
         daily, basic = _prep_inputs()
-        monkeypatch.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
+        mp.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
         # 跳过 attach 链（无真实数据）
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
+        mp.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
+        mp.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
+        mp.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
 
         out = prep.prepare_mining_daily("20240102", "20240104", slim=True)
         cols = set(out.columns)
@@ -207,39 +207,40 @@ def test_p1_slim_whitelist_suite(monkeypatch):
                      "close_adj", "open_adj", "high_adj", "low_adj"):
             assert keep in cols
 
-    _section_0_test_p1_slim_whitelist_column_snapshot(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_p1_slim_whitelist_column_snapshot(mp)
 
     # -- 原 test_p1_slim_false_keeps_dead_weight --
-    def _section_1_test_p1_slim_false_keeps_dead_weight(monkeypatch):
+    def _section_1_test_p1_slim_false_keeps_dead_weight(mp):
         import factorzen.daily.data.context as ctx_mod
         import factorzen.discovery.preparation as prep
 
         daily, basic = _prep_inputs()
-        monkeypatch.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
+        mp.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
+        mp.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
+        mp.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
+        mp.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
 
         fat = prep.prepare_mining_daily("20240102", "20240104", slim=False)
         cols = set(fat.columns)
         for keep in ("change", "pct_chg", "pe", "ps", "dv_ratio", "total_share", "free_share"):
             assert keep in cols, f"slim=False 应保留旧帧列 {keep}"
 
-    monkeypatch.undo()
-    _section_1_test_p1_slim_false_keeps_dead_weight(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_p1_slim_false_keeps_dead_weight(mp)
 
     # -- 原 test_p1_cross_family_expr_numeric_parity_slim_vs_fat --
-    def _section_2_test_p1_cross_family_expr_numeric_parity_slim_vs_fat(monkeypatch):
+    def _section_2_test_p1_cross_family_expr_numeric_parity_slim_vs_fat(mp):
         import factorzen.daily.data.context as ctx_mod
         import factorzen.discovery.preparation as prep
         from factorzen.discovery.evaluation import _factor_df_from_prepped, _preprocess_daily
         from factorzen.discovery.expression import parse_expr
 
         daily, basic = _prep_inputs()
-        monkeypatch.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
+        mp.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
+        mp.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
+        mp.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
+        mp.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
 
         slim_df = prep.prepare_mining_daily("20240102", "20240104", slim=True)
         fat_df = prep.prepare_mining_daily("20240102", "20240104", slim=False)
@@ -254,8 +255,8 @@ def test_p1_slim_whitelist_suite(monkeypatch):
         diff = (joined["factor_value"] - joined["factor_value_fat"]).abs().max()
         assert diff is None or float(diff) == 0.0 or diff == 0.0
 
-    monkeypatch.undo()
-    _section_2_test_p1_cross_family_expr_numeric_parity_slim_vs_fat(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_p1_cross_family_expr_numeric_parity_slim_vs_fat(mp)
 
 
 # ── P3: prepped 注入 + scout 失效 + 调用次数 ────────────────────────────────
@@ -330,11 +331,10 @@ def test_p3_prepped_reuse_suite(monkeypatch):
         assert "ix_fake_scout" not in prepped_old.columns
         assert out_stale is not None  # 引用防 lint
 
-    monkeypatch.undo()
     _section_1_test_p3_scout_inject_invalidates_prepped()
 
     # -- 原 test_p3_session_preprocess_call_count --
-    def _section_2_test_p3_session_preprocess_call_count(monkeypatch):
+    def _section_2_test_p3_session_preprocess_call_count(mp):
         import factorzen.discovery.evaluation as ev_mod
         from factorzen.discovery.evaluation import (
             _preprocess_daily as real_prep,
@@ -355,7 +355,7 @@ def test_p3_prepped_reuse_suite(monkeypatch):
             calls.append(1)
             return orig(df, profile)
 
-        monkeypatch.setattr(ev_mod, "_preprocess_daily", counting_prep)
+        mp.setattr(ev_mod, "_preprocess_daily", counting_prep)
 
         # 模拟 session：一次 prep + 复用
         session_prepped = counting_prep(daily, None)
@@ -372,11 +372,11 @@ def test_p3_prepped_reuse_suite(monkeypatch):
         # 不应因 evaluate/health 再增 prep（仅 session 那一次）
         assert sum(calls) <= 2, f"_preprocess_daily 调用过多: {sum(calls)}"
 
-    monkeypatch.undo()
-    _section_2_test_p3_session_preprocess_call_count(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_p3_session_preprocess_call_count(mp)
 
     # -- 原 test_p3_make_lift_context_reuses_prepped --
-    def _section_3_test_p3_make_lift_context_reuses_prepped(monkeypatch):
+    def _section_3_test_p3_make_lift_context_reuses_prepped(mp):
         import factorzen.discovery.evaluation as ev_mod
         from factorzen.discovery.evaluation import _preprocess_daily
         from factorzen.discovery.lift_test import make_lift_context
@@ -391,7 +391,7 @@ def test_p3_prepped_reuse_suite(monkeypatch):
             calls["n"] += 1
             return orig(df, profile)
 
-        monkeypatch.setattr(ev_mod, "_preprocess_daily", counting)
+        mp.setattr(ev_mod, "_preprocess_daily", counting)
         ctx = make_lift_context("ashare", daily, prepped=prepped)
         assert calls["n"] == 0
         assert "ret_1d" in ctx.prepped.columns or "close_adj" in ctx.prepped.columns
@@ -399,8 +399,8 @@ def test_p3_prepped_reuse_suite(monkeypatch):
         _ = make_lift_context("ashare", daily)
         assert calls["n"] == 1
 
-    monkeypatch.undo()
-    _section_3_test_p3_make_lift_context_reuses_prepped(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_p3_make_lift_context_reuses_prepped(mp)
 
 
 # ── P5: 单副本纪律 ─────────────────────────────────────────────────────────
@@ -441,7 +441,6 @@ def test_p5_bundle_keys_suite(monkeypatch):
             assert a["ir"] == pytest.approx(c["ir"], abs=0.0, rel=0.0)
             assert a["n"] == c["n"]
 
-    monkeypatch.undo()
     _section_1_test_p5_bundle_keys_only_quick_fitness_parity()
 
     # -- 原 test_p5_narrow_holdout_price_frame --
@@ -453,11 +452,10 @@ def test_p5_bundle_keys_suite(monkeypatch):
         assert set(narrow.columns) == {"trade_date", "ts_code", "close_adj"}
         assert narrow.height == daily.height
 
-    monkeypatch.undo()
     _section_2_test_p5_narrow_holdout_price_frame()
 
     # -- 原 test_p5_guardrails_prepped_skips_warmup_reprep --
-    def _section_3_test_p5_guardrails_prepped_skips_warmup_reprep(monkeypatch):
+    def _section_3_test_p5_guardrails_prepped_skips_warmup_reprep(mp):
         from factorzen.agents.nodes import node_guardrails
         from factorzen.agents.state import AgentState, AttemptRecord
         from factorzen.agents.team_orchestrator import _narrow_holdout_price_frame
@@ -491,7 +489,7 @@ def test_p5_bundle_keys_suite(monkeypatch):
             return orig(df, profile)
 
         # node_guardrails 函数内 from-import：patch evaluation 模块即可
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.evaluation._preprocess_daily", counting,
         )
 
@@ -505,8 +503,8 @@ def test_p5_bundle_keys_suite(monkeypatch):
         # 允许 mining 段 train residual 的 prep（height == mining）
         assert all(h == mining_df.height for h in calls), calls
 
-    monkeypatch.undo()
-    _section_3_test_p5_guardrails_prepped_skips_warmup_reprep(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_p5_guardrails_prepped_skips_warmup_reprep(mp)
 
 
 # ── P4c: ts_code Categorical ────────────────────────────────────────────────
@@ -515,40 +513,41 @@ def test_p5_bundle_keys_suite(monkeypatch):
 def test_p4c_categorical_keys_suite(monkeypatch, tmp_path):
     """test_p4c_prepare_categorical_keys_explicit；默认 None + 小帧 → 不自动 Categorical（阈值 4M）。；Categorical on/off 同表达式 factor_value 与 IC 逐值相等。；库相关 scatter：因子帧 Categorical × stock_map Utf8 可 join 且 present 全覆盖。；落盘 alpha 截面 ts_code 仍为 Utf8。"""
     # -- 原 test_p4c_prepare_categorical_keys_explicit --
-    def _section_0_test_p4c_prepare_categorical_keys_explicit(monkeypatch):
+    def _section_0_test_p4c_prepare_categorical_keys_explicit(mp):
         import factorzen.daily.data.context as ctx_mod
         import factorzen.discovery.preparation as prep
 
         daily, basic = _prep_inputs()
-        monkeypatch.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
+        mp.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
+        mp.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
+        mp.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
+        mp.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
 
         on = prep.prepare_mining_daily("20240102", "20240104", slim=True, categorical_keys=True)
         off = prep.prepare_mining_daily("20240102", "20240104", slim=True, categorical_keys=False)
         assert on.schema["ts_code"] == pl.Categorical
         assert off.schema["ts_code"] in (pl.Utf8, pl.String)
 
-    _section_0_test_p4c_prepare_categorical_keys_explicit(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_p4c_prepare_categorical_keys_explicit(mp)
 
     # -- 原 test_p4c_threshold_auto_off_for_small_frames --
-    def _section_1_test_p4c_threshold_auto_off_for_small_frames(monkeypatch):
+    def _section_1_test_p4c_threshold_auto_off_for_small_frames(mp):
         import factorzen.daily.data.context as ctx_mod
         import factorzen.discovery.preparation as prep
 
         daily, basic = _prep_inputs()
-        monkeypatch.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
-        monkeypatch.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
+        mp.setattr(ctx_mod, "FactorDataContext", _fake_ctx_factory(daily, basic))
+        mp.setattr("factorzen.daily.data.pit.attach_fundamentals", lambda d: d)
+        mp.setattr("factorzen.daily.data.pit.attach_holders", lambda d: d)
+        mp.setattr("factorzen.daily.data.flows.attach_flows", lambda d: d)
 
         out = prep.prepare_mining_daily("20240102", "20240104", slim=True, categorical_keys=None)
         assert out.height < prep.KEYS_CATEGORICAL_ROWS_THRESHOLD
         assert out.schema["ts_code"] in (pl.Utf8, pl.String)
 
-    monkeypatch.undo()
-    _section_1_test_p4c_threshold_auto_off_for_small_frames(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_p4c_threshold_auto_off_for_small_frames(mp)
 
     # -- 原 test_p4c_categorical_factor_value_and_ic_parity --
     def _section_2_test_p4c_categorical_factor_value_and_ic_parity():
@@ -582,7 +581,6 @@ def test_p4c_categorical_keys_suite(monkeypatch, tmp_path):
         assert j.height == fu.height
         assert float((j["factor_value"] - j["factor_value_c"]).abs().max()) == 0.0
 
-    monkeypatch.undo()
     _section_2_test_p4c_categorical_factor_value_and_ic_parity()
 
     # -- 原 test_p4c_scatter_join_with_categorical_keys --
@@ -617,18 +615,17 @@ def test_p4c_categorical_keys_suite(monkeypatch, tmp_path):
         j = fac.select(["ts_code"]).unique().join(aligned, on="ts_code", how="inner")
         assert j.height >= 1
 
-    monkeypatch.undo()
     _section_3_test_p4c_scatter_join_with_categorical_keys()
 
     # -- 原 test_p4c_export_alpha_casts_utf8 --
-    def _section_4_test_p4c_export_alpha_casts_utf8(tmp_path, monkeypatch):
+    def _section_4_test_p4c_export_alpha_casts_utf8(tmp_path, mp):
         from factorzen.discovery import export as export_mod
 
         daily = _mock_daily(n_stocks=3, n_days=5).with_columns(
             pl.col("ts_code").cast(pl.Categorical)
         )
         # stub alpha_cross_section
-        monkeypatch.setattr(
+        mp.setattr(
             export_mod,
             "alpha_cross_section",
             lambda *a, **k: daily.select([
@@ -640,10 +637,10 @@ def test_p4c_categorical_keys_suite(monkeypatch, tmp_path):
         loaded = pl.read_parquet(out)
         assert loaded.schema["ts_code"] in (pl.Utf8, pl.String)
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_p4c_export_alpha_casts_utf8(_tp4, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_p4c_export_alpha_casts_utf8(_tp4, mp)
 
 
 def test_evaluate_materialized_prunes_unused_columns():

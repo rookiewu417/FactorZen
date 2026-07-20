@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.nodes import AgentContext
@@ -161,8 +162,8 @@ def test_leaf_stats_suite(tmp_path):
 def test_exhausted_guidance_suite(tmp_path, monkeypatch):
     """**进了库**的叶子不判枯竭，哪怕单因子护栏零通过。；豁免只认**在任**记录 → 因子被降级后该叶重新可判枯竭。；库内表达式按词边界匹配叶名，`roe` 不得被 `grossprofit_margin` 之类子串误命中。；`library_exprs=None`（旧调用方）→ 行为与加该参数前完全一致。；coverage 失败不计入尝试数；n_passed>0 不入挖穿区。；test_unexplored_excludes_dead_leaves_from_leaf_health；不传 leaf_names → leaf_guidance=None，旧调用零回归。"""
     # -- 原 test_exhausted_excludes_leaf_present_in_library --
-    def _section_0_test_exhausted_excludes_leaf_present_in_library(tmp_path, monkeypatch):
-        monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
+    def _section_0_test_exhausted_excludes_leaf_present_in_library(tmp_path, mp):
+        mp.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
 
         idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
         # 两个叶子都是「6 次方向失败、单因子护栏 0 过关」——按旧判据都该枯竭
@@ -188,11 +189,12 @@ def test_exhausted_guidance_suite(tmp_path, monkeypatch):
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    _section_0_test_exhausted_excludes_leaf_present_in_library(_tp0, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_exhausted_excludes_leaf_present_in_library(_tp0, mp)
 
     # -- 原 test_exhausted_library_exemption_expires_with_demotion --
-    def _section_1_test_exhausted_library_exemption_expires_with_demotion(tmp_path, monkeypatch):
-        monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
+    def _section_1_test_exhausted_library_exemption_expires_with_demotion(tmp_path, mp):
+        mp.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
 
         idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
         _write(idx, [_rec(f"rank(ts_mean(roa,{i}))", passed=False, ic=0.01) for i in range(6)])
@@ -205,14 +207,14 @@ def test_exhausted_guidance_suite(tmp_path, monkeypatch):
         demoted = recall(idx, k=5, leaf_names=["roa"], library_exprs=[])
         assert demoted.exhausted_leaves == ["roa"], demoted.exhausted_leaves
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
-    _section_1_test_exhausted_library_exemption_expires_with_demotion(_tp1, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_exhausted_library_exemption_expires_with_demotion(_tp1, mp)
 
     # -- 原 test_exhausted_library_match_uses_word_boundary --
-    def _section_2_test_exhausted_library_match_uses_word_boundary(tmp_path, monkeypatch):
-        monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
+    def _section_2_test_exhausted_library_match_uses_word_boundary(tmp_path, mp):
+        mp.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
 
         idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
         _write(idx, [_rec(f"rank(ts_mean(roe,{i}))", passed=False, ic=0.01) for i in range(6)])
@@ -221,14 +223,14 @@ def test_exhausted_guidance_suite(tmp_path, monkeypatch):
         r = recall(idx, k=5, leaf_names=["roe"], library_exprs=["rank(roe_ttm)"])
         assert "roe" in " ".join(r.leaf_guidance["exhausted"]), "子串命中导致误救"
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
-    _section_2_test_exhausted_library_match_uses_word_boundary(_tp2, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_exhausted_library_match_uses_word_boundary(_tp2, mp)
 
     # -- 原 test_exhausted_library_exprs_none_is_zero_regression --
-    def _section_3_test_exhausted_library_exprs_none_is_zero_regression(tmp_path, monkeypatch):
-        monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
+    def _section_3_test_exhausted_library_exprs_none_is_zero_regression(tmp_path, mp):
+        mp.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
 
         idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
         _write(idx, [_rec(f"rank(ts_mean(roa,{i}))", passed=False, ic=0.01) for i in range(6)])
@@ -237,15 +239,15 @@ def test_exhausted_guidance_suite(tmp_path, monkeypatch):
         assert "roa" in " ".join(r.leaf_guidance["exhausted"])
         assert r.exhausted_leaves == ["roa"]
 
-    monkeypatch.undo()
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)
-    _section_3_test_exhausted_library_exprs_none_is_zero_regression(_tp3, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_exhausted_library_exprs_none_is_zero_regression(_tp3, mp)
 
     # -- 原 test_exhausted_excludes_coverage_only_and_passed --
-    def _section_4_test_exhausted_excludes_coverage_only_and_passed(tmp_path, monkeypatch):
-        monkeypatch.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
-        monkeypatch.setattr("factorzen.agents.roles.librarian.UNEXPLORED_MAX_TRIES", 2)
+    def _section_4_test_exhausted_excludes_coverage_only_and_passed(tmp_path, mp):
+        mp.setattr("factorzen.agents.roles.librarian.EXHAUSTED_MIN_TRIES", 5)
+        mp.setattr("factorzen.agents.roles.librarian.UNEXPLORED_MAX_TRIES", 2)
 
         idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
         # north_ratio：20 次全 coverage → 方向尝试 0 → 不挖穿
@@ -285,14 +287,14 @@ def test_exhausted_guidance_suite(tmp_path, monkeypatch):
         # 文案含统计
         assert "试" in exhausted_blob and "0 过关" in exhausted_blob
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_exhausted_excludes_coverage_only_and_passed(_tp4, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_exhausted_excludes_coverage_only_and_passed(_tp4, mp)
 
     # -- 原 test_unexplored_excludes_dead_leaves_from_leaf_health --
-    def _section_5_test_unexplored_excludes_dead_leaves_from_leaf_health(tmp_path, monkeypatch):
-        monkeypatch.setattr("factorzen.agents.roles.librarian.UNEXPLORED_MAX_TRIES", 2)
+    def _section_5_test_unexplored_excludes_dead_leaves_from_leaf_health(tmp_path, mp):
+        mp.setattr("factorzen.agents.roles.librarian.UNEXPLORED_MAX_TRIES", 2)
         idx = ExperimentIndex(str(tmp_path / "e.jsonl"))
         # index 里有 north_ratio 历史，但 session 存活叶子已不含它
         _write(idx, [_rec("rank(close)", passed=False, ic=0.0)])
@@ -304,10 +306,10 @@ def test_exhausted_guidance_suite(tmp_path, monkeypatch):
         # close 有 1 条 ≤2 → 未探索；roe/vol 0 条 → 未探索
         assert "roe" in u and "vol" in u and "close" in u
 
-    monkeypatch.undo()
     _tp5 = tmp_path / "_s5"
     _tp5.mkdir(exist_ok=True)
-    _section_5_test_unexplored_excludes_dead_leaves_from_leaf_health(_tp5, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_5_test_unexplored_excludes_dead_leaves_from_leaf_health(_tp5, mp)
 
     # -- 原 test_recall_without_leaf_names_has_no_guidance --
     def _section_6_test_recall_without_leaf_names_has_no_guidance(tmp_path):
@@ -316,7 +318,6 @@ def test_exhausted_guidance_suite(tmp_path, monkeypatch):
         r = recall(idx, k=5)
         assert r.leaf_guidance is None
 
-    monkeypatch.undo()
     _tp6 = tmp_path / "_s6"
     _tp6.mkdir(exist_ok=True)
     _section_6_test_recall_without_leaf_names_has_no_guidance(_tp6)
@@ -641,7 +642,6 @@ def test_scout_role_core_suite(monkeypatch):
 
         assert propose_intraday_features(llm_fn, k=3, avoid=[], known_features="") == []
 
-    monkeypatch.undo()
     _section_1_test_propose_malformed_returns_empty()
 
     # -- 原 test_propose_mixed_skips_non_dict_and_caps_k --
@@ -660,7 +660,6 @@ def test_scout_role_core_suite(monkeypatch):
         assert len(out) == 2
         assert all("bar_expr" in x and "agg" in x for x in out)
 
-    monkeypatch.undo()
     _section_2_test_propose_mixed_skips_non_dict_and_caps_k()
 
     # -- 原 test_propose_llm_raises_returns_empty --
@@ -670,7 +669,6 @@ def test_scout_role_core_suite(monkeypatch):
 
         assert propose_intraday_features(llm_fn, k=1, avoid=[], known_features="") == []
 
-    monkeypatch.undo()
     _section_3_test_propose_llm_raises_returns_empty()
 
     # -- 原 test_propose_wrapped_features_key --
@@ -688,11 +686,10 @@ def test_scout_role_core_suite(monkeypatch):
         assert len(out) == 1
         assert out[0]["agg"] == "std"
 
-    monkeypatch.undo()
     _section_4_test_propose_wrapped_features_key()
 
     # -- 原 test_run_scout_round_injects_and_audits --
-    def _section_5_test_run_scout_round_injects_and_audits(monkeypatch):
+    def _section_5_test_run_scout_round_injects_and_audits(mp):
         daily = _mock_daily()
         mid = daily["trade_date"].unique().sort()
         n = mid.len()
@@ -723,14 +720,14 @@ def test_scout_role_core_suite(monkeypatch):
         def fake_screen(panel, reference=None, **_kw):
             return {c: "keep" for c in panel.columns if c.startswith("ix_")}
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.scout_support.materialize_expr_features", fake_mat,
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.scout_support.screen_expr_panel", fake_screen,
         )
         # 跳过 leaf_health 死叶（合成帧覆盖可能为 0）
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.leaf_health.leaf_holdout_coverage",
             lambda *a, **k: {n: 1.0 for n in (a[1] if len(a) > 1 else [])},
         )
@@ -757,11 +754,11 @@ def test_scout_role_core_suite(monkeypatch):
         keeps = [a for a in state.audit if a["verdict"] == "keep"]
         assert len(keeps) == 2
 
-    monkeypatch.undo()
-    _section_5_test_run_scout_round_injects_and_audits(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_5_test_run_scout_round_injects_and_audits(mp)
 
     # -- 原 test_run_scout_round_max_leaves_skips_llm --
-    def _section_6_test_run_scout_round_max_leaves_skips_llm(monkeypatch):
+    def _section_6_test_run_scout_round_max_leaves_skips_llm():
         daily = _mock_daily(n_days=40)
         ctx = AgentContext()
         state = ScoutState()
@@ -787,8 +784,7 @@ def test_scout_role_core_suite(monkeypatch):
         assert called["n"] == 0
         assert frames_out is frames_in
 
-    monkeypatch.undo()
-    _section_6_test_run_scout_round_max_leaves_skips_llm(monkeypatch)
+    _section_6_test_run_scout_round_max_leaves_skips_llm()
 
 
 # ── run_scout_round ──────────────────────────────────────────────────────
@@ -880,7 +876,7 @@ def test_run_scout_round_dedup_repeat_proposal(monkeypatch):
 def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
     """test_promote_only_referenced；flag-off：不建 ScoutState，result.intraday_scout 为 None（行为与改前一致）。；test_cli_parser_intraday_scout_flags；test_cli_intraday_scout_non_ashare_returns_2；--intraday-scout 隐含 intraday_leaves=True 再进 prepare。"""
     # -- 原 test_promote_only_referenced --
-    def _section_0_test_promote_only_referenced(tmp_path, monkeypatch):
+    def _section_0_test_promote_only_referenced(tmp_path, mp):
         sp_keep = make_expr_spec("sub(high, low)", "mean", freq="5min", hypothesis="振幅")
         sp_skip = make_expr_spec("vol", "sum", freq="5min", hypothesis="量")
         state = ScoutState(
@@ -900,10 +896,10 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
                 schema={"trade_date": pl.Date, "ts_code": pl.String, name: pl.Float64}
             )
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.scout_support.register_expr_features", fake_reg,
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.scout_support.ensure_expr_panel", fake_ensure,
         )
 
@@ -926,7 +922,8 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    _section_0_test_promote_only_referenced(_tp0, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_promote_only_referenced(_tp0, mp)
 
     # -- 原 test_team_flag_off_no_scout_block --
     def _section_1_test_team_flag_off_no_scout_block(tmp_path):
@@ -953,7 +950,6 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
         )
         assert res.intraday_scout is None
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
     _section_1_test_team_flag_off_no_scout_block(_tp1)
@@ -978,11 +974,10 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
         assert args2.scout_k == 4
         assert args2.scout_max_leaves == 12
 
-    monkeypatch.undo()
     _section_2_test_cli_parser_intraday_scout_flags()
 
     # -- 原 test_cli_intraday_scout_non_ashare_returns_2 --
-    def _section_3_test_cli_intraday_scout_non_ashare_returns_2(monkeypatch, capsys):
+    def _section_3_test_cli_intraday_scout_non_ashare_returns_2(capsys):
         from factorzen.cli import main as cli
 
         rc = cli.main([
@@ -995,11 +990,10 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
         err = capsys.readouterr().err
         assert "intraday-scout" in err and "ashare" in err
 
-    monkeypatch.undo()
-    _section_3_test_cli_intraday_scout_non_ashare_returns_2(monkeypatch, capsys)
+    _section_3_test_cli_intraday_scout_non_ashare_returns_2(capsys)
 
     # -- 原 test_cli_intraday_scout_implies_leaves --
-    def _section_4_test_cli_intraday_scout_implies_leaves(monkeypatch, capsys):
+    def _section_4_test_cli_intraday_scout_implies_leaves(mp, capsys):
         import polars as pl
 
         from factorzen.cli import main as cli
@@ -1027,10 +1021,10 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
                 "run_dir": "workspace/mine_team/x",
             }
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare,
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.pipelines.factor_mine_team.run_team_mine", fake_run,
         )
         rc = cli.main([
@@ -1042,8 +1036,8 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
         assert seen.get("intraday") is True
         assert seen.get("scout") is True
 
-    monkeypatch.undo()
-    _section_4_test_cli_intraday_scout_implies_leaves(monkeypatch, capsys)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_cli_intraday_scout_implies_leaves(mp, capsys)
 
 
 # ── e2e team ─────────────────────────────────────────────────────────────

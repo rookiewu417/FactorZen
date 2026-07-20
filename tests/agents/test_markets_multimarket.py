@@ -724,43 +724,44 @@ def _team_args(**over):
 def test_multimarket_cli_profile_suite(monkeypatch):
     """test_cmd_mine_team_ashare_passes_profile_none；test_cmd_mine_team_crypto_assembles_and_threads_profile；test_cmd_mine_team_us_assembles_and_threads_profile；test_us_leaf_map_has_no_ashare_leaves"""
     # -- 原 test_cmd_mine_team_ashare_passes_profile_none --
-    def _section_0_test_cmd_mine_team_ashare_passes_profile_none(monkeypatch):
+    def _section_0_test_cmd_mine_team_ashare_passes_profile_none(mp):
         from factorzen.cli import main as cli
         cap: dict = {}
-        monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily",
+        mp.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily",
                             lambda start, end, universe=None, lookback_days=None, **kw: _mock_ashare_daily())
 
         def fake_team_mine(daily, **kw):
             cap.update(kw)
             return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
-        monkeypatch.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
+        mp.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
         rc = cli._cmd_mine_team(_team_args(market="ashare"))
         assert rc == 0
         assert cap["profile"] is None            # A 股零回归：不带 profile
         assert cap["eval_start"] == "20240301"
 
-    _section_0_test_cmd_mine_team_ashare_passes_profile_none(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_cmd_mine_team_ashare_passes_profile_none(mp)
 
     # -- 原 test_cmd_mine_team_crypto_assembles_and_threads_profile --
-    def _section_1_test_cmd_mine_team_crypto_assembles_and_threads_profile(monkeypatch):
+    def _section_1_test_cmd_mine_team_crypto_assembles_and_threads_profile(mp):
         from factorzen.cli import main as cli
         cap: dict = {}
         fake_profile = _CryptoProfileStub()
         fake_profile.base_freq = "daily"
         fake_profile.provider = object()
 
-        monkeypatch.setattr("factorzen.markets.crypto.profile.build_crypto_profile",
+        mp.setattr("factorzen.markets.crypto.profile.build_crypto_profile",
                             lambda **_k: fake_profile)
 
         def fake_build(provider, symbols, start, end, freq):
             cap["build"] = dict(symbols=symbols, start=start, end=end, freq=freq)
             return _crypto_daily(n_days=40)
-        monkeypatch.setattr("factorzen.markets.crypto.mining.build_crypto_daily", fake_build)
+        mp.setattr("factorzen.markets.crypto.mining.build_crypto_daily", fake_build)
 
         def fake_team_mine(daily, **kw):
             cap.update(kw)
             return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
-        monkeypatch.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
+        mp.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
 
         rc = cli._cmd_mine_team(_team_args(market="crypto", symbols="BTCUSDT,ETHUSDT"))
         assert rc == 0
@@ -773,11 +774,11 @@ def test_multimarket_cli_profile_suite(monkeypatch):
         # data_window.market 如实记录 crypto
         assert cap["data_window"]["market"] == "crypto"
 
-    monkeypatch.undo()
-    _section_1_test_cmd_mine_team_crypto_assembles_and_threads_profile(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cmd_mine_team_crypto_assembles_and_threads_profile(mp)
 
     # -- 原 test_cmd_mine_team_us_assembles_and_threads_profile --
-    def _section_2_test_cmd_mine_team_us_assembles_and_threads_profile(monkeypatch):
+    def _section_2_test_cmd_mine_team_us_assembles_and_threads_profile(mp):
         from factorzen.cli import main as cli
         cap: dict = {}
         fake_profile = _USProfileStub()
@@ -788,17 +789,17 @@ def test_multimarket_cli_profile_suite(monkeypatch):
             def snapshot(self, d):
                 return ["AAPL", "MSFT"]
         fake_profile.universe = _U()
-        monkeypatch.setattr("factorzen.markets.us.profile.build_us_profile", lambda **_k: fake_profile)
+        mp.setattr("factorzen.markets.us.profile.build_us_profile", lambda **_k: fake_profile)
 
         def fake_build(provider, symbols, start, end, freq="daily"):
             cap["build"] = dict(symbols=symbols, start=start, end=end, freq=freq)
             return _us_daily()
-        monkeypatch.setattr("factorzen.markets.us.mining.build_us_daily", fake_build)
+        mp.setattr("factorzen.markets.us.mining.build_us_daily", fake_build)
 
         def fake_team_mine(daily, **kw):
             cap.update(kw)
             return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
-        monkeypatch.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
+        mp.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_team_mine)
 
         rc = cli._cmd_mine_team(_team_args(market="us", symbols=None))
         assert rc == 0
@@ -808,8 +809,8 @@ def test_multimarket_cli_profile_suite(monkeypatch):
         assert cap["build"]["start"] < "20240301"       # 预热前缀：早于挖掘窗口 start
         assert cap["data_window"]["market"] == "us"     # manifest 如实记录 us
 
-    monkeypatch.undo()
-    _section_2_test_cmd_mine_team_us_assembles_and_threads_profile(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_cmd_mine_team_us_assembles_and_threads_profile(mp)
 
     # -- 原 test_us_leaf_map_has_no_ashare_leaves --
     def _section_3_test_us_leaf_map_has_no_ashare_leaves():
@@ -818,7 +819,6 @@ def test_multimarket_cli_profile_suite(monkeypatch):
         assert {"north_ratio", "roe", "net_mf_amount", "funding_rate", "oi"}.isdisjoint(leaves)
         assert {"close", "vwap", "log_vol", "ret_1d", "amount"}.issubset(leaves)
 
-    monkeypatch.undo()
     _section_3_test_us_leaf_map_has_no_ashare_leaves()
 
 

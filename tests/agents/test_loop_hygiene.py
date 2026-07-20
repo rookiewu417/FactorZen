@@ -134,7 +134,6 @@ def test_parallel_llm_parity_suite(tmp_path, monkeypatch):
             f"装配须按提交序而非完成序: {exprs}"
         )
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
     _section_1_test_parallel_deterministic_despite_completion_order(_tp1)
@@ -172,13 +171,12 @@ def test_parallel_llm_parity_suite(tmp_path, monkeypatch):
             a.expression != "ts_mean(close, 5)" for a in res.state.attempts
         ) or res.n_trials == 0
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
     _section_2_test_parallel_llm_error_counts_as_round_failure(_tp2)
 
     # -- 原 test_llm_workers_one_never_constructs_executor --
-    def _section_3_test_llm_workers_one_never_constructs_executor(tmp_path, monkeypatch):
+    def _section_3_test_llm_workers_one_never_constructs_executor(tmp_path, mp):
         created: list[int] = []
 
         real = __import__("concurrent.futures", fromlist=["ThreadPoolExecutor"]).ThreadPoolExecutor
@@ -188,7 +186,7 @@ def test_parallel_llm_parity_suite(tmp_path, monkeypatch):
                 created.append(1)
                 super().__init__(*a, **k)
 
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.agents.team_orchestrator.ThreadPoolExecutor", TrackingPool
         )
         fn, _ = _threadsafe_routed_llm()
@@ -199,10 +197,10 @@ def test_parallel_llm_parity_suite(tmp_path, monkeypatch):
         )
         assert created == [], f"workers=1 不应进 executor, created={created}"
 
-    monkeypatch.undo()
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)
-    _section_3_test_llm_workers_one_never_constructs_executor(_tp3, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_llm_workers_one_never_constructs_executor(_tp3, mp)
 
 
 def test_llm_workers_cli_suite(monkeypatch, tmp_path):
@@ -219,7 +217,7 @@ def test_llm_workers_cli_suite(monkeypatch, tmp_path):
     _section_0_test_parser_mine_team_llm_workers_default_is_four()
 
     # -- 原 test_cmd_mine_team_forwards_llm_workers --
-    def _section_1_test_cmd_mine_team_forwards_llm_workers(monkeypatch):
+    def _section_1_test_cmd_mine_team_forwards_llm_workers(mp):
         from factorzen.cli import main as cli
 
         captured: dict = {}
@@ -231,8 +229,8 @@ def test_llm_workers_cli_suite(monkeypatch, tmp_path):
             captured.update(kw)
             return {"n_candidates": 0, "n_trials": 0, "run_dir": "x"}
 
-        monkeypatch.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
-        monkeypatch.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_run_team_mine)
+        mp.setattr("factorzen.pipelines.factor_mine.prepare_mining_daily", fake_prepare)
+        mp.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_run_team_mine)
 
         rc = cli.main([
             "mine", "team", "--start", "20220101", "--end", "20231231",
@@ -241,11 +239,11 @@ def test_llm_workers_cli_suite(monkeypatch, tmp_path):
         assert rc == 0
         assert captured["llm_workers"] == 8
 
-    monkeypatch.undo()
-    _section_1_test_cmd_mine_team_forwards_llm_workers(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cmd_mine_team_forwards_llm_workers(mp)
 
     # -- 原 test_run_team_mine_forwards_llm_workers_and_records_manifest --
-    def _section_2_test_run_team_mine_forwards_llm_workers_and_records_manifest(monkeypatch, tmp_path):
+    def _section_2_test_run_team_mine_forwards_llm_workers_and_records_manifest(mp, tmp_path):
         from factorzen.agents.state import AgentState
         from factorzen.agents.team_orchestrator import TeamResult
         from factorzen.pipelines import factor_mine_team as fmt
@@ -256,7 +254,7 @@ def test_llm_workers_cli_suite(monkeypatch, tmp_path):
             captured.update(kw)
             return TeamResult(state=AgentState(seed=1), candidates=[], n_trials=0)
 
-        monkeypatch.setattr(fmt, "run_team_agent", fake_run_team_agent)
+        mp.setattr(fmt, "run_team_agent", fake_run_team_agent)
         fmt.run_team_mine(
             _mock_daily__llm_parallel(), n_rounds=1, seed=1, index_path=str(tmp_path / "e.jsonl"),
             llm_fn=lambda _m: "{}", out_dir=str(tmp_path), run_id="r",
@@ -266,10 +264,10 @@ def test_llm_workers_cli_suite(monkeypatch, tmp_path):
         manifest = json.loads((tmp_path / "r" / "manifest.json").read_text())
         assert manifest["params"]["llm_workers"] == 6
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
-    _section_2_test_run_team_mine_forwards_llm_workers_and_records_manifest(monkeypatch, _tp2)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_run_team_mine_forwards_llm_workers_and_records_manifest(mp, _tp2)
 
     # -- 原 test_run_team_agent_default_llm_workers_is_one --
     def _section_3_test_run_team_agent_default_llm_workers_is_one():
@@ -280,7 +278,6 @@ def test_llm_workers_cli_suite(monkeypatch, tmp_path):
         sig = inspect.signature(rta)
         assert sig.parameters["llm_workers"].default == 1
 
-    monkeypatch.undo()
     _section_3_test_run_team_agent_default_llm_workers_is_one()
 
 
@@ -966,7 +963,6 @@ def test_health_check_diag_suite(monkeypatch):
         assert diag is not None
         assert "null" in diag.lower() or "NaN" in diag
 
-    monkeypatch.undo()
     _section_1_test_all_null_factor_is_diagnosed()
 
     # -- 原 test_null_ratio_threshold_is_configurable_and_respected --
@@ -975,7 +971,6 @@ def test_health_check_diag_suite(monkeypatch):
         assert make_health_check(daily, max_null_ratio=0.5)(_HEALTHY) is None
         assert make_health_check(daily, max_null_ratio=0.001)(_HEALTHY) is not None
 
-    monkeypatch.undo()
     _section_2_test_null_ratio_threshold_is_configurable_and_respected()
 
     # -- 原 test_parse_error_is_diagnosed --
@@ -984,11 +979,10 @@ def test_health_check_diag_suite(monkeypatch):
         diag = check("not_a_func(")
         assert diag is not None and "解析" in diag
 
-    monkeypatch.undo()
     _section_3_test_parse_error_is_diagnosed()
 
     # -- 原 test_eval_error_is_diagnosed --
-    def _section_4_test_eval_error_is_diagnosed(monkeypatch):
+    def _section_4_test_eval_error_is_diagnosed(mp):
         from factorzen.discovery import evaluation as ev
 
         check = ev.make_health_check(_mock_daily__health_check())
@@ -996,13 +990,13 @@ def test_health_check_diag_suite(monkeypatch):
         def boom(*_a, **_k):
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(ev, "evaluate_materialized", boom)
+        mp.setattr(ev, "evaluate_materialized", boom)
         diag = check(_HEALTHY)
         assert diag is not None
         assert "求值失败" in diag and "RuntimeError" in diag and "boom" in diag
 
-    monkeypatch.undo()
-    _section_4_test_eval_error_is_diagnosed(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_eval_error_is_diagnosed(mp)
 
 
 # ─────────────────── heal_expressions × health_check 集成 ───────────────────

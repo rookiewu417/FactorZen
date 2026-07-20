@@ -170,43 +170,44 @@ def test_daily_basic_filters_universe(patched):
 def test_daily_snapshot_downsample_suite(patched, monkeypatch):
     """test_snapshot_dates_daily_mode；test_snapshot_dates_weekly_mode；test_snapshot_dates_monthly_mode；test_weekly_downsamples_to_snapshot；test_monthly_downsamples_to_snapshot"""
     # -- 原 test_snapshot_dates_daily_mode --
-    def _section_0_test_snapshot_dates_daily_mode(patched, monkeypatch):
-        monkeypatch.setattr(
+    def _section_0_test_snapshot_dates_daily_mode(patched, mp):
+        mp.setattr(
             "factorzen.core.calendar.get_trade_dates",
             lambda s, e: [date(2024, 1, 2), date(2024, 1, 3)],
         )
         ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="daily")
         assert ctx.snapshot_dates == [date(2024, 1, 2), date(2024, 1, 3)]
 
-    _section_0_test_snapshot_dates_daily_mode(patched, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_snapshot_dates_daily_mode(patched, mp)
 
     # -- 原 test_snapshot_dates_weekly_mode --
-    def _section_1_test_snapshot_dates_weekly_mode(patched, monkeypatch):
-        monkeypatch.setattr(
+    def _section_1_test_snapshot_dates_weekly_mode(patched, mp):
+        mp.setattr(
             "factorzen.core.calendar.get_weekly_snapshot_dates",
             lambda s, e: [date(2024, 1, 3)],
         )
         ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="weekly")
         assert ctx.snapshot_dates == [date(2024, 1, 3)]
 
-    monkeypatch.undo()
-    _section_1_test_snapshot_dates_weekly_mode(patched, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_snapshot_dates_weekly_mode(patched, mp)
 
     # -- 原 test_snapshot_dates_monthly_mode --
-    def _section_2_test_snapshot_dates_monthly_mode(patched, monkeypatch):
-        monkeypatch.setattr(
+    def _section_2_test_snapshot_dates_monthly_mode(patched, mp):
+        mp.setattr(
             "factorzen.core.calendar.get_monthly_snapshot_dates",
             lambda s, e: [date(2024, 1, 3)],
         )
         ctx = FactorDataContext(start="20240102", end="20240103", snapshot_mode="monthly")
         assert ctx.snapshot_dates == [date(2024, 1, 3)]
 
-    monkeypatch.undo()
-    _section_2_test_snapshot_dates_monthly_mode(patched, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_snapshot_dates_monthly_mode(patched, mp)
 
     # -- 原 test_weekly_downsamples_to_snapshot --
-    def _section_3_test_weekly_downsamples_to_snapshot(patched, monkeypatch):
-        monkeypatch.setattr(
+    def _section_3_test_weekly_downsamples_to_snapshot(patched, mp):
+        mp.setattr(
             "factorzen.core.calendar.get_weekly_snapshot_dates",
             lambda s, e: [date(2024, 1, 3)],
         )
@@ -215,12 +216,12 @@ def test_daily_snapshot_downsample_suite(patched, monkeypatch):
         assert df["trade_date"].unique().to_list() == [date(2024, 1, 3)]
         assert ctx.weekly is ctx.weekly  # 缓存
 
-    monkeypatch.undo()
-    _section_3_test_weekly_downsamples_to_snapshot(patched, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_weekly_downsamples_to_snapshot(patched, mp)
 
     # -- 原 test_monthly_downsamples_to_snapshot --
-    def _section_4_test_monthly_downsamples_to_snapshot(patched, monkeypatch):
-        monkeypatch.setattr(
+    def _section_4_test_monthly_downsamples_to_snapshot(patched, mp):
+        mp.setattr(
             "factorzen.core.calendar.get_monthly_snapshot_dates",
             lambda s, e: [date(2024, 1, 2)],
         )
@@ -228,8 +229,8 @@ def test_daily_snapshot_downsample_suite(patched, monkeypatch):
         df = ctx.monthly.collect()
         assert df["trade_date"].unique().to_list() == [date(2024, 1, 2)]
 
-    monkeypatch.undo()
-    _section_4_test_monthly_downsamples_to_snapshot(patched, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_monthly_downsamples_to_snapshot(patched, mp)
 
 
 # ══════════════════════════════════════════════════════════

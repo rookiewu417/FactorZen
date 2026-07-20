@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import polars as pl
+import pytest
 
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.state import AgentState, AttemptRecord
@@ -351,7 +352,7 @@ def test_team_hook_default_cap_writes_probation(monkeypatch, tmp_path):
 def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
     """--apply --allow-active 时 upsert 收到 allow_active=True。；--apply 默认不传 active 权限 → allow_active=False。；None×2 + v2×1 → 标 2 条 legacy；v2 不动；重跑 0 条；不改 status。；CLI tag-legacy 子命令可解析并打印计数。；single 轨 upsert 新记录 evidence_tier=='v2'。"""
     # -- 原 test_cli_allow_active_forwarded --
-    def _section_0_test_cli_allow_active_forwarded(tmp_path, monkeypatch):
+    def _section_0_test_cli_allow_active_forwarded(tmp_path, mp):
         import factorzen.cli.main as cli_main
         import factorzen.discovery.factor_library as fl
         import factorzen.discovery.lift_test as lt_mod
@@ -372,7 +373,7 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
             encoding="utf-8",
         )
 
-        monkeypatch.setattr(
+        mp.setattr(
             cli_main,
             "_prepare_agent_mining_data",
             lambda args: (
@@ -387,8 +388,8 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
             ),
         )
         from tests._cli_lift_mocks import patch_cli_lift_pre_gates
-        patch_cli_lift_pre_gates(monkeypatch)
-        monkeypatch.setattr(
+        patch_cli_lift_pre_gates(mp)
+        mp.setattr(
             lt_mod,
             "run_lift_tests",
             lambda gray, **kw: [{
@@ -403,7 +404,7 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
             upsert_calls.append({"results": results, **kw})
             return {"added_active": 1, "added_probation": 0, "rejected": 0}
 
-        monkeypatch.setattr(fl, "upsert_lift_admissions", fake_upsert)
+        mp.setattr(fl, "upsert_lift_admissions", fake_upsert)
 
         args = build_parser().parse_args([
             "factor-library", "lift-test",
@@ -423,10 +424,11 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    _section_0_test_cli_allow_active_forwarded(_tp0, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_cli_allow_active_forwarded(_tp0, mp)
 
     # -- 原 test_cli_apply_default_allow_active_false --
-    def _section_1_test_cli_apply_default_allow_active_false(tmp_path, monkeypatch):
+    def _section_1_test_cli_apply_default_allow_active_false(tmp_path, mp):
         import factorzen.cli.main as cli_main
         import factorzen.discovery.factor_library as fl
         import factorzen.discovery.lift_test as lt_mod
@@ -445,7 +447,7 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
             }),
             encoding="utf-8",
         )
-        monkeypatch.setattr(
+        mp.setattr(
             cli_main,
             "_prepare_agent_mining_data",
             lambda args: (
@@ -460,8 +462,8 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
             ),
         )
         from tests._cli_lift_mocks import patch_cli_lift_pre_gates
-        patch_cli_lift_pre_gates(monkeypatch)
-        monkeypatch.setattr(
+        patch_cli_lift_pre_gates(mp)
+        mp.setattr(
             lt_mod,
             "run_lift_tests",
             lambda gray, **kw: [{
@@ -476,7 +478,7 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
             upsert_calls.append(kw)
             return {"added_active": 0, "added_probation": 1, "rejected": 0}
 
-        monkeypatch.setattr(fl, "upsert_lift_admissions", fake_upsert)
+        mp.setattr(fl, "upsert_lift_admissions", fake_upsert)
 
         args = build_parser().parse_args([
             "factor-library", "lift-test",
@@ -493,10 +495,10 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
         assert len(upsert_calls) == 1
         assert upsert_calls[0].get("allow_active") is False
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
-    _section_1_test_cli_apply_default_allow_active_false(_tp1, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cli_apply_default_allow_active_false(_tp1, mp)
 
     # -- 原 test_tag_legacy_marks_none_only_and_idempotent --
     def _section_2_test_tag_legacy_marks_none_only_and_idempotent(tmp_path):
@@ -536,7 +538,6 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
         out2 = tag_legacy_records("ashare", root=str(tmp_path))
         assert out2["tagged"] == 0
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
     _section_2_test_tag_legacy_marks_none_only_and_idempotent(_tp2)
@@ -567,7 +568,6 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
         assert "1" in out  # tagged 1
         assert "legacy" in out.lower() or "tag" in out.lower() or "标" in out
 
-    monkeypatch.undo()
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)
     _section_3_test_cli_tag_legacy(_tp3, capsys)
@@ -587,7 +587,6 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
         r = load_library("ashare", root=str(tmp_path))[0]
         assert r.evidence_tier == "v2"
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
     _section_4_test_upsert_sets_evidence_tier_v2(_tp4)
@@ -680,7 +679,7 @@ def _state_with_lift_queue(exprs: list[str]) -> AgentState:
 def test_lift_reject_writeback_session_suite(monkeypatch, tmp_path):
     """组门不过 → kept 全体写 lift_rejected / group_gate_fail。；组门过、单候选 admission reject → below_bar 写回。；index=None → 零写入（零回归）。"""
     # -- 原 test_session_lift_group_gate_fail_writes_index --
-    def _section_0_test_session_lift_group_gate_fail_writes_index(monkeypatch, tmp_path):
+    def _section_0_test_session_lift_group_gate_fail_writes_index(mp, tmp_path):
         idx_path = tmp_path / "experiment_index.jsonl"
         index = ExperimentIndex(str(idx_path))
         state = _state_with_lift_queue(["ts_mean(close, 5)", "rank(vol)"])
@@ -693,22 +692,22 @@ def test_lift_reject_writeback_session_suite(monkeypatch, tmp_path):
                 "n_candidates": 2, "expressions": ["ts_mean(close, 5)", "rank(vol)"],
             }
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-        monkeypatch.setattr(
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr(
             "factorzen.discovery.lift_test.run_lift_tests",
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应跑逐候选")),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.factor_library.upsert_lift_admissions",
             lambda *a, **k: {"added_active": 0, "added_probation": 0, "rejected": 0},
             raising=False,
         )
         # coverage 全放行
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.lift_test.filter_candidates_by_coverage",
             lambda cands, **k: (list(cands), []),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.lift_test.make_lift_context",
             lambda *a, **k: SimpleNamespace(
                 horizon=1, prepped=daily, admission_start="2022-08-01",
@@ -736,10 +735,11 @@ def test_lift_reject_writeback_session_suite(monkeypatch, tmp_path):
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    _section_0_test_session_lift_group_gate_fail_writes_index(monkeypatch, _tp0)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_session_lift_group_gate_fail_writes_index(mp, _tp0)
 
     # -- 原 test_session_lift_below_bar_writes_index --
-    def _section_1_test_session_lift_below_bar_writes_index(monkeypatch, tmp_path):
+    def _section_1_test_session_lift_below_bar_writes_index(mp, tmp_path):
         idx_path = tmp_path / "experiment_index.jsonl"
         index = ExperimentIndex(str(idx_path))
         state = _state_with_lift_queue(["ts_mean(close, 5)", "rank(vol)"])
@@ -766,18 +766,18 @@ def test_lift_reject_writeback_session_suite(monkeypatch, tmp_path):
                 },
             ]
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
-        monkeypatch.setattr(
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr("factorzen.discovery.lift_test.run_lift_tests", fake_per)
+        mp.setattr(
             "factorzen.discovery.factor_library.upsert_lift_admissions",
             lambda *a, **k: {"added_active": 0, "added_probation": 1, "rejected": 1},
             raising=False,
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.lift_test.filter_candidates_by_coverage",
             lambda cands, **k: (list(cands), []),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.lift_test.make_lift_context",
             lambda *a, **k: SimpleNamespace(
                 horizon=1, prepped=daily, admission_start="2022-08-01",
@@ -800,13 +800,13 @@ def test_lift_reject_writeback_session_suite(monkeypatch, tmp_path):
         assert recs[0]["lift"] == 0.0001
         assert recs[0]["source"] == "session_auto_lift"
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
-    _section_1_test_session_lift_below_bar_writes_index(monkeypatch, _tp1)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_session_lift_below_bar_writes_index(mp, _tp1)
 
     # -- 原 test_session_lift_index_none_zero_write --
-    def _section_2_test_session_lift_index_none_zero_write(monkeypatch, tmp_path):
+    def _section_2_test_session_lift_index_none_zero_write(mp, tmp_path):
         state = _state_with_lift_queue(["ts_mean(close, 5)"])
         daily, holdout, mat = _holdout_and_mat()
 
@@ -816,12 +816,12 @@ def test_lift_reject_writeback_session_suite(monkeypatch, tmp_path):
                 "n_candidates": 1, "expressions": ["ts_mean(close, 5)"],
             }
 
-        monkeypatch.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
-        monkeypatch.setattr(
+        mp.setattr("factorzen.discovery.lift_test.run_group_lift", fake_group)
+        mp.setattr(
             "factorzen.discovery.lift_test.filter_candidates_by_coverage",
             lambda cands, **k: (list(cands), []),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             "factorzen.discovery.lift_test.make_lift_context",
             lambda *a, **k: SimpleNamespace(
                 horizon=1, prepped=daily, admission_start="2022-08-01",
@@ -837,10 +837,10 @@ def test_lift_reject_writeback_session_suite(monkeypatch, tmp_path):
         )
         assert not idx_path.exists()
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
-    _section_2_test_session_lift_index_none_zero_write(monkeypatch, _tp2)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_session_lift_index_none_zero_write(mp, _tp2)
 
 
 # ── A5 CLI ──────────────────────────────────────────────────────────────────
@@ -886,7 +886,7 @@ def _fake_daily() -> pl.DataFrame:
 def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
     """--apply → 写回来源 session 对应 index（含 group_gate_fail + below_bar）。；组门不过行（error 以 group_gate_fail 开头）也写回。；dry-run 不写 experiment_index。"""
     # -- 原 test_cli_apply_writes_lift_rejects_to_index --
-    def _section_0_test_cli_apply_writes_lift_rejects_to_index(tmp_path, monkeypatch):
+    def _section_0_test_cli_apply_writes_lift_rejects_to_index(tmp_path, mp):
         import factorzen.cli.main as cli_main
         import factorzen.discovery.factor_library as fl
         import factorzen.discovery.lift_test as lt_mod
@@ -929,11 +929,11 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
         )
         fallback_index = parent / "experiment_index.jsonl"
 
-        monkeypatch.setattr(
+        mp.setattr(
             cli_main, "_prepare_agent_mining_data",
             lambda args: (_fake_daily(), None, {}),
         )
-        patch_cli_lift_pre_gates(monkeypatch)
+        patch_cli_lift_pre_gates(mp)
 
         def fake_group(*a, **k):
             return {
@@ -955,9 +955,9 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
                 },
             ]
 
-        monkeypatch.setattr(lt_mod, "run_group_lift", fake_group)
-        monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
-        monkeypatch.setattr(
+        mp.setattr(lt_mod, "run_group_lift", fake_group)
+        mp.setattr(lt_mod, "run_lift_tests", fake_lift)
+        mp.setattr(
             fl, "upsert_lift_admissions",
             lambda *a, **k: {"added_active": 0, "added_probation": 1, "rejected": 1},
         )
@@ -989,10 +989,11 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    _section_0_test_cli_apply_writes_lift_rejects_to_index(_tp0, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_cli_apply_writes_lift_rejects_to_index(_tp0, mp)
 
     # -- 原 test_cli_apply_group_gate_fail_writes --
-    def _section_1_test_cli_apply_group_gate_fail_writes(tmp_path, monkeypatch):
+    def _section_1_test_cli_apply_group_gate_fail_writes(tmp_path, mp):
         import factorzen.cli.main as cli_main
         import factorzen.discovery.factor_library as fl
         import factorzen.discovery.lift_test as lt_mod
@@ -1024,21 +1025,21 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
             encoding="utf-8",
         )
 
-        monkeypatch.setattr(
+        mp.setattr(
             cli_main, "_prepare_agent_mining_data",
             lambda args: (_fake_daily(), None, {}),
         )
-        patch_cli_lift_pre_gates(monkeypatch)
+        patch_cli_lift_pre_gates(mp)
 
         def fake_group(*a, **k):
             return {"lift": 0.0001, "lift_se": 0.01, "error": None, "n_candidates": 1}
 
-        monkeypatch.setattr(lt_mod, "run_group_lift", fake_group)
-        monkeypatch.setattr(
+        mp.setattr(lt_mod, "run_group_lift", fake_group)
+        mp.setattr(
             lt_mod, "run_lift_tests",
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应逐候选")),
         )
-        monkeypatch.setattr(
+        mp.setattr(
             fl, "upsert_lift_admissions",
             lambda *a, **k: {"added_active": 0, "added_probation": 0, "rejected": 0},
         )
@@ -1060,13 +1061,13 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
         assert len(rejects) == 1
         assert rejects[0]["lift_reason"] == "group_gate_fail"
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
-    _section_1_test_cli_apply_group_gate_fail_writes(_tp1, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_cli_apply_group_gate_fail_writes(_tp1, mp)
 
     # -- 原 test_cli_dry_run_zero_index_write --
-    def _section_2_test_cli_dry_run_zero_index_write(tmp_path, monkeypatch):
+    def _section_2_test_cli_dry_run_zero_index_write(tmp_path, mp):
         import factorzen.cli.main as cli_main
         import factorzen.discovery.factor_library as fl
         import factorzen.discovery.lift_test as lt_mod
@@ -1093,16 +1094,16 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
             }),
             encoding="utf-8",
         )
-        monkeypatch.setattr(
+        mp.setattr(
             cli_main, "_prepare_agent_mining_data",
             lambda args: (_fake_daily(), None, {}),
         )
-        patch_cli_lift_pre_gates(monkeypatch)
-        monkeypatch.setattr(
+        patch_cli_lift_pre_gates(mp)
+        mp.setattr(
             lt_mod, "run_group_lift",
             lambda *a, **k: {"lift": 0.0001, "lift_se": 0.01, "error": None},
         )
-        monkeypatch.setattr(
+        mp.setattr(
             fl, "upsert_lift_admissions",
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("dry-run 不入库")),
         )
@@ -1119,9 +1120,9 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
         assert rc == 0
         assert not index_path.exists()
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
-    _section_2_test_cli_dry_run_zero_index_write(_tp2, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_cli_dry_run_zero_index_write(_tp2, mp)
 
 

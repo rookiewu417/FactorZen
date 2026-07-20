@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 
 import polars as pl
+import pytest
 
 from factorzen.daily.data.flows import attach_flows
 from factorzen.daily.data.pit import attach_holders
@@ -138,7 +139,7 @@ def test_margin_attach_values_suite():
 def test_leaf_dual_path_parity_suite(monkeypatch):
     """prepare_mining_daily 与 ExpressionFactor.compute 共用 attach_flows → 逐值一致。；prepare_mining_daily 与 ExpressionFactor.compute 共用 attach_holders → 逐值一致。；test_toplist_mining_and_materialize_paths_value_identical"""
     # -- 原 test_mining_and_materialize_paths_value_identical --
-    def _section_0_test_mining_and_materialize_paths_value_identical(monkeypatch):
+    def _section_0_test_mining_and_materialize_paths_value_identical(mp):
         from datetime import date
 
         import factorzen.daily.data.context as ctx_mod
@@ -181,7 +182,7 @@ def test_leaf_dual_path_parity_suite(monkeypatch):
             def daily_basic(self):
                 return basic.lazy()
 
-        monkeypatch.setattr(ctx_mod, "FactorDataContext", _FakeCtx)
+        mp.setattr(ctx_mod, "FactorDataContext", _FakeCtx)
 
         # 挖掘路径：prepare 会调 attach_flows；拦截 load 注入 margin
         import factorzen.daily.data.flows as flows_mod
@@ -194,9 +195,9 @@ def test_leaf_dual_path_parity_suite(monkeypatch):
             inj.setdefault("margin_detail", margin)
             return real_attach(d, injected=inj)
 
-        monkeypatch.setattr(flows_mod, "attach_flows", _attach_with_margin)
+        mp.setattr(flows_mod, "attach_flows", _attach_with_margin)
         # prepare_mining_daily 从 factorzen.daily.data.flows import attach_flows —— 需补丁源模块
-        monkeypatch.setattr("factorzen.pipelines.factor_mine.attach_flows", _attach_with_margin, raising=False)
+        mp.setattr("factorzen.pipelines.factor_mine.attach_flows", _attach_with_margin, raising=False)
 
         # prepare 内部 from factorzen.daily.data.flows import attach_flows 是局部 import，
         # patch flows_mod.attach_flows 即可覆盖。
@@ -231,10 +232,11 @@ def test_leaf_dual_path_parity_suite(monkeypatch):
         out = fac.compute(_Ctx())
         assert "factor_value" in out.columns
 
-    _section_0_test_mining_and_materialize_paths_value_identical(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_test_mining_and_materialize_paths_value_identical(mp)
 
     # -- 原 test_holder_mining_and_materialize_paths_value_identical --
-    def _section_1_test_holder_mining_and_materialize_paths_value_identical(monkeypatch):
+    def _section_1_test_holder_mining_and_materialize_paths_value_identical(mp):
         import factorzen.daily.data.context as ctx_mod
         import factorzen.daily.data.pit as pit_mod
         import factorzen.pipelines.factor_mine as fm
@@ -272,18 +274,18 @@ def test_leaf_dual_path_parity_suite(monkeypatch):
             def daily_basic(self):
                 return basic.lazy()
 
-        monkeypatch.setattr(ctx_mod, "FactorDataContext", _FakeCtx)
+        mp.setattr(ctx_mod, "FactorDataContext", _FakeCtx)
 
         real_attach = pit_mod.attach_holders
 
         def _attach_with_holder(d, holder_df=None):
             return real_attach(d, holder_df=holder if holder_df is None else holder_df)
 
-        monkeypatch.setattr(pit_mod, "attach_holders", _attach_with_holder)
-        monkeypatch.setattr(pit_mod, "attach_fundamentals", lambda d, fina_df=None: d)
+        mp.setattr(pit_mod, "attach_holders", _attach_with_holder)
+        mp.setattr(pit_mod, "attach_fundamentals", lambda d, fina_df=None: d)
 
         import factorzen.daily.data.flows as flows_mod
-        monkeypatch.setattr(flows_mod, "attach_flows", lambda d, **kw: d)
+        mp.setattr(flows_mod, "attach_flows", lambda d, **kw: d)
 
         mined = fm.prepare_mining_daily("20200501", "20200820")
         mat_frame = _attach_with_holder(daily)
@@ -310,11 +312,11 @@ def test_leaf_dual_path_parity_suite(monkeypatch):
         out = fac.compute(_Ctx())
         assert "factor_value" in out.columns
 
-    monkeypatch.undo()
-    _section_1_test_holder_mining_and_materialize_paths_value_identical(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_holder_mining_and_materialize_paths_value_identical(mp)
 
     # -- 原 test_toplist_mining_and_materialize_paths_value_identical --
-    def _section_2_test_toplist_mining_and_materialize_paths_value_identical(monkeypatch):
+    def _section_2_test_toplist_mining_and_materialize_paths_value_identical(mp):
         import factorzen.daily.data.context as ctx_mod
         import factorzen.daily.data.flows as flows_mod
         import factorzen.pipelines.factor_mine as fm
@@ -357,7 +359,7 @@ def test_leaf_dual_path_parity_suite(monkeypatch):
             def daily_basic(self):
                 return basic.lazy()
 
-        monkeypatch.setattr(ctx_mod, "FactorDataContext", _FakeCtx)
+        mp.setattr(ctx_mod, "FactorDataContext", _FakeCtx)
 
         real_attach = flows_mod.attach_flows
 
@@ -369,11 +371,11 @@ def test_leaf_dual_path_parity_suite(monkeypatch):
             inj.setdefault("top_list", top)
             return real_attach(d, injected=inj)
 
-        monkeypatch.setattr(flows_mod, "attach_flows", _attach_with_top)
+        mp.setattr(flows_mod, "attach_flows", _attach_with_top)
 
         import factorzen.daily.data.pit as pit_mod
-        monkeypatch.setattr(pit_mod, "attach_fundamentals", lambda d, fina_df=None: d)
-        monkeypatch.setattr(pit_mod, "attach_holders", lambda d, holder_df=None: d)
+        mp.setattr(pit_mod, "attach_fundamentals", lambda d, fina_df=None: d)
+        mp.setattr(pit_mod, "attach_holders", lambda d, holder_df=None: d)
 
         mined = fm.prepare_mining_daily("20240102", "20240104")
         mat_frame = _attach_with_top(daily)
@@ -399,8 +401,8 @@ def test_leaf_dual_path_parity_suite(monkeypatch):
         out = fac.compute(_Ctx())
         assert "factor_value" in out.columns
 
-    monkeypatch.undo()
-    _section_2_test_toplist_mining_and_materialize_paths_value_identical(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_toplist_mining_and_materialize_paths_value_identical(mp)
 
 
 # ── C. 叶子注册 / prompt / leaf_health ────────────────────────────────────────

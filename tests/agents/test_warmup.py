@@ -550,7 +550,7 @@ def test_holdout_warmup_window_suite(tmp_path, monkeypatch):
     _section_0_test_m1_holdout_values_match_full_frame_ground_truth()
 
     # -- 原 test_m1_run_session_warms_up_holdout --
-    def _section_1_test_m1_run_session_warms_up_holdout(tmp_path, monkeypatch):
+    def _section_1_test_m1_run_session_warms_up_holdout(tmp_path, mp):
         from factorzen.discovery import mining_session as ms
 
         seen: list[dict] = []
@@ -560,17 +560,17 @@ def test_holdout_warmup_window_suite(tmp_path, monkeypatch):
             seen.append({"rows": daily.height, "eval_start": eval_start})
             return real(node, daily, eval_start, leaf_map)
 
-        monkeypatch.setattr(ms, "_factor_values", spy)
+        mp.setattr(ms, "_factor_values", spy)
         ms.run_session(_daily(), n_trials=20, top_k=3, seed=3, method="random",
                        holdout_ratio=0.2, out_dir=str(tmp_path))
 
         holdout_calls = [c for c in seen if c["eval_start"] is not None]
         assert holdout_calls, "holdout 求值必须带 eval_start（扩窗预热后裁剪）"
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
-    _section_1_test_m1_run_session_warms_up_holdout(_tp1, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_m1_run_session_warms_up_holdout(_tp1, mp)
 
     # -- 原 test_every_production_caller_passes_warmup_daily --
     def _section_2_test_every_production_caller_passes_warmup_daily():
@@ -590,16 +590,15 @@ def test_holdout_warmup_window_suite(tmp_path, monkeypatch):
             f"{offenders}"
         )
 
-    monkeypatch.undo()
     _section_2_test_every_production_caller_passes_warmup_daily()
 
     # -- 原 test_single_agent_orchestrator_passes_the_full_frame_not_the_mining_slice --
-    def _section_3_test_single_agent_orchestrator_passes_the_full_frame_not_the_mining_slice(monkeypatch):
+    def _section_3_test_single_agent_orchestrator_passes_the_full_frame_not_the_mining_slice(mp):
         import factorzen.agents.orchestrator as orch
         from factorzen.agents.orchestrator import run_llm_agent
 
         seen: dict = {}
-        monkeypatch.setattr(orch, "node_guardrails", _spy_guardrails(seen))
+        mp.setattr(orch, "node_guardrails", _spy_guardrails(seen))
         run_llm_agent(_daily(), _fake_llm(), n_rounds=1, seed=1, heal_rounds=0)
 
         assert seen["warmup"] == seen["mining"] + seen["holdout"], (
@@ -607,16 +606,16 @@ def test_holdout_warmup_window_suite(tmp_path, monkeypatch):
             f"实得 {seen['warmup']} 行"
         )
 
-    monkeypatch.undo()
-    _section_3_test_single_agent_orchestrator_passes_the_full_frame_not_the_mining_slice(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_single_agent_orchestrator_passes_the_full_frame_not_the_mining_slice(mp)
 
     # -- 原 test_team_orchestrator_passes_the_full_frame_not_the_mining_slice --
-    def _section_4_test_team_orchestrator_passes_the_full_frame_not_the_mining_slice(tmp_path, monkeypatch):
+    def _section_4_test_team_orchestrator_passes_the_full_frame_not_the_mining_slice(tmp_path, mp):
         import factorzen.agents.team_orchestrator as team
         from factorzen.agents.team_orchestrator import run_team_agent
 
         seen: dict = {}
-        monkeypatch.setattr(team, "node_guardrails", _spy_guardrails(seen))
+        mp.setattr(team, "node_guardrails", _spy_guardrails(seen))
         run_team_agent(_daily(), _fake_llm(), n_rounds=1, seed=1,
                        index_path=str(tmp_path / "i.jsonl"), heal_rounds=0)
 
@@ -624,10 +623,10 @@ def test_holdout_warmup_window_suite(tmp_path, monkeypatch):
             f"warmup_daily 应是完整帧，实得 {seen['warmup']} 行"
         )
 
-    monkeypatch.undo()
     _tp4 = tmp_path / "_s4"
     _tp4.mkdir(exist_ok=True)
-    _section_4_test_team_orchestrator_passes_the_full_frame_not_the_mining_slice(_tp4, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_team_orchestrator_passes_the_full_frame_not_the_mining_slice(_tp4, mp)
 
     # -- 原 test_both_paths_produce_identical_holdout_values --
     def _section_5_test_both_paths_produce_identical_holdout_values():
@@ -646,7 +645,6 @@ def test_holdout_warmup_window_suite(tmp_path, monkeypatch):
         assert a.height == m.height
         assert np.allclose(a["factor_value"].to_numpy(), m["factor_value"].to_numpy())
 
-    monkeypatch.undo()
     _section_5_test_both_paths_produce_identical_holdout_values()
 
 

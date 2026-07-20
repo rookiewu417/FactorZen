@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 import polars as pl
+import pytest
 
 from factorzen.agents.experiment_index import ExperimentIndex
 from factorzen.agents.orchestrator import run_llm_agent
@@ -401,52 +402,51 @@ def test_patience_suite(tmp_path, monkeypatch):
                              index_path=str(tmp_path / "e.jsonl"))
         assert res.state.iteration == 3
 
-    monkeypatch.undo()
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
     _section_1_test_team_patience_none_runs_all_rounds(_tp1)
 
     # -- 原 test_team_patience_resets_when_a_new_candidate_appears --
-    def _section_2_test_team_patience_resets_when_a_new_candidate_appears(tmp_path, monkeypatch):
+    def _section_2_test_team_patience_resets_when_a_new_candidate_appears(tmp_path, mp):
         import factorzen.agents.team_orchestrator as team
 
-        monkeypatch.setattr(team, "node_guardrails", _stub_guardrails(yields_candidate=True))
+        mp.setattr(team, "node_guardrails", _stub_guardrails(yields_candidate=True))
         res = run_team_agent(_mock_daily__patience(), _fn_valid(), n_rounds=6, seed=1,
                              index_path=str(tmp_path / "e.jsonl"), patience=2)
 
         assert res.state.iteration == 6, \
             f"每轮都有新候选，patience 不该触发；实得 iteration={res.state.iteration}"
 
-    monkeypatch.undo()
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
-    _section_2_test_team_patience_resets_when_a_new_candidate_appears(_tp2, monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_team_patience_resets_when_a_new_candidate_appears(_tp2, mp)
 
     # -- 原 test_m5_patience_early_stops --
-    def _section_3_test_m5_patience_early_stops(monkeypatch):
+    def _section_3_test_m5_patience_early_stops(mp):
         import factorzen.agents.orchestrator as orch
         from factorzen.agents.orchestrator import run_llm_agent
 
-        monkeypatch.setattr(orch, "node_guardrails", _stub_guardrails(yields_candidate=False))
+        mp.setattr(orch, "node_guardrails", _stub_guardrails(yields_candidate=False))
         res = run_llm_agent(_mock_daily__patience(n_stocks=40), _fn_m5(), n_rounds=8, seed=1, patience=2, library_orthogonal=False)
 
         assert res.state.iteration == 2, f"连续 2 轮无新候选应早停，实得 {res.state.iteration}"
 
-    monkeypatch.undo()
-    _section_3_test_m5_patience_early_stops(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_m5_patience_early_stops(mp)
 
     # -- 原 test_m5_patience_resets_when_a_new_candidate_appears --
-    def _section_4_test_m5_patience_resets_when_a_new_candidate_appears(monkeypatch):
+    def _section_4_test_m5_patience_resets_when_a_new_candidate_appears(mp):
         import factorzen.agents.orchestrator as orch
         from factorzen.agents.orchestrator import run_llm_agent
 
-        monkeypatch.setattr(orch, "node_guardrails", _stub_guardrails(yields_candidate=True))
+        mp.setattr(orch, "node_guardrails", _stub_guardrails(yields_candidate=True))
         res = run_llm_agent(_mock_daily__patience(n_stocks=40), _fn_m5(), n_rounds=5, seed=1, patience=2, library_orthogonal=False)
 
         assert res.state.iteration == 5, "每轮都有新候选，patience 不该触发"
 
-    monkeypatch.undo()
-    _section_4_test_m5_patience_resets_when_a_new_candidate_appears(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_m5_patience_resets_when_a_new_candidate_appears(mp)
 
     # -- 原 test_cli_rejects_non_positive_patience --
     def _section_5_test_cli_rejects_non_positive_patience():
@@ -460,7 +460,6 @@ def test_patience_suite(tmp_path, monkeypatch):
                       "--patience", bad])
             assert ei.value.code == 2, "argparse 参数校验失败应退出码 2"
 
-    monkeypatch.undo()
     _section_5_test_cli_rejects_non_positive_patience()
 
 

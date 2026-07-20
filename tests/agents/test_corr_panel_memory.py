@@ -424,7 +424,7 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
     _section_0_test_lazy_wide_default_threshold_still_materializes()
 
     # -- 原 test_lazy_wide_tripartite_bit_identical --
-    def _section_1_test_lazy_wide_tripartite_bit_identical(monkeypatch):
+    def _section_1_test_lazy_wide_tripartite_bit_identical(mp):
         from factorzen.discovery import scoring as scoring_mod
         from factorzen.discovery.scoring import (
             LazyWideCorrGrid,
@@ -448,7 +448,7 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
             assert mat.values.dtype == np.float64
 
             # lazy（阈值压到 1）
-            monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+            mp.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
             lazy = build_library_corr_panel(compact)
             assert isinstance(lazy, LazyWideCorrGrid)
             assert lazy.present is None
@@ -465,7 +465,7 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
             # （矩阵路径 vs compute_factor_correlation 求和顺序可差 ULP，既有测试同）
             _assert_same(pairwise, out_lazy)
             _assert_same(pairwise, out_mat)
-            monkeypatch.setattr(
+            mp.setattr(
                 scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD",
                 scoring_mod.CORR_PANEL_F32_BYTES_THRESHOLD,
             )
@@ -485,7 +485,7 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
         pool = {"lib": lib}
         compact = _to_compact(pool)
         mat = build_library_corr_panel(compact)
-        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+        mp.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
         lazy = build_library_corr_panel(compact)
         assert isinstance(lazy, LazyWideCorrGrid)
         pairwise = max_correlation_detail(cand, pool)
@@ -495,11 +495,11 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
         _assert_same(pairwise, out_lazy)
         _assert_same(pairwise, out_mat)
 
-    monkeypatch.undo()
-    _section_1_test_lazy_wide_tripartite_bit_identical(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_test_lazy_wide_tripartite_bit_identical(mp)
 
     # -- 原 test_lazy_wide_block_equiv_windows --
-    def _section_2_test_lazy_wide_block_equiv_windows(monkeypatch):
+    def _section_2_test_lazy_wide_block_equiv_windows(mp):
         from factorzen.discovery import scoring as scoring_mod
         from factorzen.discovery.scoring import (
             LazyWideCorrGrid,
@@ -511,7 +511,7 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
         compact = _to_compact(pool)
         mat = build_library_corr_panel(compact)
         assert isinstance(mat, LibraryCorrPanel)
-        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+        mp.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
         lazy = build_library_corr_panel(compact)
         assert isinstance(lazy, LazyWideCorrGrid)
 
@@ -524,11 +524,11 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
                 lazy.present_block(d0, d1), mat.present_block(d0, d1),
             )
 
-    monkeypatch.undo()
-    _section_2_test_lazy_wide_block_equiv_windows(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_lazy_wide_block_equiv_windows(mp)
 
     # -- 原 test_lazy_wide_chunk_boundaries_bit_identical --
-    def _section_3_test_lazy_wide_chunk_boundaries_bit_identical(monkeypatch):
+    def _section_3_test_lazy_wide_chunk_boundaries_bit_identical(mp):
         from factorzen.discovery import scoring as scoring_mod
         from factorzen.discovery.scoring import (
             LazyWideCorrGrid,
@@ -538,29 +538,29 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
 
         cand, pool, _, _ = _mk_pool_and_cand(seed=31, n_days=50, n_stocks=40)
         compact = _to_compact(pool)
-        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+        mp.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
         lazy = build_library_corr_panel(compact)
         assert isinstance(lazy, LazyWideCorrGrid)
 
         default = max_correlation_detail(cand, compact, panel=lazy)
 
-        monkeypatch.setattr(scoring_mod, "CORR_PANEL_CHUNK_BYTES", 1)
+        mp.setattr(scoring_mod, "CORR_PANEL_CHUNK_BYTES", 1)
         blk1 = max_correlation_detail(cand, compact, panel=lazy)
         assert blk1 == default
         assert blk1[0] == default[0]
         assert blk1[1] == default[1]
 
-        monkeypatch.setattr(scoring_mod, "CORR_PANEL_CHUNK_BYTES", 10**18)
+        mp.setattr(scoring_mod, "CORR_PANEL_CHUNK_BYTES", 10**18)
         one = max_correlation_detail(cand, compact, panel=lazy)
         assert one == default
         assert one[0] == default[0]
         assert one[1] == default[1]
 
-    monkeypatch.undo()
-    _section_3_test_lazy_wide_chunk_boundaries_bit_identical(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3_test_lazy_wide_chunk_boundaries_bit_identical(mp)
 
     # -- 原 test_lazy_wide_f32_source_bit_identical_vs_f32_panel --
-    def _section_4_test_lazy_wide_f32_source_bit_identical_vs_f32_panel(monkeypatch):
+    def _section_4_test_lazy_wide_f32_source_bit_identical_vs_f32_panel(mp):
         from factorzen.discovery import scoring as scoring_mod
         from factorzen.discovery.scoring import (
             LazyWideCorrGrid,
@@ -581,15 +581,15 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
         assert all(pool_f32.wide[n].dtype == pl.Float32 for n in pool_f32.factor_names)
 
         # f32 物化面板：lazy 阈值抬高，f32 阈值压到 1
-        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 10**18)
-        monkeypatch.setattr(scoring_mod, "CORR_PANEL_F32_BYTES_THRESHOLD", 1)
+        mp.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 10**18)
+        mp.setattr(scoring_mod, "CORR_PANEL_F32_BYTES_THRESHOLD", 1)
         mat_f32 = build_library_corr_panel(pool_f32)
         assert isinstance(mat_f32, LibraryCorrPanel)
         assert mat_f32.values.dtype == np.float32
         assert mat_f32.present is None
 
         # lazy：阈值压到 1
-        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+        mp.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
         lazy = build_library_corr_panel(pool_f32)
         assert isinstance(lazy, LazyWideCorrGrid)
 
@@ -603,17 +603,17 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
         n_d = len(mat_f32.dates)
         _assert_block_equal(lazy.block(0, n_d), mat_f32.block(0, n_d))
 
-    monkeypatch.undo()
-    _section_4_test_lazy_wide_f32_source_bit_identical_vs_f32_panel(monkeypatch)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_lazy_wide_f32_source_bit_identical_vs_f32_panel(mp)
 
     # -- 原 test_lazy_wide_holds_wide_ref_no_big_cache --
-    def _section_5_test_lazy_wide_holds_wide_ref_no_big_cache(monkeypatch, capsys):
+    def _section_5_test_lazy_wide_holds_wide_ref_no_big_cache(mp, capsys):
         from factorzen.discovery import scoring as scoring_mod
         from factorzen.discovery.scoring import LazyWideCorrGrid, build_library_corr_panel
 
         _, pool, _, _ = _mk_pool_and_cand(seed=34, n_days=20, n_stocks=30)
         compact = _to_compact(pool)
-        monkeypatch.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
+        mp.setattr(scoring_mod, "CORR_PANEL_LAZY_BYTES_THRESHOLD", 1)
         lazy = build_library_corr_panel(compact)
         assert isinstance(lazy, LazyWideCorrGrid)
         assert lazy._wide is compact.wide  # 引用非复制
@@ -643,7 +643,7 @@ def test_lazy_wide_bit_identical_suite(monkeypatch, capsys):
         assert lazy._row_by_day.ndim == 1 and lazy._si_by_day.ndim == 1
         del vals, pres
 
-    monkeypatch.undo()
-    _section_5_test_lazy_wide_holds_wide_ref_no_big_cache(monkeypatch, capsys)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_5_test_lazy_wide_holds_wide_ref_no_big_cache(mp, capsys)
 
 

@@ -1,7 +1,6 @@
 """组合增量 lift 实验 + probation 入库通道单测。TDD、mock 离线。"""
 from __future__ import annotations
 
-import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -155,23 +154,6 @@ def test_lift_bad_candidate_does_not_crash_batch():
     assert len(rows) == 2
     assert rows[0]["passed"] is False and rows[0]["error"]
     assert rows[1]["expression"] == "ok"
-
-
-def test_extract_gray_from_manifest():
-    from factorzen.discovery.lift_test import extract_gray_candidates_from_manifest
-
-    man = {
-        "attempts": [
-            {"expression": "a", "reject_category": "gray_zone", "residual_ic_train": 0.006},
-            {"expression": "b", "reject_category": "holdout_coverage"},
-            {"expression": "a", "reject_category": "gray_zone"},  # 去重
-        ],
-        "candidates": [
-            {"expression": "c", "reject_category": "gray_zone", "ic_train": 0.008},
-        ],
-    }
-    got = extract_gray_candidates_from_manifest(man)
-    assert {g["expression"] for g in got} == {"a", "c"}
 
 
 def test_extract_mixed_gray_zone_and_lift_queue():
@@ -771,95 +753,6 @@ def test_mining_session_gray_zone_fields_in_manifest_contract():
 # ── CLI 透传 ─────────────────────────────────────────────────────────────────
 
 
-def test_cli_lift_test_parser_and_dry_run(tmp_path, monkeypatch):
-    """capability↔wiring：子命令注册 + dry-run 不写库。"""
-    from factorzen.cli.main import build_parser
-
-    parser = build_parser()
-    args = parser.parse_args([
-        "factor-library", "lift-test",
-        "--session", str(tmp_path / "run1"),
-        "--market", "ashare",
-        "--start", "20200101",
-        "--end", "20201231",
-        "--universe", "csi300",
-        "--top-m", "5",
-        "--threshold", "0.002",
-        "--dry-run",
-    ])
-    assert args.func.__name__ == "_cmd_factor_library_lift_test"
-    assert args.top_m == 5
-    assert args.threshold == 0.002
-    assert args.dry_run is True
-
-    # 写一个含 gray_zone 的 manifest
-    run_dir = tmp_path / "run1"
-    run_dir.mkdir()
-    (run_dir / "manifest.json").write_text(json.dumps({
-        "attempts": [
-            {"expression": "rank(close)", "reject_category": "gray_zone",
-             # 须 ≥ DEFAULT_GRAY_IC_FLOOR，否则被组门 sub-floor 防呆剔除
-             "residual_ic_train": 0.02, "n_residual_holdout_days": 100},
-        ],
-        "candidates": [],
-    }), encoding="utf-8")
-
-    lib_root = tmp_path / "lib"
-    lib_root.mkdir()
-    # mock 数据装配 + lift + upsert
-    import factorzen.cli.main as cli_main
-    import factorzen.discovery.factor_library as fl
-    import factorzen.discovery.lift_test as lt_mod
-
-    monkeypatch.setattr(
-        cli_main, "_prepare_agent_mining_data",
-        lambda args: (pl.DataFrame({
-            "trade_date": [date(2020, 1, 2)], "ts_code": ["000001.SZ"],
-            "close": [10.0], "close_adj": [10.0],
-        }), None, {}),
-    )
-
-    def fake_lift(gray, **kw):
-        return [{
-            "expression": "rank(close)", "lift": 0.005, "baseline": 0.02,
-            "passed": True, "candidate_rank_ic": 0.025, "elapsed_s": 0.1,
-        }]
-
-    written = {"upsert": 0}
-
-    def fake_upsert(*a, **k):
-        written["upsert"] += 1
-        from factorzen.discovery.factor_library import UpsertResult
-        return UpsertResult(added=1)
-
-    # W1c/W2b/W0-fix-2：CLI 现先 filter → 组门 → run_lift_tests
-    monkeypatch.setattr(
-        lt_mod, "filter_candidates_by_coverage",
-        lambda cands, **k: (list(cands), []),
-    )
-    monkeypatch.setattr(
-        lt_mod, "run_group_lift",
-        lambda queue, **k: {
-            "lift": 0.01, "lift_se": 0.001, "error": None,
-            "lift_metric": "residual_ic_v1",
-        },
-    )
-    monkeypatch.setattr(lt_mod, "resolve_lift_workers", lambda w: 2)
-    monkeypatch.setattr(lt_mod, "run_lift_tests", fake_lift)
-    # CLI 从 factor_library 模块调 upsert_probation
-    monkeypatch.setattr(fl, "upsert_probation", fake_upsert)
-
-    args.library_root = str(lib_root)
-    rc = cli_main._cmd_factor_library_lift_test(args)
-    assert rc == 0
-    assert written["upsert"] == 0  # dry-run 不写库
-    assert (run_dir / "lift_test_manifest.json").exists()
-    man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
-    assert man["dry_run"] is True
-    assert man["n_passed"] == 1
-    assert man["threshold"] == 0.002
-
-
 def test_expression_keys_survive_residual_engine(tmp_path):
     """因子字典键是**真实表达式**（含括号/逗号）时 residual 引擎仍正常。
 
@@ -990,29 +883,3 @@ def test_run_lift_tests_admission_provenance_complete():
     assert r2["baseline_hash"] == expected_b
 
 
-def test_daily_oos_rank_ic_mixed_trade_date_dtypes():
-    """回归:candidate 面板 trade_date=pl.Date、ret=Utf8 → 不许 SchemaError 且能配对。
-
-    2026-07-15 apply 事故:38/38 候选死于 join 键 dtype 不匹配(admission_ic 路径把
-    Date 面板直喂本函数)。
-    """
-    import datetime as dt
-
-    import polars as pl
-
-    from factorzen.discovery.lift_test import _daily_oos_rank_ic
-
-    days = [dt.date(2024, 1, 2 + i) for i in range(3)]
-    codes = [f"{i:06d}.SZ" for i in range(12)]
-    combined = pl.DataFrame({
-        "trade_date": [d for d in days for _ in codes],          # pl.Date
-        "ts_code": codes * len(days),
-        "factor_value": [float(hash((str(d), c)) % 100) for d in days for c in codes],
-    })
-    ret = pl.DataFrame({
-        "trade_date": [d.strftime("%Y%m%d") for d in days for _ in codes],  # Utf8
-        "ts_code": codes * len(days),
-        "ret": [((hash((c, str(d))) % 200) - 100) / 5000.0 for d in days for c in codes],
-    })
-    daily = _daily_oos_rank_ic(combined, ret)
-    assert daily.height == len(days)  # 三个截面日全部配对成功

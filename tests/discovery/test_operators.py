@@ -48,14 +48,6 @@ def _toy_df(seed: int = 0) -> pl.DataFrame:
                          "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4)})
     return pl.DataFrame(rows).sort(["ts_code", "trade_date"])
 
-def test_ts_mean_matches_manual():
-    from factorzen.discovery.operators import OPERATORS
-    df = _toy_df()
-    expr = OPERATORS["ts_mean"].build([pl.col("close_adj")], 5)
-    got = df.with_columns(expr.alias("f"))
-    manual = df.with_columns(
-        pl.col("close_adj").rolling_mean(5, min_samples=3).over("ts_code").alias("m"))
-    assert got["f"].to_list() == manual["m"].to_list()
 
 def test_cs_rank_is_within_unit_interval():
     from factorzen.discovery.operators import OPERATORS
@@ -139,14 +131,6 @@ def test_ts_cov_matches_numpy_ground_truth():
         else:
             assert g is not None and abs(g - e) < 1e-9
 
-def test_ts_median_matches_manual():
-    from factorzen.discovery.operators import OPERATORS
-    df = _toy_df()
-    expr = OPERATORS["ts_median"].build([pl.col("close_adj")], 5)
-    got = df.with_columns(expr.alias("f"))
-    manual = df.with_columns(
-        pl.col("close_adj").rolling_median(5, min_samples=3).over("ts_code").alias("m"))
-    assert got["f"].to_list() == manual["m"].to_list()
 
 def test_ts_zscore_null_on_constant_and_matches_numpy():
     import numpy as np

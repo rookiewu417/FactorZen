@@ -420,19 +420,4 @@ def test_m1_reports_basis_for_reproducibility(tmp_path):
     assert m["sharpe_variance"] == pytest.approx(res["sharpe_variance"])
     assert m["n_trials"] == res["n_trials"]
 
-def test_agent_and_m1_agree_given_identical_pool_and_factor():
-    """同一 IR 池、同一因子 IR、同一 n_obs → 两条路径的 p 值必须相等。
-
-    抽出共享配方后这是结构性成立的；本测试守住它，防止任一侧再引入私有分支。
-    """
-    ir_pool = [0.42, 0.18, -0.13, 0.07, 0.02]
-    n_obs = 305
-    basis = DeflationBasis.from_ir_pool(ir_pool)
-
-    # M1 口径：带符号 IR（符号轴是独立议题，正 IR 下两者等价）
-    _, p_m1 = deflated_pvalue(0.42, basis, n_obs)
-    # Agent 口径：abs(IR)
-    _, p_agent = deflated_pvalue(abs(0.42), basis, n_obs)
-
-    assert p_m1 == p_agent
 

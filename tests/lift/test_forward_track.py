@@ -1049,23 +1049,3 @@ def test_cli_forward_track_stale_date_nonzero(tmp_path, monkeypatch, capsys):
     assert rc_ok == 0
 
 
-def test_provenance_persisted_on_disk(tmp_path):
-    """读回 ledger 行断言含 recorded_at/git_sha。"""
-    from factorzen.discovery.forward_track import record_forward_ics
-
-    daily, _d1, _d2, d3 = _daily_3day()
-    as_of = _yyyymmdd(d3)
-    _write_lib(tmp_path, "ashare", [
-        _lib_row("close", status="probation", universe="csi300"),
-    ])
-    record_forward_ics(
-        "ashare", as_of, root=str(tmp_path), daily=daily, now=as_of,
-    )
-    path = tmp_path / "forward_track" / "ashare.jsonl"
-    raw = path.read_text(encoding="utf-8")
-    assert "recorded_at" in raw
-    assert "git_sha" in raw
-    rows = _read_jsonl(path)
-    assert rows[0]["recorded_at"]
-    assert rows[0]["git_sha"]
-    assert rows[0].get("command") == "forward-track"

@@ -65,119 +65,130 @@ def mock_prev_trade_date(monkeypatch):
 # ── 构造与默认值 ──────────────────────────────────────────────────────────
 
 
-def test_construction_defaults():
-    """基本构造：默认属性与预期一致。"""
-    ctx = IntradayDataContext("20260514", "20260514")
-    assert ctx.start == "20260514"
-    assert ctx.end == "20260514"
-    assert ctx.bar_size == "1min"
-    assert ctx.required_data == ["minute"]
-    assert ctx.universe is None
-    assert ctx.max_bars == 10_000
-    assert ctx._minute is None
+def test_intraday_context_construction_suite():
+    """基本构造：默认属性与预期一致。；自定义参数正确存储。；expanded_start 向前扩展 5 天。；minute 不在 required_data 中时，访问 .minute 抛出 ValueError。；访问 .minute 触发 load_parquet 调用，结果缓存到 _minute。；传入 universe 时对 LazyFrame 添加 .is_in() 过滤。；load_all() 触发 minute 数据加载。"""
+    # -- 原 test_construction_defaults --
+    def _section_0_test_construction_defaults():
+        ctx = IntradayDataContext("20260514", "20260514")
+        assert ctx.start == "20260514"
+        assert ctx.end == "20260514"
+        assert ctx.bar_size == "1min"
+        assert ctx.required_data == ["minute"]
+        assert ctx.universe is None
+        assert ctx.max_bars == 10_000
+        assert ctx._minute is None
 
+    _section_0_test_construction_defaults()
 
-def test_construction_custom():
-    """自定义参数正确存储。"""
-    ctx = IntradayDataContext(
-        "20260501",
-        "20260510",
-        bar_size="5min",
-        required_data=["minute", "daily_basic"],
-        universe=["000001.SZ", "000002.SZ"],
-        max_bars=2000,
-    )
-    assert ctx.bar_size == "5min"
-    assert ctx.required_data == ["minute", "daily_basic"]
-    assert ctx.universe == ["000001.SZ", "000002.SZ"]
-    assert ctx.max_bars == 2000
+    # -- 原 test_construction_custom --
+    def _section_1_test_construction_custom():
+        ctx = IntradayDataContext(
+            "20260501",
+            "20260510",
+            bar_size="5min",
+            required_data=["minute", "daily_basic"],
+            universe=["000001.SZ", "000002.SZ"],
+            max_bars=2000,
+        )
+        assert ctx.bar_size == "5min"
+        assert ctx.required_data == ["minute", "daily_basic"]
+        assert ctx.universe == ["000001.SZ", "000002.SZ"]
+        assert ctx.max_bars == 2000
+
+    _section_1_test_construction_custom()
+
+    # -- 原 test_expanded_start --
+    def _section_2_test_expanded_start():
+        ctx = IntradayDataContext("20260514", "20260514")
+        assert ctx.expanded_start == "20260507"
+
+        ctx2 = IntradayDataContext("20260105", "20260110")
+        assert ctx2.expanded_start == "20251225"
+
+    _section_2_test_expanded_start()
+
+    # -- 原 test_minute_not_declared_raises --
+    def _section_3_test_minute_not_declared_raises():
+        ctx = IntradayDataContext("20260514", "20260514", required_data=["other"])
+        with pytest.raises(ValueError, match="minute data not declared"):
+            _ = ctx.minute
+
+    _section_3_test_minute_not_declared_raises()
+
+    # -- 原 test_minute_lazy_loading --
+    def _section_4_test_minute_lazy_loading():
+        synthetic = pl.DataFrame(
+            {
+                "trade_time": ["2026-05-14 09:30:00"],
+                "ts_code": ["000001.SZ"],
+            }
+        ).lazy()
+
+        with patch("factorzen.intraday.data.context.load_parquet", return_value=synthetic) as mock_load:
+            ctx = IntradayDataContext("20260514", "20260514")
+            assert ctx._minute is None
+
+            result = ctx.minute
+            mock_load.assert_called_once()
+            # 存储 data_type 必须按 freq 命名空间 minute_{bar_size}（对齐 loader.fetch_minute，
+            # 否则读到空的 "minute" 分区——双路径漂移）。
+            assert mock_load.call_args.args[0] == "minute_1min"
+            assert isinstance(result, pl.LazyFrame)
+            assert ctx._minute is not None
+
+            # 再次访问应命中缓存，不重复调用
+            _ = ctx.minute
+            mock_load.assert_called_once()
+
+    _section_4_test_minute_lazy_loading()
+
+    # -- 原 test_minute_universe_filter --
+    def _section_5_test_minute_universe_filter():
+        synthetic = pl.DataFrame(
+            {
+                "trade_time": ["2026-05-14 09:30:00", "2026-05-14 09:31:00"],
+                "ts_code": ["000001.SZ", "999999.SZ"],
+            }
+        ).lazy()
+
+        with patch("factorzen.intraday.data.context.load_parquet", return_value=synthetic):
+            ctx = IntradayDataContext("20260514", "20260514", universe=["000001.SZ"])
+            lf = ctx.minute
+            collected = lf.collect()
+            assert collected.height == 1
+            assert collected["ts_code"][0] == "000001.SZ"
+
+    _section_5_test_minute_universe_filter()
+
+    # -- 原 test_load_all --
+    def _section_6_test_load_all():
+        synthetic = pl.DataFrame(
+            {
+                "trade_time": ["2026-05-14 09:30:00"],
+                "ts_code": ["000001.SZ"],
+            }
+        ).lazy()
+
+        with patch("factorzen.intraday.data.context.load_parquet", return_value=synthetic):
+            ctx = IntradayDataContext("20260514", "20260514")
+            assert ctx._minute is None
+            ctx.load_all()
+            assert ctx._minute is not None
+
+    _section_6_test_load_all()
 
 
 # ── expanded_start ────────────────────────────────────────────────────────
 
 
-def test_expanded_start():
-    """expanded_start 向前扩展 5 天。"""
-    ctx = IntradayDataContext("20260514", "20260514")
-    assert ctx.expanded_start == "20260507"
-
-    ctx2 = IntradayDataContext("20260105", "20260110")
-    assert ctx2.expanded_start == "20251225"
-
-
 # ── required_data 校验 ────────────────────────────────────────────────────
-
-
-def test_minute_not_declared_raises():
-    """minute 不在 required_data 中时，访问 .minute 抛出 ValueError。"""
-    ctx = IntradayDataContext("20260514", "20260514", required_data=["other"])
-    with pytest.raises(ValueError, match="minute data not declared"):
-        _ = ctx.minute
 
 
 # ── 惰性加载与缓存 ────────────────────────────────────────────────────────
 
 
-def test_minute_lazy_loading():
-    """访问 .minute 触发 load_parquet 调用，结果缓存到 _minute。"""
-    synthetic = pl.DataFrame(
-        {
-            "trade_time": ["2026-05-14 09:30:00"],
-            "ts_code": ["000001.SZ"],
-        }
-    ).lazy()
-
-    with patch("factorzen.intraday.data.context.load_parquet", return_value=synthetic) as mock_load:
-        ctx = IntradayDataContext("20260514", "20260514")
-        assert ctx._minute is None
-
-        result = ctx.minute
-        mock_load.assert_called_once()
-        # 存储 data_type 必须按 freq 命名空间 minute_{bar_size}（对齐 loader.fetch_minute，
-        # 否则读到空的 "minute" 分区——双路径漂移）。
-        assert mock_load.call_args.args[0] == "minute_1min"
-        assert isinstance(result, pl.LazyFrame)
-        assert ctx._minute is not None
-
-        # 再次访问应命中缓存，不重复调用
-        _ = ctx.minute
-        mock_load.assert_called_once()
-
-
-def test_minute_universe_filter():
-    """传入 universe 时对 LazyFrame 添加 .is_in() 过滤。"""
-    synthetic = pl.DataFrame(
-        {
-            "trade_time": ["2026-05-14 09:30:00", "2026-05-14 09:31:00"],
-            "ts_code": ["000001.SZ", "999999.SZ"],
-        }
-    ).lazy()
-
-    with patch("factorzen.intraday.data.context.load_parquet", return_value=synthetic):
-        ctx = IntradayDataContext("20260514", "20260514", universe=["000001.SZ"])
-        lf = ctx.minute
-        collected = lf.collect()
-        assert collected.height == 1
-        assert collected["ts_code"][0] == "000001.SZ"
-
-
 # ── load_all ──────────────────────────────────────────────────────────────
 
-
-def test_load_all():
-    """load_all() 触发 minute 数据加载。"""
-    synthetic = pl.DataFrame(
-        {
-            "trade_time": ["2026-05-14 09:30:00"],
-            "ts_code": ["000001.SZ"],
-        }
-    ).lazy()
-
-    with patch("factorzen.intraday.data.context.load_parquet", return_value=synthetic):
-        ctx = IntradayDataContext("20260514", "20260514")
-        assert ctx._minute is None
-        ctx.load_all()
-        assert ctx._minute is not None
 
 # ==== 来自 test_intraday_audit.py ====
 def _dt(y: int, mo: int, d: int, h: int, mi: int) -> datetime:
@@ -223,8 +234,10 @@ def _daily_healthy(code: str = "000001.SZ", day: date = date(2024, 1, 2)) -> pl.
     )
 
 
-class TestTimestampCensus:
-    def test_groups_by_year_and_board(self) -> None:
+def test_timestamp_census_and_reconcile_suite():
+    """test_groups_by_year_and_board；test_healthy_multipliers；故意构造 ×1 错误单位帧，应检出 multiplier≈1。"""
+    # -- 原 test_groups_by_year_and_board --
+    def _section_0_test_groups_by_year_and_board():
         df = pl.concat(
             [
                 _minute_healthy("000001.SZ", date(2024, 1, 2)),
@@ -259,9 +272,10 @@ class TestTimestampCensus:
         assert bj_row["n_after_1500"][0] == 1
         assert bj_row["vol_after_1500"][0] == 5
 
+    _section_0_test_groups_by_year_and_board()
 
-class TestReconcileWithDaily:
-    def test_healthy_multipliers(self) -> None:
+    # -- 原 test_healthy_multipliers --
+    def _section_1_test_healthy_multipliers():
         recon = reconcile_with_daily(_minute_healthy(), _daily_healthy())
         assert recon.height == 1
         assert recon["vol_multiplier"][0] == pytest.approx(100.0)
@@ -271,8 +285,10 @@ class TestReconcileWithDaily:
         assert recon["high_match"][0] is True
         assert recon["low_match"][0] is True
 
-    def test_detects_wrong_unit_frame(self) -> None:
-        """故意构造 ×1 错误单位帧，应检出 multiplier≈1。"""
+    _section_1_test_healthy_multipliers()
+
+    # -- 原 test_detects_wrong_unit_frame --
+    def _section_2_test_detects_wrong_unit_frame():
         minute = _minute_healthy()
         # 日线也用「股/元」→ 倍率 ≈ 1
         daily = pl.DataFrame(
@@ -294,9 +310,12 @@ class TestReconcileWithDaily:
         assert recon["open_match"][0] is True
         assert recon["close_match"][0] is True
 
+    _section_2_test_detects_wrong_unit_frame()
 
 class TestInferLabelConvention:
-    def test_end_convention(self) -> None:
+    def test_infer_label_convention_suite(self):
+        """test_end_convention；test_start_convention；test_after_1500_flag"""
+        # -- 原 test_end_convention --
         times = [
             _dt(2024, 1, 2, 9, 30),
             _dt(2024, 1, 2, 9, 31),
@@ -317,8 +336,7 @@ class TestInferLabelConvention:
         assert result["first_time"] == "09:30"
         assert result["last_time"] == "15:00"
 
-    def test_start_convention(self) -> None:
-        # start 标签：有 13:00 无 11:30
+        # -- 原 test_start_convention --
         times = [
             _dt(2024, 1, 2, 9, 30),
             _dt(2024, 1, 2, 9, 31),
@@ -335,7 +353,7 @@ class TestInferLabelConvention:
         result = infer_label_convention(df)
         assert result["label_convention"] == "start"
 
-    def test_after_1500_flag(self) -> None:
+        # -- 原 test_after_1500_flag --
         times = [_dt(2024, 1, 2, 11, 30), _dt(2024, 1, 2, 15, 10)]
         df = pl.DataFrame(
             {
@@ -375,9 +393,9 @@ def _write_month_partition(
 
 
 class TestCoverageReport:
-    def test_detects_missing_range_and_merges(self, tmp_path: Path) -> None:
-        """注入 trade_dates，挖掉一段连续缺失，验证区间合并。"""
-        # 期望 10 个交易日：1/2..1/11（人工日历）
+    def test_coverage_report_suite(self, tmp_path):
+        """注入 trade_dates，挖掉一段连续缺失，验证区间合并。；test_two_disjoint_gaps_merge_separately；test_full_coverage_empty_missing"""
+        # -- 原 test_detects_missing_range_and_merges --
         expected = [date(2024, 1, d) for d in range(2, 12)]
         # 有数据：1/2,1/3,1/4 和 1/9,1/10,1/11；缺 1/5..1/8
         present = [
@@ -402,7 +420,7 @@ class TestCoverageReport:
         assert "2024-01" in report["months_present"]
         assert report["per_month_rows"]["2024-01"] == 6
 
-    def test_two_disjoint_gaps_merge_separately(self, tmp_path: Path) -> None:
+        # -- 原 test_two_disjoint_gaps_merge_separately --
         expected = [date(2024, 2, d) for d in range(1, 11)]
         # 有：1,2,5,6,9,10；缺 3-4 与 7-8
         present = [
@@ -428,7 +446,7 @@ class TestCoverageReport:
         # 6 days × 2 codes
         assert report["per_month_rows"]["2024-02"] == 12
 
-    def test_full_coverage_empty_missing(self, tmp_path: Path) -> None:
+        # -- 原 test_full_coverage_empty_missing --
         expected = [date(2024, 3, 1), date(2024, 3, 4), date(2024, 3, 5)]
         _write_month_partition(tmp_path, 2024, 3, expected, ["000001.SZ"])
         report = coverage_report(
@@ -439,6 +457,7 @@ class TestCoverageReport:
         )
         assert report["missing_ranges"] == []
         assert report["n_present_days"] == 3
+
 
 # ==== 来自 test_intraday_factors.py ====
 # ==== 来自 test_intraday_factor_base.py ====
@@ -469,76 +488,97 @@ def _make_result(values: list[float], ts_codes: list[str] | None = None) -> pl.D
 
 # ── ABC 约束 ────────────────────────────────────────────────────────────────
 
-def test_cannot_instantiate_abstract__intraday_factor_base():
-    """无法直接实例化抽象类 IntradayFactor。"""
-    with pytest.raises(TypeError, match="abstract"):
-        IntradayFactor()  # type: ignore[abstract]
+def test_intraday_factor_base_suite():
+    """无法直接实例化抽象类 IntradayFactor。；实现所有抽象方法后可以实例化。；未实现 compute() 的子类无法实例化。；默认属性值与预期一致。；空 DataFrame 返回 error。；正常因子结果返回正确的统计信息。；含 null 值时 coverage 不为 1。；含 inf 值时 inf_count > 0。；缺少 factor_value 列时 null_count 和 inf_count 为 0。"""
+    # -- 原 test_cannot_instantiate_abstract__intraday_factor_base --
+    def _section_0_test_cannot_instantiate_abstract__intraday_factor_base():
+        with pytest.raises(TypeError, match="abstract"):
+            IntradayFactor()  # type: ignore[abstract]
 
-def test_can_instantiate_concrete():
-    """实现所有抽象方法后可以实例化。"""
-    factor = _ConcreteFactor()
-    assert factor.name == "test_factor"
-    assert isinstance(factor, IntradayFactor)
+    _section_0_test_cannot_instantiate_abstract__intraday_factor_base()
 
-def test_compute_is_abstract():
-    """未实现 compute() 的子类无法实例化。"""
+    # -- 原 test_can_instantiate_concrete --
+    def _section_1_test_can_instantiate_concrete():
+        factor = _ConcreteFactor()
+        assert factor.name == "test_factor"
+        assert isinstance(factor, IntradayFactor)
 
-    @dataclass
-    class _BadFactor(IntradayFactor):
-        pass
+    _section_1_test_can_instantiate_concrete()
 
-    with pytest.raises(TypeError, match="abstract"):
-        _BadFactor()  # type: ignore[abstract]
+    # -- 原 test_compute_is_abstract --
+    def _section_2_test_compute_is_abstract():
+        class _BadFactor(IntradayFactor):
+            pass
+
+        with pytest.raises(TypeError, match="abstract"):
+            _BadFactor()  # type: ignore[abstract]
+
+    _section_2_test_compute_is_abstract()
+
+    # -- 原 test_default_attributes__intraday_factor_base --
+    def _section_3_test_default_attributes__intraday_factor_base():
+        factor = _ConcreteFactor()
+        assert factor.required_data == ["minute"]
+        assert factor.lookback_bars == 500
+        assert factor.description == "Test factor for unit testing"
+
+    _section_3_test_default_attributes__intraday_factor_base()
+
+    # -- 原 test_validate_empty --
+    def _section_4_test_validate_empty():
+        factor = _ConcreteFactor()
+        result = factor.validate(pl.DataFrame())
+        assert result["error"] == "Empty DataFrame"
+
+    _section_4_test_validate_empty()
+
+    # -- 原 test_validate_normal --
+    def _section_5_test_validate_normal():
+        factor = _ConcreteFactor()
+        result = factor.validate(_make_result([1.0, 2.0, 3.0]))
+        assert result["coverage"] == 1.0
+        assert result["n_stocks"] == 3
+
+    _section_5_test_validate_normal()
+
+    # -- 原 test_validate_nulls --
+    def _section_6_test_validate_nulls():
+        factor = _ConcreteFactor()
+        result = factor.validate(_make_result([1.0, None, 3.0]))
+        assert result["null_count"] == 1
+        assert result["coverage"] == pytest.approx(2 / 3)
+
+    _section_6_test_validate_nulls()
+
+    # -- 原 test_validate_inf --
+    def _section_7_test_validate_inf():
+        factor = _ConcreteFactor()
+        result = factor.validate(_make_result([1.0, float("inf")]))
+        assert result["inf_count"] == 1
+
+    _section_7_test_validate_inf()
+
+    # -- 原 test_validate_missing_factor_column --
+    def _section_8_test_validate_missing_factor_column():
+        factor = _ConcreteFactor()
+        df = pl.DataFrame(
+            {
+                "trade_time": ["2026-05-14 09:30:00"],
+                "ts_code": ["000001.SZ"],
+            }
+        )
+        result = factor.validate(df)
+        assert result["null_count"] == 0
+        assert result["inf_count"] == 0
+
+    _section_8_test_validate_missing_factor_column()
+
 
 # ── 默认属性 ────────────────────────────────────────────────────────────────
 
-def test_default_attributes__intraday_factor_base():
-    """默认属性值与预期一致。"""
-    factor = _ConcreteFactor()
-    assert factor.required_data == ["minute"]
-    assert factor.lookback_bars == 500
-    assert factor.description == "Test factor for unit testing"
 
 # ── validate() ──────────────────────────────────────────────────────────────
 
-def test_validate_empty():
-    """空 DataFrame 返回 error。"""
-    factor = _ConcreteFactor()
-    result = factor.validate(pl.DataFrame())
-    assert result["error"] == "Empty DataFrame"
-
-def test_validate_normal():
-    """正常因子结果返回正确的统计信息。"""
-    factor = _ConcreteFactor()
-    result = factor.validate(_make_result([1.0, 2.0, 3.0]))
-    assert result["coverage"] == 1.0
-    assert result["n_stocks"] == 3
-
-def test_validate_nulls():
-    """含 null 值时 coverage 不为 1。"""
-    factor = _ConcreteFactor()
-    result = factor.validate(_make_result([1.0, None, 3.0]))
-    assert result["null_count"] == 1
-    assert result["coverage"] == pytest.approx(2 / 3)
-
-def test_validate_inf():
-    """含 inf 值时 inf_count > 0。"""
-    factor = _ConcreteFactor()
-    result = factor.validate(_make_result([1.0, float("inf")]))
-    assert result["inf_count"] == 1
-
-def test_validate_missing_factor_column():
-    """缺少 factor_value 列时 null_count 和 inf_count 为 0。"""
-    factor = _ConcreteFactor()
-    df = pl.DataFrame(
-        {
-            "trade_time": ["2026-05-14 09:30:00"],
-            "ts_code": ["000001.SZ"],
-        }
-    )
-    result = factor.validate(df)
-    assert result["null_count"] == 0
-    assert result["inf_count"] == 0
 
 # ==== 来自 test_intraday_vwap_factor.py ====
 def _make_ctx(df: pl.DataFrame):
@@ -564,39 +604,130 @@ def _make_minute_df(n_bars: int = 20) -> pl.DataFrame:
             )
     return pl.DataFrame(rows).with_columns(pl.col("trade_time").cast(pl.Datetime))
 
-def test_no_cross_stock():
-    factor = VwapDeviation()
-    result = factor.compute(_make_ctx(_make_minute_df()))
-    assert set(result["ts_code"].unique().to_list()) == {"000001.SZ", "000002.SZ"}
+def test_intraday_demo_factor_suite():
+    """test_no_cross_stock；第一根 bar 时 VWAP == close，偏离为 0。；test_registered；默认属性与预期一致。；compute() 返回包含 trade_time, ts_code, factor_value 的 DataFrame。；factor_value 在合理范围内（正值，因模拟数据持续上涨）。；多股票同时计算时每只股票独立计算。；前 5 根 bar 的 null 值已被过滤。；validate() 返回覆盖率等统计信息。；5-bar 动量不得跨交易日：每个交易日前 5 根 bar 的 factor_value 应为 null（被过滤掉）。"""
+    # -- 原 test_no_cross_stock --
+    def _section_0_test_no_cross_stock():
+        factor = VwapDeviation()
+        result = factor.compute(_make_ctx(_make_minute_df()))
+        assert set(result["ts_code"].unique().to_list()) == {"000001.SZ", "000002.SZ"}
 
-def test_first_bar_zero():
-    """第一根 bar 时 VWAP == close，偏离为 0。"""
-    factor = VwapDeviation()
-    result = factor.compute(_make_ctx(_make_minute_df()))
-    first = (
-        result.filter(pl.col("ts_code") == "000001.SZ")
-        .sort("trade_time")
-        .head(1)["factor_value"][0]
-    )
-    assert abs(first) < 1e-9
+    _section_0_test_no_cross_stock()
 
-def test_registered():
-    from factorzen.intraday.factors.registry import get_factor
+    # -- 原 test_first_bar_zero --
+    def _section_1_test_first_bar_zero():
+        factor = VwapDeviation()
+        result = factor.compute(_make_ctx(_make_minute_df()))
+        first = (
+            result.filter(pl.col("ts_code") == "000001.SZ")
+            .sort("trade_time")
+            .head(1)["factor_value"][0]
+        )
+        assert abs(first) < 1e-9
 
-    assert get_factor("vwap_deviation") is VwapDeviation
+    _section_1_test_first_bar_zero()
+
+    # -- 原 test_registered --
+    def _section_2_test_registered():
+        from factorzen.intraday.factors.registry import get_factor
+
+        assert get_factor("vwap_deviation") is VwapDeviation
+
+    _section_2_test_registered()
+
+    # -- 原 test_default_attributes__intraday_demo --
+    def _section_3_test_default_attributes__intraday_demo():
+        factor = Momentum1Min()
+        assert factor.name == "momentum_1min"
+        assert factor.bar_size == "1min"
+        assert factor.frequency == "minute"
+        assert factor.lookback_bars == 6
+        assert factor.description == "5-bar momentum: close(t) / close(t-5) - 1"
+        assert factor.required_data == ["minute"]
+
+    _section_3_test_default_attributes__intraday_demo()
+
+    # -- 原 test_compute_returns_correct_schema --
+    def _section_4_test_compute_returns_correct_schema():
+        factor = Momentum1Min()
+        mock_data = _make_mock_minute(n_bars=20)
+        ctx = _MockContext(_minute_data=mock_data)
+        result = factor.compute(ctx)
+        assert isinstance(result, pl.DataFrame)
+        assert "trade_time" in result.columns
+        assert "ts_code" in result.columns
+        assert "factor_value" in result.columns
+        assert result.height > 0
+
+    _section_4_test_compute_returns_correct_schema()
+
+    # -- 原 test_compute_factor_range --
+    def _section_5_test_compute_factor_range():
+        factor = Momentum1Min()
+        mock_data = _make_mock_minute(n_bars=20)
+        ctx = _MockContext(_minute_data=mock_data)
+        result = factor.compute(ctx)
+        assert result["factor_value"].min() > -1.0
+        assert result["factor_value"].max() < 10.0
+        assert result["factor_value"].mean() > 0
+
+    _section_5_test_compute_factor_range()
+
+    # -- 原 test_compute_multi_stock --
+    def _section_6_test_compute_multi_stock():
+        factor = Momentum1Min()
+        ts_codes = ["000001.SZ", "000002.SZ", "000004.SZ"]
+        mock_data = _make_mock_minute(n_bars=20, ts_codes=ts_codes)
+        ctx = _MockContext(_minute_data=mock_data)
+        result = factor.compute(ctx)
+        codes_in_result = result["ts_code"].unique().to_list()
+        for code in ts_codes:
+            assert code in codes_in_result
+
+    _section_6_test_compute_multi_stock()
+
+    # -- 原 test_compute_filters_nulls --
+    def _section_7_test_compute_filters_nulls():
+        factor = Momentum1Min()
+        mock_data = _make_mock_minute(n_bars=20)
+        ctx = _MockContext(_minute_data=mock_data)
+        result = factor.compute(ctx)
+        assert result["factor_value"].null_count() == 0
+
+    _section_7_test_compute_filters_nulls()
+
+    # -- 原 test_validate_returns_stats --
+    def _section_8_test_validate_returns_stats():
+        factor = Momentum1Min()
+        mock_data = _make_mock_minute(n_bars=20)
+        ctx = _MockContext(_minute_data=mock_data)
+        result = factor.compute(ctx)
+        stats = factor.validate(result)
+        assert "coverage" in stats
+        assert stats["coverage"] == 1.0
+        assert stats["n_stocks"] == 1
+
+    _section_8_test_validate_returns_stats()
+
+    # -- 原 test_momentum_does_not_cross_trading_days --
+    def _section_9_test_momentum_does_not_cross_trading_days():
+        factor = Momentum1Min()
+        result = factor.compute(_MockContext(_minute_data=_make_two_day_minute(bars_per_day=10)))
+
+        # trade_time 字符串前 10 位是日期
+        result = result.with_columns(pl.col("trade_time").cast(pl.Utf8).str.slice(0, 10).alias("_d"))
+        per_day = {d[0]: sub.height for d, sub in result.group_by("_d")}
+        # 每日 10 根，前 5 根 null 被过滤 → 每日各剩 5 根有效值；共 2 天 → 10 行
+        assert per_day.get("2026-05-14") == 5, per_day
+        assert per_day.get("2026-05-15") == 5, per_day  # 次日不会因跨日多出有效值
+        assert result.height == 10
+
+    _section_9_test_momentum_does_not_cross_trading_days()
+
 
 # ==== 来自 test_intraday_demo.py ====
 # ── Import & Class Structure ─────────────────────────────────────────────────
 
-def test_default_attributes__intraday_demo():
-    """默认属性与预期一致。"""
-    factor = Momentum1Min()
-    assert factor.name == "momentum_1min"
-    assert factor.bar_size == "1min"
-    assert factor.frequency == "minute"
-    assert factor.lookback_bars == 6
-    assert factor.description == "5-bar momentum: close(t) / close(t-5) - 1"
-    assert factor.required_data == ["minute"]
 
 # ── compute() 结构测试 ───────────────────────────────────────────────────────
 
@@ -637,57 +768,6 @@ def _make_mock_minute(n_bars: int = 20, ts_codes: list[str] | None = None) -> pl
     df = pl.DataFrame(rows)
     return df.sort(["ts_code", "trade_time"])
 
-def test_compute_returns_correct_schema():
-    """compute() 返回包含 trade_time, ts_code, factor_value 的 DataFrame。"""
-    factor = Momentum1Min()
-    mock_data = _make_mock_minute(n_bars=20)
-    ctx = _MockContext(_minute_data=mock_data)
-    result = factor.compute(ctx)
-    assert isinstance(result, pl.DataFrame)
-    assert "trade_time" in result.columns
-    assert "ts_code" in result.columns
-    assert "factor_value" in result.columns
-    assert result.height > 0
-
-def test_compute_factor_range():
-    """factor_value 在合理范围内（正值，因模拟数据持续上涨）。"""
-    factor = Momentum1Min()
-    mock_data = _make_mock_minute(n_bars=20)
-    ctx = _MockContext(_minute_data=mock_data)
-    result = factor.compute(ctx)
-    assert result["factor_value"].min() > -1.0
-    assert result["factor_value"].max() < 10.0
-    assert result["factor_value"].mean() > 0
-
-def test_compute_multi_stock():
-    """多股票同时计算时每只股票独立计算。"""
-    factor = Momentum1Min()
-    ts_codes = ["000001.SZ", "000002.SZ", "000004.SZ"]
-    mock_data = _make_mock_minute(n_bars=20, ts_codes=ts_codes)
-    ctx = _MockContext(_minute_data=mock_data)
-    result = factor.compute(ctx)
-    codes_in_result = result["ts_code"].unique().to_list()
-    for code in ts_codes:
-        assert code in codes_in_result
-
-def test_compute_filters_nulls():
-    """前 5 根 bar 的 null 值已被过滤。"""
-    factor = Momentum1Min()
-    mock_data = _make_mock_minute(n_bars=20)
-    ctx = _MockContext(_minute_data=mock_data)
-    result = factor.compute(ctx)
-    assert result["factor_value"].null_count() == 0
-
-def test_validate_returns_stats():
-    """validate() 返回覆盖率等统计信息。"""
-    factor = Momentum1Min()
-    mock_data = _make_mock_minute(n_bars=20)
-    ctx = _MockContext(_minute_data=mock_data)
-    result = factor.compute(ctx)
-    stats = factor.validate(result)
-    assert "coverage" in stats
-    assert stats["coverage"] == 1.0
-    assert stats["n_stocks"] == 1
 
 def _make_two_day_minute(code: str = "000001.SZ", bars_per_day: int = 10) -> pl.DataFrame:
     """构造两个交易日、每日 bars_per_day 根的分钟数据（trade_time 为字符串，模拟隔夜缺口）。"""
@@ -702,21 +782,6 @@ def _make_two_day_minute(code: str = "000001.SZ", bars_per_day: int = 10) -> pl.
                          "vol": 1000.0, "amount": close * 1000.0})
     return pl.DataFrame(rows).sort(["ts_code", "trade_time"])
 
-def test_momentum_does_not_cross_trading_days():
-    """5-bar 动量不得跨交易日：每个交易日前 5 根 bar 的 factor_value 应为 null（被过滤掉）。
-
-    否则次日开盘首根 bar 会用前一日尾盘价算动量，把隔夜跳空当成日内动量（未来函数式污染）。
-    """
-    factor = Momentum1Min()
-    result = factor.compute(_MockContext(_minute_data=_make_two_day_minute(bars_per_day=10)))
-
-    # trade_time 字符串前 10 位是日期
-    result = result.with_columns(pl.col("trade_time").cast(pl.Utf8).str.slice(0, 10).alias("_d"))
-    per_day = {d[0]: sub.height for d, sub in result.group_by("_d")}
-    # 每日 10 根，前 5 根 null 被过滤 → 每日各剩 5 根有效值；共 2 天 → 10 行
-    assert per_day.get("2026-05-14") == 5, per_day
-    assert per_day.get("2026-05-15") == 5, per_day  # 次日不会因跨日多出有效值
-    assert result.height == 10
 
 # ==== 来自 test_intraday_evaluation.py ====
 def _make_intraday_data(n_stocks: int = 30, n_days: int = 5, seed: int = 0):
@@ -757,44 +822,59 @@ def _make_intraday_data(n_stocks: int = 30, n_days: int = 5, seed: int = 0):
 def intraday_data():
     return _make_intraday_data()
 
-def test_ic_is_finite(intraday_data):
-    factor_df, ret_df = intraday_data
-    result = compute_intraday_rank_ic(factor_df, ret_df)
-    assert np.isfinite(result.ic_mean)
-    assert np.isfinite(result.ic_std)
+def test_intraday_ic_suite(intraday_data):
+    """test_ic_is_finite；test_daily_ic_has_correct_dates；test_summary_string；test_empty_input_returns_zeros"""
+    # -- 原 test_ic_is_finite --
+    def _section_0_test_ic_is_finite(intraday_data):
+        factor_df, ret_df = intraday_data
+        result = compute_intraday_rank_ic(factor_df, ret_df)
+        assert np.isfinite(result.ic_mean)
+        assert np.isfinite(result.ic_std)
 
-def test_daily_ic_has_correct_dates(intraday_data):
-    factor_df, ret_df = intraday_data
-    result = compute_intraday_rank_ic(factor_df, ret_df)
-    assert not result.daily_ic.is_empty()
-    # 5 trading days -> 5 rows in daily_ic
-    assert result.daily_ic.shape[0] == 5
+    _section_0_test_ic_is_finite(intraday_data)
 
-def test_summary_string(intraday_data):
-    factor_df, ret_df = intraday_data
-    result = compute_intraday_rank_ic(factor_df, ret_df)
-    text = result.summary()
-    assert "Intraday IC" in text
-    assert "IC Mean" in text
+    # -- 原 test_daily_ic_has_correct_dates --
+    def _section_1_test_daily_ic_has_correct_dates(intraday_data):
+        factor_df, ret_df = intraday_data
+        result = compute_intraday_rank_ic(factor_df, ret_df)
+        assert not result.daily_ic.is_empty()
+        # 5 trading days -> 5 rows in daily_ic
+        assert result.daily_ic.shape[0] == 5
 
-def test_empty_input_returns_zeros():
-    factor_df = pl.DataFrame(
-        {
-            "trade_time": pl.Series([], dtype=pl.Datetime),
-            "ts_code": pl.Series([], dtype=pl.Utf8),
-            "factor_value": pl.Series([], dtype=pl.Float64),
-        }
-    )
-    ret_df = pl.DataFrame(
-        {
-            "trade_time": pl.Series([], dtype=pl.Datetime),
-            "ts_code": pl.Series([], dtype=pl.Utf8),
-            "fwd_ret_1bar": pl.Series([], dtype=pl.Float64),
-        }
-    )
-    result = compute_intraday_rank_ic(factor_df, ret_df)
-    assert result.ic_mean == 0.0
-    assert result.n_periods == 0
+    _section_1_test_daily_ic_has_correct_dates(intraday_data)
+
+    # -- 原 test_summary_string --
+    def _section_2_test_summary_string(intraday_data):
+        factor_df, ret_df = intraday_data
+        result = compute_intraday_rank_ic(factor_df, ret_df)
+        text = result.summary()
+        assert "Intraday IC" in text
+        assert "IC Mean" in text
+
+    _section_2_test_summary_string(intraday_data)
+
+    # -- 原 test_empty_input_returns_zeros --
+    def _section_3_test_empty_input_returns_zeros():
+        factor_df = pl.DataFrame(
+            {
+                "trade_time": pl.Series([], dtype=pl.Datetime),
+                "ts_code": pl.Series([], dtype=pl.Utf8),
+                "factor_value": pl.Series([], dtype=pl.Float64),
+            }
+        )
+        ret_df = pl.DataFrame(
+            {
+                "trade_time": pl.Series([], dtype=pl.Datetime),
+                "ts_code": pl.Series([], dtype=pl.Utf8),
+                "fwd_ret_1bar": pl.Series([], dtype=pl.Float64),
+            }
+        )
+        result = compute_intraday_rank_ic(factor_df, ret_df)
+        assert result.ic_mean == 0.0
+        assert result.n_periods == 0
+
+    _section_3_test_empty_input_returns_zeros()
+
 
 def test_assign_segment_labels():
     df = pl.DataFrame(
@@ -818,8 +898,9 @@ def test_assign_segment_labels():
 class TestFillMissingBars:
     """验证 forward-fill 缺失 bar 的行为。"""
 
-    def test_fill_null_within_group(self):
-        """同股票内 null 值被前一 bar 的 factor_value 填充。"""
+    def test_fill_missing_bars_suite(self):
+        """同股票内 null 值被前一 bar 的 factor_value 填充。；forward-fill 不应跨股票。；股票第一个 bar 为 null 时，forward_fill 无法填充（无先序值）。；填充操作不应丢弃原有列。；无缺失值时 DataFrame 不变。；forward-fill 不应跨交易日。"""
+        # -- 原 test_fill_null_within_group --
         df = pl.DataFrame(
             {
                 "trade_time": [
@@ -836,8 +917,7 @@ class TestFillMissingBars:
         expected = [1.0, 1.0, 3.0]
         assert result["factor_value"].to_list() == expected
 
-    def test_fill_cross_group_boundary(self):
-        """forward-fill 不应跨股票。"""
+        # -- 原 test_fill_cross_group_boundary --
         df = pl.DataFrame(
             {
                 "trade_time": [
@@ -856,8 +936,7 @@ class TestFillMissingBars:
         assert values[1] == 1.0
         assert values[2] is None
 
-    def test_leading_null_remains_null(self):
-        """股票第一个 bar 为 null 时，forward_fill 无法填充（无先序值）。"""
+        # -- 原 test_leading_null_remains_null --
         df = pl.DataFrame(
             {
                 "trade_time": [
@@ -874,8 +953,7 @@ class TestFillMissingBars:
         assert values[0] is None
         assert values[1] == 2.0
 
-    def test_retains_other_columns(self):
-        """填充操作不应丢弃原有列。"""
+        # -- 原 test_retains_other_columns --
         df = pl.DataFrame(
             {
                 "trade_time": [
@@ -892,8 +970,7 @@ class TestFillMissingBars:
         assert "volume" in result.columns
         assert result["volume"].to_list() == [100, 200]
 
-    def test_all_present_no_change(self):
-        """无缺失值时 DataFrame 不变。"""
+        # -- 原 test_all_present_no_change --
         df = pl.DataFrame(
             {
                 "trade_time": [
@@ -908,8 +985,7 @@ class TestFillMissingBars:
         result = fill_missing_bars(df)
         pl_testing.assert_frame_equal(result, df)
 
-    def test_fill_missing_bars_does_not_cross_trading_day_boundary(self):
-        """forward-fill 不应跨交易日。"""
+        # -- 原 test_fill_missing_bars_does_not_cross_trading_day_boundary --
         df = pl.DataFrame(
             {
                 "trade_time": [
@@ -926,13 +1002,15 @@ class TestFillMissingBars:
 
         assert result["factor_value"].to_list() == [1.5, None, 2.0]
 
+
 # ── clip_outliers ───────────────────────────────────────────────────────────
 
 class TestClipOutliers:
     """验证分位数截尾行为。"""
 
-    def test_clip_both_ends(self):
-        """上下同时截尾：超出分位数界的值被 clamp。"""
+    def test_clip_outliers_suite(self):
+        """上下同时截尾：超出分位数界的值被 clamp。；仅截取下界：上界 100% 不起作用。；仅截取上界：下界 0% 不起作用。；默认 1%/99% 分位数：正常数据不应被截。；截尾不应丢弃原有列。；单一值不触发截尾。"""
+        # -- 原 test_clip_both_ends --
         df = pl.DataFrame(
             {
                 "trade_time": ["2026-05-14 09:30:00"] * 5,
@@ -947,8 +1025,7 @@ class TestClipOutliers:
         assert 200.0 not in values
         assert all(v <= 200.0 for v in values)
 
-    def test_clip_lower_only(self):
-        """仅截取下界：上界 100% 不起作用。"""
+        # -- 原 test_clip_lower_only --
         df = pl.DataFrame(
             {
                 "factor_value": [-100.0, 1.0, 2.0, 3.0, 10.0],
@@ -958,8 +1035,7 @@ class TestClipOutliers:
         clipped = sorted(result["factor_value"].to_list())
         assert clipped[-1] == 10.0
 
-    def test_clip_upper_only(self):
-        """仅截取上界：下界 0% 不起作用。"""
+        # -- 原 test_clip_upper_only --
         df = pl.DataFrame(
             {
                 "factor_value": [-100.0, 1.0, 2.0, 3.0, 10.0],
@@ -969,8 +1045,7 @@ class TestClipOutliers:
         clipped = sorted(result["factor_value"].to_list())
         assert clipped[0] == -100.0
 
-    def test_default_bounds_no_clip_on_normal_data(self):
-        """默认 1%/99% 分位数：正常数据不应被截。"""
+        # -- 原 test_default_bounds_no_clip_on_normal_data --
         df = pl.DataFrame(
             {
                 "factor_value": [1.0, 2.0, 3.0, 4.0, 5.0],
@@ -979,8 +1054,7 @@ class TestClipOutliers:
         result = clip_outliers(df)
         pl_testing.assert_frame_equal(result, df)
 
-    def test_clip_preserves_other_columns(self):
-        """截尾不应丢弃原有列。"""
+        # -- 原 test_clip_preserves_other_columns --
         df = pl.DataFrame(
             {
                 "trade_time": ["2026-05-14 09:30:00"] * 3,
@@ -994,27 +1068,27 @@ class TestClipOutliers:
         assert "volume" in result.columns
         assert result["volume"].to_list() == [100, 200, 300]
 
-    def test_single_value_no_clip(self):
-        """单一值不触发截尾。"""
+        # -- 原 test_single_value_no_clip --
         df = pl.DataFrame({"factor_value": [42.0]})
         result = clip_outliers(df)
         assert result["factor_value"][0] == 42.0
+
 
 # ── IntradayPreprocessingPipeline ───────────────────────────────────────────
 
 class TestIntradayPreprocessingPipeline:
     """验证预处理管线的构造、配置和 run() 行为。"""
 
-    def test_default_config(self):
-        """默认配置：fill_missing 和 clip_outliers 均开启。"""
+    def test_intraday_preprocessing_pipeline_suite(self):
+        """默认配置：fill_missing 和 clip_outliers 均开启。；自定义分位数参数正确存储。；run() 必须产出 factor_clean 列。；同时处理缺失和异常值。；do_fill_missing=False 时跳过填充。；do_clip_outliers=False 时跳过截尾。"""
+        # -- 原 test_default_config --
         pipe = IntradayPreprocessingPipeline()
         assert pipe.do_fill_missing is True
         assert pipe.do_clip_outliers is True
         assert pipe.clip_lower_pct == 1.0
         assert pipe.clip_upper_pct == 99.0
 
-    def test_custom_config(self):
-        """自定义分位数参数正确存储。"""
+        # -- 原 test_custom_config --
         pipe = IntradayPreprocessingPipeline(
             do_fill_missing=False,
             clip_lower_pct=5.0,
@@ -1024,8 +1098,7 @@ class TestIntradayPreprocessingPipeline:
         assert pipe.clip_lower_pct == 5.0
         assert pipe.clip_upper_pct == 95.0
 
-    def test_run_produces_factor_clean(self):
-        """run() 必须产出 factor_clean 列。"""
+        # -- 原 test_run_produces_factor_clean --
         df = pl.DataFrame(
             {
                 "trade_time": [
@@ -1041,8 +1114,7 @@ class TestIntradayPreprocessingPipeline:
         assert "factor_clean" in result.columns
         assert result["factor_clean"].to_list() == [1.0, 2.0]
 
-    def test_run_with_missing_and_outliers(self):
-        """同时处理缺失和异常值。"""
+        # -- 原 test_run_with_missing_and_outliers --
         df = pl.DataFrame(
             {
                 "trade_time": [
@@ -1060,8 +1132,7 @@ class TestIntradayPreprocessingPipeline:
         assert "factor_clean" in result.columns
         assert result["factor_clean"].to_list() == [1.0, 1.0, 1.0]
 
-    def test_run_skip_fill(self):
-        """do_fill_missing=False 时跳过填充。"""
+        # -- 原 test_run_skip_fill --
         df = pl.DataFrame(
             {
                 "trade_time": ["2026-05-14 09:30:00", "2026-05-14 09:31:00"],
@@ -1074,8 +1145,7 @@ class TestIntradayPreprocessingPipeline:
         result = pipe.run(df)
         assert result["factor_clean"].to_list() == [1.0, None]
 
-    def test_run_skip_clip(self):
-        """do_clip_outliers=False 时跳过截尾。"""
+        # -- 原 test_run_skip_clip --
         df = pl.DataFrame(
             {
                 "trade_time": ["2026-05-14 09:30:00"],
@@ -1087,4 +1157,5 @@ class TestIntradayPreprocessingPipeline:
         pipe = IntradayPreprocessingPipeline(do_clip_outliers=False)
         result = pipe.run(df)
         assert result["factor_clean"][0] == 999.0
+
 

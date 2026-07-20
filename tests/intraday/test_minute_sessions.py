@@ -59,98 +59,121 @@ def _source_frame(code_col: str = "code") -> pl.DataFrame:
     )
 
 
-def test_minute_setting_matches_loader_storage_namespace():
-    assert DATA_RAW_MINUTE.name == "minute_1min"
+def test_minute_ingest_suite(tmp_path):
+    """test_minute_setting_matches_loader_storage_namespace；test_ingest_normalizes_schema_preserves_bars_and_is_idempotent；test_ingest_merges_into_existing_partial_month_instead_of_skipping；test_ingest_month_filter_limits_written_partitions；test_cli_writes_reproducibility_manifest_and_sentinel"""
+    # -- 原 test_minute_setting_matches_loader_storage_namespace --
+    def _section_0_test_minute_setting_matches_loader_storage_namespace():
+        assert DATA_RAW_MINUTE.name == "minute_1min"
 
+    _section_0_test_minute_setting_matches_loader_storage_namespace()
 
-def test_ingest_normalizes_schema_preserves_bars_and_is_idempotent(tmp_path):
-    source = tmp_path / "source.parquet"
-    raw = tmp_path / "raw"
-    _source_frame().write_parquet(source)
+    # -- 原 test_ingest_normalizes_schema_preserves_bars_and_is_idempotent --
+    def _section_1_test_ingest_normalizes_schema_preserves_bars_and_is_idempotent(tmp_path):
+        source = tmp_path / "source.parquet"
+        raw = tmp_path / "raw"
+        _source_frame().write_parquet(source)
 
-    report = ingest_minute_files([source], base_dir=raw)
-    first = load_parquet("minute_1min", base_dir=raw, date_col="trade_time").collect()
+        report = ingest_minute_files([source], base_dir=raw)
+        first = load_parquet("minute_1min", base_dir=raw, date_col="trade_time").collect()
 
-    assert report.rows_by_month == {"202401": 2, "202402": 1}
-    assert first.columns == [
-        "ts_code",
-        "trade_time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "vol",
-        "amount",
-    ]
-    assert first.schema["trade_time"] == pl.Datetime("us")
-    assert first.schema["vol"] == pl.Int64
-    assert first.height == 3
-    assert first.filter(pl.col("ts_code") == "000001.SZ").height == 2
+        assert report.rows_by_month == {"202401": 2, "202402": 1}
+        assert first.columns == [
+            "ts_code",
+            "trade_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "vol",
+            "amount",
+        ]
+        assert first.schema["trade_time"] == pl.Datetime("us")
+        assert first.schema["vol"] == pl.Int64
+        assert first.height == 3
+        assert first.filter(pl.col("ts_code") == "000001.SZ").height == 2
 
-    ingest_minute_files([source], base_dir=raw)
-    second = load_parquet("minute_1min", base_dir=raw, date_col="trade_time").collect()
-    assert second.sort(["trade_time", "ts_code"]).equals(
-        first.sort(["trade_time", "ts_code"])
-    )
+        ingest_minute_files([source], base_dir=raw)
+        second = load_parquet("minute_1min", base_dir=raw, date_col="trade_time").collect()
+        assert second.sort(["trade_time", "ts_code"]).equals(
+            first.sort(["trade_time", "ts_code"])
+        )
 
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    _section_1_test_ingest_normalizes_schema_preserves_bars_and_is_idempotent(_tp1)
 
-def test_ingest_merges_into_existing_partial_month_instead_of_skipping(tmp_path):
-    raw = tmp_path / "raw"
-    existing = pl.DataFrame(
-        {
-            "ts_code": ["000003.SZ"],
-            "trade_time": [datetime(2024, 1, 2, 9, 31)],
-            "open": [30.0],
-            "high": [31.0],
-            "low": [29.0],
-            "close": [30.5],
-            "vol": [300],
-            "amount": [3000.0],
-        }
-    )
-    save_parquet(existing, "minute_1min", date_col="trade_time", base_dir=raw)
-    source = tmp_path / "gapfill.parquet"
-    _source_frame("ts_code").filter(pl.col("trade_time").str.starts_with("2024-01")).write_parquet(
-        source
-    )
+    # -- 原 test_ingest_merges_into_existing_partial_month_instead_of_skipping --
+    def _section_2_test_ingest_merges_into_existing_partial_month_instead_of_skipping(tmp_path):
+        raw = tmp_path / "raw"
+        existing = pl.DataFrame(
+            {
+                "ts_code": ["000003.SZ"],
+                "trade_time": [datetime(2024, 1, 2, 9, 31)],
+                "open": [30.0],
+                "high": [31.0],
+                "low": [29.0],
+                "close": [30.5],
+                "vol": [300],
+                "amount": [3000.0],
+            }
+        )
+        save_parquet(existing, "minute_1min", date_col="trade_time", base_dir=raw)
+        source = tmp_path / "gapfill.parquet"
+        _source_frame("ts_code").filter(pl.col("trade_time").str.starts_with("2024-01")).write_parquet(
+            source
+        )
 
-    ingest_minute_files([source], base_dir=raw)
-    merged = load_parquet("minute_1min", base_dir=raw, date_col="trade_time").collect()
+        ingest_minute_files([source], base_dir=raw)
+        merged = load_parquet("minute_1min", base_dir=raw, date_col="trade_time").collect()
 
-    assert merged.height == 3
-    assert set(merged["ts_code"].to_list()) == {"000001.SZ", "000003.SZ"}
+        assert merged.height == 3
+        assert set(merged["ts_code"].to_list()) == {"000001.SZ", "000003.SZ"}
 
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_ingest_merges_into_existing_partial_month_instead_of_skipping(_tp2)
 
-def test_ingest_month_filter_limits_written_partitions(tmp_path):
-    source = tmp_path / "source.parquet"
-    raw = tmp_path / "raw"
-    _source_frame().write_parquet(source)
+    # -- 原 test_ingest_month_filter_limits_written_partitions --
+    def _section_3_test_ingest_month_filter_limits_written_partitions(tmp_path):
+        source = tmp_path / "source.parquet"
+        raw = tmp_path / "raw"
+        _source_frame().write_parquet(source)
 
-    report = ingest_minute_files([source], base_dir=raw, months=["202402"])
+        report = ingest_minute_files([source], base_dir=raw, months=["202402"])
 
-    assert report.rows_by_month == {"202402": 1}
-    assert not (raw / "minute_1min" / "year=2024" / "month=01").exists()
-    assert (raw / "minute_1min" / "year=2024" / "month=02" / "data.parquet").is_file()
+        assert report.rows_by_month == {"202402": 1}
+        assert not (raw / "minute_1min" / "year=2024" / "month=01").exists()
+        assert (raw / "minute_1min" / "year=2024" / "month=02" / "data.parquet").is_file()
 
+    _tp3 = tmp_path / "_s3"
+    _tp3.mkdir(exist_ok=True)
+    _section_3_test_ingest_month_filter_limits_written_partitions(_tp3)
 
-def test_cli_writes_reproducibility_manifest_and_sentinel(tmp_path, monkeypatch):
-    from tools import ingest_minute as cli
+    # -- 原 test_cli_writes_reproducibility_manifest_and_sentinel --
+    def _section_4_test_cli_writes_reproducibility_manifest_and_sentinel(tmp_path, mp):
+        from tools import ingest_minute as cli
 
-    source = tmp_path / "source.parquet"
-    raw = tmp_path / "raw"
-    workspace = tmp_path / "workspace"
-    _source_frame().write_parquet(source)
-    monkeypatch.setattr(cli, "WORKSPACE_DIR", workspace)
+        source = tmp_path / "source.parquet"
+        raw = tmp_path / "raw"
+        workspace = tmp_path / "workspace"
+        _source_frame().write_parquet(source)
+        mp.setattr(cli, "WORKSPACE_DIR", workspace)
 
-    assert cli.main([str(source), "--data-root", str(raw), "--run-id", "test-run"]) == 0
+        assert cli.main([str(source), "--data-root", str(raw), "--run-id", "test-run"]) == 0
 
-    run_dir = workspace / "data_ingest" / "test-run"
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["status"] == "success"
-    assert manifest["git_sha"]
-    assert manifest["window"] == {"months": ["202401", "202402"]}
-    assert manifest["result"]["source_files"] == 1
-    assert (run_dir / "ingest.done").is_file()
+        run_dir = workspace / "data_ingest" / "test-run"
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["status"] == "success"
+        assert manifest["git_sha"]
+        assert manifest["window"] == {"months": ["202401", "202402"]}
+        assert manifest["result"]["source_files"] == 1
+        assert (run_dir / "ingest.done").is_file()
+
+    _tp4 = tmp_path / "_s4"
+    _tp4.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_cli_writes_reproducibility_manifest_and_sentinel(_tp4, mp)
+
 
 # ==== 来自 test_resample_equiv.py ====
 def _dt__minute_data(h: int, m: int, day: int = 2, month: int = 1) -> datetime:
@@ -234,8 +257,9 @@ def _assert_equiv(src: pl.DataFrame, freq: str = "5min") -> None:
 
 
 class TestResampleBoundaryFixtures:
-    def test_lunch_boundary_bars(self) -> None:
-        """午休边界：11:30 与 13:01 不跨桶吞并。"""
+    def test_resample_boundary_fixtures_suite(self):
+        """午休边界：11:30 与 13:01 不跨桶吞并。；开盘竞价 + 收盘 15:00 标签。；不足一个完整 bar 的残段 + 单股票单日。；乱序多股票输入：first/last 仍按时间正确。；test_empty_frame"""
+        # -- 原 test_lunch_boundary_bars --
         rows = [
             ("000001.SZ", _dt__minute_data(11, 28), 10.0, 10.1, 9.9, 10.0, 10, 100.0),
             ("000001.SZ", _dt__minute_data(11, 29), 10.0, 10.2, 9.9, 10.1, 20, 200.0),
@@ -264,8 +288,7 @@ class TestResampleBoundaryFixtures:
         assert (13, 5) in labels
         assert (13, 0) not in labels
 
-    def test_open_close_session_labels(self) -> None:
-        """开盘竞价 + 收盘 15:00 标签。"""
+        # -- 原 test_open_close_session_labels --
         rows = [
             ("000001.SZ", _dt__minute_data(9, 30), 10.0, 10.0, 10.0, 10.0, 100, 1000.0),
             ("000001.SZ", _dt__minute_data(9, 31), 10.0, 10.2, 9.9, 10.1, 200, 2000.0),
@@ -289,8 +312,7 @@ class TestResampleBoundaryFixtures:
         )
         _assert_equiv(df, "5min")
 
-    def test_partial_bucket_and_single_stock_day(self) -> None:
-        """不足一个完整 bar 的残段 + 单股票单日。"""
+        # -- 原 test_partial_bucket_and_single_stock_day --
         rows = [
             ("000001.SZ", _dt__minute_data(10, 1), 10.0, 10.1, 9.9, 10.05, 10, 100.0),
             ("000001.SZ", _dt__minute_data(10, 2), 10.05, 10.2, 10.0, 10.1, 20, 200.0),
@@ -315,8 +337,7 @@ class TestResampleBoundaryFixtures:
         assert out["open"][0] == pytest.approx(10.0)
         assert out["close"][0] == pytest.approx(10.1)
 
-    def test_unsorted_multi_stock_input(self) -> None:
-        """乱序多股票输入：first/last 仍按时间正确。"""
+        # -- 原 test_unsorted_multi_stock_input --
         rows = [
             ("000002.SZ", _dt__minute_data(9, 32), 20.0, 20.1, 19.9, 20.05, 5, 100.0),
             ("000001.SZ", _dt__minute_data(9, 31), 10.0, 10.1, 9.9, 10.05, 10, 100.0),
@@ -338,7 +359,7 @@ class TestResampleBoundaryFixtures:
         )
         _assert_equiv(df, "5min")
 
-    def test_empty_frame(self) -> None:
+        # -- 原 test_empty_frame --
         _assert_equiv(_empty_bars(), "5min")
 
 
@@ -416,26 +437,38 @@ def _mini_frame() -> pl.DataFrame:
         }
     )
 
-class TestConstants:
-    def test_label_convention_is_end(self) -> None:
+def test_resample_freq_table_suite():
+    """test_label_convention_is_end；test_freq_table；test_valid；test_unknown_raises；test_drops_after_hours_keeps_boundaries；test_key_indices"""
+    # -- 原 test_label_convention_is_end --
+    def _section_0_test_label_convention_is_end():
         assert BAR_LABEL_CONVENTION == "end"
 
-    def test_freq_table(self) -> None:
+    _section_0_test_label_convention_is_end()
+
+    # -- 原 test_freq_table --
+    def _section_1_test_freq_table():
         assert ASHARE_BAR_FREQS["1min"].minutes == 1
         assert ASHARE_BAR_FREQS["1min"].bars_per_day == 240
         assert ASHARE_BAR_FREQS["5min"].bars_per_day == 48
         assert ASHARE_BAR_FREQS["60min"].bars_per_day == 4
 
-class TestNormalizeFreq:
-    def test_valid(self) -> None:
+    _section_1_test_freq_table()
+
+    # -- 原 test_valid --
+    def _section_2_test_valid():
         assert normalize_freq("5min") == "5min"
 
-    def test_unknown_raises(self) -> None:
+    _section_2_test_valid()
+
+    # -- 原 test_unknown_raises --
+    def _section_3_test_unknown_raises():
         with pytest.raises(ValueError, match="未知频率"):
             normalize_freq("7min")
 
-class TestCanonicalize:
-    def test_drops_after_hours_keeps_boundaries(self) -> None:
+    _section_3_test_unknown_raises()
+
+    # -- 原 test_drops_after_hours_keeps_boundaries --
+    def _section_4_test_drops_after_hours_keeps_boundaries():
         df = _mini_frame()
         out = canonicalize_minute(df.lazy()).collect()
         times = set(
@@ -448,8 +481,10 @@ class TestCanonicalize:
         assert (15, 0) in times
         assert out.height == df.height - 1
 
-class TestSessionBarIndex:
-    def test_key_indices(self) -> None:
+    _section_4_test_drops_after_hours_keeps_boundaries()
+
+    # -- 原 test_key_indices --
+    def _section_5_test_key_indices():
         times = [
             _dt__sessions_returns(9, 30),
             _dt__sessions_returns(9, 31),
@@ -464,9 +499,12 @@ class TestSessionBarIndex:
         idxs = df["idx"].to_list()
         assert idxs == [0, 1, 120, 121, 240, None]
 
-class TestResample5min:
-    def test_auction_merges_into_0935(self) -> None:
-        """09:30+09:31..09:35 → 标签 09:35；open=竞价 open，vol=六根之和。"""
+    _section_5_test_key_indices()
+
+def test_resample_5_30_60_1_suite():
+    """09:30+09:31..09:35 → 标签 09:35；open=竞价 open，vol=六根之和。；11:26..11:30 → 标签 11:30。；13:01..13:05 → 标签 13:05；不吞午休。；15:00 归入标签 15:00 桶（与 14:59 等同桶时合并）。；test_after_hours_dropped；30min：上午末桶标签 11:30。；60min：上午 10:30/11:30，下午 14:00/15:00。；freq=1min：竞价并入 09:31；完整日恰 240 根。"""
+    # -- 原 test_auction_merges_into_0935 --
+    def _section_0_test_auction_merges_into_0935():
         df = _mini_frame()
         out = resample_intraday(df, "5min")
         row = out.filter(
@@ -483,8 +521,10 @@ class TestResample5min:
         assert row["high"][0] == pytest.approx(10.4)
         assert row["low"][0] == pytest.approx(10.0)
 
-    def test_morning_close_bucket_1130(self) -> None:
-        """11:26..11:30 → 标签 11:30。"""
+    _section_0_test_auction_merges_into_0935()
+
+    # -- 原 test_morning_close_bucket_1130 --
+    def _section_1_test_morning_close_bucket_1130():
         df = _mini_frame()
         out = resample_intraday(df, "5min")
         row = out.filter(
@@ -497,8 +537,10 @@ class TestResample5min:
         # vol = 50+40+30+20+60 = 200
         assert row["vol"][0] == 200
 
-    def test_afternoon_open_no_lunch_swallow(self) -> None:
-        """13:01..13:05 → 标签 13:05；不吞午休。"""
+    _section_1_test_morning_close_bucket_1130()
+
+    # -- 原 test_afternoon_open_no_lunch_swallow --
+    def _section_2_test_afternoon_open_no_lunch_swallow():
         df = _mini_frame()
         out = resample_intraday(df, "5min")
         row = out.filter(
@@ -517,8 +559,10 @@ class TestResample5min:
         assert (13, 0) not in labels
         assert all(h != 12 for h, _ in labels)
 
-    def test_close_1500_bucket(self) -> None:
-        """15:00 归入标签 15:00 桶（与 14:59 等同桶时合并）。"""
+    _section_2_test_afternoon_open_no_lunch_swallow()
+
+    # -- 原 test_close_1500_bucket --
+    def _section_3_test_close_1500_bucket():
         df = _mini_frame()
         out = resample_intraday(df, "5min")
         row = out.filter(
@@ -531,7 +575,10 @@ class TestResample5min:
         assert row["close"][0] == pytest.approx(11.25)
         assert row["open"][0] == pytest.approx(11.2)
 
-    def test_after_hours_dropped(self) -> None:
+    _section_3_test_close_1500_bucket()
+
+    # -- 原 test_after_hours_dropped --
+    def _section_4_test_after_hours_dropped():
         df = _mini_frame()
         out = resample_intraday(df, "5min")
         times = [
@@ -539,10 +586,10 @@ class TestResample5min:
         ]
         assert (15, 5) not in times
 
-class TestResample30min:
-    def test_morning_buckets(self) -> None:
-        """30min：上午末桶标签 11:30。"""
-        # 构造完整 09:30 + 若干 bar 以触发 11:30 桶
+    _section_4_test_after_hours_dropped()
+
+    # -- 原 test_morning_buckets --
+    def _section_5_test_morning_buckets():
         rows_t = [_dt__sessions_returns(9, 30)] + [_dt__sessions_returns(11, m) for m in range(1, 31)]
         # 11:01..11:30 → idx 91..120 → bucket 3 → end 11:30
         n = len(rows_t)
@@ -566,10 +613,10 @@ class TestResample30min:
         # 竞价进第一桶 end=10:00
         assert (10, 0) in labels
 
-class TestResample60min:
-    def test_four_session_labels(self) -> None:
-        """60min：上午 10:30/11:30，下午 14:00/15:00。"""
-        # 每小时取代表性 bar + 竞价
+    _section_5_test_morning_buckets()
+
+    # -- 原 test_four_session_labels --
+    def _section_6_test_four_session_labels():
         times = [
             _dt__sessions_returns(9, 30),
             _dt__sessions_returns(9, 31),
@@ -600,10 +647,10 @@ class TestResample60min:
         )
         assert labels == [(10, 30), (11, 30), (14, 0), (15, 0)]
 
-class TestResample1min:
-    def test_auction_into_0931_and_240_bars(self) -> None:
-        """freq=1min：竞价并入 09:31；完整日恰 240 根。"""
-        # 构造完整 241 根（含 09:30）
+    _section_6_test_four_session_labels()
+
+    # -- 原 test_auction_into_0931_and_240_bars --
+    def _section_7_test_auction_into_0931_and_240_bars():
         times = [_dt__sessions_returns(9, 30)]
         # 09:31..11:30
         for mins in range(9 * 60 + 31, 11 * 60 + 30 + 1):
@@ -639,8 +686,12 @@ class TestResample1min:
         assert last["trade_time"].hour == 15
         assert last["trade_time"].minute == 0
 
-class TestEdgeCases:
-    def test_empty_frame(self) -> None:
+    _section_7_test_auction_into_0931_and_240_bars()
+
+def test_edge_and_fwd_ret_suite():
+    """test_empty_frame；临停：某 5min 桶只有 2 根 bar，正常聚合不崩。；test_fwd_ret_1bar_value；test_no_cross_stock_leakage；test_fwd_return_does_not_cross_trading_day_boundary"""
+    # -- 原 test_empty_frame --
+    def _section_0_test_empty_frame():
         empty = pl.DataFrame(
             schema={
                 "ts_code": pl.String,
@@ -658,8 +709,10 @@ class TestEdgeCases:
         assert out.schema["vol"] == pl.Int64
         assert out.schema["trade_time"] == pl.Datetime("us")
 
-    def test_partial_bars_halt(self) -> None:
-        """临停：某 5min 桶只有 2 根 bar，正常聚合不崩。"""
+    _section_0_test_empty_frame()
+
+    # -- 原 test_partial_bars_halt --
+    def _section_1_test_partial_bars_halt():
         times = [_dt__sessions_returns(9, 31), _dt__sessions_returns(9, 32)]  # 不完整 09:35 桶
         df = pl.DataFrame(
             {
@@ -680,6 +733,51 @@ class TestEdgeCases:
         assert out["open"][0] == pytest.approx(10.0)
         assert out["close"][0] == pytest.approx(10.2)
 
+    _section_1_test_partial_bars_halt()
+
+    # -- 原 test_fwd_ret_1bar_value --
+    def _section_2_test_fwd_ret_1bar_value():
+        df = compute_intraday_fwd_returns(_make_minute_df(), periods=[1])
+        row = df.filter((pl.col("ts_code") == "000001.SZ") & (pl.col("trade_time").dt.minute() == 30))
+        expected = (10.1 - 10.0) / 10.0
+        assert abs(row["fwd_ret_1bar"][0] - expected) < 1e-9
+
+    _section_2_test_fwd_ret_1bar_value()
+
+    # -- 原 test_no_cross_stock_leakage --
+    def _section_3_test_no_cross_stock_leakage():
+        df = compute_intraday_fwd_returns(_make_minute_df(), periods=[1])
+        for ts in ["000001.SZ", "000002.SZ", "000003.SZ"]:
+            last_val = df.filter(pl.col("ts_code") == ts).sort("trade_time").tail(1)["fwd_ret_1bar"][0]
+            assert last_val is None, f"{ts} 最后一行应为 null，实为 {last_val}"
+
+    _section_3_test_no_cross_stock_leakage()
+
+    # -- 原 test_fwd_return_does_not_cross_trading_day_boundary --
+    def _section_4_test_fwd_return_does_not_cross_trading_day_boundary():
+        df = pl.DataFrame(
+            {
+                "trade_time": [
+                    datetime(2024, 1, 2, 14, 59),
+                    datetime(2024, 1, 2, 15, 0),
+                    datetime(2024, 1, 3, 9, 30),
+                    datetime(2024, 1, 3, 9, 31),
+                ],
+                "ts_code": ["000001.SZ"] * 4,
+                "close": [100.0, 101.0, 200.0, 202.0],
+            }
+        )
+
+        out = compute_intraday_fwd_returns(df, periods=[1])
+
+        values = out["fwd_ret_1bar"].to_list()
+        assert values[0] == pytest.approx(0.01)
+        assert values[1] is None
+        assert values[2] == pytest.approx(0.01)
+        assert values[3] is None
+
+    _section_4_test_fwd_return_does_not_cross_trading_day_boundary()
+
 # ==== 来自 test_intraday_returns.py ====
 def _make_minute_df() -> pl.DataFrame:
     """3 只股票，每只 10 根 bar。"""
@@ -696,37 +794,4 @@ def _make_minute_df() -> pl.DataFrame:
             )
     return pl.DataFrame(rows).with_columns(pl.col("trade_time").cast(pl.Datetime))
 
-def test_fwd_ret_1bar_value():
-    df = compute_intraday_fwd_returns(_make_minute_df(), periods=[1])
-    row = df.filter((pl.col("ts_code") == "000001.SZ") & (pl.col("trade_time").dt.minute() == 30))
-    expected = (10.1 - 10.0) / 10.0
-    assert abs(row["fwd_ret_1bar"][0] - expected) < 1e-9
-
-def test_no_cross_stock_leakage():
-    df = compute_intraday_fwd_returns(_make_minute_df(), periods=[1])
-    for ts in ["000001.SZ", "000002.SZ", "000003.SZ"]:
-        last_val = df.filter(pl.col("ts_code") == ts).sort("trade_time").tail(1)["fwd_ret_1bar"][0]
-        assert last_val is None, f"{ts} 最后一行应为 null，实为 {last_val}"
-
-def test_fwd_return_does_not_cross_trading_day_boundary():
-    df = pl.DataFrame(
-        {
-            "trade_time": [
-                datetime(2024, 1, 2, 14, 59),
-                datetime(2024, 1, 2, 15, 0),
-                datetime(2024, 1, 3, 9, 30),
-                datetime(2024, 1, 3, 9, 31),
-            ],
-            "ts_code": ["000001.SZ"] * 4,
-            "close": [100.0, 101.0, 200.0, 202.0],
-        }
-    )
-
-    out = compute_intraday_fwd_returns(df, periods=[1])
-
-    values = out["fwd_ret_1bar"].to_list()
-    assert values[0] == pytest.approx(0.01)
-    assert values[1] is None
-    assert values[2] == pytest.approx(0.01)
-    assert values[3] is None
 

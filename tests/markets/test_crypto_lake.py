@@ -1,0 +1,456 @@
+"""test_markets_crypto_vision.py：vision 下载器离线单测:canned XML/CSV/zip,fetch 全注入。
+test_markets_crypto_lake_provider.py：湖 provider:读湖+重采样+freq 分派;mini-lake fixture 供全链路测试复用。
+test_markets_crypto_lake.py：数据湖读写 roundtrip + 区间过滤 + 缺标的空帧。
+test_crypto_backfill_incremental_meta.py：vision backfill 当月增量补拉(M3) + 写 meta 打通 universe(M4)。
+test_markets_crypto_calendar.py：MC0 Task 2: crypto 24/7 连续交易日历。
+test_markets_crypto_resample.py：重采样/对齐 ground truth 单测:全部手算期望值,不用被测函数自导自演。
+test_markets_crypto_frequency.py：频率表单测:别名/年化/未知 raise(全链路唯一事实源)。
+"""
+
+from __future__ import annotations
+
+import io
+import zipfile
+from datetime import (
+    date,
+    datetime,
+)
+
+import polars as pl
+import pytest
+
+from factorzen.markets.base import Calendar
+from factorzen.markets.crypto.calendar import CryptoCalendar
+from factorzen.markets.crypto.frequency import (
+    BAR_FREQS,
+    normalize_freq,
+    periods_per_year,
+)
+from factorzen.markets.crypto.lake import (
+    CryptoLake,
+    day_range,
+    month_range,
+)
+from factorzen.markets.crypto.lake_provider import CryptoLakeProvider
+from factorzen.markets.crypto.resample import (
+    align_funding,
+    align_open_interest,
+    resample_bars,
+)
+from factorzen.markets.crypto.vision import (
+    backfill,
+    fetch_zip_csv,
+    list_um_symbols,
+    parse_funding_csv,
+    parse_kline_csv,
+    parse_metrics_csv,
+    rank_symbols_by_amount,
+)
+
+# ==== 来自 test_markets_crypto_vision.py ====
+_KLINE_HEADER = (b"open_time,open,high,low,close,volume,close_time,quote_volume,"
+                 b"count,taker_buy_volume,taker_buy_quote_volume,ignore\n")
+_KLINE_ROW = b"1782604800000,60000.4,60018.7,60000.3,60018.6,37.652,1782604859999,2259400.8,1187,12.342,740568.6,0\n"
+
+
+def _zip_bytes(name: str, payload: bytes) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(name, payload)
+    return buf.getvalue()
+
+
+def test_parse_kline_csv_with_and_without_header():
+    for raw in (_KLINE_HEADER + _KLINE_ROW, _KLINE_ROW):  # vision 老文件无表头
+        df = parse_kline_csv(raw)
+        assert df.columns == ["trade_date", "open", "high", "low", "close",
+                              "vol", "amount", "taker_buy_volume"]
+        assert df.schema["trade_date"] == pl.Datetime("us")
+        assert df["amount"][0] == pytest.approx(2259400.8)   # 真 quote_volume,非 close*vol
+        assert df["taker_buy_volume"][0] == pytest.approx(12.342)
+
+
+def test_parse_funding_and_metrics():
+    fr = parse_funding_csv(b"calc_time,funding_interval_hours,last_funding_rate\n"
+                           b"1777593600000,8,-0.00003746\n")
+    assert fr.columns == ["event_time", "funding_rate"]
+    assert fr["funding_rate"][0] == pytest.approx(-0.00003746)
+    mt = parse_metrics_csv(
+        b"create_time,symbol,sum_open_interest,sum_open_interest_value,"
+        b"count_toptrader_long_short_ratio,sum_toptrader_long_short_ratio,"
+        b"count_long_short_ratio,sum_taker_long_short_vol_ratio\n"
+        b"2026-06-27 00:05:00,BTCUSDT,103630.42,6225989541.67,2.2,1.2,2.1,0.7\n")
+    assert mt.columns == ["event_time", "open_interest"]
+    assert mt["open_interest"][0] == pytest.approx(103630.42)
+
+
+def test_list_um_symbols_from_s3_xml():
+    xml = (b"<?xml version='1.0'?><ListBucketResult>"
+           b"<Prefix>data/futures/um/monthly/klines/</Prefix>"
+           b"<CommonPrefixes><Prefix>data/futures/um/monthly/klines/BTCUSDT/</Prefix></CommonPrefixes>"
+           b"<CommonPrefixes><Prefix>data/futures/um/monthly/klines/ETHUSDT/</Prefix></CommonPrefixes>"
+           b"<CommonPrefixes><Prefix>data/futures/um/monthly/klines/BTCUSD_PERP/</Prefix></CommonPrefixes>"
+           b"<IsTruncated>false</IsTruncated></ListBucketResult>")
+    seen = {}
+
+    def _fetch(url):
+        seen["url"] = url
+        return xml
+
+    syms = list_um_symbols(fetch=_fetch)
+    assert syms == ["BTCUSDT", "ETHUSDT"]  # 非 USDT 结尾剔除
+    assert "s3" in seen["url"]  # listing 必须走 S3 endpoint(CDN 前端只返回 HTML)
+
+
+def test_fetch_zip_csv_retries_then_none():
+    calls = {"n": 0}
+    def bad_fetch(url):
+        calls["n"] += 1
+        raise OSError("404")
+    assert fetch_zip_csv("http://x/a.zip", fetch=bad_fetch, retries=2) is None
+    assert calls["n"] == 3  # 1 次 + 2 重试
+
+
+def test_backfill_writes_lake_and_records_gaps(tmp_path):
+    lake = CryptoLake(tmp_path)
+    kzip = _zip_bytes("k.csv", _KLINE_HEADER + _KLINE_ROW)
+    fzip = _zip_bytes("f.csv", b"calc_time,funding_interval_hours,last_funding_rate\n"
+                               b"1782604800000,8,0.0001\n")
+    def fetch(url):
+        if "fundingRate" in url:
+            return fzip
+        if "/klines/" in url and "1m" in url:
+            return kzip
+        raise OSError("404")  # metrics 全 404 → 进 gaps
+    manifest = backfill(lake, ["BTCUSDT"], "20260628", "20260628", fetch=fetch, log=lambda *a: None)
+    assert lake.read_klines(["BTCUSDT"], "20260628", "20260628").height == 1
+    assert lake.read_funding(["BTCUSDT"], "20260628", "20260628").height == 1
+    assert any("metrics" in g for g in manifest["gaps"])  # 缺口不静默
+    assert (tmp_path / "manifest.json").exists()
+    # 增量:重跑不重复下载已有分区
+    counts = {"n": 0}
+    def counting_fetch(url):
+        counts["n"] += 1
+        return fetch(url)
+    backfill(lake, ["BTCUSDT"], "20260628", "20260628", fetch=counting_fetch, log=lambda *a: None)
+    assert all("/klines/" not in u for u in []) or counts["n"] < 3  # kline/funding 已存在被跳过
+
+
+def test_rank_symbols_by_amount(tmp_path):
+    # 1d 月包:BTC 成交额 > ETH,选 Top-1 应得 BTC
+    def _kd(amount_row: bytes) -> bytes:
+        return _zip_bytes("d.csv", _KLINE_HEADER + amount_row)
+    big = b"1782604800000,1,1,1,1,1,1782604859999,9999999,1,1,1,0\n"
+    small = b"1782604800000,1,1,1,1,1,1782604859999,1000,1,1,1,0\n"
+    def fetch(url):
+        if "BTCUSDT-1d" in url:
+            return _kd(big)
+        if "ETHUSDT-1d" in url:
+            return _kd(small)
+        raise OSError("404")
+    top = rank_symbols_by_amount(["BTCUSDT", "ETHUSDT"], "2026-05", top_n=1, fetch=fetch)
+    assert top == ["BTCUSDT"]
+
+# ==== 来自 test_markets_crypto_lake_provider.py ====
+def make_mini_lake(root, symbols=("BTCUSDT", "ETHUSDT"), days=(1, 2)) -> CryptoLake:
+    """2 标的 × N 日、每日 00:00-01:59 共 120 根 1m bar 的最小湖。"""
+    lake = CryptoLake(root)
+    for si, sym in enumerate(symbols):
+        frames = []
+        for d in days:
+            ts = [datetime(2026, 5, d, h, m) for h in (0, 1) for m in range(60)]
+            base = 100.0 * (si + 1)
+            px = [base + i * 0.1 for i in range(len(ts))]
+            frames.append(pl.DataFrame({
+                "trade_date": ts, "open": px, "high": [p + 0.5 for p in px],
+                "low": [p - 0.5 for p in px], "close": [p + 0.2 for p in px],
+                "vol": [1.0] * len(ts), "amount": [p * 1.0 for p in px],
+                "taker_buy_volume": [0.6] * len(ts),
+            }).with_columns(pl.col("trade_date").cast(pl.Datetime("us"))))
+        lake.write_klines(sym, "2026-05", pl.concat(frames))
+        lake.write_funding(sym, "2026-05", pl.DataFrame({
+            "event_time": [datetime(2026, 5, d, 0, 0) for d in days],
+            "funding_rate": [0.0001] * len(days),
+        }).with_columns(pl.col("event_time").cast(pl.Datetime("us"))))
+        for d in days:
+            lake.write_metrics(sym, f"202605{d:02d}", pl.DataFrame({
+                "event_time": [datetime(2026, 5, d, 0, 5)], "open_interest": [1000.0 + d],
+            }).with_columns(pl.col("event_time").cast(pl.Datetime("us"))))
+    lake.write_meta(pl.DataFrame({
+        "ts_code": list(symbols), "name": [s[:-4] for s in symbols],
+        "list_date": [date(2024, 1, 1)] * len(symbols)}))
+    return lake
+
+
+def test_fetch_bars_daily_date_key(tmp_path):
+    make_mini_lake(tmp_path)
+    p = CryptoLakeProvider(lake_root=tmp_path)
+    bars = p.fetch_bars(["BTCUSDT"], "20260501", "20260502", "daily")
+    assert bars.schema["trade_date"] == pl.Date
+    assert bars.height == 2 and bars["vol"].to_list() == [120.0, 120.0]
+
+
+def test_fetch_bars_15m_datetime_key(tmp_path):
+    make_mini_lake(tmp_path)
+    p = CryptoLakeProvider(lake_root=tmp_path)
+    bars = p.fetch_bars(["BTCUSDT", "ETHUSDT"], "20260501", "20260501", "15m")
+    assert bars.schema["trade_date"] == pl.Datetime("us")
+    assert bars.filter(pl.col("ts_code") == "BTCUSDT").height == 8  # 2h → 8 根 15m
+    assert bars.filter(pl.col("ts_code") == "BTCUSDT")["vol"].to_list() == [15.0] * 8
+
+
+def test_fetch_funding_and_oi_freq(tmp_path):
+    make_mini_lake(tmp_path)
+    p = CryptoLakeProvider(lake_root=tmp_path)
+    fd = p.fetch_funding(["BTCUSDT"], "20260501", "20260502", "daily")
+    assert fd.schema["trade_date"] == pl.Date and fd.height == 2
+    f15 = p.fetch_funding(["BTCUSDT"], "20260501", "20260501", "15m")
+    assert f15["trade_date"].to_list() == [datetime(2026, 5, 1, 0, 0)]
+    oi = p.fetch_open_interest(["BTCUSDT"], "20260501", "20260501", "15m")
+    assert oi["open_interest"].to_list() == [1001.0]
+
+
+def test_empty_lake_raises(tmp_path):
+    p = CryptoLakeProvider(lake_root=tmp_path / "nope")
+    with pytest.raises(RuntimeError, match="backfill"):
+        p.fetch_bars(["BTCUSDT"], "20260501", "20260502", "daily")
+
+
+def test_meta_roundtrip(tmp_path):
+    make_mini_lake(tmp_path)
+    meta = CryptoLakeProvider(lake_root=tmp_path).fetch_symbol_meta()
+    assert set(meta["ts_code"].to_list()) == {"BTCUSDT", "ETHUSDT"}
+
+# ==== 来自 test_markets_crypto_lake.py ====
+def _k(day: int) -> pl.DataFrame:
+    return pl.DataFrame({
+        "trade_date": [datetime(2026, 5, day, 0, 0), datetime(2026, 5, day, 0, 1)],
+        "open": [1.0, 2.0], "high": [2.0, 3.0], "low": [0.5, 1.5],
+        "close": [1.5, 2.5], "vol": [10.0, 20.0], "amount": [15.0, 50.0],
+        "taker_buy_volume": [4.0, 9.0],
+    }).with_columns(pl.col("trade_date").cast(pl.Datetime("us")))
+
+
+def test_month_and_day_range():
+    assert month_range("20250715", "20251003") == ["2025-07", "2025-08", "2025-09", "2025-10"]
+    assert day_range("2026-05", "20260530", "20260602") == ["20260530", "20260531"]
+
+
+def test_kline_roundtrip_and_filter(tmp_path):
+    lake = CryptoLake(tmp_path)
+    lake.write_klines("BTCUSDT", "2026-05", pl.concat([_k(1), _k(2)]))
+    lake.write_klines("ETHUSDT", "2026-05", _k(1))
+    out = lake.read_klines(["BTCUSDT"], "20260502", "20260502")
+    assert out["ts_code"].unique().to_list() == ["BTCUSDT"]
+    assert out.height == 2  # 只有 5/2 的两根
+    assert lake.read_klines(["XRPUSDT"], "20260501", "20260502").is_empty()  # 缺标的→空帧
+    assert sorted(lake.symbols()) == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_funding_meta_manifest_roundtrip(tmp_path):
+    lake = CryptoLake(tmp_path)
+    ev = pl.DataFrame({"event_time": [datetime(2026, 5, 1, 8)], "funding_rate": [0.0001]}
+                      ).with_columns(pl.col("event_time").cast(pl.Datetime("us")))
+    lake.write_funding("BTCUSDT", "2026-05", ev)
+    got = lake.read_funding(["BTCUSDT"], "20260501", "20260501")
+    assert got["funding_rate"].to_list() == [0.0001] and got["ts_code"][0] == "BTCUSDT"
+    meta = pl.DataFrame({"ts_code": ["BTCUSDT"], "name": ["BTC"],
+                         "list_date": [datetime(2020, 1, 1).date()]})
+    lake.write_meta(meta)
+    assert lake.read_meta()["ts_code"].to_list() == ["BTCUSDT"]
+    lake.write_manifest({"gaps": []})
+    assert lake.read_manifest() == {"gaps": []}
+
+# ==== 来自 test_crypto_backfill_incremental_meta.py ====
+_HEADER = (b"open_time,open,high,low,close,volume,close_time,quote_volume,"
+           b"count,taker_buy_volume,taker_buy_quote_volume,ignore\n")
+_D28 = 1782604800000  # 2026-06-28 00:00 UTC
+_DAY = 86_400_000
+
+
+def _zip(payload: bytes) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("d.csv", payload)
+    return buf.getvalue()
+
+
+def _day_zip(open_ms: int) -> bytes:
+    row = f"{open_ms},1,1,1,1,1,{open_ms + 59999},100,1,1,1,0\n".encode()
+    return _zip(_HEADER + row)
+
+
+def _fetch_daypacks_only(url: str) -> bytes:
+    # 当月无月包(/monthly/ 全 404)；日包按 URL 里的日期返回对应时间戳
+    if "/daily/klines/" in url and "2026-06-28" in url:
+        return _day_zip(_D28)
+    if "/daily/klines/" in url and "2026-06-29" in url:
+        return _day_zip(_D28 + _DAY)
+    raise OSError("404")
+
+
+def test_backfill_current_month_increment_tops_up(tmp_path):
+    lake = CryptoLake(tmp_path)
+    # 第一次：只回填 6-28（日包，无月包）
+    backfill(lake, ["BTCUSDT"], "20260628", "20260628",
+             fetch=_fetch_daypacks_only, log=lambda *a: None)
+    assert lake.read_klines(["BTCUSDT"], "20260628", "20260628").height == 1
+
+    # 第二次：扩到 6-29 —— 修复前当月分区已存在被整月跳过，6-29 永久缺失
+    backfill(lake, ["BTCUSDT"], "20260628", "20260629",
+             fetch=_fetch_daypacks_only, log=lambda *a: None)
+    got = lake.read_klines(["BTCUSDT"], "20260628", "20260629")
+    dates = set(got.select(pl.col("trade_date").dt.strftime("%Y%m%d")).to_series().to_list())
+    assert dates == {"20260628", "20260629"}, f"当月增量应补拉 6-29，实得 {dates}"
+
+
+def test_backfill_writes_meta_for_universe(tmp_path):
+    lake = CryptoLake(tmp_path)
+    backfill(lake, ["BTCUSDT"], "20260628", "20260628",
+             fetch=_fetch_daypacks_only, log=lambda *a: None)
+    meta = lake.read_meta()
+    assert meta.height == 1
+    assert meta["ts_code"][0] == "BTCUSDT"
+    # universe.snapshot 要求 list_date 非空，否则过滤后为空
+    assert meta["list_date"][0] is not None
+
+# ==== 来自 test_markets_crypto_calendar.py ====
+def test_is_a_calendar():
+    assert isinstance(CryptoCalendar(), Calendar)
+
+
+def test_sessions_are_continuous_including_weekends():
+    """24/7：区间内每个自然日都是交易日（含周末）。"""
+    cal = CryptoCalendar()
+    days = cal.sessions("20240101", "20240107")  # 2024-01-06=周六, 01-07=周日
+    assert days == [date(2024, 1, d) for d in range(1, 8)]
+    assert len(days) == 7
+
+
+def test_is_session_always_true():
+    cal = CryptoCalendar()
+    assert cal.is_session(date(2024, 1, 6)) is True  # 周六
+    assert cal.is_session("20240107") is True  # 周日
+
+
+def test_next_prev_session_are_natural_days():
+    cal = CryptoCalendar()
+    assert cal.next_session(date(2024, 1, 1)) == date(2024, 1, 2)
+    assert cal.next_session("20240105", n=2) == date(2024, 1, 7)  # 跨周末
+    assert cal.prev_session("20240101", n=2) == date(2023, 12, 30)
+
+
+def test_periods_per_year():
+    cal = CryptoCalendar()
+    assert cal.periods_per_year() == 365.0
+    assert cal.periods_per_year("daily") == 365.0
+    assert cal.periods_per_year("hourly") == 365.0 * 24
+    assert cal.periods_per_year("weekly") == 52.0
+    assert cal.periods_per_year("monthly") == 12.0
+
+# ==== 来自 test_markets_crypto_resample.py ====
+def _bars_1m() -> pl.DataFrame:
+    # BTCUSDT 4 根 1m bar:00:00/00:01 属 15m bar0,00:15/00:16 属 15m bar1
+    return pl.DataFrame({
+        "ts_code": ["BTCUSDT"] * 4,
+        "trade_date": [datetime(2026, 5, 1, 0, 0), datetime(2026, 5, 1, 0, 1),
+                       datetime(2026, 5, 1, 0, 15), datetime(2026, 5, 1, 0, 16)],
+        "open":  [100.0, 101.0, 103.0, 102.0],
+        "high":  [102.0, 104.0, 103.5, 105.0],
+        "low":   [ 99.0, 100.5, 101.0, 101.5],
+        "close": [101.0, 103.0, 102.0, 104.0],
+        "vol":   [10.0, 20.0, 5.0, 15.0],
+        "amount": [1000.0, 2000.0, 500.0, 1500.0],
+        "taker_buy_volume": [6.0, 8.0, 2.0, 9.0],
+    }).with_columns(pl.col("trade_date").cast(pl.Datetime("us")))
+
+
+def test_resample_15m_ground_truth():
+    out = resample_bars(_bars_1m(), "15m")
+    assert out["trade_date"].to_list() == [datetime(2026, 5, 1, 0, 0), datetime(2026, 5, 1, 0, 15)]
+    # bar0: open=首根 open,close=末根 close,high=max,low=min,量额=sum
+    assert out["open"].to_list() == [100.0, 103.0]
+    assert out["close"].to_list() == [103.0, 104.0]
+    assert out["high"].to_list() == [104.0, 105.0]
+    assert out["low"].to_list() == [99.0, 101.0]
+    assert out["vol"].to_list() == [30.0, 20.0]
+    assert out["amount"].to_list() == [3000.0, 2000.0]
+    assert out["taker_buy_volume"].to_list() == [14.0, 11.0]
+
+
+def test_resample_daily_casts_date():
+    out = resample_bars(_bars_1m(), "daily")
+    assert out.schema["trade_date"] == pl.Date
+    assert out["trade_date"].to_list() == [date(2026, 5, 1)]
+    assert out["open"].to_list() == [100.0]
+    assert out["close"].to_list() == [104.0]
+    assert out["vol"].to_list() == [50.0]
+
+
+def test_resample_empty_passthrough():
+    assert resample_bars(_bars_1m().head(0), "1h").is_empty()
+
+
+def _funding_events() -> pl.DataFrame:
+    return pl.DataFrame({
+        "ts_code": ["BTCUSDT"] * 3,
+        "event_time": [datetime(2026, 5, 1, 0, 0), datetime(2026, 5, 1, 8, 0),
+                       datetime(2026, 5, 1, 16, 0)],
+        "funding_rate": [0.0001, 0.0002, 0.0003],
+    }).with_columns(pl.col("event_time").cast(pl.Datetime("us")))
+
+
+def test_align_funding_daily_sums_three_legs():
+    out = align_funding(_funding_events(), "daily")
+    assert out.schema["trade_date"] == pl.Date
+    assert out["trade_date"].to_list() == [date(2026, 5, 1)]
+    assert abs(out["funding_rate"][0] - 0.0006) < 1e-12  # 现日频行为:三档和
+
+
+def test_align_funding_1h_lands_on_settlement_bars():
+    out = align_funding(_funding_events(), "1h").sort("trade_date")
+    assert out["trade_date"].to_list() == [
+        datetime(2026, 5, 1, 0, 0), datetime(2026, 5, 1, 8, 0), datetime(2026, 5, 1, 16, 0)]
+    assert out["funding_rate"].to_list() == [0.0001, 0.0002, 0.0003]
+
+
+def test_align_open_interest_last_in_bar():
+    metrics = pl.DataFrame({
+        "ts_code": ["BTCUSDT"] * 3,
+        "event_time": [datetime(2026, 5, 1, 0, 0), datetime(2026, 5, 1, 0, 5),
+                       datetime(2026, 5, 1, 0, 20)],
+        "open_interest": [10.0, 20.0, 30.0],
+    }).with_columns(pl.col("event_time").cast(pl.Datetime("us")))
+    out15 = align_open_interest(metrics, "15m").sort("trade_date")
+    assert out15["open_interest"].to_list() == [20.0, 30.0]  # bar 内最后一笔
+    outd = align_open_interest(metrics, "daily")
+    assert outd["open_interest"].to_list() == [30.0]  # 当日最后值
+
+# ==== 来自 test_markets_crypto_frequency.py ====
+def test_normalize_known_and_alias():
+    assert normalize_freq("daily") == "daily"
+    assert normalize_freq("1h") == "1h"
+    assert normalize_freq("hourly") == "1h"  # 别名
+    assert normalize_freq("15m") == "15m"
+
+
+def test_normalize_unknown_raises():
+    with pytest.raises(ValueError, match="未知频率"):
+        normalize_freq("3m")
+
+
+def test_periods_per_year_values():
+    assert periods_per_year("1m") == 365.0 * 24 * 60
+    assert periods_per_year("5m") == 365.0 * 24 * 12
+    assert periods_per_year("15m") == 365.0 * 24 * 4
+    assert periods_per_year("1h") == 365.0 * 24
+    assert periods_per_year("daily") == 365.0
+    assert periods_per_year("hourly") == 365.0 * 24  # 别名走 1h
+    assert periods_per_year("weekly") == 52.0  # calendar 兼容
+    assert periods_per_year("monthly") == 12.0
+
+
+def test_bar_freqs_polars_every():
+    assert BAR_FREQS["daily"].every == "1d"
+    assert BAR_FREQS["15m"].every == "15m"
+    assert BAR_FREQS["daily"].timeframe == "1d"  # ccxt timeframe

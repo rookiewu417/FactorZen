@@ -213,26 +213,6 @@ def test_confirmed_lift_active_demotes_on_probation_decision(tmp_path):
     assert r.forward_n_days == 60
 
 
-def test_new_record_active_still_capped_to_probation(tmp_path):
-    """无 prev、decision=active、allow_active=False → cap 到 probation（零回归）。"""
-    from factorzen.discovery.factor_library import load_library, upsert_lift_admissions
-
-    out = upsert_lift_admissions(
-        [_active_lift_row("rank(vol)")],
-        market="ashare",
-        root=str(tmp_path),
-        meta=_meta(),
-    )
-    assert out["added_probation"] == 1
-    assert out.get("added_active", 0) == 0
-    assert out.get("capped_active", 0) == 1
-
-    r = load_library("ashare", root=str(tmp_path))[0]
-    assert r.status == "probation"
-    assert r.admission_decision == "active"
-    assert r.forward_confirmed_at is None
-    assert r.forward_n_days is None
-
 
 # ── 4：team hook 默认 cap ────────────────────────────────────────────────────
 

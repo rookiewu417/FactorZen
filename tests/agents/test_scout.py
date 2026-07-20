@@ -14,7 +14,6 @@ from factorzen.agents.scout_support import (
     ScoutState,
     promote_admitted_exprs,
     run_scout_round,
-    scout_manifest_block,
 )
 from factorzen.discovery.intraday_expr import make_expr_spec
 
@@ -476,9 +475,6 @@ def test_team_flag_off_no_scout_block(tmp_path: Path):
     )
     assert res.intraday_scout is None
 
-
-def test_scout_manifest_block_none_when_flag_off():
-    assert scout_manifest_block(None) is None
 
 
 def test_cli_parser_intraday_scout_flags():

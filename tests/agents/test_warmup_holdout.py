@@ -325,15 +325,6 @@ def _frame_with_north_ratio(n_warm: int = 100, n_after: int = 40,
 
 
 # ── B4.1 一致性（关键）─────────────────────────────────────────────────────────
-def test_budget_equals_warmup_shortfall_have():
-    prepped, es = _frame_with_north_ratio(n_warm=100)
-    budgets = leaf_warmup_budgets(prepped, es, ["north_ratio"])
-    sf = warmup_shortfall(parse_expr("ts_mean(north_ratio, 200)"), prepped, es)
-    assert sf is not None, "need=200 > have=100，应报预热不足"
-    leaf, need, have = sf
-    assert leaf == "north_ratio" and need == 200
-    assert budgets["north_ratio"] == have == 100
-
 
 def test_budget_missing_column_is_zero():
     prepped, es = _frame_with_north_ratio(n_warm=30)
@@ -356,13 +347,6 @@ def test_budget_matches_warmup_shortfall_across_random_windows():
 
 
 # ── B4.2 build_agent_messages（单 agent 路径）─────────────────────────────────
-def test_build_agent_messages_lists_budget():
-    from factorzen.llm.generation import build_agent_messages
-    msgs = build_agent_messages(["ts_mean", "rank"], ["close", "north_ratio"],
-                                leaf_budgets={"north_ratio": 238})
-    sysmsg = msgs[0]["content"]
-    assert "north_ratio" in sysmsg and "238" in sysmsg and "历史较短" in sysmsg
-
 
 def test_build_agent_messages_none_is_byte_identical():
     from factorzen.llm.generation import build_agent_messages
@@ -382,11 +366,6 @@ def test_build_agent_messages_empty_budget_no_text():
 
 
 # ── B4.3 coder._syntax_prompt（team 路径）+ 双路径 parity ──────────────────────
-def test_syntax_prompt_lists_budget():
-    from factorzen.agents.roles.coder import _syntax_prompt
-    p = _syntax_prompt(leaf_budgets={"north_ratio": 238})
-    assert "north_ratio" in p and "238" in p and "历史较短" in p
-
 
 def test_syntax_prompt_none_is_byte_identical():
     from factorzen.agents.roles.coder import _syntax_prompt

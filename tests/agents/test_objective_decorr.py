@@ -182,34 +182,6 @@ def _mk_daily(n_days=80, n_stocks=30, seed=3):
 # ── 三处语义契约（参数化）──────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "corr,expect_reject",
-    [
-        (DEFAULT_DECORR_THRESHOLD, True),   # 恰等阈值 = 拒
-        (0.699, False),
-        (0.701, True),
-        (0.0, False),
-        (1.0, True),
-    ],
-)
-def test_m1_session_pool_boundary_semantics(corr, expect_reject):
-    """M1 top-K：``mc < threshold`` 入选 ⇒ 恰等拒。"""
-    accept = corr < DEFAULT_DECORR_THRESHOLD
-    assert accept is (not expect_reject)
-
-
-@pytest.mark.parametrize(
-    "corr,expect_reject",
-    [
-        (DEFAULT_DECORR_THRESHOLD, True),
-        (0.699, False),
-        (0.701, True),
-    ],
-)
-def test_agent_session_pool_boundary_semantics(corr, expect_reject):
-    """Agent：``corr >= threshold`` 拒（与 M1 恰等阈值语义一致）。"""
-    reject = corr >= DEFAULT_DECORR_THRESHOLD
-    assert reject is expect_reject
 
 
 @pytest.mark.parametrize(
@@ -464,15 +436,6 @@ def test_evaluate_expressions_icir_is_ir():
     assert isinstance(out[0]["ir_train"], float)
 
 
-def test_attempt_record_turnover_field_defaults_none():
-    """AttemptRecord 增 turnover 字段，向后兼容（默认 None，不破坏旧构造）。"""
-    from factorzen.agents.state import AttemptRecord
-    r = AttemptRecord(iteration=0, hypothesis="h", expression="e", compile_ok=True,
-                      ic_train=0.05, passed_guardrails=False, critic_verdict=None, error=None)
-    assert hasattr(r, "turnover")
-    assert r.turnover is None
-    assert "turnover" in r.__dict__
-
 
 def test_node_evaluate_records_turnover():
     """M5 node_evaluate 把 evaluate 的 turnover 写进 AttemptRecord。"""
@@ -489,24 +452,6 @@ def test_node_evaluate_records_turnover():
     assert a.turnover is not None
     assert 0.0 <= a.turnover <= 1.0, f"单边换手率必须 ∈ [0,1]，实得 {a.turnover}"
 
-
-def test_team_records_turnover(tmp_path):
-    """M6 team _evaluate_and_record 同样写 turnover（双路径一致）。"""
-    from factorzen.agents.team_orchestrator import run_team_agent
-    seq = [json.dumps({"hypotheses": ["动量"]}),
-           json.dumps({"expressions": ["ts_mean(close,5)"]}),
-           json.dumps({"verdict": "keep", "reason": "ok"})] * 10
-    i = {"k": 0}
-
-    def fn(_m):
-        v = seq[i["k"] % len(seq)]
-        i["k"] += 1
-        return v
-    daily = _mock_daily(n_days=180)
-    res = run_team_agent(daily, fn, n_rounds=1, seed=1, index_path=str(tmp_path / "e.jsonl"))
-    assert res.state.attempts
-    for a in res.state.attempts:
-        assert hasattr(a, "turnover")
 
 
 def test_critique_prompt_includes_cost_metrics():

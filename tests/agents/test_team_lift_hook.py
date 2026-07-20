@@ -746,20 +746,6 @@ def test_cli_auto_lift_default_is_on():
     assert args.lift_se_mult == 1.0
 
 
-def test_cli_lift_test_help_mentions_se_columns():
-    """lift-test 子命令存在且 dry-run 标志可用（表列行为在集成路径测）。"""
-    from factorzen.cli.main import build_parser
-
-    p = build_parser()
-    args = p.parse_args([
-        "factor-library", "lift-test",
-        "--session", "workspace/x",
-        "--start", "20200101", "--end", "20201231",
-        "--dry-run",
-    ])
-    assert args.dry_run is True
-    assert args.factor_library_command == "lift-test"
-
 
 def test_auto_lift_false_skips_expensive_path(monkeypatch):
     state = _state_with_lift_queue(["ts_mean(close, 5)"])

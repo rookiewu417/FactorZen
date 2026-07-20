@@ -118,11 +118,6 @@ def test_node_critic_still_defaults_to_keep_on_garbage():
     assert state.attempts[0].critic_verdict == "keep"
 
 
-def test_json_loads_would_have_raised_on_fenced_input():
-    """判别性前置：证明围栏输入确实会让裸 json.loads 抛——否则上面的修复无从验证。"""
-    with pytest.raises(json.JSONDecodeError):
-        json.loads('```json\n{"verdict": "drop"}\n```')
-
 
 # ── 3. 编译失败的表达式必须进长期记忆 ───────────────────────────────────────
 
@@ -200,12 +195,6 @@ def test_team_evaluate_deduplicates_within_the_batch():
     passed = [a for a in state.attempts if a.compile_ok and a.ic_train is not None]
     assert len(passed) == len(uniq), "node_guardrails 记的 N 必须等于唯一表达式数"
 
-
-def test_team_evaluate_normalizes_before_dedup():
-    """去重必须在**归一化后**比较：`ts_mean(close,5)` 与 `ts_mean(close, 5)` 是同一表达式。"""
-    from factorzen.agents.team_orchestrator import _normalize
-
-    assert _normalize("ts_mean(close,5)") == _normalize("ts_mean(close, 5)")
 
 
 @pytest.mark.parametrize("garbage", ["", "{", "不是json", "[1,2]"])

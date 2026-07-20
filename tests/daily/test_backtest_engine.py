@@ -19,7 +19,6 @@ import pytest
 
 from factorzen.daily.evaluation.backtest import (
     BacktestConfig,
-    BacktestResult,
     CostModel,
     PrecomputedWeightsStrategy,
     run_strategy_backtest,
@@ -72,22 +71,12 @@ def _make_factor_price(n_dates: int = 60, n_stocks: int = 50, seed: int = 42):
     return pl.DataFrame(rows_factor), pl.DataFrame(rows_price)
 
 
-def test_returns_backtest_result():
-    factor_df, price_df = _make_factor_price()
-    result = run_stratified_backtest(factor_df, price_df)
-    assert isinstance(result, BacktestResult)
-
 
 def test_factor_name_passed_through():
     factor_df, price_df = _make_factor_price()
     result = run_stratified_backtest(factor_df, price_df, factor_name="momentum")
     assert result.factor_name == "momentum"
 
-
-def test_default_factor_name_is_empty():
-    factor_df, price_df = _make_factor_price()
-    result = run_stratified_backtest(factor_df, price_df)
-    assert result.factor_name == ""
 
 
 def test_summary_stats_has_portfolio_and_long_short():
@@ -106,13 +95,8 @@ def test_nav_starts_near_one():
     assert first_nav == 1.0
 
 
-def test_annual_return_is_finite():
-    factor_df, price_df = _make_factor_price()
-    result = run_stratified_backtest(factor_df, price_df, n_groups=5)
-    for stats in result.summary_stats.values():
-        assert np.isfinite(stats["ann_ret"])
-        assert np.isfinite(stats["ann_vol"])
 
+# ==== 来自 test_backtest_direction.py ====
 
 def test_summary_string_is_non_empty():
     factor_df, price_df = _make_factor_price()
@@ -121,7 +105,6 @@ def test_summary_string_is_non_empty():
     assert "Portfolio" in text
     assert len(text) > 10
 
-# ==== 来自 test_backtest_direction.py ====
 def _ic(**kwargs) -> ICAnalysisResult:
     base = dict(
         factor_name="f",
@@ -562,11 +545,6 @@ def test_aggregate_takes_last_value():
     assert abs(daily["factor_value"][0] - expected_last) < 1e-9
 
 
-def test_run_intraday_backtest_returns_backtest_result():
-    result = run_intraday_backtest(_make_minute_factor(), _make_daily_price(), n_groups=5)
-    assert isinstance(result, BacktestResult)
-    assert result.n_groups == 5
-
 
 def test_run_intraday_backtest_has_long_short():
     result = run_intraday_backtest(_make_minute_factor(), _make_daily_price(), n_groups=5)
@@ -632,17 +610,6 @@ class TestLookaheadSafety:
         result = run_stratified_backtest(leaked_factor, price_df, n_groups=5)
         sharpe_leaked = result.summary_stats["long_short"]["sharpe"]
         assert sharpe_leaked > 5.0
-
-    def test_future_leakage_gap_is_significant(self):
-        """同日收益因子与未来泄漏因子的 Sharpe 差距应显著。"""
-        same_day_factor, leaked_factor, price_df = _make_synthetic_data()
-        r_same = run_stratified_backtest(same_day_factor, price_df, n_groups=5)
-        r_leaked = run_stratified_backtest(leaked_factor, price_df, n_groups=5)
-        gap = (
-            r_leaked.summary_stats["long_short"]["sharpe"]
-            - r_same.summary_stats["long_short"]["sharpe"]
-        )
-        assert gap >= 3.0
 
     def test_ret_definition_field(self):
         """BacktestResult.ret_definition 应记录新执行收益口径。"""

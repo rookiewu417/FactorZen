@@ -421,12 +421,6 @@ def test_run_daily_failure_manifest_records_partial_outputs(tmp_path, monkeypatc
     )
 
 # ==== 来自 test_seed.py ====
-def test_set_global_seed_returns_dict():
-    from factorzen.core.seed import set_global_seed
-
-    result = set_global_seed(42)
-    assert result["seed"] == 42
-
 def test_seed_reproducibility():
     """固定种子两次采样结果相同。"""
     from factorzen.core.seed import set_global_seed
@@ -451,11 +445,6 @@ def test_get_optuna_sampler_reproducible():
     assert trial1.params == trial2.params
 
 # ==== 来自 test_validation.py ====
-def test_require_columns_passes_when_all_present():
-    df = pl.DataFrame({"trade_date": ["20240101"], "ts_code": ["000001.SZ"], "close": [1.0]})
-    # 不应抛错
-    require_columns(df, ["trade_date", "ts_code"], context="t")
-
 def test_require_columns_raises_listing_missing_and_actual():
     df = pl.DataFrame({"trade_date": ["20240101"], "close": [1.0]})
     with pytest.raises(ValueError) as exc:

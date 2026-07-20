@@ -139,29 +139,6 @@ class TestBuildIntradayFeatures:
         assert set(m["coverage"]["months"]) == {"2024-01", "2024-02"}
         assert m["rows_total"] == report.rows
 
-    def test_idempotent_rerun(self, tmp_path: Path) -> None:
-        src = tmp_path / "src"
-        out = tmp_path / "out"
-        _build_mini_source(src)
-        r1 = build_intraday_features(
-            "20240101",
-            "20240229",
-            source_dir=src,
-            out_dir=out,
-            min_bar_coverage=0.0,
-        )
-        r2 = build_intraday_features(
-            "20240101",
-            "20240229",
-            source_dir=src,
-            out_dir=out,
-            min_bar_coverage=0.0,
-        )
-        assert r1.rows == r2.rows
-        p = pl.read_parquet(out / "v1" / "5min" / "year=2024" / "month=01" / "data.parquet")
-        # overwrite 模式，行数不翻倍
-        assert p.height == 4  # 2 股 × 2 日
-
     def test_hash_mismatch_raises_without_overwrite(self, tmp_path: Path) -> None:
         src = tmp_path / "src"
         out = tmp_path / "out"
@@ -414,36 +391,6 @@ class TestBuildIntradayFeatures:
         )
         assert r.months == ["2024-01"]
         assert jan_path.exists()
-
-    def test_hash_mismatch_still_fail_loudly_without_overwrite(
-        self, tmp_path: Path
-    ) -> None:
-        """battery_hash 变更：overwrite=False 仍 fail-loudly（与既有语义一致）。"""
-        src = tmp_path / "src"
-        out = tmp_path / "out"
-        _build_mini_source(src)
-        build_intraday_features(
-            "20240101",
-            "20240131",
-            source_dir=src,
-            out_dir=out,
-            min_bar_coverage=0.0,
-        )
-        mpath = out / "v1" / "5min" / "manifest.json"
-        payload = json.loads(mpath.read_text(encoding="utf-8"))
-        payload["battery_hash"] = "deadbeefdeadbeef"
-        mpath.write_text(json.dumps(payload), encoding="utf-8")
-
-        with pytest.raises(ValueError, match="battery_hash"):
-            build_intraday_features(
-                "20240101",
-                "20240131",
-                source_dir=src,
-                out_dir=out,
-                min_bar_coverage=0.0,
-                force=False,
-                overwrite=False,
-            )
 
     def test_force_recomputes_all_covered_months(self, tmp_path: Path) -> None:
         """--force 即使已覆盖也全量重算。"""

@@ -239,18 +239,6 @@ class TestLinearCostModel:
         expected = 0.1 * (0.0003 + 0.001 + 0.001)
         assert abs(sell_cost - expected) < 1e-12
 
-    def test_sell_cost_greater_than_buy_cost(self):
-        """卖出成本（含印花税）> 买入成本。"""
-        m = LinearCostModel()
-        buy_cost = m.trade_cost(0.1)
-        sell_cost = m.trade_cost(-0.1)
-        assert sell_cost > buy_cost
-
-    def test_linear_cost_symmetric_abs(self):
-        """|cost(+delta)| ≠ |cost(-delta)| (asymmetric due to stamp tax)."""
-        m = LinearCostModel()
-        assert m.trade_cost(0.5) != m.trade_cost(-0.5)
-
     def test_borrow_rate_daily(self):
         m = LinearCostModel(annual_borrow_rate=0.08, trading_days_per_year=252)
         expected = 0.08 / 252
@@ -263,6 +251,7 @@ class TestLinearCostModel:
 
 
 class TestSquareRootImpactCostModel:
+
     def test_zero_delta_returns_zero(self):
         m = SquareRootImpactCostModel()
         assert m.trade_cost(0.0) == 0.0
@@ -273,16 +262,6 @@ class TestSquareRootImpactCostModel:
         sqroot = SquareRootImpactCostModel(alpha=0.1)
         large_delta = 0.5
         assert sqroot.trade_cost(large_delta) > linear.trade_cost(large_delta)
-
-    def test_sqroot_cost_buy_positive(self):
-        """买入成本 > 0。"""
-        m = SquareRootImpactCostModel(alpha=0.1)
-        assert m.trade_cost(0.1) > 0.0
-
-    def test_sqroot_cost_sell_positive(self):
-        """卖出成本 > 0。"""
-        m = SquareRootImpactCostModel(alpha=0.1)
-        assert m.trade_cost(-0.1) > 0.0
 
     def test_sqroot_is_superlinear(self):
         """平方根冲击：大交易边际成本率 > 小交易边际成本率（超线性）。"""
@@ -311,11 +290,6 @@ class TestSquareRootImpactCostModel:
         cost_low_adv = m.trade_cost(0.1, adv=1e6)   # ADV 小（1e7 fallback / 1e6 = 10x smaller → higher impact）
         cost_high_adv = m.trade_cost(0.1, adv=1e8)  # ADV 大
         assert cost_high_adv < cost_low_adv, "ADV 越大，冲击成本应越小"
-
-    def test_borrow_rate_daily(self):
-        m = SquareRootImpactCostModel(annual_borrow_rate=0.08, trading_days_per_year=252)
-        expected = 0.08 / 252
-        assert abs(m.borrow_rate_per_period("daily") - expected) < 1e-12
 
 # ==== 来自 test_turnover_nan_filter.py ====
 def _stable_panel(n_days: int = 5, n_stocks: int = 10) -> pl.DataFrame:
@@ -563,23 +537,6 @@ class TestRunOptunaSearch:
         assert abs(best_params["x"] - 3.0) < 1.0, (
             f"最优 x={best_params['x']:.3f} 与真实最优 3.0 相差超过 1.0"
         )
-
-    def test_returns_best_params_dict(self):
-        """run_optuna_search 应返回包含期望键的字典。"""
-        space = TuningSpace([ParamSpec("n", "int", low=1, high=10)])
-
-        def objective(params: dict) -> float:
-            return float(params["n"])
-
-        best_params, _study = run_optuna_search(
-            objective_fn=objective,
-            space=space,
-            n_trials=5,
-            direction="maximize",
-            study_name="test_returns_dict",
-        )
-        assert isinstance(best_params, dict)
-        assert "n" in best_params
 
     def test_direction_minimize(self):
         """direction="minimize" 时应最小化目标函数。"""

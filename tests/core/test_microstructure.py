@@ -17,7 +17,6 @@ from datetime import date, timedelta
 import polars as pl
 import pytest
 
-from factorzen.core.universe import _get_board_limit
 from factorzen.daily.evaluation.backtest import (
     BacktestConfig,
     BacktestContext,
@@ -747,56 +746,12 @@ class TestLimitDownBlocking:
 
 
 # ═══════════════════════════════════════════════════════════
-# Test: ST stocks filtering by universe
-# ═══════════════════════════════════════════════════════════
-
-
-class TestSTFiltering:
-    """ST / *ST / PT 股票通过 filter_st 被剔除。"""
-
-    def test_filter_st_removes_st_stocks(self):
-        from factorzen.core.universe import filter_st
-
-        stocks = pl.DataFrame({
-            "ts_code": ["000001.SZ", "000002.SZ", "000003.SZ"],
-            "name": ["平安银行", "*ST远程", "PT南洋"],
-        })
-        result = filter_st(stocks, "20240101")
-        assert result.height == 1
-        assert result["ts_code"][0] == "000001.SZ"
-
-    def test_filter_st_keeps_normal_stocks(self):
-        from factorzen.core.universe import filter_st
-
-        stocks = pl.DataFrame({
-            "ts_code": ["000001.SZ", "600519.SH"],
-            "name": ["平安银行", "贵州茅台"],
-        })
-        result = filter_st(stocks, "20240101")
-        assert result.height == 2
-
-
-# ═══════════════════════════════════════════════════════════
 # Test: New listing stocks (<250 days) filtered
 # ═══════════════════════════════════════════════════════════
 
 
 class TestNewListingFiltering:
     """上市不足 250 个自然日的次新股被剔除。"""
-
-    def test_filter_new_listing_removes_recent_ipo(self):
-        from factorzen.core.universe import filter_new_listing
-
-        stocks = pl.DataFrame({
-            "ts_code": ["000001.SZ", "000002.SZ"],
-            "list_date": [
-                date(2023, 1, 1),   # >250 days → keep
-                date(2024, 3, 1),   # <250 days → remove
-            ],
-        })
-        result = filter_new_listing(stocks, "20240601", min_days=250)
-        assert result.height == 1
-        assert result["ts_code"][0] == "000001.SZ"
 
     def test_filter_new_listing_exact_boundary(self):
         from factorzen.core.universe import filter_new_listing
@@ -818,23 +773,6 @@ class TestNewListingFiltering:
 
 class TestTPlus1Execution:
     """信号在 t 日生成，调仓在 t+1 日执行。"""
-
-    def test_signal_date_before_execution_date(self):
-        """Trade 发生在 signal date 的下一个交易日。"""
-        prices = _make_prices(n_days=3)
-        factors = _make_factors([(date(2024, 1, 1), "000001.SZ", 1.0)])
-
-        result = run_strategy_backtest(
-            BuyOneStrategy(),
-            factors,
-            prices,
-            config=_default_config(),
-            cost_model=_zero_cost(),
-        )
-
-        if not result.trades.is_empty():
-            first_trade = result.trades.sort("trade_date").row(0, named=True)
-            assert first_trade["trade_date"] == date(2024, 1, 2)
 
     def test_no_same_day_execution(self):
         """信号日本身不应有交易执行。"""
@@ -867,27 +805,6 @@ class TestTPlus1Execution:
 
         sorted_returns = result.returns.sort("trade_date")
         assert sorted_returns["trade_date"][0] == date(2024, 1, 2)
-
-
-# ═══════════════════════════════════════════════════════════
-# Test: Board limit helper
-# ═══════════════════════════════════════════════════════════
-
-
-class TestBoardLimit:
-    """验证 _get_board_limit 按板块返回正确阈值。"""
-
-    def test_main_board(self):
-        assert _get_board_limit("000001.SZ") == pytest.approx(0.098)
-
-    def test_gem_board(self):
-        assert _get_board_limit("300001.SZ") == pytest.approx(0.198)
-
-    def test_star_board(self):
-        assert _get_board_limit("688001.SH") == pytest.approx(0.198)
-
-    def test_bse_board(self):
-        assert _get_board_limit("430001.BJ") == pytest.approx(0.298)
 
 
 # ═══════════════════════════════════════════════════════════

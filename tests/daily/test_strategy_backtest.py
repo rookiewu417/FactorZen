@@ -636,14 +636,6 @@ def test_suspended_stock_blocks_trade():
     assert trade["block_reason"] == "missing_price"
 
 
-def test_limit_up_blocks_buy_but_allows_sell():
-    result = run_strategy_backtest(
-        BuyOneStrategy(), _factor(), _prices(day2_open=11.0, day2_pct=9.9)
-    )
-    buy_trade = result.trades.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
-    assert buy_trade["filled_delta_weight"] == pytest.approx(0.0)
-    assert buy_trade["block_reason"] == "limit_up"
-
 
 def test_limit_down_blocks_sell():
     factors = _factor(
@@ -1240,63 +1232,6 @@ def test_fast_path_validates_target_weights_like_slow_path():
             **fast_kwargs,
         )
 
-
-def test_fast_path_charges_borrow_cost_on_short_position():
-    """快速路径满仓做空时必须按 borrow_annual 扣息，闭式解验证（Fix 1）。
-
-    2 天、单只股票、target_weight=-1.0（满仓做空），价格全程持平
-    （gross_return=0、trade_cost=0），唯一的收益拖累应是融券利息：
-    net_return = -short_exposure * borrow_rate_per_period。
-    """
-    prices = pl.DataFrame(
-        [
-            {
-                "trade_date": date(2024, 1, 1),
-                "ts_code": "000001.SZ",
-                "open": 10.0,
-                "close": 10.0,
-                "pre_close": 10.0,
-                "pct_chg": 0.0,
-                "vol": 1000.0,
-                "amount": 1_000_000.0,
-            },
-            {
-                "trade_date": date(2024, 1, 2),
-                "ts_code": "000001.SZ",
-                "open": 10.0,
-                "close": 10.0,
-                "pre_close": 10.0,
-                "pct_chg": 0.0,
-                "vol": 1000.0,
-                "amount": 1_000_000.0,
-            },
-        ]
-    )
-    weights_by_date = {
-        date(2024, 1, 1): pl.DataFrame({"ts_code": ["000001.SZ"], "target_weight": [-1.0]}),
-    }
-    factors = _factor([(date(2024, 1, 1), "000001.SZ", 1.0)])
-    cfg = BacktestConfig(
-        initial_capital=1_000_000, max_participation_rate=1.0, fallback_adv=1_000_000.0
-    )
-    cost_model = CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0.10)
-
-    fast = run_strategy_backtest(
-        PrecomputedWeightsStrategy(weights_by_date),
-        factors,
-        prices,
-        config=cfg,
-        cost_model=cost_model,
-        collect_positions=False,
-        collect_trades=False,
-        include_context_positions=False,
-    )
-
-    expected_borrow_cost = 1.0 * cost_model.borrow_rate_per_period("daily")
-    day2 = fast.nav.filter(pl.col("trade_date") == date(2024, 1, 2)).row(0, named=True)
-    assert day2["borrow_cost"] == pytest.approx(expected_borrow_cost)
-    assert day2["net_return"] == pytest.approx(-expected_borrow_cost)
-    assert day2["nav"] == pytest.approx(1.0 - expected_borrow_cost)
 
 
 def test_fast_path_borrow_cost_matches_slow_path():

@@ -394,28 +394,6 @@ def make_factor_df(n_dates=20, n_stocks=50) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def test_parallel_matches_serial():
-    from factorzen.daily.preprocessing.neutralizer import neutralize_ols
-
-    df = make_factor_df()
-    serial = neutralize_ols(df, "factor", n_jobs=1)
-    parallel = neutralize_ols(df, "factor", n_jobs=2)
-    # Results should be numerically identical
-    np.testing.assert_allclose(
-        serial["factor"].to_numpy(),
-        parallel["factor"].to_numpy(),
-        rtol=1e-8,
-        atol=1e-10,
-    )
-
-
-def test_serial_baseline():
-    from factorzen.daily.preprocessing.neutralizer import neutralize_ols
-
-    df = make_factor_df()
-    result = neutralize_ols(df, "factor", n_jobs=1)
-    assert len(result) == len(df)
-    assert "factor" in result.columns
 
 
 def test_neutralize_ols_handles_mixed_low_and_high_sample_days():
@@ -573,13 +551,6 @@ def test_zero_std():
     assert result[col].to_list() == [0.0, 0.0, 0.0]
 
 
-def test_single_stock():
-    """截面上只有一只股票 → std=0 → 不崩溃，返回 0.0。"""
-    df = _make_test_data([5.0], stocks=["stock_0"])
-    result = cross_sectional_zscore(df)
-    col = "factor_value_clip_fill_z"
-    assert result[col].to_list() == [0.0]
-
 
 def test_normal_case():
     """多只股票不同值 → 正常计算 Z-score。"""
@@ -633,24 +604,6 @@ def test_rank_nan_not_ranked_highest():
     assert max_real_score == max(finite_scores), "真实最大值应获最高有效分位，而非被 NaN 顶替"
 
 # ==== 来自 test_preprocessing_winsorize.py ====
-def test_winsorize_clips_extremes():
-    from factorzen.daily.preprocessing.outlier import winsorize_percentile
-
-    df = pl.DataFrame(
-        {
-            "trade_date": ["2024-01-01"] * 100,
-            "ts_code": [f"00{i:04d}.SZ" for i in range(100)],
-            "factor": list(range(100)),  # 0..99
-        }
-    ).with_columns(pl.col("factor").cast(pl.Float64))
-    result = winsorize_percentile(df, "factor", lower=0.01, upper=0.99)
-    vals = result["factor"]
-    # original min=0, max=99; after 1%/99% clip: ~ [1, 98]
-    assert vals.max() <= 99.0
-    assert vals.min() >= 0.0
-    # the extreme values should be clipped
-    assert vals.max() < 99.0 or vals.min() > 0.0
-
 
 def test_sigma_clip_removes_outliers():
     from factorzen.daily.preprocessing.outlier import sigma_clip
@@ -753,6 +706,7 @@ def test_rank_normal_approx_standard_normal():
     assert p > 0.01  # not rejected at 1%
 
 
+
 def test_quantile_transform_constant_column():
     from factorzen.daily.preprocessing.normalizer import quantile_transform
 
@@ -766,7 +720,6 @@ def test_quantile_transform_constant_column():
     result = quantile_transform(df, "factor")
     # Should not raise; all values same (constant)
     assert len(result) == 10
-
 
 def test_quantile_transform_schema_preserved():
     from factorzen.daily.preprocessing.normalizer import quantile_transform

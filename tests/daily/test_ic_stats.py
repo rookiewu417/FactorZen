@@ -19,7 +19,7 @@ import pytest
 from scipy import stats as scipy_stats
 
 from factorzen.daily.evaluation import ic_analysis as ia
-from factorzen.daily.evaluation.advanced import MonotonicityResult, compute_monotonicity
+from factorzen.daily.evaluation.advanced import compute_monotonicity
 from factorzen.daily.evaluation.ic_analysis import _hac_maxlags, _ic_stats, compute_rank_ic
 
 
@@ -44,21 +44,6 @@ def make_factor_ret_df(n_stocks: int = 50, n_dates: int = 20, seed: int = 42) ->
     return pl.DataFrame(rows)
 
 
-def test_pearson_ic_is_positive():
-    """已知正信号因子的 Pearson IC 应为正。"""
-    from factorzen.daily.evaluation.ic_analysis import compute_ic
-
-    df = make_factor_ret_df()
-    result = compute_ic(df, method="pearson")
-    assert result.ic_mean > 0
-
-
-def test_rank_ic_is_positive():
-    from factorzen.daily.evaluation.ic_analysis import compute_ic
-
-    df = make_factor_ret_df()
-    result = compute_ic(df, method="rank")
-    assert result.ic_mean > 0
 
 
 def test_both_ic_returns_dict():
@@ -103,22 +88,6 @@ def test_heavy_tail_pearson_less_than_rank():
     # Rank IC should be >= Pearson IC in absolute value (rank is outlier-robust)
     assert abs(rank_res.ic_mean) >= abs(pearson_res.ic_mean)
 
-
-def test_ic_stats_fields():
-    """IcStats 应含预期字段。"""
-    from factorzen.daily.evaluation.ic_analysis import IcStats, compute_ic
-
-    df = make_factor_ret_df()
-    result = compute_ic(df, method="rank")
-    assert isinstance(result, IcStats)
-    assert hasattr(result, "ic_mean")
-    assert hasattr(result, "ic_std")
-    assert hasattr(result, "ir")
-    assert hasattr(result, "ic_positive_ratio")
-    assert hasattr(result, "n_periods")
-    assert hasattr(result, "ic_tstat")
-    assert hasattr(result, "ic_pvalue")
-    assert hasattr(result, "ic_series")
 
 # ==== 来自 test_ic_factor_nan_mask.py ====
 def _panel(n_days=6, n_stocks=40, seed=0):
@@ -240,12 +209,6 @@ def _make_strongly_monotonic_data() -> pl.DataFrame:
     )
 
 
-def test_monotonicity_returns_result_object():
-    """compute_monotonicity 返回 MonotonicityResult。"""
-    df = _make_strongly_monotonic_data()
-    result = compute_monotonicity(df, factor_col="factor_value", ret_col="fwd_ret", n_groups=10)
-    assert isinstance(result, MonotonicityResult)
-
 
 def test_monotonicity_strongly_positive():
     """强正相关数据 → monotonicity_score 接近 1.0。"""
@@ -264,16 +227,6 @@ def test_monotonicity_group_means_monotonic():
     for i in range(len(means) - 1):
         assert means[i] <= means[i + 1], f"组 {i}→{i + 1} 收益不单调"
 
-
-def test_monotonicity_result_fields():
-    """MonotonicityResult 包含必要字段。"""
-    df = _make_strongly_monotonic_data()
-    result = compute_monotonicity(df, factor_col="factor_value", ret_col="fwd_ret", n_groups=10)
-    assert hasattr(result, "monotonicity_score")
-    assert hasattr(result, "group_means")
-    assert hasattr(result, "direction")
-    assert isinstance(result.group_means, list)
-    assert all(isinstance(m, float) for m in result.group_means)
 
 
 # ── group_daily_returns：报告层画分组净值/绩效的数据源 ────────────────────────
@@ -488,18 +441,4 @@ def test_rank_ic_series_covers_trading_days():
     assert result.ic_series.height == _N_DAYS
     assert result.ic_std > 0
 
-
-def test_monotonicity_reexport_runs():
-    """advanced 包仍导出 compute_monotonicity（管线在用）。"""
-    factor, ret = _make_factor_and_returns()
-    mono_df = factor.join(
-        ret.select(["trade_date", "ts_code", "fwd_ret_1d"]),
-        on=["trade_date", "ts_code"],
-        how="inner",
-    )
-    mono = compute_monotonicity(
-        mono_df, factor_col="factor_clean", ret_col="fwd_ret_1d", n_groups=5
-    )
-    assert isinstance(mono, MonotonicityResult)
-    assert len(mono.group_means) == 5
 

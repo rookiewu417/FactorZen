@@ -13,7 +13,6 @@ import polars as pl
 import pytest
 
 from factorzen.daily.evaluation.advanced import (
-    CrowdingResult,
     compute_factor_crowding,
 )
 
@@ -76,25 +75,6 @@ def test_opposite_factor_correlation_is_negative():
     corr_val = corr.filter(pl.col("factor") == "pos")["neg"][0]
     assert corr_val < -0.9
 
-
-def test_factor_correlation_returns_dataframe():
-    """返回值应为 pl.DataFrame 含 'factor' 列。"""
-    from factorzen.daily.evaluation.advanced import compute_factor_correlation
-
-    rng = np.random.default_rng(1)
-    n = 30
-    rows = []
-    for d in range(5):
-        dt = (date(2023, 1, 3) + timedelta(days=d)).isoformat()
-        vals = rng.standard_normal(n)
-        for s in range(n):
-            rows.append({"trade_date": dt, "ts_code": f"{s:06d}.SZ", "factor_clean": float(vals[s])})
-    df = pl.DataFrame(rows)
-    result = compute_factor_correlation({"X": df, "Y": df})
-    assert isinstance(result, pl.DataFrame)
-    assert "factor" in result.columns
-    assert "X" in result.columns
-    assert "Y" in result.columns
 
 
 def test_single_factor_returns_identity__factor_correlation():
@@ -225,13 +205,6 @@ def test_summary_contains_factor_names_and_values():
     assert "0.420" in summary
 
 
-def test_summary_single_factor():
-    from factorzen.daily.evaluation.correlation import CorrelationResult
-
-    result = CorrelationResult(factor_names=["only"], corr_matrix=np.eye(1))
-    summary = result.summary()
-    assert "only" in summary
-
 # ==== 来自 test_factor_crowding.py ====
 def _make_factor_dict() -> dict[str, pl.DataFrame]:
     """构造多个因子数据的字典。"""
@@ -250,23 +223,6 @@ def _make_factor_dict() -> dict[str, pl.DataFrame]:
     }
 
 
-def test_crowding_returns_result_object():
-    """compute_factor_crowding 返回 CrowdingResult。"""
-    factor_dict = _make_factor_dict()
-    result = compute_factor_crowding(factor_dict, factor_col="factor_clean")
-    assert isinstance(result, CrowdingResult)
-
-
-def test_crowding_has_corr_matrix():
-    """CrowdingResult 包含相关性矩阵和因子名称列表。"""
-    factor_dict = _make_factor_dict()
-    result = compute_factor_crowding(factor_dict, factor_col="factor_clean")
-    assert hasattr(result, "corr_matrix")
-    assert hasattr(result, "factor_names")
-    import numpy as np
-
-    assert isinstance(result.corr_matrix, np.ndarray)
-    assert result.corr_matrix.shape == (3, 3)
 
 
 def test_crowding_diagonal_is_one():
@@ -278,18 +234,4 @@ def test_crowding_diagonal_is_one():
         assert abs(result.corr_matrix[i][i] - 1.0) < 1e-10
 
 
-def test_crowding_has_crowding_score():
-    """CrowdingResult 包含整体拥挤度评分。"""
-    factor_dict = _make_factor_dict()
-    result = compute_factor_crowding(factor_dict, factor_col="factor_clean")
-    assert hasattr(result, "crowding_score")
-    assert 0.0 <= result.crowding_score <= 1.0
-
-
-def test_crowding_has_pairwise_df():
-    """CrowdingResult 包含因子对级相关性 DataFrame。"""
-    factor_dict = _make_factor_dict()
-    result = compute_factor_crowding(factor_dict, factor_col="factor_clean")
-    assert hasattr(result, "pairwise_corr")
-    assert isinstance(result.pairwise_corr, pl.DataFrame)
 

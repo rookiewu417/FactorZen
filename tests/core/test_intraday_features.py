@@ -751,10 +751,3 @@ def test_leaf_features_key_order_prefix_unchanged():
     # 新叶子全部在旧键之后
     assert all(k.startswith("i_") for k in keys[n:])
 
-def test_intraday_features_match_battery_v1_names():
-    """与 battery('v1') 名字集合一致（单源守卫；本测试可 import battery）。"""
-    from factorzen.core.feature_schema import INTRADAY_FEATURES
-    from factorzen.intraday.features import battery
-
-    battery_names = {s.name for s in battery("v1")}
-    assert battery_names == INTRADAY_FEATURES

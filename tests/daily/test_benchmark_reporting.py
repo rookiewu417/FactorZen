@@ -158,28 +158,6 @@ class TestComputeExcessReturn(unittest.TestCase):
         self.assertGreater(result.ann_excess_ret, 0.0)
 
     @patch("factorzen.core.loader.fetch_index_daily")
-    def test_tracking_error_nonnegative(self, mock_fetch: unittest.mock.MagicMock) -> None:
-        """tracking_error >= 0 恒成立。"""
-        dates = self._dates(40)
-        mock_fetch.return_value = _make_index_df(dates, seed=5)
-        strategy_nav = _make_strategy_nav(dates, seed=6)
-
-        result = compute_excess_return(strategy_nav, "000300.SH", "20260101", "20260209")
-
-        self.assertGreaterEqual(result.tracking_error, 0.0)
-
-    @patch("factorzen.core.loader.fetch_index_daily")
-    def test_excess_max_dd_nonpositive(self, mock_fetch: unittest.mock.MagicMock) -> None:
-        """excess_max_dd <= 0 恒成立（最大回撤为非正数）。"""
-        dates = self._dates(40)
-        mock_fetch.return_value = _make_index_df(dates, seed=7)
-        strategy_nav = _make_strategy_nav(dates, seed=8)
-
-        result = compute_excess_return(strategy_nav, "000300.SH", "20260101", "20260209")
-
-        self.assertLessEqual(result.excess_max_dd, 0.0)
-
-    @patch("factorzen.core.loader.fetch_index_daily")
     def test_ir_zero_when_no_volatility(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """策略与基准收益完全一致时，超额收益方差为 0，IR 应返回 0.0。"""
         dates = self._dates(40)

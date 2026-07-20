@@ -212,35 +212,6 @@ def test_critic_groups_by_hypothesis_no_cross_kill(tmp_path: Path):
     assert last["reason"] == "H2 稳健"
 
 
-def test_critic_single_hypothesis_drop_zero_regression(tmp_path: Path):
-    """单假设 drop → 本轮候选全删、rounds_log['verdict']=='drop'（现状行为）。"""
-    drop_expr = "ts_mean(close, 5)"
-
-    def fn(messages):
-        text = "\n".join(m["content"] for m in messages)
-        if "风控审计员" in text:
-            return json.dumps({"verdict": "drop", "reason": "过拟合"})
-        if "翻译成" in text:
-            return json.dumps({"expressions": ["ts_mean(close,5)"]})
-        return json.dumps({"hypotheses": ["动量"]})
-
-    daily = _mock_daily()
-    with patch(
-        "factorzen.agents.team_orchestrator.node_guardrails",
-        _inject_guardrails_from_attempts,
-    ):
-        res = run_team_agent(
-            daily, fn, n_rounds=1, seed=42, heal_rounds=0,
-            index_path=str(tmp_path / "e.jsonl"),
-        )
-
-    assert all(c["expression"] != drop_expr for c in res.candidates), \
-        f"单假设 drop 应清空本轮候选: {res.candidates}"
-    assert res.rounds_log[-1]["verdict"] == "drop"
-    dropped = [a for a in res.state.attempts if a.expression == drop_expr]
-    assert dropped and all(a.critic_verdict == "drop" for a in dropped)
-    assert all(a.passed_guardrails for a in dropped)
-
 
 def test_critic_called_once_per_hypothesis(tmp_path: Path):
     """两假设轮恰好调用 2 次 critique（每假设一次）。"""

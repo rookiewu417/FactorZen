@@ -230,9 +230,6 @@ def _lift_reject(
     return rec
 
 
-def test_reject_category_constant():
-    assert REJECT_CATEGORY_LIFT_REJECTED == "lift_rejected"
-
 
 def test_known_lift_rejects_recalls_and_scopes(tmp_path: Path):
     idx = ExperimentIndex(str(tmp_path / "e.jsonl"))

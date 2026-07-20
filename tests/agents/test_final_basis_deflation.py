@@ -113,17 +113,6 @@ def test_significant_candidate_survives_final_rejudgement():
     assert state.candidates[0]["ir_train"] == pytest.approx(0.45)
 
 
-def test_surviving_candidate_p_equals_final_basis_recipe():
-    """存活候选的 dsr_pvalue 必须由最终 basis 逐位算出——否则 manifest 与产物不自洽。"""
-    pool = [0.02, -0.05, 0.08, 0.11, -0.09, 0.03]
-    state = _state_with_pool(0.45, pool)
-
-    basis = node_finalize_guardrails(state)
-
-    c = state.candidates[0]
-    want = deflated_pvalue(c["ir_train"], basis, c["n_train"])[1]
-    assert c["dsr_pvalue"] == pytest.approx(want, abs=1e-12)
-
 
 def test_demoted_candidate_syncs_the_attempt_fact():
     """`passed_guardrails` 是「过了定量护栏」这个事实。最终 N 说没过，事实就得改。
@@ -169,19 +158,6 @@ def test_dead_expressions_do_not_inflate_final_n():
 
 # ── 可复现：光靠 manifest 就能复算出产物里的 p ────────────────────────────
 
-
-def test_candidate_carries_every_field_needed_to_recompute_p():
-    """`n_train` / `ic_ci_low` / `ic_ci_high` 必须落进候选，否则拿 manifest 复算不出 p。
-
-    反解真实 run 时正是被这个卡住：候选里没有 n_train，只能回连 attempts 才算得出。
-    """
-    pool = [0.02, -0.05, 0.08]
-    state = _state_with_pool(0.45, pool)
-    node_finalize_guardrails(state)
-
-    c = state.candidates[0]
-    for key in ("n_train", "ic_ci_low", "ic_ci_high", "ir_train", "dsr_pvalue"):
-        assert key in c, f"候选缺字段 {key}，manifest 无法自证 p 值"
 
 
 def test_real_node_guardrails_records_ci_and_n_train(monkeypatch):

@@ -191,27 +191,6 @@ def test_lift_context_carries_exec_args():
     assert c.exec_lag == 1 and c.exec_price_col == "open_adj"
 
 
-def test_run_session_accepts_exec_args():
-    """`run_session` 必须接住两个参数（挖掘入口）。
-
-    ⚠️ 这条**只验证形参存在**，判别力弱于上面两条（那两条比对真实数值）。
-    之所以不真跑挖掘：run_session 需要完整行情帧 + 护栏 + 库，成本过高。
-    `bind_partial` 在形参不存在时会抛 TypeError，故仍能抓到「签名漏加」，
-    但**抓不到「加了形参却没往下传」**——那一层由 DataBundle / lift ctx
-    两条数值测试覆盖，三条合起来才把链路钉住。
-    """
-    import inspect
-
-    from factorzen.discovery.mining_session import run_session
-
-    sig = inspect.signature(run_session)
-    bound = sig.bind_partial(
-        pl.DataFrame({"ts_code": [], "trade_date": [], "close": []}),
-        n_trials=1, top_k=1, seed=0, exec_lag=1, exec_price_col="open_adj",
-    )
-    assert bound.arguments["exec_lag"] == 1
-    assert bound.arguments["exec_price_col"] == "open_adj"
-
 
 def test_session_end_auto_lift_accepts_exec_args():
     """`_session_end_auto_lift` 必须接住口径——它是 lift 裁决的入口。

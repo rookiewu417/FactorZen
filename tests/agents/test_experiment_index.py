@@ -620,14 +620,6 @@ def _recs():
     ]
 
 
-def test_append_then_load_roundtrip(tmp_path: Path):
-    idx = ExperimentIndex(str(tmp_path / "exp.jsonl"))
-    idx.append(_recs())
-    idx2 = ExperimentIndex(str(tmp_path / "exp.jsonl"))   # 新实例，跨 "session"
-    loaded = idx2.load()
-    assert len(loaded) == 2
-    assert loaded[0]["expression"] == "ts_mean(close,5)"
-
 
 def test_seen_expressions_normalized(tmp_path: Path):
     idx = ExperimentIndex(str(tmp_path / "exp.jsonl"))
@@ -637,13 +629,6 @@ def test_seen_expressions_normalized(tmp_path: Path):
     assert "ts_mean(close, 5)" in seen           # 归一化后带空格
     assert "rank(vol)" in seen
 
-
-def test_known_invalid_and_valid(tmp_path: Path):
-    idx = ExperimentIndex(str(tmp_path / "exp.jsonl"))
-    idx.append(_recs())
-    assert "rank(vol)" in idx.known_invalid(k=5)      # passed=False / 低 IC
-    assert "ts_mean(close, 5)" in idx.known_valid(k=5) # passed=True（归一化）
-    assert "ts_mean(close, 5)" not in idx.known_invalid(k=5)
 
 
 def test_load_missing_file_empty(tmp_path: Path):

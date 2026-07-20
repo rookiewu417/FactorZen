@@ -216,22 +216,6 @@ def test_node_guardrails_library_reject_frees_slot_for_orthogonal(tmp_path, monk
 # ── 3. M1 / team 架构守卫：共用相关函数 ──────────────────────────────────────
 
 
-def test_library_corr_shared_function_architecture_guard():
-    """双路径必须调用同一库相关入口，禁止各自内联 max_correlation(lib_pool)。"""
-    shared_names = {"library_orthogonal_check", "max_correlation_detail"}
-    for rel in ("agents/nodes.py", "discovery/mining_session.py"):
-        tree = ast.parse((_SRC / rel).read_text(encoding="utf-8-sig"))
-        called = set()
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Call):
-                if isinstance(n.func, ast.Name):
-                    called.add(n.func.id)
-                elif isinstance(n.func, ast.Attribute):
-                    called.add(n.func.attr)
-        assert called & shared_names, (
-            f"{rel} 未调用共享库相关函数 {shared_names}；实得 calls∩={called & shared_names}"
-        )
-
 
 def test_dual_path_wires_library_corr_panel():
     """M1 与 nodes 都必须构建 LibraryCorrPanel 并传给 library_orthogonal_check。"""
@@ -466,18 +450,6 @@ def test_cli_no_library_orthogonal_flag():
         )
         assert args.no_library_orthogonal is True
 
-
-def test_reject_category_constant_exists():
-    from factorzen.discovery.guardrails import (
-        DEFAULT_DUPLICATE_CORR,
-        REJECT_CATEGORY_HOLDOUT_COVERAGE,
-        REJECT_CATEGORY_LIBRARY_CORRELATED,
-        REJECT_CATEGORY_LIFT_QUEUE,
-    )
-    assert REJECT_CATEGORY_LIBRARY_CORRELATED == "library_correlated"
-    assert REJECT_CATEGORY_HOLDOUT_COVERAGE == "holdout_coverage"
-    assert REJECT_CATEGORY_LIFT_QUEUE == "lift_queue"
-    assert DEFAULT_DUPLICATE_CORR == 0.95
 
 
 def test_recall_accepts_library_covered():

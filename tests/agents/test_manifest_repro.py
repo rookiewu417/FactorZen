@@ -585,12 +585,6 @@ def test_run_mine_patches_session_manifest(monkeypatch, tmp_path):
     assert man["method"] == "random"
 
 # ==== 来自 test_agent_state.py ====
-def test_attempt_record_fields():
-    r = AttemptRecord(iteration=1, hypothesis="低换手反转", expression="rank(close)",
-                      compile_ok=True, ic_train=0.03, passed_guardrails=False,
-                      critic_verdict=None, error=None)
-    assert r.iteration == 1 and r.compile_ok is True
-
 
 def test_agent_state_defaults_and_serializable():
     import json

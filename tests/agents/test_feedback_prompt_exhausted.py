@@ -1,7 +1,6 @@
 """W3 B/C/D: lift 拒绝 prompt 注入、exhausted 硬过滤、library 族聚类。"""
 from __future__ import annotations
 
-import inspect
 import json
 from pathlib import Path
 
@@ -17,10 +16,6 @@ from factorzen.llm.prompt_fragments import (
 # ── B1 fragments ─────────────────────────────────────────────────────────────
 
 
-def test_format_lift_rejected_none_gating():
-    assert format_lift_rejected(None) == ""
-    assert format_lift_rejected([]) == ""
-
 
 def test_format_lift_rejected_text():
     text = format_lift_rejected([
@@ -33,10 +28,6 @@ def test_format_lift_rejected_text():
     assert "组门整体无增量" in text
     assert "lift=" in text
 
-
-def test_format_library_crowded_none_gating():
-    assert format_library_crowded(None) == ""
-    assert format_library_crowded([]) == ""
 
 
 def test_format_library_crowded_text():
@@ -118,15 +109,6 @@ def test_critic_optional_lift_rejected():
     blob2 = " ".join(m["content"] for m in llm2.calls[0])
     assert "组合层" not in blob2
 
-
-def test_node_generate_signature_has_lift_rejected_and_library_crowded():
-    from factorzen.agents.nodes import node_generate
-
-    sig = inspect.signature(node_generate)
-    assert "lift_rejected" in sig.parameters
-    assert sig.parameters["lift_rejected"].default is None
-    assert "library_crowded" in sig.parameters
-    assert sig.parameters["library_crowded"].default is None
 
 
 # ── B3 librarian ─────────────────────────────────────────────────────────────

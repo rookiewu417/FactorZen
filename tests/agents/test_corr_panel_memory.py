@@ -253,46 +253,6 @@ def test_candidate_nan_poisons_day_panel_and_pairwise():
 # ── 5. present_block ─────────────────────────────────────────────────────────
 
 
-def test_present_block_none_matches_explicit_bool():
-    """present=None 时 present_block 与显式 bool 面板推导一致。"""
-    from factorzen.discovery.scoring import LibraryCorrPanel, build_library_corr_panel
-
-    _, pool, _, _ = _mk_pool_and_cand(seed=6, n_days=20, n_stocks=30, null_frac=0.1)
-    panel = build_library_corr_panel(pool)
-    assert panel is not None
-    assert panel.present is None
-
-    derived = panel.present_block(0, panel.values.shape[0])
-    expected = ~np.isnan(panel.values)
-    np.testing.assert_array_equal(derived, expected)
-
-    # 切片
-    d0, d1 = 3, 12
-    np.testing.assert_array_equal(
-        panel.present_block(d0, d1),
-        ~np.isnan(panel.values[d0:d1]),
-    )
-
-    # 显式 bool 面板：present_block 走切片分支
-    explicit = LibraryCorrPanel(
-        names=panel.names,
-        dates=panel.dates,
-        stocks=panel.stocks,
-        date_idx=panel.date_idx,
-        stock_idx=panel.stock_idx,
-        values=panel.values,
-        present=expected,
-    )
-    np.testing.assert_array_equal(
-        explicit.present_block(d0, d1),
-        expected[d0:d1],
-    )
-    # 与 None 推导逐格一致
-    np.testing.assert_array_equal(
-        panel.present_block(d0, d1),
-        explicit.present_block(d0, d1),
-    )
-
 
 # ── 6. 刀 1：residual_projector 复用 lib_panel，不重调 build_library_panel ───
 

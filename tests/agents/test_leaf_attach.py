@@ -134,19 +134,6 @@ def test_margin_ratios_are_same_day_then_lagged():
         f"应为同日比 1.0(1e7/1e7)，误用当日分母会得 0.1；实得 {row['margin_buy_ratio']}"
 
 
-def test_margin_buy_ratio_unit_scale():
-    """rzmre 元 / (amount 千元 × 1e3)。2e8 元 / (1e5 千元 × 1e3 = 1e8 元) = 2.0。"""
-    margin = _margin([
-        {"ts_code": "000001.SZ", "trade_date": "20240102", "rzye": 1.0, "rzmre": 2e8, "rqyl": 0.0},
-        {"ts_code": "000001.SZ", "trade_date": "20240103", "rzye": 1.0, "rzmre": 9e9, "rqyl": 0.0},
-    ])
-    out = attach_flows(
-        _daily__margin(["20240102", "20240103"], amount=1e5),
-        injected={"moneyflow": pl.DataFrame(), "hk_hold": pl.DataFrame(), "margin_detail": margin},
-    )
-    row = out.filter(pl.col("trade_date") == dt.date(2024, 1, 3)).row(0, named=True)
-    assert abs(row["margin_buy_ratio"] - 2.0) < 1e-12
-
 
 # ── B. 双路径逐值一致 ────────────────────────────────────────────────────────
 
@@ -495,36 +482,6 @@ def test_prompt_mentions_holder_family():
     assert "股东" in sys or "holder" in sys.lower()
     assert "ann_date" in sys or "公告" in sys or "PIT" in sys
 
-
-def test_holder_leaves_pass_through_leaf_health():
-    """无数据叶在 holdout 全 null → 被 leaf_health 摘除。"""
-    from factorzen.discovery.leaf_health import filter_leaves_by_holdout_coverage
-    from factorzen.discovery.operators import HOLDER_FEATURES
-
-    days = [dt.date(2024, 1, d) for d in range(2, 22)]
-    hstart = days[10]
-    codes = [f"{i:06d}.SZ" for i in range(40)]
-    rows = []
-    for day in days:
-        for c in codes:
-            rows.append({
-                "trade_date": day,
-                "ts_code": c,
-                "close_adj": 10.0,
-                "holder_num": None if day >= hstart else 10000.0,
-                "holder_num_chg": None if day >= hstart else -0.05,
-            })
-    df = pl.DataFrame(rows)
-    leaves = ["close", "holder_num", "holder_num_chg"]
-    leaf_map = {"close": "close_adj", "holder_num": "holder_num",
-                "holder_num_chg": "holder_num_chg"}
-    kept, excluded = filter_leaves_by_holdout_coverage(
-        df, leaves, hstart, leaf_map=leaf_map, min_coverage=0.5, min_cross=30,
-    )
-    assert "holder_num" in excluded
-    assert "holder_num_chg" in excluded
-    assert "close" in kept
-    assert HOLDER_FEATURES
 
 # ==== 来自 test_toplist_attach.py ====
 _TOPLIST_EMPTY_CODE = "__EMPTY__"

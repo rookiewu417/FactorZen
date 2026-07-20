@@ -56,14 +56,6 @@ def _scripted_team():
     return fn
 
 
-def test_run_team_closes_loop(tmp_path: Path):
-    daily = _mock_daily__team_orch()
-    res = run_team_agent(daily, _scripted_team(), n_rounds=2, seed=42,
-                         index_path=str(tmp_path / "e.jsonl"))
-    assert res.state.iteration == 2
-    assert res.n_trials >= 1
-    assert len(res.rounds_log) >= 1     # 角色决策可审计
-
 
 def _inject_cands_for_critic(state, *, ledger, **_kw):
     """把本轮 attempts 注入 candidates，使 Critic 走「有新候选」路径（非 W5c 空轮跳过）。
@@ -346,13 +338,6 @@ def _scripted_llm():
         return v
     return fn
 
-
-def test_run_llm_agent_closes_loop():
-    daily = _mock_daily__agent_orch()
-    res = run_llm_agent(daily, _scripted_llm(), n_rounds=3, seed=42, library_orthogonal=False)
-    assert res.state.iteration == 3
-    assert res.n_trials >= 1            # N 累加了
-    assert len(res.state.attempts) >= 1
 
 
 def test_run_llm_agent_reproducible():

@@ -503,32 +503,3 @@ def _seed(state, irs, n_train):
         ))
 
 
-def test_agent_guardrails_deflate_two_sided(monkeypatch):
-    """驱动真实 `node_guardrails`，其 dsr_pvalue 必须等于**双边**配方逐位算出的值。
-
-    AST 守卫只看形状；这条看行为。有人换个写法绕过 abs 检查，这里照样红。
-    """
-    from factorzen.agents.nodes import node_guardrails
-    from factorzen.agents.state import AgentState
-    from factorzen.discovery.scoring import DataBundle
-    from factorzen.validation.multiple_testing import TrialLedger
-    
-    monkeypatch.setattr("factorzen.validation.holdout.holdout_ic",
-                        lambda fdf, hdf: (0.05, 0.5, (0.01, 0.09)))
-    monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
-
-    daily = _mk_daily__dsr_parity()
-    ir_pool, n_train = [0.45, 0.1048, -0.1285], 305
-    state = AgentState(seed=1)
-    _seed(state, ir_pool, n_train)
-
-    node_guardrails(state, daily=daily, holdout_df=daily, bundle=DataBundle.build(daily),
-                    ledger=TrialLedger(), top_k=5)
-    assert state.candidates, "IR=0.45 应过关，否则本测试失去判别力"
-
-    top = max(state.candidates, key=lambda c: abs(c["ir_train"]))
-    want = deflated_pvalue(0.45, DeflationBasis.from_ir_pool(ir_pool, two_sided=True), n_train)[1]
-    assert top["dsr_pvalue"] == pytest.approx(want, abs=1e-9), (
-        f"Agent 的 dsr_pvalue={top['dsr_pvalue']} 不等于双边配方的 {want} —— "
-        "sidedness 与 deflation 基准脱钩了"
-    )

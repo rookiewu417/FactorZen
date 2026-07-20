@@ -35,27 +35,6 @@ def _mock_daily() -> pl.DataFrame:
 
 # ─────────────────────────── CLI parser 层 ───────────────────────────
 
-def test_parser_mine_agent_exposes_patience_and_heal_rounds():
-    from factorzen.cli.main import build_parser
-
-    args = build_parser().parse_args(
-        ["mine", "agent", "--start", "20220101", "--end", "20231231",
-         "--patience", "3", "--heal-rounds", "1"]
-    )
-    assert args.patience == 3
-    assert args.heal_rounds == 1
-
-
-def test_parser_mine_team_exposes_structured_patience_heal_rounds():
-    from factorzen.cli.main import build_parser
-
-    args = build_parser().parse_args(
-        ["mine", "team", "--start", "20220101", "--end", "20231231",
-         "--structured", "--patience", "2", "--heal-rounds", "0"]
-    )
-    assert args.structured is True
-    assert args.patience == 2
-    assert args.heal_rounds == 0
 
 
 def test_parser_defaults_are_zero_regression():

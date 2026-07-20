@@ -1,7 +1,10 @@
-"""Unit tests for vectorized apply_trade_constraints_batch (W3-B)."""
+"""test_trade_constraints_batch.py：Unit tests for vectorized apply_trade_constraints_batch (W3-B).
+test_filter_liquidity_unit.py：filter_liquidity 的 amount 单位回归测试。
+"""
 from __future__ import annotations
 
 import numpy as np
+import polars as pl
 import pytest
 
 from factorzen.daily.evaluation.backtest import BacktestConfig
@@ -20,6 +23,7 @@ from factorzen.daily.evaluation.trade_constraints import (
 )
 
 
+# ==== 来自 test_trade_constraints_batch.py ====
 def _batch(
     *,
     delta,
@@ -44,7 +48,6 @@ def _batch(
         fallback_adv=fallback_adv,
     )
 
-
 def test_near_zero_delta_short_circuit():
     filled, reason = _batch(
         delta=[1e-15, 0.0],
@@ -57,7 +60,6 @@ def test_near_zero_delta_short_circuit():
     assert np.allclose(filled, 0.0)
     assert reason.tolist() == [BLOCK_OK, BLOCK_OK]
 
-
 def test_missing_price():
     filled, reason = _batch(
         delta=[0.1, 0.1, 0.1],
@@ -69,7 +71,6 @@ def test_missing_price():
     )
     assert np.allclose(filled, 0.0)
     assert reason.tolist() == [BLOCK_MISSING_PRICE] * 3
-
 
 def test_suspended_vol_zero_not_nan():
     # 大 ADV 避免 capacity 干扰；NaN vol ≠ 停牌
@@ -87,7 +88,6 @@ def test_suspended_vol_zero_not_nan():
     assert reason[2] == BLOCK_OK
     assert filled[2] == pytest.approx(0.1)
 
-
 def test_limit_up_blocks_buy_allows_sell():
     # main board +9.9%
     filled, reason = _batch(
@@ -101,7 +101,6 @@ def test_limit_up_blocks_buy_allows_sell():
     assert filled[0] == 0.0 and reason[0] == BLOCK_LIMIT_UP
     assert filled[1] == pytest.approx(-0.1) and reason[1] == BLOCK_OK
 
-
 def test_limit_down_blocks_sell_allows_buy():
     filled, reason = _batch(
         delta=[-0.1, 0.1],
@@ -114,7 +113,6 @@ def test_limit_down_blocks_sell_allows_buy():
     assert filled[0] == 0.0 and reason[0] == BLOCK_LIMIT_DOWN
     assert filled[1] == pytest.approx(0.1) and reason[1] == BLOCK_OK
 
-
 def test_gem_float_tolerance_limit_up():
     # open=11.98/pre=10 → 19.7999... must block at 19.8
     filled, reason = _batch(
@@ -126,7 +124,6 @@ def test_gem_float_tolerance_limit_up():
         board_limits=[19.8],
     )
     assert filled[0] == 0.0 and reason[0] == BLOCK_LIMIT_UP
-
 
 def test_st_board_limit_switch():
     limits = board_limit_pct_for_codes(["600001.SH", "600001.SH"])
@@ -145,7 +142,6 @@ def test_st_board_limit_switch():
     assert reason[0] == BLOCK_LIMIT_UP and filled[0] == 0.0
     assert reason[1] == BLOCK_OK and filled[1] == pytest.approx(0.1)
 
-
 def test_fallback_adv_still_invalid_no_cap():
     # no adv, no fallback → full delta, no capacity
     filled, reason = _batch(
@@ -160,7 +156,6 @@ def test_fallback_adv_still_invalid_no_cap():
     )
     assert filled[0] == pytest.approx(0.2)
     assert reason[0] == BLOCK_OK
-
 
 def test_capacity_caps_delta():
     # adv=1e7, rate=0.05 → max trade value 5e5; pv=1e7 → max_delta=0.05
@@ -178,7 +173,6 @@ def test_capacity_caps_delta():
     assert filled[0] == pytest.approx(0.05) and reason[0] == BLOCK_CAPACITY
     assert filled[1] == pytest.approx(-0.05) and reason[1] == BLOCK_CAPACITY
 
-
 def test_portfolio_value_le_zero():
     filled, reason = _batch(
         delta=[0.1],
@@ -190,7 +184,6 @@ def test_portfolio_value_le_zero():
         portfolio_value=0.0,
     )
     assert filled[0] == 0.0 and reason[0] == BLOCK_INVALID_PORTFOLIO
-
 
 def test_scalar_wrapper_matches_batch():
     cfg = BacktestConfig(fallback_adv=10_000_000.0, max_participation_rate=0.05)
@@ -229,7 +222,6 @@ def test_scalar_wrapper_matches_batch():
         assert sf == pytest.approx(float(bf[0]))
         assert sr == block_reason_to_str(br)[0]
 
-
 def test_block_reason_to_str_roundtrip():
     codes = np.array(
         [
@@ -252,3 +244,43 @@ def test_block_reason_to_str_roundtrip():
         "capacity",
         "invalid_portfolio_value",
     ]
+
+# ==== 来自 test_filter_liquidity_unit.py ====
+def _fake_daily(amounts_qy: dict[str, float]):
+    """构造一天的 daily 帧，amount 单位=千元（Tushare 口径）。"""
+    codes = list(amounts_qy)
+    return pl.LazyFrame(
+        {
+            "ts_code": codes,
+            "trade_date": [pl.date(2026, 6, 5)] * len(codes),
+            "amount": [amounts_qy[c] for c in codes],
+        }
+    )
+
+def test_filter_liquidity_uses_yuan_threshold(monkeypatch):
+    import factorzen.core.storage as storage
+    from factorzen.core.universe import filter_liquidity
+
+    # A: 2000万元成交额 = 20_000 千元（应留）；B: 500万元 = 5_000 千元（应剔）
+    amounts_qy = {"A.SZ": 20_000.0, "B.SZ": 5_000.0}
+    monkeypatch.setattr(storage, "load_parquet", lambda *a, **k: _fake_daily(amounts_qy))
+
+    stocks = pl.DataFrame({"ts_code": ["A.SZ", "B.SZ"], "industry": ["X", "Y"]})
+    # 默认 min_amount=1000万元
+    kept = filter_liquidity(stocks, "20260605")["ts_code"].to_list()
+
+    assert "A.SZ" in kept, "2000万元成交额应通过 1000万元 门槛（修复前因单位错配被剔除）"
+    assert "B.SZ" not in kept, "500万元成交额应被 1000万元 门槛剔除"
+
+def test_filter_liquidity_realistic_market_not_collapsed(monkeypatch):
+    """真实量级：中位数约 1.36亿元（≈135_762 千元）的市场不应被门槛几乎清空。"""
+    import factorzen.core.storage as storage
+    from factorzen.core.universe import filter_liquidity
+
+    # 100 只股票，成交额 5000万~5亿元（=50_000~500_000 千元），全部远超 1000万元 门槛
+    amounts_qy = {f"{i:06d}.SZ": 50_000.0 + i * 4500.0 for i in range(100)}
+    monkeypatch.setattr(storage, "load_parquet", lambda *a, **k: _fake_daily(amounts_qy))
+
+    stocks = pl.DataFrame({"ts_code": list(amounts_qy), "industry": ["X"] * 100})
+    kept = filter_liquidity(stocks, "20260605")
+    assert kept.height == 100, f"全部应通过，修复前会因 100亿元 假门槛只剩极少数（实得 {kept.height}）"

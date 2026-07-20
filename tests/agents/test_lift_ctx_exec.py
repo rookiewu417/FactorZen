@@ -200,16 +200,16 @@ def test_exec_wiring_signature_suite():
                 return lambda *a, **k: 0
 
         p = build_parser(_Stub())
-        ns = p.parse_args(["mine", "team", "--start", "20200101", "--end", "20201231"])
-        assert ns.exec_lag == 0
-        assert ns.exec_price_col is None
-
-        ns2 = p.parse_args([
-            "mine", "team", "--start", "20200101", "--end", "20201231",
-            "--exec-lag", "1", "--exec-price-col", "open_adj",
-        ])
-        assert ns2.exec_lag == 1
-        assert ns2.exec_price_col == "open_adj"
+        for cmd in ("team", "agent", "search"):
+            base = ["mine", cmd, "--start", "20200101", "--end", "20201231"]
+            ns = p.parse_args(base)
+            assert ns.exec_lag == 0, cmd
+            assert ns.exec_price_col is None, cmd
+            ns2 = p.parse_args([
+                *base, "--exec-lag", "1", "--exec-price-col", "open_adj",
+            ])
+            assert ns2.exec_lag == 1, cmd
+            assert ns2.exec_price_col == "open_adj", cmd
 
     _section_4_test_cli_parser_exposes_exec_flags()
 

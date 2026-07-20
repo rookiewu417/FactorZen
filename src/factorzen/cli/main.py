@@ -495,6 +495,8 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         intraday=bool(getattr(args, "intraday_leaves", False)),
         intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
         intraday_expr_leaves=getattr(args, "intraday_expr_leaves", None),
+        exec_lag=int(getattr(args, "exec_lag", 0) or 0),
+        exec_price_col=getattr(args, "exec_price_col", None),
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
@@ -704,7 +706,9 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
                          intraday_scout=bool(getattr(args, "intraday_scout", False)),
                          scout_k=int(getattr(args, "scout_k", 4) or 4),
                          scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
-                         scout_freq=getattr(args, "intraday_freq", "5min") or "5min")
+                         scout_freq=getattr(args, "intraday_freq", "5min") or "5min",
+                         exec_lag=int(getattr(args, "exec_lag", 0) or 0),
+                         exec_price_col=getattr(args, "exec_price_col", None))
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 

@@ -166,7 +166,9 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_A
                    intraday_scout: bool = False,
                    scout_k: int = 4,
                    scout_max_leaves: int = 12,
-                   scout_freq: str = "5min") -> dict:
+                   scout_freq: str = "5min",
+                   exec_lag: int = 0,
+                   exec_price_col: str | None = None) -> dict:
     """跑单 Agent 挖掘闭环，每轮增量落 manifest，收尾导出候选。
 
     ``data_window``：``{start, end, universe, market}``。落进 manifest 的 params，
@@ -180,12 +182,15 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_A
     带 ``lookback_days`` 预热前缀，须把该前缀的边界（= 挖掘窗口 ``start``）透传给
     `run_llm_agent`，否则预热段随 `split_holdout` 进 train IC（与 M1 `run_session(eval_start=)`
     同口径）。``None``（默认）退化为旧行为，对现有调用方零回归。
+
+    ``exec_lag`` / ``exec_price_col``：成交口径，透传 ``run_llm_agent`` 并落 manifest params。
     """
     fn = llm_fn or _default_llm_fn()
     rid = run_id or f"{_timestamp()}_agent_{seed}_{n_rounds}r"
     params = {
         "n_rounds": n_rounds, "seed": seed, "top_k": top_k, "holdout_ratio": holdout_ratio,
         "patience": patience, "heal_rounds": heal_rounds, "eval_start": eval_start,
+        "exec_lag": exec_lag, "exec_price_col": exec_price_col,
         **(data_window or {}),
         "command": command,
         "llm": _llm_meta(llm_fn),
@@ -208,7 +213,9 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_A
                            intraday_scout=intraday_scout,
                            scout_k=scout_k,
                            scout_max_leaves=scout_max_leaves,
-                           scout_freq=scout_freq)
+                           scout_freq=scout_freq,
+                           exec_lag=exec_lag,
+                           exec_price_col=exec_price_col)
     write_session_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid
     # candidates.csv —— 兼容 fz mine leaderboard/export-alpha（含 rank + passed 列）

@@ -66,7 +66,9 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                   scout_k: int = 4,
                   scout_max_leaves: int = 12,
                   scout_freq: str = "5min",
-                  scout_base_dir: str | None = None) -> AgentResult:
+                  scout_base_dir: str | None = None,
+                  exec_lag: int = 0,
+                  exec_price_col: str | None = None) -> AgentResult:
     """跑 n_rounds 轮 Agent 挖掘闭环。
 
     ``on_round_end``：每个**成功**轮次结束时以当前累积结果回调，供调用方增量落盘。
@@ -88,7 +90,10 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     rng = np.random.default_rng(seed)  # noqa: F841 预留给未来随机选择，保证可复现入口
     mining_df, holdout_df, holdout_start = _prepare_segments(
         daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
-    bundle = DataBundle.build(mining_df)        # Agent 只见 mining 段
+    # 成交口径贯穿 train bundle（与 team / mining_session 同源）
+    bundle = DataBundle.build(
+        mining_df, exec_lag=exec_lag, exec_price_col=exec_price_col,
+    )  # Agent 只见 mining 段
     _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
     # P5：holdout 长驻窄投影（与 team 路径一致）
@@ -251,7 +256,9 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                                     eval_start=_eval_start_date,  # 池级 PBO 的 None-gating
                                     profile=profile, lib_pool=lib_pool,
                                     objective=objective,
-                                    prepped=session_prepped)
+                                    prepped=session_prepped,
+                                    exec_lag=exec_lag,
+                                    exec_price_col=exec_price_col)
             _print_rejections("mine-agent", state)
             _step("  ④ Critic 审计")
             state = node_critic(state, llm_fn)

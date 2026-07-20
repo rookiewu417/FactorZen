@@ -284,7 +284,7 @@ def _run_guardrails_with(n_candidates: int):
     from factorzen.validation.holdout import HoldoutICResult
     orig_hic, orig_pass = hmod.holdout_ic_result, gmod.acceptance_reasons
     # 覆盖充足 + 同号；acceptance_reasons 恒空 → 全过（与旧 mock guardrail_passed 等价）
-    hmod.holdout_ic_result = lambda _f, _h: HoldoutICResult(
+    hmod.holdout_ic_result = lambda *_a, **_k: HoldoutICResult(
         0.05, 0.5, (0.01, 0.09), n_days=100)
     gmod.acceptance_reasons = lambda **_kw: []
     try:
@@ -337,7 +337,7 @@ def _stub_holdout(monkeypatch):
     只 stub holdout（外部关卡），DSR 走真实 `deflated_sharpe`——被测的就是它的入参。
     """
     monkeypatch.setattr("factorzen.validation.holdout.holdout_ic",
-                        lambda fdf, hdf: (0.05, 0.5, (0.01, 0.09)))
+                        lambda *a, **k: (0.05, 0.5, (0.01, 0.09)))
     monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
 
 

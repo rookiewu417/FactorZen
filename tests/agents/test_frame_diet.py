@@ -449,8 +449,13 @@ def test_p5_bundle_keys_suite(monkeypatch):
 
         daily = _mock_daily(n_stocks=4, n_days=10)
         narrow = _narrow_holdout_price_frame(daily)
-        assert set(narrow.columns) == {"trade_date", "ts_code", "close_adj"}
+        # 保留 close/open 价列供 holdout IC + exec 口径（open_adj）
+        assert set(narrow.columns) == {
+            "trade_date", "ts_code", "close_adj", "close", "open_adj", "open",
+        }
         assert narrow.height == daily.height
+        # 不得带全宽叶子/成交额等（P5 峰值）
+        assert "vol" not in narrow.columns and "amount" not in narrow.columns
 
     _section_2_test_p5_narrow_holdout_price_frame()
 

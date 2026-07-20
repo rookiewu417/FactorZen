@@ -137,7 +137,7 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
         # holdout 固定过关；session 池为空 → session 去相关不干扰
         mp.setattr(
             "factorzen.validation.holdout.holdout_ic_result",
-            lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
+            lambda *a, **k: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
         )
 
         # nodes 在函数内 from scoring import——patch 源模块即可在 import 时拿到 wrap
@@ -198,7 +198,7 @@ def test_library_orthogonal_gate_suite(tmp_path, monkeypatch):
         lib_pool = build_library_pool("ashare", daily, root=str(tmp_path))
         mp.setattr(
             "factorzen.validation.holdout.holdout_ic_result",
-            lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
+            lambda *a, **k: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
         )
 
         state = AgentState(seed=1)
@@ -668,7 +668,7 @@ def test_residual_objective_suite(tmp_path, monkeypatch):
         bundle = DataBundle.build(daily)
         mp.setattr(
             "factorzen.validation.holdout.holdout_ic_result",
-            lambda fdf, hdf: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
+            lambda *a, **k: HoldoutICResult(0.05, 0.5, (0.01, 0.09), n_days=100),
         )
         state = AgentState(seed=1)
         state.attempts.append(AttemptRecord(
@@ -962,7 +962,7 @@ def test_node_guardrails_rejects_redundant_with_residual_reason(tmp_path, monkey
 
     monkeypatch.setattr(
         "factorzen.validation.holdout.holdout_ic_result",
-        lambda fdf, hdf: HoldoutICResult(0.08, 0.6, (0.02, 0.12), n_days=100),
+        lambda *a, **k: HoldoutICResult(0.08, 0.6, (0.02, 0.12), n_days=100),
     )
     # 库相关固定 <0.7，迫使路径走到残差门
     monkeypatch.setattr(

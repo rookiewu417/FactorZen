@@ -16,7 +16,6 @@ def _pf(dir_, sig, code, w):
     )
     return str(dir_)
 
-
 def _daily(dates, code):
     return pl.DataFrame(
         [
@@ -32,7 +31,6 @@ def _daily(dates, code):
             for d in dates
         ]
     )
-
 
 def test_daily_step_idempotent_and_resumes(tmp_path: Path):
     d1, d2 = date(2026, 1, 5), date(2026, 1, 6)
@@ -50,19 +48,6 @@ def test_daily_step_idempotent_and_resumes(tmp_path: Path):
     r2 = run_daily_step(tmp_path / "sess", d2, [rd], daily, config=cfg)
     assert not r2["skipped"]
     assert SessionStore(tmp_path / "sess").nav_frame().height == 2  # 只两行(d1,d2)
-
-
-def test_state_json_is_resumable_shape(tmp_path: Path):
-    d1 = date(2026, 1, 5)
-    daily = _daily([d1], "A.SZ")
-    rd = _pf(tmp_path / "pf", date(2026, 1, 2), "A.SZ", 0.5)
-    cfg = {"initial_cash": 1_000_000.0, "slippage_bps": 0.0}
-    s = SessionStore(tmp_path / "sess")
-    s.init({"broker": "paper", **cfg})
-    run_daily_step(tmp_path / "sess", d1, [rd], daily, config=cfg)
-    st = SessionStore(tmp_path / "sess").load_state()
-    assert {"cash", "pos", "order_seq"}.issubset(st)  # 可续跑核心态(非显示视图)
-
 
 def test_daily_step_resume_nav_matches_single_shot_replay(tmp_path: Path) -> None:
     # 回归 Fix5：spec 承诺"daily 驱动跨两日 step 的 NAV == 连续两日 run_replay"。
@@ -101,7 +86,6 @@ def test_daily_step_resume_nav_matches_single_shot_replay(tmp_path: Path) -> Non
     for replay_v, daily_v in zip(nav_replay, nav_daily, strict=True):
         assert abs(replay_v - daily_v) < 1e-6
 
-
 def _daily_var(dates_prices, code):
     """带价格变化的 daily（区分「续跑重建持仓」vs「从空仓重来」的 nav）。"""
     return pl.DataFrame(
@@ -111,7 +95,6 @@ def _daily_var(dates_prices, code):
             for d, p in dates_prices
         ]
     )
-
 
 def test_replay_resume_extends_window_matches_single_shot(tmp_path: Path) -> None:
     """扩窗/崩溃恢复：在已有部分 ledger 的 session 上再 run_replay（延长 --to），
@@ -137,7 +120,6 @@ def test_replay_resume_extends_window_matches_single_shot(tmp_path: Path) -> Non
     for a, b in zip(nav_full, nav_resume, strict=True):
         assert abs(a - b) < 1e-6, f"扩窗 replay nav 须等于一次性 replay：{nav_full} vs {nav_resume}"
 
-
 def test_replay_state_resumable_by_daily_step(tmp_path: Path) -> None:
     """run_replay 落的 state.json 须是可续跑态 {cash,pos,order_seq}，使后续
     run_daily_step 能 load_state 续跑，而非因显示视图 float(dict) 抛 TypeError。"""
@@ -154,7 +136,6 @@ def test_replay_state_resumable_by_daily_step(tmp_path: Path) -> None:
     # 后续 fz live step 续跑不应因显示视图 float(dict) 崩溃
     r = run_daily_step(sess, d2, [rd], daily, config={"initial_cash": 1_000_000.0})
     assert not r["skipped"] and r["nav_after"] is not None
-
 
 def test_signal_executes_next_trading_day_not_same_day(tmp_path: Path) -> None:
     """E1：signal_date=组合数据截止日(用当日收盘算权重)，须在**次一交易日**执行，

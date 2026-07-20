@@ -19,14 +19,12 @@ def test_positive_ic_ci_above_zero():
     lo, hi = block_bootstrap_ic_ci(ic, seed=1)
     assert lo > 0 and hi > lo
 
-
 def test_noise_ic_ci_straddles_zero():
     from factorzen.validation.bootstrap import block_bootstrap_ic_ci
     rng = np.random.default_rng(0)
     ic = rng.normal(0.0, 0.05, 250)  # 噪声 IC
     lo, hi = block_bootstrap_ic_ci(ic, seed=1)
     assert lo < 0 < hi
-
 
 def test_too_short_returns_nan():
     from factorzen.validation.bootstrap import block_bootstrap_ic_ci
@@ -40,13 +38,11 @@ def test_strong_sharpe_significant():
     dsr, p = deflated_sharpe(sharpe=0.15, n_trials=5, n_obs=500, sharpe_variance=0.0025)
     assert dsr > 0.95 and p < 0.05
 
-
 def test_noise_sharpe_not_significant():
     from factorzen.validation.deflated_sharpe import deflated_sharpe
     # IR≈0 → 不显著
     _dsr, p = deflated_sharpe(sharpe=0.0, n_trials=100, n_obs=500, sharpe_variance=0.0025)
     assert p > 0.05
-
 
 def test_more_trials_tightens():
     from factorzen.validation.deflated_sharpe import deflated_sharpe
@@ -55,15 +51,12 @@ def test_more_trials_tightens():
     dsr_many, _ = deflated_sharpe(0.12, n_trials=1000, n_obs=500, sharpe_variance=0.0025)
     assert dsr_many < dsr_few
 
-
 def test_expected_max_sharpe_grows_with_trials():
     from factorzen.validation.deflated_sharpe import expected_max_sharpe
     assert expected_max_sharpe(0.0025, 1000) > expected_max_sharpe(0.0025, 10)
 
 # ==== 来自 test_validation_holdout.py ====
 # tests/test_validation_holdout.py
-
-
 
 def _daily(n_stocks=40, n_days=200, seed=1):
     rng = np.random.default_rng(seed)
@@ -82,7 +75,6 @@ def _daily(n_stocks=40, n_days=200, seed=1):
                          "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4)})
     return pl.DataFrame(rows)
 
-
 def test_split_holdout_disjoint_and_isolated():
     from factorzen.validation.holdout import split_holdout
     daily = _daily()
@@ -93,7 +85,6 @@ def test_split_holdout_disjoint_and_isolated():
     # holdout 约占 20%
     frac = holdout["trade_date"].n_unique() / daily["trade_date"].n_unique()
     assert 0.15 < frac < 0.25
-
 
 def test_holdout_ic_runs():
     from factorzen.validation.holdout import holdout_ic, split_holdout
@@ -115,11 +106,6 @@ def test_trial_ledger_accumulates():
     led.record(5)
     assert led.n_trials == 6
 
-
-def test_trial_ledger_default_zero():
-    from factorzen.validation.multiple_testing import TrialLedger
-    assert TrialLedger().n_trials == 0
-
 # ==== 来自 test_validation_pbo.py ====
 def test_pbo_noise_near_half():
     """纯噪声候选池：IS 最优在 OOS 无优势 → PBO ≈ 0.5。"""
@@ -129,7 +115,6 @@ def test_pbo_noise_near_half():
     pbo = compute_pbo(perf, n_splits=10)
     assert 0.3 < pbo < 0.7
 
-
 def test_pbo_one_dominant_low():
     """一个候选全程显著最优 → IS 最优 = OOS 最优 → PBO 低。"""
     from factorzen.validation.pbo import compute_pbo
@@ -138,7 +123,6 @@ def test_pbo_one_dominant_low():
     perf[0] += 3.0  # 候选0 全程领先
     pbo = compute_pbo(perf, n_splits=10)
     assert pbo < 0.2
-
 
 def test_pbo_too_small_returns_nan():
     from factorzen.validation.pbo import compute_pbo

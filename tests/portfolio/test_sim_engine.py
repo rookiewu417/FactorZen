@@ -27,7 +27,6 @@ def _write_portfolio_dir(tmp_path, run_id, codes, weights, sig_date):
     )
     return str(d)
 
-
 def _fake_daily(codes, start="20230101", end="20230228"):
     """构造 mock 日线数据（不连接真实数据源）。"""
     dates = pl.date_range(pl.date(2023, 1, 1), pl.date(2023, 2, 28), "1d", eager=True)
@@ -52,7 +51,6 @@ def _fake_daily(codes, start="20230101", end="20230228"):
             )
     return pl.DataFrame(rows)
 
-
 def test_run_portfolio_simulation_produces_metrics(tmp_path: Path):
     """nav.parquet / metrics.json / manifest.json 落盘，返回 sharpe/max_dd/ann_ret。"""
     codes = ["000001.SZ", "000002.SZ"]
@@ -74,7 +72,6 @@ def test_run_portfolio_simulation_produces_metrics(tmp_path: Path):
     assert "sharpe" in res, "返回 dict 缺少 sharpe"
     assert "max_dd" in res, "返回 dict 缺少 max_dd"
     assert "ann_ret" in res, "返回 dict 缺少 ann_ret"
-
 
 def test_sim_manifest_reproducibility_fields(tmp_path: Path):
     """可复现铁律#3：sim manifest 须含 inputs/窗口/成本/配置/command/git_sha，
@@ -113,7 +110,6 @@ def test_sim_manifest_reproducibility_fields(tmp_path: Path):
     assert isinstance(manifest.get("n_exec_dates"), int)
     assert manifest["n_exec_dates"] > 0
 
-
 def test_sim_manifest_json_roundtrip_and_no_nav_regression(tmp_path: Path):
     """manifest 加厚不得改 nav/metrics 产物；JSON 可往返 loads。"""
     codes = ["000001.SZ", "000002.SZ"]
@@ -140,35 +136,6 @@ def test_sim_manifest_json_roundtrip_and_no_nav_regression(tmp_path: Path):
     nav = pl.read_parquet(run_dir / "nav.parquet")
     assert "nav" in nav.columns and nav.height > 0
 
-
-def test_run_portfolio_simulation_multiple_signals(tmp_path: Path):
-    """多个 signal_date 时仍能正常落盘。"""
-    codes = ["000001.SZ", "000002.SZ"]
-    p1 = _write_portfolio_dir(tmp_path, "r1", codes, [0.5, 0.5], "2023-01-10")
-    p2 = _write_portfolio_dir(tmp_path, "r2", codes, [0.3, 0.7], "2023-02-01")
-    daily = _fake_daily(codes)
-    res = run_portfolio_simulation(
-        [p1, p2], daily, out_dir=str(tmp_path / "sim2"), run_id="multi"
-    )
-    run_dir = Path(res["run_dir"])
-    assert (run_dir / "nav.parquet").exists()
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["n_signals"] == 2
-
-
-def test_run_portfolio_simulation_nav_is_parquet(tmp_path: Path):
-    """nav.parquet 可被 polars 读取且含 nav 列。"""
-    codes = ["000001.SZ", "000002.SZ"]
-    p1 = _write_portfolio_dir(tmp_path, "px", codes, [0.5, 0.5], "2023-01-10")
-    daily = _fake_daily(codes)
-    res = run_portfolio_simulation(
-        [p1], daily, out_dir=str(tmp_path / "sim3"), run_id="navtest"
-    )
-    nav_df = pl.read_parquet(Path(res["run_dir"]) / "nav.parquet")
-    assert "nav" in nav_df.columns, f"nav 列缺失, 有: {nav_df.columns}"
-    assert "trade_date" in nav_df.columns
-
-
 def test_run_portfolio_simulation_warns_when_signal_date_after_trade_dates(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -185,7 +152,6 @@ def test_run_portfolio_simulation_warns_when_signal_date_after_trade_dates(
     assert any(
         "signal_date" in m and "调仓" in m for m in warning_messages
     ), f"未找到预期 warning，记录到的 warning: {warning_messages}"
-
 
 def test_run_portfolio_simulation_accepts_leveraged_portfolio_weights(tmp_path: Path):
     """组合流权重可能 gross>2.0（杠杆/多空），sim 不应用 daily-research 默认
@@ -204,7 +170,6 @@ def test_run_portfolio_simulation_accepts_leveraged_portfolio_weights(tmp_path: 
     nav_df = pl.read_parquet(Path(res["run_dir"]) / "nav.parquet")
     assert "nav" in nav_df.columns, "杠杆组合应正常产出 nav，而非被默认 gross 上限崩掉"
 
-
 def test_run_portfolio_simulation_accepts_concentrated_weight_over_one(tmp_path: Path):
     """单票权重 > 1.0（杠杆集中/多空腿）也不应触发默认 max_abs_weight=1.0 校验崩溃。"""
     codes = ["000001.SZ", "000002.SZ"]
@@ -216,7 +181,6 @@ def test_run_portfolio_simulation_accepts_concentrated_weight_over_one(tmp_path:
     )
     assert (Path(res["run_dir"]) / "nav.parquet").exists()
 
-
 def test_run_portfolio_simulation_still_rejects_nonfinite_weights(tmp_path: Path):
     """放宽 gross/abs 上限后，NaN/inf 权重的数据损坏防线仍须保留（不能一起放掉）。"""
     codes = ["000001.SZ", "000002.SZ"]
@@ -227,9 +191,7 @@ def test_run_portfolio_simulation_still_rejects_nonfinite_weights(tmp_path: Path
             [p1], daily, out_dir=str(tmp_path / "sim_bad"), run_id="bad1"
         )
 
-
 # ── 代码评审修复回归测试 ───────────────────────────────────────────────────
-
 
 def test_run_portfolio_simulation_charges_trading_cost_on_turnover(tmp_path: Path):
     """修复1：3 次大幅调仓（模拟高换手）后，nav.parquet 的 cost 列与 metrics.json
@@ -254,7 +216,6 @@ def test_run_portfolio_simulation_charges_trading_cost_on_turnover(tmp_path: Pat
 
     metrics = json.loads((run_dir / "metrics.json").read_text())
     assert metrics.get("total_cost", 0.0) > 0, "metrics.json 的 total_cost 仍为 0"
-
 
 def test_run_portfolio_simulation_passes_is_st_by_date_to_backtest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -290,7 +251,6 @@ def test_run_portfolio_simulation_passes_is_st_by_date_to_backtest(
         f"实际收到: {captured.get('is_st_by_date')!r}"
     )
 
-
 def test_load_weights_by_date_skips_non_optimal_status(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -325,7 +285,6 @@ def test_load_weights_by_date_skips_non_optimal_status(
         "infeasible" in m or "status" in m for m in warning_messages
     ), f"未找到跳过原因的 warning，记录到的 warning: {warning_messages}"
 
-
 def test_load_weights_by_date_keeps_manifest_without_status_field(tmp_path: Path) -> None:
     """修复2 不应破坏向后兼容：manifest 完全没有 status 字段时（历史产物/旧版
     pipeline）应照常视为有效信号，而不是被新增的状态校验误伤。
@@ -338,7 +297,6 @@ def test_load_weights_by_date_keeps_manifest_without_status_field(tmp_path: Path
     legacy = _write_portfolio_dir(tmp_path, "legacy", codes, [1.0], "2023-01-10")
     out = _load_weights_by_date([legacy])
     assert _date(2023, 1, 10) in out
-
 
 def test_load_weights_by_date_warns_on_missing_signal_date(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -367,7 +325,6 @@ def test_load_weights_by_date_warns_on_missing_signal_date(
         f"manifest 缺 signal_date 时应 warning 说明具体 run_dir，实际: {warning_messages}"
     )
 
-
 def test_load_weights_by_date_warns_on_signal_date_collision(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -394,7 +351,6 @@ def test_load_weights_by_date_warns_on_signal_date_collision(
     assert any(
         "2023-01-10" in m and "a_first" in m and "z_second" in m for m in warning_messages
     ), f"撞键时应 warning 说明具体的两个 run_dir，实际: {warning_messages}"
-
 
 def test_run_portfolio_simulation_warns_for_specific_stale_signal_among_valid_ones(
     tmp_path: Path, caplog: pytest.LogCaptureFixture

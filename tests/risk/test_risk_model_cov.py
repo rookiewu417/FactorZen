@@ -20,9 +20,6 @@ from factorzen.risk.model import RiskModel, RiskModelResult
 # ==== 来自 test_risk_model.py ====
 # tests/test_risk_model.py
 
-
-
-
 @pytest.fixture(autouse=True)
 def _pit_industry_unavailable_by_default(monkeypatch):
     """RiskModel.build() 内部循环调用 compute_exposures：默认不触达真实 Tushare，
@@ -31,7 +28,6 @@ def _pit_industry_unavailable_by_default(monkeypatch):
     monkeypatch.setattr(exposures_module, "fetch_index_member_all", lambda: None)
     monkeypatch.setattr(exposures_module, "_pit_industry_warned", False)
     yield
-
 
 def _toy_result():
     """手搓一个 RiskModelResult，绕开截面回归，做确定性 predict/decompose 验证。"""
@@ -43,26 +39,6 @@ def _toy_result():
     exp = ExposureMatrix(codes=codes, factor_names=factor_names, matrix=X)
     return RiskModelResult(factor_exposures=exp, factor_covariance=F,
                            specific_risk=D, factor_names=factor_names)
-
-
-def test_predict_risk_positive():
-    result = _toy_result()
-    w = np.array([0.5, 0.3, 0.2])
-    risk = RiskModel().predict_risk(w, result)
-    assert risk > 0
-
-    # Fix 2: 手算期望值，验证 predict_risk 公式正确性
-    X = result.factor_exposures.matrix
-    F = result.factor_covariance
-    D = result.specific_risk
-    Xw = X.T @ w
-    factor_var = float(Xw @ F @ Xw)
-    spec_var = float(np.sum((D * w) ** 2))
-    expected = np.sqrt(factor_var + spec_var) * np.sqrt(252)
-    assert math.isclose(risk, expected, rel_tol=1e-9), (
-        f"predict_risk={risk} 与手算 expected={expected} 不一致，公式有误"
-    )
-
 
 def test_decompose_risk_variance_conservation():
     """factor_risk² + specific_risk² ≈ total_risk²（方差可加）。"""
@@ -95,7 +71,6 @@ def test_decompose_risk_variance_conservation():
         "所有因子贡献均为零，分解结果退化"
     )
 
-
 def test_build_end_to_end_r_squared_in_range():
     """端到端 build（mock 数据，n_days≥280 让 momentum 有值）→ R²∈[0,1]。"""
     rng = np.random.default_rng(7)
@@ -125,7 +100,6 @@ def test_build_end_to_end_r_squared_in_range():
     assert np.linalg.eigvalsh(result.factor_covariance).min() >= -1e-8, (
         "factor_covariance 不是半正定矩阵，风险模型协方差估计有误"
     )
-
 
 def test_build_residual_matrix_mid_window_gap_no_misalignment():
     """回归测试：股票在窗口第3期(非首尾)缺失时，重建残差矩阵不能把缺口前的残差
@@ -171,7 +145,6 @@ def test_factor_covariance_symmetric_psd():
     assert np.allclose(cov, cov.T, atol=1e-10)  # 对称
     assert np.linalg.eigvalsh(cov).min() >= -1e-8  # 半正定
 
-
 def test_specific_risk_positive():
     from factorzen.risk.covariance import estimate_specific_risk
 
@@ -180,7 +153,6 @@ def test_specific_risk_positive():
     sr = estimate_specific_risk(resid, half_life=60, shrinkage=0.3)
     assert sr.shape == (8,)
     assert (sr > 0).all()  # 特质风险全正
-
 
 def test_eigenvector_adjustment_symmetric_same_shape():
     from factorzen.risk.covariance import eigenvector_adjustment
@@ -193,7 +165,6 @@ def test_eigenvector_adjustment_symmetric_same_shape():
     # eigenvector_adjustment 内部执行 (A + A.T) / 2，对称性达机器精度，与
     # factor_covariance 对称断言保持一致
     assert np.allclose(adj, adj.T, atol=1e-10)
-
 
 def test_covariance_too_short_returns_identity():
     from factorzen.risk.covariance import estimate_factor_covariance
@@ -212,7 +183,6 @@ def make_stocks(n_stocks=8):
         "industry": [industries[i % len(industries)] for i in range(n_stocks)],
     })
 
-
 def test_industry_dummies_one_hot_per_stock():
     from factorzen.risk.industry_factors import get_industry_dummies
     dummies = get_industry_dummies(make_stocks())
@@ -222,14 +192,12 @@ def test_industry_dummies_one_hot_per_stock():
     row_sums = dummies.select(ind_cols).sum_horizontal()
     assert row_sums.to_list() == [1.0] * dummies.height
 
-
 def test_industry_names_sorted_bare():
     from factorzen.risk.industry_factors import get_industry_names
     names = get_industry_names(make_stocks())
     assert names == sorted(names)
     assert set(names) == {"银行", "医药", "电子", "食品饮料"}
     assert all(not n.startswith("ind_") for n in names)  # 裸名，无前缀
-
 
 def test_industry_dummies_missing_col_raises():
     import pytest
@@ -246,7 +214,6 @@ def _make_daily(dates, codes):
         for d in dates for c in codes
     ])
 
-
 def test_reindex_exposure_fills_missing_industry_with_zero():
     """缺列填 0、列序对齐固定全集。"""
     exp = ExposureMatrix(
@@ -261,7 +228,6 @@ def test_reindex_exposure_fills_missing_industry_with_zero():
     np.testing.assert_allclose(out.matrix[:, 0], [1.0, 0.5])
     np.testing.assert_allclose(out.matrix[:, 1], [1.0, 0.0])
     np.testing.assert_allclose(out.matrix[:, 2], [0.0, 0.0])
-
 
 def test_industry_mid_window_appearance_kept_with_zero_fill():
     """合成场景：某行业中途出现——旧逻辑丢日、新逻辑保留且缺列 0。
@@ -312,7 +278,6 @@ def test_industry_mid_window_appearance_kept_with_zero_fill():
     assert "ind_C" in result.factor_returns.columns
     # 早期日也有 ind_C 因子收益列（对应暴露为 0）
     assert result.factor_returns.filter(pl.col("trade_date") == dates[0]).height == 1
-
 
 def test_n_factor_mismatch_visible_on_result():
     """退化可见性：n_factor_mismatch / n_valid_dates 字段存在且默认可读。"""

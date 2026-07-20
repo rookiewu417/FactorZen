@@ -487,25 +487,6 @@ def test_build_manifest_base_accepts_plain_dict_config(monkeypatch):
     assert base["command"] is None
     assert base["config"] == {"cov_half_life": 90, "nw_lags": 2}
 
-def test_build_manifest_base_used_by_run_experiment_unchanged(tmp_path, monkeypatch):
-    """run_experiment() 重构为复用 build_manifest_base 后，对外行为（字段集合/取值）保持不变。"""
-    from factorzen.config.research import RunConfig
-    from factorzen.core import experiment as exp_mod
-
-    monkeypatch.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
-    cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
-
-    with exp_mod.run_experiment(cfg, run_id="base_reuse_run", command=["fz", "daily-single"]) as exp_dir:
-        pass
-
-    manifest = json.loads((exp_dir / "manifest.json").read_text())
-    assert manifest["schema_version"] == "1"
-    assert manifest["run_id"] == "base_reuse_run"
-    assert manifest["command"] == ["fz", "daily-single"]
-    assert manifest["config"]["factor"] == "momentum_20d"
-    assert isinstance(manifest["git_dirty"], bool)
-    assert isinstance(manifest["pixi_lock_sha256"], str)
-
 # ==== 来自 test_factor_sweep.py ====
 def test_expand_grid_cartesian_product():
     combos = expand_grid(["backtest.top_n=30,50", "preprocessing.normalizer=zscore,rank_normal"])

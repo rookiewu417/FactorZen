@@ -18,7 +18,6 @@ from factorzen.builtin_factors.intraday.momentum_1min import Momentum1Min
 from factorzen.builtin_factors.intraday.vwap_deviation import VwapDeviation
 from factorzen.intraday.data.context import IntradayDataContext
 from factorzen.intraday.evaluation.ic_analysis import (
-    IntradayICResult,
     _assign_segment,
     compute_intraday_rank_ic,
 )
@@ -32,7 +31,6 @@ from factorzen.intraday.preprocessing.pipeline import (
 # ==== 来自 test_intraday_factor_base.py ====
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-
 @dataclass
 class _ConcreteFactor(IntradayFactor):
     """测试用的具体因子类。"""
@@ -45,7 +43,6 @@ class _ConcreteFactor(IntradayFactor):
             schema={"trade_time": pl.Utf8, "ts_code": pl.Utf8, "factor_value": pl.Float64}
         )
 
-
 def _make_result(values: list[float], ts_codes: list[str] | None = None) -> pl.DataFrame:
     """构建模拟的 factor 结果 DataFrame。"""
     ts_codes = ts_codes or [f"00000{i}.SZ" for i in range(len(values))]
@@ -57,22 +54,18 @@ def _make_result(values: list[float], ts_codes: list[str] | None = None) -> pl.D
         }
     )
 
-
 # ── ABC 约束 ────────────────────────────────────────────────────────────────
-
 
 def test_cannot_instantiate_abstract__intraday_factor_base():
     """无法直接实例化抽象类 IntradayFactor。"""
     with pytest.raises(TypeError, match="abstract"):
         IntradayFactor()  # type: ignore[abstract]
 
-
 def test_can_instantiate_concrete():
     """实现所有抽象方法后可以实例化。"""
     factor = _ConcreteFactor()
     assert factor.name == "test_factor"
     assert isinstance(factor, IntradayFactor)
-
 
 def test_compute_is_abstract():
     """未实现 compute() 的子类无法实例化。"""
@@ -84,9 +77,7 @@ def test_compute_is_abstract():
     with pytest.raises(TypeError, match="abstract"):
         _BadFactor()  # type: ignore[abstract]
 
-
 # ── 默认属性 ────────────────────────────────────────────────────────────────
-
 
 def test_default_attributes__intraday_factor_base():
     """默认属性值与预期一致。"""
@@ -95,16 +86,13 @@ def test_default_attributes__intraday_factor_base():
     assert factor.lookback_bars == 500
     assert factor.description == "Test factor for unit testing"
 
-
 # ── validate() ──────────────────────────────────────────────────────────────
-
 
 def test_validate_empty():
     """空 DataFrame 返回 error。"""
     factor = _ConcreteFactor()
     result = factor.validate(pl.DataFrame())
     assert result["error"] == "Empty DataFrame"
-
 
 def test_validate_normal():
     """正常因子结果返回正确的统计信息。"""
@@ -113,7 +101,6 @@ def test_validate_normal():
     assert result["coverage"] == 1.0
     assert result["n_stocks"] == 3
 
-
 def test_validate_nulls():
     """含 null 值时 coverage 不为 1。"""
     factor = _ConcreteFactor()
@@ -121,13 +108,11 @@ def test_validate_nulls():
     assert result["null_count"] == 1
     assert result["coverage"] == pytest.approx(2 / 3)
 
-
 def test_validate_inf():
     """含 inf 值时 inf_count > 0。"""
     factor = _ConcreteFactor()
     result = factor.validate(_make_result([1.0, float("inf")]))
     assert result["inf_count"] == 1
-
 
 def test_validate_missing_factor_column():
     """缺少 factor_value 列时 null_count 和 inf_count 为 0。"""
@@ -148,7 +133,6 @@ def _make_ctx(df: pl.DataFrame):
     ctx.minute = df.lazy()
     return ctx
 
-
 def _make_minute_df(n_bars: int = 20) -> pl.DataFrame:
     base = datetime(2026, 5, 16, 9, 30)
     rows = []
@@ -167,18 +151,10 @@ def _make_minute_df(n_bars: int = 20) -> pl.DataFrame:
             )
     return pl.DataFrame(rows).with_columns(pl.col("trade_time").cast(pl.Datetime))
 
-
-def test_columns():
-    factor = VwapDeviation()
-    result = factor.compute(_make_ctx(_make_minute_df()))
-    assert set(["trade_time", "ts_code", "factor_value"]).issubset(result.columns)
-
-
 def test_no_cross_stock():
     factor = VwapDeviation()
     result = factor.compute(_make_ctx(_make_minute_df()))
     assert set(result["ts_code"].unique().to_list()) == {"000001.SZ", "000002.SZ"}
-
 
 def test_first_bar_zero():
     """第一根 bar 时 VWAP == close，偏离为 0。"""
@@ -191,7 +167,6 @@ def test_first_bar_zero():
     )
     assert abs(first) < 1e-9
 
-
 def test_registered():
     from factorzen.intraday.factors.registry import get_factor
 
@@ -199,25 +174,6 @@ def test_registered():
 
 # ==== 来自 test_intraday_demo.py ====
 # ── Import & Class Structure ─────────────────────────────────────────────────
-
-
-def test_import_clean():
-    """Momentum1Min 可正常导入。"""
-    assert Momentum1Min is not None
-    assert Momentum1Min.__name__ == "Momentum1Min"
-
-
-def test_extends_intraday_factor():
-    """Momentum1Min 继承自 IntradayFactor。"""
-    factor = Momentum1Min()
-    assert isinstance(factor, IntradayFactor)
-
-
-def test_cannot_instantiate_abstract__intraday_demo():
-    """IntradayFactor 本身不可直接实例化。"""
-    with pytest.raises(TypeError, match="abstract"):
-        IntradayFactor()  # type: ignore[abstract]
-
 
 def test_default_attributes__intraday_demo():
     """默认属性与预期一致。"""
@@ -229,14 +185,7 @@ def test_default_attributes__intraday_demo():
     assert factor.description == "5-bar momentum: close(t) / close(t-5) - 1"
     assert factor.required_data == ["minute"]
 
-
-def test_is_dataclass():
-    """Momentum1Min 是 dataclass，可按位置/关键字实例化。"""
-    assert hasattr(Momentum1Min, "__dataclass_fields__")
-
-
 # ── compute() 结构测试 ───────────────────────────────────────────────────────
-
 
 @dataclass
 class _MockContext:
@@ -247,7 +196,6 @@ class _MockContext:
     @property
     def minute(self) -> pl.LazyFrame:
         return self._minute_data.lazy()
-
 
 def _make_mock_minute(n_bars: int = 20, ts_codes: list[str] | None = None) -> pl.DataFrame:
     """构造模拟的 1 分钟 bar 数据（按 ts_code + trade_time 排序）。"""
@@ -276,7 +224,6 @@ def _make_mock_minute(n_bars: int = 20, ts_codes: list[str] | None = None) -> pl
     df = pl.DataFrame(rows)
     return df.sort(["ts_code", "trade_time"])
 
-
 def test_compute_returns_correct_schema():
     """compute() 返回包含 trade_time, ts_code, factor_value 的 DataFrame。"""
     factor = Momentum1Min()
@@ -289,7 +236,6 @@ def test_compute_returns_correct_schema():
     assert "factor_value" in result.columns
     assert result.height > 0
 
-
 def test_compute_factor_range():
     """factor_value 在合理范围内（正值，因模拟数据持续上涨）。"""
     factor = Momentum1Min()
@@ -299,7 +245,6 @@ def test_compute_factor_range():
     assert result["factor_value"].min() > -1.0
     assert result["factor_value"].max() < 10.0
     assert result["factor_value"].mean() > 0
-
 
 def test_compute_multi_stock():
     """多股票同时计算时每只股票独立计算。"""
@@ -312,7 +257,6 @@ def test_compute_multi_stock():
     for code in ts_codes:
         assert code in codes_in_result
 
-
 def test_compute_filters_nulls():
     """前 5 根 bar 的 null 值已被过滤。"""
     factor = Momentum1Min()
@@ -320,7 +264,6 @@ def test_compute_filters_nulls():
     ctx = _MockContext(_minute_data=mock_data)
     result = factor.compute(ctx)
     assert result["factor_value"].null_count() == 0
-
 
 def test_validate_returns_stats():
     """validate() 返回覆盖率等统计信息。"""
@@ -332,7 +275,6 @@ def test_validate_returns_stats():
     assert "coverage" in stats
     assert stats["coverage"] == 1.0
     assert stats["n_stocks"] == 1
-
 
 def _make_two_day_minute(code: str = "000001.SZ", bars_per_day: int = 10) -> pl.DataFrame:
     """构造两个交易日、每日 bars_per_day 根的分钟数据（trade_time 为字符串，模拟隔夜缺口）。"""
@@ -346,7 +288,6 @@ def _make_two_day_minute(code: str = "000001.SZ", bars_per_day: int = 10) -> pl.
                          "open": close, "high": close, "low": close, "close": close,
                          "vol": 1000.0, "amount": close * 1000.0})
     return pl.DataFrame(rows).sort(["ts_code", "trade_time"])
-
 
 def test_momentum_does_not_cross_trading_days():
     """5-bar 动量不得跨交易日：每个交易日前 5 根 bar 的 factor_value 应为 null（被过滤掉）。
@@ -399,24 +340,15 @@ def _make_intraday_data(n_stocks: int = 30, n_days: int = 5, seed: int = 0):
 
     return pl.DataFrame(factor_rows), pl.DataFrame(ret_rows)
 
-
 @pytest.fixture()
 def intraday_data():
     return _make_intraday_data()
-
-
-def test_returns_result_object(intraday_data):
-    factor_df, ret_df = intraday_data
-    result = compute_intraday_rank_ic(factor_df, ret_df)
-    assert isinstance(result, IntradayICResult)
-
 
 def test_ic_is_finite(intraday_data):
     factor_df, ret_df = intraday_data
     result = compute_intraday_rank_ic(factor_df, ret_df)
     assert np.isfinite(result.ic_mean)
     assert np.isfinite(result.ic_std)
-
 
 def test_daily_ic_has_correct_dates(intraday_data):
     factor_df, ret_df = intraday_data
@@ -425,28 +357,12 @@ def test_daily_ic_has_correct_dates(intraday_data):
     # 5 trading days -> 5 rows in daily_ic
     assert result.daily_ic.shape[0] == 5
 
-
-def test_segment_ic_has_three_segments(intraday_data):
-    factor_df, ret_df = intraday_data
-    result = compute_intraday_rank_ic(factor_df, ret_df)
-    segments = set(result.segment_ic["segment"].to_list())
-    # Only open bars (09:30-10:00) and midday in our synthetic data
-    assert len(segments) >= 1
-
-
-def test_n_periods_positive(intraday_data):
-    factor_df, ret_df = intraday_data
-    result = compute_intraday_rank_ic(factor_df, ret_df)
-    assert result.n_periods > 0
-
-
 def test_summary_string(intraday_data):
     factor_df, ret_df = intraday_data
     result = compute_intraday_rank_ic(factor_df, ret_df)
     text = result.summary()
     assert "Intraday IC" in text
     assert "IC Mean" in text
-
 
 def test_empty_input_returns_zeros():
     factor_df = pl.DataFrame(
@@ -467,7 +383,6 @@ def test_empty_input_returns_zeros():
     assert result.ic_mean == 0.0
     assert result.n_periods == 0
 
-
 def test_assign_segment_labels():
     df = pl.DataFrame(
         {
@@ -486,7 +401,6 @@ def test_assign_segment_labels():
 
 # ==== 来自 test_intraday_preprocessing.py ====
 # ── fill_missing_bars ───────────────────────────────────────────────────────
-
 
 class TestFillMissingBars:
     """验证 forward-fill 缺失 bar 的行为。"""
@@ -599,9 +513,7 @@ class TestFillMissingBars:
 
         assert result["factor_value"].to_list() == [1.5, None, 2.0]
 
-
 # ── clip_outliers ───────────────────────────────────────────────────────────
-
 
 class TestClipOutliers:
     """验证分位数截尾行为。"""
@@ -675,9 +587,7 @@ class TestClipOutliers:
         result = clip_outliers(df)
         assert result["factor_value"][0] == 42.0
 
-
 # ── IntradayPreprocessingPipeline ───────────────────────────────────────────
-
 
 class TestIntradayPreprocessingPipeline:
     """验证预处理管线的构造、配置和 run() 行为。"""

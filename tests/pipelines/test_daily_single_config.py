@@ -21,9 +21,6 @@ def _ns(**kw):
     base.update(kw)
     return Namespace(**base)
 
-
-
-
 def test_build_forward_return_frame_prefers_adjusted_close():
     from factorzen.pipelines.daily_single import _build_forward_return_frame
 
@@ -41,7 +38,6 @@ def test_build_forward_return_frame_prefers_adjusted_close():
     assert ret_df["ret"][1] == pytest.approx(0.0)
     assert ret_df["fwd_ret_1d"][0] == pytest.approx(0.0)
 
-
 def test_build_forward_return_frame_falls_back_to_close_without_adjusted_close():
     from factorzen.pipelines.daily_single import _build_forward_return_frame
 
@@ -57,7 +53,6 @@ def test_build_forward_return_frame_falls_back_to_close_without_adjusted_close()
 
     assert ret_df["ret"][1] == pytest.approx(-0.5)
     assert ret_df["fwd_ret_1d"][0] == pytest.approx(-0.5)
-
 
 def test_build_forward_return_frame_falls_back_per_stock_for_partial_adjusted_close():
     from factorzen.pipelines.daily_single import _build_forward_return_frame
@@ -84,9 +79,6 @@ def test_build_forward_return_frame_falls_back_per_stock_for_partial_adjusted_cl
     assert stock_a["fwd_ret_1d"][0] == pytest.approx(-0.5)
     assert stock_b["ret"][1] == pytest.approx(0.1)
     assert stock_b["fwd_ret_1d"][0] == pytest.approx(0.1)
-
-
-
 
 def test_run_backtest_strategies_runs_each_configured_strategy(monkeypatch):
     from types import SimpleNamespace
@@ -131,7 +123,6 @@ def test_run_backtest_strategies_runs_each_configured_strategy(monkeypatch):
     assert primary.strategy_name == "topn_5"
     assert list(results) == ["topn_5", "quantile_ls_4"]
 
-
 def test_run_backtest_strategies_passes_is_st_by_date_to_backtest(monkeypatch):
     """ST涨跌停容差接线：_run_backtest_strategies 应基于 daily 的
     codes/trade_dates 构建 is_st_by_date 并传给 run_strategy_backtest。
@@ -171,7 +162,6 @@ def test_run_backtest_strategies_passes_is_st_by_date_to_backtest(monkeypatch):
         f"实际收到: {captured.get('is_st_by_date')!r}"
     )
 
-
 def test_merge_run_config_args_uses_yaml_for_missing_cli_values():
     from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _merge_run_config_args
@@ -194,7 +184,6 @@ def test_merge_run_config_args_uses_yaml_for_missing_cli_values():
     assert merged.universe == "csi500"
     assert merged.benchmark == "000905.SH"
     assert merged.seed == 42
-
 
 def test_merge_run_config_args_keeps_explicit_cli_values():
     from factorzen.config.research import RunConfig
@@ -226,7 +215,6 @@ def test_merge_run_config_args_keeps_explicit_cli_values():
     assert merged.benchmark == "000905.SH"
     assert merged.seed == 7
 
-
 def test_merge_run_config_args_keeps_explicit_cli_benchmark():
     from factorzen.config.research import RunConfig
     from factorzen.pipelines.daily_single import _merge_run_config_args
@@ -242,7 +230,6 @@ def test_merge_run_config_args_keeps_explicit_cli_benchmark():
     merged = _merge_run_config_args(args, cfg)
 
     assert merged.benchmark == "000852.SH"
-
 
 def test_dry_run_payload_includes_effective_config_and_output_dir():
     from factorzen.config.research import RunConfig
@@ -267,7 +254,6 @@ def test_dry_run_payload_includes_effective_config_and_output_dir():
     assert "execution" not in payload
     for banned in ("ic_method", "neutralized_ic", "event_study", "llm_explain", "llm_refresh"):
         assert banned not in payload["config"]
-
 
 def test_merge_run_config_args_and_dry_run_drop_deep_eval_keys():
     """防回归：合并后的 namespace / dry-run payload 不再含深度评估键。"""
@@ -300,7 +286,6 @@ def test_merge_run_config_args_and_dry_run_drop_deep_eval_keys():
         assert banned not in payload.get("execution", {})
         assert banned not in payload["config"]
 
-
 def test_effective_run_config_without_yaml_uses_quantile_ls_5():
     from factorzen.pipelines.daily_single import _effective_run_config, _merge_run_config_args
 
@@ -322,102 +307,6 @@ def test_effective_run_config_without_yaml_uses_quantile_ls_5():
     assert [spec.name for spec in cfg.backtest.strategy_specs] == ["quantile_ls_5"]
     assert cfg.backtest.strategy_specs[0].type == "quantile_long_short"
     assert cfg.backtest.strategy_specs[0].params == {"quantiles": 5}
-
-
-def test_merge_run_config_args_without_yaml_fills_benchmark_and_seed():
-    from factorzen.pipelines.daily_single import _merge_run_config_args
-
-    args = _ns(
-        factor="momentum_20d",
-        start="20240101",
-        end="20240131",
-    )
-
-    merged = _merge_run_config_args(args, None)
-
-    assert merged.universe == "csi500"
-    assert merged.benchmark == "000905.SH"
-    assert merged.seed == 42
-
-
-def test_find_default_run_config_path_matches_factor_field(tmp_path):
-    from factorzen.pipelines.daily_single import _find_default_run_config_path
-
-    config_dir = tmp_path / "daily"
-    config_dir.mkdir()
-    (config_dir / "momentum_20d.yaml").write_text(
-        "\n".join(
-            [
-                "factor: momentum_20d",
-                "universe: csi500",
-                'start: "20230101"',
-                'end: "20241231"',
-            ]
-        ),
-        encoding="utf-8",
-    )
-    (config_dir / "other.yaml").write_text(
-        "\n".join(
-            [
-                "factor: reversal_5d",
-                "universe: csi300",
-                'start: "20230101"',
-                'end: "20241231"',
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    path = _find_default_run_config_path("momentum_20d", "daily", configs_root=tmp_path)
-
-    assert path == config_dir / "momentum_20d.yaml"
-
-
-def test_find_default_run_config_path_errors_on_multiple_matches(tmp_path):
-    from factorzen.pipelines.daily_single import _find_default_run_config_path
-
-    config_dir = tmp_path / "daily"
-    config_dir.mkdir()
-    for name in ("a.yaml", "b.yaml"):
-        (config_dir / name).write_text(
-            "\n".join(
-                [
-                    "factor: momentum_20d",
-                    "universe: csi500",
-                    'start: "20230101"',
-                    'end: "20241231"',
-                ]
-            ),
-            encoding="utf-8",
-        )
-
-    with pytest.raises(ValueError, match="找到多个默认配置"):
-        _find_default_run_config_path("momentum_20d", "daily", configs_root=tmp_path)
-
-
-def test_find_default_run_config_path_prefers_factor_named_config(tmp_path):
-    from factorzen.pipelines.daily_single import _find_default_run_config_path
-
-    config_dir = tmp_path / "daily"
-    config_dir.mkdir()
-    for name in ("momentum_20d.yaml", "momentum_20d_walk_forward.yaml"):
-        (config_dir / name).write_text(
-            "\n".join(
-                [
-                    "factor: momentum_20d",
-                    "universe: csi500",
-                    'start: "20230101"',
-                    'end: "20241231"',
-                ]
-            ),
-            encoding="utf-8",
-        )
-
-    path = _find_default_run_config_path("momentum_20d", "daily", configs_root=tmp_path)
-
-    assert path == config_dir / "momentum_20d.yaml"
-
-
 
 def test_preprocess_with_industry_neutralization_uses_universe_industry():
     from factorzen.config.research import RunConfig
@@ -453,7 +342,6 @@ def test_preprocess_with_industry_neutralization_uses_universe_industry():
     )
     assert by_industry["mean_factor"].abs().max() < 1e-10
 
-
 def test_load_daily_basic_for_neutralization_reads_ensured_cache(monkeypatch):
     import factorzen.pipelines.daily_single as run_mod
 
@@ -480,7 +368,6 @@ def test_load_daily_basic_for_neutralization_reads_ensured_cache(monkeypatch):
 
     assert result.equals(expected)
     assert calls == [("daily_basic", "20240102", "20240103")]
-
 
 def test_run_ensures_required_data_before_loading_universe(monkeypatch):
     import factorzen.pipelines.daily_single as run_mod

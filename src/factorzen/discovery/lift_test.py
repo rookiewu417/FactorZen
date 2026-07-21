@@ -42,6 +42,7 @@ from factorzen.discovery.guardrails import (
     DEFAULT_HOLDOUT_MIN_DAYS,
     DEFAULT_LIFT_THRESHOLD,
     REJECT_CATEGORY_GRAY_ZONE,
+    SLEEVE_SUBSET_MIN_DAYS,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -54,6 +55,14 @@ DEFAULT_LIFT_WORKERS: int | None = None
 
 # residual_ic_v1 口径阈值占位——阶段 D null 校准后回填，勿当已标定值用
 DEFAULT_RESIDUAL_LIFT_THRESHOLD: float = 0.005
+
+# sleeve overlay_v1（07-19 OOS 验证口径）：combined = main_z + w × sleeve_z
+# w=0.25 = 扫参表保守中档（见 .artifacts/event-sleeve-overlay.md / sleeve3-progress）
+DEFAULT_OVERLAY_W: float = 0.25
+# 掩码有效日下限：与 sleeve 旁路 subset 日数守卫同源
+OVERLAY_MIN_MASK_DAYS: int = SLEEVE_SUBSET_MIN_DAYS
+# 单日事件股下限（与 event_sleeve_overlay m.sum() >= 3 一致）
+OVERLAY_MIN_CROSS: int = 3
 
 # 历史 lgbm walk-forward CV 常量（旧口径引用 / 对照）；residual 引擎不再使用。
 DEFAULT_LIFT_CV: dict[str, Any] = {
@@ -837,6 +846,256 @@ def _candidate_identity_fields(c: dict) -> dict[str, Any]:
     return out
 
 
+def partition_lift_queue_by_sleeve(
+    candidates: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """按 ``sleeve_candidate`` 拆稠密 / sleeve 两队列（CLI 与 session 同源）。
+
+    sleeve 不走 residual 组门（见模块 docstring / sleeve3-progress）；稠密路径不变。
+    """
+    dense: list[dict] = []
+    sleeve: list[dict] = []
+    for c in candidates:
+        if c.get("sleeve_candidate"):
+            sleeve.append(c)
+        else:
+            dense.append(c)
+    return dense, sleeve
+
+
+def library_equal_weight_score_panel(panel: Any) -> pl.DataFrame:
+    """库面板 → 等权主分数长表 ``[trade_date, ts_code, factor_value]``。
+
+    与 07-19 ``event_sleeve_overlay``：``main_score = X.mean(axis=2)`` 同源
+    （``LibraryPanel.X`` 已是逐日截面 z-score + null→0）。
+    """
+    empty = pl.DataFrame(
+        schema={
+            "trade_date": pl.Utf8,
+            "ts_code": pl.Utf8,
+            "factor_value": pl.Float64,
+        },
+    )
+    if panel is None or getattr(panel, "k", 0) == 0:
+        return empty
+    X = np.asarray(panel.X, dtype=np.float64)
+    if X.ndim != 3 or X.shape[2] == 0:
+        return empty
+    main = X.mean(axis=2)  # (n_d, n_s)
+    dates = list(panel.dates)
+    stocks = list(panel.stocks)
+    n_d, n_s = main.shape
+    # 展平；trade_date 统一 ISO 字符串，便于与 ret / cand join
+    out_dates: list[str] = []
+    out_codes: list[str] = []
+    out_vals: list[float] = []
+    for di in range(n_d):
+        d_iso = iso_date_str(dates[di])
+        if d_iso is None:
+            d_iso = str(dates[di])
+        for si in range(n_s):
+            out_dates.append(d_iso)
+            out_codes.append(str(stocks[si]))
+            out_vals.append(float(main[di, si]))
+    return pl.DataFrame(
+        {
+            "trade_date": out_dates,
+            "ts_code": out_codes,
+            "factor_value": out_vals,
+        },
+        schema={
+            "trade_date": pl.Utf8,
+            "ts_code": pl.Utf8,
+            "factor_value": pl.Float64,
+        },
+    )
+
+
+def apply_sleeve_overlay(
+    base_scores: pl.DataFrame,
+    cand_df: pl.DataFrame,
+    *,
+    w: float = DEFAULT_OVERLAY_W,
+    min_cross: int = OVERLAY_MIN_CROSS,
+) -> tuple[pl.DataFrame, int]:
+    """``combined = main_z + w × sleeve_z``（sleeve 仅事件股非零）。
+
+    事件股 = 候选 ``factor_value`` 有限且非零；日内事件子集 z-score 后叠
+    ``w * sleeve_z``。事件股数 < ``min_cross`` 的日不叠（= 基线）。
+    返回 ``(combined_long, n_mask_days)``；``n_mask_days`` = 实际发生叠加的日数。
+    """
+    empty = pl.DataFrame(
+        schema={
+            "trade_date": pl.Utf8,
+            "ts_code": pl.Utf8,
+            "factor_value": pl.Float64,
+        },
+    )
+    if base_scores is None or base_scores.is_empty():
+        return empty, 0
+    if cand_df is None or cand_df.is_empty() or "factor_value" not in cand_df.columns:
+        return (
+            with_iso_date(base_scores).select(
+                pl.col("trade_date").cast(pl.Utf8),
+                pl.col("ts_code").cast(pl.Utf8),
+                pl.col("factor_value").cast(pl.Float64),
+            ),
+            0,
+        )
+
+    base = with_iso_date(base_scores).select(
+        pl.col("trade_date").cast(pl.Utf8),
+        pl.col("ts_code").cast(pl.Utf8),
+        pl.col("factor_value").cast(pl.Float64),
+    )
+    cand = with_iso_date(cand_df).select(
+        pl.col("trade_date").cast(pl.Utf8),
+        pl.col("ts_code").cast(pl.Utf8),
+        pl.col("factor_value").cast(pl.Float64),
+    )
+    # 事件掩码：有限且 |v| > 0
+    cand_ev = cand.filter(
+        pl.col("factor_value").is_not_null()
+        & pl.col("factor_value").is_finite()
+        & (pl.col("factor_value").abs() > 0.0)
+    )
+    if cand_ev.is_empty():
+        return base, 0
+
+    from factorzen.discovery.residual import _cs_zscore_null0
+
+    sleeve_rows: list[dict[str, Any]] = []
+    n_mask_days = 0
+    for _d, g in cand_ev.group_by("trade_date", maintain_order=True):
+        d = _d[0] if isinstance(_d, tuple) else _d
+        codes = g["ts_code"].to_list()
+        vals = g["factor_value"].to_numpy().astype(np.float64, copy=False)
+        if vals.size < int(min_cross):
+            continue
+        # 事件子集内 z-score（与 07-19 _zscore(raw[m]) 同构；ddof=1 走生产 _cs_zscore）
+        z = _cs_zscore_null0(vals)
+        # _cs_zscore_null0 对全截面 mask；此处 vals 已全有限，z 与 vals 对齐
+        if int(np.isfinite(z).sum()) < int(min_cross):
+            continue
+        n_mask_days += 1
+        for code, zv in zip(codes, z, strict=False):
+            if not np.isfinite(zv) or zv == 0.0:
+                continue
+            sleeve_rows.append({
+                "trade_date": str(d),
+                "ts_code": str(code),
+                "sleeve_z": float(zv),
+            })
+
+    if not sleeve_rows or n_mask_days == 0:
+        return base, 0
+
+    sleeve = pl.DataFrame(sleeve_rows)
+    joined = base.join(sleeve, on=["trade_date", "ts_code"], how="left")
+    combined = joined.with_columns(
+        (
+            pl.col("factor_value")
+            + float(w) * pl.col("sleeve_z").fill_null(0.0)
+        ).alias("factor_value")
+    ).select(["trade_date", "ts_code", "factor_value"])
+    return combined, n_mask_days
+
+
+def _count_mask_days_in_window(
+    cand_df: pl.DataFrame,
+    *,
+    start: str | None,
+    end: str | None,
+    min_cross: int = OVERLAY_MIN_CROSS,
+) -> int:
+    """admission 窗内事件日数（日事件股 ≥ min_cross）。"""
+    if cand_df is None or cand_df.is_empty():
+        return 0
+    cand = with_iso_date(cand_df).select(
+        pl.col("trade_date").cast(pl.Utf8),
+        pl.col("factor_value").cast(pl.Float64),
+    )
+    start_iso = iso_date_str(start)
+    end_iso = iso_date_str(end)
+    if start_iso is not None:
+        cand = cand.filter(pl.col("trade_date") >= start_iso)
+    if end_iso is not None:
+        cand = cand.filter(pl.col("trade_date") <= end_iso)
+    cand = cand.filter(
+        pl.col("factor_value").is_not_null()
+        & pl.col("factor_value").is_finite()
+        & (pl.col("factor_value").abs() > 0.0)
+    )
+    if cand.is_empty():
+        return 0
+    counts = cand.group_by("trade_date").len()
+    return int(counts.filter(pl.col("len") >= int(min_cross)).height)
+
+
+def _subset_factor_panel(cand_df: pl.DataFrame) -> pl.DataFrame:
+    """保留事件子集行（有限非零）供 admission_ic / 子集 RankIC。"""
+    if cand_df is None or cand_df.is_empty():
+        return pl.DataFrame(
+            schema={
+                "trade_date": pl.Utf8,
+                "ts_code": pl.Utf8,
+                "factor_value": pl.Float64,
+            },
+        )
+    return with_iso_date(cand_df).filter(
+        pl.col("factor_value").is_not_null()
+        & pl.col("factor_value").is_finite()
+        & (pl.col("factor_value").abs() > 0.0)
+    ).select(
+        pl.col("trade_date").cast(pl.Utf8),
+        pl.col("ts_code").cast(pl.Utf8),
+        pl.col("factor_value").cast(pl.Float64),
+    )
+
+
+def _subset_mean_rank_ic(
+    cand_df: pl.DataFrame,
+    ret_df: pl.DataFrame,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    min_cross: int = OVERLAY_MIN_CROSS,
+) -> float:
+    """掩码子集逐日 RankIC 均值（事件股日守卫 = ``min_cross``，非 n_groups*2）。
+
+    全截面 ``_daily_oos_rank_ic`` 要求 ≥10 票，事件子集常只有数票——不能复用。
+    """
+    sub = _subset_factor_panel(cand_df)
+    if sub.is_empty():
+        return 0.0
+    rdf = with_iso_date(ret_df)
+    if (
+        "ts_code" in sub.columns
+        and "ts_code" in rdf.columns
+        and sub.schema["ts_code"] != rdf.schema["ts_code"]
+    ):
+        rdf = rdf.with_columns(pl.col("ts_code").cast(sub.schema["ts_code"]))
+    m = sub.join(rdf, on=["trade_date", "ts_code"], how="inner")
+    start_iso = iso_date_str(start)
+    end_iso = iso_date_str(end)
+    if start_iso is not None:
+        m = m.filter(pl.col("trade_date") >= start_iso)
+    if end_iso is not None:
+        m = m.filter(pl.col("trade_date") <= end_iso)
+    ics: list[float] = []
+    for _d, g in m.group_by("trade_date", maintain_order=True):
+        if len(g) < int(min_cross):
+            continue
+        f = g["factor_value"].to_numpy().astype(float)
+        r = g["ret"].to_numpy().astype(float)
+        ic = spearman_avg_rank(f, r)
+        if ic is not None and np.isfinite(ic):
+            ics.append(float(ic))
+    if not ics:
+        return 0.0
+    return float(np.mean(ics))
+
+
 def run_lift_tests(
     gray_candidates: list[dict],
     *,
@@ -855,7 +1114,9 @@ def run_lift_tests(
     ctx: LiftEvalContext | None = None,
     lift_workers: int | None = DEFAULT_LIFT_WORKERS,
 ) -> list[dict]:
-    """对灰区/lift 队列候选跑残差增量 lift 实验（``residual_ic_v1``）。
+    """对灰区/lift 队列候选跑 lift 实验。
+
+    **稠密**（默认 / ``sleeve_candidate`` 假）：``residual_ic_v1`` 残差增量。
 
     - gray 按 |residual_ic_train|（缺则 |ic_train|）降序；``top_m=None`` 全测，
       否则截断（``truncated_from`` / n_selected 语义不变——**no silent caps**）。
@@ -863,6 +1124,16 @@ def run_lift_tests(
     - 每候选：物化 → ``daily_residual_rank_ic`` → ``series_lift_stats``。
     - ``lift`` / ``candidate_rank_ic`` **同源**（残差 IC 均值）；``baseline=None``。
     - ``admission_ic`` = 候选**裸** RankIC（方向权威，不换残差）。
+
+    **sleeve**（``sleeve_candidate=True``）：``overlay_v1`` 叠加增量（07-19 OOS 口径）。
+
+    - 基线 = 库等权主分数逐日 RankIC；叠加 = ``main + w·sleeve_z``（仅事件股）；
+    - ``lift`` = 配对日 IC 差均值（``paired_lift_stats``）；``baseline`` = 基线 IC 均值；
+    - ``admission_ic`` = **掩码子集** RankIC（稀疏方向权威；全截面裸 IC 被 fill-0 稀释不可用）；
+    - 掩码日 < ``OVERLAY_MIN_MASK_DAYS`` → ``error=insufficient_mask_days``。
+
+    共用：
+
     - ``lift ≥ threshold`` → passed（最终 active/probation/reject 见 ``lift_admission``）。
     - 逐候选 try/except：一个坏候选不崩整批。
     - 残差序列空 → ``error=no_residual_days``、``lift=None``（**禁止静默 lift=0**）。
@@ -964,6 +1235,7 @@ def run_lift_tests(
         return _batch_error_rows("empty_library_panel", n_lib=0)
 
     projector = ResidualProjector(panel)
+    n_lib_k = int(panel.k)
     meta = _lift_run_meta(
         n_input=n_input,
         n_selected=len(selected),
@@ -974,8 +1246,10 @@ def run_lift_tests(
         market=market,
         baseline_hash=baseline_hash,
         seed=seed,
-        n_lib_factors=int(panel.k),
+        n_lib_factors=n_lib_k,
     )
+    # overlay 共用：等权基线分数 + 基线日 IC（admission 窗）一次构建
+    base_scores = library_equal_weight_score_panel(panel)
 
     if ret_df is None:
         ret_src = ctx.prepped if ctx is not None else daily
@@ -995,12 +1269,24 @@ def run_lift_tests(
         else:
             materialize_candidate = _default_materializer(daily, leaf_map)
 
+    # 基线日 IC 懒缓存：仅 sleeve 批需要；稠密路径不读
+    _base_daily_cache: dict[str, pl.DataFrame] = {}
+
+    def _base_daily_ic() -> pl.DataFrame:
+        key = f"{adm_start}|{adm_end}"
+        if key not in _base_daily_cache:
+            _base_daily_cache[key] = _daily_oos_rank_ic(
+                base_scores, ret_df, start=adm_start, end=adm_end,
+            )
+        return _base_daily_cache[key]
+
     n_sel = len(selected)
     done_i = {"n": 0}
 
     def _eval_one(c: dict) -> dict[str, Any]:
         expr = c.get("expression")
         t0 = time.monotonic()
+        is_sleeve = bool(c.get("sleeve_candidate"))
         row: dict[str, Any] = {
             "expression": expr,
             "lift": None,
@@ -1014,6 +1300,11 @@ def run_lift_tests(
             **prov_empty,
             **_candidate_identity_fields(c),
         }
+        if is_sleeve:
+            row["overlay"] = True
+            row["overlay_w"] = float(DEFAULT_OVERLAY_W)
+            row["lift_metric"] = "overlay_v1"
+            row["sleeve_candidate"] = True
         try:
             cand_df = materialize_candidate(expr) if expr else None
             if cand_df is None or (hasattr(cand_df, "is_empty") and cand_df.is_empty()):
@@ -1028,14 +1319,64 @@ def run_lift_tests(
             if _is_degenerate_factor_df(cand_sel):
                 row["error"] = "degenerate_candidate"
                 return row
+            # 透传候选 provenance（审计用；方向权威仍是 admission_ic）
+            row["ic_train"] = c.get("ic_train")
+            row["residual_ic_train"] = c.get("residual_ic_train")
+
+            if is_sleeve:
+                n_mask = _count_mask_days_in_window(
+                    cand_sel, start=adm_start, end=adm_end,
+                )
+                row["n_mask_days"] = n_mask
+                if n_mask < int(OVERLAY_MIN_MASK_DAYS):
+                    row["error"] = "insufficient_mask_days"
+                    row["lift"] = None
+                    return row
+                # 掩码子集 RankIC = 方向权威（稀疏全截面裸 IC 被 fill-0 稀释）
+                row["admission_ic"] = _subset_mean_rank_ic(
+                    cand_sel, ret_df, start=adm_start, end=adm_end,
+                )
+
+                combined, n_mask_applied = apply_sleeve_overlay(
+                    base_scores, cand_sel, w=float(DEFAULT_OVERLAY_W),
+                )
+                # 与守卫计数对齐（apply 全窗；评分仍裁 admission）
+                row["n_mask_days"] = n_mask
+                del n_mask_applied  # 全窗叠加日；admission 以 n_mask 为准
+
+                base_daily = _base_daily_ic()
+                cand_daily = _daily_oos_rank_ic(
+                    combined, ret_df, start=adm_start, end=adm_end,
+                )
+                if base_daily.is_empty() or cand_daily.is_empty():
+                    row["error"] = "no_overlay_days"
+                    row["lift"] = None
+                    return row
+                stats = paired_lift_stats(
+                    cand_daily, base_daily, block_days=block_days,
+                )
+                scored_s, scored_e = _scored_bounds(cand_daily, base_daily)
+                lift_v = stats["lift"]
+                row["baseline"] = _mean_ic(base_daily)
+                row["candidate_rank_ic"] = _mean_ic(cand_daily)
+                row["lift"] = lift_v
+                row["lift_se"] = stats["lift_se"]
+                row["n_blocks"] = stats["n_blocks"]
+                row["lift_first_half"] = stats["lift_first_half"]
+                row["lift_second_half"] = stats["lift_second_half"]
+                row["scored_start"] = scored_s
+                row["scored_end"] = scored_e
+                row["passed"] = bool(
+                    lift_v is not None and float(lift_v) >= threshold
+                )
+                return row
+
+            # ── residual_ic_v1（稠密 / 非 sleeve）──────────────────────────
             # 单因子 admission 窗 RankIC（方向权威；≠ 残差 candidate_rank_ic）
             single_daily = _daily_oos_rank_ic(
                 cand_sel, ret_df, start=adm_start, end=adm_end,
             )
             row["admission_ic"] = _mean_ic(single_daily)
-            # 透传候选 provenance（审计用；方向权威仍是 admission_ic）
-            row["ic_train"] = c.get("ic_train")
-            row["residual_ic_train"] = c.get("residual_ic_train")
 
             resid_daily = daily_residual_rank_ic(
                 cand_sel,
@@ -1093,8 +1434,9 @@ def run_lift_tests(
                 if isinstance(lift_s, (int, float)) and lift_s == lift_s
                 else repr(lift_s)
             )
+            tag = "overlay" if row.get("overlay") else "resid"
             print(
-                f"[lift {done_i['n']}/{n_sel}] {expr_s} "
+                f"[lift {done_i['n']}/{n_sel}] ({tag}) {expr_s} "
                 f"lift={lift_fmt} elapsed={row['elapsed_s']:.2f}s",
                 flush=True,
             )
@@ -1499,18 +1841,24 @@ __all__ = [
     "DEFAULT_HORIZON",
     "DEFAULT_LIFT_CV",
     "DEFAULT_LIFT_WORKERS",
+    "DEFAULT_OVERLAY_W",
     "DEFAULT_RESIDUAL_LIFT_THRESHOLD",
     "DEFAULT_TOP_M",
     "LIFT_QUEUE_CATEGORY",
+    "OVERLAY_MIN_CROSS",
+    "OVERLAY_MIN_MASK_DAYS",
     "LiftEvalContext",
     "adaptive_lift_workers",
+    "apply_sleeve_overlay",
     "extract_gray_candidates_from_manifest",
     "extract_lift_queue_from_manifest",
     "filter_candidates_by_coverage",
     "group_gate_ok",
+    "library_equal_weight_score_panel",
     "lift_admission",
     "make_lift_context",
     "paired_lift_stats",
+    "partition_lift_queue_by_sleeve",
     "resolve_lift_workers",
     "run_group_lift",
     "run_lift_tests",

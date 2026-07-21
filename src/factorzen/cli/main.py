@@ -1397,6 +1397,8 @@ def _holdout_bounds_from_manifest(man: dict) -> tuple[str | None, str | None]:
     - mine_team / mine-agent：当前**不落** holdout_start，仅 params 有
       holdout_ratio / start / end / eval_start——无交易日历时无法反推切点，
       故只认显式 holdout 字段（顶层或 params.holdout_start）。
+    - 回退：session 末 auto-lift 已写入的 ``lift_group.admission_start/end``
+      （team_1002 等历史 team manifest 的实操评分窗）。
     - end：params.end / end / mining_end（多 session 取最晚）
     """
     start = man.get("holdout_start")
@@ -1407,6 +1409,14 @@ def _holdout_bounds_from_manifest(man: dict) -> tuple[str | None, str | None]:
     if end is None:
         params = man.get("params") or {}
         end = params.get("end") or params.get("eval_end")
+    # team auto-lift 回写的评分窗（无顶层 holdout_start 时）
+    if start is None or end is None:
+        lg = man.get("lift_group") or {}
+        if isinstance(lg, dict):
+            if start is None:
+                start = lg.get("admission_start")
+            if end is None:
+                end = lg.get("admission_end")
     return _lift_admission_str(start), _lift_admission_str(end)
 
 
@@ -1419,11 +1429,16 @@ def _horizon_from_manifest(man: dict) -> int | None:
     - mining_session：顶层字段可选 ``horizon``（``run_session`` 有入参但历史 manifest
       多数未落盘）
     - 顶层 ``horizon`` 优先于 ``params.horizon``
+    - 回退：``lift_group.horizon``（auto-lift 实跑评分窗）
     """
     raw = man.get("horizon")
     if raw is None:
         params = man.get("params") or {}
         raw = params.get("horizon")
+    if raw is None:
+        lg = man.get("lift_group") or {}
+        if isinstance(lg, dict):
+            raw = lg.get("horizon")
     if raw is None:
         return None
     try:
@@ -1612,6 +1627,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         filter_candidates_by_coverage,
         group_gate_ok,
         make_lift_context,
+        partition_lift_queue_by_sleeve,
         resolve_lift_workers,
         run_group_lift,
         run_lift_tests,
@@ -1884,13 +1900,20 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             in_floor = list(cands)
             sub_floor = [
                 c for c in cands
-                if is_sub_floor_candidate(c, floor=queue_ic_floor)
+                if (not c.get("sleeve_candidate")
+                    and is_sub_floor_candidate(c, floor=queue_ic_floor))
             ]
         else:
             in_floor, sub_floor = [], []
             for c in cands:
-                (sub_floor if is_sub_floor_candidate(c, floor=queue_ic_floor)
-                 else in_floor).append(c)
+                # sleeve 旁路进队列的依据是子集 IC，残差/裸 IC 本就弱——
+                # residual 噪声地板不得把 sleeve 剔出（否则 overlay 通道永远空）
+                if c.get("sleeve_candidate"):
+                    in_floor.append(c)
+                elif is_sub_floor_candidate(c, floor=queue_ic_floor):
+                    sub_floor.append(c)
+                else:
+                    in_floor.append(c)
         if sub_floor:
             floor_desc = (
                 f"{queue_ic_floor}" if queue_ic_floor is not None
@@ -1976,70 +1999,109 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         grp_ctx = dataclasses.replace(
             base_ctx, admission_start=g_start, admission_end=g_end,
         )
-        group = run_group_lift(
-            kept,
-            market=market,
-            daily=daily,
-            leaf_map=leaf_map,
-            library_root=lib_root,
-            seed=seed,
-            threshold=threshold,
-            materialize_candidate=memo_mat,
-            ctx=grp_ctx,
-        )
-        # 防御性剥离：组结果本无 base_daily；若旧 mock 注入帧则不进 JSON manifest
-        group_view = {k: v for k, v in group.items() if k != "base_daily"}
-        lift_groups_meta.append(group_view)
-        n_lift_evaluated += 1  # 组门计 1 次
-
-        group_ok, bar = group_gate_ok(
-            group, threshold=float(threshold), lift_se_mult=se_mult,
-        )
-        g_lift, g_se = group.get("lift"), group.get("lift_se")
-        print(
-            f"[factor-library lift-test] 组门(residual) lift={g_lift!r} se={g_se!r} "
-            f"bar={bar:.4f} → {'过' if group_ok else '拒'}",
-            flush=True,
-        )
-        if not group_ok:
-            # 组门不过：全体 skip 逐候选；结果行记 reject 原因（lift/se 取组门值供 index 写回）
-            reason = (
-                f"group_gate_fail(lift={g_lift!r},se={g_se!r},bar={bar:.4f})"
+        # sleeve 不与稠密混 residual 组门（07-19 overlay 口径；见 sleeve3-progress）
+        dense_kept, sleeve_kept = partition_lift_queue_by_sleeve(kept)
+        if sleeve_kept:
+            print(
+                f"[factor-library lift-test] sleeve 队列 {len(sleeve_kept)} 条"
+                f"（跳过 residual 组门 → overlay 个体）"
+                f"（组 {g_start or '—'}~{g_end or '—'}）",
+                flush=True,
             )
-            for c in kept:
-                results.append({
-                    "expression": c.get("expression"),
-                    "lift": g_lift,
-                    "lift_se": g_se,
-                    "baseline": group.get("baseline"),
-                    "passed": False,
-                    "error": reason,
-                    "admission_start": g_start,
-                    "admission_end": g_end,
-                    "ic_train": c.get("ic_train"),
-                    "residual_ic_train": c.get("residual_ic_train"),
-                })
-            continue
 
-        rows = run_lift_tests(
-            kept,
-            market=market,
-            daily=daily,
-            leaf_map=leaf_map,
-            library_root=lib_root,
-            top_m=None,  # CLI 已截断；此处全测 kept
-            threshold=threshold,
-            seed=seed,
-            ctx=grp_ctx,
-            lift_workers=lift_workers_arg,
-            materialize_candidate=memo_mat,
-        )
-        n_lift_evaluated += len(rows)
-        for r in rows:
-            r = dict(r)
-            r.setdefault("admission_start", g_start)
-            r.setdefault("admission_end", g_end)
-            results.append(r)
+        if dense_kept:
+            group = run_group_lift(
+                dense_kept,
+                market=market,
+                daily=daily,
+                leaf_map=leaf_map,
+                library_root=lib_root,
+                seed=seed,
+                threshold=threshold,
+                materialize_candidate=memo_mat,
+                ctx=grp_ctx,
+            )
+            # 防御性剥离：组结果本无 base_daily；若旧 mock 注入帧则不进 JSON manifest
+            group_view = {k: v for k, v in group.items() if k != "base_daily"}
+            lift_groups_meta.append(group_view)
+            n_lift_evaluated += 1  # 组门计 1 次
+
+            group_ok, bar = group_gate_ok(
+                group, threshold=float(threshold), lift_se_mult=se_mult,
+            )
+            g_lift, g_se = group.get("lift"), group.get("lift_se")
+            print(
+                f"[factor-library lift-test] 组门(residual) lift={g_lift!r} se={g_se!r} "
+                f"bar={bar:.4f} → {'过' if group_ok else '拒'}"
+                f"（dense={len(dense_kept)}）",
+                flush=True,
+            )
+            if not group_ok:
+                # 组门不过：仅稠密 skip 逐候选；sleeve 仍走 overlay
+                reason = (
+                    f"group_gate_fail(lift={g_lift!r},se={g_se!r},bar={bar:.4f})"
+                )
+                for c in dense_kept:
+                    results.append({
+                        "expression": c.get("expression"),
+                        "lift": g_lift,
+                        "lift_se": g_se,
+                        "baseline": group.get("baseline"),
+                        "passed": False,
+                        "error": reason,
+                        "admission_start": g_start,
+                        "admission_end": g_end,
+                        "ic_train": c.get("ic_train"),
+                        "residual_ic_train": c.get("residual_ic_train"),
+                    })
+            else:
+                rows = run_lift_tests(
+                    dense_kept,
+                    market=market,
+                    daily=daily,
+                    leaf_map=leaf_map,
+                    library_root=lib_root,
+                    top_m=None,  # CLI 已截断；此处全测 kept
+                    threshold=threshold,
+                    seed=seed,
+                    ctx=grp_ctx,
+                    lift_workers=lift_workers_arg,
+                    materialize_candidate=memo_mat,
+                )
+                n_lift_evaluated += len(rows)
+                for r in rows:
+                    r = dict(r)
+                    r.setdefault("admission_start", g_start)
+                    r.setdefault("admission_end", g_end)
+                    results.append(r)
+        else:
+            lift_groups_meta.append({
+                "admission_start": g_start,
+                "admission_end": g_end,
+                "skipped": "no_dense_after_sleeve_split",
+                "n_sleeve": len(sleeve_kept),
+            })
+
+        if sleeve_kept:
+            sleeve_rows = run_lift_tests(
+                sleeve_kept,
+                market=market,
+                daily=daily,
+                leaf_map=leaf_map,
+                library_root=lib_root,
+                top_m=None,
+                threshold=threshold,
+                seed=seed,
+                ctx=grp_ctx,
+                lift_workers=lift_workers_arg,
+                materialize_candidate=memo_mat,
+            )
+            n_lift_evaluated += len(sleeve_rows)
+            for r in sleeve_rows:
+                r = dict(r)
+                r.setdefault("admission_start", g_start)
+                r.setdefault("admission_end", g_end)
+                results.append(r)
 
     # 打印表（含 lift_se / second_half）
     print(

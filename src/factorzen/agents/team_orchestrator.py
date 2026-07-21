@@ -1343,6 +1343,7 @@ def _session_end_auto_lift(
         from factorzen.discovery.lift_test import (
             filter_candidates_by_coverage,
             group_gate_ok,
+            partition_lift_queue_by_sleeve,
         )
         kept, dropped = filter_candidates_by_coverage(
             queue,
@@ -1357,68 +1358,108 @@ def _session_end_auto_lift(
             _step("lift 钩子 ▸ 覆盖后队列为空，跳过组测")
             return meta
 
-        # 组门：整批残差等权组合一次——失败则不跑逐候选
-        group = run_group_lift(
-            kept,
-            market=market,
-            daily=daily,
-            leaf_map=leaf_map,
-            library_root=library_root,
-            seed=seed,
-            threshold=DEFAULT_LIFT_THRESHOLD,
-            active_factor_dfs=active_factor_dfs,
-            ret_df=ret_df,
-            materialize_candidate=mat,
-            ctx=lift_ctx,
-        )
-        # 防御性剥离：组结果本无 base_daily；若旧 mock 注入帧则不进 JSON manifest
-        meta["lift_group"] = {
-            k: v for k, v in group.items() if k != "base_daily"
-        }
-        meta["n_lift_evaluated"] = 1  # 组门计 1 次（多重检验 N 记账）
+        # sleeve 不与稠密混 residual 组门（overlay 个体；CLI 同源）
+        dense_kept, sleeve_kept = partition_lift_queue_by_sleeve(kept)
+        results: list = []
+        n_eval = 0
 
-        group_ok, bar = group_gate_ok(
-            group, threshold=float(DEFAULT_LIFT_THRESHOLD), lift_se_mult=float(lift_se_mult),
-        )
-        g_lift = group.get("lift")
-        g_se = group.get("lift_se")
-        _step(
-            f"lift 钩子 ▸ 组 lift={g_lift!r} se={g_se!r} bar={bar:.4f} "
-            f"→ {'过' if group_ok else '拒'}"
-        )
-        if not group_ok:
-            # 组门不过：全体 reject，不跑逐候选（省 n 次残差评估）；写回 experiment_index
-            _append_lift_rejects_to_index(
-                index,
-                kept,
-                lift=g_lift,
-                lift_se=g_se,
-                lift_reason="group_gate_fail",
-                data_window=data_window,
-                admission_start=adm_start,
-                admission_end=adm_end,
-                baseline_rank_ic=group.get("baseline"),
-                source="session_auto_lift",
+        if dense_kept:
+            # 组门：稠密批残差等权组合一次——失败则不跑稠密逐候选
+            group = run_group_lift(
+                dense_kept,
+                market=market,
+                daily=daily,
+                leaf_map=leaf_map,
+                library_root=library_root,
+                seed=seed,
+                threshold=DEFAULT_LIFT_THRESHOLD,
+                active_factor_dfs=active_factor_dfs,
+                ret_df=ret_df,
+                materialize_candidate=mat,
+                ctx=lift_ctx,
             )
-            return meta
+            # 防御性剥离：组结果本无 base_daily；若旧 mock 注入帧则不进 JSON manifest
+            meta["lift_group"] = {
+                k: v for k, v in group.items() if k != "base_daily"
+            }
+            n_eval += 1  # 组门计 1 次（多重检验 N 记账）
 
-        results = run_lift_tests(
-            kept,
-            market=market,
-            daily=daily,
-            leaf_map=leaf_map,
-            library_root=library_root,
-            top_m=None,  # 全测，no silent caps
-            seed=seed,
-            threshold=DEFAULT_LIFT_THRESHOLD,
-            active_factor_dfs=active_factor_dfs,
-            ret_df=ret_df,
-            materialize_candidate=mat,
-            ctx=lift_ctx,
-            lift_workers=lift_workers,
-        )
+            group_ok, bar = group_gate_ok(
+                group,
+                threshold=float(DEFAULT_LIFT_THRESHOLD),
+                lift_se_mult=float(lift_se_mult),
+            )
+            g_lift = group.get("lift")
+            g_se = group.get("lift_se")
+            _step(
+                f"lift 钩子 ▸ 组 lift={g_lift!r} se={g_se!r} bar={bar:.4f} "
+                f"→ {'过' if group_ok else '拒'}（dense={len(dense_kept)}）"
+            )
+            if not group_ok:
+                # 组门不过：仅稠密 reject；sleeve 仍走 overlay
+                _append_lift_rejects_to_index(
+                    index,
+                    dense_kept,
+                    lift=g_lift,
+                    lift_se=g_se,
+                    lift_reason="group_gate_fail",
+                    data_window=data_window,
+                    admission_start=adm_start,
+                    admission_end=adm_end,
+                    baseline_rank_ic=group.get("baseline"),
+                    source="session_auto_lift",
+                )
+            else:
+                dense_results = run_lift_tests(
+                    dense_kept,
+                    market=market,
+                    daily=daily,
+                    leaf_map=leaf_map,
+                    library_root=library_root,
+                    top_m=None,  # 全测，no silent caps
+                    seed=seed,
+                    threshold=DEFAULT_LIFT_THRESHOLD,
+                    active_factor_dfs=active_factor_dfs,
+                    ret_df=ret_df,
+                    materialize_candidate=mat,
+                    ctx=lift_ctx,
+                    lift_workers=lift_workers,
+                )
+                results.extend(dense_results)
+                n_eval += len(dense_results)
+        else:
+            meta["lift_group"] = {
+                "skipped": "no_dense_after_sleeve_split",
+                "n_sleeve": len(sleeve_kept),
+            }
+
+        if sleeve_kept:
+            _step(
+                f"lift 钩子 ▸ sleeve overlay 个体 {len(sleeve_kept)} 条"
+                f"（跳过 residual 组门）"
+            )
+            sleeve_results = run_lift_tests(
+                sleeve_kept,
+                market=market,
+                daily=daily,
+                leaf_map=leaf_map,
+                library_root=library_root,
+                top_m=None,
+                seed=seed,
+                threshold=DEFAULT_LIFT_THRESHOLD,
+                active_factor_dfs=active_factor_dfs,
+                ret_df=ret_df,
+                materialize_candidate=mat,
+                ctx=lift_ctx,
+                lift_workers=lift_workers,
+            )
+            results.extend(sleeve_results)
+            n_eval += len(sleeve_results)
+
         meta["lift_results"] = results
-        meta["n_lift_evaluated"] = 1 + len(results)
+        meta["n_lift_evaluated"] = n_eval
+        if not results:
+            return meta
 
         # 延迟导入：任务 D 契约；测试 monkeypatch factor_library.upsert_lift_admissions
         from factorzen.discovery.factor_library import upsert_lift_admissions

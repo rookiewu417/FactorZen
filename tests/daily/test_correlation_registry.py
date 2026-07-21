@@ -389,7 +389,7 @@ class MockCtx:
 
 # ==== 来自 test_factor_class_attr_declaration.py ====
 class _PlainDeclared(DailyFactor):
-    """按 workspace/factors/*/TEMPLATE.md 教的写法声明——无注解的类属性。"""
+    """按 factor_store / 因子编写指南的写法声明——无注解的类属性。"""
 
     name = "plain_declared_probe"
     category = "weekly"

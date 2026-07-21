@@ -17,13 +17,13 @@
     ├── factor.py
     └── factor.parquet   # 仅 active/probation；correlated 省算力不写
 """
+
 from __future__ import annotations
 
 import importlib.util
 import json
 import logging
 import re
-import warnings
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,6 +80,7 @@ def _date_key(s: str | None) -> str:
 def _to_ymd8(s: str) -> str:
     """物化装帧通道用 ``YYYYMMDD``。"""
     return _date_key(s)
+
 
 # expression 型 factor.py 生成模板（单测锁死：import + compute 与生产求值一致）
 _EXPRESSION_FACTOR_PY_TEMPLATE = '''\
@@ -185,9 +186,7 @@ def build_meta(
     """构造 meta.json 内容（字段契约见模块 docstring / 任务规格）。"""
     name = record_asset_name(rec)
     kind = "python" if _is_python_record(rec) else "expression"
-    description = _truncate(rec.hypothesis) if kind == "expression" else (
-        rec.hypothesis or ""
-    )
+    description = _truncate(rec.hypothesis) if kind == "expression" else (rec.hypothesis or "")
     # python 型 description 也可来自实现；hypothesis 优先
     if kind == "python" and not description:
         description = ""
@@ -234,9 +233,7 @@ def render_expression_factor_py(
 
 def _write_json(path: Path, obj: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -322,9 +319,7 @@ def write_factor_asset(
         out = panel
         needed = {"trade_date", "ts_code", "factor_value"}
         if not needed.issubset(set(out.columns)):
-            raise ValueError(
-                f"panel must have columns {needed}, got {out.columns}"
-            )
+            raise ValueError(f"panel must have columns {needed}, got {out.columns}")
         out = out.select(["trade_date", "ts_code", "factor_value"])
         out.write_parquet(pq_path)
         mat_info = {
@@ -341,9 +336,8 @@ def write_factor_asset(
         mat_info = None
     elif isinstance(prev_mat, dict) and pq_path.exists():
         # 刷新 meta/py 时：expression + store 物化口径仍新鲜则保留 provenance
-        if (
-            prev_meta.get("expression") == record.expression
-            and _materialization_window_fresh(prev_mat)
+        if prev_meta.get("expression") == record.expression and _materialization_window_fresh(
+            prev_mat
         ):
             mat_info = prev_mat
         else:
@@ -392,9 +386,10 @@ def _materialization_fresh(
         return False
     if meta.get("expression") != rec.expression:
         return False
-    if mat.get("expression") not in (None, rec.expression) and mat.get(
-        "expression"
-    ) != rec.expression:
+    if (
+        mat.get("expression") not in (None, rec.expression)
+        and mat.get("expression") != rec.expression
+    ):
         return False
     if not _materialization_window_fresh(mat):
         return False
@@ -428,17 +423,12 @@ def _materialize_records(
     from factorzen.discovery.lift_test import _materializer_from_prepped
     from factorzen.discovery.preparation import expressions_need_intraday
 
-    targets = [
-        r
-        for r in records
-        if (r.status or "") in MATERIALIZE_STATUSES and r.expression
-    ]
+    targets = [r for r in records if (r.status or "") in MATERIALIZE_STATUSES and r.expression]
     if not targets:
         return 0
     if panel_loader is None:
         raise ValueError(
-            "materialize 需要 panel_loader（由 CLI 层注入生产数据装配；"
-            "discovery 层不拉数）"
+            "materialize 需要 panel_loader（由 CLI 层注入生产数据装配；discovery 层不拉数）"
         )
 
     start = STORE_MATERIALIZE_START
@@ -492,9 +482,7 @@ def _materialize_records(
                 if panel is None or (hasattr(panel, "is_empty") and panel.is_empty()):
                     _LOG.warning("factor_store: materialize empty for %s", name)
                     # 仍刷新 meta/py
-                    write_factor_asset(
-                        r, market=market, root=root, materialize=False
-                    )
+                    write_factor_asset(r, market=market, root=root, materialize=False)
                     continue
                 write_factor_asset(
                     r,
@@ -587,23 +575,14 @@ def sync_store(
             prev_meta = _read_json(d / "meta.json")
             # 写 meta + py（始终刷新 ledger 快照）
             # 若即将物化则先不写 mat；若跳过则保留 mat
-            will_try_mat = (
-                materialize
-                and (rec.status or "") in MATERIALIZE_STATUSES
-            )
-            fresh = will_try_mat and _materialization_fresh(
-                rec, prev_meta, d / "factor.parquet"
-            )
+            will_try_mat = materialize and (rec.status or "") in MATERIALIZE_STATUSES
+            fresh = will_try_mat and _materialization_fresh(rec, prev_meta, d / "factor.parquet")
             if will_try_mat and not fresh:
                 # 先写 meta/py（mat=null 或保留），再批物化
-                write_factor_asset(
-                    rec, market=market, root=root, materialize=False
-                )
+                write_factor_asset(rec, market=market, root=root, materialize=False)
                 to_materialize.append(rec)
             else:
-                write_factor_asset(
-                    rec, market=market, root=root, materialize=False
-                )
+                write_factor_asset(rec, market=market, root=root, materialize=False)
                 # 刷新 meta 但保留 materialization
                 if fresh and prev_meta and prev_meta.get("materialization"):
                     meta = build_meta(
@@ -759,9 +738,7 @@ def sync_records_after_upsert(
     root = store_root_for_library(lib_root)
     for rec in records:
         try:
-            write_factor_asset(
-                rec, market=market, root=root, materialize=materialize
-            )
+            write_factor_asset(rec, market=market, root=root, materialize=materialize)
         except Exception as exc:
             _LOG.warning(
                 "factor_store sync after upsert failed name=%s: %s: %s",
@@ -771,7 +748,7 @@ def sync_records_after_upsert(
             )
 
 
-# ── python 因子发现（factor_store + 旧 workspace/factors 兼容）────────────────
+# ── python 因子发现（factor_store 单路径）──────────────────────────────────────
 
 
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -849,25 +826,3 @@ def register_python_factors_from_store(
             ):
                 n_ok += 1
     return n_ok
-
-
-def warn_legacy_workspace_factors() -> None:
-    """若 ``workspace/factors/daily`` 仍有手写 .py，打 DeprecationWarning。"""
-    legacy = WORKSPACE_DIR / "factors" / "daily"
-    if not legacy.is_dir():
-        return
-    py_files = [
-        p
-        for p in legacy.glob("*.py")
-        if p.name not in ("__init__.py",) and not p.name.startswith("TEMPLATE")
-    ]
-    if not py_files:
-        return
-    names = ", ".join(p.stem for p in py_files[:8])
-    more = f" (+{len(py_files) - 8} more)" if len(py_files) > 8 else ""
-    warnings.warn(
-        f"workspace/factors/daily is deprecated; migrate python factors to "
-        f"workspace/factor_store/<market>/<name>/factor.py. Found: {names}{more}",
-        DeprecationWarning,
-        stacklevel=2,
-    )

@@ -1,21 +1,19 @@
-﻿"""通用因子注册中心。支持 daily/intraday 因子的自动发现与注册。
+"""通用因子注册中心。支持 daily/intraday 因子的自动发现与注册。
 
 用法:
     # daily 频率
     from factorzen.core.registry import FactorRegistry
     daily_registry = FactorRegistry(
         base_cls=DailyFactor,
-        scan_packages=[
-            "factorzen.builtin_factors.daily",  # 框架自带
-            "workspace.factors.daily",          # 用户自定义（同名时覆盖内置）
-        ],
+        scan_packages=["factorzen.builtin_factors.daily"],  # 框架自带
     )
+    # 用户 python 因子：load_library_factors() 从 factor_store 动态注入
     factor_cls = daily_registry.get("momentum_20d")
 
     # intraday 频率
     intraday_registry = FactorRegistry(
         base_cls=IntradayFactor,
-        scan_packages=["factorzen.builtin_factors.intraday", "workspace.factors.intraday"],
+        scan_packages=["factorzen.builtin_factors.intraday"],
     )
 """
 

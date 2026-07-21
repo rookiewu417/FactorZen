@@ -5,9 +5,9 @@
 而 discovery→daily 边已存在（ExpressionFactor 继承 DailyFactor）。
 
 - expression 型：从 jsonl 动态生成 ExpressionFactor 子类
-- python 型：从 ``workspace/factor_store/<market>/<name>/factor.py`` 加载
-- 兼容：仍扫描旧 ``workspace/factors/**``（registry 包路径），并打 DeprecationWarning
+- python 型：从 ``workspace/factor_store/<market>/<name>/factor.py`` 加载（唯一用户路径）
 """
+
 from __future__ import annotations
 
 from factorzen.core.logger import get_logger
@@ -25,14 +25,11 @@ def load_library_factors(
 
     - expression：kind=expression，status 不过滤（correlated/probation 也可 run）
     - python：扫描 factor_store 下 kind=python 的 factor.py
-    - builtin/workspace 同名优先：register(override=False) 让位并 warning
-    - 旧 workspace/factors 路径：兼容扫描 + DeprecationWarning
+    - builtin 同名优先：register(override=False) 让位并 warning
     - 返回成功注册数
 
     约束：不在模块 import 时自动执行，避免测试污染。
     """
-    import contextlib
-
     from factorzen.daily.factors.registry import _registry
     from factorzen.discovery.factor import ExpressionFactor, lookback_for_expression
     from factorzen.discovery.factor_library import (
@@ -45,7 +42,6 @@ def load_library_factors(
     from factorzen.discovery.factor_store import (
         register_python_factors_from_store,
         store_root_for_library,
-        warn_legacy_workspace_factors,
     )
 
     lib_root = root if root is not None else DEFAULT_ROOT
@@ -89,14 +85,10 @@ def load_library_factors(
         if _registry.register(cls, override=False):
             n_ok += 1
 
-    # python 型：factor_store 扫描（kind=python 的 factor.py）
+    # python 型：factor_store 扫描（唯一用户 python 因子路径）
     try:
         n_ok += register_python_factors_from_store(s_root, market=market, override=False)
     except Exception as e:
         logger.warning(f"register_python_factors_from_store 跳过: {e}")
-
-    # 旧 workspace/factors 兼容扫描已由 registry.discover 完成；此处打弃用警告
-    with contextlib.suppress(Exception):
-        warn_legacy_workspace_factors()
 
     return n_ok

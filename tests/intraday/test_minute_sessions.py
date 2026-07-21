@@ -155,13 +155,13 @@ def test_minute_ingest_suite(tmp_path):
 
         source = tmp_path / "source.parquet"
         raw = tmp_path / "raw"
-        workspace = tmp_path / "workspace"
+        ops = tmp_path / "workspace" / "_ops"
         _source_frame().write_parquet(source)
-        mp.setattr(cli, "WORKSPACE_DIR", workspace)
+        mp.setattr(cli, "WORKSPACE_OPS_DIR", ops)
 
         assert cli.main([str(source), "--data-root", str(raw), "--run-id", "test-run"]) == 0
 
-        run_dir = workspace / "data_ingest" / "test-run"
+        run_dir = ops / "data_ingest" / "test-run"
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["status"] == "success"
         assert manifest["git_sha"]

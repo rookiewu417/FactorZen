@@ -10,7 +10,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from factorzen.config.settings import DATA_RAW, WORKSPACE_DIR
+from factorzen.config.settings import DATA_RAW, WORKSPACE_OPS_DIR
 from factorzen.core.experiment import get_git_sha
 from factorzen.dataio.partition_repair import merge_missing_partition_rows
 
@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     started = datetime.now().astimezone()
     run_id = args.run_id or started.strftime("repair_%Y%m%d_%H%M%S")
-    run_dir = WORKSPACE_DIR / "data_maintenance" / run_id
+    run_dir = WORKSPACE_OPS_DIR / "data_maintenance" / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     keys = tuple(args.keys or [args.date_col, "ts_code"])
 

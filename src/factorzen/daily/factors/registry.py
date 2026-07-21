@@ -1,4 +1,4 @@
-﻿"""Daily 因子注册中心（代理到 common.registry.FactorRegistry）。"""
+"""Daily 因子注册中心（代理到 common.registry.FactorRegistry）。"""
 
 from factorzen.core.registry import FactorRegistry
 from factorzen.daily.factors.base import DailyFactor
@@ -11,11 +11,8 @@ _registry = FactorRegistry(
         "factorzen.builtin_factors.weekly",
         "factorzen.builtin_factors.monthly",
         "factorzen.builtin_factors.qlib",
-        # 用户自定义因子（workspace 在后，同名时覆盖内置）
-        # qlib 因子由框架经 builtin_factors.qlib 生成，用户不在 workspace 手写
-        "workspace.factors.daily",
-        "workspace.factors.weekly",
-        "workspace.factors.monthly",
+        # 用户 python 因子由 library_provider 从 factor_store 动态注入，
+        # 不再扫描 workspace.factors.*（该树已退役）
     ],
 )
 # 模块加载时自动扫描（与之前行为保持一致）

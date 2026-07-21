@@ -1,4 +1,4 @@
-﻿"""全局路径配置。所有模块通过 ``from factorzen.config.settings import ROOT`` 引用路径。"""
+"""全局路径配置。所有模块通过 ``from factorzen.config.settings import ROOT`` 引用路径。"""
 
 from pathlib import Path
 
@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[3]
 
 WORKSPACE_DIR = ROOT / "workspace"
 WORKSPACE_RUNS = WORKSPACE_DIR / "runs"
+WORKSPACE_OPS_DIR = WORKSPACE_DIR / "_ops"  # 运维杂项统一屋（下划线前缀：非产品 stage）
 FACTOR_EVALUATIONS_DIR = WORKSPACE_DIR / "factor_evaluations"
-DAILY_FACTORS_DIR = WORKSPACE_DIR / "factors" / "daily"
 FACTOR_LIBRARY_DIR = WORKSPACE_DIR / "factor_library"
 FACTOR_STORE_DIR = WORKSPACE_DIR / "factor_store"  # 三件套资产库（meta/py/parquet）
 MINING_SESSIONS_DIR = WORKSPACE_DIR / "mining_sessions"

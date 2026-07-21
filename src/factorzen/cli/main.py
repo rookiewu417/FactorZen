@@ -196,15 +196,45 @@ def _class_name(name: str) -> str:
 
 
 def _cmd_factor_new(args: argparse.Namespace) -> int:
-    target = ROOT / "workspace" / "factors" / args.freq / f"{args.name}.py"
+    """脚手架：写 factor_store 三件套中的 factor.py + 最小 meta.json。"""
+    import json
+    from datetime import date
+
+    market = getattr(args, "market", None) or "ashare"
+    asset_dir = ROOT / "workspace" / "factor_store" / market / args.name
+    target = asset_dir / "factor.py"
+    meta_path = asset_dir / "meta.json"
     if target.exists() and not args.force:
         print(f"Factor already exists: {target}", file=sys.stderr)
         return 2
-    target.parent.mkdir(parents=True, exist_ok=True)
+    asset_dir.mkdir(parents=True, exist_ok=True)
     target.write_text(
         _factor_template(_class_name(args.name), args.name, args.freq),
         encoding="utf-8",
     )
+    if not meta_path.exists() or args.force:
+        meta = {
+            "name": args.name,
+            "kind": "python",
+            "expression": f"py::{args.name}",
+            "frequency": args.freq,
+            "description": args.name,
+            "source_run_id": None,
+            "created_at": date.today().isoformat(),
+            "ledger_snapshot": {
+                "status": None,
+                "lift": None,
+                "admission_ic": None,
+                "ic_train": None,
+                "holdout_ic": None,
+                "truth": f"workspace/factor_library/{market}.jsonl",
+            },
+            "materialization": None,
+        }
+        meta_path.write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     print(target)
     return 0
 
@@ -364,6 +394,7 @@ def _cmd_data_fetch(args: argparse.Namespace) -> int:
     elif args.data_type == "fundamentals":
         # fina_indicator 全套质量/成长字段 → finance_fina_indicator 分区（按公告日 PIT 对齐用）
         from factorzen.discovery.operators import FUNDAMENTAL_FEATURES
+
         fields = "ts_code,ann_date,end_date," + ",".join(sorted(FUNDAMENTAL_FEATURES))
         frame = loader.fetch_finance("fina_indicator", args.start, args.end, fields=fields)
     elif args.data_type == "flows":
@@ -519,14 +550,23 @@ def _mine_search_crypto(args: argparse.Namespace) -> int:
         print("[mine] crypto universe 为空（检查网络/交易所可用性）", file=sys.stderr)
         return 1
     res = run_crypto_mining(
-        profile, symbols, args.start, args.end,
-        n_trials=args.trials, top_k=args.top_k, seed=args.seed, method=args.method,
+        profile,
+        symbols,
+        args.start,
+        args.end,
+        n_trials=args.trials,
+        top_k=args.top_k,
+        seed=args.seed,
+        method=args.method,
         freq=args.freq,
         # 六个护栏/并行参数经 **session_kw 透传到 run_session，否则用户设的
         # --dsr-alpha/--holdout-ratio/--workers 等被静默丢弃、按默认执行。
-        holdout_ratio=args.holdout_ratio, train_ratio=args.train_ratio,
-        decorr_threshold=args.decorr_threshold, min_n_train=args.min_n_train,
-        dsr_alpha=args.dsr_alpha, workers=args.workers,
+        holdout_ratio=args.holdout_ratio,
+        train_ratio=args.train_ratio,
+        decorr_threshold=args.decorr_threshold,
+        min_n_train=args.min_n_train,
+        dsr_alpha=args.dsr_alpha,
+        workers=args.workers,
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
         objective=getattr(args, "objective", "residual"),
     )
@@ -546,11 +586,20 @@ def _mine_search_futures(args: argparse.Namespace) -> int:
         print("[mine] futures universe 为空（检查 Tushare 权限/数据覆盖）", file=sys.stderr)
         return 1
     res = run_futures_mining(
-        profile, symbols, args.start, args.end,
-        n_trials=args.trials, top_k=args.top_k, seed=args.seed, method=args.method,
-        holdout_ratio=args.holdout_ratio, train_ratio=args.train_ratio,
-        decorr_threshold=args.decorr_threshold, min_n_train=args.min_n_train,
-        dsr_alpha=args.dsr_alpha, workers=args.workers,
+        profile,
+        symbols,
+        args.start,
+        args.end,
+        n_trials=args.trials,
+        top_k=args.top_k,
+        seed=args.seed,
+        method=args.method,
+        holdout_ratio=args.holdout_ratio,
+        train_ratio=args.train_ratio,
+        decorr_threshold=args.decorr_threshold,
+        min_n_train=args.min_n_train,
+        dsr_alpha=args.dsr_alpha,
+        workers=args.workers,
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
         objective=getattr(args, "objective", "residual"),
     )
@@ -570,11 +619,20 @@ def _mine_search_us(args: argparse.Namespace) -> int:
         print("[mine] us universe 为空（检查 sp500 快照）", file=sys.stderr)
         return 1
     res = run_us_mining(
-        profile, symbols, args.start, args.end,
-        n_trials=args.trials, top_k=args.top_k, seed=args.seed, method=args.method,
-        holdout_ratio=args.holdout_ratio, train_ratio=args.train_ratio,
-        decorr_threshold=args.decorr_threshold, min_n_train=args.min_n_train,
-        dsr_alpha=args.dsr_alpha, workers=args.workers,
+        profile,
+        symbols,
+        args.start,
+        args.end,
+        n_trials=args.trials,
+        top_k=args.top_k,
+        seed=args.seed,
+        method=args.method,
+        holdout_ratio=args.holdout_ratio,
+        train_ratio=args.train_ratio,
+        decorr_threshold=args.decorr_threshold,
+        min_n_train=args.min_n_train,
+        dsr_alpha=args.dsr_alpha,
+        workers=args.workers,
         update_library=not getattr(args, "no_library", False),
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
         objective=getattr(args, "objective", "residual"),
@@ -588,7 +646,10 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
     err = _apply_set_overrides(args, _MINE_SEARCH_SET)
     if err is not None:
         return err
-    if getattr(args, "market", "ashare") not in ("crypto",) and getattr(args, "freq", "daily") != "daily":
+    if (
+        getattr(args, "market", "ashare") not in ("crypto",)
+        and getattr(args, "freq", "daily") != "daily"
+    ):
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
     # --intraday-leaves 仅 ashare（在 market 分流前拦截）
@@ -623,16 +684,22 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         intraday=bool(getattr(args, "intraday_leaves", False)),
         intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
         intraday_expr_leaves=getattr(args, "intraday_expr_leaves", None),
-        exec_lag=int(getattr(args, "exec_lag", 1) if getattr(args, "exec_lag", None) is not None else 1),
+        exec_lag=int(
+            getattr(args, "exec_lag", 1) if getattr(args, "exec_lag", None) is not None else 1
+        ),
         exec_price_col=getattr(args, "exec_price_col", "open_adj"),
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
-    print("[mine] 复现：入库候选 fz factor-library list 查 name 后 "
-          "fz factor run <name> --set preprocessing.neutralize=false；"
-          "未入库候选：表达式在 candidates.csv")
-    print("[mine] 注：candidates.csv 的 IC 为挖掘内估计(plain zscore)；"
-          "fz factor run 默认带中性化，IC parity 需 neutralize=false")
+    print(
+        "[mine] 复现：入库候选 fz factor-library list 查 name 后 "
+        "fz factor run <name> --set preprocessing.neutralize=false；"
+        "未入库候选：表达式在 candidates.csv"
+    )
+    print(
+        "[mine] 注：candidates.csv 的 IC 为挖掘内估计(plain zscore)；"
+        "fz factor run 默认带中性化，IC parity 需 neutralize=false"
+    )
     return 0
 
 
@@ -640,19 +707,31 @@ def _cmd_research_run(args: argparse.Namespace) -> int:
     from factorzen.pipelines.research_run import run_research
 
     res = run_research(
-        start=args.start, end=args.end, universe=args.universe,
-        n_trials=args.trials, method=args.method, seed=args.seed, top_k=args.top_k,
-        rebalance_days=args.rebalance_days, warmup=args.warmup,
-        risk_aversion=args.lam, w_max=args.w_max, turnover=args.turnover,
-        industry_neutral=args.industry_neutral, lookback=args.lookback,
-        run_id=args.run_id, command=["research", "run"],
+        start=args.start,
+        end=args.end,
+        universe=args.universe,
+        n_trials=args.trials,
+        method=args.method,
+        seed=args.seed,
+        top_k=args.top_k,
+        rebalance_days=args.rebalance_days,
+        warmup=args.warmup,
+        risk_aversion=args.lam,
+        w_max=args.w_max,
+        turnover=args.turnover,
+        industry_neutral=args.industry_neutral,
+        lookback=args.lookback,
+        run_id=args.run_id,
+        command=["research", "run"],
         intraday=bool(getattr(args, "intraday_leaves", False)),
         intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
         exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
         exec_price_col=getattr(args, "exec_price_col", "open_adj"),
     )
     print(f"[research] 完成 run_id={res['run_id']} 因子={res['expression']!r}")
-    print(f"[research] 调仓 {res['n_rebalances']} 次 · sharpe={res['sharpe']} · ann_ret={res['ann_ret']}")
+    print(
+        f"[research] 调仓 {res['n_rebalances']} 次 · sharpe={res['sharpe']} · ann_ret={res['ann_ret']}"
+    )
     print(f"[research] mining={res['mining_session_dir']}")
     print(f"[research] portfolios={res['portfolios_root']}  sim={res['sim_dir']}")
     print(f"[research] dashboard → {res['report_html']}")
@@ -747,8 +826,10 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
         prep_meta = _membership_prep_meta_empty(getattr(args, "universe", None))
         if not symbols:
             return None, profile, prep_meta
-        warmup_start = (_dt.datetime.strptime(args.start, "%Y%m%d").date()
-                        - _dt.timedelta(days=AGENT_WARMUP_LOOKBACK)).strftime("%Y%m%d")
+        warmup_start = (
+            _dt.datetime.strptime(args.start, "%Y%m%d").date()
+            - _dt.timedelta(days=AGENT_WARMUP_LOOKBACK)
+        ).strftime("%Y%m%d")
         freq = getattr(args, "freq", None) or profile.base_freq
         daily = build_crypto_daily(profile.provider, symbols, warmup_start, args.end, freq)
         return (None if daily.is_empty() else daily), profile, prep_meta
@@ -767,8 +848,10 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
         if not symbols:
             return None, profile, prep_meta
         # 预热前缀：AGENT_WARMUP_LOOKBACK 交易日 → 自然日近似（243 交易日/年，×1.55 覆盖节假日）。
-        warmup_start = (_dt.datetime.strptime(args.start, "%Y%m%d").date()
-                        - _dt.timedelta(days=int(AGENT_WARMUP_LOOKBACK * 1.55))).strftime("%Y%m%d")
+        warmup_start = (
+            _dt.datetime.strptime(args.start, "%Y%m%d").date()
+            - _dt.timedelta(days=int(AGENT_WARMUP_LOOKBACK * 1.55))
+        ).strftime("%Y%m%d")
         daily = build_futures_daily(profile.provider, symbols, warmup_start, args.end)
         return (None if daily.is_empty() else daily), profile, prep_meta
     if market == "us":
@@ -786,14 +869,18 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
         if not symbols:
             return None, profile, prep_meta
         # 预热前缀：AGENT_WARMUP_LOOKBACK 交易日 → 自然日近似（252 交易日/年，×1.5 覆盖周末/假日）。
-        warmup_start = (_dt.datetime.strptime(args.start, "%Y%m%d").date()
-                        - _dt.timedelta(days=int(AGENT_WARMUP_LOOKBACK * 1.5))).strftime("%Y%m%d")
+        warmup_start = (
+            _dt.datetime.strptime(args.start, "%Y%m%d").date()
+            - _dt.timedelta(days=int(AGENT_WARMUP_LOOKBACK * 1.5))
+        ).strftime("%Y%m%d")
         daily = build_us_daily(profile.provider, symbols, warmup_start, args.end)
         return (None if daily.is_empty() else daily), profile, prep_meta
     # A 股：预热前缀用 agent 专用加长值（LLM 窗口无搜索空间上界，长窗因子用 180 会被误判欠预热）。
     prep_meta = {}
     daily = prepare_mining_daily(
-        args.start, args.end, args.universe,
+        args.start,
+        args.end,
+        args.universe,
         lookback_days=AGENT_WARMUP_LOOKBACK,
         out_meta=prep_meta,
         intraday=bool(getattr(args, "intraday_leaves", False)),
@@ -828,20 +915,27 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
     # eval_start = 挖掘窗口 start（预热前缀边界），与 M1 `run_mine(eval_start=start)` 同口径：
     # 缺了它预热前缀会被 split_holdout 当训练数据。
     # membership_* 并入 data_window → agent params（与 start/end/universe 平级，铁律#3）。
-    res = run_agent_mine(daily, n_rounds=args.iterations, seed=args.seed,
-                         top_k=args.top_k, human_review=args.human_review,
-                         patience=args.patience, heal_rounds=args.heal_rounds,
-                         data_window=_data_window_with_membership(args, prep_meta),
-                         command=_command_line(args),
-                         eval_start=args.start, profile=profile,
-                         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
-                         objective=getattr(args, "objective", "residual"),
-                         intraday_scout=bool(getattr(args, "intraday_scout", False)),
-                         scout_k=int(getattr(args, "scout_k", 4) or 4),
-                         scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
-                         scout_freq=getattr(args, "intraday_freq", "5min") or "5min",
-                         exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
-                         exec_price_col=getattr(args, "exec_price_col", "open_adj"))
+    res = run_agent_mine(
+        daily,
+        n_rounds=args.iterations,
+        seed=args.seed,
+        top_k=args.top_k,
+        human_review=args.human_review,
+        patience=args.patience,
+        heal_rounds=args.heal_rounds,
+        data_window=_data_window_with_membership(args, prep_meta),
+        command=_command_line(args),
+        eval_start=args.start,
+        profile=profile,
+        library_orthogonal=not getattr(args, "no_library_orthogonal", False),
+        objective=getattr(args, "objective", "residual"),
+        intraday_scout=bool(getattr(args, "intraday_scout", False)),
+        scout_k=int(getattr(args, "scout_k", 4) or 4),
+        scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
+        scout_freq=getattr(args, "intraday_freq", "5min") or "5min",
+        exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
+        exec_price_col=getattr(args, "exec_price_col", "open_adj"),
+    )
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -872,6 +966,7 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
 
     def _to_date(s: str):
         import datetime as _dt
+
         return _dt.datetime.strptime(s, "%Y%m%d").date()
 
     try:
@@ -901,24 +996,29 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
         # 剪叶（同 team 序）：AgentContext → filter → apply_leaf_exclusion
         ctx = AgentContext.from_profile(profile)
         _kept, excluded_leaves = filter_leaves_by_holdout_coverage(
-            session_prepped, list(ctx.leaf_names), holdout_start,
+            session_prepped,
+            list(ctx.leaf_names),
+            holdout_start,
             leaf_map=ctx.leaf_map,
         )
         log_excluded_leaves(excluded_leaves, prefix="pool-prebuild")
         ctx.leaf_names, ctx.leaf_map = apply_leaf_exclusion(
-            list(ctx.leaf_names), ctx.leaf_map, excluded_leaves,
+            list(ctx.leaf_names),
+            ctx.leaf_map,
+            excluded_leaves,
         )
 
         market = getattr(profile, "name", None) or getattr(args, "market", "ashare") or "ashare"
-        lib_root = args.library_root or str(
-            Path(args.index_path).parent / "factor_library"
-        )
+        lib_root = args.library_root or str(Path(args.index_path).parent / "factor_library")
         # 强制 compact（与父进程装载 CompactLibraryPool 契约一致）
         # universe：库含 python 记录时物化必需（与 run_team_agent 池调用同口径）
         _pool_universe = getattr(args, "universe", None)
         lib_pool = build_library_pool(
-            market, session_prepped, ctx.leaf_map,
-            root=lib_root, eval_start=eval_start_date,
+            market,
+            session_prepped,
+            ctx.leaf_map,
+            root=lib_root,
+            eval_start=eval_start_date,
             compact=True,
             universe=_pool_universe,
         )
@@ -934,7 +1034,9 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
                 "eval_start": str(eval_start_date),
                 "library_hash": library_file_hash(market, lib_root),
                 "python_pool_key": python_pool_cache_key(
-                    market, root=lib_root, statuses=("active",),
+                    market,
+                    root=lib_root,
+                    statuses=("active",),
                     universe=_pool_universe,
                 ),
                 "prepped_height": session_prepped.height,
@@ -1007,16 +1109,18 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         lib_hash = library_file_hash(market, lib_root) or "nolib"
         # holdout_ratio：CLI 当前不透传 → 常量 0.2，与 run_team_agent 默认参数同源
         _holdout_ratio_key = "0.2"
-        key_src = "|".join([
-            lib_hash,
-            args.start,
-            args.end,
-            str(getattr(args, "universe", None)),
-            market,
-            _holdout_ratio_key,
-            str(bool(getattr(args, "intraday_leaves", False))),
-            str(getattr(args, "intraday_freq", "5min") or "5min"),
-        ])
+        key_src = "|".join(
+            [
+                lib_hash,
+                args.start,
+                args.end,
+                str(getattr(args, "universe", None)),
+                market,
+                _holdout_ratio_key,
+                str(bool(getattr(args, "intraday_leaves", False))),
+                str(getattr(args, "intraday_freq", "5min") or "5min"),
+            ]
+        )
         key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
         cache_dir = _mine_team_dir / "_pool_cache" / key
         if (cache_dir / "pool_meta.json").exists():
@@ -1025,14 +1129,25 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         else:
             # 路径归位：顶层 pool-prebuild → mine pool-prebuild
             cmd = [
-                sys.executable, "-m", "factorzen.cli.main", "mine", "pool-prebuild",
-                "--start", args.start,
-                "--end", args.end,
-                "--market", market,
-                "--index-path", str(args.index_path),
-                "--library-root", lib_root,
-                "--holdout-ratio", _holdout_ratio_key,
-                "--out", str(cache_dir),
+                sys.executable,
+                "-m",
+                "factorzen.cli.main",
+                "mine",
+                "pool-prebuild",
+                "--start",
+                args.start,
+                "--end",
+                args.end,
+                "--market",
+                market,
+                "--index-path",
+                str(args.index_path),
+                "--library-root",
+                lib_root,
+                "--holdout-ratio",
+                _holdout_ratio_key,
+                "--out",
+                str(cache_dir),
             ]
             # universe/symbols/top_n/intraday 旗标逐一透传（None 不传）
             if getattr(args, "universe", None) is not None:
@@ -1051,14 +1166,12 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
                 pool_cache_dir = str(cache_dir)
             else:
                 print(
-                    f"[mine-team] 警告:池预构建子进程失败"
-                    f"(exit={proc.returncode})→ 回退进程内构建",
+                    f"[mine-team] 警告:池预构建子进程失败(exit={proc.returncode})→ 回退进程内构建",
                     file=sys.stderr,
                 )
     elif use_subproc:
         print(
-            "[mine-team] --pool-subproc 与 --no-library-orthogonal 同开:"
-            "池不会被使用,跳过子进程",
+            "[mine-team] --pool-subproc 与 --no-library-orthogonal 同开:池不会被使用,跳过子进程",
             flush=True,
         )
 
@@ -1073,14 +1186,19 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     _daily_holder = [daily]
     del daily
     res = pmt.run_team_mine(
-        _daily_holder.pop(), n_rounds=args.iterations, seed=args.seed,
-        top_k=args.top_k, index_path=args.index_path,
-        structured=args.structured, patience=args.patience,
+        _daily_holder.pop(),
+        n_rounds=args.iterations,
+        seed=args.seed,
+        top_k=args.top_k,
+        index_path=args.index_path,
+        structured=args.structured,
+        patience=args.patience,
         heal_rounds=args.heal_rounds,
         hypotheses_per_round=args.hypotheses_per_round,
         data_window=_data_window_with_membership(args, prep_meta),
         command=_command_line(args),
-        eval_start=args.start, profile=profile,
+        eval_start=args.start,
+        profile=profile,
         update_library=not getattr(args, "no_library", False),
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
         objective=getattr(args, "objective", "residual"),
@@ -1134,8 +1252,10 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     elif getattr(args, "only", None) is not None or only_file:
         # 显式给了定向旗标却解析出空集：静默降级成全量重估会重排全库 status，
         # 是「以为只动几条、实际动全库」的最坏结果 → fail-loudly
-        print("[factor-library] --only/--only-file 解析出空目标集；"
-              "如需全量重估请不带这两个旗标重跑", file=sys.stderr)
+        print(
+            "[factor-library] --only/--only-file 解析出空目标集；如需全量重估请不带这两个旗标重跑",
+            file=sys.stderr,
+        )
         return 1
 
     # A 股不带 --universe = 全 A 5000+ 只拉取，多年窗口必 OOM（实测 ~22GB 被杀）；
@@ -1167,16 +1287,16 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
         expressions_need_intraday,
         intraday_expr_leaf_names,
     )
-    _scan_exprs: list[str] = [
-        str(e) for e in sources if e and not fl.is_python_identity(str(e))
-    ]
+
+    _scan_exprs: list[str] = [str(e) for e in sources if e and not fl.is_python_identity(str(e))]
     # root 在调用点取（`load_library` 的默认参数在 def 时求值，绑死的是导入时的
     # DEFAULT_ROOT；显式传才跟得上 patch/配置，也与 lift-test 的取法一致）
     _lib_root = getattr(args, "library_root", None) or fl.DEFAULT_ROOT
     # 库读不出来不该挡住 rebuild；真缺列会在复审的求值失败守卫里被点名
     with contextlib.suppress(Exception):
         _scan_exprs += [
-            str(r.expression) for r in fl.load_library(market, root=_lib_root)
+            str(r.expression)
+            for r in fl.load_library(market, root=_lib_root)
             if r.expression and not fl.is_python_identity(str(r.expression))
         ]
     if getattr(args, "intraday_leaves", False) or expressions_need_intraday(_scan_exprs):
@@ -1187,25 +1307,32 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
         args.intraday_leaves = True
     daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
-        print("[factor-library] 挖掘帧为空（检查 --symbols / 数据湖覆盖 / 缓存回补）",
-              file=sys.stderr)
+        print(
+            "[factor-library] 挖掘帧为空（检查 --symbols / 数据湖覆盖 / 缓存回补）", file=sys.stderr
+        )
         return 1
     leaf_map = profile.factors.leaf_features() if profile is not None else None
     if not sources:
         print(f"[factor-library] 提示：未从历史产物收集到 {market} 候选（将产出空库文件）")
     evaluate, compact_materialize = fl.build_library_evaluator(
-        daily, holdout_ratio=args.holdout_ratio, eval_start=start, leaf_map=leaf_map,
-        profile=profile)
+        daily,
+        holdout_ratio=args.holdout_ratio,
+        eval_start=start,
+        leaf_map=leaf_map,
+        profile=profile,
+    )
     # lift 复审评分窗 = single 轨 evaluator 的 holdout 尾段（同 split_holdout 口径）
     # build_library_evaluator 内部：sample = prepped[trade_date>=eval_start] 再 split；
     # prep 不改 trade_date 集合，这里对 daily 同边界切分即可复用同一 holdout 起止。
     es_date = _dt.strptime(start, "%Y%m%d").date() if start else None
     sample = daily if es_date is None else daily.filter(pl.col("trade_date") >= es_date)
     _, holdout_df, holdout_start = split_holdout(
-        sample, holdout_ratio=float(args.holdout_ratio),
+        sample,
+        holdout_ratio=float(args.holdout_ratio),
     )
     lift_adm_start = _lift_admission_str(holdout_start)
     lift_adm_end = _lift_admission_str(holdout_df["trade_date"].max())
+
     # lift 复审 active 池物化：透传 python_universe（expression + py:: 统一入口）。
     # 惰性构建：只有 rebuild 真调物化（存在 lift 轨复审 + active 记录）才 prep——
     # ①无复审的 rebuild 不多付一次 prep；②退化帧（缺列的小样本/测试）prep 失败
@@ -1221,11 +1348,10 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
                     from factorzen.discovery.evaluation import _preprocess_daily
                     from factorzen.discovery.lift_test import _materializer_from_prepped
 
-                    prepped_mat = _preprocess_daily(daily, profile).sort(
-                        ["ts_code", "trade_date"]
-                    )
+                    prepped_mat = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
                     state["mat"] = _materializer_from_prepped(
-                        prepped_mat, leaf_map,
+                        prepped_mat,
+                        leaf_map,
                         python_universe=args.universe,
                         python_market=market,
                     )
@@ -1243,14 +1369,22 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
 
     materialize = _make_lazy_rebuild_materializer()
     res = fl.rebuild(
-        market, sources=sources, eval_window=(start, end), universe=args.universe,
-        horizon=args.horizon, evaluate=evaluate,
+        market,
+        sources=sources,
+        eval_window=(start, end),
+        universe=args.universe,
+        horizon=args.horizon,
+        evaluate=evaluate,
         compact_materialize=compact_materialize,
         materialize=materialize,
-        git_sha=get_git_sha(), now=date.today().strftime("%Y-%m-%d"),
-        leaf_map=leaf_map, decorr_threshold=args.decorr_threshold,
-        daily=daily, profile=profile,
-        admission_start=lift_adm_start, admission_end=lift_adm_end,
+        git_sha=get_git_sha(),
+        now=date.today().strftime("%Y-%m-%d"),
+        leaf_map=leaf_map,
+        decorr_threshold=args.decorr_threshold,
+        daily=daily,
+        profile=profile,
+        admission_start=lift_adm_start,
+        admission_end=lift_adm_end,
         only=only,
     )
     # lift 轨复审失败时 rebuild 已恢复旧记录；CLI 必须 fail-loudly，禁止「表面成功」
@@ -1262,18 +1396,25 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
         )
         return 1
     mode = f"定向重估 {len(only)} 条" if only else "全量 rebuild"
-    print(f"[factor-library] {market} {mode}：新增 {res.added} / 更新 {res.updated} / "
-          f"标记 correlated {res.correlated} / 跳过 {res.skipped}（窗口 {start}–{end}）")
+    print(
+        f"[factor-library] {market} {mode}：新增 {res.added} / 更新 {res.updated} / "
+        f"标记 correlated {res.correlated} / 跳过 {res.skipped}（窗口 {start}–{end}）"
+    )
     if only:
         # 定向语义必须每次说清楚：操作者最容易误以为「重估完 correlated 会自动升回来」
-        print("[factor-library] 定向重估：只刷新指标 + 只降不升"
-              "（correlated/no_lift 升回 active 需跑全量 rebuild）")
+        print(
+            "[factor-library] 定向重估：只刷新指标 + 只降不升"
+            "（correlated/no_lift 升回 active 需跑全量 rebuild）"
+        )
     if res.gate_failed:
         # 指标已按真值刷新，但这些记录已不满足 library gate 却仍留在库里 → 必须大声说
-        print(f"[factor-library] 警告：{len(res.gate_failed)} 条定向目标重估后不再满足 "
-              f"library gate（指标已刷新，status 未裁决，需人工复核或跑全量 rebuild）："
-              f"{', '.join(res.gate_failed[:10])}"
-              f"{' …' if len(res.gate_failed) > 10 else ''}", file=sys.stderr)
+        print(
+            f"[factor-library] 警告：{len(res.gate_failed)} 条定向目标重估后不再满足 "
+            f"library gate（指标已刷新，status 未裁决，需人工复核或跑全量 rebuild）："
+            f"{', '.join(res.gate_failed[:10])}"
+            f"{' …' if len(res.gate_failed) > 10 else ''}",
+            file=sys.stderr,
+        )
     print(f"[factor-library] → {FACTOR_LIBRARY_DIR}/{market}.jsonl + {market}.md")
     if res.lift_eval_failed:
         # 求值失败的记录已保持原状（未降级），但本次 lift 轨结论不完整 → 非零退出。
@@ -1304,8 +1445,10 @@ def _cmd_factor_library_list(args: argparse.Namespace) -> int:
         return 0
     print(f"[factor-library] {args.market}: {len(lib)} 个因子（holdout_ic 降序）")
     for i, r in enumerate(lib, 1):
-        print(f"  {i:>3}. holdout_ic={fl._fmt(r.holdout_ic)} ic_train={fl._fmt(r.ic_train)} "
-              f"[{r.status}] {r.expression}")
+        print(
+            f"  {i:>3}. holdout_ic={fl._fmt(r.holdout_ic)} ic_train={fl._fmt(r.ic_train)} "
+            f"[{r.status}] {r.expression}"
+        )
     return 0
 
 
@@ -1367,9 +1510,7 @@ def _factor_store_panel_loader(
     )
     daily, profile, _prep_meta = _prepare_agent_mining_data(ns)
     if daily is None or daily.is_empty():
-        raise RuntimeError(
-            f"挖掘帧为空 market={market} {start}–{end} universe={universe}"
-        )
+        raise RuntimeError(f"挖掘帧为空 market={market} {start}–{end} universe={universe}")
     prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
     float_cols = [
         c
@@ -1377,9 +1518,7 @@ def _factor_store_panel_loader(
         if dt in (pl.Float32, pl.Float64)
     ]
     if float_cols:
-        prepped = prepped.with_columns(
-            [pl.col(c).fill_nan(None) for c in float_cols]
-        )
+        prepped = prepped.with_columns([pl.col(c).fill_nan(None) for c in float_cols])
     return prepped
 
 
@@ -1516,8 +1655,7 @@ def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
     )
     if recorded > 0 and failed == recorded:
         print(
-            f"[factor-library forward-track] 全部 failed"
-            f"（recorded={recorded}），退出码 1",
+            f"[factor-library forward-track] 全部 failed（recorded={recorded}），退出码 1",
             file=sys.stderr,
         )
         return 1
@@ -1544,8 +1682,7 @@ def _cmd_factor_library_forward_review(args: argparse.Namespace) -> int:
         apply=apply,
     )
     print(
-        f"[factor-library forward-review] {market}："
-        f"{len(rows)} 个 probation 裁决（apply={apply}）"
+        f"[factor-library forward-review] {market}：{len(rows)} 个 probation 裁决（apply={apply}）"
     )
     if rows:
         print(f"{'expression':<42} {'decision':<10} {'n':>5} {'mean':>10} {'ci_low':>10}")
@@ -1570,9 +1707,7 @@ def _cmd_factor_library_forward_review(args: argparse.Namespace) -> int:
             f"promote={n_promote} demote={n_demote} hold={n_hold}"
         )
     else:
-        print(
-            "[factor-library forward-review] dry-run（加 --apply 写库并更新 markdown）"
-        )
+        print("[factor-library forward-review] dry-run（加 --apply 写库并更新 markdown）")
     return 0
 
 
@@ -1586,12 +1721,18 @@ def _cmd_factor_library_lift_null(args: argparse.Namespace) -> int:
     se_mults = tuple(float(x) for x in args.se_mults.split(",") if x.strip())
     min_blocks = tuple(int(x) for x in args.min_blocks.split(",") if x.strip())
     rows = calibration_table(
-        n_days=args.n_days, daily_sigma=args.daily_sigma, ar1=args.ar1,
-        se_mults=se_mults, min_blocks_options=min_blocks,
-        n_sims=args.n_sims, seed=args.seed,
+        n_days=args.n_days,
+        daily_sigma=args.daily_sigma,
+        ar1=args.ar1,
+        se_mults=se_mults,
+        min_blocks_options=min_blocks,
+        n_sims=args.n_sims,
+        seed=args.seed,
     )
-    print(f"[lift-null] H0=无真实 lift；n_days={args.n_days} σ={args.daily_sigma} "
-          f"ar1={args.ar1} n_sims={args.n_sims} seed={args.seed}")
+    print(
+        f"[lift-null] H0=无真实 lift；n_days={args.n_days} σ={args.daily_sigma} "
+        f"ar1={args.ar1} n_sims={args.n_sims} seed={args.seed}"
+    )
     print("[lift-null] 统计层下界：真实链路含选择偏差，误准入只会更高")
     print(format_calibration_markdown(rows))
     return 0
@@ -1826,9 +1967,7 @@ def _write_cli_lift_rejects_to_index(
                 lift_reason=reason,
                 source="cli_lift_test",
                 ic_train=src.get("ic_train") if isinstance(src, dict) else None,
-                residual_ic_train=(
-                    src.get("residual_ic_train") if isinstance(src, dict) else None
-                ),
+                residual_ic_train=(src.get("residual_ic_train") if isinstance(src, dict) else None),
                 baseline_rank_ic=row.get("baseline"),
                 admission_start=row.get("admission_start"),
                 admission_end=row.get("admission_end"),
@@ -1913,12 +2052,14 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 2
-            py_cands.append({
-                "expression": fl.python_identity(name),
-                "kind": "python",
-                "name": name,
-                "impl": name,
-            })
+            py_cands.append(
+                {
+                    "expression": fl.python_identity(name),
+                    "kind": "python",
+                    "name": name,
+                    "impl": name,
+                }
+            )
 
     # 旗标覆盖优先：任一非 None → 所有候选归同一旗标窗（escape hatch）
     flag_start = getattr(args, "admission_start", None)
@@ -1988,8 +2129,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
 
     print(
         f"[factor-library lift-test] 候选 {n_gray} 个（去重后），"
-        f"admission 分组 {len(groups)} 组"
-        + (f"（含 python {len(py_cands)}）" if py_cands else "")
+        f"admission 分组 {len(groups)} 组" + (f"（含 python {len(py_cands)}）" if py_cands else "")
     )
     for gi, (g_start, g_end, cands) in enumerate(groups, start=1):
         print(
@@ -2011,6 +2151,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         expressions_need_intraday,
         intraday_expr_leaf_names,
     )
+
     all_exprs: list[str] = []
     for _gs, _ge, cands in groups:
         for c in cands:
@@ -2063,7 +2204,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     # base_ctx：prep 一次；admission 窗 per-group replace（不改 horizon）
     try:
         base_ctx = make_lift_context(
-            market, daily,
+            market,
+            daily,
             profile=profile,
             leaf_map=leaf_map,
             horizon=resolved_horizon,
@@ -2076,8 +2218,11 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     except Exception:
         # 回退=raw 帧当 prepped:派生叶子(ret_1d 等)将全空——真实数据不应走到这
         # (2026-07-14 事故根因:候选全空面板→lift 全噪声)。仅容极简 mock 帧。
-        print("[factor-library lift-test] 警告：预处理失败,回退 raw 帧(派生叶子将缺失,"
-              "真实数据下结果不可信)", file=sys.stderr)
+        print(
+            "[factor-library lift-test] 警告：预处理失败,回退 raw 帧(派生叶子将缺失,"
+            "真实数据下结果不可信)",
+            file=sys.stderr,
+        )
         base_ctx = LiftEvalContext(
             market=market,
             prepped=daily.sort(["ts_code", "trade_date"]) if daily.height else daily,
@@ -2095,7 +2240,11 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     workers_resolved = resolve_lift_workers(lift_workers_arg)
     print(
         f"[factor-library lift-test] lift_workers={workers_resolved}"
-        + ("（自适应）" if lift_workers_arg is None else f"（显式 --lift-workers={lift_workers_arg}）"),
+        + (
+            "（自适应）"
+            if lift_workers_arg is None
+            else f"（显式 --lift-workers={lift_workers_arg}）"
+        ),
         flush=True,
     )
     if lift_workers_arg == 1 and n_gray > 10:
@@ -2109,7 +2258,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     from factorzen.discovery.lift_test import _materializer_from_prepped
 
     mat_base = _materializer_from_prepped(
-        base_ctx.prepped, leaf_map,
+        base_ctx.prepped,
+        leaf_map,
         python_universe=python_universe,
         python_market=market,
     )
@@ -2141,9 +2291,12 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         if include_sub_floor:
             in_floor = list(cands)
             sub_floor = [
-                c for c in cands
-                if (not c.get("sleeve_candidate")
-                    and is_sub_floor_candidate(c, floor=queue_ic_floor))
+                c
+                for c in cands
+                if (
+                    not c.get("sleeve_candidate")
+                    and is_sub_floor_candidate(c, floor=queue_ic_floor)
+                )
             ]
         else:
             in_floor, sub_floor = [], []
@@ -2158,7 +2311,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                     in_floor.append(c)
         if sub_floor:
             floor_desc = (
-                f"{queue_ic_floor}" if queue_ic_floor is not None
+                f"{queue_ic_floor}"
+                if queue_ic_floor is not None
                 else f"{DEFAULT_GRAY_IC_FLOOR}(残差)/{DEFAULT_RAW_GRAY_IC_FLOOR}(裸IC)"
             )
             share = len(sub_floor) / max(1, len(cands))
@@ -2175,8 +2329,11 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                     f"[factor-library lift-test] 警告：sub-floor 占比 {share:.0%} ≥50%，"
                     "属「历史积压全量复测」形态——组门是小队列短路语义，"
                     "噪声占主时整组连坐拒会误杀真信号"
-                    + ("（当前 --include-sub-floor 已关闭防呆，风险自负）"
-                       if include_sub_floor else "（已按默认防呆剔除）"),
+                    + (
+                        "（当前 --include-sub-floor 已关闭防呆，风险自负）"
+                        if include_sub_floor
+                        else "（已按默认防呆剔除）"
+                    ),
                     file=sys.stderr,
                 )
             # 记账：被剔者不产生 results 行，故不会被写回 lift_rejected
@@ -2192,11 +2349,13 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 for c in sub_floor
             )
         if not in_floor:
-            lift_groups_meta.append({
-                "admission_start": g_start,
-                "admission_end": g_end,
-                "skipped": "empty_after_sub_floor",
-            })
+            lift_groups_meta.append(
+                {
+                    "admission_start": g_start,
+                    "admission_end": g_end,
+                    "skipped": "empty_after_sub_floor",
+                }
+            )
             continue
 
         n_in = len(in_floor)
@@ -2231,15 +2390,19 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         if not kept:
-            lift_groups_meta.append({
-                "admission_start": g_start,
-                "admission_end": g_end,
-                "skipped": "empty_after_coverage",
-            })
+            lift_groups_meta.append(
+                {
+                    "admission_start": g_start,
+                    "admission_end": g_end,
+                    "skipped": "empty_after_coverage",
+                }
+            )
             continue
 
         grp_ctx = dataclasses.replace(
-            base_ctx, admission_start=g_start, admission_end=g_end,
+            base_ctx,
+            admission_start=g_start,
+            admission_end=g_end,
         )
         # sleeve 不与稠密混 residual 组门（07-19 overlay 口径；见 sleeve3-progress）
         dense_kept, sleeve_kept = partition_lift_queue_by_sleeve(kept)
@@ -2269,7 +2432,9 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             n_lift_evaluated += 1  # 组门计 1 次
 
             group_ok, bar = group_gate_ok(
-                group, threshold=float(threshold), lift_se_mult=se_mult,
+                group,
+                threshold=float(threshold),
+                lift_se_mult=se_mult,
             )
             g_lift, g_se = group.get("lift"), group.get("lift_se")
             print(
@@ -2280,22 +2445,22 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             )
             if not group_ok:
                 # 组门不过：仅稠密 skip 逐候选；sleeve 仍走 overlay
-                reason = (
-                    f"group_gate_fail(lift={g_lift!r},se={g_se!r},bar={bar:.4f})"
-                )
+                reason = f"group_gate_fail(lift={g_lift!r},se={g_se!r},bar={bar:.4f})"
                 for c in dense_kept:
-                    results.append({
-                        "expression": c.get("expression"),
-                        "lift": g_lift,
-                        "lift_se": g_se,
-                        "baseline": group.get("baseline"),
-                        "passed": False,
-                        "error": reason,
-                        "admission_start": g_start,
-                        "admission_end": g_end,
-                        "ic_train": c.get("ic_train"),
-                        "residual_ic_train": c.get("residual_ic_train"),
-                    })
+                    results.append(
+                        {
+                            "expression": c.get("expression"),
+                            "lift": g_lift,
+                            "lift_se": g_se,
+                            "baseline": group.get("baseline"),
+                            "passed": False,
+                            "error": reason,
+                            "admission_start": g_start,
+                            "admission_end": g_end,
+                            "ic_train": c.get("ic_train"),
+                            "residual_ic_train": c.get("residual_ic_train"),
+                        }
+                    )
             else:
                 rows = run_lift_tests(
                     dense_kept,
@@ -2317,12 +2482,14 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                     r.setdefault("admission_end", g_end)
                     results.append(r)
         else:
-            lift_groups_meta.append({
-                "admission_start": g_start,
-                "admission_end": g_end,
-                "skipped": "no_dense_after_sleeve_split",
-                "n_sleeve": len(sleeve_kept),
-            })
+            lift_groups_meta.append(
+                {
+                    "admission_start": g_start,
+                    "admission_end": g_end,
+                    "skipped": "no_dense_after_sleeve_split",
+                    "n_sleeve": len(sleeve_kept),
+                }
+            )
 
         if sleeve_kept:
             sleeve_rows = run_lift_tests(
@@ -2358,11 +2525,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         raw_expr = r.get("expression") or ""
         # python 候选打印用 name（可读性），避免 py:: 哨兵裸奔
         if fl.is_python_identity(str(raw_expr)):
-            label = (
-                r.get("name")
-                or fl._python_name_from_expression(str(raw_expr))
-                or raw_expr
-            )
+            label = r.get("name") or fl._python_name_from_expression(str(raw_expr)) or raw_expr
         else:
             label = raw_expr
         expr = str(label)[:40]
@@ -2374,9 +2537,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         ses = f"{se:.4f}" if se is not None else "  n/a "
         shs = f"{sh:+.4f}" if sh is not None else "  n/a "
         bs = f"{base:.4f}" if base is not None else "  n/a "
-        print(
-            f"{expr:40s}  {ls:>8s}  {ses:>8s}  {shs:>8s}  {bs:>8s}  {r.get('passed')}"
-        )
+        print(f"{expr:40s}  {ls:>8s}  {ses:>8s}  {shs:>8s}  {bs:>8s}  {r.get('passed')}")
 
     # 默认 dry-run；仅 --apply 才写库 + 写回 lift 拒绝到 experiment_index
     # （--dry-run 为兼容旗标，与 --apply 互斥；dry-run 保持纯只读）
@@ -2423,9 +2584,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         )
     elif dry_run:
         n_pass = sum(1 for r in results if r.get("passed"))
-        print(
-            f"[factor-library lift-test] dry-run：通过 {n_pass} 个，不写库（加 --apply 写库）"
-        )
+        print(f"[factor-library lift-test] dry-run：通过 {n_pass} 个，不写库（加 --apply 写库）")
     else:
         print("[factor-library lift-test] 无结果行")
 
@@ -2440,9 +2599,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 se_mult=float(se_mult),
             )
             if n_idx:
-                print(
-                    f"[factor-library lift-test] experiment_index 写回 lift_rejected {n_idx} 条"
-                )
+                print(f"[factor-library lift-test] experiment_index 写回 lift_rejected {n_idx} 条")
         except Exception as exc:
             print(
                 f"[factor-library lift-test] 警告：lift 拒绝写回 index 失败: "
@@ -2534,8 +2691,10 @@ def _cmd_mine_leaderboard(args: argparse.Namespace) -> int:
     if not getattr(args, "all", False) and "passed" in df.columns:
         kept = df.filter(pl.col("passed").cast(pl.Utf8).str.to_lowercase() == "true")
         if kept.height == 0:
-            print(f"[mine] {csv}: 无候选通过防过拟合护栏；用 --all 查看全部 {df.height} 个候选",
-                  file=sys.stderr)
+            print(
+                f"[mine] {csv}: 无候选通过防过拟合护栏；用 --all 查看全部 {df.height} 个候选",
+                file=sys.stderr,
+            )
             return 0
         df = kept
     with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=80, tbl_width_chars=200):
@@ -2558,12 +2717,15 @@ def _mine_export_alpha_crypto(args: argparse.Namespace) -> int:
     start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime(
         "%Y%m%d"
     )
-    cross = export_crypto_alpha(profile, expr, symbols, start, args.date, date=args.date,
-                                freq=args.freq)
+    cross = export_crypto_alpha(
+        profile, expr, symbols, start, args.date, date=args.date, freq=args.freq
+    )
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     cross.write_parquet(args.out)
-    print(f"[mine] export-alpha(crypto): rank={args.rank} expr={expr!r} date={args.date} "
-          f"→ {args.out} ({cross.height} 个标的)")
+    print(
+        f"[mine] export-alpha(crypto): rank={args.rank} expr={expr!r} date={args.date} "
+        f"→ {args.out} ({cross.height} 个标的)"
+    )
     return 0
 
 
@@ -2579,12 +2741,16 @@ def _mine_export_alpha_futures(args: argparse.Namespace) -> int:
     expr = read_candidate_expression(args.session, args.rank, require_passed=not args.all)
     profile = build_futures_profile(top_n=args.top_n)
     symbols = profile.universe.snapshot(args.date)
-    start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime("%Y%m%d")
+    start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime(
+        "%Y%m%d"
+    )
     cross = export_futures_alpha(profile, expr, symbols, start, args.date, date=args.date)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     cross.write_parquet(args.out)
-    print(f"[mine] export-alpha(futures): rank={args.rank} expr={expr!r} date={args.date} "
-          f"→ {args.out} ({cross.height} 个品种)")
+    print(
+        f"[mine] export-alpha(futures): rank={args.rank} expr={expr!r} date={args.date} "
+        f"→ {args.out} ({cross.height} 个品种)"
+    )
     return 0
 
 
@@ -2600,12 +2766,16 @@ def _mine_export_alpha_us(args: argparse.Namespace) -> int:
     expr = read_candidate_expression(args.session, args.rank, require_passed=not args.all)
     profile = build_us_profile(top_n=args.top_n)
     symbols = profile.universe.snapshot(args.date)
-    start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime("%Y%m%d")
+    start = (datetime.strptime(args.date, "%Y%m%d") - timedelta(days=args.lookback)).strftime(
+        "%Y%m%d"
+    )
     cross = export_us_alpha(profile, expr, symbols, start, args.date, date=args.date)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     cross.write_parquet(args.out)
-    print(f"[mine] export-alpha(us): rank={args.rank} expr={expr!r} date={args.date} "
-          f"→ {args.out} ({cross.height} 个标的)")
+    print(
+        f"[mine] export-alpha(us): rank={args.rank} expr={expr!r} date={args.date} "
+        f"→ {args.out} ({cross.height} 个标的)"
+    )
     return 0
 
 
@@ -2639,23 +2809,25 @@ def _cmd_mine_export_alpha(args: argparse.Namespace) -> int:
     import polars as pl
 
     n = pl.read_parquet(out).height
-    print(f"[mine] export-alpha: rank={args.rank} expr={expr!r} date={args.date} "
-          f"→ {out} ({n} 只股票)")
+    print(
+        f"[mine] export-alpha: rank={args.rank} expr={expr!r} date={args.date} → {out} ({n} 只股票)"
+    )
     return 0
 
 
 def _validate_overfit_crypto(args: argparse.Namespace) -> int:
     """crypto 单表达式防过拟合验证（live CCXT）。"""
     if not getattr(args, "expression", None):
-        print("[validate] crypto 需 --expression \"<表达式>\"", file=sys.stderr)
+        print('[validate] crypto 需 --expression "<表达式>"', file=sys.stderr)
         return 1
     from factorzen.markets.crypto.mining import validate_crypto_expression
     from factorzen.markets.crypto.profile import build_crypto_profile
 
     profile = build_crypto_profile(top_n=args.top_n)
     symbols = profile.universe.snapshot(args.end)
-    rep = validate_crypto_expression(profile, args.expression, symbols, args.start, args.end,
-                                     freq=args.freq)
+    rep = validate_crypto_expression(
+        profile, args.expression, symbols, args.start, args.end, freq=args.freq
+    )
     print(
         f"[validate] {args.expression}: IC={rep['ic_mean']:.4f} IR={rep['ir']:.4f} "
         f"DSR_p={rep['dsr_p']:.4f} IC_95%CI=[{rep['ci_lo']:.4f},{rep['ci_hi']:.4f}]"
@@ -2667,7 +2839,7 @@ def _validate_overfit_crypto(args: argparse.Namespace) -> int:
 def _validate_overfit_futures(args: argparse.Namespace) -> int:
     """futures 单表达式防过拟合验证（Tushare 主力连续）。"""
     if not getattr(args, "expression", None):
-        print("[validate] futures 需 --expression \"<表达式>\"", file=sys.stderr)
+        print('[validate] futures 需 --expression "<表达式>"', file=sys.stderr)
         return 1
     from factorzen.markets.futures.mining import validate_futures_expression
     from factorzen.markets.futures.profile import build_futures_profile
@@ -2686,7 +2858,7 @@ def _validate_overfit_futures(args: argparse.Namespace) -> int:
 def _validate_overfit_us(args: argparse.Namespace) -> int:
     """us 单表达式防过拟合验证（Yahoo 后复权）。"""
     if not getattr(args, "expression", None):
-        print("[validate] us 需 --expression \"<表达式>\"", file=sys.stderr)
+        print('[validate] us 需 --expression "<表达式>"', file=sys.stderr)
         return 1
     from factorzen.markets.us.mining import validate_us_expression
     from factorzen.markets.us.profile import build_us_profile
@@ -2719,8 +2891,10 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
 
     # factor 位置参数 nargs='?' 可缺省；缺省时给友好用法提示，而非 get_factor(None) 裸 KeyError
     if not getattr(args, "factor", None):
-        print("[validate] 缺少因子名：用法 fz validate overfit <factor> --start ... --end ...",
-              file=sys.stderr)
+        print(
+            "[validate] 缺少因子名：用法 fz validate overfit <factor> --start ... --end ...",
+            file=sys.stderr,
+        )
         return 2
     # ashare daily：注入 library expression 因子（库损坏不崩）
     try:
@@ -2731,6 +2905,7 @@ def _cmd_validate_overfit(args: argparse.Namespace) -> int:
     uni = None
     if getattr(args, "universe", None):
         from factorzen.core.universe import get_universe
+
         uni = get_universe(args.end, args.universe)["ts_code"].to_list()
     ctx = FactorDataContext(
         start=args.start,
@@ -2764,13 +2939,25 @@ def _portfolio_build_crypto(args: argparse.Namespace) -> int:
         else pl.read_csv(args.alpha_file)
     )
     _end = args.end or ""
-    signal_date = f"{_end[:4]}-{_end[4:6]}-{_end[6:]}" if len(_end) == 8 and _end.isdigit() else _end
-    res = build_crypto_portfolio(
-        profile, adf, symbols, args.start, args.end,
-        market_neutral=True, w_max=args.w_max, gross_limit=args.gross_limit,
-        risk_aversion=args.lam, signal_date=signal_date, freq=args.freq,
+    signal_date = (
+        f"{_end[:4]}-{_end[4:6]}-{_end[6:]}" if len(_end) == 8 and _end.isdigit() else _end
     )
-    print(f"[portfolio] crypto status={res['status']} holdings={res['n_holdings']} → {res['run_dir']}")
+    res = build_crypto_portfolio(
+        profile,
+        adf,
+        symbols,
+        args.start,
+        args.end,
+        market_neutral=True,
+        w_max=args.w_max,
+        gross_limit=args.gross_limit,
+        risk_aversion=args.lam,
+        signal_date=signal_date,
+        freq=args.freq,
+    )
+    print(
+        f"[portfolio] crypto status={res['status']} holdings={res['n_holdings']} → {res['run_dir']}"
+    )
     return 0
 
 
@@ -2811,9 +2998,7 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
     # --industry-neutral 使用 universe 等权基准：target = X_s.T @ w_bench（等权行业暴露）
     # 而非绝对 0；raw one-hot 列下 target=0 + long_only + Σw=1 必然 infeasible。
     # MVP：等权基准（真实指数基准权重留后续扩展）。
-    bench_weights = (
-        np.full(len(codes), 1.0 / len(codes)) if args.industry_neutral else None
-    )
+    bench_weights = np.full(len(codes), 1.0 / len(codes)) if args.industry_neutral else None
     _ind_map = dict(zip(stocks["ts_code"].to_list(), stocks["industry"].to_list(), strict=False))
     sectors = [(_ind_map.get(c) or "") for c in codes]
     # 将 args.end (YYYYMMDD) 转成 ISO 格式 YYYY-MM-DD，供 sim 的 date.fromisoformat() 解析
@@ -2883,7 +3068,8 @@ def _cmd_sim_run(args: argparse.Namespace) -> int:
         return 2
 
     run_dirs = sorted(
-        p for p in portfolio_root.iterdir()
+        p
+        for p in portfolio_root.iterdir()
         # 同时要求 manifest.json：portfolio_build 先写 weights 再写 manifest，中途崩溃会
         # 留下含 weights 无 manifest 的半成品目录，_load_weights_by_date 无条件读 manifest
         # 会 FileNotFoundError 炸掉整批 sim。
@@ -2899,8 +3085,13 @@ def _cmd_sim_run(args: argparse.Namespace) -> int:
 
         profile = build_crypto_profile(top_n=getattr(args, "top_n", 50))
         res = run_crypto_simulation(
-            [str(p) for p in run_dirs], profile, args.start, args.end,
-            out_dir=str(SIM_DIR), run_id=args.run_id, freq=args.freq,
+            [str(p) for p in run_dirs],
+            profile,
+            args.start,
+            args.end,
+            out_dir=str(SIM_DIR),
+            run_id=args.run_id,
+            freq=args.freq,
         )
     else:
         from factorzen.core import loader
@@ -2908,7 +3099,10 @@ def _cmd_sim_run(args: argparse.Namespace) -> int:
 
         daily = loader.fetch_daily(args.start, args.end)
         res = run_portfolio_simulation(
-            [str(p) for p in run_dirs], daily, out_dir=str(SIM_DIR), run_id=args.run_id,
+            [str(p) for p in run_dirs],
+            daily,
+            out_dir=str(SIM_DIR),
+            run_id=args.run_id,
         )
     print(
         f"[sim] run_dir={res['run_dir']} "
@@ -2970,6 +3164,7 @@ def _cmd_report_portfolio(args: argparse.Namespace) -> int:
         nav_path = sim_dir / "nav.parquet"
         if nav_path.exists():
             from types import SimpleNamespace
+
             _nav_df = pl.read_parquet(nav_path)
             if not _nav_df.is_empty():
                 # returns=nav_df（含 net_return）供月度收益热力图渲染
@@ -3036,7 +3231,9 @@ def _cmd_live_replay(args: argparse.Namespace) -> int:
         to_date=_date.fromisoformat(args.to_date) if args.to_date else None,
         seed=args.seed,
     )
-    print(f"replay 完成: {out['n_steps']} 步, 终值 NAV={out['final_nav']:.2f} → {out['session_dir']}")
+    print(
+        f"replay 完成: {out['n_steps']} 步, 终值 NAV={out['final_nav']:.2f} → {out['session_dir']}"
+    )
     return 0
 
 
@@ -3172,16 +3369,28 @@ def _cmd_combine_from_session(args: argparse.Namespace) -> int:
 
     methods = None if args.methods == "all" else args.methods.split(",")
     res = combine_from_session(
-        session_dirs=args.session, start=args.start, end=args.end, universe=args.universe,
-        horizon=args.horizon, passed_only=not args.all, top_n=args.top_n,
+        session_dirs=args.session,
+        start=args.start,
+        end=args.end,
+        universe=args.universe,
+        horizon=args.horizon,
+        passed_only=not args.all,
+        top_n=args.top_n,
         decorr_threshold=args.decorr_threshold,
-        methods=methods, seed=args.seed, out_dir=args.out_dir, run_id=args.run_id,
-        train_days=args.train_days, test_days=args.test_days,
-        purge_days=args.purge_days, embargo_days=args.embargo_days,
+        methods=methods,
+        seed=args.seed,
+        out_dir=args.out_dir,
+        run_id=args.run_id,
+        train_days=args.train_days,
+        test_days=args.test_days,
+        purge_days=args.purge_days,
+        embargo_days=args.embargo_days,
     )
     print(f"[combine] 因子库组合完成 → {res['run_dir']}")
-    print(f"[combine] 纳入 {len(res['factors_used'])} 个因子；"
-          f"去相关剔除 {len(res['dropped_correlated'])} 个近亲")
+    print(
+        f"[combine] 纳入 {len(res['factors_used'])} 个因子；"
+        f"去相关剔除 {len(res['dropped_correlated'])} 个近亲"
+    )
     for d in res["dropped_correlated"]:
         ident = d.get("identity", d.get("expression"))
         print(f"[combine]   ✗ {ident} → 与 {d['corr_with']} 相关 {d['corr']:.2f}")
@@ -3234,9 +3443,7 @@ def _cmd_combine_from_library(args: argparse.Namespace) -> int:
         print(f"[combine] top_n 截断自 {res['truncated_from']}")
     for d in res.get("dropped_correlated") or []:
         ident = d.get("identity", d.get("expression"))
-        print(
-            f"[combine]   ✗ {ident} → 与 {d['corr_with']} 相关 {d['corr']:.2f}"
-        )
+        print(f"[combine]   ✗ {ident} → 与 {d['corr_with']} 相关 {d['corr']:.2f}")
     print(res["comparison"])
     return 0
 
@@ -3282,7 +3489,9 @@ def build_parser() -> argparse.ArgumentParser:
     return assemble_parser(sys.modules[__name__])
 
 
-def _schema_for_parsed_args(args: argparse.Namespace) -> dict[str, tuple[type, Any, tuple[str, ...] | None]] | None:
+def _schema_for_parsed_args(
+    args: argparse.Namespace,
+) -> dict[str, tuple[type, Any, tuple[str, ...] | None]] | None:
     """按已解析命令选 --set schema（parse 后 / handler 前统一注入）。"""
     cmd = getattr(args, "command", None)
     if cmd == "mine":

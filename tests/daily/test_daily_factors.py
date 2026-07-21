@@ -406,9 +406,13 @@ def test_idiosyncratic_vol_20d(ctx):
 
 
 def test_volume_return_corr_20d(ctx):
-    from workspace.factors.daily.volume_return_corr_20d import VolumeReturnCorr20D
+    from factorzen.config.settings import FACTOR_STORE_DIR
+    from factorzen.discovery.factor_store import load_python_factor_module
 
-    factor = VolumeReturnCorr20D()
+    mod = load_python_factor_module(
+        FACTOR_STORE_DIR / "ashare" / "volume_return_corr_20d" / "factor.py"
+    )
+    factor = mod.VolumeReturnCorr20D()
     assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "volume_return_corr_20d")
@@ -441,19 +445,19 @@ def test_ep_ratio(ctx):
 
 
 def test_factor_required_meta_suite():
-    """test_registry_has_new_factors；test_registry_has_qlib_factors"""
+    """test_registry_has_new_factors；test_registry_has_qlib_factors；store python 单路径"""
     # -- 原 test_registry_has_new_factors --
     def _section_0_test_registry_has_new_factors():
         from factorzen.daily.factors.registry import list_factors
 
         factors = list_factors()
+        # builtin 包扫描路径（不含 factor_store 用户因子）
         expected = [
             "amihud_illiquidity",
             "max_return_5d",
             "skewness_20d",
             "beta_60d",
             "idiosyncratic_vol_20d",
-            "volume_return_corr_20d",
             "bm_ratio",
             "ep_ratio",
             "asset_growth",
@@ -462,6 +466,19 @@ def test_factor_required_meta_suite():
             assert name in factors, f"Factor '{name}' not registered"
 
     _section_0_test_registry_has_new_factors()
+
+    # -- factor_store 单路径：load_library_factors 注入 python 用户因子 --
+    def _section_0b_store_python_factor_registered():
+        from factorzen.daily.factors.registry import list_factors
+        from factorzen.discovery.library_provider import load_library_factors
+
+        load_library_factors(market="ashare")
+        factors = list_factors()
+        assert "volume_return_corr_20d" in factors, (
+            "store python factor volume_return_corr_20d not registered via load_library_factors"
+        )
+
+    _section_0b_store_python_factor_registered()
 
     # -- 原 test_registry_has_qlib_factors --
     def _section_1_test_registry_has_qlib_factors():

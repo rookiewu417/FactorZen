@@ -23,17 +23,30 @@ FactorZen 严格区分两个根目录：
 | `mining_sessions/` | `fz mine search` | 随机/遗传搜索 session |
 | `mine_team/` | `fz mine team` | 多角色团队挖掘 session（含 lift 准入记录） |
 | `combinations/` | `fz combine run / from-session / from-library` | 多因子合成实验 |
+| `combine_backtests/` | 组合回测脚本 / 研究作业 | 组合回测产物 |
 | `risk_models/` | `fz risk build` | 风险模型（暴露/协方差/特质风险） |
 | `sim/` | `fz sim run` | 模拟交易 run |
 | `reports/` | `fz report portfolio` 等 | 独立报告输出 |
 | `factor_library/` | lift 准入、`fz factor-library rebuild` | **因子库登记簿本体，不是 run 目录** |
-| `factors/` | 用户手写 | python 因子**源码**目录，非 run 产物 |
+| `factor_store/` | `fz factor new`、`fz factor-library store sync` | python/expression 因子三件套（meta/py/parquet） |
 | `configs/` | 用户手写 | YAML 运行配置模板，非产物（见 [配置参考](configuration.md)） |
 | `runs/` | 各命令共同写入 | 全局归档 `runs/artifacts/` + 日志 `runs/logs/` |
-| `notebooks/` | `pixi run lab` | jupyter 工作区 |
-| `logs/`、`data_ingest/`、`data_backfill/`、`data_maintenance/`、`architecture_review/` | 长任务与运维脚本自建 | 运维产物，无 `settings.py` 常量管辖 |
+| `_ops/` | 长任务与运维脚本（`WORKSPACE_OPS_DIR`） | 运维杂项统一屋，见下表 |
 
 > ℹ️ `workspace/` 根下还会出现散落的 `*.done` / `*.exitcode` / `*.log` 文件。这是长任务的 sentinel 惯例（后台任务完成时 `touch` 一个哨兵文件供轮询），不属于产物结构。
+
+### `_ops/` 子目录（运维，非产品 stage）
+
+常量：`settings.WORKSPACE_OPS_DIR = workspace/_ops`。
+
+| 子目录 | 写入者 | 内容 |
+|---|---|---|
+| `logs/` | 长任务 shell（`workspace/configs/run_*.sh` 等）、一次性作业 | 文本日志 / sentinel |
+| `data_ingest/` | `tools/ingest_minute.py` | 分钟数据导入 manifest + done |
+| `data_backfill/` | `data/_tools/card_*.py` 等回填脚本 | 回填 run 目录 |
+| `data_maintenance/` | `tools/repair_raw_partition.py` | raw 分区修补 manifest |
+| `campaigns/` | 研究战役归档 | 战役材料 |
+| `architecture_review/` | 架构评审作业 | 评审产物（含 `job_manifest.txt`） |
 
 ---
 
@@ -242,7 +255,7 @@ n_lift_evaluated, lift_dropped_coverage[], lift_error, objective, git_sha
 | `strategies/trend_timing.py:149` | 各期 run_dir | 含 `signal_date` + `weights.parquet` |
 | `server/artifacts.py:40,77` | **读**取端 | 扫 `<workspace>/<domain>/<run_id>/manifest.json` 建索引，供只读展示 server |
 
-变体文件名：`rebuild_{market}_manifest.json`、`input_manifest.json`（combinations）、`lift_test_manifest.json`（mine_team）、`job_manifest.txt`（architecture_review，**非 JSON**）。
+变体文件名：`rebuild_{market}_manifest.json`、`input_manifest.json`（combinations）、`lift_test_manifest.json`（mine_team）、`job_manifest.txt`（`_ops/architecture_review`，**非 JSON**）。
 
 lift-test 每次运行落**两份**：稳定名 `lift_test_manifest.json`（latest 指针，覆写）
 + 时间戳归档 `lift_test_manifest_{YYYYmmddTHHMMSS}.json`（永不覆写）。

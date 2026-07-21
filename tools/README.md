@@ -50,7 +50,7 @@ tmux new-session -d -s tushare_gapfill \
 
 旧备份不能按目录大小判定“冗余”。`repair_raw_partition.py` 先按键做 anti-join，只把目标
 缺失行对齐到当前 schema 后追加，目标已有值永远优先；每次运行会在
-`workspace/data_maintenance/<run_id>/` 写 manifest 与完成 sentinel。
+`workspace/_ops/data_maintenance/<run_id>/` 写 manifest 与完成 sentinel。
 
 ```bash
 pixi run python tools/repair_raw_partition.py data/raw/<type>.bak.<timestamp> \

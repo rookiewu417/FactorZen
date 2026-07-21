@@ -53,7 +53,11 @@ class CryptoUniverse(Universe):
         vol = vol.join(meta.select("ts_code", "list_date"), on="ts_code", how="left")
         keep = (
             vol.filter(
-                (pl.col("tot_amount") >= self.min_amount)
+                # 零成交额恒不可交易,与阈值无关:合约下架/迁移后 Vision 仍生成价格
+                # 冻结的 bar(实测 FTMUSDT 2025-01-06 后、MKRUSDT 2025-09-08 后),
+                # 若只判 `>= min_amount(默认 0.0)` 它们会静默进池污染截面。
+                (pl.col("tot_amount") > 0)
+                & (pl.col("tot_amount") >= self.min_amount)
                 & pl.col("list_date").is_not_null()
                 & ((pl.lit(d) - pl.col("list_date")).dt.total_days() >= self.min_list_days)
             )

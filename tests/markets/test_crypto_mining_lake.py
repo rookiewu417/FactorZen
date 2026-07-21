@@ -365,6 +365,25 @@ def test_crypto_universe_rules_costs_suite():
 
     _section_2_test_snapshot_topn_caps_count()
 
+    # -- 新增:零成交僵尸标的必须出池(实测 FTMUSDT/MKRUSDT 合约迁移后价格冻结) --
+    def _section_2b_test_snapshot_drops_zero_amount_symbols():
+        prov = _fixture()
+        dead = pl.DataFrame([
+            {"ts_code": "DEADUSDT", "trade_date": dd, "close": 100.0, "vol": 0.0, "amount": 0.0}
+            for dd in (date(2024, 1, 11), date(2024, 2, 1), date(2024, 2, 10))
+        ])
+        prov._bars = pl.concat([prov._bars, dead], how="vertical")
+        prov._meta = pl.concat([prov._meta, pl.DataFrame(
+            {"ts_code": ["DEADUSDT"], "name": ["DEAD"], "list_date": [date(2020, 1, 1)]}
+        )], how="vertical")
+        # top_n 大于池子规模时,零成交标的过去会因 `0 >= min_amount(0.0)` 混进来
+        snap = CryptoUniverse(provider=prov, top_n=99, lookback_days=30,
+                              min_amount=0.0, min_list_days=30).snapshot("20240210")
+        assert "DEADUSDT" not in snap
+        assert snap[:2] == ["BTCUSDT", "ETHUSDT"]  # 健康标的不受影响
+
+    _section_2b_test_snapshot_drops_zero_amount_symbols()
+
     # -- 原 test_benchmark_returns_btc_close_series --
     def _section_3_test_benchmark_returns_btc_close_series():
         u = CryptoUniverse(provider=_fixture(), benchmark_symbol="BTCUSDT")

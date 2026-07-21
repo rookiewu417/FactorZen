@@ -202,7 +202,12 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
             iteration=state.iteration, hypothesis=hypothesis, expression=r["expression"],
             compile_ok=r["compile_ok"], ic_train=r["ic_train"], passed_guardrails=False,
             critic_verdict=None, error=r["error"], ir_train=r["ir_train"],
-            turnover=r.get("turnover"), n_train=r.get("n_train")))
+            turnover=r.get("turnover"), n_train=r.get("n_train"),
+            nonzero_coverage=r.get("nonzero_coverage"),
+            is_sparse=bool(r.get("is_sparse") or False),
+            subset_ic_train=r.get("subset_ic_train"),
+            subset_n_days_train=r.get("subset_n_days_train"),
+        ))
         state.seen_expressions.add(r["expression"])
     return results
 
@@ -218,6 +223,7 @@ def _run_one_round(
     prepped=None,
     exec_lag: int = 0,
     exec_price_col: str | None = None,
+    sleeve_gate: bool = True,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -476,6 +482,7 @@ def _run_one_round(
         prepped=prepped,             # P5：session 同源 prep，跳过护栏再 prep 全帧
         exec_lag=exec_lag,
         exec_price_col=exec_price_col,
+        sleeve_gate=sleeve_gate,
     )
     _print_rejections("mine-team", state)
     new_cands = state.candidates[n_before:]                # Important 1/Minor 2: 本轮新增候选
@@ -677,6 +684,8 @@ def run_team_agent(
     # 1 + "open_adj" = t+1 开盘成交（可实现）。贯穿护栏 / holdout / lift 裁决。
     exec_lag: int = 0,
     exec_price_col: str | None = None,
+    # 稀疏因子 sleeve 旁路（子集 IC → lift_queue）；False=关闭，稠密路径不变。
+    sleeve_gate: bool = True,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -961,6 +970,7 @@ def run_team_agent(
                 run_id=session_run_id, campaign_id=session_campaign_id,
                 prepped=session_prepped,
                 exec_lag=exec_lag, exec_price_col=exec_price_col,
+                sleeve_gate=sleeve_gate,
             )
         except LLMClientError as exc:
             llm_failures += 1
@@ -1179,7 +1189,7 @@ def _collect_lift_queue(state: AgentState) -> list[dict]:
         if not expr or expr in seen:
             continue
         seen.add(expr)
-        queue.append({
+        row = {
             "expression": expr,
             "ic_train": a.ic_train,
             "ir_train": a.ir_train,
@@ -1190,7 +1200,19 @@ def _collect_lift_queue(state: AgentState) -> list[dict]:
             "reject_category": a.reject_category,
             "reject_reason": a.reject_reason,
             "hypothesis": a.hypothesis,
-        })
+        }
+        # sleeve 旁路审计字段（lift 层不读；缺字段容忍）
+        if getattr(a, "sleeve_candidate", False):
+            row["sleeve_candidate"] = True
+            for _k in (
+                "subset_ic_train", "subset_ic_holdout",
+                "subset_n_days_train", "subset_n_days_holdout",
+                "nonzero_coverage",
+            ):
+                _v = getattr(a, _k, None)
+                if _v is not None:
+                    row[_k] = _v
+        queue.append(row)
     return queue
 
 

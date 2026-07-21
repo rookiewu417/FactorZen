@@ -456,6 +456,11 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         help="关闭 session 末自动组 lift 裁决（默认开：lift_queue 候选组测+入库）",
     )
     m_team.add_argument(
+        "--no-sleeve-gate", dest="no_sleeve_gate", action="store_true",
+        help="关闭稀疏因子 sleeve 旁路（默认开：非零覆盖<20%% 时补算子集 IC，"
+             "达标则进 lift_queue 而非直接拒）",
+    )
+    m_team.add_argument(
         "--lift-se-mult", dest="lift_se_mult", type=float, default=1.0,
         help="lift 准入 SE 乘数（默认 1.0：lift ≥ max(threshold, se_mult×SE)）",
     )

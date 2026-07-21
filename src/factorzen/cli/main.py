@@ -959,6 +959,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         # 成交口径：默认 0 = 历史行为（close→close，隐含 t 日收盘成交，不可实现）
         exec_lag=int(getattr(args, "exec_lag", 0) or 0),
         exec_price_col=getattr(args, "exec_price_col", None),
+        sleeve_gate=not bool(getattr(args, "no_sleeve_gate", False)),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0

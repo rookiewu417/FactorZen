@@ -260,6 +260,20 @@ def record(
             "campaign_id": campaign_id,             # 完整统计问题族（顶层，非 data_window）
             "run_id": run_id,
         }
+        # 稀疏因子子集评估 + sleeve 旁路（及残差双指标）— 有值才写；消费方缺字段须容忍
+        for _k in (
+            "nonzero_coverage", "is_sparse",
+            "subset_ic_train", "subset_n_days_train",
+            "subset_ic_holdout", "subset_n_days_holdout",
+            "sleeve_candidate",
+            "residual_ic_train", "residual_holdout_ic", "n_residual_holdout_days",
+        ):
+            _v = getattr(a, _k, None)
+            if _k in ("is_sparse", "sleeve_candidate"):
+                if _v:
+                    rec[_k] = True
+            elif _v is not None:
+                rec[_k] = _v
         # 回填 holdout_ic（归一化匹配）
         hic = hic_map.get(_normalize(a.expression))
         if hic is not None:

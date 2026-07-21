@@ -25,6 +25,116 @@ _LOG = logging.getLogger(__name__)
 _PRICE_COLS = ("close", "open", "high", "low", "vol", "amount",
                "close_adj", "open_adj", "high_adj", "low_adj")
 
+# 稀疏因子（事件叶 fill-0）子集评估阈值——改这一处即全局生效。
+# 非零覆盖率 < 此值 → 判稀疏，补算 subset RankIC；稠密路径完全跳过子集指标。
+SPARSE_COVERAGE_THRESHOLD = 0.20
+# 当日子集截面样本下限（与生产 RankIC ``_MIN_CROSS_SAMPLES`` 同源）。
+SUBSET_MIN_CROSS_SAMPLES = 30
+
+
+def _nonzero_coverage(factor_df: pl.DataFrame) -> float:
+    """非零且非 null/finite 样本占比 ∈ [0, 1]。空帧 → 0.0。
+
+    分母 = factor_df 行数（调用方应传入已 filter 有限 factor_value 的帧，
+    与 ``_factor_df_from_prepped`` 出口同形态——fill-0 事件叶的 0 仍在帧内）。
+    """
+    if factor_df.is_empty() or "factor_value" not in factor_df.columns:
+        return 0.0
+    n = int(factor_df.height)
+    if n == 0:
+        return 0.0
+    n_nz = int(
+        factor_df.filter(
+            pl.col("factor_value").is_not_null()
+            & pl.col("factor_value").is_finite()
+            & (pl.col("factor_value") != 0)
+        ).height
+    )
+    return n_nz / n
+
+
+def compute_subset_rank_ic(
+    factor_df: pl.DataFrame,
+    fwd_returns: pl.DataFrame,
+    *,
+    min_samples: int = SUBSET_MIN_CROSS_SAMPLES,
+    ret_col: str | None = None,
+) -> tuple[float | None, int]:
+    """仅在因子非零样本上算逐日截面 RankIC，返回 ``(ic_mean, n_days)``。
+
+    - 因子值 null / 非有限 / **等于 0** 的行剔除（事件子集口径）。
+    - 当日有效子集 n < ``min_samples`` 跳过（与生产 RankIC 同守卫）。
+    - 无任何有效日 → ``(None, 0)``。
+
+    ``ret_col``：缺省取 ``fwd_ret_1d``，否则 fwd_returns 中第一个 ``fwd_ret_*`` 列。
+    """
+    from factorzen.daily.evaluation.ic_analysis import _rank_ic_by_date
+
+    if factor_df.is_empty() or "factor_value" not in factor_df.columns:
+        return None, 0
+    if ret_col is None:
+        if "fwd_ret_1d" in fwd_returns.columns:
+            ret_col = "fwd_ret_1d"
+        else:
+            cands = [c for c in fwd_returns.columns if c.startswith("fwd_ret_")]
+            if not cands:
+                return None, 0
+            ret_col = cands[0]
+
+    sub = factor_df.filter(
+        pl.col("factor_value").is_not_null()
+        & pl.col("factor_value").is_finite()
+        & (pl.col("factor_value") != 0)
+    )
+    if sub.is_empty():
+        return None, 0
+
+    ret = fwd_returns
+    need = {"trade_date", "ts_code", ret_col}
+    if not need.issubset(set(ret.columns)):
+        # 宽表可能含额外列；只要求键 + ret
+        missing = need - set(ret.columns)
+        if missing:
+            return None, 0
+    ret = ret.select(["trade_date", "ts_code", ret_col])
+    joined = sub.select(["trade_date", "ts_code", "factor_value"]).join(
+        ret, on=["trade_date", "ts_code"], how="inner",
+    )
+    if joined.is_empty():
+        return None, 0
+
+    ic_df = _rank_ic_by_date(
+        joined, "factor_value", ret_col, min_samples=min_samples,
+    )
+    if ic_df.is_empty():
+        return None, 0
+    vals = ic_df["ic"].drop_nulls().drop_nans().to_numpy()
+    if vals.size == 0:
+        return None, 0
+    return float(np.mean(vals)), int(vals.size)
+
+
+def _sparse_subset_train_fields(
+    fdf: pl.DataFrame, bundle,
+) -> dict:
+    """对 train 段 factor_df 算覆盖率 +（若稀疏）子集 IC 字段字典。"""
+    # 与 quick_fitness 同 train 段口径
+    seg = bundle._segment_mask(fdf, "train")
+    cov = _nonzero_coverage(seg if not seg.is_empty() else fdf)
+    out: dict = {
+        "nonzero_coverage": float(cov),
+        "is_sparse": bool(cov < SPARSE_COVERAGE_THRESHOLD),
+        "subset_ic_train": None,
+        "subset_n_days_train": None,
+    }
+    if not out["is_sparse"]:
+        return out
+    ret = bundle._segment_mask(bundle.fwd_returns, "train")
+    sic, sn = compute_subset_rank_ic(seg if not seg.is_empty() else fdf, ret)
+    out["subset_ic_train"] = sic
+    out["subset_n_days_train"] = sn
+    return out
+
 
 def _preprocess_daily(daily: pl.DataFrame, profile=None) -> pl.DataFrame:
     """把评估帧准备成与 run_session/ExpressionFactor 同一套 prep（复权价 + 停牌掩码 + 全套派生列）。
@@ -265,7 +375,9 @@ def evaluate_expressions(
         except ValueError as exc:
             results.append({"expression": s, "node": None, "compile_ok": False,
                             "ic_train": None, "ir_train": None, "turnover": None,
-                            "n_train": 0, "error": str(exc)})
+                            "n_train": 0, "error": str(exc),
+                            "nonzero_coverage": None, "is_sparse": False,
+                            "subset_ic_train": None, "subset_n_days_train": None})
             continue
 
         if eval_start is not None:
@@ -275,7 +387,9 @@ def evaluate_expressions(
                 results.append({
                     "expression": to_expr_string(node), "node": node, "compile_ok": True,
                     "ic_train": None, "ir_train": None, "turnover": None, "n_train": 0,
-                    "error": f"预热不足: 叶 {leaf} 需要 {need} 根历史，可用 {have} 根"})
+                    "error": f"预热不足: 叶 {leaf} 需要 {need} 根历史，可用 {have} 根",
+                    "nonzero_coverage": None, "is_sparse": False,
+                    "subset_ic_train": None, "subset_n_days_train": None})
                 continue
 
         try:
@@ -289,7 +403,9 @@ def evaluate_expressions(
                             "expression": to_expr_string(node), "node": node,
                             "compile_ok": True,
                             "ic_train": None, "ir_train": None, "turnover": None,
-                            "n_train": 0, "error": "duplicate_fingerprint"})
+                            "n_train": 0, "error": "duplicate_fingerprint",
+                            "nonzero_coverage": None, "is_sparse": False,
+                            "subset_ic_train": None, "subset_n_days_train": None})
                         continue
                     seen_fingerprints.add(fp)
             fit = quick_fitness(fdf, bundle, segment="train")
@@ -298,14 +414,23 @@ def evaluate_expressions(
                 results.append({
                     "expression": to_expr_string(node), "node": node, "compile_ok": True,
                     "ic_train": None, "ir_train": None, "turnover": None, "n_train": 0,
-                    "error": "求值后 train 段无有效截面（因子值全 null/NaN、分母恒零或窗口长于样本）"})
+                    "error": "求值后 train 段无有效截面（因子值全 null/NaN、分母恒零或窗口长于样本）",
+                    "nonzero_coverage": None, "is_sparse": False,
+                    "subset_ic_train": None, "subset_n_days_train": None})
                 continue
-            results.append({"expression": to_expr_string(node), "node": node, "compile_ok": True,
-                            "ic_train": float(fit["ic_mean"]), "ir_train": float(fit["ir"]),
-                            "turnover": _factor_turnover(fdf), "n_train": n_train, "error": None})
+            # 稀疏因子：补算 train 子集 RankIC（稠密只记覆盖率，不跑子集）
+            sparse_fields = _sparse_subset_train_fields(fdf, bundle)
+            results.append({
+                "expression": to_expr_string(node), "node": node, "compile_ok": True,
+                "ic_train": float(fit["ic_mean"]), "ir_train": float(fit["ir"]),
+                "turnover": _factor_turnover(fdf), "n_train": n_train, "error": None,
+                **sparse_fields,
+            })
         except Exception as exc:
             _LOG.warning("表达式 %s 求值失败: %s: %s", s, type(exc).__name__, exc)
             results.append({"expression": to_expr_string(node), "node": node, "compile_ok": True,
                             "ic_train": None, "ir_train": None, "turnover": None,
-                            "n_train": 0, "error": str(exc)})
+                            "n_train": 0, "error": str(exc),
+                            "nonzero_coverage": None, "is_sparse": False,
+                            "subset_ic_train": None, "subset_n_days_train": None})
     return results

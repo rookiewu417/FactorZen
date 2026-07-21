@@ -284,13 +284,17 @@ def test_fc_surprise_one_side_and_both_null():
 
 
 def test_express_yoy_pit_and_window():
-    """express_yoy：PIT + 20 日窗 + /100。"""
+    """express_yoy：PIT + 20 日窗 + 真同比 n_income/yoy_net_profit−1。
+
+    yoy_net_profit 是上年同期净利**额**(元)非同比%——1.25e8/1.0e8−1 = 0.25。
+    """
     from factorzen.daily.data.events import attach_express
 
     ex = _express([{
         "ts_code": "000001.SZ",
         "ann_date": "20240103",
-        "yoy_net_profit": 25.0,  # → 0.25 after /100
+        "n_income": 1.25e8,
+        "yoy_net_profit": 1.0e8,  # 上年同期净利额 → 真同比 0.25
     }])
     daily = _daily(["20240102", "20240103", "20240104", "20240105"])
     out = attach_express(daily, express_df=ex)
@@ -299,6 +303,26 @@ def test_express_yoy_pit_and_window():
     assert by[dt.date(2024, 1, 3)]["express_yoy"] == 0.0  # 公告日不可见
     assert abs(by[dt.date(2024, 1, 4)]["express_yoy"] - 0.25) < 1e-12
     assert by[dt.date(2024, 1, 2)]["express_yoy"] == 0.0
+
+
+def test_express_yoy_guard_and_clip():
+    """分母 ≤0 → 0(负基数同比语义破碎);极值 clip ±5。"""
+    from factorzen.daily.data.events import attach_express
+
+    ex = _express([
+        # 上年亏损:同比无意义 → 0
+        {"ts_code": "000001.SZ", "ann_date": "20240103",
+         "n_income": 5.0e7, "yoy_net_profit": -1.0e8},
+        # 微基数暴增:1e9/1e8−1 = 9 → clip 5
+        {"ts_code": "000002.SZ", "ann_date": "20240103",
+         "n_income": 1.0e9, "yoy_net_profit": 1.0e8},
+    ])
+    daily = _daily(["20240103", "20240104"], codes=["000001.SZ", "000002.SZ"])
+    out = attach_express(daily, express_df=ex)
+    by = {(r["ts_code"], r["trade_date"]): r for r in out.iter_rows(named=True)}
+
+    assert by[("000001.SZ", dt.date(2024, 1, 4))]["express_yoy"] == 0.0
+    assert by[("000002.SZ", dt.date(2024, 1, 4))]["express_yoy"] == 5.0
 
 
 def test_empty_source_all_null_not_zero():

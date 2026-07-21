@@ -9,7 +9,8 @@
 
 叶子:
 - ``fc_type_score`` / ``fc_surprise`` / ``fc_flag`` ← forecast
-- ``express_yoy`` ← express.yoy_net_profit / 100
+- ``express_yoy`` ← 真同比 express.n_income/yoy_net_profit − 1（clip ±5;
+  yoy_net_profit 是上年同期净利**额**非同比%，见 attach_express docstring）
 """
 from __future__ import annotations
 
@@ -264,7 +265,14 @@ def attach_express(
     daily: pl.DataFrame,
     express_df: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """把业绩快报 ``express_yoy`` join 进日线帧（yoy_net_profit/100，20 日窗）。"""
+    """把业绩快报 ``express_yoy`` join 进日线帧（真同比 n_income/yoy_net_profit−1，20 日窗）。
+
+    tushare express 的 ``yoy_net_profit`` 是**上年同期修正后净利润(元,绝对额)**而非同比%
+    (2026-07-20 实测中位 8.77e7;旧实现 /100 编码的是盈利规模,与 pe_ttm rank 相关 −0.77,
+    子集 IC +0.05 混入估值效应不是干净 PEAD)。真同比 = n_income/yoy_net_profit − 1;
+    分母 ≤0 时同比语义破碎(负基数增长率符号反转)→ 0;clip ±5(扭亏/微基数极值会统治
+    mul/zscore 类算子,rank 不受影响但算子组合受)。
+    """
     cols = _EX_LEAF_COLS
     if daily.is_empty() or "trade_date" not in daily.columns:
         return daily
@@ -276,14 +284,19 @@ def attach_express(
     calendar = _trade_calendar(daily)
     if any(c not in express_df.columns for c in ("ts_code", "ann_date")):
         return _ensure_cols(daily, cols)
-    if "yoy_net_profit" not in express_df.columns:
-        express_df = express_df.with_columns(
-            pl.lit(None, dtype=pl.Float64).alias("yoy_net_profit")
-        )
+    for c in ("yoy_net_profit", "n_income"):
+        if c not in express_df.columns:
+            express_df = express_df.with_columns(pl.lit(None, dtype=pl.Float64).alias(c))
 
     yoy = (
-        pl.when(pl.col("yoy_net_profit").is_not_null())
-        .then(pl.col("yoy_net_profit") / 100.0)
+        pl.when(
+            pl.col("n_income").is_not_null()
+            & pl.col("yoy_net_profit").is_not_null()
+            & (pl.col("yoy_net_profit") > 0)
+        )
+        .then(
+            (pl.col("n_income") / pl.col("yoy_net_profit") - 1.0).clip(-5.0, 5.0)
+        )
         .otherwise(0.0)
         .alias("express_yoy")
     )

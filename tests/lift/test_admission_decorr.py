@@ -849,7 +849,7 @@ def test_materialize_wiring_suite(tmp_path):
         args = build_parser().parse_args([
             "factor-library", "lift-test", "--session", str(run_dir),
             "--market", "ashare", "--start", "20200101", "--end", "20201231",
-            "--library-root", str(tmp_path / "lib"), "--apply",
+            "--set", "library_root=" + str(tmp_path / "lib"), "--apply",
         ])
         assert cli_main._cmd_factor_library_lift_test(args) == 0
         assert len(upsert_calls) == 1

@@ -287,18 +287,18 @@ pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi500 \
   --pool-subproc
 ```
 
-`--pool-subproc`（或环境变量 `FACTORZEN_POOL_SUBPROC=1`）会自动派生一个 `fz pool-prebuild` 子进程，产物落在 `workspace/mine_team/_pool_cache/<key>/`。缓存键由**库文件 hash + 窗口 + 票池 + 市场 + holdout 比例 + 日内旗标**共同决定（`cli/main.py:860-871`），命中则直接复用、跳过子进程。
+`--pool-subproc`（或环境变量 `FACTORZEN_POOL_SUBPROC=1`）会自动派生一个 `fz mine pool-prebuild` 子进程，产物落在 `workspace/mine_team/_pool_cache/<key>/`。缓存键由**库文件 hash + 窗口 + 票池 + 市场 + holdout 比例 + 日内旗标**共同决定，命中则直接复用、跳过子进程。
 
 **手工预热：**
 
 ```bash
-pixi run -- fz pool-prebuild --start 20200101 --end 20241231 --universe csi500 \
+pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi500 \
   --out workspace/factors/_cache/pool_20260718
 ```
 
 产物是 `--out` 目录下的 `pool_wide.parquet` + `pool_meta.json`。
 
-> ⚠️ **`fz pool prepare` 不存在。** 真实形态是扁平的顶层命令 `fz pool-prebuild`，无子命令，`--start` / `--end` / `--out` 三个必填。敲 `fz pool` 会直接报 invalid choice。
+> ⚠️ 路径为 **`fz mine pool-prebuild`**（已归入 mine 组，不再是顶层命令）。`--start` / `--end` / `--out` 三个必填。
 
 > ⚠️ **手工 `--out` 指定的目录不会被 `mine team` 自动发现**——自动路径的目录名是按缓存键算出来的哈希。手工预构建主要用于离线检查产物或独立排查，日常直接用 `--pool-subproc` 就好。
 

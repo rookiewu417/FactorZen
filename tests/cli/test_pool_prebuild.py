@@ -504,7 +504,7 @@ def test_cmd_pool_prebuild_e2e_and_dual_path(tmp_path, monkeypatch):
     monkeypatch.setattr(eval_mod, "_preprocess_daily", capture_preprocess)
 
     rc = cli.main([
-        "pool-prebuild",
+        "mine", "pool-prebuild",
         "--start", start,
         "--end", end,
         "--library-root", root,
@@ -550,7 +550,7 @@ def _mine_team_base_argv(*, start="20210104", end="20210331", extra=None):
         "--end", end,
         "--iterations", "1",
         "--seed", "1",
-        "--index-path", "workspace/mine_team/custom_index.jsonl",
+        "--set", "index_path=workspace/mine_team/custom_index.jsonl",
     ]
     if extra:
         argv.extend(extra)
@@ -617,6 +617,10 @@ def test_pool_subproc_cli_suite(tmp_path, capsys):
         assert len(sub_calls) == 1
         argv = sub_calls[0]
         assert "pool-prebuild" in argv
+        # spawn 路径归位：mine pool-prebuild（非顶层）
+        assert "mine" in argv
+        i_pool = argv.index("pool-prebuild")
+        assert argv[i_pool - 1] == "mine"
         assert "--start" in argv and "20210104" in argv
         assert "--end" in argv and "20210331" in argv
         assert captured["kwargs"].get("pool_cache_dir") is not None
@@ -783,12 +787,13 @@ def test_pool_subproc_cli_suite(tmp_path, capsys):
 
         p = build_parser()
         args = p.parse_args([
-            "pool-prebuild",
+            "mine", "pool-prebuild",
             "--start", "20220101",
             "--end", "20231231",
             "--out", "/tmp/pool",
         ])
-        assert args.command == "pool-prebuild"
+        assert args.command == "mine"
+        assert args.mine_command == "pool-prebuild"
         assert args.start == "20220101"
         assert args.out == "/tmp/pool"
         assert args.holdout_ratio == 0.2

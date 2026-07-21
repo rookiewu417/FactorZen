@@ -123,8 +123,8 @@ def test_lift_test_dry_apply_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20201231",
-                "--library-root",
-                str(tmp_path / "lib"),
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
             ]
         )
         rc = cli_main._cmd_factor_library_lift_test(args)
@@ -159,8 +159,8 @@ def test_lift_test_dry_apply_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20201231",
-                "--library-root",
-                str(tmp_path / "lib"),
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
                 "--apply",
             ]
         )
@@ -222,16 +222,16 @@ def test_lift_test_dry_apply_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20201231",
-                "--library-root",
-                str(tmp_path / "lib"),
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
                 "--apply",
-                "--se-mult",
-                "2.0",
+                "--set", "se_mult=2.0",
             ]
         )
-        assert args.se_mult == 2.0
+        # --set 在 handler 入口 apply；此处只断言透传结果
         rc = cli_main._cmd_factor_library_lift_test(args)
         assert rc == 0
+        assert args.se_mult == 2.0
         assert len(upsert_calls) == 1
         assert upsert_calls[0]["se_mult"] == 2.0
 
@@ -258,8 +258,8 @@ def test_lift_test_dry_apply_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20201231",
-                "--library-root",
-                str(tmp_path / "lib"),
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
             ]
         )
         rc = cli_main._cmd_factor_library_lift_test(args)
@@ -422,7 +422,7 @@ def test_cli_top_m_truncation_suite(tmp_path, capsys):
         run_dir = _write_session(tmp_path, n=25)
         lib_root = tmp_path / "lib"
         lib_root.mkdir()
-        args = _base_args(run_dir, lib_root, extra=["--top-m", "0"])
+        args = _base_args(run_dir, lib_root, extra=["--set", "top_m=0"])
 
         mp.setattr(
             cli_main, "_prepare_agent_mining_data",
@@ -502,7 +502,7 @@ def test_cli_top_m_truncation_suite(tmp_path, capsys):
             "factor-library", "lift-test",
             "--session", str(run_dir),
             "--start", "20240102", "--end", "20240301",
-            "--library-root", str(tmp_path / "lib"),
+            "--set", "library_root=" + str(tmp_path / "lib"),
             "--dry-run",
         ])
         assert args.top_m == 20
@@ -554,10 +554,11 @@ def test_cli_top_m_truncation_suite(tmp_path, capsys):
             "factor-library", "lift-test",
             "--session", str(run_dir),
             "--start", "20240102", "--end", "20240301",
-            "--library-root", str(tmp_path / "lib"),
-            "--top-m", "10",
+            "--set", "library_root=" + str(tmp_path / "lib"),
+            "--set", "top_m=10",
             "--dry-run",
         ])
+        assert cli_main._apply_set_overrides(args, cli_main._LIFT_TEST_SET) is None
         assert args.top_m == 10
         rc = cli_main._cmd_factor_library_lift_test(args)
         assert rc == 0
@@ -576,6 +577,7 @@ def test_cli_top_m_truncation_suite(tmp_path, capsys):
 
     # -- 原 test_cli_lift_parser_top_m_default_is_20 --
     def _section_3_test_cli_lift_parser_top_m_default_is_20():
+        from factorzen.cli import main as cli_main
         from factorzen.cli.main import build_parser
 
         args = build_parser().parse_args([
@@ -588,8 +590,9 @@ def test_cli_top_m_truncation_suite(tmp_path, capsys):
             "factor-library", "lift-test",
             "--session", "workspace/x",
             "--start", "20200101", "--end", "20201231",
-            "--top-m", "0",
+            "--set", "top_m=0",
         ])
+        assert cli_main._apply_set_overrides(args0, cli_main._LIFT_TEST_SET) is None
         assert args0.top_m == 0
 
     _section_3_test_cli_lift_parser_top_m_default_is_20()
@@ -605,7 +608,7 @@ def test_cli_group_coverage_pipeline_suite(tmp_path):
         run_dir = _write_session(tmp_path, n=3)
         lib_root = tmp_path / "lib"
         lib_root.mkdir()
-        args = _base_args(run_dir, lib_root, extra=["--top-m", "0"])
+        args = _base_args(run_dir, lib_root, extra=["--set", "top_m=0"])
 
         mp.setattr(
             cli_main, "_prepare_agent_mining_data",
@@ -675,7 +678,7 @@ def test_cli_group_coverage_pipeline_suite(tmp_path):
         }), encoding="utf-8")
         lib_root = tmp_path / "lib"
         lib_root.mkdir()
-        args = _base_args(run_dir, lib_root, extra=["--top-m", "0"])
+        args = _base_args(run_dir, lib_root, extra=["--set", "top_m=0"])
 
         mp.setattr(
             cli_main, "_prepare_agent_mining_data",
@@ -982,10 +985,11 @@ def test_cli_lift_sparse_event_panel_matches_mining_path(tmp_path, monkeypatch, 
         "--end", "20240301",
         "--universe", "csi300",
         "--dry-run",
-        "--library-root", str(tmp_path / "lib"),
-        "--top-m", "0",  # 全测逃生口（默认 20）
+        "--set", "library_root=" + str(tmp_path / "lib"),
+        "--set", "top_m=0",  # 全测逃生口（默认 20）
     ])
     assert args.func.__name__ == "_cmd_factor_library_lift_test"
+    assert cli_main._apply_set_overrides(args, cli_main._LIFT_TEST_SET) is None
     assert args.top_m == 0
 
     rc = cli_main._cmd_factor_library_lift_test(args)
@@ -1033,7 +1037,7 @@ def test_cli_and_mine_team_share_prepare_fn(monkeypatch, tmp_path):
         "factor-library", "lift-test",
         "--session", str(run_dir),
         "--start", "20240102", "--end", "20240301",
-        "--library-root", str(tmp_path / "lib"),
+        "--set", "library_root=" + str(tmp_path / "lib"),
         "--dry-run",
     ])
     assert cli_main._cmd_factor_library_lift_test(args_lt) == 0

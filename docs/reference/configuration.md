@@ -182,7 +182,7 @@ backtest:
 不跑评估、只验证配置是否合法：
 
 ```bash
-pixi run -- fz config validate workspace/configs/daily/volume_return_corr_20d.yaml
+pixi run -- fz ops validate-config workspace/configs/daily/volume_return_corr_20d.yaml
 ```
 
 ---

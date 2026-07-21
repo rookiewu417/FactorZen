@@ -47,7 +47,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [CLI 参考](reference/cli.md) | 16 个顶层命令 / 47 个叶子命令，含参数表与示例 |
+| [CLI 参考](reference/cli.md) | 14 个顶层命令 / 45 个叶子命令，含参数表与示例 |
 | [配置](reference/configuration.md) | 配置模型、YAML 模板、`--set` 覆盖机制 |
 | [产物布局](reference/artifacts.md) | `workspace/` 与 `data/` 目录结构、`manifest.json` 字段 |
 | [环境变量](reference/environment.md) | `TUSHARE_TOKEN`、`FACTORZEN_LLM_*` 全表与缺失行为 |

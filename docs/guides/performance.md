@@ -111,7 +111,7 @@ FACTORZEN_POOL_SUBPROC=1 pixi run -- fz mine team ...
 
 ```bash
 # 用法 B：先离线预构建，多个 session 共享同一份池缓存
-pixi run -- fz pool-prebuild --start 20200101 --end 20241231 --universe csi800 \
+pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi800 \
   --out workspace/factors/_cache/pool_20260718
 
 pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi800 \
@@ -120,13 +120,13 @@ pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi800 \
 
 > ⚠️ 预构建的**窗口、票池、`--holdout-ratio` 必须与随后的挖掘完全一致**，否则口径不匹配。缓存键包含因子库指纹与窗口指纹，库有变更会自动失效并重建，不会悄悄用旧池。
 
-命令的完整参数见 [CLI 参考 · `fz pool-prebuild`](../reference/cli.md#fz-pool-prebuild)。
+命令的完整参数见 [CLI 参考 · `fz mine pool-prebuild`](../reference/cli.md#fz-mine-pool-prebuild)。
 
 ### lift 准入的并发
 
 `fz factor-library lift-test` 与团队挖掘收尾的自动 lift 都是逐候选跑 walk-forward 交叉验证，可以并行。并发度直接决定内存占用：**每个 worker 峰值约 3–5 GB**（面板构建的中间物化），再加共享长表 1–2 GB，按 **约 5 GB/worker** 折算。
 
-不指定 `--lift-workers` 时按可用内存自适应：
+不指定 `--set lift_workers=N`（原 `--lift-workers`）时按可用内存自适应：
 
 ```text
 workers = max(2, min(4, 可用内存GB // 5))
@@ -173,8 +173,8 @@ pixi run -- fz factor-library lift-test --market ashare --lift-workers 2
 
 按顺序自查，命中前面的就不用看后面的：
 
-1. **任务被 OOM kill 了？** 先开 `--pool-subproc`（或先 `fz pool-prebuild`），再压 `--lift-workers`，最后缩票池到 `csi800`。
-2. **挖掘慢得离谱？** 确认是否开着库正交检查。scout 阶段可以 `--no-library-orthogonal` 快速探索，正式入库前再开回来。
+1. **任务被 OOM kill 了？** 先开 `--pool-subproc`（或先 `fz mine pool-prebuild`），再 `--set lift_workers=1`，最后缩票池到 `csi800`。
+2. **挖掘慢得离谱？** 确认是否开着库正交检查。scout 阶段可以 `--set no_library_orthogonal=true` 快速探索，正式入库前再开回来。
 3. **单因子评估慢？** 看日志的分段计时，绝大多数情况瓶颈在预处理段而非 I/O。
 4. **补历史日内特征慢？** 确认增量跳过生效（已覆盖月应是毫秒级）；只有缺口月份才需要 `--workers`。
 5. **回测慢？** 只要净值不要持仓明细时，关掉持仓/成交明细的收集可以走更省的路径。

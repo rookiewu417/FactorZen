@@ -115,7 +115,7 @@ graph TD
 | `daily/` | ~5,900 | A 股日频主干：PIT 数据、预处理、IC、回测、walk-forward |
 | `core/` | 4,843 | 日历、universe 逐日快照、Tushare 加载与缓存、叶子 schema 单一真源 |
 | `agents/` | 4,654 | LLM 挖掘：单 Agent 闭环、4 角色团队 + Evaluator、实验索引 |
-| `cli/` | 3,783 | 16 个顶层命令 / 47 个叶子命令 |
+| `cli/` | — | 14 个顶层命令 / 45 个叶子命令 |
 | `markets/` | 3,687 | Ports & Adapters，四市场适配 |
 | `pipelines/` | 3,548 | 端到端编排：单因子链路、组合、research run |
 | `intraday/` | 2,593 | 分钟 bar → 日内微观结构特征面板 |

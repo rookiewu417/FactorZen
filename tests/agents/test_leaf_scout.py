@@ -959,10 +959,13 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
         from factorzen.cli.main import build_parser
 
         p = build_parser()
+        from factorzen.cli import main as cli_main
+
         args = p.parse_args([
             "mine", "team", "--start", "20220101", "--end", "20231231",
-            "--intraday-scout", "--scout-k", "3", "--scout-max-leaves", "8",
+            "--set", "intraday_scout=true", "--set", "scout_k=3", "--set", "scout_max_leaves=8",
         ])
+        assert cli_main._apply_set_overrides(args, cli_main._MINE_TEAM_SET) is None
         assert args.intraday_scout is True
         assert args.scout_k == 3
         assert args.scout_max_leaves == 8
@@ -984,7 +987,7 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
             "mine", "team",
             "--start", "20220101", "--end", "20231231",
             "--market", "crypto",
-            "--intraday-scout",
+            "--set", "intraday_scout=true",
         ])
         assert rc == 2
         err = capsys.readouterr().err
@@ -1030,7 +1033,7 @@ def test_scout_wiring_suite(tmp_path, monkeypatch, capsys):
         rc = cli.main([
             "mine", "team",
             "--start", "20220101", "--end", "20231231",
-            "--intraday-scout",
+            "--set", "intraday_scout=true",
         ])
         assert rc == 0
         assert seen.get("intraday") is True

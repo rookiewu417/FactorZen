@@ -406,15 +406,17 @@ def test_node_guardrails_sleeve_bypass_and_switch_off():
 
 
 def test_cli_no_sleeve_gate_flag():
-    """fz mine team --no-sleeve-gate 解析为 no_sleeve_gate=True。"""
+    """fz mine team --set no_sleeve_gate=true 解析并注入 no_sleeve_gate=True。"""
+    from factorzen.cli import main as cli_main
     from factorzen.cli.main import build_parser
 
     p = build_parser()
     args = p.parse_args([
         "mine", "team",
         "--start", "20200101", "--end", "20201231",
-        "--no-sleeve-gate",
+        "--set", "no_sleeve_gate=true",
     ])
+    assert cli_main._apply_set_overrides(args, cli_main._MINE_TEAM_SET) is None
     assert getattr(args, "no_sleeve_gate", False) is True
 
     args_default = p.parse_args([

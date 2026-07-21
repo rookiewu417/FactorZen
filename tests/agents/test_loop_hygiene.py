@@ -234,7 +234,7 @@ def test_llm_workers_cli_suite(monkeypatch, tmp_path):
 
         rc = cli.main([
             "mine", "team", "--start", "20220101", "--end", "20231231",
-            "--llm-workers", "8",
+            "--set", "llm_workers=8",
         ])
         assert rc == 0
         assert captured["llm_workers"] == 8

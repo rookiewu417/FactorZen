@@ -2,7 +2,7 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **CLI 参考**
 
-FactorZen 的全部功能都通过单一入口 `fz` 暴露。本手册覆盖 **16 个顶层命令 / 47 个叶子命令**（含 2 个 deprecated 别名）的完整参数面，所有默认值均取自真实 argparse 声明。
+FactorZen 的全部功能都通过单一入口 `fz` 暴露。本手册覆盖 **14 个顶层命令 / 45 个叶子命令** 的完整参数面，所有默认值均取自真实 argparse 声明。
 
 ## 如何调用
 
@@ -31,10 +31,8 @@ pixi run -- fz mine search --help
 | [`fz factor`](#fz-factor) | 创建 / 列出 / 评估单个因子，含参数网格扫描 |
 | [`fz report`](#fz-report) | 生成单因子报告与组合仪表盘 HTML |
 | [`fz data`](#fz-data) | 拉取行情与财务数据、回补 crypto 数据湖、构建日内特征面板 |
-| [`fz config`](#fz-config) | 校验 YAML run config |
-| [`fz runs`](#fz-runs) | 查看历史 run 记录与 manifest |
-| [`fz mine`](#fz-mine) | 因子挖掘：随机/遗传搜索、LLM 单 Agent、多角色团队 |
-| [`fz pool-prebuild`](#fz-pool-prebuild) | 在独立子进程预构建因子库池，供团队挖掘装载 |
+| [`fz runs`](#fz-runs) | 列出历史 run 记录 |
+| [`fz mine`](#fz-mine) | 因子挖掘：搜索 / Agent / 团队 / 库池预构建 |
 | [`fz factor-library`](#fz-factor-library) | 因子库登记簿：重建、查询、lift 准入、向前跟踪与复审 |
 | [`fz research`](#fz-research) | 端到端编排：挖掘 → 组合构建 → 模拟 → 报告，同一 run_id |
 | [`fz validate`](#fz-validate) | 单因子过拟合检验（Deflated Sharpe + bootstrap CI） |
@@ -43,7 +41,7 @@ pixi run -- fz mine search --help
 | [`fz sim`](#fz-sim) | 模拟交易回测与指标查看 |
 | [`fz live`](#fz-live) | 向前执行：会话初始化、逐日推进、replay、分歧归因 |
 | [`fz combine`](#fz-combine) | 多因子组合的四方法 OOS 对比实验 |
-| [`fz ops`](#fz-ops) | 无人值守运营的每日链路与状态查询 |
+| [`fz ops`](#fz-ops) | 无人值守运营；含 `validate-config` 校验 YAML run config |
 
 ---
 
@@ -280,27 +278,9 @@ pixi run -- fz data intraday-features status --freq 5min --version v1
 
 ---
 
-## fz config
-
-### fz config validate
-
-校验一份 YAML run config 的合法性。
-
-| 参数 | 类型 | 默认值 | 必填 | 说明 |
-|---|---|---|---|---|
-| `<path>` | str | — | ✅ | YAML run config 路径 |
-
-```bash
-pixi run -- fz config validate workspace/configs/daily/volume_return_corr_20d.yaml
-```
-
-**产物**：无，仅打印校验结果。
-
----
-
 ## fz runs
 
-历史 run 记录查询。
+历史 run 记录查询（仅 list；单条 manifest 请直接读 `workspace/factor_evaluations/<run_id>/manifest.json`）。
 
 ### fz runs list
 
@@ -314,19 +294,7 @@ pixi run -- fz config validate workspace/configs/daily/volume_return_corr_20d.ya
 pixi run -- fz runs list --limit 20
 ```
 
-### fz runs show
-
-打印单个 run 的 manifest。
-
-| 参数 | 类型 | 默认值 | 必填 | 说明 |
-|---|---|---|---|---|
-| `<run_id>` | str | — | ✅ | run 标识 |
-
-```bash
-pixi run -- fz runs show 20260718_120000_momentum_20
-```
-
-**产物**：无，仅打印。run 记录本身位于 `workspace/runs/`。
+**产物**：无，仅打印。
 
 ---
 
@@ -348,32 +316,22 @@ pixi run -- fz runs show 20260718_120000_momentum_20
 | `--end` | str | — | ✅ | 终止日 `YYYYMMDD` |
 | `--universe` | str | 无 | | 票池名（如 `csi500`） |
 | `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
-| `--top-n` | int | `50` | | crypto/futures 池规模（按成交额 Top-N）；us 为 S&P500 静态池截断 |
+| `--top-n` | int | `50` | | crypto/futures/us 池规模 |
 | `--method` | `random` \| `genetic` | `random` | | 搜索方法 |
 | `--trials` | int | `200` | | 试验次数 |
 | `--top-k` | int | `10` | | 保留的头部候选数 |
 | `--seed` | int | `42` | | 随机种子 |
-| `--workers` | int | `1` | | 遗传搜索并行评分线程数（同 seed 下与串行结果等价） |
-| `--holdout-ratio` | float | `0.2` | | 永久隔离的 OOS holdout 占比 |
-| `--train-ratio` | float | `0.7` | | 挖掘段内 train/valid 切分比例 |
-| `--decorr-threshold` | float | `0.7` | | top-K 贪心去相关的 \|corr\| 门槛，≥该值视为近重复剔除 |
-| `--min-n-train` | int | `5` | | 候选 train 段最少有效 IC 天数，不足则丢弃 |
-| `--dsr-alpha` | float | `0.1` | | 护栏 `passed` 标记的 DSR 显著性阈值 |
-| `--no-library` | flag | 关 | | 关闭收尾自动 upsert 因子库（默认开） |
-| `--no-library-orthogonal` | flag | 关 | | 关闭搜索期库级正交过滤（默认开；与 `--no-library` 相互独立） |
-| `--objective` | `raw` \| `residual` | `residual` | | 评估目标：`residual` = 对库内 active 因子截面正交后的残差 IC（库空自动退化为 `raw`）；`raw` = 裸 RankIC |
-| `--intraday-leaves` | flag | 关 | | 启用日内特征叶子 `i_*`（仅 `ashare`） |
-| `--intraday-freq` | str | `5min` | | 消费的日内特征面板频率（需与 `fz data intraday-features build --freq` 一致） |
 | `--freq` | `1m` \| `5m` \| `15m` \| `1h` \| `daily` | `daily` | | crypto bar 粒度 |
-
-> ⚠️ `--no-library` 与 `--no-library-orthogonal` 管的是两件事：前者只关**收尾时把 passed 候选写进因子库**，后者只关**搜索过程中避开库内已有方向**。关掉一个不影响另一个。
+| `--exec-lag` / `--exec-price-col` | | 1 / open_adj | | 成交口径 |
+| `--set KEY=VALUE` | str，可重复 | 无 | | 高级覆盖（见[高级覆盖](#高级覆盖--set)） |
 
 ```bash
 pixi run -- fz mine search --start 20200101 --end 20241231 --universe csi500 \
   --method genetic --trials 500 --top-k 10 --seed 42
+# 高级：pixi run -- fz mine search ... --set objective=raw --set workers=4
 ```
 
-**产物**：`workspace/mining_sessions/<run_id>/`（`candidates.csv`、`manifest.json` 等）；默认还会 upsert 到 `workspace/factor_library/`。
+**产物**：`workspace/mining_sessions/<run_id>/`；默认 upsert 到 `workspace/factor_library/`。
 
 ### fz mine leaderboard
 
@@ -420,112 +378,111 @@ LLM 单 Agent 引导的挖掘。
 
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
-| `--start` | str | — | ✅ | 起始日 `YYYYMMDD` |
-| `--end` | str | — | ✅ | 终止日 `YYYYMMDD` |
+| `--start` / `--end` | str | — | ✅ | 窗口 `YYYYMMDD` |
 | `--universe` | str | 无 | | 票池名 |
-| `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
-| `--symbols` | str | 无 | | 仅 crypto/futures/us：逗号分隔 symbols；缺省 = universe Top-N 快照 |
-| `--top-n` | int | `50` | | crypto/futures 池规模 |
+| `--market` | 四选一 | `ashare` | | 市场剖面 |
+| `--symbols` | str | 无 | | crypto/futures/us 显式标的 |
+| `--top-n` | int | `50` | | 池规模 |
 | `--iterations` | int | `5` | | 迭代轮数 |
-| `--top-k` | int | `5` | | 保留的头部候选数 |
+| `--top-k` | int | `5` | | 头部候选数 |
 | `--seed` | int | `42` | | 随机种子 |
-| `--human-review` | flag | 关 | | 开启人工复核环节（**`mine agent` 独有**，`mine team` 没有） |
-| `--patience` | int ≥ 1 | 无 | | 连续 N 轮无新候选则早停；缺省跑满 `--iterations` |
-| `--heal-rounds` | int | `2` | | 表达式解析失败时回灌 LLM 修正的最大轮数（`0` = 关闭） |
-| `--no-library-orthogonal` | flag | 关 | | 关闭搜索期库级正交过滤（默认开） |
-| `--objective` | `raw` \| `residual` | `residual` | | 评估目标（库空自动退化 `raw`） |
-| `--intraday-leaves` | flag | 关 | | 启用日内特征叶子 `i_*`（仅 `ashare`） |
-| `--intraday-freq` | str | `5min` | | 日内特征面板频率 |
-| `--intraday-scout` | flag | 关 | | 每轮由 LLM 提案 bar 表达式并注入 session（隐含 `--intraday-leaves`；仅 `ashare`） |
-| `--scout-k` | int | `4` | | 每轮 Scout 提案条数（仅 `--intraday-scout`） |
-| `--scout-max-leaves` | int | `12` | | session 最多注入 `ix_*` 叶数（仅 `--intraday-scout`） |
-| `--freq` | `1m` \| `5m` \| `15m` \| `1h` \| `daily` | `daily` | | crypto bar 粒度 |
-
-> ⚠️ LLM 挖掘需要 `FACTORZEN_LLM_*` 环境变量。缺配置时命令直接报错退出，不会静默降级。
+| `--human-review` | flag | 关 | | 人工审阅 |
+| `--freq` / `--exec-*` | | | | crypto bar / 成交口径 |
+| `--set KEY=VALUE` | 可重复 | 无 | | 高级覆盖：`heal_rounds`/`patience`/`objective`/`intraday_*`/`scout_*` 等 |
 
 ```bash
-pixi run -- fz mine agent --start 20200101 --end 20241231 --universe csi500 \
-  --iterations 5 --top-k 5 --patience 2
+pixi run -- fz mine agent --start 20200101 --end 20241231 --universe csi500 --iterations 5
+# 高级：--set heal_rounds=0 --set patience=3 --set intraday_scout=true
 ```
 
-**产物**：`workspace/mine_agent/<run_id>/`；默认 upsert 因子库。
+**产物**：`workspace/mine_agent/<run_id>/`。
 
 ### fz mine team
 
-4 角色 LLM 团队 + Evaluator 的挖掘（主力入口）。参数与 `mine agent` 大量重叠，差异见下表标注。
+多角色团队挖掘（Hypothesis / Coder / Critic / Librarian）。**表面参数 ≤14 + `--set`**。
 
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
-| `--start` | str | — | ✅ | 起始日 `YYYYMMDD` |
-| `--end` | str | — | ✅ | 终止日 `YYYYMMDD` |
-| `--universe` | str | 无 | | 票池名 |
-| `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
-| `--symbols` | str | 无 | | 仅 crypto/futures/us：逗号分隔 symbols |
-| `--top-n` | int | `50` | | crypto/futures 池规模 |
-| `--iterations` | int | `5` | | 迭代轮数 |
-| `--top-k` | int | `5` | | 保留的头部候选数 |
-| `--seed` | int | `42` | | 随机种子 |
-| `--index-path` | str | `workspace/mine_team/experiment_index.jsonl` | | 跨 session 实验登记簿路径 |
-| `--structured` | flag | 关 | | 结构化假设（机制 / 预期符号 / 证伪判据）+ 任务分解后逐任务翻译 |
-| `--patience` | int ≥ 1 | 无 | | 连续 N 轮无新候选则早停 |
-| `--heal-rounds` | int | `2` | | 表达式解析失败回灌 LLM 修正轮数（`0` = 关闭） |
-| `--hypotheses-per-round` | int | `1` | | 每轮提出的假设数；`>1` 提升单轮产能（护栏 / Critic 仍每轮一次） |
-| `--no-library` | flag | 关 | | 关闭收尾自动 upsert 因子库 |
-| `--no-library-orthogonal` | flag | 关 | | 关闭搜索期库级正交过滤 |
-| `--objective` | `raw` \| `residual` | `residual` | | 评估目标 |
-| `--no-campaign-prior` | flag | 关 | | 关闭跨 session 试验族记账（默认开：DSR 的 N 取历史唯一表达式 ∪ 本 session，防多重检验漏记） |
-| `--llm-workers` | int | `4` | | 轮内独立 LLM 调用的并发度（`1` = 串行零回归） |
-| `--no-auto-lift` | flag | 关 | | 关闭 session 末的自动组 lift 裁决（默认开） |
-| `--lift-se-mult` | float | `1.0` | | lift 准入 SE 乘数：`lift ≥ max(threshold, se_mult × SE)` |
-| `--lift-workers` | int | 无（自适应） | | session 末 lift 的逐候选线程并发；缺省按可用内存自适应，上限 4；`1` = 串行 |
-| `--intraday-leaves` | flag | 关 | | 启用日内特征叶子 `i_*`（仅 `ashare`） |
-| `--intraday-freq` | str | `5min` | | 日内特征面板频率 |
-| `--intraday-scout` | flag | 关 | | 每轮 LLM 提案 bar 表达式并注入 session（隐含 `--intraday-leaves`；仅 `ashare`） |
-| `--scout-k` | int | `4` | | 每轮 Scout 提案条数 |
-| `--scout-max-leaves` | int | `12` | | session 最多注入 `ix_*` 叶数 |
-| `--pool-subproc` | flag | 关 | | 池构建放子进程，退出即全额归还内存；等效环境变量 `FACTORZEN_POOL_SUBPROC=1` |
-| `--freq` | `1m` \| `5m` \| `15m` \| `1h` \| `daily` | `daily` | | crypto bar 粒度 |
-
-> ⚠️ `mine team` **没有 `--human-review`**（那是 `mine agent` 独有）。反过来 `--index-path` / `--structured` / `--hypotheses-per-round` / `--llm-workers` / `--no-campaign-prior` / `--no-auto-lift` / `--lift-*` / `--pool-subproc` 是 `mine team` 独有。
-
-> ⚠️ 全 A 长窗口挖掘内存压力大时，配合 `--pool-subproc` 与 [`fz pool-prebuild`](#fz-pool-prebuild) 使用，可让池构建的内存在子进程退出时全额归还。
+| `--start` / `--end` | str | — | ✅ | 窗口 |
+| `--universe` | str | 无 | | 票池 |
+| `--market` | 四选一 | `ashare` | | 市场 |
+| `--symbols` | str | 无 | | 非 A 股显式标的 |
+| `--top-n` | int | `50` | | 池规模 |
+| `--iterations` | int | `5` | | 轮数 |
+| `--top-k` | int | `5` | | 头部候选 |
+| `--seed` | int | `42` | | 种子 |
+| `--structured` | flag | 关 | | 结构化假设 + 任务分解 |
+| `--pool-subproc` | flag | 关 | | 库池子进程预构建（等价 env `FACTORZEN_POOL_SUBPROC=1`） |
+| `--freq` / `--exec-*` | | | | crypto bar / 成交口径 |
+| `--set KEY=VALUE` | 可重复 | 无 | | 高级覆盖（见下表） |
 
 ```bash
 pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi500 \
-  --iterations 8 --structured --hypotheses-per-round 2 --llm-workers 4 --pool-subproc
+  --iterations 8 --structured --pool-subproc \
+  --set hypotheses_per_round=2 --set llm_workers=4
 ```
 
-**产物**：`workspace/mine_team/<run_id>/`；实验登记簿追加到 `--index-path`；默认 upsert 因子库 `workspace/factor_library/`。
+**产物**：`workspace/mine_team/<run_id>/`；默认 upsert 因子库。
 
----
+### fz mine pool-prebuild
 
-## fz pool-prebuild
-
-**顶层命令，无子命令。** 为 `fz mine team --pool-subproc` 预先在独立子进程中构建因子库池，产物 parquet 供后续装载；子进程退出即全额归还内存。
+原顶层 `fz pool-prebuild`，现归位 `mine` 组。为 `--pool-subproc` 在独立子进程构建库池。
 
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
-| `--start` | str | — | ✅ | 起始日 `YYYYMMDD` |
-| `--end` | str | — | ✅ | 终止日 `YYYYMMDD` |
-| `--universe` | str | 无 | | 票池名 |
-| `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面（与 `mine team` 同源） |
-| `--symbols` | str | 无 | | 仅 crypto/futures/us：逗号分隔 symbols |
-| `--top-n` | int | `50` | | crypto/futures 池规模 |
-| `--index-path` | str | `workspace/mine_team/experiment_index.jsonl` | | 实验登记簿路径 |
-| `--library-root` | str | 无 | | 因子库根目录；缺省 = `--index-path` 同级的 `factor_library` |
-| `--holdout-ratio` | float | `0.2` | | holdout 比例（与团队挖掘默认同源） |
-| `--intraday-leaves` | flag | 关 | | 启用日内特征叶子 `i_*`（仅 `ashare`） |
-| `--intraday-freq` | str | `5min` | | 日内特征面板频率 |
+| `--start` / `--end` | str | — | ✅ | 窗口 |
 | `--out` | str | — | ✅ | 池缓存输出目录 |
-
-> ⚠️ 预构建的窗口 / 票池 / `--holdout-ratio` 必须与随后 `fz mine team` 的取值一致，否则池与挖掘口径不匹配。
+| `--universe` / `--market` / `--symbols` / `--top-n` | | | | 与 team 同源 |
+| `--index-path` | str | `workspace/mine_team/experiment_index.jsonl` | | |
+| `--library-root` | str | 无 | | 缺省 = index 同级 `factor_library` |
+| `--holdout-ratio` | float | `0.2` | | |
+| `--intraday-leaves` / `--intraday-freq` | | 关 / `5min` | | |
 
 ```bash
-pixi run -- fz pool-prebuild --start 20200101 --end 20241231 --universe csi500 \
-  --out workspace/factors/_cache/pool_20260718
+pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi500 \
+  --out workspace/mine_team/_pool_cache/manual
 ```
 
-**产物**：`--out` 目录下的 `pool_wide.parquet` + `pool_meta.json`。
+**产物**：`--out` 下 `pool_wide.parquet` + `pool_meta.json`。
+
+### 高级覆盖 `--set`
+
+`mine search` / `agent` / `team` 与 `factor-library lift-test` 支持 `--set KEY=VALUE`（可重复）。未知 KEY **fail-loudly** 并列出合法键。布尔用 `true/false/1/0`。
+
+#### mine team 合法 KEY（旧旗标 → 等价写法）
+
+| KEY | 旧默认 | 旧 CLI | `--set` 示例 |
+|---|---|---|---|
+| `llm_workers` | 4 | `--llm-workers` | `--set llm_workers=4` |
+| `heal_rounds` | 2 | `--heal-rounds` | `--set heal_rounds=0` |
+| `objective` | residual | `--objective` | `--set objective=raw` |
+| `hypotheses_per_round` | 1 | `--hypotheses-per-round` | `--set hypotheses_per_round=2` |
+| `index_path` | workspace/mine_team/experiment_index.jsonl | `--index-path` | `--set index_path=...` |
+| `patience` | None | `--patience` | `--set patience=3` |
+| `no_library` | false | `--no-library` | `--set no_library=true` |
+| `no_library_orthogonal` | false | `--no-library-orthogonal` | `--set no_library_orthogonal=true` |
+| `no_campaign_prior` | false | `--no-campaign-prior` | `--set no_campaign_prior=true` |
+| `no_auto_lift` | false | `--no-auto-lift` | `--set no_auto_lift=true` |
+| `no_sleeve_gate` | false | `--no-sleeve-gate` | `--set no_sleeve_gate=true` |
+| `lift_se_mult` | 1.0 | `--lift-se-mult` | `--set lift_se_mult=1.5` |
+| `lift_workers` | None | `--lift-workers` | `--set lift_workers=1` |
+| `intraday_leaves` | false | `--intraday-leaves` | `--set intraday_leaves=true` |
+| `intraday_freq` | 5min | `--intraday-freq` | `--set intraday_freq=5min` |
+| `intraday_scout` | false | `--intraday-scout` | `--set intraday_scout=true` |
+| `scout_k` | 4 | `--scout-k` | `--set scout_k=5` |
+| `scout_max_leaves` | 12 | `--scout-max-leaves` | `--set scout_max_leaves=16` |
+
+#### mine search 合法 KEY
+
+`workers` / `holdout_ratio` / `train_ratio` / `decorr_threshold` / `min_n_train` / `dsr_alpha` / `no_library` / `no_library_orthogonal` / `objective` / `intraday_leaves` / `intraday_freq`
+
+#### mine agent 合法 KEY
+
+`patience` / `heal_rounds` / `no_library_orthogonal` / `objective` / `intraday_leaves` / `intraday_freq` / `intraday_scout` / `scout_k` / `scout_max_leaves`
+
+#### factor-library lift-test 合法 KEY
+
+`top_m` / `queue_ic_floor` / `include_sub_floor` / `threshold` / `library_root` / `se_mult` / `allow_active` / `horizon` / `lift_workers` / `intraday_leaves` / `intraday_freq`
 
 ---
 
@@ -626,20 +583,6 @@ pixi run -- fz factor-library show --market ashare --rank 1
 
 **产物**：无，仅打印。
 
-### fz factor-library render
-
-重新生成 `{market}.md`（只渲染，不重算指标）。
-
-| 参数 | 类型 | 默认值 | 必填 | 说明 |
-|---|---|---|---|---|
-| `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
-
-```bash
-pixi run -- fz factor-library render --market ashare
-```
-
-**产物**：`workspace/factor_library/{market}.md`。
-
 ### fz factor-library lift-test
 
 对灰区候选 / registry python 因子做**组合增量 lift 实验**，通过者以 `status=probation` 入库。这是因子进库的第二通道（第一通道是挖掘收尾的自动 upsert）。
@@ -689,21 +632,6 @@ pixi run -- fz factor-library lift-test \
 ```
 
 **产物**：仅 `--apply` 时写盘——更新 `workspace/factor_library/`（新记录 `status=probation`），并把 lift 拒绝回灌 experiment_index。
-
-### fz factor-library tag-legacy
-
-把 `evidence_tier` 为空的历史记录标记为 `legacy`。幂等操作，不改动 `status`。
-
-| 参数 | 类型 | 默认值 | 必填 | 说明 |
-|---|---|---|---|---|
-| `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
-| `--root` | str | 无（= `workspace/factor_library`） | | 因子库根目录 |
-
-```bash
-pixi run -- fz factor-library tag-legacy --market ashare
-```
-
-**产物**：就地更新 `workspace/factor_library/` 的记录。
 
 ### fz factor-library lift-null
 
@@ -1223,6 +1151,20 @@ pixi run -- fz ops status --config deploy/ops.example.yaml --date 20241231
 ```
 
 **产物**：无，仅打印。
+
+### fz ops validate-config
+
+校验一份 YAML run config（原 `fz config validate`，handler 复用）。
+
+| 参数 | 类型 | 默认值 | 必填 | 说明 |
+|---|---|---|---|---|
+| `<path>` | str | — | ✅ | YAML run config 路径 |
+
+```bash
+pixi run -- fz ops validate-config workspace/configs/daily/volume_return_corr_20d.yaml
+```
+
+**产物**：无，仅打印校验结果。
 
 ---
 

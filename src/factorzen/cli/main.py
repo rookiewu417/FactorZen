@@ -7,11 +7,12 @@ import contextlib
 import dataclasses
 import json
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from factorzen.config.settings import (
     FACTOR_EVALUATIONS_DIR,
     FACTOR_LIBRARY_DIR,
+    MINE_TEAM_DIR,
     PORTFOLIOS_DIR,
     REPORTS_DIR,
     ROOT,
@@ -21,6 +22,135 @@ from factorzen.experiments.run_paths import run_dir
 
 if TYPE_CHECKING:  # 本模块 Path 一律函数内导入（保持 CLI 启动开销）；此处仅供注解
     from pathlib import Path
+
+
+# ── mine / lift-test 的 --set 通配覆盖 ────────────────────────────────────────
+# 被砍 CLI 旗标经 --set KEY=VALUE 仍可达；未知 KEY fail-loudly 列出合法键。
+
+_BOOL_TRUE = frozenset({"1", "true", "yes", "on"})
+_BOOL_FALSE = frozenset({"0", "false", "no", "off", ""})
+
+
+def _coerce_set_value(raw: str, typ: type, choices: tuple[str, ...] | None = None) -> Any:
+    s = raw.strip()
+    if typ is bool:
+        low = s.lower()
+        if low in _BOOL_TRUE:
+            return True
+        if low in _BOOL_FALSE:
+            return False
+        raise ValueError(f"期望 bool，收到 {raw!r}（可用 true/false/1/0）")
+    if typ is int:
+        if s.lower() in ("none", "null"):
+            return None
+        return int(s)
+    if typ is float:
+        if s.lower() in ("none", "null"):
+            return None
+        return float(s)
+    # str
+    if s.lower() in ("none", "null") and choices is None:
+        return None
+    if choices is not None and s not in choices:
+        raise ValueError(f"期望 {{{', '.join(choices)}}}，收到 {raw!r}")
+    return s
+
+
+# key → (type, default, choices|None)
+_MINE_SEARCH_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
+    "workers": (int, 1, None),
+    "holdout_ratio": (float, 0.2, None),
+    "train_ratio": (float, 0.7, None),
+    "decorr_threshold": (float, 0.7, None),
+    "min_n_train": (int, 5, None),
+    "dsr_alpha": (float, 0.1, None),
+    "no_library": (bool, False, None),
+    "no_library_orthogonal": (bool, False, None),
+    "objective": (str, "residual", ("raw", "residual")),
+    "intraday_leaves": (bool, False, None),
+    "intraday_freq": (str, "5min", None),
+}
+
+_MINE_AGENT_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
+    "patience": (int, None, None),
+    "heal_rounds": (int, 2, None),
+    "no_library_orthogonal": (bool, False, None),
+    "objective": (str, "residual", ("raw", "residual")),
+    "intraday_leaves": (bool, False, None),
+    "intraday_freq": (str, "5min", None),
+    "intraday_scout": (bool, False, None),
+    "scout_k": (int, 4, None),
+    "scout_max_leaves": (int, 12, None),
+}
+
+_MINE_TEAM_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
+    "index_path": (str, str(MINE_TEAM_DIR / "experiment_index.jsonl"), None),
+    "patience": (int, None, None),
+    "heal_rounds": (int, 2, None),
+    "hypotheses_per_round": (int, 1, None),
+    "no_library": (bool, False, None),
+    "no_library_orthogonal": (bool, False, None),
+    "objective": (str, "residual", ("raw", "residual")),
+    "no_campaign_prior": (bool, False, None),
+    "llm_workers": (int, 4, None),
+    "no_auto_lift": (bool, False, None),
+    "no_sleeve_gate": (bool, False, None),
+    "lift_se_mult": (float, 1.0, None),
+    "lift_workers": (int, None, None),
+    "intraday_leaves": (bool, False, None),
+    "intraday_freq": (str, "5min", None),
+    "intraday_scout": (bool, False, None),
+    "scout_k": (int, 4, None),
+    "scout_max_leaves": (int, 12, None),
+}
+
+_LIFT_TEST_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
+    "top_m": (int, 20, None),
+    "queue_ic_floor": (float, None, None),
+    "include_sub_floor": (bool, False, None),
+    "threshold": (float, None, None),
+    "library_root": (str, None, None),
+    "se_mult": (float, 1.0, None),
+    "allow_active": (bool, False, None),
+    "horizon": (int, None, None),
+    "lift_workers": (int, None, None),
+    "intraday_leaves": (bool, False, None),
+    "intraday_freq": (str, "5min", None),
+}
+
+
+def _apply_set_overrides(
+    args: argparse.Namespace,
+    schema: dict[str, tuple[type, Any, tuple[str, ...] | None]],
+) -> int | None:
+    """把 ``--set KEY=VALUE`` 注入 args；未知键 fail-loudly。成功返回 None，失败返回 exit code。"""
+    for key, (_typ, default, _choices) in schema.items():
+        if not hasattr(args, key):
+            setattr(args, key, default)
+
+    overrides = getattr(args, "set_overrides", None) or []
+    for item in overrides:
+        if "=" not in item:
+            print(f"--set 需要 KEY=VALUE 形式，收到: {item!r}", file=sys.stderr)
+            return 2
+        key, raw = item.split("=", 1)
+        key = key.strip().replace("-", "_")
+        if key not in schema:
+            legal = ", ".join(sorted(schema))
+            print(f"--set 未知键 {key!r}；合法键: {legal}", file=sys.stderr)
+            return 2
+        typ, _default, choices = schema[key]
+        try:
+            val = _coerce_set_value(raw, typ, choices)
+        except ValueError as exc:
+            print(f"--set {key}: {exc}", file=sys.stderr)
+            return 2
+        # patience 须 >=1（与旧 _positive_patience 同口径）
+        if key == "patience" and val is not None and int(val) < 1:
+            print(f"--set patience: 须 >=1，收到 {val!r}", file=sys.stderr)
+            return 2
+        setattr(args, key, val)
+    return None
 
 
 def _factor_template(class_name: str, factor_name: str, frequency: str) -> str:
@@ -378,16 +508,6 @@ def _cmd_runs_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_runs_show(args: argparse.Namespace) -> int:
-    manifest_path = FACTOR_EVALUATIONS_DIR / args.run_id / "manifest.json"
-    if not manifest_path.exists():
-        print(f"Manifest not found: {manifest_path}", file=sys.stderr)
-        return 2
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    print(json.dumps(manifest, ensure_ascii=False, indent=2))
-    return 0
-
-
 def _mine_search_crypto(args: argparse.Namespace) -> int:
     """crypto perps 挖掘（live CCXT）：universe 快照 → run_crypto_mining。"""
     from factorzen.markets.crypto.mining import run_crypto_mining
@@ -465,6 +585,9 @@ def _mine_search_us(args: argparse.Namespace) -> int:
 
 
 def _cmd_mine_search(args: argparse.Namespace) -> int:
+    err = _apply_set_overrides(args, _MINE_SEARCH_SET)
+    if err is not None:
+        return err
     if getattr(args, "market", "ashare") not in ("crypto",) and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
@@ -684,6 +807,9 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
 
 
 def _cmd_mine_agent(args: argparse.Namespace) -> int:
+    err = _apply_set_overrides(args, _MINE_AGENT_SET)
+    if err is not None:
+        return err
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
@@ -843,6 +969,9 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
 
 
 def _cmd_mine_team(args: argparse.Namespace) -> int:
+    err = _apply_set_overrides(args, _MINE_TEAM_SET)
+    if err is not None:
+        return err
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
@@ -860,7 +989,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     import factorzen.pipelines.factor_mine_team as pmt
-    from factorzen.config.settings import MINE_TEAM_DIR
+    from factorzen.config.settings import MINE_TEAM_DIR as _mine_team_dir
     from factorzen.discovery.factor_library import library_file_hash
 
     pool_cache_dir = None
@@ -872,7 +1001,8 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         # 与 run_team_mine 硬编码 library_root 同源（out_dir 默认 MINE_TEAM_DIR 的同级
         # factor_library=workspace/factor_library）。若用 index_path.parent 会落到
         # mine_team/factor_library，装载侧 hash 永不命中。
-        lib_root = str(Path(MINE_TEAM_DIR).parent / "factor_library")
+        # 函数内 from-import：测试可 monkeypatch settings.MINE_TEAM_DIR
+        lib_root = str(Path(_mine_team_dir).parent / "factor_library")
         market = getattr(args, "market", "ashare") or "ashare"
         lib_hash = library_file_hash(market, lib_root) or "nolib"
         # holdout_ratio：CLI 当前不透传 → 常量 0.2，与 run_team_agent 默认参数同源
@@ -888,13 +1018,14 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
             str(getattr(args, "intraday_freq", "5min") or "5min"),
         ])
         key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
-        cache_dir = MINE_TEAM_DIR / "_pool_cache" / key
+        cache_dir = _mine_team_dir / "_pool_cache" / key
         if (cache_dir / "pool_meta.json").exists():
             print(f"[mine-team] 复用现有池缓存 {cache_dir}", flush=True)
             pool_cache_dir = str(cache_dir)
         else:
+            # 路径归位：顶层 pool-prebuild → mine pool-prebuild
             cmd = [
-                sys.executable, "-m", "factorzen.cli.main", "pool-prebuild",
+                sys.executable, "-m", "factorzen.cli.main", "mine", "pool-prebuild",
                 "--start", args.start,
                 "--end", args.end,
                 "--market", market,
@@ -953,7 +1084,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         update_library=not getattr(args, "no_library", False),
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
         objective=getattr(args, "objective", "residual"),
-        llm_workers=getattr(args, "llm_workers", 1),
+        llm_workers=getattr(args, "llm_workers", 4),
         auto_lift=not bool(getattr(args, "no_auto_lift", False)),
         lift_se_mult=float(getattr(args, "lift_se_mult", 1.0)),
         lift_workers=getattr(args, "lift_workers", None),  # None→自适应(按可用内存)
@@ -1202,14 +1333,6 @@ def _cmd_factor_library_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_factor_library_render(args: argparse.Namespace) -> int:
-    from factorzen.discovery import factor_library as fl
-
-    fl.render_markdown(args.market)
-    print(f"[factor-library] 已重生 {FACTOR_LIBRARY_DIR}/{args.market}.md")
-    return 0
-
-
 def _factor_store_panel_loader(
     *,
     start: str,
@@ -1331,20 +1454,6 @@ def _cmd_factor_library_store_verify(args: argparse.Namespace) -> int:
     for n in (report.get("missing_in_ledger") or [])[:20]:
         print(f"  EXTRA_STORE {n}", flush=True)
     return 0 if report.get("ok") else 1
-
-
-def _cmd_factor_library_tag_legacy(args: argparse.Namespace) -> int:
-    """把 evidence_tier 为 None 的记录落盘标 legacy（幂等，不改 status）。"""
-    from factorzen.discovery import factor_library as fl
-
-    market = args.market
-    root = getattr(args, "root", None) or fl.DEFAULT_ROOT
-    out = fl.tag_legacy_records(market, root=root)
-    print(
-        f"[factor-library tag-legacy] {market}：标记 legacy {out['tagged']} 条"
-        f"（库合计 {out['total']}，已有 tier 不动；不改 status）"
-    )
-    return 0
 
 
 def _cmd_factor_library_forward_track(args: argparse.Namespace) -> int:
@@ -1737,6 +1846,9 @@ def _write_cli_lift_rejects_to_index(
 
 def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     """灰区/lift 队列候选 → 组合 OOS lift 实验；默认 dry-run，--apply 才入库。"""
+    err = _apply_set_overrides(args, _LIFT_TEST_SET)
+    if err is not None:
+        return err
     import json
     from datetime import date
     from pathlib import Path
@@ -3170,6 +3282,22 @@ def build_parser() -> argparse.ArgumentParser:
     return assemble_parser(sys.modules[__name__])
 
 
+def _schema_for_parsed_args(args: argparse.Namespace) -> dict[str, tuple[type, Any, tuple[str, ...] | None]] | None:
+    """按已解析命令选 --set schema（parse 后 / handler 前统一注入）。"""
+    cmd = getattr(args, "command", None)
+    if cmd == "mine":
+        sub = getattr(args, "mine_command", None)
+        if sub == "search":
+            return _MINE_SEARCH_SET
+        if sub == "agent":
+            return _MINE_AGENT_SET
+        if sub == "team":
+            return _MINE_TEAM_SET
+    if cmd == "factor-library" and getattr(args, "factor_library_command", None) == "lift-test":
+        return _LIFT_TEST_SET
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     effective = list(sys.argv[1:] if argv is None else argv)
@@ -3177,6 +3305,11 @@ def main(argv: list[str] | None = None) -> int:
     # 落 manifest 用（铁律#3）。记「实际传入的 argv」而非 sys.argv——main() 被程序化调用时
     # （如 research run 编排器）sys.argv 是外层进程的命令行，会记错。
     args.command_line = "fz " + " ".join(effective)
+    schema = _schema_for_parsed_args(args)
+    if schema is not None:
+        err = _apply_set_overrides(args, schema)
+        if err is not None:
+            return err
     return int(args.func(args))
 
 

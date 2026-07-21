@@ -45,7 +45,7 @@
 
 | 命令 | 支持的市场 |
 |---|---|
-| `fz mine search/agent/team`、`fz pool-prebuild`、`fz factor-library *`、`fz validate overfit` | ashare · crypto · futures · us |
+| `fz mine search/agent/team/pool-prebuild`、`fz factor-library *`、`fz validate overfit` | ashare · crypto · futures · us |
 | **`fz data fetch`** | **仅 ashare · crypto** |
 | **`fz portfolio build`** | **仅 ashare · crypto** |
 

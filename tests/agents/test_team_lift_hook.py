@@ -725,12 +725,13 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
                 lambda args: (fake_daily, None, {}),
             )
 
-            # parser 契约
+            # parser 契约（--set 在 apply 后可见）
             p = cli.build_parser()
             args = p.parse_args([
                 "mine", "team", "--start", "20220101", "--end", "20231231",
-                "--no-auto-lift", "--lift-se-mult", "1.5",
+                "--set", "no_auto_lift=true", "--set", "lift_se_mult=1.5",
             ])
+            assert cli._apply_set_overrides(args, cli._MINE_TEAM_SET) is None
             assert args.no_auto_lift is True
             assert args.lift_se_mult == 1.5
 
@@ -745,7 +746,7 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
             )
             rc = cli.main([
                 "mine", "team", "--start", "20220101", "--end", "20231231",
-                "--no-auto-lift", "--lift-se-mult", "1.5",
+                "--set", "no_auto_lift=true", "--set", "lift_se_mult=1.5",
             ])
             assert rc == 0
             assert mine_kw.get("auto_lift") is False

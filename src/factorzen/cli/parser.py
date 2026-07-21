@@ -794,7 +794,10 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
 
     fl_st_sync = fl_st_sub.add_parser(
         "sync",
-        help="从 jsonl 同步资产库：写 meta+py；默认物化 active/probation 的 parquet",
+        help=(
+            "从 jsonl 同步资产库：写 meta+py；默认物化 active/probation 的 parquet "
+            "（固定 all_a × 2016-01-01~最新已完结交易日，与 jsonl 评估窗分离）"
+        ),
     )
     fl_st_sync.add_argument(
         "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
@@ -825,7 +828,10 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
 
     fl_st_ver = fl_st_sub.add_parser(
         "verify",
-        help="校验资产库 meta.expression 与 jsonl 一致（报漂移清单）",
+        help=(
+            "校验 meta.expression 与 jsonl 一致，并检查 materialization "
+            "是否仍为 store 口径（all_a / 2016-01-01~最新）"
+        ),
     )
     fl_st_ver.add_argument(
         "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",

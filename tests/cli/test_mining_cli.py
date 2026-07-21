@@ -506,6 +506,8 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
             objective=objective,
             intraday=intraday,
             intraday_freq=intraday_freq,
+            exec_lag=exec_lag,
+            exec_price_col=exec_price_col,
         )
         return {"session_dir": str(tmp_path / "session-1"), "candidates": [1, 2, 3]}
 
@@ -562,6 +564,8 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
         "objective": "residual",         # 默认残差目标（未传 --objective）
         "intraday": False,               # 默认关（未传 --intraday-leaves）
         "intraday_freq": "5min",         # 默认频率（未传 --intraday-freq）
+        "exec_lag": 1,                   # CLI 默认可实现口径
+        "exec_price_col": "open_adj",
     }
 
     sd = str(tmp_path / "session-1")

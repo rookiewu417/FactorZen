@@ -326,15 +326,50 @@ def _ensure_date_column(df: pl.DataFrame, column: str) -> pl.DataFrame:
     return df
 
 
-def _build_forward_return_frame(daily: pl.DataFrame) -> pl.DataFrame:
-    """Build IC forward-return labels, preferring adjusted close when available."""
+def _build_forward_return_frame(
+    daily: pl.DataFrame,
+    *,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
+) -> pl.DataFrame:
+    """Build IC forward-return labels, preferring adjusted close when available.
+
+    ``exec_lag`` / ``exec_price_col`` 透传 ``compute_fwd_returns``。
+    CLI（``fz factor run`` / daily_single）默认可实现口径 1 / open_adj；
+    本 helper 内部默认仍 0 / None，便于单测断言旧 close→close 行为。
+    """
+    # 可实现口径：显式成交价列必须存在——缺列 fail-loudly，禁止静默退回 close→close
+    if exec_price_col is not None:
+        if exec_price_col not in daily.columns:
+            raise ValueError(
+                f"_build_forward_return_frame: exec_price_col={exec_price_col!r} 不在 daily 列中；"
+                f"实际列为 {list(daily.columns)}。"
+                "可实现口径要求该列存在，不会静默回退到 close→close。"
+            )
+        ret_df = (
+            daily.select(["trade_date", "ts_code", exec_price_col])
+            .sort(["ts_code", "trade_date"])
+            .with_columns(
+                (
+                    pl.col(exec_price_col) / pl.col(exec_price_col).shift(1).over("ts_code") - 1
+                ).alias("ret")
+            )
+        )
+        return compute_fwd_returns(
+            ret_df, ret_col="ret", price_col=exec_price_col,
+            exec_lag=exec_lag, exec_price_col=None,
+        )
+
     if "close_adj" not in daily.columns:
         price_col = "close"
         ret_df = daily.select(["trade_date", "ts_code", price_col]).sort(["ts_code", "trade_date"])
         ret_df = ret_df.with_columns(
             (pl.col(price_col) / pl.col(price_col).shift(1).over("ts_code") - 1).alias("ret")
         )
-        return compute_fwd_returns(ret_df, ret_col="ret", price_col=price_col)
+        return compute_fwd_returns(
+            ret_df, ret_col="ret", price_col=price_col,
+            exec_lag=exec_lag, exec_price_col=None,
+        )
 
     price_col = "_label_price"
     valid_adj = (
@@ -354,7 +389,10 @@ def _build_forward_return_frame(daily: pl.DataFrame) -> pl.DataFrame:
     ret_df = ret_df.with_columns(
         (pl.col(price_col) / pl.col(price_col).shift(1).over("ts_code") - 1).alias("ret")
     )
-    return compute_fwd_returns(ret_df, ret_col="ret", price_col=price_col)
+    return compute_fwd_returns(
+        ret_df, ret_col="ret", price_col=price_col,
+        exec_lag=exec_lag, exec_price_col=None,
+    )
 
 
 def _compute_monotonicity_result(
@@ -570,7 +608,11 @@ def _run(
     if daily.is_empty():
         logger.error("日线数据为空，无法计算收益")
         raise RuntimeError("empty daily data")
-    ret_df = _build_forward_return_frame(daily)
+    ret_df = _build_forward_return_frame(
+        daily,
+        exec_lag=int(getattr(args, "exec_lag", 1) if getattr(args, "exec_lag", None) is not None else 1),
+        exec_price_col=getattr(args, "exec_price_col", "open_adj"),
+    )
     logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
 
     # ── 6b. 数据质量审计 ──
@@ -783,7 +825,7 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true", help="只打印最终配置和输出目录，不执行评估"
     )
-    parser.add_argument("--seed", type=int, default=None, help="全局随机种子")
+    parser.add_argument("--seed", type=int, default=42, help="全局随机种子（默认 42）")
     parser.add_argument(
         "--set",
         action="append",
@@ -791,6 +833,14 @@ def main():
         dest="set_overrides",
         metavar="KEY=VALUE",
         help="覆盖任意配置字段（校验前注入），可多次：--set backtest.top_n=30 --set preprocessing.neutralize=true",
+    )
+    parser.add_argument(
+        "--exec-lag", dest="exec_lag", type=int, default=1,
+        help="成交滞后(交易日)。默认 1=可实现口径；0=旧 close→close（不可实现，仅对照用）",
+    )
+    parser.add_argument(
+        "--exec-price-col", dest="exec_price_col", default="open_adj",
+        help="成交价格列。默认 open_adj（可实现口径 open[t+2]/open[t+1]）",
     )
     parser.add_argument(
         "--metrics-out",

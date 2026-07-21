@@ -467,7 +467,7 @@ def test_score_col_auto_detect_and_multi_col_error(tmp_path: Path) -> None:
 
 
 def test_combine_backtest_default_strategy_is_quantile_ls_5() -> None:
-    """--strategy 默认与 fz eval 一致：quantile_ls_5。"""
+    """--strategy 默认与 fz factor run 一致：quantile_ls_5；universe 默认 all_a。"""
     from factorzen.cli.main import build_parser
 
     parser = build_parser()
@@ -485,7 +485,7 @@ def test_combine_backtest_default_strategy_is_quantile_ls_5() -> None:
         ]
     )
     assert args.strategy == "quantile_ls_5"
-    assert args.universe == "csi300"
+    assert args.universe == "all_a"
     assert args.market == "ashare"
 
 

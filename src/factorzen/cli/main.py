@@ -97,7 +97,7 @@ def _cmd_factor_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_factor_test(args: argparse.Namespace) -> int:
+def _cmd_factor_run(args: argparse.Namespace) -> int:
     from factorzen.pipelines import daily_single
 
     forwarded = [f"fz factor {args.factor_command}"]
@@ -120,6 +120,11 @@ def _cmd_factor_test(args: argparse.Namespace) -> int:
         forwarded.append("--dry-run")
     for override in getattr(args, "set_overrides", None) or []:
         forwarded.extend(["--set", override])
+    # 成交口径：CLI 默认可实现 (1 / open_adj)；显式 --exec-lag 0 回旧口径对照
+    if getattr(args, "exec_lag", None) is not None:
+        forwarded.extend(["--exec-lag", str(int(args.exec_lag))])
+    if getattr(args, "exec_price_col", None) is not None:
+        forwarded.extend(["--exec-price-col", str(args.exec_price_col)])
 
     old_argv = sys.argv
     try:
@@ -212,7 +217,7 @@ def _cmd_report_build(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_report_open(args: argparse.Namespace) -> int:
+def _cmd_report_path(args: argparse.Namespace) -> int:
     report = run_dir(args.run_id) / "report.html"
     if not report.exists():
         print(f"Report not found: {report}", file=sys.stderr)
@@ -495,8 +500,8 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         intraday=bool(getattr(args, "intraday_leaves", False)),
         intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
         intraday_expr_leaves=getattr(args, "intraday_expr_leaves", None),
-        exec_lag=int(getattr(args, "exec_lag", 0) or 0),
-        exec_price_col=getattr(args, "exec_price_col", None),
+        exec_lag=int(getattr(args, "exec_lag", 1) if getattr(args, "exec_lag", None) is not None else 1),
+        exec_price_col=getattr(args, "exec_price_col", "open_adj"),
     )
     sd = res["session_dir"]
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
@@ -520,6 +525,8 @@ def _cmd_research_run(args: argparse.Namespace) -> int:
         run_id=args.run_id, command=["research", "run"],
         intraday=bool(getattr(args, "intraday_leaves", False)),
         intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
+        exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
+        exec_price_col=getattr(args, "exec_price_col", "open_adj"),
     )
     print(f"[research] 完成 run_id={res['run_id']} 因子={res['expression']!r}")
     print(f"[research] 调仓 {res['n_rebalances']} 次 · sharpe={res['sharpe']} · ann_ret={res['ann_ret']}")
@@ -707,8 +714,8 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
                          scout_k=int(getattr(args, "scout_k", 4) or 4),
                          scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
                          scout_freq=getattr(args, "intraday_freq", "5min") or "5min",
-                         exec_lag=int(getattr(args, "exec_lag", 0) or 0),
-                         exec_price_col=getattr(args, "exec_price_col", None))
+                         exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
+                         exec_price_col=getattr(args, "exec_price_col", "open_adj"))
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
 
@@ -956,9 +963,9 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
         scout_freq=getattr(args, "intraday_freq", "5min") or "5min",
         pool_cache_dir=pool_cache_dir,
-        # 成交口径：默认 0 = 历史行为（close→close，隐含 t 日收盘成交，不可实现）
-        exec_lag=int(getattr(args, "exec_lag", 0) or 0),
-        exec_price_col=getattr(args, "exec_price_col", None),
+        # 成交口径：CLI 默认可实现 (1 / open_adj)；--exec-lag 0 回旧口径（不可实现，仅对照）
+        exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
+        exec_price_col=getattr(args, "exec_price_col", "open_adj"),
         sleeve_gate=not bool(getattr(args, "no_sleeve_gate", False)),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")

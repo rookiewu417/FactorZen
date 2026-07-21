@@ -14,7 +14,10 @@ import polars as pl
 
 from factorzen.core.feature_schema import (
     BASIC_FEATURES,
+    EVENT_FILL0_FEATURES,
+    EXPRESS_FEATURES,
     FLOW_FEATURES,
+    FORECAST_FEATURES,
     FUNDAMENTAL_FEATURES,
     HOLDER_FEATURES,
     LEAF_FEATURES,
@@ -24,7 +27,10 @@ from factorzen.core.feature_schema import (
 
 __all__ = [
     "BASIC_FEATURES",
+    "EVENT_FILL0_FEATURES",
+    "EXPRESS_FEATURES",
     "FLOW_FEATURES",
+    "FORECAST_FEATURES",
     "FUNDAMENTAL_FEATURES",
     "HOLDER_FEATURES",
     "LEAF_FEATURES",

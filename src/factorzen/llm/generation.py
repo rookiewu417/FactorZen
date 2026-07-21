@@ -157,7 +157,10 @@ _LEAF_GUIDANCE: dict[str, str] = {
         "margin_ratio=rzye/(circ_mv×1e4)，margin_buy_ratio=rzmre/(amount×1e3)）；"
         "top_list_net_buy/top_list_flag 是**龙虎榜**叶子"
         "（t 日榜单 t 日盘后披露，attach 已内置 lag(1)；已知日未上榜=0，未拉取=null；"
-        "net_amount 万元、amount 千元，比前统一到元）——"
+        "net_amount 万元、amount 千元，比前统一到元）；"
+        "fc_type_score/fc_surprise/fc_flag 是**业绩预告**事件叶、express_yoy 是**业绩快报**叶"
+        "（ann_date 盘后可得 → t+1 交易日起生效，20 交易日窗内有效窗外 0；"
+        "type 编码预增/扭亏=+2…预减/首亏=-2；surprise 为净利同比中值/100）——"
         "与量价正交的族可作多族组合，避开拥挤方向，别只盯量价波动。\n"
     ),
     "crypto": (

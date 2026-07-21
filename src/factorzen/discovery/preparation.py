@@ -211,12 +211,15 @@ def prepare_mining_daily(
 
     # Mining and materialisation deliberately share these attach functions so the
     # same expression has identical leaves on both paths.
+    from factorzen.daily.data.events import attach_express, attach_forecast
     from factorzen.daily.data.flows import attach_flows
     from factorzen.daily.data.pit import attach_fundamentals, attach_holders
 
     daily = attach_fundamentals(daily)
     daily = attach_holders(daily)
     daily = attach_flows(daily)
+    daily = attach_forecast(daily)
+    daily = attach_express(daily)
 
     if intraday:
         from factorzen.daily.data.intraday import attach_intraday

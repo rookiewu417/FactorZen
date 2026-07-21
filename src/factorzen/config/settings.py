@@ -10,6 +10,7 @@ WORKSPACE_RUNS = WORKSPACE_DIR / "runs"
 FACTOR_EVALUATIONS_DIR = WORKSPACE_DIR / "factor_evaluations"
 DAILY_FACTORS_DIR = WORKSPACE_DIR / "factors" / "daily"
 FACTOR_LIBRARY_DIR = WORKSPACE_DIR / "factor_library"
+FACTOR_STORE_DIR = WORKSPACE_DIR / "factor_store"  # 三件套资产库（meta/py/parquet）
 MINING_SESSIONS_DIR = WORKSPACE_DIR / "mining_sessions"
 MINE_AGENT_DIR = WORKSPACE_DIR / "mine_agent"
 MINE_TEAM_DIR = WORKSPACE_DIR / "mine_team"

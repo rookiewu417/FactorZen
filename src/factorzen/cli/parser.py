@@ -548,7 +548,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "factor-library",
         help="因子库登记簿（分市场·全信息·自动维护）："
              "rebuild/list/show/render/lift-test/tag-legacy/"
-             "forward-track/forward-review",
+             "forward-track/forward-review/store",
     )
     fl_sub = fl.add_subparsers(dest="factor_library_command", required=True)
 
@@ -784,6 +784,64 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         help=f"因子库根目录（默认 {FACTOR_LIBRARY_DIR}）",
     )
     fl_fr.set_defaults(func=commands._cmd_factor_library_forward_review)
+
+    # ── fz factor-library store ──（资产库三件套 meta/py/parquet）
+    fl_st = fl_sub.add_parser(
+        "store",
+        help="因子资产库三件套（meta.json + factor.py + factor.parquet）",
+    )
+    fl_st_sub = fl_st.add_subparsers(dest="factor_library_store_command", required=True)
+
+    fl_st_sync = fl_st_sub.add_parser(
+        "sync",
+        help="从 jsonl 同步资产库：写 meta+py；默认物化 active/probation 的 parquet",
+    )
+    fl_st_sync.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    )
+    fl_st_sync.add_argument(
+        "--only",
+        default=None,
+        help="只同步这些 name（逗号分隔）；缺省=全库",
+    )
+    fl_st_sync.add_argument(
+        "--no-materialize",
+        dest="no_materialize",
+        action="store_true",
+        help="只写 meta+py，不物化 parquet",
+    )
+    fl_st_sync.add_argument(
+        "--root",
+        default=None,
+        help="资产库根目录（默认 workspace/factor_store）",
+    )
+    fl_st_sync.add_argument(
+        "--lib-root",
+        dest="lib_root",
+        default=None,
+        help=f"因子库 jsonl 根目录（默认 {FACTOR_LIBRARY_DIR}）",
+    )
+    fl_st_sync.set_defaults(func=commands._cmd_factor_library_store_sync)
+
+    fl_st_ver = fl_st_sub.add_parser(
+        "verify",
+        help="校验资产库 meta.expression 与 jsonl 一致（报漂移清单）",
+    )
+    fl_st_ver.add_argument(
+        "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    )
+    fl_st_ver.add_argument(
+        "--root",
+        default=None,
+        help="资产库根目录（默认 workspace/factor_store）",
+    )
+    fl_st_ver.add_argument(
+        "--lib-root",
+        dest="lib_root",
+        default=None,
+        help=f"因子库 jsonl 根目录（默认 {FACTOR_LIBRARY_DIR}）",
+    )
+    fl_st_ver.set_defaults(func=commands._cmd_factor_library_store_verify)
 
     # ── fz validate ──（与 fz mine 并列的顶层命令组）
     # ── fz research ──（端到端编排：mine → 头部 passed 因子 → 循环 build → sim → report）

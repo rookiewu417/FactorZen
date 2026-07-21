@@ -1,8 +1,25 @@
 # 日频因子模板
 
-日频因子放在 `workspace/factors/daily/{factor_name}.py`。复制下面代码后，先改 `name`、类名、`description`、`lookback_days` 和公式，再运行验证命令。
+> **布局迁移（2026-07）**：手写 python 因子与挖掘因子统一为「每因子三件套」，
+> 落在 `workspace/factor_store/<market>/<name>/`：
+>
+> ```
+> workspace/factor_store/ashare/<name>/
+> ├── meta.json      # 元信息 + ledger_snapshot（裁决真相仍是 factor_library jsonl）
+> ├── factor.py      # 可执行因子代码（DailyFactor 类 或 expression 生成包装）
+> └── factor.parquet # 物化面板（仅 active/probation）
+> ```
+>
+> 旧路径 `workspace/factors/daily/{factor_name}.py` **仍兼容扫描**，但会打
+> `DeprecationWarning`；请把新因子写到 factor_store，旧文件由迁移流程收尾删除。
+>
+> 裁决真相不变：`workspace/factor_library/<market>.jsonl`（status/lift/admission）。
+> 资产库是载体；用 `fz factor-library store sync` / `verify` 维护与校验。
 
-## 编写约定
+## 编写约定（python 类）
+
+把下面代码保存为 `workspace/factor_store/ashare/<name>/factor.py`，并配一份 `meta.json`
+（`kind: "python"`）。复制后改 `name`、类名、`description`、`lookback_days` 和公式。
 
 - 继承 `DailyFactor`。
 - `category = "daily"`，`frequency` 可以省略或显式设为 `"daily"`。
@@ -13,7 +30,32 @@
 - 用 `ctx.start` 过滤预热期，只输出请求区间。
 - 行业、市值中性化放在 YAML 的 `preprocessing` 配置里，不要写进因子本身。
 
-## 可复制代码
+## meta.json 最小字段
+
+```json
+{
+  "name": "my_daily_alpha",
+  "kind": "python",
+  "expression": "py::my_daily_alpha",
+  "frequency": "daily",
+  "description": "20 日复权动量",
+  "source_run_id": null,
+  "created_at": "2026-07-21",
+  "ledger_snapshot": {
+    "status": null,
+    "lift": null,
+    "admission_ic": null,
+    "ic_train": null,
+    "holdout_ic": null,
+    "truth": "workspace/factor_library/ashare.jsonl"
+  },
+  "materialization": null
+}
+```
+
+入库后 `ledger_snapshot` / `materialization` 由 `store sync` 与 lift 准入路径自动刷新。
+
+## 可复制代码（factor.py）
 
 ```python
 """日频示例因子：20 日复权动量。"""
@@ -54,6 +96,9 @@ MyDailyAlpha()
 ```bash
 pixi run fz factor list
 pixi run fz factor run my_daily_alpha --start 20230101 --end 20241231 --universe csi500
+# 资产库同步 / 一致性
+pixi run fz factor-library store sync --market ashare --only my_daily_alpha --no-materialize
+pixi run fz factor-library store verify --market ashare
 ```
 
 ## 检查点
@@ -62,6 +107,7 @@ pixi run fz factor run my_daily_alpha --start 20230101 --end 20241231 --universe
 - 因子值只使用当前日期及以前可获得的数据。
 - 输出列名固定为 `factor_value`，不要输出多个因子列。
 - 如果公式依赖估值、市值或换手字段，先把对应数据类型加入 `required_data`。
+- 手写因子进库仍走 lift 准入：`fz factor-library lift-test --factor <name>`。
 
 ---
 

@@ -1203,6 +1203,56 @@ def _cmd_factor_library_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def _factor_store_panel_loader(
+    *,
+    start: str,
+    end: str,
+    universe: str,
+    market: str,
+    intraday_leaves: bool = False,
+):
+    """factor_store 物化的数据装配（CLI 层注入，依赖倒置防 discovery→cli 环）。
+
+    返回 preprocess 后的 polars 挖掘帧。
+
+    经生产通道拉挖掘帧并 preprocess，与 mine team/agent 同源
+    （``_prepare_agent_mining_data`` + ``_preprocess_daily``）。
+    """
+    import polars as pl
+
+    from factorzen.discovery.evaluation import _preprocess_daily
+
+    ns = argparse.Namespace(
+        market=market,
+        start=start,
+        end=end,
+        universe=universe,
+        horizon=1,
+        intraday_leaves=bool(intraday_leaves),
+        intraday_freq="5min",
+        intraday_expr_leaves=None,
+        top_n=50,
+        symbols=None,
+        freq="daily",
+    )
+    daily, profile, _prep_meta = _prepare_agent_mining_data(ns)
+    if daily is None or daily.is_empty():
+        raise RuntimeError(
+            f"挖掘帧为空 market={market} {start}–{end} universe={universe}"
+        )
+    prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
+    float_cols = [
+        c
+        for c, dt in zip(prepped.columns, prepped.dtypes, strict=False)
+        if dt in (pl.Float32, pl.Float64)
+    ]
+    if float_cols:
+        prepped = prepped.with_columns(
+            [pl.col(c).fill_nan(None) for c in float_cols]
+        )
+    return prepped
+
+
 def _cmd_factor_library_store_sync(args: argparse.Namespace) -> int:
     """从 jsonl 同步 factor_store 三件套（meta + factor.py + 可选 parquet）。"""
     import time
@@ -1229,6 +1279,7 @@ def _cmd_factor_library_store_sync(args: argparse.Namespace) -> int:
         only=only,
         materialize=materialize,
         lib_root=lib_root,
+        panel_loader=_factor_store_panel_loader,
     )
     elapsed = time.perf_counter() - t0
     print(

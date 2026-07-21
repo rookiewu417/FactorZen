@@ -23,7 +23,7 @@ import warnings
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import polars as pl
 
@@ -353,11 +353,16 @@ def _materialize_records(
     market: str,
     root: str,
     default_universe: str = "csi300",
+    panel_loader: PanelLoader | None = None,
 ) -> int:
     """串行物化 active/probation 记录（生产通道 _materializer_from_prepped）。
 
     按 (eval_start, eval_end, universe, need_intraday) 分组装帧，组内逐条物化，
     防 OOM。返回成功物化条数。
+
+    ``panel_loader``：数据帧加载器，由调用方（CLI 层）注入——discovery 不拉数，
+    避免 discovery→cli 反向依赖（架构守卫 agents→discovery→cli 环）。
+    需要物化却未注入 → ``ValueError``。
     """
     from factorzen.discovery.lift_test import _materializer_from_prepped
     from factorzen.discovery.preparation import expressions_need_intraday
@@ -369,6 +374,11 @@ def _materialize_records(
     ]
     if not targets:
         return 0
+    if panel_loader is None:
+        raise ValueError(
+            "materialize 需要 panel_loader（由 CLI 层注入生产数据装配；"
+            "discovery 层不拉数）"
+        )
 
     # 分组键
     groups: dict[tuple[str, str, str, bool], list[FactorRecord]] = {}
@@ -394,7 +404,7 @@ def _materialize_records(
             )
             continue
         try:
-            prepped = _load_prepped_panel(
+            prepped = panel_loader(
                 start=start,
                 end=end,
                 universe=univ,
@@ -455,50 +465,18 @@ def _materialize_records(
     return n_ok
 
 
-def _load_prepped_panel(
-    *,
-    start: str,
-    end: str,
-    universe: str,
-    market: str,
-    intraday_leaves: bool = False,
-    intraday_freq: str = "5min",
-) -> pl.DataFrame:
-    """经生产通道拉挖掘帧并 preprocess（与 library_exec_audit 同源）。"""
-    import argparse
+class PanelLoader(Protocol):
+    """数据帧加载器契约（CLI 层实现并注入；discovery 层不拉数）。"""
 
-    from factorzen.cli.main import _prepare_agent_mining_data
-    from factorzen.discovery.evaluation import _preprocess_daily
-
-    args = argparse.Namespace(
-        market=market,
-        start=start,
-        end=end,
-        universe=universe,
-        horizon=1,
-        intraday_leaves=bool(intraday_leaves),
-        intraday_freq=intraday_freq or "5min",
-        intraday_expr_leaves=None,
-        top_n=50,
-        symbols=None,
-        freq="daily",
-    )
-    daily, profile, _prep_meta = _prepare_agent_mining_data(args)
-    if daily is None or daily.is_empty():
-        raise RuntimeError(
-            f"挖掘帧为空 market={market} {start}–{end} universe={universe}"
-        )
-    prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
-    float_cols = [
-        c
-        for c, dt in zip(prepped.columns, prepped.dtypes, strict=False)
-        if dt in (pl.Float32, pl.Float64)
-    ]
-    if float_cols:
-        prepped = prepped.with_columns(
-            [pl.col(c).fill_nan(None) for c in float_cols]
-        )
-    return prepped
+    def __call__(
+        self,
+        *,
+        start: str,
+        end: str,
+        universe: str,
+        market: str,
+        intraday_leaves: bool = False,
+    ) -> pl.DataFrame: ...
 
 
 def sync_store(
@@ -509,6 +487,7 @@ def sync_store(
     materialize: bool = True,
     lib_root: str = DEFAULT_LIB_ROOT,
     default_universe: str = "csi300",
+    panel_loader: PanelLoader | None = None,
 ) -> dict[str, Any]:
     """全库同步：逐条写 meta+py；按需物化 parquet。
 
@@ -591,6 +570,7 @@ def sync_store(
             market=market,
             root=root,
             default_universe=default_universe,
+            panel_loader=panel_loader,
         )
         stats["materialized"] = n
 

@@ -32,15 +32,28 @@ res = run_combination_experiment(
 print(res["comparison"])  # method × {rank_ic_mean, icir, top_bottom_spread, max_drawdown, ...}
 ```
 
-产物落 `workspace/combinations/<run_id>/`:`combined_<method>.parquet`、`comparison.csv`、
-`importance.csv`(lgbm SHAP/gain)、`report.md`、`manifest.json`(cv 参数/seed/git_sha)。
+产物落 `workspace/combinations/<run_id>/`：
+- `combined_<method>.parquet`（含 fold_id 的 OOS 组合因子）
+- `oos_scores/<method>.parquet`（`trade_date, ts_code, score` 整条 OOS 面板，折间日期零重叠）
+- `comparison.csv`、`importance.csv`(lgbm)、`report.md`、`manifest.json`（含 `oos_scores` 路径）
 
 ## 命令行
 
 ```bash
 pixi run fz combine run --factor fa.parquet --factor fb.parquet --ret ret.parquet \
   --train-days 120 --test-days 20 --purge-days 5 --methods all --seed 42 --run-id exp1
+
+# 组合分数 → 真回测（日环引擎；默认策略 quantile_ls_5，与 fz eval 一致）
+pixi run fz combine backtest --run-dir workspace/combinations/exp1 --method equal_weight \
+  --start 20230101 --end 20231231 --universe csi300
+# 或任意分数面板：
+pixi run fz combine backtest --scores panel.parquet --score-col score \
+  --start 20230101 --end 20231231 --strategy topn_long_only --cost-bps 0
 ```
+
+产物：`workspace/combine_backtests/<run_id>/`（manifest + metrics + nav）。
+`--rebalance-days k`（k>1）：桥层把分数降采样到每 k 个交易日并按股票前向填充，等效 k 天调仓；
+引擎仍日环，净值逐日更新。缺省/1 为逐日。
 
 因子 parquet 可来自因子评估产物或 `fz mine export-alpha` 导出的 α 截面。
 若因子已入因子库，直接用 `pixi run fz combine from-library` 更省事——它是登记簿的正式消费出口。

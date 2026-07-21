@@ -8,15 +8,16 @@
 
 ---
 
-## 三个入口的区别
+## 入口的区别
 
-三个子命令跑的是**完全相同的实验**，区别只在**因子从哪来**：
+前三个子命令跑的是**完全相同的 OOS 组合实验**，区别只在**因子从哪来**；`backtest` 是把 OOS 分数接进真回测的桥：
 
 | 子命令 | 因子来源 | 选品方式 | 用途 |
 |---|---|---|---|
 | `fz combine run` | 裸 parquet 文件 | 你自己给文件列表 | 自定义因子、外部因子、快速验证 |
 | `fz combine from-session` | 挖掘 session 的 `candidates.csv` | 默认只取 `passed` | 一轮挖掘刚跑完，看这批候选合起来行不行 |
 | **`fz combine from-library`** | **因子库登记簿** | 按 `status` 过滤 + `\|ic_train\|` 降序 | **因子库的正式消费出口** |
+| `fz combine backtest` | `oos_scores/*.parquet` 或任意分数面板 | 指定 `--method` / `--scores` | **OOS 组合分数 → 真回测（日环引擎）** |
 
 选哪个：
 
@@ -24,7 +25,7 @@
 - **`from-session` 是挖掘的即时验收。** 一个 session 刚跑完，还没走完准入流程，想先看看这批候选组合起来的样子。注意它吃的是 session 快照，不带准入结论。
 - **`run` 是逃生口。** 因子来自平台之外，或者你想手工控制精确的输入面板。
 
-> ℹ️ 三个入口共享同一组切分与输出参数（`--train-days` / `--test-days` / `--purge-days` / `--embargo-days` / `--methods` / `--seed` / `--run-id` / `--out-dir`），产物格式完全一致，可以互相对比。
+> ℹ️ `run` / `from-session` / `from-library` 共享同一组切分与输出参数（`--train-days` / `--test-days` / `--purge-days` / `--embargo-days` / `--methods` / `--seed` / `--run-id` / `--out-dir`），产物格式完全一致，可以互相对比。
 
 ---
 
@@ -190,11 +191,12 @@ pixi run -- fz combine run \
 
 | 文件 | 内容 |
 |---|---|
-| `combined_<method>.parquet` | 每种方法的**合成因子序列**（`trade_date` · `ts_code` · `factor_value`），逐折 test 段拼起来的样本外值 |
+| `combined_<method>.parquet` | 每种方法的**合成因子序列**（`trade_date` · `ts_code` · `factor_value` · `fold_id`），逐折 test 段拼起来的样本外值 |
+| `oos_scores/<method>.parquet` | 同上 OOS 面板的分数形态（`trade_date` · `ts_code` · `score`），供 `fz combine backtest` 消费；折间日期零重叠（重叠 = bug，直接 raise） |
 | `comparison.csv` | 方法 × 指标对比表 |
 | `importance.csv` | LightGBM 因子重要性（跑了 `lgbm` 才有） |
 | `report.md` | Markdown 报告，含对比表 + 重要性表 + 最高 RankIC 方法结论 |
-| `manifest.json` | `git_sha` / `run_id` / `seed` / `methods` / 因子清单 / 完整 CV 参数 |
+| `manifest.json` | `git_sha` / `run_id` / `seed` / `methods` / 因子清单 / `oos_scores` 路径 / 完整 CV 参数 |
 
 ### `comparison.csv` 的指标
 
@@ -225,6 +227,34 @@ RankIC 用 average-rank Spearman（`core/stats.spearman_avg_rank`），与 `lift
 `method` 列标注实际用的是 **`shap`** 还是 **`gain`**——SHAP 更忠实，但 `shap` 是 **dev extras 依赖**，只装运行时依赖的环境会自动降级到 LightGBM 内置的 gain。**看这一列**，别假设拿到的就是 SHAP 值。
 
 > ⚠️ LightGBM 重要性是**在全样本上重新 fit 一次**算出来的（`experiment.py:148-153`），与 OOS 逐折的模型不是同一批。它是解释性辅助，不是样本外证据。
+
+---
+
+## 真回测：`fz combine backtest`
+
+`comparison.csv` 里的 IC / 净 spread@10bp 是**零持仓、按分位桶换手的近似**，不是统一日环引擎的真回测。要把 OOS 组合分数接进策略引擎：
+
+```bash
+# 读 combine 产物的 oos_scores
+pixi run -- fz combine backtest \
+  --run-dir workspace/combinations/<run_id> --method equal_weight \
+  --start 20200101 --end 20241231 --universe csi300
+
+# 或任意分数面板
+pixi run -- fz combine backtest \
+  --scores panel.parquet --score-col score \
+  --start 20200101 --end 20241231 --strategy topn_long_only --cost-bps 0
+```
+
+| 要点 | 行为 |
+|---|---|
+| 输入 | `--scores` 与 `--run-dir` **二选一**；后者需 `--method`（默认 `equal_weight`） |
+| 策略 | `--strategy` 默认 `quantile_ls_5`（与 `fz eval`/daily_single 无 YAML 默认一致）；另支持 `topn_long_only` 等既有 registry 类 |
+| 成本 | `--cost-bps` 缺省 = daily_single 的 `LinearCostModel`；`0` = 零成本；显式 bps = 单边 commission |
+| 调仓 | `--rebalance-days` 缺省/1=逐日；`k>1` 时桥层把分数降采样到每 k 日并前向填充（非调仓日权重不变），引擎仍日环、净值逐日更新 |
+| 产物 | `workspace/combine_backtests/<run_id>/`：`manifest.json` + `metrics.json` + `nav.parquet` |
+
+数据装配（PIT membership、复权日线、`is_st_by_date`）与 `daily_single` 同口径，避免双路径漂移。
 
 ---
 

@@ -1077,9 +1077,9 @@ pixi run -- fz live report --session-dir workspace/live/s1 \
 
 ## fz combine
 
-多因子组合的 OOS 对比实验，四种方法：`equal_weight` / `ic_weighted` / `max_ir` / `lgbm`。三个子命令的区别只在**因子从哪来**：`run` 吃裸 parquet，`from-session` 吃挖掘 session，`from-library` 吃因子库登记簿。
+多因子组合的 OOS 对比实验，四种方法：`equal_weight` / `ic_weighted` / `max_ir` / `lgbm`。前三个子命令的区别只在**因子从哪来**：`run` 吃裸 parquet，`from-session` 吃挖掘 session，`from-library` 吃因子库登记簿。第四个 `backtest` 把 OOS 组合分数接进统一日环策略回测。
 
-三者共享同一组切分与输出参数：
+`run` / `from-session` / `from-library` 共享同一组切分与输出参数：
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -1110,7 +1110,7 @@ pixi run -- fz combine run \
   --ret workspace/ret/h5.parquet --train-days 120 --test-days 20 --purge-days 5
 ```
 
-**产物**：`workspace/combinations/<run_id>/`（或 `--out-dir` 下），含各方法的 OOS 指标与 `manifest.json`。
+**产物**：`workspace/combinations/<run_id>/`（或 `--out-dir` 下），含各方法的 OOS 指标、`oos_scores/<method>.parquet` 与 `manifest.json`。
 
 ### fz combine from-session
 
@@ -1161,6 +1161,34 @@ pixi run -- fz combine from-library --market ashare --statuses active,probation 
 ```
 
 **产物**：`workspace/combinations/<run_id>/`。
+
+### fz combine backtest
+
+将组合 OOS 分数（或任意截面分数面板）接入统一日环策略回测，输出净值 / 换手 / 成本后指标。
+
+| 参数 | 类型 | 默认值 | 必填 | 说明 |
+|---|---|---|---|---|
+| `--scores` | str | — | 与 `--run-dir` 二选一 | 分数 parquet（`trade_date`, `ts_code`, 分数列） |
+| `--run-dir` | str | — | 与 `--scores` 二选一 | combine 产物目录，读 `oos_scores/<method>.parquet` |
+| `--method` | str | `equal_weight` | | 配合 `--run-dir` 选方法 |
+| `--score-col` | str | 无（自动） | | 分数列；缺省取除键列外唯一数值列，多列则必填 |
+| `--strategy` | str | `quantile_ls_5` | | 与 `fz eval` 默认一致；另支持 `topn_long_only` 等既有策略 |
+| `--start` | str | — | ✅ | 回测起 `YYYYMMDD` |
+| `--end` | str | — | ✅ | 回测止 `YYYYMMDD` |
+| `--universe` | str | `csi300` | | PIT membership 票池 |
+| `--market` | str | `ashare` | | 当前仅 `ashare` |
+| `--cost-bps` | float | 无（= LinearCostModel 默认） | | 单边成本 bps；`0` = 零成本 |
+| `--rebalance-days` | int | 无（= 逐日） | | 调仓间隔（交易日）。`1`/缺省=逐日；`k>1` 桥层降采样分数并前向填充，引擎仍日环、净值逐日更新 |
+| `--run-id` | str | 时间戳 | | 输出子目录名 |
+| `--out-dir` | str | `workspace/combine_backtests` | | 产物根目录 |
+
+```bash
+pixi run -- fz combine backtest \
+  --run-dir workspace/combinations/exp1 --method equal_weight \
+  --start 20200101 --end 20241231 --universe csi300
+```
+
+**产物**：`workspace/combine_backtests/<run_id>/` 下 `manifest.json` + `metrics.json` + `nav.parquet`。
 
 ---
 

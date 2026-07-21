@@ -189,6 +189,59 @@ def _combine(
     raise ValueError(f"未知 method: {method}")
 
 
+def _assert_fold_dates_no_overlap(combined: pl.DataFrame, *, method: str) -> None:
+    """purged walk-forward 的 test 段本不应重叠；重叠 = bug，fail-loudly 不静默去重。"""
+    if combined.is_empty() or "fold_id" not in combined.columns:
+        return
+    by_fold = (
+        combined.select(
+            [
+                pl.col("fold_id"),
+                pl.col("trade_date").cast(pl.Utf8).alias("trade_date"),
+            ]
+        )
+        .unique()
+        .group_by("fold_id")
+        .agg(pl.col("trade_date"))
+    )
+    seen: set[str] = set()
+    for row in by_fold.sort("fold_id").iter_rows(named=True):
+        dates = {str(d) for d in row["trade_date"]}
+        overlap = seen & dates
+        if overlap:
+            sample = sorted(overlap)[:8]
+            raise ValueError(
+                f"OOS fold 日期重叠（method={method}, fold_id={row['fold_id']}）："
+                f"{sample}{'…' if len(overlap) > 8 else ''}。"
+                f"purged walk-forward 的 test 段不应重叠——这是 bug，拒绝静默去重。"
+            )
+        seen |= dates
+
+
+def _write_oos_scores(
+    combined: pl.DataFrame, path: Path, *, method: str
+) -> Path:
+    """各折 test 段分数拼成 (trade_date, ts_code, score)，断言折间日期零重叠后落盘。
+
+    落盘失败不吞（raise）。不改四方法逻辑与指标计算所用的 combined 帧。
+    """
+    _assert_fold_dates_no_overlap(combined, method=method)
+    if "factor_value" not in combined.columns:
+        raise ValueError(
+            f"OOS combined 缺 factor_value 列，无法写 oos_scores（method={method}）"
+        )
+    scores = combined.select(
+        [
+            pl.col("trade_date").cast(pl.Utf8).alias("trade_date"),
+            pl.col("ts_code").cast(pl.Utf8).alias("ts_code"),
+            pl.col("factor_value").cast(pl.Float64).alias("score"),
+        ]
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scores.write_parquet(path)
+    return path
+
+
 def run_combination_experiment(
     factor_dfs: dict[str, pl.DataFrame],
     ret_df: pl.DataFrame,
@@ -225,6 +278,7 @@ def run_combination_experiment(
     )
 
     rows: list[dict[str, Any]] = []
+    oos_score_paths: dict[str, str] = {}
     importance_df: pl.DataFrame | None = None
     for method in methods:
         combined = _combine(
@@ -232,6 +286,13 @@ def run_combination_experiment(
             ic_cache=ic_cache, z_factor_dfs=z_factor_dfs,
         )
         combined.write_parquet(run_dir / f"combined_{method}.parquet")
+        # A: 各折 test 段组合分数拼成整条 OOS 面板，供 fz combine backtest 消费
+        oos_path = _write_oos_scores(
+            combined,
+            run_dir / "oos_scores" / f"{method}.parquet",
+            method=method,
+        )
+        oos_score_paths[method] = str(oos_path)
         metrics = _evaluate_oos(combined, ret_df)
         rows.append({"method": method, **metrics})
         if method == "lgbm":
@@ -256,6 +317,7 @@ def run_combination_experiment(
             "seed": seed,
             "methods": methods,
             "factors": list(factor_dfs.keys()),
+            "oos_scores": oos_score_paths,
             "cv": {
                 "train_days": cv.train_days,
                 "test_days": cv.test_days,
@@ -271,7 +333,11 @@ def run_combination_experiment(
     (run_dir / "report.md").write_text(
         _render_report(run_id, comparison, importance_df), encoding="utf-8"
     )
-    return {"run_dir": str(run_dir), "comparison": comparison}
+    return {
+        "run_dir": str(run_dir),
+        "comparison": comparison,
+        "oos_scores": oos_score_paths,
+    }
 
 
 def _rank_series(panel: pl.DataFrame) -> pl.Series:

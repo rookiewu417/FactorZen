@@ -37,6 +37,11 @@ DEFAULT_GRAY_IC_FLOOR = 0.008
 DEFAULT_RAW_GRAY_IC_FLOOR = 0.010
 # 组合增量 RankIC 阈值（初值待校准，lift 噪声地板需实测标定）。
 DEFAULT_LIFT_THRESHOLD = 0.001
+# overlay(sleeve 叠加)口径专用阈值：掩码覆盖少数日 × w=0.25,量纲比全截面成员
+# 口径小一个量级,0.001 对其结构性过严。取掩码内置换 null q95=3.35e-4
+# (2026-07-21 校准 500 次,阴性对照双干净,.artifacts/overlay-null-calib.md;
+# q99=4.5e-4;单 session 校准+null 不覆盖 w 选择/多重叠加,用户裁决取 q95)。
+OVERLAY_LIFT_THRESHOLD = 3.35e-4
 # 与库内因子「重复」硬拒阈值：corr > 此值 → library_correlated 一票否决。
 # （0.7, 0.95] 为软信号「库相关持保留」，不否决、挡快速通道、可入 lift 队列。）
 DEFAULT_DUPLICATE_CORR = 0.95

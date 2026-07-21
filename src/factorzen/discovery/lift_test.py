@@ -41,6 +41,7 @@ from factorzen.core.stats import spearman_avg_rank
 from factorzen.discovery.guardrails import (
     DEFAULT_HOLDOUT_MIN_DAYS,
     DEFAULT_LIFT_THRESHOLD,
+    OVERLAY_LIFT_THRESHOLD,
     REJECT_CATEGORY_GRAY_ZONE,
     SLEEVE_SUBSET_MIN_DAYS,
 )
@@ -746,6 +747,8 @@ def lift_admission(
       （区间证据不完整，不再按 0 处理）
     - **admission_ic（裸 IC）为负 → reject**（P1-① 同号门，见下）
     - lift ≥ max(threshold, se_mult × lift_se) 且 lift_second_half > 0 → active
+      （``row["overlay"]`` 为真且调用方未显式改门时，threshold 换
+      ``OVERLAY_LIFT_THRESHOLD=3.35e-4``——overlay 口径量纲校准，见下方注释）
     - lift ≥ 同上门槛但 second_half 为 None 或 ≤ 0 → probation
     - 否则 reject
 
@@ -793,6 +796,13 @@ def lift_admission(
     # SE 非有限 = 区间证据不完整 → reject（不按 0 退化）
     if not np.isfinite(se_val):
         return "reject"
+    # overlay 口径量纲校准：掩码仅覆盖少数交易日 × w=0.25，增量天然比全截面
+    # 成员口径小一个量级；DEFAULT_LIFT_THRESHOLD=0.001 对其结构性过严。
+    # 门取掩码内置换 null q95=3.35e-4（2026-07-21 校准，500 次，阴性对照双干净，
+    # .artifacts/overlay-null-calib.md）。已知边界：单 session 校准；null 不覆盖
+    # w 选择/多重 sleeve 叠加/挖掘选择偏差（q99=4.5e-4，用户裁决取 q95）。
+    if row.get("overlay") and threshold == DEFAULT_LIFT_THRESHOLD:
+        threshold = OVERLAY_LIFT_THRESHOLD
     bar = max(float(threshold), float(se_mult) * se_val)
     if lift_f < bar:
         return "reject"

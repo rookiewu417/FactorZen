@@ -1129,11 +1129,12 @@ def test_known_invalid_excludes_holdout_coverage_failures(tmp_path: Path):
             "reject_reason": "holdout覆盖不足(days=0/需60)",
         },
         {
+            # 正对照：方向反号 → 仍进 known_invalid（非 coverage / 非 ic_too_weak）
             "expression": "rank(vol)",
             "ic_train": 0.001,
             "passed": False,
             "compile_ok": True,
-            "reject_reason": "train_IC 太弱(|0.0010|<0.015)",
+            "reject_reason": "holdout 反号(train=0.0200/holdout=-0.0100)",
         },
     ])
     inv = idx.known_invalid(k=10)

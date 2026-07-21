@@ -453,3 +453,226 @@ def test_librarian_records_sleeve_fields(tmp_path):
     dense_row = next(r for r in rows if r["expression"] == "rank(vol)")
     assert "sleeve_candidate" not in dense_row
     assert dense_row.get("is_sparse") is None or dense_row.get("is_sparse") is not True
+
+
+# ── 6. 二期：事件掩码子集评估 ───────────────────────────────────────────────
+
+def test_event_mask_leaves_registered():
+    """EVENT_MASK_LEAVES 覆盖预告/快报/龙虎榜六叶。"""
+    from factorzen.core.feature_schema import EVENT_MASK_LEAVES
+
+    expected = {
+        "fc_type_score", "fc_surprise", "fc_flag",
+        "express_yoy", "top_list_flag", "top_list_net_buy",
+    }
+    assert set(EVENT_MASK_LEAVES) == expected
+
+
+def test_build_event_leaf_mask_union_of_nonzero_leaves():
+    """掩码 = 交集叶原值非零且非 null 的 (ts_code, trade_date) 并集。"""
+    from factorzen.discovery.evaluation import build_event_leaf_mask
+
+    days = _dates(3)
+    codes = [f"{i:06d}.SZ" for i in range(10)]
+    rows = []
+    for di, dd in enumerate(days):
+        for j, c in enumerate(codes):
+            # 日0: 前 1 只有 fc_flag；日1: 另 1 只有 express_yoy；日2: 无事件
+            fc = 1.0 if (di == 0 and j == 0) else 0.0
+            ey = 2.0 if (di == 1 and j == 1) else 0.0
+            rows.append({
+                "trade_date": dd, "ts_code": c,
+                "fc_flag": fc, "express_yoy": ey,
+            })
+    panel = pl.DataFrame(rows)
+    mask = build_event_leaf_mask(panel, ["fc_flag", "express_yoy"])
+    keys = set(zip(
+        mask["trade_date"].to_list(), mask["ts_code"].to_list(), strict=True,
+    ))
+    assert (days[0], "000000.SZ") in keys
+    assert (days[1], "000001.SZ") in keys
+    assert len(keys) == 2
+
+
+def test_masked_subset_rank_ic_golden_independent_of_value_coverage():
+    """表达式值覆盖率 1.0 时，子集 IC 仍按叶原值掩码算（perfect → 1.0）。
+
+    事件覆盖 40%（≥30 截面）；表达式值全非零（模拟 ts_rank 包装后覆盖 1.0）。
+    掩码内 factor/ret 完美同序 → RankIC mean=1；值稀疏通道会被掩码外噪声稀释。
+    """
+    from factorzen.discovery.evaluation import (
+        build_event_leaf_mask,
+        compute_subset_rank_ic,
+    )
+
+    n_days, n_stocks, nz = 12, 100, 40
+    days = _dates(n_days)
+    codes = [f"{i:06d}.SZ" for i in range(n_stocks)]
+    f_rows, r_rows, p_rows = [], [], []
+    for dd in days:
+        for j, c in enumerate(codes):
+            on_event = j < nz
+            if on_event:
+                fv, rv, flag = float(j + 1), float(j + 1), 1.0
+            else:
+                fv, rv, flag = float(1000 + j), float((j * 7) % 97), 0.0
+            f_rows.append({"trade_date": dd, "ts_code": c, "factor_value": fv})
+            r_rows.append({"trade_date": dd, "ts_code": c, "fwd_ret_1d": rv})
+            p_rows.append({"trade_date": dd, "ts_code": c, "fc_flag": flag})
+    fdf = pl.DataFrame(f_rows)
+    ret = pl.DataFrame(r_rows)
+    panel = pl.DataFrame(p_rows)
+    assert _nonzero_coverage(fdf) == pytest.approx(1.0)
+    assert _nonzero_coverage(fdf) >= SPARSE_COVERAGE_THRESHOLD
+
+    mask = build_event_leaf_mask(panel, ["fc_flag"])
+    assert mask.height == n_days * nz
+
+    ic_m, n_m = compute_subset_rank_ic(fdf, ret, min_samples=30, mask_keys=mask)
+    assert n_m == n_days
+    assert ic_m == pytest.approx(1.0, abs=1e-9)
+
+    # 无掩码的值子集（全非零）= 全截面，被噪声稀释
+    ic_v, n_v = compute_subset_rank_ic(fdf, ret, min_samples=30)
+    assert n_v == n_days
+    assert abs(ic_v) < 0.95
+
+
+def test_is_sleeve_lift_candidate_mask_trigger_without_is_sparse():
+    """掩码触发（subset_mask_leaves 非空）即使 is_sparse=False 也可旁路。"""
+    cand = {
+        "is_sparse": False,  # 值覆盖被包装成 1.0
+        "subset_mask_leaves": ["fc_flag"],
+        "subset_ic_train": 0.05,
+        "subset_ic_holdout": 0.04,
+        "subset_n_days_train": 50,
+    }
+    assert is_sleeve_lift_candidate(cand) is True
+    # 无掩码且不稀疏 → 仍拒
+    assert is_sleeve_lift_candidate({
+        **cand, "subset_mask_leaves": None,
+    }) is False
+    assert is_sleeve_lift_candidate({
+        **cand, "subset_mask_leaves": [],
+    }) is False
+
+
+def test_evaluate_expressions_event_mask_vs_dense_non_event():
+    """含事件叶 → 掩码触发 + subset_mask_leaves；不含事件叶 → 掩码字段空、稠密不变。
+
+    事件覆盖 5%（值稀疏期盲点）；ts_rank 包装后值覆盖 → 1.0；掩码仍触发。
+    掩码日截面 n=5 < 30 → subset_n_days 可为 0，但 subset_mask_leaves 必须非空。
+    """
+    import datetime as dt
+
+    from factorzen.discovery.evaluation import evaluate_expressions
+    from factorzen.discovery.scoring import DataBundle
+
+    rng = np.random.default_rng(42)
+    days, d = [], dt.date(2022, 1, 3)
+    while len(days) < 80:
+        if d.weekday() < 5:
+            days.append(d)
+        d += dt.timedelta(days=1)
+    n_stocks = 100
+    codes = [f"{i:06d}.SZ" for i in range(n_stocks)]
+    # 每日前 5 只有事件（5%）；乘 close 再 ts_rank → 值覆盖 1.0
+    nz = 5
+    rows = []
+    for c_i, c in enumerate(codes):
+        px = 10.0
+        for dd in days:
+            px *= 1 + rng.standard_normal() * 0.02
+            on = c_i < nz
+            rows.append({
+                "trade_date": dd, "ts_code": c,
+                "close": px,
+                "open": px * 0.99, "high": px * 1.01, "low": px * 0.98,
+                "vol": float(abs(rng.standard_normal()) * 1e6 + 1e5),
+                "amount": float(abs(rng.standard_normal()) * 1e7 + 1e6),
+                "fc_flag": 1.0 if on else 0.0,
+                "express_yoy": (0.1 * (c_i + 1)) if on else 0.0,
+            })
+    daily = pl.DataFrame(rows)
+    bundle = DataBundle.build(daily, train_ratio=0.7)
+
+    # 事件叶 + 包装：ts_rank 后值覆盖趋近 1.0，一期 is_sparse 会盲
+    event_expr = "ts_rank(mul(express_yoy, close), 5)"
+    res_e = evaluate_expressions([event_expr], daily, bundle)
+    assert len(res_e) == 1
+    re = res_e[0]
+    assert re["compile_ok"] is True, re.get("error")
+    assert re["ic_train"] is not None
+    assert re["subset_mask_leaves"] is not None
+    assert set(re["subset_mask_leaves"]) == {"express_yoy"}
+    # 掩码触发：subset_n_days_train 有定义（可为 0：日截面 <30）
+    assert re.get("subset_n_days_train") is not None
+    # 值覆盖被包装抬高 → 一期 is_sparse 不触发
+    assert re["nonzero_coverage"] is not None
+    assert re["nonzero_coverage"] >= SPARSE_COVERAGE_THRESHOLD
+    assert re["is_sparse"] is False
+
+    # 无事件叶：掩码不触发
+    dense_expr = "rank(close)"
+    res_d = evaluate_expressions([dense_expr], daily, bundle)
+    rd = res_d[0]
+    assert rd["compile_ok"] is True
+    assert rd.get("subset_mask_leaves") in (None, [])
+    assert rd["is_sparse"] is False
+    assert rd["subset_ic_train"] is None
+
+
+def test_strong_mask_subset_enters_lift_queue_semantics():
+    """强掩码子集 + 主门不过 → lift_queue + sleeve_candidate（与一期旁路同形态）。"""
+    cand = {
+        "is_sparse": False,
+        "subset_mask_leaves": ["express_yoy"],
+        "subset_ic_train": 0.06,
+        "subset_ic_holdout": 0.05,
+        "subset_n_days_train": 55,
+    }
+    assert is_sleeve_lift_candidate(cand) is True
+    reject_category = None
+    sleeve_candidate = False
+    passed_main = False
+    if not passed_main and is_sleeve_lift_candidate(cand):
+        reject_category = REJECT_CATEGORY_LIFT_QUEUE
+        sleeve_candidate = True
+    assert reject_category == REJECT_CATEGORY_LIFT_QUEUE
+    assert sleeve_candidate is True
+    assert passed_main is False
+
+
+# ── 7. 二期：死因 ic_too_weak ───────────────────────────────────────────────
+
+def test_classify_reject_category_ic_too_weak():
+    from factorzen.discovery.guardrails import (
+        REJECT_CATEGORY_HOLDOUT_COVERAGE,
+        REJECT_CATEGORY_IC_TOO_WEAK,
+        classify_reject_category,
+    )
+
+    assert classify_reject_category(
+        ["残差IC太弱(|0.0020|<0.010)"]
+    ) == REJECT_CATEGORY_IC_TOO_WEAK
+    assert classify_reject_category(
+        ["train_IC 太弱(|0.0010|<0.015)"]
+    ) == REJECT_CATEGORY_IC_TOO_WEAK
+    # 反号 / 无信号 → None（方向证据，维持进 known_invalid）
+    assert classify_reject_category(
+        ["holdout 反号(train=0.0200/holdout=-0.0100)"]
+    ) is None
+    assert classify_reject_category(
+        ["残差holdout反号(train=0.02/holdout=-0.01)"]
+    ) is None
+    assert classify_reject_category(
+        ["holdout无信号(train=0.0200/holdout=0.0000)"]
+    ) is None
+    # 覆盖不足优先于太弱
+    assert classify_reject_category(
+        ["train_IC 太弱(|0.0010|<0.015)", "holdout覆盖不足(days=10/需60)"]
+    ) == REJECT_CATEGORY_HOLDOUT_COVERAGE
+    # 反号优先于太弱（有方向证据 → 仍可 known_invalid）
+    assert classify_reject_category(
+        ["train_IC 太弱(|0.0010|<0.015)", "holdout 反号(train=0.0010/holdout=-0.0020)"]
+    ) is None

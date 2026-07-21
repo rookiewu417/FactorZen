@@ -264,6 +264,41 @@ def test_known_invalid_excludes_rows_without_ic(tmp_path):
     seen = idx.seen_expressions()
     assert "warmup_short" in seen and "dup_fp" in seen
 
+
+def test_known_invalid_excludes_ic_too_weak(tmp_path):
+    """弱 IC（ic_too_weak）≠ 方向无效：不进 known_invalid；反号仍进。"""
+    from factorzen.discovery.guardrails import REJECT_CATEGORY_IC_TOO_WEAK
+
+    idx = _idx(tmp_path)
+    idx.append([
+        {
+            "expression": "rank(fc_flag)",
+            "passed": False,
+            "compile_ok": True,
+            "ic_train": 0.002,
+            "reject_category": REJECT_CATEGORY_IC_TOO_WEAK,
+            "reject_reason": "残差IC太弱(|0.0020|<0.010)",
+        },
+        {
+            "expression": "rank(vol)",
+            "passed": False,
+            "compile_ok": True,
+            "ic_train": 0.001,
+            "reject_reason": "holdout 反号(train=0.0200/holdout=-0.0100)",
+        },
+    ])
+    inv = idx.known_invalid(k=10)
+    assert "rank(fc_flag)" not in inv
+    assert "rank(vol)" in inv
+    # 不进 known_lift_rejects（独立通道只认 lift_rejected）
+    lift_r = idx.known_lift_rejects(k=10)
+    assert not any(r["expression"] == "rank(fc_flag)" for r in lift_r)
+    # leaf_stats 仍计 n_exprs（尝试了；只是弱，不是 coverage 缺数）
+    stats = idx.leaf_stats(["fc_flag", "vol"])
+    assert stats["fc_flag"]["n_exprs"] == 1
+    assert stats["fc_flag"]["n_coverage_fail"] == 0
+    assert stats["fc_flag"]["n_passed"] == 0
+
 # ==== 来自 test_experiment_index_concurrency.py ====
 _PER_PROC = 40
 

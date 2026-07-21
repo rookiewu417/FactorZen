@@ -139,4 +139,10 @@ EXPRESS_FEATURES: set[str] = {"express_yoy"}
 # 事件 fill-0 叶合集：leaf_health 按源覆盖审计，不按值分布稀疏误杀
 EVENT_FILL0_FEATURES: set[str] = FORECAST_FEATURES | EXPRESS_FEATURES
 
+# 事件掩码子集评估叶：表达式引用任一即触发掩码通道（叶原值非零并集，与包装无关）。
+# 含预告/快报 fill-0 + 龙虎榜事件叶；值稀疏（is_sparse）仍作无事件叶时的回退。
+EVENT_MASK_LEAVES: frozenset[str] = frozenset(
+    FORECAST_FEATURES | EXPRESS_FEATURES | TOPLIST_FEATURES
+)
+
 FLOW_FEATURES: set[str] = {"net_mf_amount", "north_ratio"} | MARGIN_FEATURES | TOPLIST_FEATURES

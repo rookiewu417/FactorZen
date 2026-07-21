@@ -40,6 +40,8 @@ class AttemptRecord:
     subset_n_days_train: int | None = None
     subset_ic_holdout: float | None = None
     subset_n_days_holdout: int | None = None
+    # 事件掩码触发叶列表（二期；None/[] = 未走掩码通道）
+    subset_mask_leaves: list[str] | None = None
     # sleeve 旁路进 lift 队列标记（不直接 passed；lift 层零改）
     sleeve_candidate: bool = False
 

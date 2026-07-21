@@ -1,8 +1,12 @@
-"""library provider：factor_library expression 型记录 → daily registry 动态注入。
+"""library provider：factor_library + factor_store → daily registry 动态注入。
 
 放在 discovery 侧的原因（架构约束）：daily 是底层能力层，不许反向依赖 discovery
 （daily→discovery→daily 成环）；本模块自身依赖 discovery.factor / factor_library，
 而 discovery→daily 边已存在（ExpressionFactor 继承 DailyFactor）。
+
+- expression 型：从 jsonl 动态生成 ExpressionFactor 子类
+- python 型：从 ``workspace/factor_store/<market>/<name>/factor.py`` 加载
+- 兼容：仍扫描旧 ``workspace/factors/**``（registry 包路径），并打 DeprecationWarning
 """
 from __future__ import annotations
 
@@ -11,16 +15,24 @@ from factorzen.core.logger import get_logger
 logger = get_logger(__name__)
 
 
-def load_library_factors(market: str = "ashare", root: str | None = None) -> int:
-    """从 factor_library 注入 expression 型记录到 daily registry（显式调用，无 import 副作用）。
+def load_library_factors(
+    market: str = "ashare",
+    root: str | None = None,
+    *,
+    store_root: str | None = None,
+) -> int:
+    """从 factor_library 注入 expression 型 + 从 factor_store 注入 python 型。
 
-    - 只注册 kind=expression（python 型本就在 registry，不重复）
-    - status 不过滤（correlated/probation 也可 run，复现用途）
+    - expression：kind=expression，status 不过滤（correlated/probation 也可 run）
+    - python：扫描 factor_store 下 kind=python 的 factor.py
     - builtin/workspace 同名优先：register(override=False) 让位并 warning
+    - 旧 workspace/factors 路径：兼容扫描 + DeprecationWarning
     - 返回成功注册数
 
     约束：不在模块 import 时自动执行，避免测试污染。
     """
+    import contextlib
+
     from factorzen.daily.factors.registry import _registry
     from factorzen.discovery.factor import ExpressionFactor, lookback_for_expression
     from factorzen.discovery.factor_library import (
@@ -30,12 +42,19 @@ def load_library_factors(market: str = "ashare", root: str | None = None) -> int
         default_name_for_expression,
         load_library,
     )
+    from factorzen.discovery.factor_store import (
+        register_python_factors_from_store,
+        store_root_for_library,
+        warn_legacy_workspace_factors,
+    )
 
     lib_root = root if root is not None else DEFAULT_ROOT
+    s_root = store_root if store_root is not None else store_root_for_library(lib_root)
+
     records = load_library(market, root=lib_root)
     n_ok = 0
     for r in records:
-        # python 型已由包扫描进 registry；expression 哨兵旧行也跳过
+        # python 型走 factor_store 扫描；expression 哨兵旧行也跳过
         if _is_python_record(r) or r.kind != "expression":
             continue
         expr = (r.expression or "").strip()
@@ -69,4 +88,15 @@ def load_library_factors(market: str = "ashare", root: str | None = None) -> int
         )
         if _registry.register(cls, override=False):
             n_ok += 1
+
+    # python 型：factor_store 扫描（kind=python 的 factor.py）
+    try:
+        n_ok += register_python_factors_from_store(s_root, market=market, override=False)
+    except Exception as e:
+        logger.warning(f"register_python_factors_from_store 跳过: {e}")
+
+    # 旧 workspace/factors 兼容扫描已由 registry.discover 完成；此处打弃用警告
+    with contextlib.suppress(Exception):
+        warn_legacy_workspace_factors()
+
     return n_ok

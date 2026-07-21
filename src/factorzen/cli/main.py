@@ -1203,6 +1203,73 @@ def _cmd_factor_library_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_factor_library_store_sync(args: argparse.Namespace) -> int:
+    """从 jsonl 同步 factor_store 三件套（meta + factor.py + 可选 parquet）。"""
+    import time
+
+    from factorzen.discovery import factor_library as fl
+    from factorzen.discovery import factor_store as fs
+
+    market = args.market
+    lib_root = getattr(args, "lib_root", None) or fl.DEFAULT_ROOT
+    store_root = getattr(args, "root", None) or fs.DEFAULT_ROOT
+    only_raw = getattr(args, "only", None)
+    only = [x.strip() for x in only_raw.split(",") if x.strip()] if only_raw else None
+    materialize = not bool(getattr(args, "no_materialize", False))
+    print(
+        f"[factor-library store sync] market={market} root={store_root} "
+        f"lib_root={lib_root} materialize={materialize}"
+        + (f" only={only}" if only else " only=ALL"),
+        flush=True,
+    )
+    t0 = time.perf_counter()
+    stats = fs.sync_store(
+        market,
+        root=store_root,
+        only=only,
+        materialize=materialize,
+        lib_root=lib_root,
+    )
+    elapsed = time.perf_counter() - t0
+    print(
+        f"[factor-library store sync] done in {elapsed:.1f}s: "
+        f"written={stats.get('written')} materialized={stats.get('materialized')} "
+        f"skipped_materialize={stats.get('skipped_materialize')} "
+        f"errors={len(stats.get('errors') or [])} total={stats.get('total')}",
+        flush=True,
+    )
+    for err in (stats.get("errors") or [])[:20]:
+        print(f"  ! {err}", flush=True)
+    return 1 if stats.get("errors") else 0
+
+
+def _cmd_factor_library_store_verify(args: argparse.Namespace) -> int:
+    """校验 meta.expression 与 jsonl 一致。"""
+    from factorzen.discovery import factor_library as fl
+    from factorzen.discovery import factor_store as fs
+
+    market = args.market
+    lib_root = getattr(args, "lib_root", None) or fl.DEFAULT_ROOT
+    store_root = getattr(args, "root", None) or fs.DEFAULT_ROOT
+    report = fs.verify_store(market, root=store_root, lib_root=lib_root)
+    n_drift = len(report.get("drifts") or [])
+    n_miss = len(report.get("missing_in_store") or [])
+    n_extra = len(report.get("missing_in_ledger") or [])
+    print(
+        f"[factor-library store verify] market={market} ok={report.get('ok')} "
+        f"checked={report.get('n_checked')} drifts={n_drift} "
+        f"missing_in_store={n_miss} missing_in_ledger={n_extra}",
+        flush=True,
+    )
+    for d in (report.get("drifts") or [])[:50]:
+        print(f"  DRIFT {d}", flush=True)
+    for n in (report.get("missing_in_store") or [])[:20]:
+        print(f"  MISSING_STORE {n}", flush=True)
+    for n in (report.get("missing_in_ledger") or [])[:20]:
+        print(f"  EXTRA_STORE {n}", flush=True)
+    return 0 if report.get("ok") else 1
+
+
 def _cmd_factor_library_tag_legacy(args: argparse.Namespace) -> int:
     """把 evidence_tier 为 None 的记录落盘标 legacy（幂等，不改 status）。"""
     from factorzen.discovery import factor_library as fl

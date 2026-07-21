@@ -1452,6 +1452,14 @@ def upsert(
 
     _save_library(market, list(by_expr.values()), root=root)
     render_markdown(market, root=root)
+    # 资产库三件套：入库路径只写 meta+py，物化交给显式 store sync
+    if affected:
+        try:
+            from factorzen.discovery.factor_store import sync_records_after_upsert
+
+            sync_records_after_upsert(affected, market=market, lib_root=root, materialize=False)
+        except Exception as exc:
+            _LOG.warning("factor_store sync after upsert failed: %s: %s", type(exc).__name__, exc)
     return res
 
 
@@ -1591,6 +1599,8 @@ def upsert_lift_admissions(
     # 本批实际写入的准入记录（reject 降级 / single 轨跳过的不进）——去相关的 affected 集
     admitted: list[FactorRecord] = []
     admitted_exprs: set[str] = set()
+    # 凡写回 by_expr 的记录（准入 + demote），供资产库 meta 同步
+    store_touched: list[FactorRecord] = []
     # expr → 该记录当初累加的计数键；被去相关改判 correlated 时按这个键回退，
     # 不靠事后从 status/allow_active 反推（forward-confirmed 路径会反推错）。
     admitted_counter: dict[str, str] = {}
@@ -1650,6 +1660,7 @@ def upsert_lift_admissions(
                     prev.updated_at = now
                     by_expr[norm] = prev
                     dirty = True
+                    store_touched.append(prev)
                     out["demoted_no_lift"] = out.get("demoted_no_lift", 0) + 1
                 else:
                     # 无 prev / single 轨 / 已是 no_lift 等：不改写，计 rejected
@@ -1731,6 +1742,7 @@ def upsert_lift_admissions(
 
             by_expr[norm] = rec
             dirty = True
+            store_touched.append(rec)
             # 已 forward-confirmed 的 active **不进去相关的 affected 集**：它们会落进
             # `unchanged` 且 status=="active"，即仍在比较池里挡住重复的新候选，但自身
             # 不会被贪心下调成 correlated——否则一条高 lift 的新候选就能撤销一个已确认
@@ -1801,6 +1813,29 @@ def upsert_lift_admissions(
     if dirty:
         _save_library(market, list(by_expr.values()), root=root)
         render_markdown(market, root=root)
+        # 资产库三件套：lift 准入后同步 meta+py（不物化）
+        try:
+            from factorzen.discovery.factor_store import sync_records_after_upsert
+
+            # admitted 可能为空（仅 demote）；store_touched 含准入+降级+去相关后 status
+            # 去相关可能改写 admitted 的 status → 用 admitted 最新状态优先
+            by_name: dict[str, FactorRecord] = {}
+            for r in store_touched:
+                by_name[r.expression] = r
+            for r in admitted:
+                by_name[r.expression] = r
+            sync_records_after_upsert(
+                list(by_name.values()),
+                market=market,
+                lib_root=root,
+                materialize=False,
+            )
+        except Exception as exc:
+            _LOG.warning(
+                "factor_store sync after upsert_lift_admissions failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
     return out
 
 

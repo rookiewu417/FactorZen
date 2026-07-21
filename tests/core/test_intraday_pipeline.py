@@ -1215,13 +1215,19 @@ def test_leaf_schema_contract_suite():
 
     # -- 原 test_leaf_features_key_order_prefix_unchanged --
     def _section_2_test_leaf_features_key_order_prefix_unchanged():
-        from factorzen.core.feature_schema import LEAF_FEATURES
+        from factorzen.core.feature_schema import EVENT_FILL0_FEATURES, LEAF_FEATURES
 
         keys = list(LEAF_FEATURES.keys())
         n = len(_PRE_CHANGE_LEAF_KEYS)
         assert keys[:n] == _PRE_CHANGE_LEAF_KEYS
-        # 新叶子全部在旧键之后
-        assert all(k.startswith("i_") for k in keys[n:])
+        # 旧 40 键之后：先 i_* 日内叶，再事件叶等末尾追加（不许改旧序）
+        rest = keys[n:]
+        assert all(k.startswith("i_") or k in EVENT_FILL0_FEATURES for k in rest)
+        # 事件叶必须在 i_* 之后（追加在末尾）
+        event_idxs = [i for i, k in enumerate(rest) if k in EVENT_FILL0_FEATURES]
+        i_idxs = [i for i, k in enumerate(rest) if k.startswith("i_")]
+        if event_idxs and i_idxs:
+            assert min(event_idxs) > max(i_idxs)
 
     _section_2_test_leaf_features_key_order_prefix_unchanged()
 

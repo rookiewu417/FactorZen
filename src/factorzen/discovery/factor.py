@@ -18,7 +18,9 @@ from factorzen.discovery.expression import (
 from factorzen.discovery.intraday_expr import attach_expr_leaves, load_expr_registry
 from factorzen.discovery.operators import (
     BASIC_FEATURES,
+    EXPRESS_FEATURES,
     FLOW_FEATURES,
+    FORECAST_FEATURES,
     FUNDAMENTAL_FEATURES,
     HOLDER_FEATURES,
     LEAF_FEATURES,
@@ -113,6 +115,13 @@ class ExpressionFactor(DailyFactor):
                     daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
             from factorzen.daily.data.flows import attach_flows
             daily = attach_flows(daily)
+        # 业绩预告/快报事件叶（与 prepare_mining_daily 共用 attach_*，防漂移）
+        if self._feats & FORECAST_FEATURES:
+            from factorzen.daily.data.events import attach_forecast
+            daily = attach_forecast(daily)
+        if self._feats & EXPRESS_FEATURES:
+            from factorzen.daily.data.events import attach_express
+            daily = attach_express(daily)
         # builtin i_*：与挖掘路径共用 attach_intraday
         from factorzen.core.feature_schema import INTRADAY_FEATURES
         if self._feats & INTRADAY_FEATURES:

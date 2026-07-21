@@ -88,6 +88,11 @@ LEAF_FEATURES: dict[str, str] = {
     "i_limit_up_seal_share": "i_limit_up_seal_share",
     "i_limit_up_open_count": "i_limit_up_open_count",
     "i_limit_up_first_touch": "i_limit_up_first_touch",
+    # 业绩预告/快报事件叶（fill-0 事件窗；必须追加在末尾，既有键相对顺序不可变）
+    "fc_type_score": "fc_type_score",
+    "fc_surprise": "fc_surprise",
+    "fc_flag": "fc_flag",
+    "express_yoy": "express_yoy",
 }
 
 BASIC_FEATURES: set[str] = {
@@ -124,5 +129,14 @@ MARGIN_FEATURES: set[str] = {
 }
 
 TOPLIST_FEATURES: set[str] = {"top_list_net_buy", "top_list_flag"}
+
+# 业绩预告事件叶（ann_date PIT + 20 交易日窗 fill-0）
+FORECAST_FEATURES: set[str] = {"fc_type_score", "fc_surprise", "fc_flag"}
+
+# 业绩快报事件叶
+EXPRESS_FEATURES: set[str] = {"express_yoy"}
+
+# 事件 fill-0 叶合集：leaf_health 按源覆盖审计，不按值分布稀疏误杀
+EVENT_FILL0_FEATURES: set[str] = FORECAST_FEATURES | EXPRESS_FEATURES
 
 FLOW_FEATURES: set[str] = {"net_mf_amount", "north_ratio"} | MARGIN_FEATURES | TOPLIST_FEATURES

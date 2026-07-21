@@ -12,7 +12,7 @@ from typing import Any
 import polars as pl
 
 from factorzen.daily.evaluation.ic_analysis import _MIN_CROSS_SAMPLES
-from factorzen.discovery.operators import LEAF_FEATURES
+from factorzen.discovery.operators import EVENT_FILL0_FEATURES, LEAF_FEATURES
 
 DEFAULT_LEAF_HOLDOUT_MIN_COVERAGE = 0.5
 
@@ -29,6 +29,11 @@ def leaf_holdout_coverage(
 
     ``holdout_start``：与 ``trade_date`` 可比较的边界（date / datetime / 字面量）。
     列缺失 → 覆盖率 0.0。holdout 无交易日 → 全部 0.0。
+
+    **事件 fill-0 叶**（``EVENT_FILL0_FEATURES``）：按**数据源是否成功物化为非 null**
+    审计，不按非零值分布。有源时 attach 窗外 fill 0 → 非 null 即源覆盖；
+    空源全 null → coverage 0。避免「稀疏事件非零」被误判为死叶（top_list 值分布
+    隐患的对照修复）。
     """
     lm = LEAF_FEATURES if leaf_map is None else leaf_map
     if daily.is_empty() or "trade_date" not in daily.columns:
@@ -48,8 +53,13 @@ def leaf_holdout_coverage(
         if not col or col not in hold.columns:
             out[leaf] = 0.0
             continue
-        # NaN ≠ null：先 fill_nan 再判非空，与 IC 路径 is_finite 口径一致
+        # NaN ≠ null：先 fill_nan 再判非空，与 IC 路径 is_finite 口径一致。
+        # 事件 fill-0 叶（EVENT_FILL0_FEATURES）同样按非 null 计：空源全 null→0，
+        # 有源窗外 fill 0→高覆盖。**禁止**改成非零计数（会误杀稀疏事件叶）。
         series = pl.col(col).fill_nan(None)
+        if leaf in EVENT_FILL0_FEATURES:
+            # 与普通叶同一非空口径；分支仅作文档化锚点（防误改值分布判定）
+            pass
         per = (
             hold.group_by("trade_date")
             .agg(series.is_not_null().sum().alias("_n"))

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import polars as pl
 
 from factorzen.core.validation import require_columns
+from factorzen.daily.evaluation.grouping import assign_quantile_groups
 
 
 @dataclass
@@ -39,23 +40,8 @@ def compute_turnover(
         n_groups: 分组数
     """
     require_columns(factor_df, ["trade_date", "ts_code", factor_col], context="compute_turnover")
-    # 只保留有效因子值参与截面 rank/分组。polars 中 NaN 不是 null，且 rank 把
-    # NaN 排为最大值——未过滤时 NaN 股进最高组并抬高 max_rank，污染迁移/换手。
-    factor_df = factor_df.filter(
-        pl.col(factor_col).is_not_null() & pl.col(factor_col).is_not_nan()
-    )
-    # 每日分组
-    df = (
-        factor_df.with_columns(
-            pl.col(factor_col).rank("ordinal", descending=False).over("trade_date").alias("_rank")
-        )
-        .with_columns(
-            ((pl.col("_rank") - 1) * n_groups // pl.col("_rank").max().over("trade_date"))
-            .cast(pl.Int32)
-            .alias("group")
-        )
-        .drop("_rank")
-    )
+    # NaN/null 过滤与 ordinal 分组统一走 assign_quantile_groups（防 rank 把 NaN 排最大）
+    df = assign_quantile_groups(factor_df, factor_col=factor_col, n_groups=n_groups)
 
     # 按股票排序，计算上一期分组
     df = df.sort(["ts_code", "trade_date"]).with_columns(

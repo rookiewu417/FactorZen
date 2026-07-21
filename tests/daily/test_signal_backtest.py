@@ -1,0 +1,467 @@
+"""信号层向量化回测（signal_backtest）单测。
+
+离线合成数据；期望值独立手算，禁止用被测 helper 自记期望。
+"""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import polars as pl
+import pytest
+
+from factorzen.daily.evaluation.advanced.monotonicity import compute_monotonicity
+from factorzen.daily.evaluation.grouping import assign_quantile_groups
+from factorzen.daily.evaluation.signal_backtest import run_signal_backtest
+from factorzen.daily.evaluation.turnover import compute_turnover
+
+# ---------------------------------------------------------------------------
+# 手算金标准：6 股 × 4 日 × 3 组
+# ---------------------------------------------------------------------------
+# 因子值固定 0..5 → ordinal rank 1..6，n_groups=3：
+#   group = (rank-1)*3//6 → g0:{s0,s1}, g1:{s2,s3}, g2:{s4,s5}
+# 各日前向收益（手算组均 / ls）：
+#
+# day0: rets=[0.01,0.02,0.03,0.04,0.05,0.06]
+#   g0=(0.01+0.02)/2=0.015; g1=0.035; g2=0.055; ls=0.055-0.015=0.040
+# day1: rets=[0.00,0.02,0.04,0.06,0.08,0.10]
+#   g0=0.01; g1=0.05; g2=0.09; ls=0.08
+# day2: rets=[-0.01,0.01,0.00,0.02,0.03,0.05]
+#   g0=0.00; g1=0.01; g2=0.04; ls=0.04
+# day3: rets=[0.02,0.00,0.01,0.03,0.04,0.06]
+#   g0=0.01; g1=0.02; g2=0.05; ls=0.04
+# ---------------------------------------------------------------------------
+
+_GOLD_DATES = [date(2024, 1, 2) + timedelta(days=i) for i in range(4)]
+_GOLD_STOCKS = [f"s{i}" for i in range(6)]
+_GOLD_FACTOR = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+_GOLD_RETS = [
+    [0.01, 0.02, 0.03, 0.04, 0.05, 0.06],
+    [0.00, 0.02, 0.04, 0.06, 0.08, 0.10],
+    [-0.01, 0.01, 0.00, 0.02, 0.03, 0.05],
+    [0.02, 0.00, 0.01, 0.03, 0.04, 0.06],
+]
+# 手算期望组均值 [day][group]
+_GOLD_GROUP_MEANS = [
+    [0.015, 0.035, 0.055],
+    [0.01, 0.05, 0.09],
+    [0.00, 0.01, 0.04],
+    [0.01, 0.02, 0.05],
+]
+_GOLD_LS = [0.04, 0.08, 0.04, 0.04]
+
+
+def _gold_frames() -> tuple[pl.DataFrame, pl.DataFrame]:
+    f_rows: list[dict] = []
+    r_rows: list[dict] = []
+    for di, d in enumerate(_GOLD_DATES):
+        for si, code in enumerate(_GOLD_STOCKS):
+            f_rows.append(
+                {"trade_date": d, "ts_code": code, "factor_clean": _GOLD_FACTOR[si]}
+            )
+            r_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": code,
+                    "fwd_ret_1d": _GOLD_RETS[di][si],
+                }
+            )
+    return pl.DataFrame(f_rows), pl.DataFrame(r_rows)
+
+
+def test_signal_backtest_suite():
+    """手算金标准 / 分组公式 / 换手成本 / 退化守卫 / NaN 防线 / 口径透传 / 重构等价。"""
+
+    # -- 手算金标准 --
+    def _section_gold_standard():
+        factor_df, fwd = _gold_frames()
+        res = run_signal_backtest(
+            factor_df, fwd, n_groups=3, cost_bps=0.0, factor_name="gold"
+        )
+        assert res.meta.get("return_basis") == "gross_signal_level"
+        assert res.meta.get("dropped_days") == 0
+        assert not res.group_returns.is_empty()
+        assert not res.ls_returns.is_empty()
+
+        # 组均值逐日逐组
+        gr = res.group_returns.sort(["trade_date", "group"])
+        for di, d in enumerate(_GOLD_DATES):
+            d_iso = d.isoformat()
+            day = gr.filter(pl.col("trade_date") == d_iso)
+            assert day.height == 3, f"day {d_iso} groups={day.height}"
+            for g in range(3):
+                got = float(day.filter(pl.col("group") == g)["ret"][0])
+                exp = _GOLD_GROUP_MEANS[di][g]
+                assert got == pytest.approx(exp, abs=1e-12), (
+                    f"group mean d={d_iso} g={g}: got={got} exp={exp}"
+                )
+                n = int(day.filter(pl.col("group") == g)["n_stocks"][0])
+                assert n == 2
+
+        # ls_ret_gross 序列
+        ls = res.ls_returns.sort("trade_date")
+        got_ls = ls["ls_ret_gross"].to_list()
+        assert len(got_ls) == 4
+        for i, (g, e) in enumerate(zip(got_ls, _GOLD_LS, strict=True)):
+            assert g == pytest.approx(e, abs=1e-12), f"ls[{i}]: got={g} exp={e}"
+
+        # cost_bps=0 → net == gross 逐位
+        for g, n in zip(
+            ls["ls_ret_gross"].to_list(), ls["ls_ret_net"].to_list(), strict=True
+        ):
+            assert g == pytest.approx(n, abs=1e-15)
+
+        # NAV 手算：cumprod(1+ret)，首日=1+ret
+        # ls: 0.04,0.08,0.04,0.04 → nav: 1.04, 1.04*1.08, ...
+        nav_exp = []
+        acc = 1.0
+        for r in _GOLD_LS:
+            acc *= 1.0 + r
+            nav_exp.append(acc)
+        got_nav = res.ls_nav.sort("trade_date")["nav_gross"].to_list()
+        for g, e in zip(got_nav, nav_exp, strict=True):
+            assert g == pytest.approx(e, abs=1e-12)
+
+        # summary 末行警告
+        text = res.summary()
+        assert "信号层毛收益" in text
+        assert "不可直接当可实现收益汇报" in text
+
+    _section_gold_standard()
+
+    # -- 分组公式对照（含并列） --
+    def _section_group_formula():
+        # 截面 7 股，含并列因子值；n_groups=3
+        # factor: [1, 1, 2, 3, 3, 4, 5] → ordinal rank 打散并列（稳定序取决于行序）
+        codes = [f"t{i}" for i in range(7)]
+        factors = [1.0, 1.0, 2.0, 3.0, 3.0, 4.0, 5.0]
+        df = pl.DataFrame(
+            {
+                "trade_date": [date(2024, 2, 1)] * 7,
+                "ts_code": codes,
+                "factor_clean": factors,
+            }
+        )
+        # 独立重写分组公式（不调用 assign_quantile_groups）
+        ranked = df.with_columns(
+            pl.col("factor_clean")
+            .rank("ordinal", descending=False)
+            .over("trade_date")
+            .alias("_rank")
+        )
+        expected = ranked.with_columns(
+            ((pl.col("_rank") - 1) * 3 // pl.col("_rank").max().over("trade_date"))
+            .cast(pl.Int32)
+            .alias("group")
+        ).select(["ts_code", "group"]).sort("ts_code")
+
+        got = (
+            assign_quantile_groups(df, n_groups=3)
+            .select(["ts_code", "group"])
+            .sort("ts_code")
+        )
+        assert got.equals(expected)
+
+        # 各组大小差 ≤ 1
+        sizes = got.group_by("group").len().sort("group")["len"].to_list()
+        assert max(sizes) - min(sizes) <= 1
+        assert set(got["group"].to_list()) == {0, 1, 2}
+
+    _section_group_formula()
+
+    # -- 换手与成本 --
+    def _section_turnover_cost():
+        # 场景 A：两日 top/bottom 完全换仓
+        # n_groups=3, 6 股；g0={s0,s1}, g2={s4,s5}
+        # day0 factor 0..5；day1 反转 5..0 → top 从 {s4,s5} 换成 {s0,s1}
+        d0, d1 = date(2024, 3, 1), date(2024, 3, 2)
+        f_rows = []
+        r_rows = []
+        for d, factors in (
+            (d0, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]),
+            (d1, [5.0, 4.0, 3.0, 2.0, 1.0, 0.0]),
+        ):
+            for si in range(6):
+                f_rows.append(
+                    {
+                        "trade_date": d,
+                        "ts_code": f"s{si}",
+                        "factor_clean": factors[si],
+                    }
+                )
+                r_rows.append(
+                    {
+                        "trade_date": d,
+                        "ts_code": f"s{si}",
+                        "fwd_ret_1d": 0.01 * (si + 1),
+                    }
+                )
+        factor_df = pl.DataFrame(f_rows)
+        fwd = pl.DataFrame(r_rows)
+        cost_bps = 10.0  # 10bp
+        res = run_signal_backtest(
+            factor_df, fwd, n_groups=3, cost_bps=cost_bps, factor_name="to_flip"
+        )
+        ls = res.ls_returns.sort("trade_date")
+        assert ls.height == 2
+
+        # 首日建仓：每腿 turnover=1.0 → ls_turnover=2.0
+        to0 = float(ls["ls_turnover"][0])
+        assert to0 == pytest.approx(2.0, abs=1e-12)
+
+        # 次日完全换仓：每腿 0.5*Σ|Δw|=1.0 → ls_turnover=2.0
+        # 手算：top day0={s4,s5} w=0.5；day1={s0,s1} w=0.5
+        # |Δ| 四只各 0.5 → sum=2.0 → *0.5=1.0；bottom 同理
+        to1 = float(ls["ls_turnover"][1])
+        assert to1 == pytest.approx(2.0, abs=1e-12)
+
+        # net - gross = -ls_turnover * cost_bps / 1e4
+        for i in range(2):
+            gross = float(ls["ls_ret_gross"][i])
+            net = float(ls["ls_ret_net"][i])
+            to = float(ls["ls_turnover"][i])
+            exp_diff = -to * cost_bps / 10000.0
+            assert (net - gross) == pytest.approx(exp_diff, abs=1e-15)
+
+        # 场景 B：完全不换仓
+        f_stable = []
+        r_stable = []
+        factors_s = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+        for d in (d0, d1):
+            for si in range(6):
+                f_stable.append(
+                    {
+                        "trade_date": d,
+                        "ts_code": f"s{si}",
+                        "factor_clean": factors_s[si],
+                    }
+                )
+                r_stable.append(
+                    {
+                        "trade_date": d,
+                        "ts_code": f"s{si}",
+                        "fwd_ret_1d": 0.01,
+                    }
+                )
+        res2 = run_signal_backtest(
+            pl.DataFrame(f_stable),
+            pl.DataFrame(r_stable),
+            n_groups=3,
+            cost_bps=cost_bps,
+        )
+        ls2 = res2.ls_returns.sort("trade_date")
+        assert float(ls2["ls_turnover"][0]) == pytest.approx(2.0, abs=1e-12)  # 建仓
+        # 次日权重不变：leg_turnover=0 → ls_turnover=0
+        assert float(ls2["ls_turnover"][1]) == pytest.approx(0.0, abs=1e-12)
+
+        # cost_bps=0 → net==gross
+        res0 = run_signal_backtest(
+            factor_df, fwd, n_groups=3, cost_bps=0.0
+        )
+        for g, n in zip(
+            res0.ls_returns["ls_ret_gross"].to_list(),
+            res0.ls_returns["ls_ret_net"].to_list(),
+            strict=True,
+        ):
+            assert g == pytest.approx(n, abs=1e-15)
+
+    _section_turnover_cost()
+
+    # -- 退化守卫 --
+    def _section_degenerate():
+        # 单股票日 < n_groups → 整日剔除
+        d0, d1 = date(2024, 4, 1), date(2024, 4, 2)
+        # d0: 1 股；d1: 6 股
+        f_rows = [{"trade_date": d0, "ts_code": "s0", "factor_clean": 1.0}]
+        r_rows = [{"trade_date": d0, "ts_code": "s0", "fwd_ret_1d": 0.01}]
+        for si in range(6):
+            f_rows.append(
+                {
+                    "trade_date": d1,
+                    "ts_code": f"s{si}",
+                    "factor_clean": float(si),
+                }
+            )
+            r_rows.append(
+                {
+                    "trade_date": d1,
+                    "ts_code": f"s{si}",
+                    "fwd_ret_1d": 0.01 * si,
+                }
+            )
+        res = run_signal_backtest(
+            pl.DataFrame(f_rows), pl.DataFrame(r_rows), n_groups=3
+        )
+        assert res.meta["dropped_days"] == 1
+        assert res.ls_returns.height == 1
+        assert res.ls_returns["trade_date"][0] == d1.isoformat()
+
+        # 全 NaN 因子 → 空结构不崩
+        nan_f = pl.DataFrame(
+            {
+                "trade_date": [d0, d0, d1, d1],
+                "ts_code": ["a", "b", "a", "b"],
+                "factor_clean": [float("nan")] * 4,
+            }
+        )
+        nan_r = pl.DataFrame(
+            {
+                "trade_date": [d0, d0, d1, d1],
+                "ts_code": ["a", "b", "a", "b"],
+                "fwd_ret_1d": [0.01, 0.02, 0.01, 0.02],
+            }
+        )
+        res_nan = run_signal_backtest(nan_f, nan_r, n_groups=2)
+        assert res_nan.group_returns.is_empty()
+        assert res_nan.ls_returns.is_empty()
+        assert res_nan.group_nav.is_empty()
+        assert res_nan.ls_nav.is_empty()
+        assert res_nan.summary_stats["long_short"]["ann_ret_gross"] == 0.0
+        assert "group" in res_nan.group_returns.columns
+        assert "ls_ret_gross" in res_nan.ls_returns.columns
+        # summary 不崩
+        assert "信号层毛收益" in res_nan.summary()
+
+        # 所有日 n < n_groups
+        tiny_f = pl.DataFrame(
+            {
+                "trade_date": [d0, d0],
+                "ts_code": ["a", "b"],
+                "factor_clean": [1.0, 2.0],
+            }
+        )
+        tiny_r = pl.DataFrame(
+            {
+                "trade_date": [d0, d0],
+                "ts_code": ["a", "b"],
+                "fwd_ret_1d": [0.01, 0.02],
+            }
+        )
+        res_tiny = run_signal_backtest(tiny_f, tiny_r, n_groups=5)
+        assert res_tiny.meta["dropped_days"] == 1
+        assert res_tiny.ls_returns.is_empty()
+
+    _section_degenerate()
+
+    # -- NaN 传染防线 --
+    def _section_nan_ret():
+        # 6 股 1 日 3 组；g2 中一只 fwd_ret 为 float('nan')（非 null）
+        # 组均值应等于非 NaN 均值，不被污染
+        d = date(2024, 5, 1)
+        f = pl.DataFrame(
+            {
+                "trade_date": [d] * 6,
+                "ts_code": [f"s{i}" for i in range(6)],
+                "factor_clean": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+        # g2 = {s4,s5}；s5 ret = nan → g2 mean 只取 s4=0.10
+        rets = [0.01, 0.02, 0.03, 0.04, 0.10, float("nan")]
+        r = pl.DataFrame(
+            {
+                "trade_date": [d] * 6,
+                "ts_code": [f"s{i}" for i in range(6)],
+                "fwd_ret_1d": rets,
+            }
+        )
+        res = run_signal_backtest(f, r, n_groups=3)
+        # s5 因 fill_nan+drop 被剔除后当日剩 5 股 ≥ 3，仍保留
+        # 但 s5 无 fwd → join 后不在 grouped
+        # 有效：s0..s4 五只；group 公式 max_rank=5：
+        # rank1→0,2→0,3→1,4→2,5→2  即 g0={s0,s1}, g1={s2}, g2={s3,s4}
+        # 等等——s5 被 drop 后因子截面变化！更干净的做法：只让 g 内一个 ret 为 nan，
+        # 但因子全有效；spec 说 fill_nan 后再 drop null on fwd_ret_1d，
+        # 所以该股整个不参与。
+        #
+        # 手算（5 有效股, n_groups=3）：
+        # rank s0..s4 → groups: (0)*3//5=0,1*3//5=0,2*3//5=1,3*3//5=1,4*3//5=2
+        # g0={s0,s1} mean=(0.01+0.02)/2=0.015
+        # g1={s2,s3} mean=(0.03+0.04)/2=0.035
+        # g2={s4} mean=0.10
+        gr = res.group_returns.sort("group")
+        g2 = float(gr.filter(pl.col("group") == 2)["ret"][0])
+        assert g2 == pytest.approx(0.10, abs=1e-12)
+        g0 = float(gr.filter(pl.col("group") == 0)["ret"][0])
+        assert g0 == pytest.approx(0.015, abs=1e-12)
+
+        # 组均值非 NaN（NaN 传染防线）
+        assert g2 == g2
+
+    _section_nan_ret()
+
+    # -- 口径透传接线（数值差异验证） --
+    def _section_return_basis_passthrough():
+        factor_df, fwd0 = _gold_frames()
+        # 第二套：把收益整体 shift 一日（模拟 exec_lag 改变可实现收益）
+        # 手写：day0 用原 day1 ret，day1 用 day2，day2 用 day3，day3 用 0
+        shifted_rets = [*_GOLD_RETS[1:], [0.0] * 6]
+        r_rows = []
+        for di, d in enumerate(_GOLD_DATES):
+            for si, code in enumerate(_GOLD_STOCKS):
+                r_rows.append(
+                    {
+                        "trade_date": d,
+                        "ts_code": code,
+                        "fwd_ret_1d": shifted_rets[di][si],
+                    }
+                )
+        fwd1 = pl.DataFrame(r_rows)
+
+        res0 = run_signal_backtest(factor_df, fwd0, n_groups=3)
+        res1 = run_signal_backtest(factor_df, fwd1, n_groups=3)
+        ls0 = res0.ls_returns.sort("trade_date")["ls_ret_gross"].to_list()
+        ls1 = res1.ls_returns.sort("trade_date")["ls_ret_gross"].to_list()
+        assert ls0 != ls1, "不同 fwd_returns 口径应产生不同 ls_ret_gross"
+        # 手算第一日差异：原 0.04 vs shift 后 day0 用 day1 ret → ls=0.08
+        assert ls0[0] == pytest.approx(0.04, abs=1e-12)
+        assert ls1[0] == pytest.approx(0.08, abs=1e-12)
+
+    _section_return_basis_passthrough()
+
+    # -- turnover / monotonicity 等价回归（重构后硬编码期望） --
+    def _section_refactor_regression():
+        # 固定 5 股 × 2 日，n_groups=5；day1 完全反转排名
+        d0, d1 = date(2024, 6, 1), date(2024, 6, 2)
+        f_rows = []
+        for d, factors in (
+            (d0, [0.0, 1.0, 2.0, 3.0, 4.0]),
+            (d1, [4.0, 3.0, 2.0, 1.0, 0.0]),
+        ):
+            for si, fv in enumerate(factors):
+                f_rows.append(
+                    {
+                        "trade_date": d,
+                        "ts_code": f"x{si}",
+                        "factor_clean": fv,
+                    }
+                )
+        fdf = pl.DataFrame(f_rows)
+
+        # 换手：day1 除 x2 外 4 只变更组 → turnover = 4/5 = 0.8
+        to = compute_turnover(fdf, n_groups=5)
+        assert to.avg_turnover == pytest.approx(0.8, abs=1e-12)
+        assert to.daily_turnover.height == 1
+        assert float(to.daily_turnover["turnover"][0]) == pytest.approx(0.8, abs=1e-12)
+
+        # 单调性：单日 5 组，ret = factor * 0.01 → 组均严格递增
+        mono_df = pl.DataFrame(
+            {
+                "trade_date": [d0] * 5,
+                "ts_code": [f"x{i}" for i in range(5)],
+                "factor_clean": [0.0, 1.0, 2.0, 3.0, 4.0],
+                "fwd_ret": [0.0, 0.01, 0.02, 0.03, 0.04],
+            }
+        )
+        mono = compute_monotonicity(mono_df, n_groups=5, ret_col="fwd_ret")
+        # 每组 1 股，group_means = [0, 0.01, 0.02, 0.03, 0.04]
+        exp_means = [0.0, 0.01, 0.02, 0.03, 0.04]
+        assert len(mono.group_means) == 5
+        for g, e in zip(mono.group_means, exp_means, strict=True):
+            assert g == pytest.approx(e, abs=1e-12)
+        # 4 个相邻差分全为正，与首尾同向 → score=1.0
+        assert mono.monotonicity_score == pytest.approx(1.0, abs=1e-12)
+        assert mono.direction == "positive"
+        # OLS slope 手算：x=0..4, y=0,0.01,...,0.04 → slope=0.01
+        assert mono.ols_slope == pytest.approx(0.01, abs=1e-12)
+
+    _section_refactor_regression()

@@ -168,7 +168,7 @@ def test_sub_floor_cli_group_gate_suite(tmp_path, capsys):
         run_dir = _write_session(tmp_path, n_good=20, n_sub_floor=130)
         lib_root = tmp_path / "lib"
         lib_root.mkdir()
-        args = _base_args(run_dir, lib_root, ["--top-m", "0"])
+        args = _base_args(run_dir, lib_root, ["--set", "top_m=0"])
         seen: dict = {}
         # 组门给负 lift：若噪声进了组门就会全体连坐
         _patch_cli(mp, group_lift=-0.0007, seen=seen)
@@ -207,7 +207,7 @@ def test_sub_floor_cli_group_gate_suite(tmp_path, capsys):
         lib_root = tmp_path / "lib"
         lib_root.mkdir()
         args = _base_args(
-            run_dir, lib_root, ["--top-m", "0", "--include-sub-floor"],
+            run_dir, lib_root, ["--set", "top_m=0", "--set", "include_sub_floor=true"],
         )
         seen: dict = {}
         _patch_cli(mp, group_lift=-0.0007, seen=seen)
@@ -239,7 +239,7 @@ def test_sub_floor_cli_group_gate_suite(tmp_path, capsys):
         lib_root.mkdir()
         # good 的 residual_ic_train 在 [0.02, 0.0219]；地板抬到 0.021 → 只剩少数存活
         args = _base_args(
-            run_dir, lib_root, ["--top-m", "0", "--queue-ic-floor", "0.021"],
+            run_dir, lib_root, ["--set", "top_m=0", "--set", "queue_ic_floor=0.021"],
         )
         seen: dict = {}
         _patch_cli(mp, group_lift=0.01, seen=seen)
@@ -266,7 +266,7 @@ def test_sub_floor_cli_group_gate_suite(tmp_path, capsys):
         run_dir = _write_session(tmp_path, n_good=0, n_sub_floor=30)
         lib_root = tmp_path / "lib"
         lib_root.mkdir()
-        args = _base_args(run_dir, lib_root, ["--top-m", "0"])
+        args = _base_args(run_dir, lib_root, ["--set", "top_m=0"])
         seen: dict = {}
         _patch_cli(mp, group_lift=-0.0007, seen=seen)
 
@@ -295,7 +295,7 @@ def test_lift_manifest_audit_suite(tmp_path):
         run_dir = _write_session(tmp_path, n_good=5, n_sub_floor=0)
         lib_root = tmp_path / "lib"
         lib_root.mkdir()
-        args = _base_args(run_dir, lib_root, ["--top-m", "0"])
+        args = _base_args(run_dir, lib_root, ["--set", "top_m=0"])
         _patch_cli(mp, group_lift=0.01)
 
         rc = cli_main._cmd_factor_library_lift_test(args)
@@ -323,7 +323,7 @@ def test_lift_manifest_audit_suite(tmp_path):
         lib_root.mkdir()
 
         # run 1：组门过 + 逐候选全 passed
-        args1 = _base_args(run_dir, lib_root, ["--top-m", "0"])
+        args1 = _base_args(run_dir, lib_root, ["--set", "top_m=0"])
         _patch_cli(mp, group_lift=0.01)
         assert cli_main._cmd_factor_library_lift_test(args1) == 0
         archives1 = sorted(run_dir.glob("lift_test_manifest_*.json"))
@@ -332,7 +332,7 @@ def test_lift_manifest_audit_suite(tmp_path):
         assert first["n_passed"] == 5
 
         # run 2：组门全拒（同秒重跑也必须另起归档，不许覆写）
-        args2 = _base_args(run_dir, lib_root, ["--top-m", "0", "--include-sub-floor"])
+        args2 = _base_args(run_dir, lib_root, ["--set", "top_m=0", "--set", "include_sub_floor=true"])
         _patch_cli(mp, group_lift=-0.0007)
         assert cli_main._cmd_factor_library_lift_test(args2) == 0
 
@@ -536,9 +536,9 @@ def test_cli_lift_workers_from_outer_parser(tmp_path, monkeypatch):
         "--start", "20200101",
         "--end", "20201231",
         "--universe", "csi300",
-        "--lift-workers", "3",
+        "--set", "lift_workers=3",
         "--dry-run",
-        "--library-root", str(lib_root),
+        "--set", "library_root=" + str(lib_root),
     ])
     rc = cli_main._cmd_factor_library_lift_test(args)
     assert rc == 0

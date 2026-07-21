@@ -215,7 +215,7 @@ def test_pipeline_argv_forward_suite():
 
 
 def test_runs_config_report_path_suite(tmp_path, capsys):
-    """test_report_path_prints_stable_run_report_path；test_config_validate_prints_effective_config_and_output_dir；test_runs_list_reads_experiment_index；test_runs_show_reads_manifest"""
+    """test_report_path_prints_stable_run_report_path；test_ops_validate_config_prints_effective_config；test_runs_list_reads_experiment_index"""
     # -- 原 test_report_path_prints_stable_run_report_path --
     def _section_0_test_report_path_prints_stable_run_report_path(tmp_path, mp, capsys):
         from factorzen.cli import main as cli
@@ -238,8 +238,8 @@ def test_runs_config_report_path_suite(tmp_path, capsys):
     with pytest.MonkeyPatch.context() as mp:
         _section_0_test_report_path_prints_stable_run_report_path(_tp0, mp, capsys)
 
-    # -- 原 test_config_validate_prints_effective_config_and_output_dir --
-    def _section_1_test_config_validate_prints_effective_config_and_output_dir(tmp_path, mp, capsys):
+    # -- 原 test_config_validate → ops validate-config --
+    def _section_1_test_ops_validate_config_prints_effective_config(tmp_path, mp, capsys):
         from factorzen.cli import main as cli
 
         config = tmp_path / "run.yaml"
@@ -256,7 +256,7 @@ def test_runs_config_report_path_suite(tmp_path, capsys):
         )
         mp.setattr(cli, "ROOT", tmp_path)
 
-        assert cli.main(["config", "validate", str(config)]) == 0
+        assert cli.main(["ops", "validate-config", str(config)]) == 0
 
         payload = json.loads(capsys.readouterr().out)
         assert payload["config"]["benchmark"] == "000905.SH"
@@ -265,7 +265,7 @@ def test_runs_config_report_path_suite(tmp_path, capsys):
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
     with pytest.MonkeyPatch.context() as mp:
-        _section_1_test_config_validate_prints_effective_config_and_output_dir(_tp1, mp, capsys)
+        _section_1_test_ops_validate_config_prints_effective_config(_tp1, mp, capsys)
 
     # -- 原 test_runs_list_reads_experiment_index --
     def _section_2_test_runs_list_reads_experiment_index(tmp_path, mp, capsys):
@@ -300,36 +300,7 @@ def test_runs_config_report_path_suite(tmp_path, capsys):
     with pytest.MonkeyPatch.context() as mp:
         _section_2_test_runs_list_reads_experiment_index(_tp2, mp, capsys)
 
-    # -- 原 test_runs_show_reads_manifest --
-    def _section_3_test_runs_show_reads_manifest(tmp_path, mp, capsys):
-        from factorzen.cli import main as cli
-
-        root = tmp_path / "workspace" / "factor_evaluations"
-        run_dir = root / "run-1"
-        run_dir.mkdir(parents=True)
-        (run_dir / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "run_id": "run-1",
-                    "status": "success",
-                    "config": {"factor": "momentum_20d", "benchmark": "000905.SH"},
-                    "outputs": {"run_report": str(run_dir / "report.html")},
-                }
-            ),
-            encoding="utf-8",
-        )
-        mp.setattr(cli, "FACTOR_EVALUATIONS_DIR", root)
-
-        assert cli.main(["runs", "show", "run-1"]) == 0
-
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["run_id"] == "run-1"
-        assert payload["config"]["benchmark"] == "000905.SH"
-
-    _tp3 = tmp_path / "_s3"
-    _tp3.mkdir(exist_ok=True)
-    with pytest.MonkeyPatch.context() as mp:
-        _section_3_test_runs_show_reads_manifest(_tp3, mp, capsys)
+    # runs show 已删（B1 CLI prune）
 
 
 def test_every_subparser_help_renders():

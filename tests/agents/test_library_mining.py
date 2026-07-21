@@ -463,16 +463,23 @@ def test_library_prompt_invalid_suite(tmp_path):
     _tp4.mkdir(exist_ok=True)
     _section_4_test_known_invalid_excludes_lift_queue(_tp4)
 
-    # -- 原 test_cli_no_library_orthogonal_flag --
+    # -- 原 test_cli_no_library_orthogonal_flag（现经 --set）--
     def _section_5_test_cli_no_library_orthogonal_flag():
+        from factorzen.cli import main as cli_main
         from factorzen.cli.main import build_parser
 
         parser = build_parser()
+        schemas = {
+            "search": cli_main._MINE_SEARCH_SET,
+            "agent": cli_main._MINE_AGENT_SET,
+            "team": cli_main._MINE_TEAM_SET,
+        }
         for cmd in ("search", "agent", "team"):
             args = parser.parse_args(
                 ["mine", cmd, "--start", "20240101", "--end", "20240601",
-                 "--no-library-orthogonal"]
+                 "--set", "no_library_orthogonal=true"]
             )
+            assert cli_main._apply_set_overrides(args, schemas[cmd]) is None
             assert args.no_library_orthogonal is True
 
     _section_5_test_cli_no_library_orthogonal_flag()
@@ -877,16 +884,23 @@ def test_residual_shared_function_architecture_guard():
 
 def test_library_mining_wiring_suite():
     """test_cli_objective_flag_on_three_mine_commands；capability↔wiring：run_session / run_team_agent / run_llm_agent 接收 objective。；test_default_residual_ic_floor_constant"""
-    # -- 原 test_cli_objective_flag_on_three_mine_commands --
+    # -- 原 test_cli_objective_flag_on_three_mine_commands（现经 --set）--
     def _section_0_test_cli_objective_flag_on_three_mine_commands():
+        from factorzen.cli import main as cli_main
         from factorzen.cli.main import build_parser
 
         parser = build_parser()
+        schemas = {
+            "search": cli_main._MINE_SEARCH_SET,
+            "agent": cli_main._MINE_AGENT_SET,
+            "team": cli_main._MINE_TEAM_SET,
+        }
         for cmd in ("search", "agent", "team"):
             args = parser.parse_args(
                 ["mine", cmd, "--start", "20240101", "--end", "20240601",
-                 "--objective", "raw"]
+                 "--set", "objective=raw"]
             )
+            assert cli_main._apply_set_overrides(args, schemas[cmd]) is None
             assert args.objective == "raw"
             args2 = parser.parse_args(
                 ["mine", cmd, "--start", "20240101", "--end", "20240601"]

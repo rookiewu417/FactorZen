@@ -586,7 +586,7 @@ def test_lift_ctx_wiring_suite(monkeypatch, tmp_path, capsys):
             "--market", "ashare",
             "--start", "20200101",
             "--end", "20201231",
-            "--library-root", str(tmp_path / "lib"),
+            "--set", "library_root=" + str(tmp_path / "lib"),
         ])
         rc = cli_main._cmd_factor_library_lift_test(args)
         assert rc == 0
@@ -650,7 +650,7 @@ def test_lift_test_admission_flag_overrides_manifest(tmp_path, monkeypatch):
         "--market", "ashare",
         "--start", "20200101",
         "--end", "20201231",
-        "--library-root", str(tmp_path / "lib"),
+        "--set", "library_root=" + str(tmp_path / "lib"),
         "--admission-start", "20201015",
         "--admission-end", "20201130",
     ])
@@ -676,7 +676,7 @@ def test_lift_test_no_window_warns(tmp_path, monkeypatch, capsys):
         "--market", "ashare",
         "--start", "20200101",
         "--end", "20201231",
-        "--library-root", str(tmp_path / "lib"),
+        "--set", "library_root=" + str(tmp_path / "lib"),
     ])
     rc = cli_main._cmd_factor_library_lift_test(args)
     assert rc == 0

@@ -448,17 +448,16 @@ def test_patience_suite(tmp_path, monkeypatch):
     with pytest.MonkeyPatch.context() as mp:
         _section_4_test_m5_patience_resets_when_a_new_candidate_appears(mp)
 
-    # -- 原 test_cli_rejects_non_positive_patience --
+    # -- 原 test_cli_rejects_non_positive_patience（现经 --set 校验）--
     def _section_5_test_cli_rejects_non_positive_patience():
-        import pytest
-
         from factorzen.cli.main import main
 
         for bad in ("0", "-1"):
-            with pytest.raises(SystemExit) as ei:
-                main(["mine", "agent", "--start", "20220101", "--end", "20231229",
-                      "--patience", bad])
-            assert ei.value.code == 2, "argparse 参数校验失败应退出码 2"
+            rc = main([
+                "mine", "agent", "--start", "20220101", "--end", "20231229",
+                "--set", f"patience={bad}",
+            ])
+            assert rc == 2, f"--set patience={bad} 应 exit 2"
 
     _section_5_test_cli_rejects_non_positive_patience()
 

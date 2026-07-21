@@ -412,10 +412,11 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
             "--market", "ashare",
             "--start", "20200101",
             "--end", "20201231",
-            "--library-root", str(tmp_path / "lib"),
+            "--set", "library_root=" + str(tmp_path / "lib"),
             "--apply",
-            "--allow-active",
+            "--set", "allow_active=true",
         ])
+        assert cli_main._apply_set_overrides(args, cli_main._LIFT_TEST_SET) is None
         assert args.allow_active is True
         rc = cli_main._cmd_factor_library_lift_test(args)
         assert rc == 0
@@ -486,7 +487,7 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
             "--market", "ashare",
             "--start", "20200101",
             "--end", "20201231",
-            "--library-root", str(tmp_path / "lib"),
+            "--set", "library_root=" + str(tmp_path / "lib"),
             "--apply",
         ])
         assert getattr(args, "allow_active", False) is False
@@ -542,35 +543,7 @@ def test_probation_cli_tier_suite(tmp_path, monkeypatch, capsys):
     _tp2.mkdir(exist_ok=True)
     _section_2_test_tag_legacy_marks_none_only_and_idempotent(_tp2)
 
-    # -- 原 test_cli_tag_legacy --
-    def _section_3_test_cli_tag_legacy(tmp_path, capsys):
-        import factorzen.cli.main as cli_main
-        from factorzen.cli.main import build_parser
-        from factorzen.discovery.factor_library import FactorRecord, _save_library
-
-        lib_root = tmp_path / "lib"
-        _save_library("ashare", [
-            FactorRecord(expression="rank(close)", market="ashare", status="active"),
-            FactorRecord(
-                expression="rank(open)", market="ashare", status="active",
-                evidence_tier="v2",
-            ),
-        ], root=str(lib_root))
-
-        args = build_parser().parse_args([
-            "factor-library", "tag-legacy",
-            "--market", "ashare",
-            "--root", str(lib_root),
-        ])
-        rc = cli_main._cmd_factor_library_tag_legacy(args)
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "1" in out  # tagged 1
-        assert "legacy" in out.lower() or "tag" in out.lower() or "标" in out
-
-    _tp3 = tmp_path / "_s3"
-    _tp3.mkdir(exist_ok=True)
-    _section_3_test_cli_tag_legacy(_tp3, capsys)
+    # CLI tag-legacy 已删（B1）；库函数 tag_legacy_records 仍由 section_2 覆盖
 
     # -- 原 test_upsert_sets_evidence_tier_v2 --
     def _section_4_test_upsert_sets_evidence_tier_v2(tmp_path):
@@ -967,9 +940,9 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
             "--session", str(run_dir),
             "--market", "ashare",
             "--start", "20200101", "--end", "20201231",
-            "--library-root", str(tmp_path / "lib"),
+            "--set", "library_root=" + str(tmp_path / "lib"),
             "--apply",
-            "--top-m", "0",
+            "--set", "top_m=0",
         ])
         rc = cli_main._cmd_factor_library_lift_test(args)
         assert rc == 0
@@ -1049,8 +1022,8 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
             "--session", str(run_dir),
             "--market", "ashare",
             "--start", "20200101", "--end", "20201231",
-            "--library-root", str(tmp_path / "lib"),
-            "--apply", "--top-m", "0",
+            "--set", "library_root=" + str(tmp_path / "lib"),
+            "--apply", "--set", "top_m=0",
         ])
         rc = cli_main._cmd_factor_library_lift_test(args)
         assert rc == 0
@@ -1113,8 +1086,8 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
             "--session", str(run_dir),
             "--market", "ashare",
             "--start", "20200101", "--end", "20201231",
-            "--library-root", str(tmp_path / "lib"),
-            "--top-m", "0",
+            "--set", "library_root=" + str(tmp_path / "lib"),
+            "--set", "top_m=0",
         ])
         rc = cli_main._cmd_factor_library_lift_test(args)
         assert rc == 0

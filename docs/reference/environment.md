@@ -173,7 +173,7 @@ Token 校验是**延迟**的，不在 import 阶段执行：
 
 `_int_env`（读 `TUSHARE_POINTS` / `TUSHARE_MAX_RPS`）同样 import 期安全：剥行内注释、非数字回退默认值。
 
-> ✅ 这个设计的意义：**`.env` 写错不会让整个 CLI 在 import 阶段崩掉**，连不需要联网的离线命令（`fz factor list`、`fz config validate`、`fz runs list`）都还能正常用。
+> ✅ 这个设计的意义：**`.env` 写错不会让整个 CLI 在 import 阶段崩掉**，连不需要联网的离线命令（`fz factor list`、`fz ops validate-config`、`fz runs list`）都还能正常用。
 
 ---
 

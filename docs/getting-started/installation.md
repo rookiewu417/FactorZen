@@ -77,7 +77,7 @@ TUSHARE_TOKEN=<你的 tushare token>
 ```
 
 - 去 [tushare.pro](https://tushare.pro/) 注册取 token。日线、每日指标、财务等接口有积分门槛，具体见[数据源与口径](../reference/data-sources.md)。
-- **缺 token 不会让 CLI 崩溃**：token 校验是延迟的，不在 import 阶段执行。`fz factor list`、`fz config validate`、`fz runs list` 这类离线命令照常可用；只有真正要联网取数时才抛错。
+- **缺 token 不会让 CLI 崩溃**：token 校验是延迟的，不在 import 阶段执行。`fz factor list`、`fz ops validate-config`、`fz runs list` 这类离线命令照常可用；只有真正要联网取数时才抛错。
 - **crypto 不需要 token**：走本地 Binance Vision 数据湖。
 
 ### 3.2 `FACTORZEN_LLM_*`（LLM 挖掘必填，其余可选）
@@ -119,7 +119,7 @@ pixi run smoke
 pixi run fz --help
 ```
 
-应打印 16 个顶层命令：`factor` `report` `data` `config` `runs` `mine` `pool-prebuild` `factor-library` `research` `validate` `risk` `portfolio` `sim` `live` `combine` `ops`。
+应打印 14 个顶层命令：`factor` `report` `data` `runs` `mine` `factor-library` `research` `validate` `risk` `portfolio` `sim` `live` `combine` `ops`。
 
 ### 4.3 数据链路 smoke
 

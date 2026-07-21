@@ -278,8 +278,8 @@ def test_cli_lift_admission_window_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20241231",
-                "--library-root",
-                str(tmp_path / "lib"),
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
             ]
         )
         rc = cli_main._cmd_factor_library_lift_test(args)
@@ -370,8 +370,8 @@ def test_cli_lift_admission_window_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20241231",
-                "--library-root",
-                str(tmp_path / "lib"),
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
                 "--admission-start",
                 "2025-01-01",
                 "--admission-end",
@@ -443,8 +443,8 @@ def test_cli_lift_admission_window_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20241231",
-                "--library-root",
-                str(tmp_path / "lib"),
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
             ]
         )
         rc = cli_main._cmd_factor_library_lift_test(args)
@@ -526,8 +526,8 @@ def test_cli_lift_horizon_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20241231",
-                "--library-root",
-                str(tmp_path / "lib"),
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
             ]
         )
         rc = cli_main._cmd_factor_library_lift_test(args)
@@ -590,10 +590,9 @@ def test_cli_lift_horizon_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20241231",
-                "--library-root",
-                str(tmp_path / "lib"),
-                "--horizon",
-                "7",
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
+                "--set", "horizon=7",
             ]
         )
         rc = cli_main._cmd_factor_library_lift_test(args)
@@ -654,8 +653,8 @@ def test_cli_lift_horizon_suite(tmp_path, capsys):
                 "20200101",
                 "--end",
                 "20241231",
-                "--library-root",
-                str(tmp_path / "lib"),
+                "--set",
+                "library_root=" + str(tmp_path / "lib"),
             ]
         )
         rc = cli_main._cmd_factor_library_lift_test(args)
@@ -707,7 +706,7 @@ def test_cli_lift_horizon_suite(tmp_path, capsys):
                 "factor-library", "lift-test",
                 "--session", str(sa), str(sb),
                 "--start", "20200101", "--end", "20241231",
-                "--library-root", str(tmp_path / "lib"),
+                "--set", "library_root=" + str(tmp_path / "lib"),
             ]
         )
         rc = cli_main._cmd_factor_library_lift_test(args)

@@ -116,7 +116,7 @@ candidates.csv   manifest.json   exported/
 | 文件 | 内容 |
 |---|---|
 | `{market}.jsonl` | 登记簿本体，每因子一行；市场取 `ashare` / `crypto` / `futures` / `us` |
-| `{market}.md` | 同内容的人类可读渲染（`fz factor-library render` 产出） |
+| `{market}.md` | 同内容的人类可读渲染（`rebuild` 附带产出） |
 | `summary.md` | 跨市场汇总 |
 | `rebuild_{market}_manifest.json` | 每次 `fz factor-library rebuild` 的记录：窗口/源/git_sha/时间 + lift 复审计数 |
 | `forward_track/{market}.jsonl` | 向前追踪记录 |

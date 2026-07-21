@@ -65,8 +65,9 @@ def test_parser_mine_agent_team_suite():
 
     _section_2_test_parser_has_mine_team()
 
-    # -- 原 test_parser_mine_team_index_default --
+    # -- 原 test_parser_mine_team_index_default（index_path 经 set_defaults / --set）--
     def _section_3_test_parser_mine_team_index_default():
+        from factorzen.cli import main as cli_main
         from factorzen.cli.main import build_parser
 
         p = build_parser()
@@ -74,6 +75,13 @@ def test_parser_mine_agent_team_suite():
             ["mine", "team", "--start", "20220101", "--end", "20231231"]
         )
         assert args.index_path.endswith(".jsonl")  # 长期记忆默认路径
+        # --set 可覆盖
+        args2 = p.parse_args(
+            ["mine", "team", "--start", "20220101", "--end", "20231231",
+             "--set", "index_path=/tmp/custom.jsonl"]
+        )
+        assert cli_main._apply_set_overrides(args2, cli_main._MINE_TEAM_SET) is None
+        assert args2.index_path == "/tmp/custom.jsonl"
 
     _section_3_test_parser_mine_team_index_default()
 
@@ -313,8 +321,8 @@ def test_cmd_mine_team_wiring_suite(capsys):
                 "6",
                 "--seed",
                 "1",
-                "--index-path",
-                "workspace/mine_team/custom_index.jsonl",
+                "--set",
+                "index_path=workspace/mine_team/custom_index.jsonl",
             ]
         )
 
@@ -360,7 +368,7 @@ def test_cmd_mine_team_wiring_suite(capsys):
 
         rc = cli.main(
             ["mine", "team", "--start", "20220101", "--end", "20231231",
-             "--index-path", "workspace/mine_team/custom_index.jsonl"]
+             "--set", "index_path=workspace/mine_team/custom_index.jsonl"]
         )
         assert rc == 0
         assert captured["eval_start"] == "20220101"
@@ -390,7 +398,7 @@ def test_cmd_mine_team_wiring_suite(capsys):
         )
 
         rc = cli.main(["mine", "team", "--start", "20220101", "--end", "20231231",
-                       "--index-path", "workspace/mine_team/custom_index.jsonl"])
+                       "--set", "index_path=workspace/mine_team/custom_index.jsonl"])
         assert rc == 0
         assert captured["lookback_days"] == AGENT_WARMUP_LOOKBACK
         assert search_space_max_lookback() < AGENT_WARMUP_LOOKBACK
@@ -531,16 +539,11 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
             "5",
             "--seed",
             "7",
-            "--holdout-ratio",
-            "0.25",
-            "--train-ratio",
-            "0.6",
-            "--decorr-threshold",
-            "0.8",
-            "--min-n-train",
-            "8",
-            "--dsr-alpha",
-            "0.1",
+            "--set", "holdout_ratio=0.25",
+            "--set", "train_ratio=0.6",
+            "--set", "decorr_threshold=0.8",
+            "--set", "min_n_train=8",
+            "--set", "dsr_alpha=0.1",
         ]
     )
 

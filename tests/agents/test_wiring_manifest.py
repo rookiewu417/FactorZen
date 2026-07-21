@@ -83,7 +83,7 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
                             fake_run_agent_mine)
 
         rc = cli.main(["mine", "agent", "--start", "20220101", "--end", "20231231",
-                       "--patience", "3", "--heal-rounds", "1"])
+                       "--set", "patience=3", "--set", "heal_rounds=1"])
         from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
         assert rc == 0
         assert captured["patience"] == 3
@@ -111,7 +111,7 @@ def test_agent_wiring_cli_suite(monkeypatch, tmp_path):
         mp.setattr("factorzen.pipelines.factor_mine_team.run_team_mine", fake_run_team_mine)
 
         rc = cli.main(["mine", "team", "--start", "20220101", "--end", "20231231",
-                       "--structured", "--patience", "2", "--heal-rounds", "0"])
+                       "--structured", "--set", "patience=2", "--set", "heal_rounds=0"])
         assert rc == 0
         assert captured["structured"] is True
         assert captured["patience"] == 2

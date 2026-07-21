@@ -126,13 +126,6 @@ def list_um_symbols(quote: str = "USDT", fetch: Fetch = _http_get) -> list[str]:
     return sorted(s for s in syms if s.endswith(quote))
 
 
-def list_symbol_months(symbol: str, fetch: Fetch = _http_get) -> list[str]:
-    prefix = f"{_UM}/monthly/klines/{symbol}/1m/"
-    xml = fetch(f"{_S3_BASE}/?prefix={prefix}").decode()
-    pat = rf"{symbol}-1m-(\d{{4}}-\d{{2}})\.zip</Key>"
-    return sorted(set(re.findall(pat, xml)))
-
-
 # ── 下载 ──────────────────────────────────────────────────
 def fetch_zip_csv(url: str, fetch: Fetch = _http_get, retries: int = 2) -> bytes | None:
     for attempt in range(retries + 1):

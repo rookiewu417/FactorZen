@@ -102,9 +102,3 @@ def run_portfolio(alpha, risk_result, *, codes, stock_returns, sectors,
             "n_holdings": manifest["n_holdings"], "objective": opt.objective_value}
 
 
-def compute_sector_returns(daily: pl.DataFrame, stocks: pl.DataFrame) -> pl.DataFrame:
-    """行业等权收益：daily(pct_chg) + stocks(industry) → [trade_date, sector, ret]。"""
-    j = daily.join(stocks.select(["ts_code", "industry"]), on="ts_code")
-    return (j.group_by(["trade_date", "industry"])
-            .agg((pl.col("pct_chg") / 100.0).mean().alias("ret"))
-            .rename({"industry": "sector"}))

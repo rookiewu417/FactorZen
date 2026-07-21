@@ -195,10 +195,9 @@ pixi run -- fz config validate workspace/configs/daily/volume_return_corr_20d.ya
 >
 > | 挂载点 | 来源 |
 > |---|---|
-> | `fz factor run` | `cli/parser.py:105` → `_add_factor_run_arguments`（`parser.py:38-45`） |
-> | `fz factor test` | `cli/parser.py:109`（已标注 Deprecated alias for `factor run`） |
-> | `fz factor sweep` | `cli/parser.py:122-128`，语义是「应用到每个组合的固定覆盖」 |
-> | `pixi run daily`（`python -m factorzen.pipelines.daily_single`） | `pipelines/daily_single.py:791/805` |
+> | `fz factor run` | `cli/parser.py` → `_add_factor_run_arguments` |
+> | `fz factor sweep` | `cli/parser.py`，语义是「应用到每个组合的固定覆盖」 |
+> | `pixi run daily`（`python -m factorzen.pipelines.daily_single`） | `pipelines/daily_single.py` |
 
 签名 `--set KEY=VALUE`，`action="append"` 因此**可重复**：
 

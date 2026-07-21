@@ -51,8 +51,6 @@ pixi run -- fz mine search --help
 
 单因子工作流：模板创建、注册表查询、评估、参数扫描。
 
-> ⚠️ `fz factor test` 是 `fz factor run` 的 **deprecated 别名**（参数与行为完全相同）。新脚本请一律写 `fz factor run`。
-
 ### fz factor new
 
 创建一个用户因子的模板文件。
@@ -98,9 +96,11 @@ pixi run -- fz factor list --freq daily
 | `--frequency` / `--freq` | `daily` \| `weekly` \| `monthly` | `daily` | | 因子注册频率（**无 `intraday`**，与 `factor new/list` 不同） |
 | `--benchmark` | str | 无 | | 基准指数代码 |
 | `--config` | str | 无 | | YAML run config 路径 |
-| `--seed` | int | 无 | | 全局随机种子 |
+| `--seed` | int | `42` | | 全局随机种子 |
 | `--set KEY=VALUE` | str，可重复 | 无 | | 覆盖任意配置字段 |
 | `--dry-run` | flag | 关 | | 只打印生效配置，不执行 |
+| `--exec-lag` | int | `1` | | 成交滞后（交易日）。默认 1=可实现口径；`0`=旧 close→close（不可实现，仅对照用） |
+| `--exec-price-col` | str | `open_adj` | | 成交价格列。默认 `open_adj`（open[t+2]/open[t+1]） |
 
 ```bash
 pixi run -- fz factor run momentum_20 --start 20220101 --end 20241231 \
@@ -136,8 +136,6 @@ pixi run -- fz factor sweep momentum_20 --start 20220101 --end 20241231 \
 ## fz report
 
 报告工作流：单因子报告与组合仪表盘。
-
-> ⚠️ `fz report open` 是 `fz report path` 的 **deprecated 别名**。新脚本请写 `fz report path`。
 
 ### fz report build
 
@@ -792,7 +790,7 @@ pixi run -- fz factor-library forward-review --market ashare --min-days 60 --app
 |---|---|---|---|---|
 | `--start` | str | — | ✅ | 起始日 `YYYYMMDD` |
 | `--end` | str | — | ✅ | 终止日 `YYYYMMDD` |
-| `--universe` | str | 无（= `all_a`） | | 票池名 |
+| `--universe` | str | 无（运行时解析为 `all_a`） | | 票池名；parser 默认 `None`，编排器内回落 `all_a` |
 | `--method` | `random` \| `genetic` | `random` | | 挖掘搜索方法 |
 | `--trials` | int | `200` | | 挖掘试验次数 |
 | `--top-k` | int | `10` | | 挖掘保留的头部候选数 |
@@ -1172,10 +1170,10 @@ pixi run -- fz combine from-library --market ashare --statuses active,probation 
 | `--run-dir` | str | — | 与 `--scores` 二选一 | combine 产物目录，读 `oos_scores/<method>.parquet` |
 | `--method` | str | `equal_weight` | | 配合 `--run-dir` 选方法 |
 | `--score-col` | str | 无（自动） | | 分数列；缺省取除键列外唯一数值列，多列则必填 |
-| `--strategy` | str | `quantile_ls_5` | | 与 `fz eval` 默认一致；另支持 `topn_long_only` 等既有策略 |
+| `--strategy` | str | `quantile_ls_5` | | 与 `fz factor run` 默认一致；另支持 `topn_long_only` 等既有策略 |
 | `--start` | str | — | ✅ | 回测起 `YYYYMMDD` |
 | `--end` | str | — | ✅ | 回测止 `YYYYMMDD` |
-| `--universe` | str | `csi300` | | PIT membership 票池 |
+| `--universe` | str | `all_a` | | PIT membership 票池（全 A 为标准资产口径） |
 | `--market` | str | `ashare` | | 当前仅 `ashare` |
 | `--cost-bps` | float | 无（= LinearCostModel 默认） | | 单边成本 bps；`0` = 零成本 |
 | `--rebalance-days` | int | 无（= 逐日） | | 调仓间隔（交易日）。`1`/缺省=逐日；`k>1` 桥层降采样分数并前向填充，引擎仍日环、净值逐日更新 |
@@ -1185,7 +1183,7 @@ pixi run -- fz combine from-library --market ashare --statuses active,probation 
 ```bash
 pixi run -- fz combine backtest \
   --run-dir workspace/combinations/exp1 --method equal_weight \
-  --start 20200101 --end 20241231 --universe csi300
+  --start 20200101 --end 20241231 --universe all_a
 ```
 
 **产物**：`workspace/combine_backtests/<run_id>/` 下 `manifest.json` + `metrics.json` + `nav.parquet`。

@@ -203,13 +203,20 @@ def test_exec_wiring_signature_suite():
         for cmd in ("team", "agent", "search"):
             base = ["mine", cmd, "--start", "20200101", "--end", "20201231"]
             ns = p.parse_args(base)
-            assert ns.exec_lag == 0, cmd
-            assert ns.exec_price_col is None, cmd
+            # CLI 默认可实现口径
+            assert ns.exec_lag == 1, cmd
+            assert ns.exec_price_col == "open_adj", cmd
             ns2 = p.parse_args([
+                *base, "--exec-lag", "0", "--exec-price-col", "close",
+            ])
+            # 显式旧口径逃生口
+            assert ns2.exec_lag == 0, cmd
+            assert ns2.exec_price_col == "close", cmd
+            ns3 = p.parse_args([
                 *base, "--exec-lag", "1", "--exec-price-col", "open_adj",
             ])
-            assert ns2.exec_lag == 1, cmd
-            assert ns2.exec_price_col == "open_adj", cmd
+            assert ns3.exec_lag == 1, cmd
+            assert ns3.exec_price_col == "open_adj", cmd
 
     _section_4_test_cli_parser_exposes_exec_flags()
 

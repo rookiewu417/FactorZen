@@ -4,7 +4,7 @@
 --- 来源 test_generate_report.py ---
 test_generate_report_is_st.py：generate_report 回测须传 is_st_by_date（与 daily_single 一致，消除 ST 涨跌停双路径）。
 test_generate_report_persistence.py：Tests for generate_report result persistence metadata.
-test_report_forward_returns.py：fz report build 前向收益/IC 标签须用复权收盘价，与 fz factor test 口径一致，
+test_report_forward_returns.py：fz report build 前向收益/IC 标签须用复权收盘价，与 fz factor run 口径一致，
 
 --- 来源 test_pipeline_infra.py ---
 test_membership_vectorized_equiv.py：universe membership 向量化等价性：与逐日 _load_index_members 完全一致。

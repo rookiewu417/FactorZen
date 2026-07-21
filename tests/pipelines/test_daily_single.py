@@ -377,7 +377,7 @@ def _ns(**kw):
     return Namespace(**base)
 
 def test_build_forward_return_frame_suite():
-    """test_build_forward_return_frame_prefers_adjusted_close；test_build_forward_return_frame_falls_back_to_close_without_adjusted_close；test_build_forward_return_frame_falls_back_per_stock_for_partial_adjusted_close"""
+    """close_adj 偏好 / close 回退 / 分股 partial adj；显式 exec_price_col 缺列 fail-loudly。"""
     # -- 原 test_build_forward_return_frame_prefers_adjusted_close --
     def _section_0_test_build_forward_return_frame_prefers_adjusted_close():
         from factorzen.pipelines.daily_single import _build_forward_return_frame
@@ -445,6 +445,91 @@ def test_build_forward_return_frame_suite():
         assert stock_b["fwd_ret_1d"][0] == pytest.approx(0.1)
 
     _section_2_test_build_forward_return_frame_falls_back_per_stock_for_partial_adjusted_close()
+
+    # -- 显式 exec_price_col 缺列必须 fail-loudly，禁止静默回退 close→close --
+    def _section_3_test_exec_price_col_missing_raises():
+        from factorzen.pipelines.daily_single import _build_forward_return_frame
+
+        daily = pl.DataFrame(
+            {
+                "trade_date": [date(2024, 1, 2), date(2024, 1, 3)],
+                "ts_code": ["000001.SZ", "000001.SZ"],
+                "close": [10.0, 11.0],
+                "close_adj": [10.0, 11.0],
+            }
+        )
+        with pytest.raises(ValueError, match="exec_price_col"):
+            _build_forward_return_frame(daily, exec_lag=1, exec_price_col="open_adj")
+
+    _section_3_test_exec_price_col_missing_raises()
+
+
+def test_exec_price_col_vs_price_col_path_parity():
+    """两条等价路径的 fwd_ret 数值对拍，防双路径漂移。
+
+    A) daily_single 实现：``price_col=open_adj, exec_price_col=None``
+    B) 生产/文档口径：``price_col=close_adj, exec_price_col=open_adj``
+
+    在合成价格帧上 ``exec_lag=1`` 时 ``fwd_ret_1d`` 必须逐位一致。
+    """
+    from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
+
+    # 两只股票 × 4 日；open 与 close 系统错位，足以暴露路径分歧
+    daily = pl.DataFrame(
+        {
+            "trade_date": (
+                [date(2024, 1, d) for d in (2, 3, 4, 5)] * 2
+            ),
+            "ts_code": ["A"] * 4 + ["B"] * 4,
+            "close_adj": [10.0, 11.0, 12.0, 13.0, 20.0, 19.0, 21.0, 22.0],
+            "open_adj": [9.5, 10.5, 11.5, 12.5, 19.5, 18.5, 20.5, 21.5],
+        }
+    ).sort(["ts_code", "trade_date"])
+
+    # A：与 _build_forward_return_frame 可实现分支同构
+    path_a = compute_fwd_returns(
+        daily.select(["trade_date", "ts_code", "open_adj"]).with_columns(
+            (pl.col("open_adj") / pl.col("open_adj").shift(1).over("ts_code") - 1).alias("ret")
+        ),
+        ret_col="ret",
+        price_col="open_adj",
+        exec_lag=1,
+        exec_price_col=None,
+        horizons=[1],
+    )
+
+    # B：生产文档口径（标签价 close_adj + 成交价 open_adj）
+    path_b = compute_fwd_returns(
+        daily.select(["trade_date", "ts_code", "close_adj", "open_adj"]).with_columns(
+            (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1).alias("ret")
+        ),
+        ret_col="ret",
+        price_col="close_adj",
+        exec_lag=1,
+        exec_price_col="open_adj",
+        horizons=[1],
+    )
+
+    a = path_a.sort(["ts_code", "trade_date"])["fwd_ret_1d"].to_list()
+    b = path_b.sort(["ts_code", "trade_date"])["fwd_ret_1d"].to_list()
+    assert len(a) == len(b) == 8
+    for i, (va, vb) in enumerate(zip(a, b, strict=True)):
+        if va is None or (isinstance(va, float) and va != va):  # NaN
+            assert vb is None or (isinstance(vb, float) and vb != vb), i
+        else:
+            assert va == pytest.approx(vb, abs=1e-12, rel=0), (i, va, vb)
+
+    # 与 _build_forward_return_frame 接线一致
+    from factorzen.pipelines.daily_single import _build_forward_return_frame
+
+    via_helper = _build_forward_return_frame(
+        daily, exec_lag=1, exec_price_col="open_adj",
+    ).sort(["ts_code", "trade_date"])["fwd_ret_1d"].to_list()
+    for i, (va, vh) in enumerate(zip(a, via_helper, strict=True)):
+        if va is None or (isinstance(va, float) and va != va):
+            assert vh is None or (isinstance(vh, float) and vh != vh), i
+        else:
+            assert va == pytest.approx(vh, abs=1e-12, rel=0), (i, va, vh)
 
 
 def test_run_backtest_strategies_wiring_suite():

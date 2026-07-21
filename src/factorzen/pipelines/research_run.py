@@ -111,13 +111,18 @@ def run_research(*, start: str, end: str, universe: str | None = None,
                  lookback: int = 60, run_id: str | None = None,
                  out_root: str = "workspace", command: list[str] | None = None,
                  intraday: bool = False, intraday_freq: str = "5min",
-                 intraday_expr_leaves: list[str] | None = None) -> dict:
+                 intraday_expr_leaves: list[str] | None = None,
+                 exec_lag: int = 1,
+                 exec_price_col: str | None = "open_adj") -> dict:
     """一条命令跑通 mine → 头部 passed 因子 → 按调仓日循环 build → sim → report。
 
     ``intraday`` / ``intraday_freq`` / ``intraday_expr_leaves`` 透传给 ``run_mine``，
     把 i_*（17 个 builtin）与 ix_*（scout 提案的 bar 级表达式叶）纳入挖掘搜索空间；
     α 面板经 ``ExpressionFactor.compute`` 在表达式含 i_* 时自动 attach 日内面板，
     风险/组合/sim 不直接消费 i_* 叶子。
+
+    ``exec_lag`` / ``exec_price_col``：挖掘段成交口径，与 ``fz mine search`` 默认可实现
+    口径一致（1 / open_adj）；旧口径对照传 ``exec_lag=0``。
 
     返回 ``{run_id, expression, n_rebalances, mining_session_dir, portfolios_root,
     sim_dir, report_html, sharpe, ann_ret}``。所有产物落 ``{out_root}/{stage}/{run_id}...``。
@@ -147,7 +152,8 @@ def run_research(*, start: str, end: str, universe: str | None = None,
     mine_res = run_mine(start=start, end=end, universe=universe, n_trials=n_trials,
                         top_k=top_k, seed=seed, method=method,
                         intraday=intraday, intraday_freq=intraday_freq,
-                        intraday_expr_leaves=intraday_expr_leaves)
+                        intraday_expr_leaves=intraday_expr_leaves,
+                        exec_lag=exec_lag, exec_price_col=exec_price_col)
     expr = _select_passed_expression(mine_res["candidates"])
 
     # ── 2) 整段因子面板：union 拉取（替代期末快照，消除调出股整窗消失）──

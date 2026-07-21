@@ -98,7 +98,7 @@ def _attach_close_adj(daily: pl.DataFrame, adj: pl.DataFrame) -> pl.DataFrame:
 def _load_daily_with_close_adj(start: str, end: str) -> pl.DataFrame:
     """load 日线并 join 复权因子派生 close_adj，供前向收益/IC 标签使用。
 
-    fz report build 历史上用未复权 close 构造前向收益，与 fz factor test（走
+    fz report build 历史上用未复权 close 构造前向收益，与 fz factor run（走
     DailyContext.daily，优先 close_adj）口径分叉，且 A 股除权除息日 close 跳空
     会污染 IC/单调性/分层 IC。这里补上 close_adj；adj_factor 缺失时优雅回退。
     """
@@ -333,7 +333,7 @@ def _run(
             f"预处理完成 (去极值 → 填充 → 标准化 → 逐日 PIT 过滤, n={clean_df.height})"
         )
 
-        # ── 6. 前向收益（用复权价，与 fz factor test 口径一致，避免除权跳空污染 IC）──
+        # ── 6. 前向收益（用复权价，与 fz factor run 口径一致，避免除权跳空污染 IC）──
         daily = _load_daily_with_close_adj(args.start, args.end)
         if daily.is_empty():
             logger.error("日线数据为空，无法计算收益")

@@ -7,7 +7,7 @@ tests and embedding callers can still replace command functions before dispatch.
 from __future__ import annotations
 
 import argparse
-from typing import Any
+from typing import Any, Protocol
 
 from factorzen.config.settings import (
     COMBINATIONS_DIR,
@@ -18,6 +18,12 @@ from factorzen.config.settings import (
     PORTFOLIOS_DIR,
     REPORTS_DIR,
 )
+
+
+class _ArgAdder(Protocol):
+    """``ArgumentParser`` 与 ``_ArgumentGroup`` 的最小共用面（仅 ``add_argument``）。"""
+
+    def add_argument(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
@@ -35,7 +41,7 @@ def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--benchmark", default=None, help="Benchmark index code")
     parser.add_argument("--config", default=None, help="YAML run config path")
-    parser.add_argument("--seed", type=int, default=None, help="Global random seed")
+    parser.add_argument("--seed", type=int, default=42, help="Global random seed (default 42)")
     parser.add_argument(
         "--set",
         action="append",
@@ -45,6 +51,7 @@ def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
         help="Override any config field, repeatable: --set backtest.top_n=30",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print effective config without running")
+    _add_exec_convention_args(parser)
 
 
 def _add_report_build_arguments(parser: argparse.ArgumentParser) -> None:
@@ -66,35 +73,36 @@ def _add_report_build_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default=None, help="YAML run config path")
 
 
-def _add_freq_arg(p: argparse.ArgumentParser) -> None:
+def _add_freq_arg(p: _ArgAdder) -> None:
     p.add_argument("--freq", choices=["1m", "5m", "15m", "1h", "daily"], default="daily",
                    help="bar 粒度(仅 crypto;ashare 只支持 daily)")
 
 
-def _add_exec_convention_args(p: argparse.ArgumentParser) -> None:
+def _add_exec_convention_args(p: _ArgAdder) -> None:
     """成交口径旗标：把「信号什么时候能真的成交」变成显式选择。
 
-    默认 ``--exec-lag 0`` 沿用历史口径 ``close[t+1]/close[t]``——它隐含
-    「t 日收盘成交」，而算信号本身需要 t 日收盘价，**实际不可实现**。
+    **默认 = 可实现口径** ``--exec-lag 1 --exec-price-col open_adj``
+    （open[t+2]/open[t+1]，即 t 日信号 → t+1 开盘进、t+2 开盘出）。
     项目铁律是「t 日算 → t+1 执行」(CLAUDE.md PIT 自查第 8 条)。
 
-    实测代价（csi500，库 120 active，lgbm 组合 top 桶年化超额）：
-    默认口径 +35.20%，其中**隔夜段 close_t→open_{t+1} 占 100%**（日内仅 +0.05%）；
-    换成 ``--exec-lag 1 --exec-price-col open_adj``（即 open[t+2]/open[t+1]）
-    只剩 **+10.08%**。部分机制：库含涨跌停叶，涨停股次日跳空可预测，
-    但 t 日收盘已封死买不到。
+    旧口径 ``close[t+1]/close[t]`` 隐含「t 日收盘成交」，而算信号需要 t 日
+    收盘价，**实际不可实现**，且系统性高估可实现收益（csi500 实测隔夜段占
+    top 桶超额的 100%）。仅对照用时显式 ``--exec-lag 0``（并视需要覆盖
+    ``--exec-price-col`` 回 close 列）。
 
-    ⇒ 默认口径**系统性高估**可实现收益；要评判能真正成交的 alpha 请显式开启。
+    注意：因子库裁决链（rebuild / lift-test / forward-track）**不**挂本组旗标，
+    保持历史库口径一致性。
     """
     p.add_argument(
-        "--exec-lag", dest="exec_lag", type=int, default=0,
-        help="成交滞后(交易日)。0=t 日成交(默认,向后兼容但不可实现)；"
-             "1=t+1 成交(配 --exec-price-col open_adj 即可实现口径)",
+        "--exec-lag", dest="exec_lag", type=int, default=1,
+        help="成交滞后(交易日)。默认 1=可实现口径 open_adj t+1→t+2；"
+             "0=旧 close→close（不可实现，仅对照用）",
     )
     p.add_argument(
-        "--exec-price-col", dest="exec_price_col", default=None,
-        help="成交价格列(如 open_adj)。缺省沿用收盘价；"
-             "与 --exec-lag 1 合用 = open[t+2]/open[t+1]",
+        "--exec-price-col", dest="exec_price_col", default="open_adj",
+        help="成交价格列。默认 open_adj（可实现口径）；"
+             "与 --exec-lag 1 合用 = open[t+2]/open[t+1]；"
+             "旧口径对照可显式传 close / close_adj",
     )
 
 
@@ -131,11 +139,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
 
     run = factor_sub.add_parser("run", help="Run a single factor evaluation")
     _add_factor_run_arguments(run)
-    run.set_defaults(func=commands._cmd_factor_test)
-
-    test = factor_sub.add_parser("test", help="Deprecated alias for 'factor run'")
-    _add_factor_run_arguments(test)
-    test.set_defaults(func=commands._cmd_factor_test)
+    run.set_defaults(func=commands._cmd_factor_run)
 
     sweep = factor_sub.add_parser("sweep", help="Parameter grid sweep over --set overrides")
     sweep.add_argument("name", nargs="?", help="Factor name (or supply via --config)")
@@ -175,11 +179,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
 
     path_cmd = report_sub.add_parser("path", help="Print report path for a run")
     path_cmd.add_argument("run_id")
-    path_cmd.set_defaults(func=commands._cmd_report_open)
-
-    open_cmd = report_sub.add_parser("open", help="Deprecated alias for 'report path'")
-    open_cmd.add_argument("run_id")
-    open_cmd.set_defaults(func=commands._cmd_report_open)
+    path_cmd.set_defaults(func=commands._cmd_report_path)
 
     pf_report = report_sub.add_parser("portfolio", help="Generate portfolio dashboard HTML report")
     pf_report.add_argument(
@@ -288,49 +288,51 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     mine_sub = mine.add_subparsers(dest="mine_command", required=True)
 
     m_search = mine_sub.add_parser("search", help="Search candidate factor expressions")
-    m_search.add_argument("--start", required=True, help="Start date YYYYMMDD")
-    m_search.add_argument("--end", required=True, help="End date YYYYMMDD")
-    m_search.add_argument("--universe", default=None, help="Universe name (e.g. csi500)")
-    m_search.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    ms_common = m_search.add_argument_group("常用")
+    ms_adv = m_search.add_argument_group("高级（很少需要改）")
+    ms_common.add_argument("--start", required=True, help="Start date YYYYMMDD")
+    ms_common.add_argument("--end", required=True, help="End date YYYYMMDD")
+    ms_common.add_argument("--universe", default=None, help="Universe name (e.g. csi500)")
+    ms_common.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
                           help="Market profile (default ashare; crypto=USDT-M perps; "
                                "futures=国内商品期货主力连续; us=S&P500 Yahoo 后复权)")
-    m_search.add_argument("--top-n", dest="top_n", type=int, default=50,
+    ms_common.add_argument("--top-n", dest="top_n", type=int, default=50,
                           help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)")
-    m_search.add_argument("--method", choices=["random", "genetic"], default="random")
-    m_search.add_argument("--trials", type=int, default=200)
-    m_search.add_argument("--top-k", dest="top_k", type=int, default=10)
-    m_search.add_argument("--seed", type=int, default=42)
-    m_search.add_argument("--workers", type=int, default=1,
+    ms_common.add_argument("--method", choices=["random", "genetic"], default="random")
+    ms_common.add_argument("--trials", type=int, default=200)
+    ms_common.add_argument("--top-k", dest="top_k", type=int, default=10)
+    ms_common.add_argument("--seed", type=int, default=42)
+    ms_adv.add_argument("--workers", type=int, default=1,
                           help="遗传搜索并行评分线程数(默认 1;同 seed 结果与串行等价)")
-    m_search.add_argument("--holdout-ratio", dest="holdout_ratio", type=float, default=0.2,
+    ms_adv.add_argument("--holdout-ratio", dest="holdout_ratio", type=float, default=0.2,
                           help="永久隔离的 OOS holdout 占比（默认 0.2）")
-    m_search.add_argument("--train-ratio", dest="train_ratio", type=float, default=0.7,
+    ms_adv.add_argument("--train-ratio", dest="train_ratio", type=float, default=0.7,
                           help="mining 段内 train/valid 切分比例（默认 0.7）")
-    m_search.add_argument("--decorr-threshold", dest="decorr_threshold", type=float, default=0.7,
+    ms_adv.add_argument("--decorr-threshold", dest="decorr_threshold", type=float, default=0.7,
                           help="top-K 贪心去相关的 |corr| 门槛，≥该值视为近重复剔除（默认 0.7）")
-    m_search.add_argument("--min-n-train", dest="min_n_train", type=int, default=5,
+    ms_adv.add_argument("--min-n-train", dest="min_n_train", type=int, default=5,
                           help="候选 train 段最少有效 IC 天数，不足则丢弃（默认 5）")
-    m_search.add_argument("--dsr-alpha", dest="dsr_alpha", type=float, default=DEFAULT_DSR_ALPHA,
+    ms_adv.add_argument("--dsr-alpha", dest="dsr_alpha", type=float, default=DEFAULT_DSR_ALPHA,
                           help="护栏 passed 标记的 DSR 显著性阈值（默认 0.10，2026-07 松一档）")
-    m_search.add_argument("--no-library", dest="no_library", action="store_true",
+    ms_adv.add_argument("--no-library", dest="no_library", action="store_true",
                           help=f"关闭收尾自动 upsert 因子库（默认开，passed 候选进 {FACTOR_LIBRARY_DIR}）")
-    m_search.add_argument("--no-library-orthogonal", dest="no_library_orthogonal",
+    ms_adv.add_argument("--no-library-orthogonal", dest="no_library_orthogonal",
                           action="store_true",
                           help="关闭搜索期库级正交过滤（默认开：top-K 贪心去相关时避开库内 active 方向；"
                                "与 --no-library 无关，后者只关收尾 upsert）")
-    m_search.add_argument("--objective", choices=["raw", "residual"], default="residual",
+    ms_adv.add_argument("--objective", choices=["raw", "residual"], default="residual",
                           help="挖掘评估目标：residual=对库内 active 因子截面正交后的残差 IC "
                                "（默认；库空自动退化为 raw）；raw=裸 Rank IC（旧口径）")
-    m_search.add_argument(
+    ms_adv.add_argument(
         "--intraday-leaves", dest="intraday_leaves", action="store_true",
         help="启用日内特征叶子 i_* 接入挖掘（仅 ashare；默认关，零回归）",
     )
-    m_search.add_argument(
+    ms_adv.add_argument(
         "--intraday-freq", dest="intraday_freq", default="5min",
         help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
     )
-    _add_freq_arg(m_search)
-    _add_exec_convention_args(m_search)
+    _add_freq_arg(ms_adv)
+    _add_exec_convention_args(ms_adv)
     m_search.set_defaults(func=commands._cmd_mine_search)
 
     m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
@@ -364,138 +366,142 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     m_exp.set_defaults(func=commands._cmd_mine_export_alpha)
 
     m_agent = mine_sub.add_parser("agent", help="LLM-guided agent factor mining")
-    m_agent.add_argument("--start", required=True)
-    m_agent.add_argument("--end", required=True)
-    m_agent.add_argument("--universe", default=None)
-    m_agent.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    ma_common = m_agent.add_argument_group("常用")
+    ma_adv = m_agent.add_argument_group("高级（很少需要改）")
+    ma_common.add_argument("--start", required=True)
+    ma_common.add_argument("--end", required=True)
+    ma_common.add_argument("--universe", default=None)
+    ma_common.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
                          help="Market profile (default ashare; crypto=USDT-M perps via Vision lake; "
                               "futures=国内商品期货主力连续 via Tushare; us=S&P500 via Yahoo chart)")
-    m_agent.add_argument("--symbols", default=None,
+    ma_common.add_argument("--symbols", default=None,
                          help="crypto/futures/us only: 逗号分隔 symbols；缺省=universe Top-N 快照")
-    m_agent.add_argument("--top-n", dest="top_n", type=int, default=50,
+    ma_common.add_argument("--top-n", dest="top_n", type=int, default=50,
                          help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)")
-    m_agent.add_argument("--iterations", type=int, default=5)
-    m_agent.add_argument("--top-k", dest="top_k", type=int, default=5)
-    m_agent.add_argument("--seed", type=int, default=42)
-    m_agent.add_argument("--human-review", action="store_true", dest="human_review")
-    m_agent.add_argument("--patience", type=commands._positive_patience, default=None,
+    ma_common.add_argument("--iterations", type=int, default=5)
+    ma_common.add_argument("--top-k", dest="top_k", type=int, default=5)
+    ma_common.add_argument("--seed", type=int, default=42)
+    ma_adv.add_argument("--human-review", action="store_true", dest="human_review")
+    ma_adv.add_argument("--patience", type=commands._positive_patience, default=None,
                          help="连续 N 轮无新候选则早停（N>=1；默认不早停，跑满 --iterations）")
-    m_agent.add_argument("--heal-rounds", dest="heal_rounds", type=int, default=2,
+    ma_adv.add_argument("--heal-rounds", dest="heal_rounds", type=int, default=2,
                          help="表达式解析失败时回灌 LLM 修正的最大轮数（0=关闭）")
-    m_agent.add_argument("--no-library-orthogonal", dest="no_library_orthogonal",
+    ma_adv.add_argument("--no-library-orthogonal", dest="no_library_orthogonal",
                          action="store_true",
                          help="关闭搜索期库级正交过滤（默认开：护栏阶段避开库内 active 方向）")
-    m_agent.add_argument("--objective", choices=["raw", "residual"], default="residual",
+    ma_adv.add_argument("--objective", choices=["raw", "residual"], default="residual",
                         help="挖掘评估目标：residual=对库残差 IC（默认；库空→raw）；raw=裸 IC")
-    m_agent.add_argument(
+    ma_adv.add_argument(
         "--intraday-leaves", dest="intraday_leaves", action="store_true",
         help="启用日内特征叶子 i_* 接入挖掘（仅 ashare；默认关，零回归）",
     )
-    m_agent.add_argument(
+    ma_adv.add_argument(
         "--intraday-freq", dest="intraday_freq", default="5min",
         help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
     )
-    m_agent.add_argument(
+    ma_adv.add_argument(
         "--intraday-scout", dest="intraday_scout", action="store_true",
         help="启用日内 Feature Scout：每轮 LLM 提案 bar 表达式并注入 session（隐含 "
              "--intraday-leaves；仅 ashare；默认关）",
     )
-    m_agent.add_argument(
+    ma_adv.add_argument(
         "--scout-k", dest="scout_k", type=int, default=4,
         help="每轮 Scout 提案条数（默认 4；仅 --intraday-scout）",
     )
-    m_agent.add_argument(
+    ma_adv.add_argument(
         "--scout-max-leaves", dest="scout_max_leaves", type=int, default=12,
         help="session 最多注入 ix_* 叶数（默认 12；仅 --intraday-scout）",
     )
-    _add_freq_arg(m_agent)
-    _add_exec_convention_args(m_agent)
+    _add_freq_arg(ma_adv)
+    _add_exec_convention_args(ma_adv)
     m_agent.set_defaults(func=commands._cmd_mine_agent)
 
     m_team = mine_sub.add_parser("team", help="Multi-agent team factor mining")
-    m_team.add_argument("--start", required=True)
-    m_team.add_argument("--end", required=True)
-    m_team.add_argument("--universe", default=None)
-    m_team.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
+    mt_common = m_team.add_argument_group("常用")
+    mt_adv = m_team.add_argument_group("高级（很少需要改）")
+    mt_common.add_argument("--start", required=True)
+    mt_common.add_argument("--end", required=True)
+    mt_common.add_argument("--universe", default=None)
+    mt_common.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
                         help="Market profile (default ashare; crypto=USDT-M perps via Vision lake; "
                              "futures=国内商品期货主力连续 via Tushare; us=S&P500 via Yahoo chart)")
-    m_team.add_argument("--symbols", default=None,
+    mt_common.add_argument("--symbols", default=None,
                         help="crypto/futures/us only: 逗号分隔 symbols；缺省=universe Top-N 快照")
-    m_team.add_argument("--top-n", dest="top_n", type=int, default=50,
+    mt_common.add_argument("--top-n", dest="top_n", type=int, default=50,
                         help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)")
-    m_team.add_argument("--iterations", type=int, default=5)
-    m_team.add_argument("--top-k", dest="top_k", type=int, default=5)
-    m_team.add_argument("--seed", type=int, default=42)
-    m_team.add_argument("--index-path", dest="index_path",
-                        default=str(MINE_TEAM_DIR / "experiment_index.jsonl"))
-    m_team.add_argument("--structured", action="store_true",
+    mt_common.add_argument("--iterations", type=int, default=5)
+    mt_common.add_argument("--top-k", dest="top_k", type=int, default=5)
+    mt_common.add_argument("--seed", type=int, default=42)
+    mt_common.add_argument("--structured", action="store_true",
                         help="结构化假设(机制/预期符号/证伪判据) + 任务分解后逐任务翻译")
-    m_team.add_argument("--patience", type=commands._positive_patience, default=None,
+    mt_adv.add_argument("--index-path", dest="index_path",
+                        default=str(MINE_TEAM_DIR / "experiment_index.jsonl"))
+    mt_adv.add_argument("--patience", type=commands._positive_patience, default=None,
                         help="连续 N 轮无新候选则早停（N>=1；默认不早停，跑满 --iterations）")
-    m_team.add_argument("--heal-rounds", dest="heal_rounds", type=int, default=2,
+    mt_adv.add_argument("--heal-rounds", dest="heal_rounds", type=int, default=2,
                         help="表达式解析失败时回灌 LLM 修正的最大轮数（0=关闭）")
-    m_team.add_argument("--hypotheses-per-round", dest="hypotheses_per_round",
+    mt_adv.add_argument("--hypotheses-per-round", dest="hypotheses_per_round",
                         type=int, default=1,
                         help="每轮提多少个假设（默认1；>1 提升单轮产能，护栏/Critic 仍每轮一次）")
-    m_team.add_argument("--no-library", dest="no_library", action="store_true",
+    mt_adv.add_argument("--no-library", dest="no_library", action="store_true",
                         help=f"关闭收尾自动 upsert 因子库（默认开，最终候选进 {FACTOR_LIBRARY_DIR}）")
-    m_team.add_argument("--no-library-orthogonal", dest="no_library_orthogonal",
+    mt_adv.add_argument("--no-library-orthogonal", dest="no_library_orthogonal",
                         action="store_true",
                         help="关闭搜索期库级正交过滤（默认开：护栏阶段避开库内 active 方向；"
                              "与 --no-library 无关，后者只关收尾 upsert）")
-    m_team.add_argument("--objective", choices=["raw", "residual"], default="residual",
+    mt_adv.add_argument("--objective", choices=["raw", "residual"], default="residual",
                        help="挖掘评估目标：residual=对库残差 IC（默认；库空→raw）；raw=裸 IC")
-    m_team.add_argument("--no-campaign-prior", dest="no_campaign_prior",
+    mt_adv.add_argument("--no-campaign-prior", dest="no_campaign_prior",
                         action="store_true",
                         help="关闭跨 session trial family 记账（默认开：finalize 的 DSR 用"
                              "同评价配置历史唯一表达式∪本 session 的 N，防多重检验清零漏记）")
-    m_team.add_argument("--llm-workers", dest="llm_workers", type=int, default=4,
+    mt_adv.add_argument("--llm-workers", dest="llm_workers", type=int, default=4,
                         help="轮内独立 LLM 调用的并发度（默认 4 提速；1=串行零回归；"
                              "API/pipeline 缺省仍为 1）")
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--no-auto-lift", dest="no_auto_lift", action="store_true",
         help="关闭 session 末自动组 lift 裁决（默认开：lift_queue 候选组测+入库）",
     )
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--no-sleeve-gate", dest="no_sleeve_gate", action="store_true",
         help="关闭稀疏因子 sleeve 旁路（默认开：非零覆盖<20%% 时补算子集 IC，"
              "达标则进 lift_queue 而非直接拒）",
     )
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--lift-se-mult", dest="lift_se_mult", type=float, default=1.0,
         help="lift 准入 SE 乘数（默认 1.0：lift ≥ max(threshold, se_mult×SE)）",
     )
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--lift-workers", dest="lift_workers", type=int, default=None,
         help="session 末 lift 逐候选线程并发（默认自适应可用内存，上限 4；1=串行）",
     )
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--intraday-leaves", dest="intraday_leaves", action="store_true",
         help="启用日内特征叶子 i_* 接入挖掘（仅 ashare；默认关，零回归）",
     )
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--intraday-freq", dest="intraday_freq", default="5min",
         help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
     )
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--intraday-scout", dest="intraday_scout", action="store_true",
         help="启用日内 Feature Scout：每轮 LLM 提案 bar 表达式并注入 session（隐含 "
              "--intraday-leaves；仅 ashare；默认关）",
     )
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--scout-k", dest="scout_k", type=int, default=4,
         help="每轮 Scout 提案条数（默认 4；仅 --intraday-scout）",
     )
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--scout-max-leaves", dest="scout_max_leaves", type=int, default=12,
         help="session 最多注入 ix_* 叶数（默认 12；仅 --intraday-scout）",
     )
-    m_team.add_argument(
+    mt_adv.add_argument(
         "--pool-subproc", dest="pool_subproc", action="store_true",
         help="池构建放子进程，退出全额归还内存；等效 env FACTORZEN_POOL_SUBPROC=1",
     )
-    _add_exec_convention_args(m_team)
-    _add_freq_arg(m_team)
+    _add_exec_convention_args(mt_adv)
+    _add_freq_arg(mt_adv)
     m_team.set_defaults(func=commands._cmd_mine_team)
 
     # ── fz pool-prebuild ──（mine team 库池预构建；子进程内存隔离）
@@ -611,42 +617,23 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "lift-test",
         help="灰区候选 / registry python 因子组合增量 lift 实验 → 通过者以 status=probation 入库（第二通道）",
     )
-    fl_lt.add_argument(
+    fl_lt_common = fl_lt.add_argument_group("常用")
+    fl_lt_adv = fl_lt.add_argument_group("高级（很少需要改）")
+    fl_lt_common.add_argument(
         "--session", nargs="+", required=False, default=None,
         help="mine_team / mine-agent / mining_session 的 run 目录（含 manifest.json）；"
              "与 --factor 至少一个",
     )
-    fl_lt.add_argument(
+    fl_lt_common.add_argument(
         "--factor", nargs="+", default=None,
         help="registry 因子名（python 型）；与 --session 至少一个；"
              "要求 market=ashare 且 --universe 必填",
     )
-    fl_lt.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
-    fl_lt.add_argument("--start", required=True, help="评估窗口起点 YYYYMMDD")
-    fl_lt.add_argument("--end", required=True, help="评估窗口终点 YYYYMMDD")
-    fl_lt.add_argument("--universe", default=None, help="A股 universe 名（如 csi300）")
-    fl_lt.add_argument(
-        "--top-m", dest="top_m", type=int, default=20,
-        help="按 |residual_ic_train| 取 top-M 控成本（默认 20；--top-m 0=全测逃生口；"
-             "截断会 stderr 大声打印并记 truncated_from）",
-    )
-    fl_lt.add_argument(
-        "--queue-ic-floor", dest="queue_ic_floor", type=float, default=None,
-        help="sub-floor 噪声地板：|train IC| 低于此值的候选默认剔出组门"
-             "（默认按候选口径取 DEFAULT_GRAY_IC_FLOOR=0.008 残差 / "
-             "DEFAULT_RAW_GRAY_IC_FLOOR=0.010 裸 IC；无 IC 指标的候选不受影响）",
-    )
-    fl_lt.add_argument(
-        "--include-sub-floor", dest="include_sub_floor", action="store_true",
-        help="逃生口：sub-floor 候选照旧进组门（复现旧行为）。"
-             "注意组门是等权残差组合，噪声占多数时会连坐拒掉真信号",
-    )
-    fl_lt.add_argument("--threshold", type=float, default=None,
-                       help="RankIC lift 阈值（默认 DEFAULT_LIFT_THRESHOLD=0.001）")
-    fl_lt.add_argument("--seed", type=int, default=0)
-    fl_lt.add_argument("--library-root", dest="library_root", default=None,
-                       help=f"因子库根目录（默认 {FACTOR_LIBRARY_DIR}）")
-    fl_lt_write = fl_lt.add_mutually_exclusive_group()
+    fl_lt_common.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
+    fl_lt_common.add_argument("--start", required=True, help="评估窗口起点 YYYYMMDD")
+    fl_lt_common.add_argument("--end", required=True, help="评估窗口终点 YYYYMMDD")
+    fl_lt_common.add_argument("--universe", default=None, help="A股 universe 名（如 csi300）")
+    fl_lt_write = fl_lt_common.add_mutually_exclusive_group()
     fl_lt_write.add_argument(
         "--apply", dest="apply", action="store_true",
         help="将通过的候选写入因子库，并将 lift 拒绝写回 experiment_index"
@@ -656,42 +643,63 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "--dry-run", dest="dry_run", action="store_true",
         help="只打印不写库（当前已是默认行为，保留为兼容旗标）",
     )
-    fl_lt.add_argument(
+    fl_lt_adv.add_argument(
+        "--top-m", dest="top_m", type=int, default=20,
+        help="按 |residual_ic_train| 取 top-M 控成本（默认 20；--top-m 0=全测逃生口；"
+             "截断会 stderr 大声打印并记 truncated_from）",
+    )
+    fl_lt_adv.add_argument(
+        "--queue-ic-floor", dest="queue_ic_floor", type=float, default=None,
+        help="sub-floor 噪声地板：|train IC| 低于此值的候选默认剔出组门"
+             "（默认按候选口径取 DEFAULT_GRAY_IC_FLOOR=0.008 残差 / "
+             "DEFAULT_RAW_GRAY_IC_FLOOR=0.010 裸 IC；无 IC 指标的候选不受影响）",
+    )
+    fl_lt_adv.add_argument(
+        "--include-sub-floor", dest="include_sub_floor", action="store_true",
+        help="逃生口：sub-floor 候选照旧进组门（复现旧行为）。"
+             "注意组门是等权残差组合，噪声占多数时会连坐拒掉真信号",
+    )
+    fl_lt_adv.add_argument("--threshold", type=float, default=None,
+                       help="RankIC lift 阈值（默认 DEFAULT_LIFT_THRESHOLD=0.001）")
+    fl_lt_adv.add_argument("--seed", type=int, default=0)
+    fl_lt_adv.add_argument("--library-root", dest="library_root", default=None,
+                       help=f"因子库根目录（默认 {FACTOR_LIBRARY_DIR}）")
+    fl_lt_adv.add_argument(
         "--se-mult", dest="se_mult", type=float, default=1.0,
         help="lift 准入 SE 乘数（默认 1.0：lift ≥ max(threshold, se_mult×SE)）",
     )
-    fl_lt.add_argument(
+    fl_lt_adv.add_argument(
         "--allow-active", dest="allow_active", action="store_true",
         help="允许 lift 裁决直接写 active（默认封顶 probation，待校准）",
     )
-    fl_lt.add_argument(
+    fl_lt_adv.add_argument(
         "--admission-start", dest="admission_start", default=None,
         help="lift 评分窗起点 YYYYMMDD（覆盖 session manifest holdout 推导）",
     )
-    fl_lt.add_argument(
+    fl_lt_adv.add_argument(
         "--admission-end", dest="admission_end", default=None,
         help="lift 评分窗终点 YYYYMMDD（覆盖 session manifest holdout 推导）",
     )
-    fl_lt.add_argument(
+    fl_lt_adv.add_argument(
         "--horizon", type=int, default=None,
         help="lift 前向持有期；默认跟随 session manifest 的 mining horizon，兜底 DEFAULT_HORIZON",
     )
-    fl_lt.add_argument(
+    fl_lt_adv.add_argument(
         "--lift-workers", dest="lift_workers", type=int, default=None,
         help="候选级 lift 线程并发（默认按可用内存自适应，上限 4；1=串行）",
     )
-    fl_lt.add_argument("--top-n", dest="top_n", type=int, default=50,
+    fl_lt_adv.add_argument("--top-n", dest="top_n", type=int, default=50,
                        help="crypto/futures/us universe size")
-    fl_lt.add_argument("--symbols", default=None)
-    fl_lt.add_argument(
+    fl_lt_adv.add_argument("--symbols", default=None)
+    fl_lt_adv.add_argument(
         "--intraday-leaves", dest="intraday_leaves", action="store_true",
         help="启用日内特征叶子 i_* 装帧（仅 ashare；库内已有 i_* 因子时也会自动置位）",
     )
-    fl_lt.add_argument(
+    fl_lt_adv.add_argument(
         "--intraday-freq", dest="intraday_freq", default="5min",
         help="日内特征面板频率（默认 5min；仅 ashare）",
     )
-    _add_freq_arg(fl_lt)
+    _add_freq_arg(fl_lt_adv)
     fl_lt.set_defaults(func=commands._cmd_factor_library_lift_test)
 
     fl_tl = fl_sub.add_parser(
@@ -858,7 +866,10 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "run", help="mine → 头部 passed 因子 → 按调仓日循环 build → sim → report（同一 run_id）")
     r_run.add_argument("--start", required=True, help="Start date YYYYMMDD")
     r_run.add_argument("--end", required=True, help="End date YYYYMMDD")
-    r_run.add_argument("--universe", default=None, help="Universe name (default all_a)")
+    r_run.add_argument(
+        "--universe", default=None,
+        help="Universe name（default None → 运行时解析为 all_a）",
+    )
     r_run.add_argument("--method", choices=["random", "genetic"], default="random")
     r_run.add_argument("--trials", type=int, default=200)
     r_run.add_argument("--top-k", dest="top_k", type=int, default=10)
@@ -885,6 +896,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "--intraday-freq", dest="intraday_freq", default="5min",
         help="日内特征频率",
     )
+    _add_exec_convention_args(r_run)
     r_run.set_defaults(func=commands._cmd_research_run)
 
     validate = sub.add_parser("validate", help="Overfitting / robustness checks")
@@ -1140,13 +1152,13 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     cbt.add_argument(
         "--strategy",
         default="quantile_ls_5",
-        help="策略名（默认 quantile_ls_5，与 fz eval/daily_single 无 YAML 默认一致）；"
+        help="策略名（默认 quantile_ls_5，与 fz factor run/daily_single 无 YAML 默认一致）；"
         "支持 quantile_ls_5 / topn_long_only / factor_weighted 等既有 registry 类",
     )
     cbt.add_argument("--start", required=True, help="回测起 YYYYMMDD")
     cbt.add_argument("--end", required=True, help="回测止 YYYYMMDD")
     cbt.add_argument(
-        "--universe", default="csi300", help="票池（默认 csi300；PIT membership 过滤）",
+        "--universe", default="all_a", help="票池（默认 all_a；PIT membership 过滤）",
     )
     cbt.add_argument(
         "--market", choices=["ashare"], default="ashare",

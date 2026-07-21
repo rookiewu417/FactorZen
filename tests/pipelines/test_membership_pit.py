@@ -235,6 +235,7 @@ def test_pipeline_membership_integration_suite(tmp_path):
                         "close": 10.0,
                         "close_adj": 10.0,
                         "open": 10.0,
+                        "open_adj": 10.0,  # 可实现口径默认 exec_price_col=open_adj
                         "high": 10.0,
                         "low": 10.0,
                         "vol": 1e5,

@@ -238,7 +238,7 @@ RankIC 用 average-rank Spearman（`core/stats.spearman_avg_rank`），与 `lift
 # 读 combine 产物的 oos_scores
 pixi run -- fz combine backtest \
   --run-dir workspace/combinations/<run_id> --method equal_weight \
-  --start 20200101 --end 20241231 --universe csi300
+  --start 20200101 --end 20241231 --universe all_a
 
 # 或任意分数面板
 pixi run -- fz combine backtest \
@@ -249,7 +249,7 @@ pixi run -- fz combine backtest \
 | 要点 | 行为 |
 |---|---|
 | 输入 | `--scores` 与 `--run-dir` **二选一**；后者需 `--method`（默认 `equal_weight`） |
-| 策略 | `--strategy` 默认 `quantile_ls_5`（与 `fz eval`/daily_single 无 YAML 默认一致）；另支持 `topn_long_only` 等既有 registry 类 |
+| 策略 | `--strategy` 默认 `quantile_ls_5`（与 `fz factor run`/daily_single 无 YAML 默认一致）；另支持 `topn_long_only` 等既有 registry 类 |
 | 成本 | `--cost-bps` 缺省 = daily_single 的 `LinearCostModel`；`0` = 零成本；显式 bps = 单边 commission |
 | 调仓 | `--rebalance-days` 缺省/1=逐日；`k>1` 时桥层把分数降采样到每 k 日并前向填充（非调仓日权重不变），引擎仍日环、净值逐日更新 |
 | 产物 | `workspace/combine_backtests/<run_id>/`：`manifest.json` + `metrics.json` + `nav.parquet` |

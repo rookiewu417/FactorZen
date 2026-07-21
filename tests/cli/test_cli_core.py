@@ -92,6 +92,10 @@ def test_pipeline_argv_forward_suite():
             "--seed",
             "42",
             "--dry-run",
+            "--exec-lag",
+            "1",
+            "--exec-price-col",
+            "open_adj",
         ]
 
     with pytest.MonkeyPatch.context() as mp:

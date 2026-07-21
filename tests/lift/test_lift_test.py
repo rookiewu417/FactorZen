@@ -378,6 +378,32 @@ def test_lift_admission_four_branches():
     }, threshold=thr) == "reject"
 
 
+def test_lift_admission_overlay_threshold():
+    """overlay 口径专用门(null q95=3.35e-4):同一 lift 值两口径判决相反。
+
+    实弹锚点:team_1002 roa overlay_lift=+4.1e-4——overlay 口径 active,
+    全截面口径 reject(0.001 门)。显式传非默认 threshold 时 overlay 不改门。
+    """
+    from factorzen.discovery.guardrails import OVERLAY_LIFT_THRESHOLD
+    from factorzen.discovery.lift_test import lift_admission
+
+    roa_like = {"lift": 4.1e-4, "lift_se": 1.5e-4, "lift_second_half": 3.3e-4}
+    # overlay 标记 → 门换 3.35e-4,4.1e-4 过(bar=max(3.35e-4, 1.5e-4)) → active
+    assert lift_admission({**roa_like, "overlay": True}) == "active"
+    # 无标记 → 0.001 门 → reject(两口径对照,证明分支有判别力)
+    assert lift_admission(roa_like) == "reject"
+    # 低于 overlay 门 → 仍 reject
+    assert lift_admission(
+        {"lift": OVERLAY_LIFT_THRESHOLD - 1e-9, "lift_se": 0.0,
+         "lift_second_half": 0.01, "overlay": True}) == "reject"
+    # 调用方显式改门(非默认值)时 overlay 不覆盖——显式意图优先
+    assert lift_admission({**roa_like, "overlay": True}, threshold=0.002) == "reject"
+    # overlay + second_half ≤ 0 → probation(其余规则不变)
+    assert lift_admission(
+        {"lift": 4.1e-4, "lift_se": 1.5e-4, "lift_second_half": -1e-5,
+         "overlay": True}) == "probation"
+
+
 def _signed_factor_panels(sign: float, n_days=60, n_stocks=40, seed=1):
     """构造单因子与 ret 同号/反号相关的面板（admission_ic 符号断言用）。
 

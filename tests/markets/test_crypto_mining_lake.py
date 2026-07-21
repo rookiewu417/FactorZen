@@ -519,6 +519,20 @@ def test_vision_parse_and_s3_suite(tmp_path):
 
     _section_0_test_parse_kline_csv_with_and_without_header()
 
+    # -- 新增:volume 前万行全整数、之后出现小数(实测 SOLUSDT 2025-04) --
+    def _section_0b_test_parse_kline_csv_late_float_volume():
+        # 按前 N 行推断 dtype 会把 volume 定成 i64,之后的 "6701.8" 解析即崩;
+        # 行数须超过推断窗口才有判别力。
+        head = b"1782604800000,60000.4,60018.7,60000.3,60018.6,"
+        tail = b",1782604859999,2259400.8,1187,12.342,740568.6,0\n"
+        rows = [head + (b"37" if i < 10_000 else b"6701.8") + tail for i in range(10_001)]
+        df = parse_kline_csv(b"".join(rows))
+        assert df.height == 10_001
+        assert df.schema["vol"] == pl.Float64
+        assert df["vol"].max() == pytest.approx(6701.8)
+
+    _section_0b_test_parse_kline_csv_late_float_volume()
+
     # -- 原 test_parse_funding_and_metrics --
     def _section_1_test_parse_funding_and_metrics():
         fr = parse_funding_csv(b"calc_time,funding_interval_hours,last_funding_rate\n"

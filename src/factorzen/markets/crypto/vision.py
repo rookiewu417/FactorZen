@@ -60,10 +60,15 @@ _KLINE_COLS = ["open_time", "open", "high", "low", "close", "volume", "close_tim
 
 
 def _read_csv(raw: bytes, header_prefix: bytes, cols: list[str]) -> pl.DataFrame:
+    """全列按 String 读入,由各 parser 显式 cast。
+
+    按前 N 行推断 dtype 会把只在文件后半段出现小数的列(实测 SOLUSDT 2025-04 的
+    ``volume``)定成 i64,解析当场崩;而下游本就逐列 cast,推断毫无收益。
+    """
     has_header = raw.split(b"\n", 1)[0].startswith(header_prefix)
     return pl.read_csv(io.BytesIO(raw), has_header=has_header,
                        new_columns=None if has_header else cols,
-                       infer_schema_length=10000)
+                       infer_schema_length=0)
 
 
 def parse_kline_csv(raw: bytes) -> pl.DataFrame:

@@ -405,10 +405,84 @@ def test_idiosyncratic_vol_20d(ctx):
     assert np.all(non_null >= 0), "Idiosyncratic vol must be non-negative"
 
 
-def test_volume_return_corr_20d(ctx):
-    from workspace.factors.daily.volume_return_corr_20d import VolumeReturnCorr20D
+def _write_synthetic_store_factor(store_root):
+    """合成 store 资产(与真实 volume_return_corr_20d 同逻辑)。
 
-    factor = VolumeReturnCorr20D()
+    CI 无 workspace/factor_store(gitignored 本地资产),测试必须自带 fixture,
+    不依赖磁盘上的真实因子——「本地绿 CI 红」惯犯模式。
+    """
+    import json
+
+    d = store_root / "ashare" / "volume_return_corr_20d"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(
+        json.dumps({"name": "volume_return_corr_20d", "kind": "python"}),
+        encoding="utf-8",
+    )
+    (d / "factor.py").write_text(
+        '''"""20-day volume-return correlation factor (synthetic test copy)."""
+import polars as pl
+
+from factorzen.daily.data.context import FactorDataContext
+from factorzen.daily.factors.base import DailyFactor
+
+
+class VolumeReturnCorr20D(DailyFactor):
+    name = "volume_return_corr_20d"
+    category = "daily"
+    frequency = "daily"
+    required_data = ["daily"]
+    lookback_days = 30
+    description = "20-day rolling Pearson correlation between 1-day return and log volume"
+
+    def compute(self, ctx: FactorDataContext) -> pl.DataFrame:
+        return (
+            ctx.daily.sort(["ts_code", "trade_date"])
+            .with_columns([
+                (pl.col("close_adj") / pl.col("close_adj").shift(1).over("ts_code") - 1.0)
+                .alias("_ret"),
+                pl.col("vol").log1p().alias("_log_vol"),
+            ])
+            .with_columns((pl.col("_ret") * pl.col("_log_vol")).alias("_rxv"))
+            .with_columns([
+                pl.col("_ret").rolling_mean(20, min_samples=10).over("ts_code").alias("_rm"),
+                pl.col("_log_vol").rolling_mean(20, min_samples=10).over("ts_code").alias("_vm"),
+                pl.col("_rxv").rolling_mean(20, min_samples=10).over("ts_code").alias("_rxvm"),
+                (pl.col("_ret") ** 2).rolling_mean(20, min_samples=10).over("ts_code").alias("_rsq"),
+                (pl.col("_log_vol") ** 2).rolling_mean(20, min_samples=10).over("ts_code").alias("_vsq"),
+            ])
+            .with_columns([
+                (pl.col("_rxvm") - pl.col("_rm") * pl.col("_vm")).alias("_cov"),
+                (pl.col("_rsq") - pl.col("_rm") ** 2).alias("_rv"),
+                (pl.col("_vsq") - pl.col("_vm") ** 2).alias("_vv"),
+            ])
+            .with_columns(
+                pl.when((pl.col("_rv") > 0) & (pl.col("_vv") > 0))
+                .then(pl.col("_cov") / (pl.col("_rv") * pl.col("_vv")).sqrt())
+                .otherwise(None)
+                .clip(-1.0, 1.0)
+                .alias("factor_value")
+            )
+            .filter(pl.col("trade_date") >= pl.lit(ctx.start).str.strptime(pl.Date, "%Y%m%d"))
+            .select(["trade_date", "ts_code", "factor_value"])
+            .filter(pl.col("factor_value").is_not_null() & pl.col("factor_value").is_finite())
+            .collect()
+        )
+
+
+VolumeReturnCorr20D()
+''',
+        encoding="utf-8",
+    )
+    return d
+
+
+def test_volume_return_corr_20d(ctx, tmp_path):
+    from factorzen.discovery.factor_store import load_python_factor_module
+
+    asset_dir = _write_synthetic_store_factor(tmp_path)
+    mod = load_python_factor_module(asset_dir / "factor.py")
+    factor = mod.VolumeReturnCorr20D()
     assert isinstance(factor, DailyFactor)
     result = factor.compute(ctx)
     _check_result(result, "volume_return_corr_20d")
@@ -440,20 +514,20 @@ def test_ep_ratio(ctx):
     assert np.all(non_null > 0), "E/P ratio must be positive"
 
 
-def test_factor_required_meta_suite():
-    """test_registry_has_new_factors；test_registry_has_qlib_factors"""
+def test_factor_required_meta_suite(tmp_path):
+    """test_registry_has_new_factors；test_registry_has_qlib_factors；store python 单路径"""
     # -- 原 test_registry_has_new_factors --
     def _section_0_test_registry_has_new_factors():
         from factorzen.daily.factors.registry import list_factors
 
         factors = list_factors()
+        # builtin 包扫描路径（不含 factor_store 用户因子）
         expected = [
             "amihud_illiquidity",
             "max_return_5d",
             "skewness_20d",
             "beta_60d",
             "idiosyncratic_vol_20d",
-            "volume_return_corr_20d",
             "bm_ratio",
             "ep_ratio",
             "asset_growth",
@@ -462,6 +536,23 @@ def test_factor_required_meta_suite():
             assert name in factors, f"Factor '{name}' not registered"
 
     _section_0_test_registry_has_new_factors()
+
+    # -- factor_store 单路径：load_library_factors 注入 python 用户因子 --
+    # 合成 store(tmp_path):CI 无本地 workspace/factor_store,不依赖真实资产
+    def _section_0b_store_python_factor_registered():
+        from factorzen.daily.factors.registry import list_factors
+        from factorzen.discovery.library_provider import load_library_factors
+
+        _write_synthetic_store_factor(tmp_path)
+        load_library_factors(
+            market="ashare", root=str(tmp_path / "empty_lib"), store_root=str(tmp_path)
+        )
+        factors = list_factors()
+        assert "volume_return_corr_20d" in factors, (
+            "store python factor volume_return_corr_20d not registered via load_library_factors"
+        )
+
+    _section_0b_store_python_factor_registered()
 
     # -- 原 test_registry_has_qlib_factors --
     def _section_1_test_registry_has_qlib_factors():

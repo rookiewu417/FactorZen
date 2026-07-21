@@ -112,7 +112,7 @@ FACTORZEN_POOL_SUBPROC=1 pixi run -- fz mine team ...
 ```bash
 # 用法 B：先离线预构建，多个 session 共享同一份池缓存
 pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi800 \
-  --out workspace/factors/_cache/pool_20260718
+  --out workspace/_ops/logs/pool_20260718
 
 pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi800 \
   --iterations 8 --pool-subproc

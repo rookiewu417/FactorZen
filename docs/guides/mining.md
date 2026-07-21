@@ -293,7 +293,7 @@ pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi500 \
 
 ```bash
 pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi500 \
-  --out workspace/factors/_cache/pool_20260718
+  --out workspace/_ops/logs/pool_20260718
 ```
 
 产物是 `--out` 目录下的 `pool_wide.parquet` + `pool_meta.json`。

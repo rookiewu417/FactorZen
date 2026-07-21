@@ -12,15 +12,13 @@
 
 | 位置 | 用途 | 是否随包分发 |
 |---|---|---|
-| `workspace/factors/<freq>/` | **你自己的因子**。写在这里 | ❌ 属于研究产出，不进 pip 包 |
+| `workspace/factor_store/<market>/<name>/` | **你自己的 python 因子**（三件套：meta.json + factor.py + 可选 parquet） | ❌ 属于研究产出，不进 pip 包 |
 | `src/factorzen/builtin_factors/<freq>/` | 平台自带因子（动量/反转/波动率/Barra 风格等） | ✅ 随包分发 |
 | `src/factorzen/builtin_factors/qlib/` | 框架自动生成的 Alpha158 / Alpha360 移植 | ✅ 随包分发，**不要手写** |
 
-`<freq>` 取 `daily` / `weekly` / `monthly` / `intraday`。
+用户因子**唯一**加载路径：`load_library_factors()` 扫描 `factor_store` 并把 `DailyFactor` 子类注入 registry。内置同名时 builtin 优先（`register(override=False)` 让位）。
 
-注册表在 `daily/factors/registry.py`，扫描顺序是**先内置、后 workspace**——同名时 workspace 的实现覆盖内置的。这让你可以在不改包代码的前提下替换某个自带因子。
-
-> ℹ️ 各频率目录下都有一份 `TEMPLATE.md`，含可直接复制的样板代码与检查点清单，比本文更贴近手边操作。
+裁决真相仍是 `workspace/factor_library/<market>.jsonl`；资产库是载体，用 `fz factor-library store sync` / `verify` 维护。
 
 ---
 
@@ -30,11 +28,9 @@
 pixi run -- fz factor new my_reversal --freq daily
 ```
 
-命令在 `workspace/factors/daily/my_reversal.py` 生成一个骨架并打印路径。`--freq` 决定落哪个目录和继承哪个基类；已存在同名文件时需要 `--force` 才覆盖。
+命令在 `workspace/factor_store/ashare/my_reversal/` 生成 `factor.py` + 最小 `meta.json` 并打印路径。`--freq` 写入 meta 并决定骨架继承哪个基类；已存在同名文件时需要 `--force` 才覆盖。
 
 > ⚠️ 这里的 `--freq` 是**因子注册频率**（`daily/weekly/monthly/intraday`），跟 `fz mine` 的 bar 粒度 `--freq {1m,5m,15m,1h,daily}` 完全是两回事。全 CLI 有三套 `--freq` 语义，见 [CLI 参考](../reference/cli.md)。
-
-> ⚠️ 命令只创建 `.py` 文件，不创建 `__init__.py`。四个标准频率目录都已经有 `__init__.py`（注册表靠 `importlib.import_module` 扫包，缺了整个目录会被静默跳过），只有你手工新建目录时才需要补。
 
 ---
 
@@ -63,7 +59,7 @@ class VolumeReturnCorr20D(DailyFactor):
         ...  # 返回 [trade_date, ts_code, factor_value]
 ```
 
-完整可跑的实现见 `workspace/factors/daily/volume_return_corr_20d.py`。
+完整可跑的实现见 `workspace/factor_store/ashare/volume_return_corr_20d/factor.py`。
 
 ### 类属性契约
 

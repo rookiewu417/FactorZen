@@ -65,7 +65,7 @@ pixi run -- fz mine search --help
 pixi run -- fz factor new my_reversal --freq daily
 ```
 
-**产物**：因子模板 `.py` 落在 `workspace/factors/daily/`（按频率分目录）。
+**产物**：`workspace/factor_store/ashare/<name>/factor.py` + `meta.json`（三件套脚手架）。
 
 ### fz factor list
 

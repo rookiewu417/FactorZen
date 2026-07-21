@@ -25,14 +25,9 @@ AGENTS.md
 workspace/*
 !workspace/configs/
 !workspace/configs/**
-!workspace/factors/
-!workspace/factors/**
 !workspace/factor_evaluations/
 workspace/factor_evaluations/*
 !workspace/factor_evaluations/.gitkeep
-!workspace/notebooks/
-workspace/notebooks/*
-!workspace/notebooks/.gitkeep
 !workspace/runs/
 workspace/runs/*
 !workspace/runs/.gitkeep

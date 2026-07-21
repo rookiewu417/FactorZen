@@ -516,11 +516,13 @@ def test_workspace_factor_new_suite(tmp_path):
 
         assert cli.main(["factor", "new", "my_alpha", "--freq", "daily"]) == 0
 
-        factor_path = tmp_path / "workspace" / "factors" / "daily" / "my_alpha.py"
+        asset = tmp_path / "workspace" / "factor_store" / "ashare" / "my_alpha"
+        factor_path = asset / "factor.py"
         assert factor_path.exists()
         text = factor_path.read_text(encoding="utf-8")
         assert 'name = "my_alpha"' in text
         assert "class MyAlphaFactor" in text
+        assert (asset / "meta.json").exists()
 
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)
@@ -535,7 +537,10 @@ def test_workspace_factor_new_suite(tmp_path):
 
         assert cli.main(["factor", "new", "my_weekly_alpha", "--frequency", "weekly"]) == 0
 
-        assert (tmp_path / "workspace" / "factors" / "weekly" / "my_weekly_alpha.py").exists()
+        asset = tmp_path / "workspace" / "factor_store" / "ashare" / "my_weekly_alpha"
+        assert (asset / "factor.py").exists()
+        meta = (asset / "meta.json").read_text(encoding="utf-8")
+        assert '"frequency": "weekly"' in meta
 
     _tp3 = tmp_path / "_s3"
     _tp3.mkdir(exist_ok=True)

@@ -11,6 +11,7 @@ from typing import Any
 
 from factorzen.config.settings import (
     COMBINATIONS_DIR,
+    COMBINE_BACKTESTS_DIR,
     CRYPTO_LAKE,
     FACTOR_LIBRARY_DIR,
     MINE_TEAM_DIR,
@@ -1101,6 +1102,74 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     cfl.add_argument("--run-id", default=None, dest="run_id")
     cfl.add_argument("--out-dir", default=str(COMBINATIONS_DIR), dest="out_dir")
     cfl.set_defaults(func=commands._cmd_combine_from_library)
+
+    # combine backtest: OOS 组合分数 → 日环策略回测（桥命令）
+    cbt = combine_sub.add_parser(
+        "backtest",
+        help="组合 OOS 分数面板 → 统一日环策略回测（净值/换手/成本后指标）",
+    )
+    cbt_src = cbt.add_mutually_exclusive_group(required=True)
+    cbt_src.add_argument(
+        "--scores",
+        default=None,
+        help="分数 parquet[trade_date,ts_code,<分数列>]；与 --run-dir 二选一",
+    )
+    cbt_src.add_argument(
+        "--run-dir",
+        dest="run_dir",
+        default=None,
+        help="combine 产物目录（读 oos_scores/<method>.parquet）；与 --scores 二选一",
+    )
+    cbt.add_argument(
+        "--method",
+        default="equal_weight",
+        help="配合 --run-dir：读 oos_scores/<method>.parquet（默认 equal_weight）",
+    )
+    cbt.add_argument(
+        "--score-col",
+        dest="score_col",
+        default=None,
+        help="分数列名；缺省取除 trade_date/ts_code 外唯一数值列，多列则必填",
+    )
+    cbt.add_argument(
+        "--strategy",
+        default="quantile_ls_5",
+        help="策略名（默认 quantile_ls_5，与 fz eval/daily_single 无 YAML 默认一致）；"
+        "支持 quantile_ls_5 / topn_long_only / factor_weighted 等既有 registry 类",
+    )
+    cbt.add_argument("--start", required=True, help="回测起 YYYYMMDD")
+    cbt.add_argument("--end", required=True, help="回测止 YYYYMMDD")
+    cbt.add_argument(
+        "--universe", default="csi300", help="票池（默认 csi300；PIT membership 过滤）",
+    )
+    cbt.add_argument(
+        "--market", choices=["ashare"], default="ashare",
+        help="市场（当前仅 ashare）",
+    )
+    cbt.add_argument(
+        "--cost-bps",
+        dest="cost_bps",
+        type=float,
+        default=None,
+        help="单边成本(bps)。缺省=daily_single LinearCostModel 默认费率；"
+        "0=零成本；显式数值用 commission=bps/1e4（印花税/滑点/融券置 0）",
+    )
+    cbt.add_argument(
+        "--rebalance-days",
+        dest="rebalance_days",
+        type=int,
+        default=None,
+        help="调仓间隔（交易日）。缺省或 1=逐日；k>1 时桥层把分数降采样到每 k 日并"
+        "按股票前向填充（非调仓日目标权重不变、换手≈0），引擎仍日环、净值逐日更新",
+    )
+    cbt.add_argument("--run-id", default=None, dest="run_id")
+    cbt.add_argument(
+        "--out-dir",
+        default=str(COMBINE_BACKTESTS_DIR),
+        dest="out_dir",
+        help=f"产物根目录（默认 {COMBINE_BACKTESTS_DIR}）",
+    )
+    cbt.set_defaults(func=commands._cmd_combine_backtest)
 
     # ── ops:无人值守运营 ──
     ops = sub.add_parser("ops", help="无人值守运营(每日链路)")

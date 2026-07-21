@@ -3117,6 +3117,13 @@ def _cmd_combine_from_library(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_combine_backtest(args: argparse.Namespace) -> int:
+    """组合 OOS 分数 → 日环策略回测桥；ValueError → stderr + exit 2。"""
+    from factorzen.pipelines.combine_backtest import cmd_combine_backtest
+
+    return cmd_combine_backtest(args)
+
+
 def _ops_as_of(date_arg: str | None):
     from datetime import date as _date
 

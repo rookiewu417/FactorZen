@@ -197,6 +197,9 @@ class ExperimentIndex:
         组合层无增量 ≠ 单因子无信号，混入负例会误导 LLM 认为方向没信号；
         lift 拒绝走 ``known_lift_rejects`` 独立通道。
 
+        排除 **弱 IC**（``reject_category=ic_too_weak`` 或 reason 含「太弱」）：
+        该窗强度不足 ≠ 方向已验证无效；回灌会把事件式提案压成「方向无效」死循环。
+
         排除 **无 IC 的行**（``ic_train is None``：预热不足 / duplicate_fingerprint 等
         评估未出值）：零方向信息，排序键 abs(None or 0)=0 会挤占 top-k——与排除
         编译失败同理；它们的价值在 ``seen_expressions()`` 去重，不在负例库。
@@ -204,6 +207,7 @@ class ExperimentIndex:
         from factorzen.discovery.guardrails import (
             REJECT_CATEGORY_GRAY_ZONE,
             REJECT_CATEGORY_HOLDOUT_COVERAGE,
+            REJECT_CATEGORY_IC_TOO_WEAK,
             REJECT_CATEGORY_LIBRARY_CORRELATED,
             REJECT_CATEGORY_LIFT_QUEUE,
             REJECT_CATEGORY_LIFT_REJECTED,
@@ -225,6 +229,15 @@ class ExperimentIndex:
         def _is_lift_rejected(r: dict) -> bool:
             return r.get("reject_category") == REJECT_CATEGORY_LIFT_REJECTED
 
+        def _is_ic_too_weak(r: dict) -> bool:
+            if r.get("reject_category") == REJECT_CATEGORY_IC_TOO_WEAK:
+                return True
+            rr = r.get("reject_reason") or ""
+            if "太弱" not in rr:
+                return False
+            # 同条 reason 若含反号/无信号 → 方向证据，不按弱 IC 排除
+            return not ("反号" in rr or "无信号" in rr)
+
         recs = [r for r in self._scoped(data_window)
                 if not r.get("passed", False) and r.get("compile_ok", True)
                 and r.get("ic_train") is not None
@@ -232,7 +245,8 @@ class ExperimentIndex:
                 and not _is_coverage_fail(r)
                 and not _is_library_corr(r)
                 and not _is_lift_queue_or_gray(r)
-                and not _is_lift_rejected(r)]
+                and not _is_lift_rejected(r)
+                and not _is_ic_too_weak(r)]
         recs.sort(key=lambda r: abs(r.get("ic_train") or 0.0))  # 最没用的优先
         return [_normalize(r["expression"]) for r in recs[:k] if "expression" in r]
 

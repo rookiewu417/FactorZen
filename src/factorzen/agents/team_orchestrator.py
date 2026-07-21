@@ -207,6 +207,7 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
             is_sparse=bool(r.get("is_sparse") or False),
             subset_ic_train=r.get("subset_ic_train"),
             subset_n_days_train=r.get("subset_n_days_train"),
+            subset_mask_leaves=r.get("subset_mask_leaves"),
         ))
         state.seen_expressions.add(r["expression"])
     return results
@@ -1207,7 +1208,7 @@ def _collect_lift_queue(state: AgentState) -> list[dict]:
             for _k in (
                 "subset_ic_train", "subset_ic_holdout",
                 "subset_n_days_train", "subset_n_days_holdout",
-                "nonzero_coverage",
+                "nonzero_coverage", "subset_mask_leaves",
             ):
                 _v = getattr(a, _k, None)
                 if _v is not None:

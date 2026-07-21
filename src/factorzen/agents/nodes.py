@@ -204,6 +204,7 @@ def node_evaluate(state: AgentState, *, daily, bundle,
             is_sparse=bool(r.get("is_sparse") or False),
             subset_ic_train=r.get("subset_ic_train"),
             subset_n_days_train=r.get("subset_n_days_train"),
+            subset_mask_leaves=r.get("subset_mask_leaves"),
         ))
         state.seen_expressions.add(r["expression"])
     state._pending = []  # type: ignore[attr-defined]
@@ -284,6 +285,7 @@ def node_guardrails(
     from factorzen.discovery.evaluation import (
         _factor_df_from_prepped,
         _preprocess_daily,
+        build_event_leaf_mask,
         compute_subset_rank_ic,
     )
     from factorzen.discovery.guardrails import (
@@ -665,16 +667,19 @@ def node_guardrails(
                 )
                 state.n_gray_zone = getattr(state, "n_gray_zone", 0) + 1
 
-    # ── 稀疏因子 sleeve 旁路：子集 IC 达标 → lift_queue（不直接 passed）────────
+    # ── 稀疏 / 事件掩码 sleeve 旁路：子集 IC 达标 → lift_queue（不直接 passed）──
     # 与 is_lift_queue_candidate 全截面地板独立：fill-0 事件叶全截面被稀释后
-    # 常过不了 gray floor，事件子集才是真口径。稠密因子 is_sparse=False 零开销跳过。
+    # 常过不了 gray floor，事件子集才是真口径。
+    # 触发：is_sparse（一期值稀疏）或 subset_mask_leaves（二期掩码；包装后值覆盖可 1.0）。
     if sleeve_gate:
         for a in passed:
             if getattr(a, "passed_guardrails", False):
                 continue
             if a.reject_category == REJECT_CATEGORY_LIBRARY_CORRELATED:
                 continue
-            if not getattr(a, "is_sparse", False):
+            mask_leaves = getattr(a, "subset_mask_leaves", None) or None
+            is_sparse_a = bool(getattr(a, "is_sparse", False))
+            if not is_sparse_a and not mask_leaves:
                 continue
             # holdout 子集 IC：尚未算则补算（top-K 与非 top-K 统一）
             if getattr(a, "subset_ic_holdout", None) is None:
@@ -686,7 +691,18 @@ def node_guardrails(
                             holdout_df,
                             exec_lag=exec_lag, exec_price_col=exec_price_col,
                         )
-                    sic_h, sn_h = compute_subset_rank_ic(fdf_hold_sl, _hold_fwd)
+                    if mask_leaves:
+                        # 掩码通道：holdout 面板叶原值并集（与 train 同源口径）
+                        import polars as pl
+
+                        mask_h = build_event_leaf_mask(_prepped_hold, list(mask_leaves))
+                        if _hold_start is not None:
+                            mask_h = mask_h.filter(pl.col("trade_date") >= _hold_start)
+                        sic_h, sn_h = compute_subset_rank_ic(
+                            fdf_hold_sl, _hold_fwd, mask_keys=mask_h,
+                        )
+                    else:
+                        sic_h, sn_h = compute_subset_rank_ic(fdf_hold_sl, _hold_fwd)
                     a.subset_ic_holdout = sic_h  # type: ignore[attr-defined]
                     a.subset_n_days_holdout = sn_h  # type: ignore[attr-defined]
                 except Exception as exc:
@@ -696,7 +712,8 @@ def node_guardrails(
                     )
                     continue
             sleeve_probe = {
-                "is_sparse": True,
+                "is_sparse": is_sparse_a,
+                "subset_mask_leaves": mask_leaves,
                 "subset_ic_train": getattr(a, "subset_ic_train", None),
                 "subset_ic_holdout": getattr(a, "subset_ic_holdout", None),
                 "subset_n_days_train": getattr(a, "subset_n_days_train", None),

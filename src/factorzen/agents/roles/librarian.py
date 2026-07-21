@@ -265,6 +265,7 @@ def record(
             "nonzero_coverage", "is_sparse",
             "subset_ic_train", "subset_n_days_train",
             "subset_ic_holdout", "subset_n_days_holdout",
+            "subset_mask_leaves",
             "sleeve_candidate",
             "residual_ic_train", "residual_holdout_ic", "n_residual_holdout_days",
         ):

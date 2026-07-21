@@ -57,6 +57,9 @@ REJECT_CATEGORY_LIFT_QUEUE = "lift_queue"
 # 组合层 lift 裁决 reject（组门不过 / 单候选 below_bar）→ 写回 experiment_index；
 # 不进 known_invalid（组合无增量 ≠ 单因子无信号），走 known_lift_rejects 独立通道。
 REJECT_CATEGORY_LIFT_REJECTED = "lift_rejected"
+# 主门 |IC| 低于 floor（「残差IC太弱」/「train_IC 太弱」）：强度不足 ≠ 方向已验证无效。
+# 不进 known_invalid 负例回灌，避免事件式提案被稀释后自强化「方向无效」死循环。
+REJECT_CATEGORY_IC_TOO_WEAK = "ic_too_weak"
 
 # ── 稀疏因子 sleeve 旁路（事件子集口径；不改主门阈值）────────────────────────
 # |subset_ic_train| 下限：战役 express_yoy 真子集 ~0.02–0.05；0.03 为工程入队门槛。
@@ -279,10 +282,21 @@ def library_reasons(
 
 
 def classify_reject_category(reasons: list[str]) -> str | None:
-    """从护栏 reason 列表提取死因类别（供 experiment_index 过滤）。无匹配 → None。"""
+    """从护栏 reason 列表提取死因类别（供 experiment_index 过滤）。无匹配 → None。
+
+    优先级：覆盖不足 > 反号/无信号（维持 None，方向证据可进 known_invalid）
+    > 太弱（``ic_too_weak``，强度不足不进 known_invalid）。
+    """
     for r in reasons:
         if "覆盖不足" in r:
             return REJECT_CATEGORY_HOLDOUT_COVERAGE
+    # 反号 / 无信号：方向性证据，明确不打类别（None → known_invalid 可吸收）
+    for r in reasons:
+        if "反号" in r or "无信号" in r:
+            return None
+    for r in reasons:
+        if "太弱" in r:
+            return REJECT_CATEGORY_IC_TOO_WEAK
     return None
 
 
@@ -416,11 +430,12 @@ def is_sleeve_lift_candidate(
     *,
     sleeve_gate: bool = True,
 ) -> bool:
-    """稀疏因子 sleeve 旁路：主门不过时可否进 ``lift_queue``（**不**直接 passed）。
+    """稀疏 / 事件掩码因子 sleeve 旁路：主门不过时可否进 ``lift_queue``（**不**直接 passed）。
 
     条件（全部满足）：
     1. ``sleeve_gate`` 开启
-    2. ``is_sparse`` 为真（非零覆盖率 < 0.20，由 evaluation 层判定）
+    2. **触发通道**：``is_sparse``（值稀疏，一期）**或** ``subset_mask_leaves`` 非空
+       （事件掩码，二期；LLM 包装后值覆盖可到 1.0）
     3. ``|subset_ic_train| ≥ SLEEVE_SUBSET_IC_FLOOR``（默认 0.03）
     4. ``subset_ic_holdout`` 与 train **严格同号**（任一侧 0 / None → 拒）
     5. ``subset_n_days_train ≥ SLEEVE_SUBSET_MIN_DAYS``（默认 40）
@@ -433,7 +448,9 @@ def is_sleeve_lift_candidate(
     """
     if not sleeve_gate:
         return False
-    if not candidate.get("is_sparse"):
+    mask_leaves = candidate.get("subset_mask_leaves")
+    mask_triggered = bool(mask_leaves)
+    if not candidate.get("is_sparse") and not mask_triggered:
         return False
     sic_tr = candidate.get("subset_ic_train")
     sic_h = candidate.get("subset_ic_holdout")

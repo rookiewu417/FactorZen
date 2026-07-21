@@ -11,9 +11,11 @@ import logging
 import numpy as np
 import polars as pl
 
+from factorzen.core.feature_schema import EVENT_MASK_LEAVES
 from factorzen.discovery.derived import add_derived_columns
 from factorzen.discovery.expression import (
     evaluate_materialized,
+    feature_names,
     parse_expr,
     to_expr_string,
     warmup_shortfall,
@@ -53,16 +55,63 @@ def _nonzero_coverage(factor_df: pl.DataFrame) -> float:
     return n_nz / n
 
 
+def event_mask_leaves_in_node(node) -> list[str]:
+    """表达式引用的 ``EVENT_MASK_LEAVES`` 叶（排序列表；无交集 → []）。"""
+    if node is None:
+        return []
+    hit = feature_names(node) & set(EVENT_MASK_LEAVES)
+    return sorted(hit)
+
+
+def build_event_leaf_mask(
+    panel: pl.DataFrame,
+    mask_leaves: list[str] | set[str],
+) -> pl.DataFrame:
+    """叶原值非零且非 null 的 ``(trade_date, ts_code)`` 并集掩码。
+
+    与表达式包装无关——只读面板叶列原值。缺列的叶静默跳过；
+    全部缺列 / 无命中 → 空帧（schema 固定）。
+    """
+    empty = pl.DataFrame(schema={"trade_date": pl.Date, "ts_code": pl.Utf8})
+    if panel.is_empty() or not mask_leaves:
+        # 尽量对齐 panel 的 trade_date dtype
+        if "trade_date" in panel.columns and "ts_code" in panel.columns:
+            return panel.head(0).select(["trade_date", "ts_code"])
+        return empty
+    present = [L for L in mask_leaves if L in panel.columns]
+    if not present:
+        if "trade_date" in panel.columns and "ts_code" in panel.columns:
+            return panel.head(0).select(["trade_date", "ts_code"])
+        return empty
+    cond = pl.lit(False)
+    for L in present:
+        cond = cond | (
+            pl.col(L).is_not_null()
+            & pl.col(L).is_finite()
+            & (pl.col(L) != 0)
+        )
+    return (
+        panel.filter(cond)
+        .select(["trade_date", "ts_code"])
+        .unique()
+    )
+
+
 def compute_subset_rank_ic(
     factor_df: pl.DataFrame,
     fwd_returns: pl.DataFrame,
     *,
     min_samples: int = SUBSET_MIN_CROSS_SAMPLES,
     ret_col: str | None = None,
+    mask_keys: pl.DataFrame | None = None,
 ) -> tuple[float | None, int]:
-    """仅在因子非零样本上算逐日截面 RankIC，返回 ``(ic_mean, n_days)``。
+    """在子集上算逐日截面 RankIC，返回 ``(ic_mean, n_days)``。
 
-    - 因子值 null / 非有限 / **等于 0** 的行剔除（事件子集口径）。
+    子集口径：
+    - ``mask_keys`` 非 None：按叶原值掩码键 inner-join（事件掩码通道；
+      表达式值可稠密，只要求 factor_value 有限非 null）。
+    - 否则（一期值稀疏）：剔除 factor_value null / 非有限 / **等于 0**。
+
     - 当日有效子集 n < ``min_samples`` 跳过（与生产 RankIC 同守卫）。
     - 无任何有效日 → ``(None, 0)``。
 
@@ -81,11 +130,21 @@ def compute_subset_rank_ic(
                 return None, 0
             ret_col = cands[0]
 
-    sub = factor_df.filter(
-        pl.col("factor_value").is_not_null()
-        & pl.col("factor_value").is_finite()
-        & (pl.col("factor_value") != 0)
-    )
+    if mask_keys is not None:
+        if mask_keys.is_empty():
+            return None, 0
+        keys = mask_keys.select(["trade_date", "ts_code"]).unique()
+        sub = factor_df.join(keys, on=["trade_date", "ts_code"], how="inner")
+        sub = sub.filter(
+            pl.col("factor_value").is_not_null()
+            & pl.col("factor_value").is_finite()
+        )
+    else:
+        sub = factor_df.filter(
+            pl.col("factor_value").is_not_null()
+            & pl.col("factor_value").is_finite()
+            & (pl.col("factor_value") != 0)
+        )
     if sub.is_empty():
         return None, 0
 
@@ -115,22 +174,46 @@ def compute_subset_rank_ic(
 
 
 def _sparse_subset_train_fields(
-    fdf: pl.DataFrame, bundle,
+    fdf: pl.DataFrame,
+    bundle,
+    *,
+    node=None,
+    prepped: pl.DataFrame | None = None,
 ) -> dict:
-    """对 train 段 factor_df 算覆盖率 +（若稀疏）子集 IC 字段字典。"""
+    """对 train 段 factor_df 算覆盖率 +（掩码或值稀疏）子集 IC 字段字典。
+
+    通道优先级：
+    1. **事件掩码**（二期）：``node`` 引用 ``EVENT_MASK_LEAVES`` 且 ``prepped`` 可用
+       → 叶原值掩码内算子集 IC；``subset_mask_leaves`` = 触发叶列表。
+    2. **值稀疏**（一期回退）：``is_sparse`` 且未走掩码 → 表达式非零子集。
+    """
     # 与 quick_fitness 同 train 段口径
     seg = bundle._segment_mask(fdf, "train")
-    cov = _nonzero_coverage(seg if not seg.is_empty() else fdf)
+    seg_f = seg if not seg.is_empty() else fdf
+    cov = _nonzero_coverage(seg_f)
     out: dict = {
         "nonzero_coverage": float(cov),
         "is_sparse": bool(cov < SPARSE_COVERAGE_THRESHOLD),
         "subset_ic_train": None,
         "subset_n_days_train": None,
+        "subset_mask_leaves": None,
     }
+    mask_leaves = event_mask_leaves_in_node(node)
+    if mask_leaves and prepped is not None and not prepped.is_empty():
+        out["subset_mask_leaves"] = list(mask_leaves)
+        # 叶原值掩码：在 prepped 上建，再裁到 train 段
+        panel_train = bundle._segment_mask(prepped, "train")
+        panel_src = panel_train if not panel_train.is_empty() else prepped
+        mask = build_event_leaf_mask(panel_src, mask_leaves)
+        ret = bundle._segment_mask(bundle.fwd_returns, "train")
+        sic, sn = compute_subset_rank_ic(seg_f, ret, mask_keys=mask)
+        out["subset_ic_train"] = sic
+        out["subset_n_days_train"] = sn
+        return out
     if not out["is_sparse"]:
         return out
     ret = bundle._segment_mask(bundle.fwd_returns, "train")
-    sic, sn = compute_subset_rank_ic(seg if not seg.is_empty() else fdf, ret)
+    sic, sn = compute_subset_rank_ic(seg_f, ret)
     out["subset_ic_train"] = sic
     out["subset_n_days_train"] = sn
     return out
@@ -377,7 +460,8 @@ def evaluate_expressions(
                             "ic_train": None, "ir_train": None, "turnover": None,
                             "n_train": 0, "error": str(exc),
                             "nonzero_coverage": None, "is_sparse": False,
-                            "subset_ic_train": None, "subset_n_days_train": None})
+                            "subset_ic_train": None, "subset_n_days_train": None,
+                            "subset_mask_leaves": None})
             continue
 
         if eval_start is not None:
@@ -389,7 +473,8 @@ def evaluate_expressions(
                     "ic_train": None, "ir_train": None, "turnover": None, "n_train": 0,
                     "error": f"预热不足: 叶 {leaf} 需要 {need} 根历史，可用 {have} 根",
                     "nonzero_coverage": None, "is_sparse": False,
-                    "subset_ic_train": None, "subset_n_days_train": None})
+                    "subset_ic_train": None, "subset_n_days_train": None,
+                    "subset_mask_leaves": None})
                 continue
 
         try:
@@ -405,7 +490,8 @@ def evaluate_expressions(
                             "ic_train": None, "ir_train": None, "turnover": None,
                             "n_train": 0, "error": "duplicate_fingerprint",
                             "nonzero_coverage": None, "is_sparse": False,
-                            "subset_ic_train": None, "subset_n_days_train": None})
+                            "subset_ic_train": None, "subset_n_days_train": None,
+                            "subset_mask_leaves": None})
                         continue
                     seen_fingerprints.add(fp)
             fit = quick_fitness(fdf, bundle, segment="train")
@@ -416,10 +502,13 @@ def evaluate_expressions(
                     "ic_train": None, "ir_train": None, "turnover": None, "n_train": 0,
                     "error": "求值后 train 段无有效截面（因子值全 null/NaN、分母恒零或窗口长于样本）",
                     "nonzero_coverage": None, "is_sparse": False,
-                    "subset_ic_train": None, "subset_n_days_train": None})
+                    "subset_ic_train": None, "subset_n_days_train": None,
+                    "subset_mask_leaves": None})
                 continue
-            # 稀疏因子：补算 train 子集 RankIC（稠密只记覆盖率，不跑子集）
-            sparse_fields = _sparse_subset_train_fields(fdf, bundle)
+            # 事件掩码 / 值稀疏：补算 train 子集 RankIC
+            sparse_fields = _sparse_subset_train_fields(
+                fdf, bundle, node=node, prepped=prepped,
+            )
             results.append({
                 "expression": to_expr_string(node), "node": node, "compile_ok": True,
                 "ic_train": float(fit["ic_mean"]), "ir_train": float(fit["ir"]),
@@ -432,5 +521,6 @@ def evaluate_expressions(
                             "ic_train": None, "ir_train": None, "turnover": None,
                             "n_train": 0, "error": str(exc),
                             "nonzero_coverage": None, "is_sparse": False,
-                            "subset_ic_train": None, "subset_n_days_train": None})
+                            "subset_ic_train": None, "subset_n_days_train": None,
+                            "subset_mask_leaves": None})
     return results

@@ -270,6 +270,66 @@ def test_sim_engine_core_suite(tmp_path, caplog):
     with pytest.MonkeyPatch.context() as mp:
         _section_8_test_run_portfolio_simulation_passes_is_st_by_date_to_backtest(_tp8, mp)
 
+    # -- factor_df=None 与哑元帧等价 --
+    def _section_9_test_factor_df_none_equiv_to_dummy():
+        from datetime import date as _date
+
+        from factorzen.daily.evaluation.backtest import (
+            BacktestConfig,
+            CostModel,
+            PrecomputedWeightsStrategy,
+            run_strategy_backtest,
+        )
+
+        codes = ["000001.SZ", "000002.SZ"]
+        weights_by_date = {
+            _date(2023, 1, 10): pl.DataFrame(
+                {"ts_code": codes, "target_weight": [0.5, 0.5]}
+            ),
+            _date(2023, 2, 1): pl.DataFrame(
+                {"ts_code": codes, "target_weight": [0.3, 0.7]}
+            ),
+        }
+        daily = _fake_daily(codes)
+
+        # 原 _build_dummy_factor_df 逻辑内联对照（每信号日第一只股票 + factor_clean=0.0）
+        rows = []
+        for sig_date, weight_df in weights_by_date.items():
+            if weight_df.height > 0:
+                rows.append(
+                    {
+                        "trade_date": sig_date,
+                        "ts_code": weight_df["ts_code"][0],
+                        "factor_clean": 0.0,
+                    }
+                )
+        dummy_df = pl.DataFrame(rows)
+
+        strategy = PrecomputedWeightsStrategy(weights_by_date)
+        sim_config = BacktestConfig(
+            max_gross_exposure=float("inf"),
+            max_abs_weight=float("inf"),
+        )
+        cost = CostModel()
+        common = dict(
+            price_df=daily,
+            config=sim_config,
+            cost_model=cost,
+            collect_positions=False,
+            collect_trades=False,
+            include_context_positions=False,
+        )
+        control = run_strategy_backtest(strategy, dummy_df, **common)
+        experiment = run_strategy_backtest(
+            PrecomputedWeightsStrategy(weights_by_date), None, **common
+        )
+        from polars.testing import assert_frame_equal
+
+        assert_frame_equal(control.nav, experiment.nav)
+        assert_frame_equal(control.returns, experiment.returns)
+
+    _section_9_test_factor_df_none_equiv_to_dummy()
+
 
 # ── 代码评审修复回归测试 ───────────────────────────────────────────────────
 

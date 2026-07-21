@@ -21,7 +21,6 @@ from factorzen.daily.evaluation.backtest import (
     TopNLongOnlyStrategy,
     _compute_adv_20d,
     _precompute_adv_20d_by_date,
-    _run_precomputed_weights_backtest_fast,
     _summary_stats,
     precompute_top_n_weights,
     run_strategy_backtest,
@@ -1393,7 +1392,7 @@ def test_fast_path_parity_suite():
                 fallback_adv=1_000_000.0,
                 frequency=frequency,
             )
-            # collect_positions 默认 True -> 慢路径（通用循环）
+            # collect_positions 默认 True -> 收集明细（同一日环引擎）
             slow = run_strategy_backtest(
                 PrecomputedWeightsStrategy(weights_by_date),
                 factors,
@@ -1401,7 +1400,7 @@ def test_fast_path_parity_suite():
                 config=cfg,
                 cost_model=cost_model,
             )
-            # collect 全关 -> 快路径（_run_precomputed_weights_backtest_fast）
+            # collect 全关 -> 不写明细（同一日环引擎，collect_* 不切换实现）
             fast = run_strategy_backtest(
                 PrecomputedWeightsStrategy(weights_by_date),
                 factors,
@@ -1499,85 +1498,6 @@ def test_fast_path_parity_suite():
         assert day2_nav == pytest.approx(1.05)
 
     _section_3_test_fast_path_handles_missing_open_price_without_crashing()
-
-    # -- 原 test_fast_path_handles_missing_pre_close_without_crashing --
-    def _section_4_test_fast_path_handles_missing_pre_close_without_crashing():
-        weights_by_date = {
-            date(2024, 1, 1): pl.DataFrame(
-                {"ts_code": ["000001.SZ", "000002.SZ"], "target_weight": [0.5, 0.5]}
-            ),
-        }
-        trade_dates = [date(2024, 1, 1), date(2024, 1, 2)]
-        price = pl.DataFrame(
-            [
-                {
-                    "trade_date": date(2024, 1, 1),
-                    "ts_code": "000001.SZ",
-                    "open": 10.0,
-                    "close": 10.0,
-                    "pre_close": 10.0,
-                    "pct_chg": 0.0,
-                    "vol": 1000.0,
-                    "amount": 1_000_000.0,
-                    "overnight_ret": 0.0,
-                    "intraday_ret": 0.0,
-                },
-                {
-                    "trade_date": date(2024, 1, 1),
-                    "ts_code": "000002.SZ",
-                    "open": 10.0,
-                    "close": 10.0,
-                    "pre_close": 10.0,
-                    "pct_chg": 0.0,
-                    "vol": 1000.0,
-                    "amount": 1_000_000.0,
-                    "overnight_ret": 0.0,
-                    "intraday_ret": 0.0,
-                },
-                {
-                    "trade_date": date(2024, 1, 2),
-                    "ts_code": "000001.SZ",
-                    "open": 10.0,
-                    "close": 11.0,
-                    "pre_close": 10.0,
-                    "pct_chg": 10.0,
-                    "vol": 1000.0,
-                    "amount": 1_000_000.0,
-                    "overnight_ret": 0.0,
-                    "intraday_ret": 0.1,
-                },
-                {
-                    # pre_close=None（绕过 _prepare_price_df 的 fill_null(open) 兜底），open 仍有效
-                    "trade_date": date(2024, 1, 2),
-                    "ts_code": "000002.SZ",
-                    "open": 10.0,
-                    "close": 11.0,
-                    "pre_close": None,
-                    "pct_chg": 10.0,
-                    "vol": 1000.0,
-                    "amount": 1_000_000.0,
-                    "overnight_ret": 0.0,
-                    "intraday_ret": 0.1,
-                },
-            ]
-        )
-
-        result = _run_precomputed_weights_backtest_fast(
-            strategy=PrecomputedWeightsStrategy(weights_by_date),
-            price=price,
-            trade_dates=trade_dates,
-            config=BacktestConfig(
-                initial_capital=1_000_000, max_participation_rate=1.0, fallback_adv=1_000_000.0
-            ),
-            cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
-            factor_name="test",
-        )
-
-        day2_nav = result.nav.filter(pl.col("trade_date") == date(2024, 1, 2))["nav"][0]
-        # 000002.SZ 因缺 pre_close 不可交易（贡献 0），000001.SZ 满仓一半 + 10% 涨幅
-        assert day2_nav == pytest.approx(1.05)
-
-    _section_4_test_fast_path_handles_missing_pre_close_without_crashing()
 
 
 def test_optimizer_strategy_end_to_end():

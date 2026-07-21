@@ -15,6 +15,11 @@
 >
 > 裁决真相不变：`workspace/factor_library/<market>.jsonl`（status/lift/admission）。
 > 资产库是载体；用 `fz factor-library store sync` / `verify` 维护与校验。
+>
+> **物化口径（parquet）** 与裁决评估窗分离：store sync 统一按
+> `all_a` × `2016-01-01` ~ 最新已完结交易日写 `factor.parquet` /
+> `meta.materialization`；jsonl 的 `eval_start`/`eval_end`/`universe`
+> （多为 csi300 评估窗）保持不动。
 
 ## 编写约定（python 类）
 
@@ -54,6 +59,8 @@
 ```
 
 入库后 `ledger_snapshot` / `materialization` 由 `store sync` 与 lift 准入路径自动刷新。
+`materialization` 窗口/universe 固定为 store 口径（`all_a` / `2016-01-01`~最新），
+不跟记录上的评估 `universe`（如 csi300）走。
 
 ## 可复制代码（factor.py）
 

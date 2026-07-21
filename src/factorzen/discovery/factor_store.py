@@ -5,6 +5,10 @@
   （status / lift / admission / forward）。
 - 本模块是资产库载体：把库内记录物化为可读、可 import、可复现的磁盘资产。
 - 入库/rebuild 写入单点同步两处；``verify_store`` 校验一致。
+- **物化口径与评估口径分离**：``factor.parquet`` / ``meta.materialization``
+  固定 ``all_a`` × ``2016-01-01`` ~ 最新已完结交易日
+  （``STORE_MATERIALIZE_*``）；jsonl 的 ``eval_start``/``eval_end``/``universe``
+  仍是挖掘评估窗，不随 store 改写。
 
 目录布局（定死）::
 
@@ -44,6 +48,38 @@ _LOG = logging.getLogger(__name__)
 DEFAULT_ROOT = str(WORKSPACE_DIR / "factor_store")
 MATERIALIZE_STATUSES = frozenset({"active", "probation"})
 _HYPOTHESIS_MAX = 200
+
+# 资产库 parquet 物化口径（与 jsonl 裁决/评估口径分离）：
+# ledger 的 eval_start/eval_end/universe 仍是挖掘评估窗；
+# factor.parquet 统一 all_a × 2016-01-01 ~ 最新已完结交易日。
+STORE_MATERIALIZE_UNIVERSE = "all_a"
+STORE_MATERIALIZE_START = "2016-01-01"
+
+
+def store_materialize_end() -> str:
+    """sync 时的最新已完结交易日（``YYYY-MM-DD``）。
+
+    不以「今天」直接当交易日 end：盘中/未收盘 bar 可能不齐。
+    统一取 ``date.today()`` 之前的上一个交易日
+    （``factorzen.core.calendar.prev_trade_date``）。
+    """
+    from datetime import date as _date
+
+    from factorzen.core.calendar import prev_trade_date
+
+    return prev_trade_date(_date.today()).isoformat()
+
+
+def _date_key(s: str | None) -> str:
+    """日期串归一到 ``YYYYMMDD`` 便于比较（兼容 ``YYYY-MM-DD`` / ``YYYYMMDD``）。"""
+    if not s:
+        return ""
+    return str(s).replace("-", "").replace("/", "")[:8]
+
+
+def _to_ymd8(s: str) -> str:
+    """物化装帧通道用 ``YYYYMMDD``。"""
+    return _date_key(s)
 
 # expression 型 factor.py 生成模板（单测锁死：import + compute 与生产求值一致）
 _EXPRESSION_FACTOR_PY_TEMPLATE = '''\
@@ -292,9 +328,9 @@ def write_factor_asset(
         out = out.select(["trade_date", "ts_code", "factor_value"])
         out.write_parquet(pq_path)
         mat_info = {
-            "start": record.eval_start,
-            "end": record.eval_end,
-            "universe": record.universe or "csi300",
+            "start": STORE_MATERIALIZE_START,
+            "end": store_materialize_end(),
+            "universe": STORE_MATERIALIZE_UNIVERSE,
             "git_sha": _git_sha(),
             "n_rows": int(out.height),
             "generated_at": _utc_now_iso(),
@@ -304,12 +340,10 @@ def write_factor_asset(
         # correlated / 其他：规格要求 materialization=null（不强制删 parquet）
         mat_info = None
     elif isinstance(prev_mat, dict) and pq_path.exists():
-        # 刷新 meta/py 时：expression + 窗口仍一致则保留既有物化 provenance
+        # 刷新 meta/py 时：expression + store 物化口径仍新鲜则保留 provenance
         if (
             prev_meta.get("expression") == record.expression
-            and prev_mat.get("start") == record.eval_start
-            and prev_mat.get("end") == record.eval_end
-            and prev_mat.get("universe") == (record.universe or "csi300")
+            and _materialization_window_fresh(prev_mat)
         ):
             mat_info = prev_mat
         else:
@@ -322,12 +356,35 @@ def write_factor_asset(
     return str(d)
 
 
+def _materialization_window_fresh(mat: dict[str, Any]) -> bool:
+    """store 物化口径是否仍新鲜。
+
+    增量判据（end 语义 = 物化时最新已完结交易日）::
+
+        start == STORE_MATERIALIZE_START
+        AND universe == STORE_MATERIALIZE_UNIVERSE
+        AND mat.end 已覆盖「上一个已完结交易日」(>= store_materialize_end())
+
+    未覆盖则需重物化（例如日历推进一天、或历史 csi300/csi500 资产）。
+    """
+    if mat.get("start") != STORE_MATERIALIZE_START:
+        return False
+    if mat.get("universe") != STORE_MATERIALIZE_UNIVERSE:
+        return False
+    target_end = store_materialize_end()
+    return _date_key(mat.get("end")) >= _date_key(target_end)
+
+
 def _materialization_fresh(
     rec: FactorRecord,
     meta: dict[str, Any] | None,
     pq_path: Path,
 ) -> bool:
-    """meta.expression 与 parquet materialization 与当前记录一致 → 可跳过物化。"""
+    """meta.expression 与 parquet 的 store 物化口径仍新鲜 → 可跳过物化。
+
+    不再对照 ``record.eval_start/eval_end/universe``（那是裁决评估口径）；
+    只认 ``STORE_MATERIALIZE_*`` + ``store_materialize_end()`` 覆盖。
+    """
     if meta is None or not pq_path.exists():
         return False
     mat = meta.get("materialization")
@@ -339,10 +396,7 @@ def _materialization_fresh(
         "expression"
     ) != rec.expression:
         return False
-    if mat.get("start") != rec.eval_start or mat.get("end") != rec.eval_end:
-        return False
-    univ = rec.universe or "csi300"
-    if mat.get("universe") != univ:
+    if not _materialization_window_fresh(mat):
         return False
     return bool(mat.get("n_rows"))
 
@@ -352,18 +406,25 @@ def _materialize_records(
     *,
     market: str,
     root: str,
-    default_universe: str = "csi300",
+    default_universe: str = STORE_MATERIALIZE_UNIVERSE,
     panel_loader: PanelLoader | None = None,
 ) -> int:
     """串行物化 active/probation 记录（生产通道 _materializer_from_prepped）。
 
-    按 (eval_start, eval_end, universe, need_intraday) 分组装帧，组内逐条物化，
-    防 OOM。返回成功物化条数。
+    物化窗口/universe 固定为 store 常量口径
+    （``STORE_MATERIALIZE_START`` ~ ``store_materialize_end()`` ×
+    ``STORE_MATERIALIZE_UNIVERSE``），与 record.eval_* 无关。
+    统一口径后仅按 ``need_intraday`` 分组装帧，组内逐条物化，防 OOM。
+    返回成功物化条数。
+
+    ``default_universe`` 保留 API 兼容，装帧实际一律用
+    ``STORE_MATERIALIZE_UNIVERSE``（忽略入参）。
 
     ``panel_loader``：数据帧加载器，由调用方（CLI 层）注入——discovery 不拉数，
     避免 discovery→cli 反向依赖（架构守卫 agents→discovery→cli 环）。
     需要物化却未注入 → ``ValueError``。
     """
+    del default_universe  # 固定口径；保留形参以免破坏调用方 kwargs
     from factorzen.discovery.lift_test import _materializer_from_prepped
     from factorzen.discovery.preparation import expressions_need_intraday
 
@@ -380,33 +441,29 @@ def _materialize_records(
             "discovery 层不拉数）"
         )
 
-    # 分组键
-    groups: dict[tuple[str, str, str, bool], list[FactorRecord]] = {}
+    start = STORE_MATERIALIZE_START
+    end = store_materialize_end()
+    univ = STORE_MATERIALIZE_UNIVERSE
+    start8 = _to_ymd8(start)
+    end8 = _to_ymd8(end)
+
+    # 统一口径 → 仅按 need_intraday 分组
+    groups: dict[bool, list[FactorRecord]] = {}
     for r in targets:
-        start = r.eval_start or ""
-        end = r.eval_end or ""
-        univ = r.universe or default_universe
         need_ix = False
         if not _is_python_record(r) and r.expression:
             try:
                 need_ix = bool(expressions_need_intraday([r.expression]))
             except Exception:
                 need_ix = False
-        key = (start, end, univ, need_ix)
-        groups.setdefault(key, []).append(r)
+        groups.setdefault(need_ix, []).append(r)
 
     n_ok = 0
-    for (start, end, univ, need_ix), recs in groups.items():
-        if not start or not end:
-            _LOG.warning(
-                "factor_store: skip materialize (missing eval window) names=%s",
-                [record_asset_name(r) for r in recs],
-            )
-            continue
+    for need_ix, recs in groups.items():
         try:
             prepped = panel_loader(
-                start=start,
-                end=end,
+                start=start8,
+                end=end8,
                 universe=univ,
                 market=market,
                 intraday_leaves=need_ix,
@@ -414,8 +471,8 @@ def _materialize_records(
         except Exception as exc:
             _LOG.warning(
                 "factor_store: load panel failed %s–%s u=%s ix=%s: %s: %s",
-                start,
-                end,
+                start8,
+                end8,
                 univ,
                 need_ix,
                 type(exc).__name__,
@@ -486,13 +543,17 @@ def sync_store(
     only: Iterable[str] | None = None,
     materialize: bool = True,
     lib_root: str = DEFAULT_LIB_ROOT,
-    default_universe: str = "csi300",
+    default_universe: str = STORE_MATERIALIZE_UNIVERSE,
     panel_loader: PanelLoader | None = None,
 ) -> dict[str, Any]:
     """全库同步：逐条写 meta+py；按需物化 parquet。
 
-    增量：若 meta.expression 与 materialization 窗口/universe 与当前记录一致
-    且 parquet 存在 → 跳过物化。
+    物化口径固定 ``STORE_MATERIALIZE_*``（all_a / 2016-01-01 ~ 最新已完结
+    交易日），与 jsonl 的 eval_start/eval_end/universe 分离。
+
+    增量：若 meta.expression 一致，且 materialization 的 start/universe 与
+    store 常量一致、end 已覆盖 ``store_materialize_end()``，且 parquet 存在
+    → 跳过物化；否则重物化。
 
     Returns
     -------
@@ -635,6 +696,44 @@ def verify_store(
                     "ledger": ledger_expr,
                 }
             )
+
+        # 物化口径漂移（active/probation 且已有 materialization/parquet）
+        # 旧 csi300/csi500 资产 → 期望判漂移，下次 sync 重物化为 all_a。
+        mat = meta.get("materialization")
+        pq_path = asset_dir(market, name, root=root) / "factor.parquet"
+        if (
+            (rec.status or "") in MATERIALIZE_STATUSES
+            and isinstance(mat, dict)
+            and (pq_path.exists() or bool(mat.get("n_rows")))
+        ):
+            target_end = store_materialize_end()
+            if mat.get("start") != STORE_MATERIALIZE_START:
+                drifts.append(
+                    {
+                        "name": name,
+                        "field": "materialization.start",
+                        "store": mat.get("start"),
+                        "ledger": STORE_MATERIALIZE_START,
+                    }
+                )
+            if mat.get("universe") != STORE_MATERIALIZE_UNIVERSE:
+                drifts.append(
+                    {
+                        "name": name,
+                        "field": "materialization.universe",
+                        "store": mat.get("universe"),
+                        "ledger": STORE_MATERIALIZE_UNIVERSE,
+                    }
+                )
+            if _date_key(mat.get("end")) < _date_key(target_end):
+                drifts.append(
+                    {
+                        "name": name,
+                        "field": "materialization.end",
+                        "store": mat.get("end"),
+                        "ledger": target_end,
+                    }
+                )
 
     missing_in_ledger = sorted(store_names - set(by_name.keys()))
     return {

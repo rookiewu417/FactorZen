@@ -1266,9 +1266,13 @@ def _cmd_factor_library_store_sync(args: argparse.Namespace) -> int:
     only_raw = getattr(args, "only", None)
     only = [x.strip() for x in only_raw.split(",") if x.strip()] if only_raw else None
     materialize = not bool(getattr(args, "no_materialize", False))
+    mat_start = fs.STORE_MATERIALIZE_START
+    mat_end = fs.store_materialize_end()
+    mat_univ = fs.STORE_MATERIALIZE_UNIVERSE
     print(
         f"[factor-library store sync] market={market} root={store_root} "
-        f"lib_root={lib_root} materialize={materialize}"
+        f"lib_root={lib_root} materialize={materialize} "
+        f"window={mat_start}..{mat_end} universe={mat_univ}"
         + (f" only={only}" if only else " only=ALL"),
         flush=True,
     )
@@ -1279,6 +1283,7 @@ def _cmd_factor_library_store_sync(args: argparse.Namespace) -> int:
         only=only,
         materialize=materialize,
         lib_root=lib_root,
+        default_universe=mat_univ,
         panel_loader=_factor_store_panel_loader,
     )
     elapsed = time.perf_counter() - t0

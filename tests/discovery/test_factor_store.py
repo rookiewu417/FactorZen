@@ -96,10 +96,15 @@ def _import_factor_py(path: Path, mod_name: str = "fz_test_factor_mod"):
 # ── write_factor_asset: expression ───────────────────────────────────────────
 
 
-def test_write_expression_asset_suite(tmp_path):
+def test_write_expression_asset_suite(tmp_path, monkeypatch):
     """expression 类 write → 三件套齐、meta 全、factor.py 与生产求值一致。"""
+    from factorzen.discovery import factor_store as fs
     from factorzen.discovery.expression import evaluate_materialized, parse_expr
     from factorzen.discovery.factor_store import write_factor_asset
+
+    # 离线:end 走 prev_trade_date(today) 需要交易日历(CI 无 token 会炸),mock 固定值
+    fixed_end = "2026-07-17"
+    monkeypatch.setattr(fs, "store_materialize_end", lambda: fixed_end)
 
     rec = _expr_record("rank(close)")
     daily = _tiny_daily()
@@ -153,11 +158,17 @@ def test_write_expression_asset_suite(tmp_path):
     assert "factor_library" in snap["truth"] and "ashare.jsonl" in snap["truth"]
     mat = meta["materialization"]
     assert mat is not None
-    assert mat["start"] == "20240101"
-    assert mat["end"] == "20240630"
-    assert mat["universe"] == "csi300"
+    # 物化口径与裁决 eval 窗分离：parquet 固定 all_a / 2016-01-01~最新
+    # (end 用 mock 的字面值断言,不与生产同 helper 重算——那是恒真)
+    assert mat["start"] == "2016-01-01"
+    assert mat["end"] == fixed_end
+    assert mat["universe"] == "all_a"
     assert mat["n_rows"] == expected.height
     assert "generated_at" in mat
+    # ledger 评估口径仍保留在 record 侧（eval_* / universe 不变）
+    assert rec.eval_start == "20240101"
+    assert rec.eval_end == "20240630"
+    assert rec.universe == "csi300"
 
     # 生成的 factor.py 可 import，compute 与生产求值逐位一致
     mod = _import_factor_py(asset_dir / "factor.py")
@@ -321,7 +332,7 @@ StorePyAlphaTdd()
 
 
 def test_sync_skips_unchanged_materialization(tmp_path, monkeypatch):
-    """第二次 sync：meta.expression 与 materialization 一致则跳过物化。"""
+    """第二次 sync：store 口径 (all_a/2016~最新) 已覆盖 → 跳过物化。"""
     from factorzen.discovery import factor_store as fs
     from factorzen.discovery.factor_library import _save_library
 
@@ -331,12 +342,16 @@ def test_sync_skips_unchanged_materialization(tmp_path, monkeypatch):
     lib_root.mkdir()
     _save_library("ashare", [rec], root=str(lib_root))
 
+    # 固定「最新已完结交易日」，避免日历/日期抖动
+    fixed_end = "2026-07-20"
+    monkeypatch.setattr(fs, "store_materialize_end", lambda: fixed_end)
+
     calls: list[str] = []
 
     def fake_mat(records, **kw):
         for r in records:
             calls.append(r.name or r.expression)
-            # 写假 parquet + 更新 meta materialization
+            # 写假 parquet + 更新 meta materialization（新 store 口径）
             name = r.name or "anon"
             d = store_root / "ashare" / name
             d.mkdir(parents=True, exist_ok=True)
@@ -349,11 +364,15 @@ def test_sync_skips_unchanged_materialization(tmp_path, monkeypatch):
             )
             panel.write_parquet(d / "factor.parquet")
             meta_path = d / "meta.json"
-            meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+            meta = (
+                json.loads(meta_path.read_text(encoding="utf-8"))
+                if meta_path.exists()
+                else {}
+            )
             meta["materialization"] = {
-                "start": r.eval_start,
-                "end": r.eval_end,
-                "universe": r.universe or "csi300",
+                "start": fs.STORE_MATERIALIZE_START,
+                "end": fixed_end,
+                "universe": fs.STORE_MATERIALIZE_UNIVERSE,
                 "git_sha": "deadbeef",
                 "n_rows": 1,
                 "generated_at": "2026-07-21T00:00:00+00:00",
@@ -434,6 +453,99 @@ def test_verify_clean_when_consistent(tmp_path):
     report = verify_store("ashare", root=str(store_root), lib_root=str(lib_root))
     assert report["ok"] is True
     assert report["drifts"] == []
+
+
+def test_verify_reports_materialization_universe_drift(tmp_path, monkeypatch):
+    """旧 csi300/csi500 物化口径 → verify 报 materialization 漂移（期望重物化为 all_a）。"""
+    from factorzen.discovery import factor_store as fs
+    from factorzen.discovery.factor_library import _save_library
+    from factorzen.discovery.factor_store import verify_store, write_factor_asset
+
+    fixed_end = "2026-07-20"
+    monkeypatch.setattr(fs, "store_materialize_end", lambda: fixed_end)
+
+    # probation + 旧 universe 物化（模拟 mined_7d449261 类历史资产）
+    rec = _expr_record(
+        "rank(close)",
+        name="mined_7d449261",
+        status="probation",
+        universe="csi500",
+    )
+    lib_root = tmp_path / "factor_library"
+    store_root = tmp_path / "factor_store"
+    lib_root.mkdir()
+    _save_library("ashare", [rec], root=str(lib_root))
+    write_factor_asset(rec, market="ashare", root=str(store_root), materialize=False)
+
+    meta_path = store_root / "ashare" / "mined_7d449261" / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["materialization"] = {
+        "start": "20240101",
+        "end": "20240630",
+        "universe": "csi300",
+        "git_sha": "old",
+        "n_rows": 10,
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "expression": rec.expression,
+    }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    # 假 parquet 存在，触发窗口/universe 一致性校验
+    (store_root / "ashare" / "mined_7d449261" / "factor.parquet").write_bytes(b"pq")
+
+    report = verify_store("ashare", root=str(store_root), lib_root=str(lib_root))
+    assert report["ok"] is False
+    mat_drifts = [
+        d
+        for d in report["drifts"]
+        if d.get("name") == "mined_7d449261"
+        and str(d.get("field", "")).startswith("materialization")
+    ]
+    assert mat_drifts, f"expected materialization drift, got {report['drifts']}"
+    fields = {d["field"] for d in mat_drifts}
+    assert "materialization.universe" in fields or any(
+        "universe" in f for f in fields
+    )
+
+
+def test_materialize_records_panel_loader_uses_store_window(tmp_path, monkeypatch):
+    """_materialize_records 装帧：panel_loader 收到 store 常量口径（非 record.eval_*）。"""
+    from factorzen.discovery import factor_store as fs
+
+    fixed_end = "2026-07-20"
+    monkeypatch.setattr(fs, "store_materialize_end", lambda: fixed_end)
+
+    rec = _expr_record(
+        "rank(close)",
+        name="mined_loader_win",
+        status="active",
+        eval_start="20240101",
+        eval_end="20240630",
+        universe="csi300",
+    )
+    calls: list[dict] = []
+
+    def fake_loader(**kw):
+        calls.append(dict(kw))
+        # 最小 prepped 帧：_materializer_from_prepped 需要真实列；此处直接拦在 mat 前
+        raise RuntimeError("stop_after_loader_capture")
+
+    # 只验证 loader 入参：panel_loader 抛错时组级 continue，n_ok=0
+    n = fs._materialize_records(
+        [rec],
+        market="ashare",
+        root=str(tmp_path),
+        panel_loader=fake_loader,
+    )
+    assert n == 0
+    assert len(calls) == 1
+    c = calls[0]
+    # 行为/数值断言（不用 signature）
+    assert c["universe"] == fs.STORE_MATERIALIZE_UNIVERSE
+    # panel 通道用 YYYYMMDD
+    assert c["start"].replace("-", "") == fs.STORE_MATERIALIZE_START.replace("-", "")
+    assert c["end"].replace("-", "") == fixed_end.replace("-", "")
+    assert c["market"] == "ashare"
+    assert "intraday_leaves" in c
 
 
 # ── 生成模板可 import ────────────────────────────────────────────────────────

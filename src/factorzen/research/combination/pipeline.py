@@ -1,4 +1,4 @@
-﻿"""多因子合成评估管线。加载因子、合成、回测一体化。"""
+"""多因子合成评估管线。加载因子、合成、信号层评估一体化。"""
 
 from __future__ import annotations
 
@@ -6,11 +6,14 @@ import logging
 
 import polars as pl
 
-from factorzen.daily.evaluation.backtest import BacktestResult, CostModel, run_stratified_backtest
 from factorzen.daily.evaluation.ic_analysis import (
     ICAnalysisResult,
     compute_fwd_returns,
     compute_rank_ic,
+)
+from factorzen.daily.evaluation.signal_backtest import (
+    SignalBacktestResult,
+    run_signal_backtest,
 )
 from factorzen.daily.factors.registry import get_factor
 from factorzen.research.combination.methods import equal_weight, ic_weighted, max_ir
@@ -43,21 +46,25 @@ def combine_and_evaluate(
     price_df: pl.DataFrame,
     method: str = "equal_weight",
     horizons: list[int] | None = None,
-    cost_model: CostModel | None = None,
+    cost_bps: float = 0.0,
     ret_col: str = "ret",
-) -> tuple[pl.DataFrame, ICAnalysisResult, BacktestResult]:
-    """合成多个因子并评估 IC / 回测性能。
+) -> tuple[pl.DataFrame, ICAnalysisResult, SignalBacktestResult]:
+    """合成多个因子并做信号层 IC / 分层评估。
+
+    返回的是**信号层毛收益口径**评估（``return_basis=gross_signal_level``），
+    不含停牌/涨跌停/T+1 等可交易性约束，**不是**可交易净值。
+    可交易净值请走 ``fz combine backtest``。
 
     Args:
         factor_dfs: {factor_name: DataFrame(trade_date, ts_code, factor_value)}
         price_df: 含 trade_date, ts_code, {ret_col} 的价格 DataFrame
         method: 合成方法 ("equal_weight" | "ic_weighted" | "max_ir")
         horizons: IC 衰减窗口（默认 [1, 5]）
-        cost_model: 成本模型，None 表示不扣成本
+        cost_bps: 信号层提示性单边成本（bp），默认 0
         ret_col: 单日收益列名
 
     Returns:
-        (combined_factor_df, ic_result, backtest_result)
+        (combined_factor_df, ic_result, signal_backtest_result)
     """
     if horizons is None:
         horizons = [1, 5]
@@ -94,13 +101,13 @@ def combine_and_evaluate(
         horizons=horizons,
     )
 
-    # 回测
-    bt_result = run_stratified_backtest(
+    # 信号层分层评估（复用已算好的 ret_df，不再额外算前向收益）
+    signal_result = run_signal_backtest(
         combined,
-        price_df,
+        ret_df,
         factor_col="factor_clean",
         n_groups=5,
-        cost_model=cost_model,
+        cost_bps=cost_bps,
     )
 
-    return combined, ic_result, bt_result
+    return combined, ic_result, signal_result

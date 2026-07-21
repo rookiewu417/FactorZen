@@ -905,3 +905,81 @@ def test_neutralization_and_ensure_data_suite():
         _section_2_test_run_ensures_required_data_before_loading_universe(mp)
 
 
+# -- signal 落盘 --
+def test_signal_backtest_artifacts_suite(tmp_path):
+    """信号层回测落盘契约：_signal.json 含 ann_ret_gross；_signal_group_nav.parquet 列齐全。
+
+    现有 suite 无完整 _run 形态，按约定退而测与 daily_single 11b 同构的落盘路径。
+    """
+    from datetime import date, timedelta
+
+    from factorzen.daily.evaluation.signal_backtest import run_signal_backtest
+
+    # 10 股 × 8 日，n_groups=5 足够有效分组
+    n_days, n_stocks, n_groups = 8, 10, 5
+    dates = [date(2024, 1, 2) + timedelta(days=i) for i in range(n_days)]
+    codes = [f"{i:06d}.SZ" for i in range(n_stocks)]
+    f_rows, r_rows = [], []
+    for di, d in enumerate(dates):
+        for si, c in enumerate(codes):
+            f_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": c,
+                    "factor_clean": float(si) + 0.01 * di,
+                }
+            )
+            r_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": c,
+                    "fwd_ret_1d": 0.001 * si + 0.0001 * di,
+                }
+            )
+    factor_df = pl.DataFrame(f_rows)
+    ret_df = pl.DataFrame(r_rows)
+
+    signal_result = run_signal_backtest(
+        factor_df,
+        ret_df,
+        factor_col="factor_clean",
+        n_groups=n_groups,
+        frequency="daily",
+        factor_name="dummy_factor",
+        meta={"exec_lag": 1, "exec_price_col": "open_adj", "direction": "long"},
+    )
+
+    factor_name, start, end = "dummy_factor", "20240102", "20240109"
+    result_dir = tmp_path / "results"
+    result_dir.mkdir(parents=True)
+
+    # 与 daily_single 11b 同构落盘
+    signal_json_path = result_dir / f"{factor_name}_{start}_{end}_signal.json"
+    signal_json_path.write_text(
+        json.dumps(
+            {
+                "summary_stats": signal_result.summary_stats,
+                "meta": signal_result.meta,
+                "n_groups": signal_result.n_groups,
+                "cost_bps": signal_result.cost_bps,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    signal_nav_path = result_dir / f"{factor_name}_{start}_{end}_signal_group_nav.parquet"
+    signal_result.group_nav.write_parquet(str(signal_nav_path))
+
+    assert signal_json_path.exists()
+    payload = json.loads(signal_json_path.read_text(encoding="utf-8"))
+    assert "ann_ret_gross" in payload["summary_stats"]["long_short"]
+    assert payload["meta"]["return_basis"] == "gross_signal_level"
+    assert payload["n_groups"] == n_groups
+
+    nav = pl.read_parquet(str(signal_nav_path))
+    assert {"trade_date", "group", "nav"}.issubset(set(nav.columns))
+    assert not nav.is_empty()
+    # 独立期望：5 组均应有净值序列
+    assert set(nav["group"].to_list()) == set(range(n_groups))
+

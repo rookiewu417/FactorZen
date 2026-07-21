@@ -585,8 +585,8 @@ def test_intraday_backtest_suite():
     # -- 原 test_run_intraday_backtest_has_long_short --
     def _section_2_test_run_intraday_backtest_has_long_short():
         result = run_intraday_backtest(_make_minute_factor(), _make_daily_price(), n_groups=5)
-        assert "long_short" in result.summary_stats
-        assert not result.nav.is_empty()
+        assert not result.ls_returns.is_empty()
+        assert "ann_ret_gross" in result.summary_stats["long_short"]
 
     _section_2_test_run_intraday_backtest_has_long_short()
 

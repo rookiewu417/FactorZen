@@ -1,10 +1,14 @@
-﻿"""intraday/evaluation/backtest.py — 日内因子分层回测（聚合到日频后复用 daily 回测框架）。"""
+"""intraday/evaluation/backtest.py — 分钟因子聚合→日频信号层分层评估（毛收益口径）。"""
 
 from __future__ import annotations
 
 import polars as pl
 
-from factorzen.daily.evaluation.backtest import BacktestResult, run_stratified_backtest
+from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
+from factorzen.daily.evaluation.signal_backtest import (
+    SignalBacktestResult,
+    run_signal_backtest,
+)
 
 
 def aggregate_intraday_factor(
@@ -38,10 +42,14 @@ def run_intraday_backtest(
     factor_col: str = "factor_value",
     n_groups: int = 10,
     factor_name: str = "",
-) -> BacktestResult:
-    """日内因子分层回测。
+    *,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
+) -> SignalBacktestResult:
+    """分钟因子聚合后做日频信号层分层评估（毛收益口径）。
 
-    将分钟因子聚合到日频后，对齐日频价格进行分层回测。
+    将分钟因子聚合到日频，经 ``compute_fwd_returns`` 得到前向收益，
+    再走 ``run_signal_backtest``。输出为研究口径毛收益，不含可交易性约束。
 
     Args:
         minute_factor: 分钟级因子 DataFrame，含 trade_time/trade_date、ts_code、{factor_col}。
@@ -49,14 +57,21 @@ def run_intraday_backtest(
         factor_col: 因子列名。
         n_groups: 分组数。
         factor_name: 因子名称。
+        exec_lag: 成交滞后（交易日），原样透传 ``compute_fwd_returns``；默认 0。
+        exec_price_col: 成交价格列，原样透传 ``compute_fwd_returns``；默认 None。
 
     Returns:
-        BacktestResult（复用 daily 框架）。
+        SignalBacktestResult（信号层毛收益口径）。
     """
     daily_factor = aggregate_intraday_factor(minute_factor, factor_col=factor_col)
-    return run_stratified_backtest(
-        daily_factor,
+    fwd_returns = compute_fwd_returns(
         daily_price,
+        exec_lag=exec_lag,
+        exec_price_col=exec_price_col,
+    )
+    return run_signal_backtest(
+        daily_factor,
+        fwd_returns,
         factor_col=factor_col,
         n_groups=n_groups,
         factor_name=factor_name,

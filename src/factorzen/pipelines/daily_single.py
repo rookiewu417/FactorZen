@@ -36,6 +36,7 @@ from factorzen.core.universe import build_is_st_by_date, get_universe
 from factorzen.daily.data.context import FactorDataContext
 from factorzen.daily.evaluation.backtest import run_strategy_backtest, trim_backtest_to_first_trade
 from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
+from factorzen.daily.evaluation.signal_backtest import run_signal_backtest
 from factorzen.daily.evaluation.turnover import compute_turnover
 from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 from factorzen.daily.factors.registry import get_factor
@@ -746,6 +747,54 @@ def _run(
     except Exception as e:
         logger.warning(f"更新 meta walk_forward 失败（跳过）: {e}")
     progress.advance("mono")
+
+    # ── 11b. 信号层回测 ──
+    # 增量产出：失败只 warning 跳过，不拖垮主管线；不改 progress 序列。
+    try:
+        _sig_exec_lag = int(
+            getattr(args, "exec_lag", 1)
+            if getattr(args, "exec_lag", None) is not None
+            else 1
+        )
+        _sig_exec_price_col = getattr(args, "exec_price_col", "open_adj")
+        signal_result = run_signal_backtest(
+            backtest_df,  # 方向对齐后的信号（与回测/换手同口径）
+            ret_df,  # 第 6 步已算好的前向收益（exec_lag/exec_price_col 可实现口径，自动继承）
+            factor_col="factor_clean",
+            n_groups=5,
+            frequency=args.frequency,
+            factor_name=factor.name,
+            meta={
+                "exec_lag": _sig_exec_lag,
+                "exec_price_col": _sig_exec_price_col,
+                "direction": backtest_direction.get("direction"),
+            },
+        )
+        logger.info(f"\n{signal_result.summary()}")
+        signal_json_path = (
+            result_output_dir / f"{factor.name}_{args.start}_{args.end}_signal.json"
+        )
+        signal_json_path.write_text(
+            json.dumps(
+                {
+                    "summary_stats": signal_result.summary_stats,
+                    "meta": signal_result.meta,
+                    "n_groups": signal_result.n_groups,
+                    "cost_bps": signal_result.cost_bps,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        signal_nav_path = (
+            result_output_dir
+            / f"{factor.name}_{args.start}_{args.end}_signal_group_nav.parquet"
+        )
+        signal_result.group_nav.write_parquet(str(signal_nav_path))
+        logger.info(f"信号层回测已保存: {signal_json_path}, {signal_nav_path}")
+    except Exception as e:
+        logger.warning(f"信号层回测失败（跳过）: {e}")
 
     # ── 12. Benchmark 对比（可选）──
     benchmark_result = None

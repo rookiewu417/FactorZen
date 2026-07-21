@@ -96,10 +96,15 @@ def _import_factor_py(path: Path, mod_name: str = "fz_test_factor_mod"):
 # ── write_factor_asset: expression ───────────────────────────────────────────
 
 
-def test_write_expression_asset_suite(tmp_path):
+def test_write_expression_asset_suite(tmp_path, monkeypatch):
     """expression 类 write → 三件套齐、meta 全、factor.py 与生产求值一致。"""
+    from factorzen.discovery import factor_store as fs
     from factorzen.discovery.expression import evaluate_materialized, parse_expr
     from factorzen.discovery.factor_store import write_factor_asset
+
+    # 离线:end 走 prev_trade_date(today) 需要交易日历(CI 无 token 会炸),mock 固定值
+    fixed_end = "2026-07-17"
+    monkeypatch.setattr(fs, "store_materialize_end", lambda: fixed_end)
 
     rec = _expr_record("rank(close)")
     daily = _tiny_daily()
@@ -154,15 +159,10 @@ def test_write_expression_asset_suite(tmp_path):
     mat = meta["materialization"]
     assert mat is not None
     # 物化口径与裁决 eval 窗分离：parquet 固定 all_a / 2016-01-01~最新
-    from factorzen.discovery.factor_store import (
-        STORE_MATERIALIZE_START,
-        STORE_MATERIALIZE_UNIVERSE,
-        store_materialize_end,
-    )
-
-    assert mat["start"] == STORE_MATERIALIZE_START
-    assert mat["end"] == store_materialize_end()
-    assert mat["universe"] == STORE_MATERIALIZE_UNIVERSE
+    # (end 用 mock 的字面值断言,不与生产同 helper 重算——那是恒真)
+    assert mat["start"] == "2016-01-01"
+    assert mat["end"] == fixed_end
+    assert mat["universe"] == "all_a"
     assert mat["n_rows"] == expected.height
     assert "generated_at" in mat
     # ledger 评估口径仍保留在 record 侧（eval_* / universe 不变）

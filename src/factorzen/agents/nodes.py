@@ -199,7 +199,12 @@ def node_evaluate(state: AgentState, *, daily, bundle,
             iteration=state.iteration, hypothesis=p.hypothesis, expression=r["expression"],
             compile_ok=r["compile_ok"], ic_train=r["ic_train"], passed_guardrails=False,
             critic_verdict=None, error=r["error"], ir_train=r["ir_train"],
-            turnover=r.get("turnover"), n_train=r.get("n_train")))
+            turnover=r.get("turnover"), n_train=r.get("n_train"),
+            nonzero_coverage=r.get("nonzero_coverage"),
+            is_sparse=bool(r.get("is_sparse") or False),
+            subset_ic_train=r.get("subset_ic_train"),
+            subset_n_days_train=r.get("subset_n_days_train"),
+        ))
         state.seen_expressions.add(r["expression"])
     state._pending = []  # type: ignore[attr-defined]
     return state
@@ -224,6 +229,7 @@ def node_guardrails(
     prepped=None,
     exec_lag: int = 0,
     exec_price_col: str | None = None,
+    sleeve_gate: bool = True,
 ) -> AgentState:
     """对过编译的候选记账 N、跑 holdout_ic/DSR，过关者进 candidates。
 
@@ -275,7 +281,11 @@ def node_guardrails(
     """
     from tqdm import tqdm
 
-    from factorzen.discovery.evaluation import _factor_df_from_prepped, _preprocess_daily
+    from factorzen.discovery.evaluation import (
+        _factor_df_from_prepped,
+        _preprocess_daily,
+        compute_subset_rank_ic,
+    )
     from factorzen.discovery.guardrails import (
         DEFAULT_DUPLICATE_CORR,
         DEFAULT_GRAY_IC_FLOOR,
@@ -286,6 +296,7 @@ def node_guardrails(
         classify_reject_category,
         deflated_pvalue,
         is_lift_queue_candidate,
+        is_sleeve_lift_candidate,
         pool_pbo,
     )
     from factorzen.discovery.residual import (
@@ -652,6 +663,55 @@ def node_guardrails(
                 a.reject_reason = (
                     ((a.reject_reason or "") + suffix) if a.reject_reason else suffix
                 )
+                state.n_gray_zone = getattr(state, "n_gray_zone", 0) + 1
+
+    # ── 稀疏因子 sleeve 旁路：子集 IC 达标 → lift_queue（不直接 passed）────────
+    # 与 is_lift_queue_candidate 全截面地板独立：fill-0 事件叶全截面被稀释后
+    # 常过不了 gray floor，事件子集才是真口径。稠密因子 is_sparse=False 零开销跳过。
+    if sleeve_gate:
+        for a in passed:
+            if getattr(a, "passed_guardrails", False):
+                continue
+            if a.reject_category == REJECT_CATEGORY_LIBRARY_CORRELATED:
+                continue
+            if not getattr(a, "is_sparse", False):
+                continue
+            # holdout 子集 IC：尚未算则补算（top-K 与非 top-K 统一）
+            if getattr(a, "subset_ic_holdout", None) is None:
+                try:
+                    node_sl = parse_expr(a.expression, leaf_map)
+                    fdf_hold_sl = _holdout_values(node_sl)
+                    if _hold_fwd is None:
+                        _hold_fwd = holdout_fwd_returns(
+                            holdout_df,
+                            exec_lag=exec_lag, exec_price_col=exec_price_col,
+                        )
+                    sic_h, sn_h = compute_subset_rank_ic(fdf_hold_sl, _hold_fwd)
+                    a.subset_ic_holdout = sic_h  # type: ignore[attr-defined]
+                    a.subset_n_days_holdout = sn_h  # type: ignore[attr-defined]
+                except Exception as exc:
+                    _LOG.debug(
+                        "sleeve holdout 子集 IC 失败 %s: %s: %s",
+                        a.expression, type(exc).__name__, exc,
+                    )
+                    continue
+            sleeve_probe = {
+                "is_sparse": True,
+                "subset_ic_train": getattr(a, "subset_ic_train", None),
+                "subset_ic_holdout": getattr(a, "subset_ic_holdout", None),
+                "subset_n_days_train": getattr(a, "subset_n_days_train", None),
+            }
+            if not is_sleeve_lift_candidate(sleeve_probe, sleeve_gate=True):
+                continue
+            already_queue = a.reject_category == REJECT_CATEGORY_LIFT_QUEUE
+            a.reject_category = REJECT_CATEGORY_LIFT_QUEUE
+            a.sleeve_candidate = True  # type: ignore[attr-defined]
+            sleeve_suffix = "(sleeve候选,lift队列,待组合裁决)"
+            if a.reject_reason and sleeve_suffix not in a.reject_reason:
+                a.reject_reason = a.reject_reason + sleeve_suffix
+            elif not a.reject_reason:
+                a.reject_reason = sleeve_suffix
+            if not already_queue:
                 state.n_gray_zone = getattr(state, "n_gray_zone", 0) + 1
 
     try:

@@ -61,6 +61,7 @@ def run_team_mine(
     pool_cache_dir: str | None = None,
     exec_lag: int = 0,
     exec_price_col: str | None = None,
+    sleeve_gate: bool = True,
 ) -> dict:
     """跑多 Agent 团队挖掘，每轮增量落 manifest，收尾写 candidates.csv + 导出候选。
 
@@ -148,6 +149,7 @@ def run_team_mine(
         pool_cache_dir=pool_cache_dir,
         exec_lag=exec_lag,
         exec_price_col=exec_price_col,
+        sleeve_gate=sleeve_gate,
     )
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

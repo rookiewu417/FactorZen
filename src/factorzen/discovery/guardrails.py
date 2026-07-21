@@ -58,6 +58,12 @@ REJECT_CATEGORY_LIFT_QUEUE = "lift_queue"
 # 不进 known_invalid（组合无增量 ≠ 单因子无信号），走 known_lift_rejects 独立通道。
 REJECT_CATEGORY_LIFT_REJECTED = "lift_rejected"
 
+# ── 稀疏因子 sleeve 旁路（事件子集口径；不改主门阈值）────────────────────────
+# |subset_ic_train| 下限：战役 express_yoy 真子集 ~0.02–0.05；0.03 为工程入队门槛。
+SLEEVE_SUBSET_IC_FLOOR = 0.03
+# train 子集有效 IC 天数下限（低于此视为样本不足，不进 sleeve 旁路）。
+SLEEVE_SUBSET_MIN_DAYS = 40
+
 
 def _holdout_direction_reasons(
     ic_train: float, holdout_ic: float, *, reason_style: str = "raw",
@@ -403,6 +409,53 @@ def is_gray_zone(candidate: dict, *, objective: str | None = None) -> bool:
     薄别名，行为与 ``is_lift_queue_candidate`` 完全一致（上界已取消；库重复阈 0.95）。
     """
     return is_lift_queue_candidate(candidate, objective=objective)
+
+
+def is_sleeve_lift_candidate(
+    candidate: dict,
+    *,
+    sleeve_gate: bool = True,
+) -> bool:
+    """稀疏因子 sleeve 旁路：主门不过时可否进 ``lift_queue``（**不**直接 passed）。
+
+    条件（全部满足）：
+    1. ``sleeve_gate`` 开启
+    2. ``is_sparse`` 为真（非零覆盖率 < 0.20，由 evaluation 层判定）
+    3. ``|subset_ic_train| ≥ SLEEVE_SUBSET_IC_FLOOR``（默认 0.03）
+    4. ``subset_ic_holdout`` 与 train **严格同号**（任一侧 0 / None → 拒）
+    5. ``subset_n_days_train ≥ SLEEVE_SUBSET_MIN_DAYS``（默认 40）
+
+    **独立于** ``is_lift_queue_candidate`` 的全截面 |IC| 地板——事件叶 fill-0
+    全截面 IC 被稀释后常低于 gray floor，子集才是真口径。
+
+    调用方契约：``if not passed and is_sleeve_lift_candidate(...)`` 时打
+    ``reject_category=lift_queue`` + ``sleeve_candidate=True``，绝不改 ``passed``。
+    """
+    if not sleeve_gate:
+        return False
+    if not candidate.get("is_sparse"):
+        return False
+    sic_tr = candidate.get("subset_ic_train")
+    sic_h = candidate.get("subset_ic_holdout")
+    n_days = candidate.get("subset_n_days_train")
+    if sic_tr is None or sic_h is None or n_days is None:
+        return False
+    try:
+        tr = float(sic_tr)
+        ho = float(sic_h)
+        nd = int(n_days)
+    except (TypeError, ValueError):
+        return False
+    if tr != tr or ho != ho:  # NaN
+        return False
+    if abs(tr) < SLEEVE_SUBSET_IC_FLOOR:
+        return False
+    if nd < SLEEVE_SUBSET_MIN_DAYS:
+        return False
+    # 严格同号；0 视为无信号
+    if tr == 0.0 or ho == 0.0:
+        return False
+    return (ho > 0) == (tr > 0)
 
 
 def acceptance_reasons(

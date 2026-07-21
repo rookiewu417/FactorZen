@@ -33,6 +33,15 @@ class AttemptRecord:
     residual_ic_train: float | None = None
     residual_holdout_ic: float | None = None
     n_residual_holdout_days: int | None = None
+    # 稀疏因子子集评估（evaluation 层；消费方缺字段须容忍）
+    nonzero_coverage: float | None = None
+    is_sparse: bool = False
+    subset_ic_train: float | None = None
+    subset_n_days_train: int | None = None
+    subset_ic_holdout: float | None = None
+    subset_n_days_holdout: int | None = None
+    # sleeve 旁路进 lift 队列标记（不直接 passed；lift 层零改）
+    sleeve_candidate: bool = False
 
 
 @dataclass

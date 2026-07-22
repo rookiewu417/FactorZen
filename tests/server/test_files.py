@@ -305,3 +305,45 @@ def test_manager_list_and_delete_direct(tmp_path):
     assert any(d["name"] == "a" for d in listing["dirs"])
     fm.delete("bin.dat")
     assert not (tmp_path / "bin.dat").exists()
+
+
+# ---- raw 直开 ----
+
+
+def test_raw_html_200_content_type(tmp_path):
+    html = tmp_path / "report.html"
+    html.write_text("<html><body>ok</body></html>", encoding="utf-8")
+    r = _client(tmp_path).get("/api/files/raw", params={"path": "report.html"})
+    assert r.status_code == 200
+    ct = r.headers.get("content-type", "")
+    assert "text/html" in ct
+    assert b"ok" in r.content
+
+
+def test_raw_path_traversal_404(tmp_path):
+    (tmp_path / "report.html").write_text("<html/>", encoding="utf-8")
+    client = _client(tmp_path)
+    for evil in ["../x", "/etc/passwd", "a/../../etc/passwd", ".."]:
+        assert (
+            client.get("/api/files/raw", params={"path": evil}).status_code == 404
+        )
+
+
+def test_raw_disallowed_ext_404(tmp_path):
+    (tmp_path / "x.py").write_text("print(1)\n", encoding="utf-8")
+    (tmp_path / "bin.dat").write_bytes(b"\x00\x01")
+    client = _client(tmp_path)
+    assert (
+        client.get("/api/files/raw", params={"path": "x.py"}).status_code == 404
+    )
+    assert (
+        client.get("/api/files/raw", params={"path": "bin.dat"}).status_code
+        == 404
+    )
+
+
+def test_raw_missing_file_404(tmp_path):
+    r = _client(tmp_path).get(
+        "/api/files/raw", params={"path": "nope.html"}
+    )
+    assert r.status_code == 404

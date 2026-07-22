@@ -39,6 +39,24 @@ TEXT_EXTENSIONS = frozenset(
     }
 )
 
+# 浏览器直开（FileResponse）白名单扩展名
+RAW_EXTENSIONS = frozenset(
+    {
+        ".html",
+        ".htm",
+        ".md",
+        ".txt",
+        ".json",
+        ".jsonl",
+        ".csv",
+        ".log",
+        ".png",
+        ".svg",
+        ".jpg",
+        ".jpeg",
+    }
+)
+
 
 def _mtime_iso(path: Path) -> str:
     """文件/目录 mtime 转 ISO 字符串（UTC）。"""
@@ -140,6 +158,20 @@ class FileManager:
             raise FileNotFoundError(f"非法 path: {rel_path}")
         if target == self.root and not allow_root:
             raise FileNotFoundError(f"非法 path: {rel_path}")
+        return target
+
+    def raw_path(self, rel_path: str) -> Path:
+        """返回可直开的绝对文件路径；路径防护同 ``_safe_path``。
+
+        仅存在的**文件**且扩展名在 ``RAW_EXTENSIONS`` 内才返回；
+        否则 raise FileNotFoundError（API 映射 404）。
+        """
+        target = self._safe_path(rel_path, allow_root=False)
+        if not target.is_file():
+            raise FileNotFoundError(f"文件不存在: {rel_path}")
+        suffix = target.suffix.lower()
+        if suffix not in RAW_EXTENSIONS:
+            raise FileNotFoundError(f"不允许直开的扩展名: {suffix or '(none)'}")
         return target
 
     def list_dir(self, rel_path: str = "") -> dict[str, Any]:

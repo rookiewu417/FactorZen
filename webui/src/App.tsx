@@ -2,14 +2,17 @@ import { ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './components/AppLayout'
+import { CliPage } from './pages/Cli'
 import { DomainListPage } from './pages/DomainList'
 import { FilesPage } from './pages/Files'
+import { JobsPage } from './pages/Jobs'
 import { LibraryPage } from './pages/Library'
 import { OpsPage } from './pages/Ops'
 import { OverviewPage } from './pages/Overview'
 import { ReportsPage } from './pages/Reports'
 import { RunDetailPage } from './pages/RunDetail'
 import { StorePage } from './pages/Store'
+import { StrategyPage } from './pages/Strategy'
 
 export default function App() {
   return (
@@ -25,6 +28,9 @@ export default function App() {
             <Route path="ops" element={<OpsPage />} />
             <Route path="reports" element={<ReportsPage />} />
             <Route path="files" element={<FilesPage />} />
+            <Route path="jobs" element={<JobsPage />} />
+            <Route path="cli" element={<CliPage />} />
+            <Route path="strategy" element={<StrategyPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

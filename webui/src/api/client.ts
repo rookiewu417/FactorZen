@@ -1,11 +1,16 @@
 import type {
   CampaignLogResponse,
   CampaignsResponse,
+  CliNode,
   FileContentResponse,
   FileDeleteResponse,
   FileWriteResponse,
   FilesListResponse,
   HealthResponse,
+  JobKillResponse,
+  JobLogResponse,
+  JobSummary,
+  JobsListResponse,
   LibraryResponse,
   NavResponse,
   OverviewResponse,
@@ -155,4 +160,52 @@ export function deleteFile(
     `/api/files?path=${encodeURIComponent(path)}&recursive=${recursive}`,
     { method: 'DELETE' },
   )
+}
+
+/** 浏览器直开 raw 文件 URL（html/图片等）。 */
+export function fileRawUrl(path: string): string {
+  return `/api/files/raw?path=${encodeURIComponent(path)}`
+}
+
+// ---- 任务中心 ----
+
+export function fetchJobs(): Promise<JobsListResponse> {
+  return getJson('/api/jobs')
+}
+
+export function fetchJob(jobId: string): Promise<JobSummary> {
+  return getJson(`/api/jobs/${encodeURIComponent(jobId)}`)
+}
+
+export function fetchJobLog(
+  jobId: string,
+  tail = 200,
+): Promise<JobLogResponse> {
+  return getJson(
+    `/api/jobs/${encodeURIComponent(jobId)}/log?tail=${tail}`,
+  )
+}
+
+export function submitJob(body: {
+  kind: string
+  argv: string[]
+  title: string
+}): Promise<JobSummary> {
+  return requestJson('/api/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function killJob(jobId: string): Promise<JobKillResponse> {
+  return requestJson(`/api/jobs/${encodeURIComponent(jobId)}/kill`, {
+    method: 'POST',
+  })
+}
+
+// ---- CLI schema ----
+
+export function fetchCliSchema(): Promise<CliNode> {
+  return getJson('/api/cli/schema')
 }

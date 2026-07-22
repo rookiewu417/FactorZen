@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 import polars as pl
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from factorzen.server.api import create_app
@@ -386,3 +387,10 @@ def test_create_app_without_ui_dist(tmp_path):
     assert "domains" in r.json()
 
 
+
+
+def test_module_level_app_exists_for_uvicorn():
+    """uvicorn 入口依赖模块级 `app`(pixi run serve);create_app 单测抓不到它丢失。"""
+    from factorzen.server import api
+
+    assert isinstance(api.app, FastAPI)

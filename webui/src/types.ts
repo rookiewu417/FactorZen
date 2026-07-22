@@ -209,3 +209,54 @@ export interface FileWriteResponse {
 export interface FileDeleteResponse {
   deleted: string
 }
+
+// ---- 任务中心 ----
+
+export type JobStatus = 'running' | 'finished' | 'orphaned'
+
+export interface JobSummary {
+  job_id: string
+  kind: string
+  title: string
+  argv: string[]
+  pid: number
+  started_at: string
+  status: JobStatus
+  exit_code?: number | null
+  ended_at?: string | null
+}
+
+export interface JobsListResponse {
+  jobs: JobSummary[]
+}
+
+export interface JobLogResponse {
+  job_id: string
+  lines: string[]
+}
+
+export interface JobKillResponse {
+  job_id: string
+  killed: boolean
+}
+
+// ---- CLI schema ----
+
+export interface CliOption {
+  flags: string[]
+  dest: string
+  help: string | null
+  required: boolean
+  default: unknown
+  choices: string[] | null
+  nargs: string | number | null
+  is_flag: boolean
+  is_positional: boolean
+}
+
+export interface CliNode {
+  name: string
+  help: string
+  children: CliNode[]
+  options: CliOption[]
+}

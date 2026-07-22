@@ -4,11 +4,14 @@ import type { MenuProps } from 'antd'
 import {
   AppstoreOutlined,
   BankOutlined,
+  CodeOutlined,
   DatabaseOutlined,
   ExperimentOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
   FundOutlined,
+  LineChartOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { fetchHealth } from '../api/client'
@@ -58,18 +61,26 @@ export function AppLayout() {
     if (path.startsWith('/ops')) return 'ops'
     if (path.startsWith('/reports')) return 'reports'
     if (path.startsWith('/files')) return 'files'
+    if (path.startsWith('/jobs')) return 'jobs'
+    if (path.startsWith('/cli')) return 'cli'
+    if (path.startsWith('/strategy')) return 'strategy'
     return 'overview'
   })()
 
+  const topKeys = new Set([
+    'overview',
+    'library',
+    'store',
+    'ops',
+    'reports',
+    'files',
+    'jobs',
+    'cli',
+    'strategy',
+  ])
+
   const openKeys = (() => {
-    if (
-      selectedKey !== 'overview' &&
-      selectedKey !== 'library' &&
-      selectedKey !== 'store' &&
-      selectedKey !== 'ops' &&
-      selectedKey !== 'reports' &&
-      selectedKey !== 'files'
-    ) {
+    if (!topKeys.has(selectedKey)) {
       return ['runs']
     }
     return undefined
@@ -120,6 +131,21 @@ export function AppLayout() {
       key: 'overview',
       icon: <AppstoreOutlined />,
       label: <Link to="/">总览</Link>,
+    },
+    {
+      key: 'jobs',
+      icon: <ThunderboltOutlined />,
+      label: <Link to="/jobs">任务中心</Link>,
+    },
+    {
+      key: 'cli',
+      icon: <CodeOutlined />,
+      label: <Link to="/cli">命令启动器</Link>,
+    },
+    {
+      key: 'strategy',
+      icon: <LineChartOutlined />,
+      label: <Link to="/strategy">策略回测</Link>,
     },
     {
       key: 'files',

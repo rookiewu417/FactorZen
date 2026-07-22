@@ -16,6 +16,7 @@ import {
 import {
   DeleteOutlined,
   EditOutlined,
+  ExportOutlined,
   EyeOutlined,
   FolderOutlined,
   FileOutlined,
@@ -25,6 +26,7 @@ import {
   deleteFile,
   fetchFileContent,
   fetchFiles,
+  fileRawUrl,
   putFileContent,
 } from '../api/client'
 import type {
@@ -70,6 +72,11 @@ function isTextName(name: string): boolean {
   return /\.(json|jsonl|md|txt|yaml|yml|py|sh|csv|html|log|cfg|toml)$/.test(
     lower,
   )
+}
+
+/** 可浏览器新标签直开（raw 端点白名单子集中的可视类型）。 */
+function canOpenRaw(name: string): boolean {
+  return /\.(html?|png|svg|jpe?g)$/i.test(name)
 }
 
 function prettyText(path: string, content: string): string {
@@ -311,7 +318,7 @@ export function FilesPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 220,
+      width: 300,
       render: (_: unknown, record) => {
         const target = joinPath(path, record.name)
         if (record.kind === 'dir') {
@@ -339,6 +346,17 @@ export function FilesPage() {
             >
               查看
             </Button>
+            {canOpenRaw(record.name) && (
+              <Button
+                size="small"
+                icon={<ExportOutlined />}
+                onClick={() =>
+                  window.open(fileRawUrl(target), '_blank', 'noopener,noreferrer')
+                }
+              >
+                新标签打开
+              </Button>
+            )}
             {canEdit && (
               <Button
                 size="small"

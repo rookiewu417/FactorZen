@@ -14,6 +14,8 @@
 
 #### 因子库与增量准入
 
+- **combine from-library 优先读 factor_store 物化 parquet：** expression 因子命中 store（expression/universe 严格一致 + 窗口覆盖）时跳过重算，miss 回退原路径；`--no-store` 强制重算；manifest 记 `store_usage` 命中/miss 分布。同步收归 `FACTOR_STORE_DIR` 到 settings 单点，server DOMAINS 补 `combine_backtests`/`mine_team`、首页净值按域优先序回退，并新增 `*_DIR` 零引用架构守卫。
+
 - **准入架构倒置（#97）：** lift 增量检验升级为**入库的最终裁决**，单因子门降级为排序信号，硬门只剩数据质量；灰区候选进入无上界的 lift 队列，组门短路；三个消费方统一走同一套准入逻辑。
 - **试用池与第二条入库路（#93）：** 单因子指标偏弱但对组合有增量的因子经 probation 通道入库。
 - **向前确认机制（#101）：** 新增 `fz factor-library forward-track` 记录与 `forward-review` 裁决，构成 probation → forward → promote 的完整生命周期；`--apply` 之前默认 dry-run。

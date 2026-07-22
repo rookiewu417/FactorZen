@@ -282,4 +282,49 @@ def test_server_domain_services_suite(tmp_path):
     _tp11.mkdir(exist_ok=True)
     _section_11_test_nav_series_survives_corrupt_parquet(_tp11)
 
+    # -- DOMAINS 含 combine_backtests / mine_team --
+    def _section_12_test_domains_include_combine_and_team():
+        assert "combine_backtests" in DOMAINS
+        assert "mine_team" in DOMAINS
+
+    _section_12_test_domains_include_combine_and_team()
+
+
+def test_dashboard_nav_domain_fallback(tmp_path):
+    """首页 nav：combine_backtests 有 nav 时采用；execution 优先于 combine_backtests。"""
+    from factorzen.server.views import _pick_nav
+
+    # 仅 combine_backtests 有 nav
+    d = tmp_path / "combine_backtests" / "cb1"
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(
+        json.dumps({"status": "ok", "git_sha": "x"}), encoding="utf-8",
+    )
+    pl.DataFrame(
+        {"trade_date": ["2024-01-02", "2024-01-03"], "nav": [1.0, 1.05]}
+    ).write_parquet(d / "nav.parquet")
+    idx = ArtifactIndex(tmp_path)
+    summary = {dom: idx.list_runs(dom) for dom in DOMAINS}
+    nav, nav_domain = _pick_nav(idx, summary)
+    assert nav_domain == "combine_backtests"
+    assert len(nav) >= 1
+
+    # execution 也有时优先 execution
+    ed = tmp_path / "execution" / "e1"
+    ed.mkdir(parents=True)
+    (ed / "manifest.json").write_text("{}", encoding="utf-8")
+    pl.DataFrame(
+        {"as_of_date": ["2026-01-05"], "nav_after": [1_000_000.0]}
+    ).write_parquet(ed / "nav.parquet")
+    idx2 = ArtifactIndex(tmp_path)
+    summary2 = {dom: idx2.list_runs(dom) for dom in DOMAINS}
+    nav2, domain2 = _pick_nav(idx2, summary2)
+    assert domain2 == "execution"
+    assert nav2[0][1] == 1_000_000.0
+
+    # HTTP 首页也能渲染 combine_backtests 来源
+    r = _client(tmp_path).get("/")
+    assert r.status_code == 200
+    assert "combine_backtests" in r.text or "execution" in r.text
+
 

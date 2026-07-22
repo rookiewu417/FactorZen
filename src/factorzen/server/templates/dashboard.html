@@ -38,7 +38,7 @@
   </div>
 
   {% if nav %}
-  <h2>纸面执行净值(最新会话)</h2>
+  <h2>净值曲线{% if nav_domain %}（{{ nav_domain }}）{% endif %}</h2>
   <div id="chart"></div>
   {% endif %}
 

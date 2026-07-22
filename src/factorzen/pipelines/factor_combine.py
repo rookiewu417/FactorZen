@@ -350,6 +350,8 @@ def combine_from_library(
     methods: list[str] | None = None,
     seed: int = 0,
     run_id: str | None = None,
+    no_store: bool = False,
+    store_root: str | None = None,
 ) -> dict[str, Any]:
     """因子库登记簿 → 选品 → 物化 → 贪心去相关 → 四方法 OOS 组合。
 
@@ -363,8 +365,11 @@ def combine_from_library(
       → ``ValueError``（与库池「跳过+告警」不同——组合少一条腿直接改实验结论）。
     - 单记录物化失败跳过并记入 ``skipped_materialize``（与 from-session except-continue 同款）。
     - 落盘/组合报告用可读 ``name``，不用 ``factor_{i}``。
+    - expression 型优先读 factor_store 物化 parquet（同源物化路径）；``no_store`` 强制重算。
     """
+    import logging
     import tempfile
+    from collections import Counter
     from datetime import datetime
     from pathlib import Path
 
@@ -383,13 +388,20 @@ def combine_from_library(
         library_file_hash,
         load_library,
     )
+    from factorzen.discovery.factor_store import (
+        load_materialized_factor,
+        store_root_for_library,
+    )
     from factorzen.discovery.preparation import (
         expressions_need_intraday,
         intraday_expr_leaf_names,
     )
     from factorzen.pipelines.factor_mine import prepare_mining_daily
 
+    _log = logging.getLogger(__name__)
+
     root = library_root if library_root is not None else DEFAULT_ROOT
+    s_root = store_root if store_root is not None else store_root_for_library(root)
     recs = [r for r in load_library(market, root=root) if r.status in statuses]
     # 与 build_library_pool 同序：|ic_train| 降序，expression 作稳定 tie-break
     recs.sort(key=lambda r: (-abs(r.ic_train or 0.0), r.expression))
@@ -442,6 +454,7 @@ def combine_from_library(
     ]
     need_intraday = expressions_need_intraday(_exprs)
     ix_leaves = intraday_expr_leaf_names(_exprs)
+    # prepare + preprocess 不能省：前向收益 / python 因子 / store miss 重算都依赖
     daily = prepare_mining_daily(
         start, end, universe,
         intraday=need_intraday or bool(ix_leaves),
@@ -451,9 +464,13 @@ def combine_from_library(
     start_date = datetime.strptime(start, "%Y%m%d").date()
     pool_start, pool_end = _pool_date_bounds(prepped)
 
-    # 物化：expression → _factor_df_from_prepped；python → _materialize_python_on_grid
+    # 物化：expression 优先 store parquet → miss 则 _factor_df_from_prepped；
+    # python 仍走 _materialize_python_on_grid
     materialized: list[tuple[str, pl.DataFrame]] = []
     skipped_materialize: list[str] = []
+    store_hits: dict[str, dict[str, Any]] = {}
+    store_misses: dict[str, str] = {}
+    n_store_candidates = 0
     for name, r in named_recs:
         identity = str(r.expression or name)
         try:
@@ -477,14 +494,58 @@ def combine_from_library(
                     skipped_materialize.append(identity)
                     continue
             else:
-                fdf = _factor_df_from_prepped(
-                    parse_expr(r.expression), prepped, eval_start=start_date,
-                )
-                fdf = fdf.select(["trade_date", "ts_code", "factor_value"])
+                used_store = False
+                if not no_store and universe is not None:
+                    n_store_candidates += 1
+                    fdf_store, miss_reason, hit_meta = load_materialized_factor(
+                        r,
+                        market=market,
+                        root=s_root,
+                        start=start,
+                        end=end,
+                        universe=universe,
+                    )
+                    if fdf_store is not None:
+                        # 与重算路径一致：再滤 trade_date >= start_date
+                        fdf = (
+                            fdf_store.filter(pl.col("trade_date") >= start_date)
+                            .select(["trade_date", "ts_code", "factor_value"])
+                        )
+                        if fdf.is_empty():
+                            store_misses[name] = "empty_after_start_filter"
+                        else:
+                            used_store = True
+                            store_hits[name] = hit_meta or {}
+                    else:
+                        store_misses[name] = miss_reason or "unknown"
+                elif not no_store and universe is None:
+                    n_store_candidates += 1
+                    store_misses[name] = "no_universe"
+
+                if not used_store:
+                    fdf = _factor_df_from_prepped(
+                        parse_expr(r.expression), prepped, eval_start=start_date,
+                    )
+                    fdf = fdf.select(["trade_date", "ts_code", "factor_value"])
         except Exception:
             skipped_materialize.append(identity)
             continue
         materialized.append((name, fdf))
+
+    # store 命中汇总日志
+    n_hits = len(store_hits)
+    miss_dist = dict(Counter(store_misses.values()))
+    _log.info(
+        "store 命中 %s/%s(miss 原因分布: %s)",
+        n_hits,
+        n_store_candidates,
+        miss_dist if miss_dist else "{}",
+    )
+    store_usage: dict[str, Any] = {
+        "hits": store_hits,
+        "misses": store_misses,
+        "no_store": bool(no_store),
+    }
 
     if len(materialized) < 2:
         raise ValueError(
@@ -538,6 +599,7 @@ def combine_from_library(
             "decorr_threshold": decorr_threshold,
             "library_root": str(root),
             "library_hash": library_file_hash(market, root),
+            "store_usage": store_usage,
         },
     )
     res["factors_used"] = [n for n, _ in kept]
@@ -548,4 +610,5 @@ def combine_from_library(
     res["market"] = market
     res["statuses"] = list(statuses)
     res["truncated_from"] = truncated_from
+    res["store_usage"] = store_usage
     return res

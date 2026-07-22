@@ -22,6 +22,9 @@ DOMAINS = [
     "sim",
     "execution",
     "combinations",
+    "combine_backtests",  # 天然带 nav.parquet 的回测域
+    "mine_team",
+    # risk_models：目前仅有少量 manifest、无 nav；有产物再收
 ]
 
 

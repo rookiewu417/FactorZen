@@ -3449,6 +3449,7 @@ def _cmd_combine_from_library(args: argparse.Namespace) -> int:
             test_days=args.test_days,
             purge_days=args.purge_days,
             embargo_days=args.embargo_days,
+            no_store=bool(getattr(args, "no_store", False)),
         )
     except ValueError as exc:
         print(f"[combine] {exc}", file=sys.stderr)

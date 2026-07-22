@@ -73,7 +73,7 @@ from factorzen.pipelines.daily_single import (
     filter_frame_by_membership,
     load_pit_membership,
 )
-from factorzen.reports.tear_sheet import generate_tear_sheet
+from factorzen.reports.trading_report import generate_trading_report
 
 setup_logging()
 logger = get_logger(__name__)
@@ -201,7 +201,6 @@ def _run(
 
     walk_forward_summary: dict | None = None
     backtest_direction: dict[str, Any] | None = None
-    mono_result = None
     quality_report: dict[str, Any] | None = None
 
     # ── --reuse 路径 ──
@@ -240,12 +239,11 @@ def _run(
                     factor_name=factor.name,
                     frequency=args.frequency,
                 )
-            mono_result = _run_advanced_evaluation(
+            _ = _run_advanced_evaluation(
                 backtest_df, ret_df, args.frequency, args.start, args.end, n_groups=5
             )
         else:
             logger.warning("日线数据为空，跳过单调性")
-            mono_result = None
         progress.advance("results")
     else:
         if args.reuse:
@@ -402,8 +400,8 @@ def _run(
             walk_forward_summary = {"status": "disabled", "n_folds": 0}
             logger.info("Walk-forward 已关闭，跳过")
 
-        # ── 11. 单调性（与回测同一信号口径）──
-        mono_result = _run_advanced_evaluation(
+        # ── 11. 单调性（与回测同一信号口径；日志侧车，交易报告不消费）──
+        _ = _run_advanced_evaluation(
             backtest_df, ret_df, args.frequency, args.start, args.end, n_groups=5
         )
 
@@ -448,17 +446,14 @@ def _run(
             except json.JSONDecodeError:
                 quality_report = None
     with timer.stage("报告生成"):
-        html = generate_tear_sheet(
+        html = generate_trading_report(
             factor.name,
-            ic_result,
             bt_result,
-            to_result,
-            frequency=args.frequency,
             date_range=date_range,
             universe=args.universe,
-            mono_result=mono_result,
-            benchmark_result=benchmark_result,
+            strategy_name=str(getattr(bt_result, "strategy_name", "") or ""),
             backtest_direction=backtest_direction,
+            benchmark_result=benchmark_result,
             walk_forward_summary=walk_forward_summary,
             quality_report=quality_report,
         )

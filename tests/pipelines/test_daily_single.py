@@ -1168,7 +1168,8 @@ def test_eval_backtest_track_artifacts_suite(tmp_path):
             "factorzen.pipelines._report_persistence.daily_result_output_dir",
             lambda name: out_root / "results" / name,
         )
-        mp.setattr(ds, "generate_tear_sheet", lambda *a, **k: "<html>ok</html>")
+        mp.setattr(ds, "generate_signal_report", lambda *a, **k: "<html>ok</html>")
+        mp.setattr(ds, "generate_trading_report", lambda *a, **k: "<html>ok</html>")
         mp.setattr(
             ds,
             "_compute_monotonicity_result",

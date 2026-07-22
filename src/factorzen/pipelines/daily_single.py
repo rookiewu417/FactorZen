@@ -53,7 +53,8 @@ from factorzen.pipelines._report_direction import (
     _decide_backtest_direction,
 )
 from factorzen.pipelines._report_persistence import _meta_path
-from factorzen.reports.tear_sheet import generate_tear_sheet
+from factorzen.reports.signal_report import generate_signal_report
+from factorzen.reports.trading_report import generate_trading_report
 
 setup_logging()
 logger = get_logger(__name__)
@@ -718,7 +719,7 @@ def run_factor_eval(
     effective_config: RunConfig,
     timer: StageTimer | None = None,
 ) -> dict[str, str]:
-    """信号轨：IC / 换手 / 单调性 / 信号回测（毛口径）+ tear sheet。
+    """信号轨：IC / 换手 / 单调性 / 信号回测（毛口径）+ 信号轨报告。
 
     不跑策略日环回测、walk-forward、benchmark。
     """
@@ -793,8 +794,8 @@ def run_factor_eval(
     logger.info(f"meta 已更新: {meta_path}")
     progress.advance("save-core")
 
-    # ── 11. 单调性（与信号轨同一信号口径）──
-    mono_result = _compute_monotonicity_result(backtest_df, ret_df, n_groups=5)
+    # ── 11. 单调性（与信号轨同一信号口径；日志侧车，信号报告读 signal_result.monotonicity）──
+    _ = _compute_monotonicity_result(backtest_df, ret_df, n_groups=5)
     progress.advance("mono")
 
     # ── 11b. 信号层回测（eval 轨主产物；失败直接上抛）──
@@ -856,18 +857,12 @@ def run_factor_eval(
         f"{args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
     )
     with timer.stage("报告生成"):
-        html = generate_tear_sheet(
-            factor.name,
-            ic_result,
-            None,  # eval 轨无策略回测
-            to_result,
-            frequency=args.frequency,
+        html = generate_signal_report(
+            signal_result,
+            factor_name=factor.name,
             date_range=date_range,
             universe=args.universe,
-            mono_result=mono_result,
-            benchmark_result=None,
-            backtest_direction=backtest_direction,
-            walk_forward_summary=None,
+            frequency=args.frequency,
             quality_report=quality_report,
         )
     report_output_dir.mkdir(parents=True, exist_ok=True)
@@ -897,7 +892,7 @@ def run_factor_backtest(
     effective_config: RunConfig,
     timer: StageTimer | None = None,
 ) -> dict[str, str]:
-    """交易轨：IC（方向判定）/ 策略日环回测 / 换手 / walk-forward / 单调性 / benchmark + tear sheet。
+    """交易轨：IC（方向判定）/ 策略日环回测 / 换手 / walk-forward / 单调性 / benchmark + 交易轨报告。
 
     不跑信号层回测（11b）。产物文件名与拆分前单因子主命令完全一致。
     """
@@ -1006,8 +1001,8 @@ def run_factor_backtest(
         logger.info("Walk-forward 已关闭，跳过")
     progress.advance("walk-forward")
 
-    # ── 11. 单调性（与回测同一信号口径）──
-    mono_result = _compute_monotonicity_result(backtest_df, ret_df, n_groups=5)
+    # ── 11. 单调性（与回测同一信号口径；日志侧车，交易报告不消费）──
+    _ = _compute_monotonicity_result(backtest_df, ret_df, n_groups=5)
 
     walk_forward_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_walk_forward.json"
     walk_forward_path.write_text(
@@ -1049,17 +1044,14 @@ def run_factor_backtest(
         f"{args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
     )
     with timer.stage("报告生成"):
-        html = generate_tear_sheet(
+        html = generate_trading_report(
             factor.name,
-            ic_result,
             bt_result,
-            to_result,
-            frequency=args.frequency,
             date_range=date_range,
             universe=args.universe,
-            mono_result=mono_result,
-            benchmark_result=benchmark_result,
+            strategy_name=str(getattr(bt_result, "strategy_name", "") or ""),
             backtest_direction=backtest_direction,
+            benchmark_result=benchmark_result,
             walk_forward_summary=walk_forward_summary,
             quality_report=quality_report,
         )

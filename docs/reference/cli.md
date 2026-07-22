@@ -1168,7 +1168,10 @@ pixi run -- fz combine from-session \
 | `--horizon` | int | `5` | | 前向收益持有期（交易日） |
 | `--top-n` | int | 无（全取） | | 只取库前 N 个因子 |
 | `--decorr-threshold` | float | `0.7` | | 贪心去相关阈值；`1.0` = 关闭 |
+| `--no-store` | flag | 关 | | 强制重算 expression 因子，不读 factor_store 物化 parquet（逃生口） |
 | 共享参数 | | | | 见上表 |
+
+> expression 因子默认优先读 `factor_store` 物化 parquet（命中条件：expression/universe 严格一致 + 窗口覆盖），miss 则回退重算，manifest 的 `store_usage` 记录命中与 miss 原因分布。
 
 > ⚠️ 本子命令**没有 `--all`**（`from-session` 才有）。要放宽选品范围请用 `--statuses`，例如 `--statuses active,probation`。`--statuses` 有自定义校验：非法值或空串会被 argparse 直接拒绝。
 

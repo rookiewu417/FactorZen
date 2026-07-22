@@ -1036,6 +1036,12 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     cfl.add_argument("--seed", type=int, default=0)
     cfl.add_argument("--run-id", default=None, dest="run_id")
     cfl.add_argument("--out-dir", default=str(COMBINATIONS_DIR), dest="out_dir")
+    cfl.add_argument(
+        "--no-store",
+        action="store_true",
+        dest="no_store",
+        help="强制重算 expression 因子，不读 factor_store 物化 parquet（逃生口）",
+    )
     cfl.set_defaults(func=commands._cmd_combine_from_library)
 
     # combine backtest: OOS 组合分数 → 日环策略回测（桥命令）

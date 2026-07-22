@@ -31,7 +31,7 @@ from typing import Any, Protocol
 
 import polars as pl
 
-from factorzen.config.settings import FACTOR_LIBRARY_DIR, WORKSPACE_DIR
+from factorzen.config.settings import FACTOR_LIBRARY_DIR, FACTOR_STORE_DIR
 from factorzen.discovery.factor_library import (
     DEFAULT_ROOT as DEFAULT_LIB_ROOT,
 )
@@ -45,7 +45,7 @@ from factorzen.discovery.factor_library import (
 
 _LOG = logging.getLogger(__name__)
 
-DEFAULT_ROOT = str(WORKSPACE_DIR / "factor_store")
+DEFAULT_ROOT = str(FACTOR_STORE_DIR)
 MATERIALIZE_STATUSES = frozenset({"active", "probation"})
 _HYPOTHESIS_MAX = 200
 
@@ -256,6 +256,151 @@ def _git_sha() -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def load_materialized_factor(
+    record: FactorRecord,
+    *,
+    market: str,
+    root: str = DEFAULT_ROOT,
+    start: str,
+    end: str,
+    universe: str,
+) -> tuple[pl.DataFrame | None, str | None, dict[str, Any] | None]:
+    """读 factor_store 物化 parquet；门控全过才返回帧。
+
+    返回 ``(df, reason, hit_meta)``：
+
+    - 命中：``(frame, None, {git_sha, generated_at})``
+    - miss：``(None, reason, None)``；调用方可聚合 reason 分布
+
+    命中条件（全部满足）::
+
+        1. 资产目录与 factor.parquet 存在
+        2. meta.expression 与 record.expression 完全一致
+        3. materialization 非 null 且 universe 与请求严格相等
+        4. parquet 实际 min(trade_date) <= start，且 materialization.end >= end
+           （下界用 parquet 实际最小日：预热吃掉头部后 meta.start 不可信）
+        5. 过滤到 [start, end] 后非空
+
+    返回帧 schema：``trade_date(Date) / ts_code(Utf8) / factor_value(Float64)``。
+    读盘损坏 → miss + warning，不炸。
+    """
+    try:
+        name = record_asset_name(record)
+    except ValueError:
+        return None, "no_asset_name", None
+
+    d = asset_dir(market, name, root=root)
+    pq_path = d / "factor.parquet"
+    if not d.is_dir():
+        return None, "missing_asset", None
+    if not pq_path.is_file():
+        return None, "missing_parquet", None
+
+    meta = _read_json(d / "meta.json")
+    if meta is None:
+        return None, "meta_unreadable", None
+
+    if meta.get("expression") != record.expression:
+        return None, "expression_mismatch", None
+
+    mat = meta.get("materialization")
+    if not isinstance(mat, dict):
+        return None, "no_materialization", None
+
+    mat_univ = mat.get("universe")
+    if mat_univ != universe:
+        return None, "universe_mismatch", None
+
+    start_key = _date_key(start)
+    end_key = _date_key(end)
+    if not start_key or not end_key:
+        return None, "bad_request_window", None
+
+    mat_end_key = _date_key(mat.get("end"))
+    if not mat_end_key or mat_end_key < end_key:
+        return None, "window_end_uncovered", None
+
+    try:
+        df = pl.read_parquet(pq_path)
+    except Exception as exc:
+        _LOG.warning(
+            "factor_store: 读 parquet 失败 %s: %s: %s",
+            pq_path,
+            type(exc).__name__,
+            exc,
+        )
+        return None, "parquet_corrupt", None
+
+    needed = {"trade_date", "ts_code", "factor_value"}
+    if not needed.issubset(set(df.columns)):
+        return None, "parquet_schema", None
+
+    # 统一 schema，便于与 combine 重算路径对齐
+    try:
+        td = df["trade_date"]
+        if td.dtype != pl.Date:
+            if td.dtype == pl.Utf8:
+                sample = (
+                    str(td.drop_nulls().head(1).to_list()[0])
+                    if td.drop_nulls().len()
+                    else ""
+                )
+                fmt = (
+                    "%Y%m%d"
+                    if len(sample.replace("-", "")) == 8 and "-" not in sample
+                    else "%Y-%m-%d"
+                )
+                df = df.with_columns(
+                    pl.col("trade_date").str.strptime(pl.Date, fmt, strict=False)
+                )
+            else:
+                df = df.with_columns(pl.col("trade_date").cast(pl.Date, strict=False))
+        df = df.select(
+            [
+                pl.col("trade_date").cast(pl.Date),
+                pl.col("ts_code").cast(pl.Utf8),
+                pl.col("factor_value").cast(pl.Float64),
+            ]
+        )
+    except Exception as exc:
+        _LOG.warning(
+            "factor_store: parquet schema cast 失败 %s: %s: %s",
+            pq_path,
+            type(exc).__name__,
+            exc,
+        )
+        return None, "parquet_schema", None
+
+    if df.is_empty() or df["trade_date"].null_count() == df.height:
+        return None, "parquet_empty", None
+
+    # 下界：parquet 实际最小交易日（预热吃掉头部后 meta.start 不可作下界）
+    pq_min = df["trade_date"].min()
+    if pq_min is None:
+        return None, "parquet_empty", None
+    pq_min_key = _date_key(
+        pq_min.isoformat() if hasattr(pq_min, "isoformat") else str(pq_min)
+    )
+    if pq_min_key > start_key:
+        return None, "window_start_uncovered", None
+
+    # 过滤到请求窗 [start, end]
+    from datetime import date as _date
+
+    start_d = _date(int(start_key[:4]), int(start_key[4:6]), int(start_key[6:8]))
+    end_d = _date(int(end_key[:4]), int(end_key[4:6]), int(end_key[6:8]))
+    out = df.filter(
+        (pl.col("trade_date") >= start_d) & (pl.col("trade_date") <= end_d)
+    )
+    if out.is_empty():
+        return None, "empty_after_filter", None
+    hit_meta = {
+        "git_sha": mat.get("git_sha"),
+        "generated_at": mat.get("generated_at"),
+    }
+    return out, None, hit_meta
 
 
 def write_factor_asset(

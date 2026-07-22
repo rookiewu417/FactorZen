@@ -584,3 +584,135 @@ def test_description_truncates_hypothesis_200(tmp_path):
     )
     meta = json.loads((asset_dir / "meta.json").read_text(encoding="utf-8"))
     assert len(meta["description"]) == 200
+
+
+# ── load_materialized_factor 门控 ─────────────────────────────────────────────
+
+
+def _write_mini_asset(
+    root: Path,
+    *,
+    name: str = "f_rank_close",
+    expression: str = "rank(close)",
+    universe: str = "all_a",
+    mat_start: str = "2016-01-01",
+    mat_end: str = "2024-12-31",
+    dates: list[date] | None = None,
+    values: list[tuple[date, str, float]] | None = None,
+) -> Path:
+    """手写微型 store 资产（meta + parquet），离线字面量。"""
+    d = root / "ashare" / name
+    d.mkdir(parents=True, exist_ok=True)
+    if values is None:
+        if dates is None:
+            dates = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+        values = [(dt, "000001.SZ", 1.0 + i * 0.1) for i, dt in enumerate(dates)]
+    pq = pl.DataFrame(
+        {
+            "trade_date": [v[0] for v in values],
+            "ts_code": [v[1] for v in values],
+            "factor_value": [v[2] for v in values],
+        }
+    ).with_columns(
+        pl.col("trade_date").cast(pl.Date),
+        pl.col("ts_code").cast(pl.Utf8),
+        pl.col("factor_value").cast(pl.Float64),
+    )
+    pq.write_parquet(d / "factor.parquet")
+    meta = {
+        "name": name,
+        "kind": "expression",
+        "expression": expression,
+        "frequency": "daily",
+        "description": "",
+        "materialization": {
+            "start": mat_start,
+            "end": mat_end,
+            "universe": universe,
+            "git_sha": "deadbeef",
+            "n_rows": pq.height,
+            "generated_at": "2026-07-01T00:00:00+00:00",
+            "expression": expression,
+        },
+    }
+    (d / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    (d / "factor.py").write_text("# stub\n", encoding="utf-8")
+    return d
+
+
+def test_load_materialized_factor_gates(tmp_path):
+    """loader 门逐个：universe / 窗下界 / 窗上界 / expression / 全对齐切片。"""
+    from factorzen.discovery.factor_store import load_materialized_factor
+
+    store = tmp_path / "factor_store"
+    dates = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    values = [
+        (date(2024, 1, 2), "000001.SZ", 1.0),
+        (date(2024, 1, 3), "000001.SZ", 2.0),
+        (date(2024, 1, 4), "000001.SZ", 3.0),
+    ]
+    _write_mini_asset(store, values=values, dates=dates)
+    rec = _expr_record("rank(close)", name="f_rank_close")
+
+    # universe 不匹配
+    df, reason, meta = load_materialized_factor(
+        rec, market="ashare", root=str(store),
+        start="20240102", end="20240104", universe="csi300",
+    )
+    assert df is None and reason == "universe_mismatch" and meta is None
+
+    # 请求 start 早于 parquet 最小日
+    df, reason, meta = load_materialized_factor(
+        rec, market="ashare", root=str(store),
+        start="20240101", end="20240104", universe="all_a",
+    )
+    assert df is None and reason == "window_start_uncovered"
+
+    # materialization.end 早于请求 end
+    store2 = tmp_path / "store_short_end"
+    _write_mini_asset(store2, mat_end="2024-01-03", values=values)
+    df, reason, meta = load_materialized_factor(
+        rec, market="ashare", root=str(store2),
+        start="20240102", end="20240104", universe="all_a",
+    )
+    assert df is None and reason == "window_end_uncovered"
+
+    # expression 不一致
+    rec_bad = _expr_record("rank(vol)", name="f_rank_close")
+    df, reason, meta = load_materialized_factor(
+        rec_bad, market="ashare", root=str(store),
+        start="20240102", end="20240104", universe="all_a",
+    )
+    assert df is None and reason == "expression_mismatch"
+
+    # 全对齐：返回帧逐值等于手写期望切片 [01-03, 01-04]
+    df, reason, meta = load_materialized_factor(
+        rec, market="ashare", root=str(store),
+        start="20240103", end="20240104", universe="all_a",
+    )
+    assert reason is None and df is not None
+    assert meta is not None and meta.get("git_sha") == "deadbeef"
+    expect = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 3), date(2024, 1, 4)],
+            "ts_code": ["000001.SZ", "000001.SZ"],
+            "factor_value": [2.0, 3.0],
+        }
+    ).with_columns(
+        pl.col("trade_date").cast(pl.Date),
+        pl.col("ts_code").cast(pl.Utf8),
+        pl.col("factor_value").cast(pl.Float64),
+    )
+    assert df.sort(["trade_date", "ts_code"]).equals(
+        expect.sort(["trade_date", "ts_code"])
+    )
+
+
+def test_default_root_equals_factor_store_dir():
+    """DEFAULT_ROOT 与 settings.FACTOR_STORE_DIR 一字不差。"""
+    from factorzen.config.settings import FACTOR_STORE_DIR
+    from factorzen.discovery.factor_store import DEFAULT_ROOT
+
+    assert str(FACTOR_STORE_DIR) == DEFAULT_ROOT

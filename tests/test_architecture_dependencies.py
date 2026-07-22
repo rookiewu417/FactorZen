@@ -145,3 +145,98 @@ def _looks_like_path_name(node: ast.AST) -> bool:
     )
 
 
+# ── *_DIR 产物目录零引用守卫 ────────────────────────────────────────────────
+
+# 白名单：常量名 → 保留理由（不许空理由）。任务 E 后 FACTOR_STORE_DIR 已接线，不进白名单。
+_DIR_ZERO_REF_ALLOWLIST: dict[str, str] = {
+    "WORKSPACE_OPS_DIR": (
+        "运维杂项目录；tools/ 脚本消费（repair_raw_partition/ingest_minute），"
+        "src/factorzen 包内零引用为设计（运维与产品路径分离）"
+    ),
+    "EXECUTION_DIR": (
+        "纸面执行会话根；CLI live 经 --session-dir 显式传入任意路径，"
+        "SessionStore 不读常量（会话可落任意目录）"
+    ),
+    "OPS_DIR": (
+        "仅作 OPS_SITE_DIR/OPS_STATE_DIR 的父路径中间量；"
+        "生产读站点/状态用后两者，本常量无直接消费点"
+    ),
+    "CONFIG_DIR": (
+        "workspace/configs 约定路径；CLI/流水线经 --config 显式路径注入，"
+        "未默认绑定该常量"
+    ),
+    "DATA_DIR": (
+        "data 根；包内经 DATA_RAW/DATA_CACHE 等子常量间接使用；"
+        "tools/download_tushare_lake 直接引用，src 层保持子路径粒度"
+    ),
+    "OUTPUT_DIR": (
+        "legacy artifacts 根；OUTPUT_DAILY_* / daily_factor_output_dir 等派生路径"
+        "在 settings 内消费，包外无直接引用"
+    ),
+    "COMMON_DIR": "历史源码路径别名（core/），现用包 import 而非路径常量，保留供文档/脚本",
+    "REPORTING_DIR": "历史 reports 路径别名，现用 factorzen.reports 包导入，保留供文档/脚本",
+    "NOTEBOOKS_DIR": "研究 notebook 目录约定，产品代码不读写 notebook，仅路径声明",
+    "TESTS_DIR": "测试根路径约定，运行时由 pytest 发现 tests/，产品代码不引用",
+}
+
+
+def _settings_dir_constant_names() -> list[str]:
+    """解析 config/settings.py 顶层 ``*_DIR`` 赋值名。"""
+    settings = PACKAGE_ROOT / "config" / "settings.py"
+    tree = ast.parse(settings.read_text(encoding="utf-8-sig"), filename=str(settings))
+    names: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id.endswith("_DIR"):
+                    names.append(t.id)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id.endswith("_DIR")
+        ):
+            names.append(node.target.id)
+    return names
+
+
+def test_settings_dir_constants_have_consumers_or_whitelist():
+    """每个 settings ``*_DIR`` 在 src/factorzen（除 settings 自身）须有引用，否则白名单。"""
+    import re
+
+    names = _settings_dir_constant_names()
+    assert names, "settings.py 应声明至少一个 *_DIR"
+
+    zero: list[str] = []
+    for name in names:
+        found = False
+        for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+            if path == PACKAGE_ROOT / "config" / "settings.py":
+                continue
+            text = path.read_text(encoding="utf-8-sig")
+            if re.search(rf"\b{re.escape(name)}\b", text):
+                found = True
+                break
+        if not found:
+            zero.append(name)
+
+    allow = _DIR_ZERO_REF_ALLOWLIST
+    # 白名单项必须有非空理由
+    empty_reasons = [k for k, v in allow.items() if not (v and str(v).strip())]
+    assert not empty_reasons, f"白名单理由为空: {empty_reasons}"
+
+    unexpected_zero = [n for n in zero if n not in allow]
+    stale_allow = [n for n in allow if n not in zero]
+    # 已有引用却仍在白名单 → 提示清理（不 fail 也可，但更严：fail 逼清理）
+    msgs: list[str] = []
+    if unexpected_zero:
+        msgs.append(
+            "零引用 *_DIR 未进白名单（接线或加入白名单并注明理由）: "
+            + ", ".join(unexpected_zero)
+        )
+    if stale_allow:
+        msgs.append(
+            "白名单项已有引用，请从白名单移除: " + ", ".join(stale_allow)
+        )
+    assert not msgs, "\n".join(msgs)
+
+

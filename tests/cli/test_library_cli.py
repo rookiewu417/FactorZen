@@ -966,6 +966,132 @@ def test_combine_from_library_behavior_suite(tmp_path):
     with pytest.MonkeyPatch.context() as mp:
         _section_5_test_manifest_records_full_provenance(_tp5, mp)
 
+    # -- store 命中 vs --no-store 重算：组合输入数值一致 --
+    def _section_6_test_store_hit_matches_recompute(tmp_path, mp):
+        """store 命中路径与 no_store 重算路径对同一微型数据数值一致。"""
+        import factorzen.pipelines.factor_mine as fm
+        from factorzen.discovery.evaluation import (
+            _factor_df_from_prepped,
+            _preprocess_daily,
+        )
+        from factorzen.discovery.expression import parse_expr
+        from factorzen.discovery.factor_library import FactorRecord
+        from factorzen.discovery.factor_store import load_materialized_factor
+
+        # 面板从 2023-01-03 起；请求窗后移，滚动算子预热后 parquet min 仍 ≤ start
+        daily = _daily(n_stocks=20, n_days=120, seed=7)
+        mp.setattr(fm, "prepare_mining_daily", lambda *a, **k: daily)
+
+        lib = tmp_path / "lib"
+        store = tmp_path / "store"
+        # 截面算子不丢头部日；保证 min(trade_date) 覆盖请求 start
+        exprs = [
+            ("f_close", "rank(close)", 0.08),
+            ("f_vol", "rank(vol)", 0.06),
+        ]
+        _write_lib__combine_from_library(lib, "ashare", [
+            _expr_rec(e, name=n, ic_train=ic) for n, e, ic in exprs
+        ])
+
+        prepped = _preprocess_daily(daily)
+        req_start, req_end = "20230201", "20230630"
+        start_d = dt.datetime.strptime(req_start, "%Y%m%d").date()
+        end_d = dt.datetime.strptime(req_end, "%Y%m%d").date()
+        for n, e, _ic in exprs:
+            full = _factor_df_from_prepped(parse_expr(e), prepped).select(
+                ["trade_date", "ts_code", "factor_value"]
+            )
+            adir = store / "ashare" / n
+            adir.mkdir(parents=True, exist_ok=True)
+            full.write_parquet(adir / "factor.parquet")
+            meta = {
+                "name": n,
+                "kind": "expression",
+                "expression": e,
+                "frequency": "daily",
+                "description": "",
+                "materialization": {
+                    "start": "2016-01-01",
+                    "end": "2023-12-31",
+                    "universe": "all_a",
+                    "git_sha": "abc123",
+                    "n_rows": full.height,
+                    "generated_at": "2026-07-01T00:00:00+00:00",
+                    "expression": e,
+                },
+            }
+            (adir / "meta.json").write_text(
+                json.dumps(meta, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+            (adir / "factor.py").write_text("# stub\n", encoding="utf-8")
+
+        common = dict(
+            market="ashare",
+            library_root=str(lib),
+            store_root=str(store),
+            start=req_start,
+            end=req_end,
+            universe="all_a",
+            horizon=5,
+            train_days=40,
+            test_days=10,
+            decorr_threshold=1.0,
+            methods=["equal_weight"],
+        )
+        res_hit = factor_combine.combine_from_library(
+            **common, no_store=False, out_dir=str(tmp_path / "out_hit"),
+        )
+        res_re = factor_combine.combine_from_library(
+            **common, no_store=True, out_dir=str(tmp_path / "out_re"),
+        )
+        su = res_hit.get("store_usage") or {}
+        assert su.get("no_store") is False
+        assert set(su.get("hits") or {}) == {"f_close", "f_vol"}, su
+        assert (res_re.get("store_usage") or {}).get("no_store") is True
+
+        ch = res_hit["comparison"].sort("method")
+        cr = res_re["comparison"].sort("method")
+        assert ch["method"].to_list() == cr["method"].to_list()
+        for col in ch.columns:
+            if col == "method":
+                continue
+            if ch[col].dtype in (pl.Float32, pl.Float64):
+                a = ch[col].to_numpy()
+                b = cr[col].to_numpy()
+                assert np.allclose(a, b, equal_nan=True), f"col={col} {a} vs {b}"
+
+        # 直接对账：store 切片 vs 重算 fdf（防「读了但读错」）
+        for n, e, _ic in exprs:
+            rec = FactorRecord(
+                expression=e, market="ashare", kind="expression", name=n, status="active",
+            )
+            f_store, reason, _m = load_materialized_factor(
+                rec,
+                market="ashare",
+                root=str(store),
+                start=req_start,
+                end=req_end,
+                universe="all_a",
+            )
+            assert reason is None and f_store is not None
+            f_re = _factor_df_from_prepped(
+                parse_expr(e), prepped, eval_start=start_d, eval_end=end_d,
+            ).select(["trade_date", "ts_code", "factor_value"])
+            f_store = f_store.filter(
+                (pl.col("trade_date") >= start_d) & (pl.col("trade_date") <= end_d)
+            )
+            a = f_store.sort(["trade_date", "ts_code"])
+            b = f_re.sort(["trade_date", "ts_code"])
+            assert a.height == b.height and a.height > 0
+            from polars.testing import assert_frame_equal
+
+            assert_frame_equal(a, b, check_dtypes=False)
+
+    _tp6 = tmp_path / "_s6"
+    _tp6.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_6_test_store_hit_matches_recompute(_tp6, mp)
+
 
 # ==== 来自 test_combine_cli_smoke.py ====
 

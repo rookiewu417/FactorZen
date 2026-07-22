@@ -61,6 +61,32 @@ class ArtifactIndex:
             )
         return out
 
+    def overview(self) -> list[dict[str, Any]]:
+        """汇总各域产物数量与最新 run。
+
+        遍历 DOMAINS；latest 取 list_runs 目录名排序后的最后一项
+        （坏 manifest 已在 list_runs 中跳过）。无产物时 latest 为 None。
+        """
+        result: list[dict[str, Any]] = []
+        for domain in DOMAINS:
+            runs = self.list_runs(domain)
+            latest: dict[str, Any] | None = None
+            if runs:
+                last = runs[-1]
+                latest = {
+                    "run_id": last["run_id"],
+                    "status": last["status"],
+                    "git_sha": last["git_sha"],
+                }
+            result.append(
+                {
+                    "domain": domain,
+                    "count": len(runs),
+                    "latest": latest,
+                }
+            )
+        return result
+
     def _safe_run_dir(self, domain: str, run_id: str) -> Path:
         """校验 domain 白名单 + run_id 无路径遍历，返回安全的 run 目录。
 

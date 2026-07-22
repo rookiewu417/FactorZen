@@ -328,3 +328,53 @@ def test_dashboard_nav_domain_fallback(tmp_path):
     assert "combine_backtests" in r.text or "execution" in r.text
 
 
+def test_api_overview(tmp_path):
+    """GET /api/overview: 各域 count/latest;坏 manifest 跳过;latest 取目录名排序最后。"""
+    # portfolios: 两个 run,latest 应为 run_b
+    _write_run__server_api(
+        tmp_path, "portfolios", "run_a", {"git_sha": "aaa111", "status": "done"}
+    )
+    _write_run__server_api(
+        tmp_path, "portfolios", "run_b", {"git_sha": "bbb222", "status": "optimal"}
+    )
+    # sim: 一个好 + 一个坏 manifest
+    _write_run__server_api(
+        tmp_path, "sim", "s1", {"git_sha": "ccc333", "status": "ok"}
+    )
+    bad = tmp_path / "sim" / "s0_bad"
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text("{ not json", encoding="utf-8")
+
+    r = _client(tmp_path).get("/api/overview")
+    assert r.status_code == 200
+    body = r.json()
+    assert "domains" in body
+    by_domain = {d["domain"]: d for d in body["domains"]}
+    # 覆盖全部白名单域
+    assert set(by_domain) == set(DOMAINS)
+
+    pf = by_domain["portfolios"]
+    assert pf["count"] == 2
+    assert pf["latest"] is not None
+    assert pf["latest"]["run_id"] == "run_b"
+    assert pf["latest"]["status"] == "optimal"
+    assert pf["latest"]["git_sha"] == "bbb222"
+
+    sim = by_domain["sim"]
+    assert sim["count"] == 1  # 坏 manifest 跳过
+    assert sim["latest"]["run_id"] == "s1"
+
+    # 空域 latest 为 None
+    assert by_domain["mine_team"]["count"] == 0
+    assert by_domain["mine_team"]["latest"] is None
+
+
+def test_create_app_without_ui_dist(tmp_path):
+    """webui/dist 不存在时 create_app 不炸, /api/health 正常。"""
+    client = _client(tmp_path)
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+    assert "domains" in r.json()
+
+

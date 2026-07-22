@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 
 from factorzen.config.settings import WORKSPACE_DIR
 from factorzen.server.artifacts import DOMAINS, ArtifactIndex
@@ -24,6 +25,11 @@ def create_app(workspace_dir: str | Path | None = None) -> FastAPI:
     @app.get("/api/health")
     def health() -> dict:
         return {"status": "ok", "domains": DOMAINS}
+
+    @app.get("/api/overview")
+    def overview() -> dict:
+        """各域产物计数与最新 run 摘要。"""
+        return {"domains": idx.overview()}
 
     @app.get("/api/runs")
     def runs(domain: str) -> dict:
@@ -51,6 +57,13 @@ def create_app(workspace_dir: str | Path | None = None) -> FastAPI:
     from factorzen.server.views import register_views
 
     register_views(app, idx)
+
+    # SPA 静态资源:仓库根/webui/dist 存在时挂到 /ui;测试环境无 dist 则静默跳过
+    repo_root = Path(__file__).resolve().parents[3]
+    ui_dist = repo_root / "webui" / "dist"
+    if (ui_dist / "index.html").exists():
+        app.mount("/ui", StaticFiles(directory=str(ui_dist), html=True), name="ui")
+
     return app
 
 

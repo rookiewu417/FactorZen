@@ -723,6 +723,20 @@ def _generate_signal_report_inner(
     ]
     meta_html = "".join(f"<span>{b}</span>" for b in meta_bits)
 
+    # 上游若判定原始因子 IC 显著为负,会先把信号翻号再送进本轨评估——此时页面上
+    # 所有 IC / 分层 / 多空数字都是**翻号后**的。不说明的话读者会把 +0.012 当成
+    # 原始因子的 IC,方向正好读反。
+    direction_html = ""
+    if str(meta.get("direction", "") or "").lower() == "reversed":
+        direction_html = (
+            "<div class='banner' style='border-color:#c0392b'>"
+            "🔄 <b>反向信号</b>：上游判定原始因子 IC 显著为负，已翻号（做多低因子值）后评估。"
+            "本页所有 IC / 分层 / 多空数字均为<b>翻号后</b>口径；"
+            "原始因子的 IC 与之<b>符号相反</b>（原始序列见 <code>*_ic.parquet</code> 与 "
+            "<code>*_meta.json</code>）。"
+            "</div>"
+        )
+
     warn_html = ""
     if isinstance(quality_report, dict):
         warns = [str(w).strip() for w in (quality_report.get("warnings") or []) if str(w).strip()]
@@ -742,6 +756,7 @@ def _generate_signal_report_inner(
 <div class="wrap">
   <h1>{_esc(name)} · 信号轨</h1>
   <div class="banner">{_esc(SIGNAL_BANNER)}</div>
+  {direction_html}
   <div class="meta">{meta_html}</div>
 
   <section class="block">

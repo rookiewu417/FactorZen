@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import polars as pl
+import pytest
 
 from factorzen.reports.trading_report import (
     TRADING_BANNER,
@@ -175,7 +176,10 @@ def test_trading_report_suite():
             "滚动 Sharpe",
         ):
             assert title in html, f"缺区块 {title}"
-        assert "data:image/png;base64," in html
+        # 8 张图必须全部渲染成功;只断言「至少一张」则 7 张静默失败仍绿。
+        assert html.count("data:image/png;base64,") >= 8, (
+            "应渲染 8 张图,base64 处数不足"
+        )
         assert "成本占毛收益比" in html
         assert "平均总敞口 Σ|w|" in html
         assert "平均净敞口 Σw" in html
@@ -193,6 +197,8 @@ def test_trading_report_suite():
         for bt, note in cases:
             html = generate_trading_report(f"deg_{note}", bt, benchmark_result=None)
             assert isinstance(html, str) and len(html) > 100, note
+            # 降级页同样满足下面的断言,必须排除(变异实验实锤:inner 恒抛仍绿)。
+            assert "报告生成异常" not in html, f"{note}: 走了降级页,等于没测到真实渲染"
             assert TRADING_BANNER in html, note
             assert "未计算" in html or "核心指标" in html
 
@@ -287,8 +293,14 @@ def test_trading_report_suite():
 
         # 端到端：两个数值都要如实进指标卡
         html = generate_trading_report("ls_exposure", bt)
-        assert "100.00%" in html, "总敞口 Σ|w|=1.0 未进指标卡"
-        assert "0.00%" in html, "净敞口 Σw=0 未进指标卡"
+        # 注意:不能写 `assert "0.00%" in html` —— 它被 "100.00%" 恒真蕴含。
+        # 按卡片标签定位各自的值窗口才有判别力。
+        gi = html.find("平均总敞口")
+        ni = html.find("平均净敞口")
+        assert gi > 0 and ni > 0, "两个敞口卡片都应存在"
+        assert "100.00%" in html[gi : gi + 120], "总敞口 Σ|w|=1.0 未进指标卡"
+        net_win = html[ni : ni + 120]
+        assert "0.00%" in net_win and "100.00%" not in net_win, "净敞口 Σw=0 未进指标卡"
 
     _section_gross_exposure_discriminates_long_short()
 
@@ -307,3 +319,59 @@ def test_trading_report_suite():
         assert "<img src=x" not in html
 
     _section_escape()
+
+
+def test_cost_erosion_not_reported_when_gross_is_nonpositive():
+    """毛收益 ≤0 或近零时,「成本占毛收益比」必须判为不适用。
+
+    用 abs(sum_gross) 当分母会说谎:毛 −6% / 成本 3.6% 会显示「成本占 60%」,
+    读者理解成「毛 alpha 还剩 40%」,而实际毛收益本身就是亏的;毛收益近零时
+    比值还会爆成几千个百分点。两种情形都必须显示「未计算/不适用」而非数字。
+    """
+    import numpy as np
+
+    def _bt(gross_per_day: float, n: int = 60) -> SimpleNamespace:
+        d = _dates(n)
+        cost, borrow = 0.0005, 0.0001
+        nav_v, rows = 1.0, []
+        for i in range(n):
+            net = gross_per_day - cost - borrow
+            nav_v *= 1.0 + net
+            rows.append(
+                {
+                    "trade_date": d[i],
+                    "gross_return": gross_per_day,
+                    "cost": cost,
+                    "borrow_cost": borrow,
+                    "net_return": net,
+                    "nav": nav_v,
+                    "cash_weight": 0.2,
+                }
+            )
+        nav = pl.DataFrame(rows)
+        return SimpleNamespace(
+            nav=nav, returns=nav, positions=pl.DataFrame(),
+            trades=pl.DataFrame(schema={"block_reason": pl.Utf8}),
+            summary_stats={}, config={},
+        )
+
+    # 毛收益为负:−10bp/日 × 60 日 = −6%,成本 3.6%
+    neg = compute_cost_erosion(_bt(-0.001).nav)
+    assert neg["sum_gross"] < 0
+    assert not np.isfinite(neg["erosion_ratio"]), (
+        f"毛收益为负时比例必须不可计,实得 {neg['erosion_ratio']}"
+    )
+    html_neg = generate_trading_report("neg_gross", _bt(-0.001))
+    assert "报告生成异常" not in html_neg
+    i = html_neg.find("成本占毛收益比")
+    assert i > 0 and "未计算" in html_neg[i : i + 120], "卡片应显示未计算而非编造比例"
+
+    # 毛收益近零:比值会爆炸
+    tiny = compute_cost_erosion(_bt(0.00001).nav)
+    assert not np.isfinite(tiny["erosion_ratio"]), (
+        f"毛收益近零时比例必须不可计,实得 {tiny['erosion_ratio']}"
+    )
+
+    # 毛收益显著为正:正常给出数值(手算:60×0.002=0.12 毛,60×0.0006=0.036 成本 → 30%)
+    pos = compute_cost_erosion(_bt(0.002).nav)
+    assert pos["erosion_ratio"] == pytest.approx(0.036 / 0.12, rel=1e-9)

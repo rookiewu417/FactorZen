@@ -555,3 +555,86 @@ def test_two_track_consistency_under_controlled_conditions():
         f"两轨在零成本零约束下应逐位相同,实测最大差={max_diff:.3e}。"
         "差异非零说明分组规则/腿权重/收益归属在某一侧被改动。"
     )
+
+
+def test_silent_failure_guards_suite():
+    """三类「静默失明」守卫:日期形态哨兵 / inf 污染 / n_groups<2。
+
+    共同点:出问题时结果**看起来完全正常**,不报错也无告警,是最危险的形态。
+    """
+    import numpy as np
+    import pytest as _pytest
+
+    codes = [f"{k:06d}.SZ" for k in range(40)]
+
+    # -- 日期形态不一致不得让 IC 静默变 0 哨兵 --
+    def _section_date_format():
+        # 因子侧 Date、收益侧 ISO 字符串——生产中两条链路形态不一致是真实场景。
+        # 归一化缺失时 join 零命中,compute_rank_ic 返回 ic_mean=0.0 哨兵且无告警,
+        # 与「因子真的没有预测力」不可区分(core/dates.py 记录的 live P0 同形态)。
+        days = [date(2024, 1, 1) + timedelta(days=i) for i in range(40)]
+        f_rows, r_rows = [], []
+        for d in days:
+            for j, c in enumerate(codes):
+                f_rows.append({"trade_date": d, "ts_code": c, "factor_clean": float(j)})
+                # 因子与收益完全同序 → 真实 Rank IC 必须 ≈ 1
+                r_rows.append(
+                    {"trade_date": d.isoformat(), "ts_code": c, "fwd_ret_1d": 0.001 * j}
+                )
+        res = run_signal_backtest(
+            pl.DataFrame(f_rows), pl.DataFrame(r_rows), n_groups=5, horizons=[1]
+        )
+        assert res.ic.n_periods > 0, "日期形态归一后 IC 必须算得出来"
+        assert res.ic.ic_mean == pytest.approx(1.0, abs=1e-9), (
+            f"完全同序应得 IC≈1,实得 {res.ic.ic_mean}(0.0 说明 join 零命中走了哨兵)"
+        )
+        assert res.summary_stats["ic"]["n_periods"] == res.ic.n_periods
+
+    _section_date_format()
+
+    # -- inf 不得污染收益序列并伪装成零 alpha --
+    def _section_inf_guard():
+        days = [date(2024, 1, 1) + timedelta(days=i) for i in range(3)]
+        f_rows, r_rows = [], []
+        for di, d in enumerate(days):
+            for k in range(10):
+                code = f"{k:06d}.SZ"
+                f_rows.append({"trade_date": d, "ts_code": code, "factor_clean": float(k)})
+                # 首日最高分位塞一个 inf(entry 价为 0 时 exit/entry-1 就会产生)
+                val = float("inf") if (di == 0 and k == 9) else 0.01 * k
+                r_rows.append({"trade_date": d, "ts_code": code, "fwd_ret_1d": val})
+        res = run_signal_backtest(
+            pl.DataFrame(f_rows), pl.DataFrame(r_rows), n_groups=3, horizons=[1]
+        )
+        gross = np.asarray(res.ls_returns["ls_ret_gross"].to_numpy(), dtype=float)
+        assert np.all(np.isfinite(gross)), f"inf 必须被隔离,实得 {gross.tolist()}"
+        nav = np.asarray(res.ls_nav["nav_gross"].to_numpy(), dtype=float)
+        assert np.all(np.isfinite(nav)), "NAV 不得被 inf 传染"
+        assert np.isfinite(res.summary_stats["long_short"]["max_dd_gross"]), (
+            "max_dd 为 nan 说明序列已损坏"
+        )
+        # n_days 让消费方能区分「没有数据」与「真的是 0」
+        assert res.summary_stats["long_short"]["n_days"] == res.ls_returns.height > 0
+
+    _section_inf_guard()
+
+    # -- n_groups<2 必须报错而非产出恒 0 假信号 --
+    def _section_n_groups_guard():
+        days = [date(2024, 1, 1) + timedelta(days=i) for i in range(3)]
+        f_rows, r_rows = [], []
+        for d in days:
+            for k in range(6):
+                code = f"{k:06d}.SZ"
+                f_rows.append({"trade_date": d, "ts_code": code, "factor_clean": float(k)})
+                r_rows.append({"trade_date": d, "ts_code": code, "fwd_ret_1d": 0.01 * k})
+        fdf, rdf = pl.DataFrame(f_rows), pl.DataFrame(r_rows)
+        # n_groups=1 时 top 组与 bottom 组是同一组:毛收益恒 0、换手照算,
+        # cost_bps>0 会凭空造出「稳定小亏」的曲线,且全程不报错。
+        for bad in (1, 0, -3):
+            with _pytest.raises(ValueError, match="n_groups"):
+                run_signal_backtest(fdf, rdf, n_groups=bad, cost_bps=2.0, horizons=[1])
+        # 合法值仍正常
+        ok = run_signal_backtest(fdf, rdf, n_groups=2, cost_bps=2.0, horizons=[1])
+        assert ok.ls_returns.height > 0
+
+    _section_n_groups_guard()

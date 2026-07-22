@@ -18,6 +18,7 @@ import numpy as np
 import polars as pl
 
 from factorzen.core.dates import with_iso_date
+from factorzen.core.logger import get_logger
 from factorzen.core.validation import require_columns
 from factorzen.daily.evaluation.advanced.monotonicity import (
     MonotonicityResult,
@@ -26,6 +27,8 @@ from factorzen.daily.evaluation.advanced.monotonicity import (
 from factorzen.daily.evaluation.grouping import assign_quantile_groups
 from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult, compute_rank_ic
 from factorzen.daily.evaluation.turnover import TurnoverResult, compute_turnover
+
+_logger = get_logger(__name__)
 
 _TRADING_DAYS = 252
 
@@ -134,8 +137,11 @@ def _zero_summary_stats() -> dict[str, Any]:
             "sharpe_net": 0.0,
             "max_dd_net": 0.0,
             "avg_turnover": 0.0,
+            # n_days=0 是「一天都没算出来」的判据:没有它,0.0 的年化与真实零 alpha
+            # 不可区分(机器消费方读 signal.json 时尤其需要)
+            "n_days": 0,
         },
-        "ic": {"ic_mean": 0.0, "ir": 0.0, "tstat": 0.0},
+        "ic": {"ic_mean": 0.0, "ir": 0.0, "tstat": 0.0, "n_periods": 0},
     }
 
 
@@ -294,37 +300,52 @@ def run_signal_backtest(
         ["trade_date", "ts_code", "fwd_ret_1d"],
         context="run_signal_backtest",
     )
+    # 多空需要 top/bottom 两个不同的组;n_groups<2 时 top_g==0==bottom,
+    # ls_ret 恒 0 而换手照算 → cost_bps>0 会凭空造出「稳定小亏」的假信号。
+    if int(n_groups) < 2:
+        raise ValueError(f"n_groups 必须 >=2(多空需要两个不同分组),收到 {n_groups}")
 
-    # 辅助指标始终基于原始输入（即使主路径退化也尽量给出 IC/换手/单调性）
-    try:
-        ic_result = compute_rank_ic(
-            factor_df,
-            fwd_returns,
-            factor_col=factor_col,
-            horizons=horizons,
-            frequency=frequency,
-        )
-    except Exception:
-        ic_result = _empty_ic(factor_col, frequency)
-
-    try:
-        to_result = compute_turnover(
-            factor_df, factor_col=factor_col, n_groups=n_groups, frequency=frequency
-        )
-    except Exception:
-        to_result = _empty_turnover(frequency)
-
+    # 日期形态必须先归一再喂给任何子计算:factor 侧 Date、ret 侧 ISO 字符串这类
+    # 不一致会让 join 零命中,IC 返回 0.0 哨兵且无告警——正是 core/dates.py 记录的
+    # 那条 live P0(admission_ic 恒 0.0)。归一化后两侧同形态。
     fdf = with_iso_date(factor_df)
     rdf = with_iso_date(fwd_returns)
     # NaN 传染防线：聚合跳过 null 但被 NaN 污染
     rdf = rdf.with_columns(pl.col("fwd_ret_1d").fill_nan(None))
 
+    # 辅助指标基于归一化后的输入（即使主路径退化也尽量给出 IC/换手/单调性）。
+    # 只接 ValueError:polars 的 SchemaError 等不是 ValueError 子类,无差别吞掉会把
+    # 响亮的报错降级成 0.0 哨兵,与「异常契约统一」相悖。
+    try:
+        ic_result = compute_rank_ic(
+            fdf,
+            rdf,
+            factor_col=factor_col,
+            horizons=horizons,
+            frequency=frequency,
+        )
+    except ValueError as exc:
+        _logger.warning("compute_rank_ic 失败,IC 置空: %s", exc)
+        ic_result = _empty_ic(factor_col, frequency)
+
+    try:
+        to_result = compute_turnover(
+            fdf, factor_col=factor_col, n_groups=n_groups, frequency=frequency
+        )
+    except ValueError as exc:
+        _logger.warning("compute_turnover 失败,换手置空: %s", exc)
+        to_result = _empty_turnover(frequency)
+
     merged = fdf.join(
         rdf.select(["trade_date", "ts_code", "fwd_ret_1d"]),
         on=["trade_date", "ts_code"],
         how="inner",
-    ).filter(pl.col("fwd_ret_1d").is_not_null() & pl.col(factor_col).is_not_null()
-             & pl.col(factor_col).is_not_nan())
+    ).filter(
+        # is_finite 同时挡住 null/NaN/±inf:inf 会让 ls_ret 与 nav 全变 inf,
+        # 而 _ann_ret_sharpe 用 isfinite 滤空后返回 0.0 —— 彻底损坏的序列
+        # 会长得和「零 alpha」一模一样。全仓同类位置(ic_analysis/backtest)都用 is_finite。
+        pl.col("fwd_ret_1d").is_finite() & pl.col(factor_col).is_finite()
+    )
 
     if merged.is_empty():
         try:
@@ -494,11 +515,14 @@ def run_signal_backtest(
             "sharpe_net": sh_n,
             "max_dd_net": _max_drawdown(nav_n),
             "avg_turnover": avg_to,
+            "n_days": int(ls_returns.height),
         },
         "ic": {
             "ic_mean": float(ic_result.ic_mean),
             "ir": float(ic_result.ir),
             "tstat": float(ic_result.ic_tstat),
+            # 机器消费方(signal.json)据此区分「IC 算不出来」与「IC 真的接近 0」
+            "n_periods": int(ic_result.n_periods),
         },
     }
 

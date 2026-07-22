@@ -132,21 +132,21 @@ def compute_cost_erosion(nav: Any) -> dict[str, float] | None:
     sum_cost = float(np.sum(cost))
     sum_borrow = float(np.sum(borrow))
     sum_net = float(np.sum(net))
-    denom = abs(sum_gross)
-    if denom < 1e-15:
-        return {
-            "sum_gross": sum_gross,
-            "sum_cost": sum_cost,
-            "sum_borrow": sum_borrow,
-            "sum_net": sum_net,
-            "erosion_ratio": float("nan"),
-        }
+    total_cost = sum_cost + sum_borrow
+    # 「成本吃掉毛 alpha 的百分之多少」只在毛收益为正时有意义。
+    # 用 abs(sum_gross) 当分母会说谎:毛 −6% / 成本 3.6% 会显示「成本占 60%」,
+    # 读者理解成「毛 alpha 还剩 40%」,而实际毛收益本身就是亏的;
+    # 毛收益近零时比值还会爆成几千个百分点。这两种情形一律判为不适用。
+    if sum_gross <= 0 or sum_gross < 0.05 * abs(total_cost):
+        erosion: float = float("nan")
+    else:
+        erosion = total_cost / sum_gross
     return {
         "sum_gross": sum_gross,
         "sum_cost": sum_cost,
         "sum_borrow": sum_borrow,
         "sum_net": sum_net,
-        "erosion_ratio": (sum_cost + sum_borrow) / denom,
+        "erosion_ratio": erosion,
     }
 
 
@@ -360,7 +360,7 @@ def _chart_cost_waterfall(bt_result: Any) -> str | None:
     er_txt = (
         f"成本侵蚀比例 {(erosion * 100):.1f}%"
         if np.isfinite(erosion)
-        else "成本侵蚀比例 不可计（毛收益≈0）"
+        else "成本侵蚀比例 不适用（毛收益≤0 或近零，比值无意义）"
     )
     ax.set_title(f"成本侵蚀瀑布图 · {er_txt}", fontsize=11)
     ax.set_xticks(x)

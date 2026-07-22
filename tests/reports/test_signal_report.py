@@ -186,7 +186,11 @@ def test_signal_report_suite():
             "换手率时序",
         ):
             assert f"<h2>{title}</h2>" in html or f"<h2>{title}" in html, f"缺区块 {title}"
-        assert "data:image/png;base64," in html
+        # 8 张图必须全部渲染成功。只断言「至少一张」时,7 张静默失败也不会红
+        # (_safe_chart 逐图吞异常,失败区块照样吐标题 + 「未计算」)。
+        assert html.count("data:image/png;base64,") >= 8, (
+            f"应渲染 8 张图,实际 {html.count(chr(100)+chr(97)+chr(116)+chr(97))} 处 base64"
+        )
         assert "0.0350" in html  # IC mean
         assert "exec_lag" in html or "1" in html
 
@@ -202,6 +206,9 @@ def test_signal_report_suite():
             sig = _make_signal(**kwargs)
             html = generate_signal_report(sig, factor_name=f"deg_{note}")
             assert isinstance(html, str) and len(html) > 100, note
+            # 外层 try/except 的降级页也满足下面几条断言,必须显式排除,
+            # 否则整个 inner 抛异常时本段仍会绿(变异实验实锤)。
+            assert "报告生成异常" not in html, f"{note}: 走了降级页,等于没测到真实渲染"
             assert SIGNAL_BANNER in html, note
             assert "未计算" in html or "data:image/png;base64," in html or "核心指标" in html
 
@@ -267,3 +274,26 @@ def test_ic_unavailable_is_not_disguised_as_zero():
     assert "IC 不可用" not in html_ok
     idx_ok = html_ok.find("IC mean")
     assert "未计算" not in html_ok[idx_ok : idx_ok + 60]
+
+
+def test_reversed_direction_is_disclosed():
+    """信号翻号后,报告必须明说页面数字是翻号口径。
+
+    上游若判定原始因子 IC 显著为负,会先把信号翻号再送进信号轨评估——此时
+    页面上所有 IC/分层/多空数字都是翻号后的。不提示的话,读者会把 +0.012 当成
+    原始因子的 IC,方向正好读反(实测同一 run 的 ic.parquet 是 −0.012)。
+    """
+    sig = _make_signal()
+    sig.meta = dict(getattr(sig, "meta", {}) or {})
+    sig.meta["direction"] = "reversed"
+    html = generate_signal_report(sig, factor_name="rev_factor")
+    assert "报告生成异常" not in html
+    assert "反向信号" in html, "翻号时必须有醒目提示"
+    assert "符号相反" in html, "必须说明与原始因子 IC 符号相反"
+
+    # 正向不得误报
+    sig2 = _make_signal()
+    sig2.meta = dict(getattr(sig2, "meta", {}) or {})
+    sig2.meta["direction"] = "normal"
+    html2 = generate_signal_report(sig2, factor_name="normal_factor")
+    assert "反向信号" not in html2

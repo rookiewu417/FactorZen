@@ -33,7 +33,7 @@ FactorZen 的选择是把后者作为最终裁决：
 
 关键在于它是**配对**统计——同一折、同一 universe、同一窗口下的两个组合直接相减，共同的市场噪声被抵消掉，剩下的才是候选因子的净贡献。
 
-裁决实现在 `discovery/lift_test.py:532` 的 `lift_admission()`，是全平台唯一的准入裁决函数。
+裁决实现在 `discovery/lift_test.py` 的 `lift_admission()`，是全平台唯一的准入裁决函数。
 
 ---
 
@@ -53,7 +53,7 @@ lift ≥ bar 且 second_half ≤ 0 或缺失    → probation
 
 **门槛取 `max(绝对阈值, SE 倍数)`。** 绝对阈值挡住「统计显著但幅度小到没有经济意义」的候选；SE 倍数挡住「幅度看着大但噪声更大」的候选。两道都要过。
 
-**SE 不可用即 reject，不退化为裸阈值。** 这是刻意的保守：区间证据不完整时，平台选择拒绝而不是假装 SE 为 0 从而让门槛塌缩成 `threshold`。同样的约定也用在组门（`lift_test.py:107-122`），代码注释明确写了「不再把『无 SE』当『零方差』」。
+**SE 不可用即 reject，不退化为裸阈值。** 这是刻意的保守：区间证据不完整时，平台选择拒绝而不是假装 SE 为 0 从而让门槛塌缩成 `threshold`。同样的约定也用在组门（`lift_test.py` 的 `group_gate_ok()`），代码注释明确写了「不再把『无 SE』当『零方差』」。
 
 **后半段决定是 `active` 还是 `probation`。** 把评估窗口切两半，若后半段的增量为正，说明这个因子的贡献不是集中在样本前期的一次性效应，直接给 `active`；否则先收进 `probation`，等真实时间累积更多证据再定。
 
@@ -61,19 +61,21 @@ lift ≥ bar 且 second_half ≤ 0 或缺失    → probation
 
 | 常量 | 值 | 定义处 |
 |---|---|---|
-| `DEFAULT_LIFT_THRESHOLD` | `0.001` | `discovery/guardrails.py:39` |
-| `se_mult` 默认 | `1.0` | `lift_test.py:536`，CLI `--lift-se-mult` |
-| `DEFAULT_HOLDOUT_MIN_DAYS` | `60` | `discovery/guardrails.py:28` |
-| 交叉验证默认 | `train_days=250, test_days=40, purge_days=5, embargo_days=0` | `lift_test.py:60-66` |
-| `DEFAULT_TOP_M` / `DEFAULT_HORIZON` / `DEFAULT_BLOCK_DAYS` | `10` / `5` / `20` | `lift_test.py:51-53` |
+| `DEFAULT_LIFT_THRESHOLD` | `0.001` | `discovery/guardrails.py` |
+| `se_mult` 默认 | `1.0` | `lift_test.py` 的 `lift_admission()`，CLI `--set se_mult=` |
+| `DEFAULT_HOLDOUT_MIN_DAYS` | `60` | `discovery/guardrails.py` |
+| 交叉验证默认 | `train_days=250, test_days=40, purge_days=5, embargo_days=0` | `lift_test.py` 的 `DEFAULT_LIFT_CV` |
+| `DEFAULT_TOP_M` / `DEFAULT_HORIZON` / `DEFAULT_BLOCK_DAYS` | `10` / `5` / `20` | `lift_test.py` |
 
-> ⚠️ **两套 `se_mult` 别混淆。** lift 准入（`fz factor-library lift-test --lift-se-mult`）默认 **1.0**；向前复审（`fz factor-library forward-review --se-mult`）默认 **1.645**（单侧 95%）。两者作用于不同证据、不同时间尺度，阈值不通用。
+> ⚠️ **两套 `se_mult` 别混淆。** lift 准入（`fz factor-library lift-test --set se_mult=1.0`）默认 **1.0**；向前复审（`fz factor-library forward-review --se-mult`）默认 **1.645**（单侧 95%）。两者作用于不同证据、不同时间尺度，阈值不通用。
+>
+> ℹ️ **`DEFAULT_TOP_M` 与 CLI `--set top_m` 默认不同。** 模块常量 `DEFAULT_TOP_M = 10`（`lift_test.py`）；`fz factor-library lift-test` 的 argparse 默认是 `--set top_m` / `top_m=20`。库函数默认与 CLI 默认是两套值，不要混为一谈。
 
 ---
 
 ## 四态状态机
 
-每条因子记录（`FactorRecord`，`discovery/factor_library.py:137`）带一个 `status`：
+每条因子记录（`FactorRecord`，`discovery/factor_library.py`）带一个 `status`：
 
 | 状态 | 含义 | 参与组合 |
 |---|---|---|
@@ -115,7 +117,7 @@ fz factor-library forward-review --apply
 
 ## 登记簿的数据模型
 
-`FactorRecord`（`discovery/factor_library.py:137`）是唯一登记簿记录，40+ 个字段按语义分组：
+`FactorRecord`（`discovery/factor_library.py`）是唯一登记簿记录，40+ 个字段按语义分组：
 
 | 组 | 内容 |
 |---|---|
@@ -146,9 +148,9 @@ fz factor-library forward-review --apply
 
 问题在于登记簿的一切逻辑（去重、池键、台账键）都以 `expression` 为主键。为 python 因子引入第二套主键会让所有消费方分叉。
 
-平台的解法是 **`py::` 身份哨兵**（`factor_library.py:254`）：python 因子的 `expression` 字段填成 `"py::{name}"` 这样一个**故意不合法**的表达式串。它不可解析，因此绝不会被误当成表达式求值；但它是唯一的字符串，因此去重、池键、台账全部零改动继续工作。
+平台的解法是 **`py::` 身份哨兵**（`factor_library.py` 的 `PY_IDENTITY_PREFIX`）：python 因子的 `expression` 字段填成 `"py::{name}"` 这样一个**故意不合法**的表达式串。它不可解析，因此绝不会被误当成表达式求值；但它是唯一的字符串，因此去重、池键、台账全部零改动继续工作。
 
-真正的实现由 `kind` / `name` / `impl` 三个显式字段承载，且**优先级高于** `py::` 推断（`factor_library.py:1083`）。消费方按 `kind` 分派到不同的物化路径。
+真正的实现由 `kind` / `name` / `impl` 三个显式字段承载，且**优先级高于** `py::` 推断（`factor_library.py`）。消费方按 `kind` 分派到不同的物化路径。
 
 写手写因子并入库的操作步骤见[因子编写指南](../guides/factor-authoring.md)。
 

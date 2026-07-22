@@ -20,7 +20,7 @@
 | 交易约束 | 停牌 / 涨跌停 / ST / 次新 / T+1 内嵌进 universe 快照；ST 的涨跌停阈值按 PIT 收窄 | `core/universe.py` `_get_board_limit` |
 | 财务数据 | 按**公告日**对齐，不用报告期末数据 | `daily/data/pit.py` |
 | 执行定价 | 用 `pre_close` 而非当日收盘 | `daily/evaluation/backtest.py` |
-| 滚动因子 | 扩窗预热（`expanded_start`），避免窗口起点处用到未来样本 | `validation/holdout.py` |
+| 滚动因子 | 扩窗预热（`expanded_start`），避免窗口起点处用到未来样本 | `daily/data/context.py` |
 | 预处理统计量 | 中性化、标准化的统计量只用 ≤t 样本 | `daily/preprocessing/` |
 | 时序 | t 日计算 → t+1 日执行 | 全链 |
 

@@ -226,7 +226,7 @@ RankIC 用 average-rank Spearman（`core/stats.spearman_avg_rank`），与 `lift
 
 `method` 列标注实际用的是 **`shap`** 还是 **`gain`**——SHAP 更忠实，但 `shap` 是 **dev extras 依赖**，只装运行时依赖的环境会自动降级到 LightGBM 内置的 gain。**看这一列**，别假设拿到的就是 SHAP 值。
 
-> ⚠️ LightGBM 重要性是**在全样本上重新 fit 一次**算出来的（`experiment.py:148-153`），与 OOS 逐折的模型不是同一批。它是解释性辅助，不是样本外证据。
+> ⚠️ LightGBM 重要性是**在全样本上重新 fit 一次**算出来的（`experiment.py` 的 `run_combination_experiment()`），与 OOS 逐折的模型不是同一批。它是解释性辅助，不是样本外证据。
 
 ---
 

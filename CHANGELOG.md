@@ -6,7 +6,7 @@
 
 ## [Unreleased]
 
-自 v0.3.0 起，项目从「端到端可复现的量化研究平台」重心转向**以因子库准入为核心的多市场研究平台**：候选因子必须相对既有因子库跑出统计显著的增量（lift）才能进库。同期完成了多市场扩展、分钟级研究一等公民化、一轮全链路性能优化与一轮内存治理。测试套件扩展到 2,561 个用例 / 314 个测试文件。
+自 v0.3.0 起，项目从「端到端可复现的量化研究平台」重心转向**以因子库准入为核心的多市场研究平台**：候选因子必须相对既有因子库跑出统计显著的增量（lift）才能进库。同期完成了多市场扩展、分钟级研究一等公民化、一轮全链路性能优化、一轮内存治理，以及回测双轨分离与一轮结构级清障。测试套件经归并重构后为 952 个用例 / 97 个测试文件。
 
 ### Added
 
@@ -22,6 +22,13 @@
 - **评估证据链接（#127）：** 因子记录关联最近一次评估的 run，且不覆盖准入裁决指标。
 - **组合增量目标（#85）：** 挖掘目标残差化——用「对现有库的增量 IC」而非孤立 IC 评估候选，`--objective residual` 成为默认。
 - **库级正交过滤（#81）：** 搜索期即按与在库因子的相关性过滤候选。
+- **因子资产库（#172, #174）：** 每个因子物化为 `meta.json` + `factor.py` + `factor.parquet` 三件套，落 `workspace/factor_store/<market>/<name>/`；`factor_library` 的 jsonl 仍是**裁决唯一真相**，store 只是资产载体，两者口径正式分离。新增 `fz factor-library store sync` / `store verify`；expression 因子自动生成可执行 `factor.py`，防漂移测试锁定与生产求值逐位一致。物化口径统一为全 A + 2016 起。
+- **残差增量口径（#131）：** lift 引擎从 LightGBM walk-forward 改为对在库因子做正交化后的残差 IC 口径 `residual_ic_v1`。
+- **lift 轨去相关门（#132）：** lift 通道补上此前缺失的相关性门；同批新增 `ts_decay_linear` 真实现。
+- **裸 IC 同号门（#135）：** 裸 IC 与库内方向相反的候选不再准入——等权组合无法表达负贡献。
+- **定向重估与组门 sub-floor（#138）：** `rebuild` 支持只重估指定来源，解锁积压的重估账；组门补 sub-floor 通道。
+- **稀疏事件因子 sleeve（#168–#171）：** 稀疏因子改用事件掩码评分并以 overlay 方式叠加，避免 fill-0 在组合层稀释；overlay 专用 lift 阈值经 500 次掩码内置换的 null 校准确定。
+- **lift 统计层 null 校准（#138 后续）：** 新增 `fz factor-library lift-null`，在「无真实 lift」的 H0 下扫描参数网格的误准入率。
 
 #### 多市场
 
@@ -30,7 +37,7 @@
 
 #### 分钟级与日内研究
 
-- **日内特征引擎（#106）：** A 股分钟 session 单一真源 + 17 个微观结构特征电池，分钟 bar 聚合为日频特征面板并作为挖掘叶子接入全链（语义零回归）。
+- **日内特征引擎（#106）：** A 股分钟 session 单一真源 + 17 个微观结构特征电池，分钟 bar 聚合为日频特征面板并作为挖掘叶子接入全链（语义零回归）。**#143 补入涨跌停邻域三叶后为 20 个。**
 - **端到端透传（#107）：** research 链路与无人值守日链路接入日内面板的增量构建。
 - **日内表达式 Scout（#108）：** bar 级表达式求值器 + `ix_*` 内容寻址动态叶子注册表；LLM 每轮提案 bar 表达式并注入 session，动态扩展搜索空间。
 
@@ -39,6 +46,9 @@
 - **两融叶子（#86）：** `margin_detail`，T+1 滞后结构性内置。
 - **股东户数与龙虎榜叶子（#88）。**
 - **叶子反馈（#80）：** 挖掘过程回灌叶子健康度，开局自动摘除死叶。
+- **涨跌停邻域三叶（#143）：** `i_limit_up_seal_share` / `i_limit_up_open_count` / `i_limit_up_first_touch`——离散状态机与连续路径统计正交，是库饱和后首批过门的新叶。
+- **业绩预告 / 快报事件叶（#167）：** `fc_type_score` / `fc_surprise` / `fc_flag` / `express_yoy`，按公告日 PIT 对齐至 t+1。
+- **阈值与游程算子（#166）：** `ts_count_gt` / `ts_streak_gt` / `ts_count_cross_up`，让表达式能表达「连续 N 日超阈值」这类此前只能做成叶子的结构。
 
 #### LLM 挖掘
 
@@ -51,6 +61,8 @@
 #### 组合研究
 
 - **四方法样本外对比（#28）：** 等权 / IC 加权 / max_ir / LightGBM，含因子重要性解释（shap 可选、gain 兜底）与 `fz combine run`。
+- **换手与带成本净收益（#142, #144）：** 组合对比表补上换手、`net_spread_10bp` 与 `net_sharpe_10bp`——实测 IC 最高的方法换手也最高，只看 IC 会选错。
+- **组合直通回测（#173）：** 各方法的 OOS 分数拼接落盘 `oos_scores/<method>.parquet`（折间日期零重叠，重叠即 fail-loudly），新增 `fz combine backtest` 把任意分数面板送进日环回测引擎；`--rebalance-days` 以调仓日降采样 + 按股票 ffill 实现。组合的可实现净值自此一条命令可得。
 
 #### 运营与展示
 
@@ -64,6 +76,32 @@
 - **库池子进程预构建（#123）：** 新增顶层命令 `fz pool-prebuild` 与 `fz mine team --pool-subproc`，把因子库池的内存尖峰隔离到子进程，退出即全额归还；池缓存可跨 session 复用。
 
 ### Changed
+
+#### 命令面与口径 ⚠️ 含破坏性变更
+
+- **⚠️ 回测双轨分离（#177）：** `fz factor run` **已删除，不留别名**，拆成两条语义分明的轨：
+  - `fz factor eval` —— 因子研究评估（信号层，纯向量化：IC / 分层 / 多空 / 单调性 / 换手），**毛口径**；
+  - `fz factor backtest` —— 模拟交易回测（日环撮合 + 交易约束 + 成本），**净口径**，含 walk-forward。
+
+  两轨参数面一致、产物不互撞（eval 轨 HTML 用 `_eval.html`）。同一因子在两轨下的差异是真实存在的：
+  实测 `momentum_20d` / csi300 / 2024H1 信号轨毛多空 +10.82%，交易轨净 −2.14%。
+- **⚠️ 信号轨移除全部成本参数（#180）：** `--cost-bps`、`ls_ret_net`、`nav_net` 及所有 `*_net` 指标从信号轨移除。
+  粗略的 bps 折算既非真实撮合，又让人误以为研究轨能算净收益。`ls_turnover` 保留，但语义收窄为「信号换手强度」。
+  交易轨的 `fz combine backtest --cost-bps` 不受影响。
+- **⚠️ 挖掘与评估默认改为可实现口径（#145, #146, #175）：** 前向收益默认 `exec_lag=1` / `exec_price_col=open_adj`
+  （即 t 日算、t+1 开盘成交），`--exec-lag 0` 为逃生口。此前的 close→close 默认隐含「T 日收盘成交」，
+  与「t 日算 → t+1 执行」的 PIT 铁律矛盾。**库裁决链（`rebuild` / `lift-test` / `forward-track`）保持历史口径不动**，
+  以维持已入库记录的可比性。跨版本对照数字时须注意口径差。
+- **⚠️ CLI 结构级收敛（#175, #176）：** 顶层命令 16 → 14；`fz mine team` 参数面 32 → 15，
+  高级参数改由 **`--set KEY=VALUE`** 通配传入（未知键 fail-loudly），`fz mine search` / `mine agent` /
+  `factor-library lift-test` 同此。删除 `tag-legacy` / `render` / `runs show` 等低频命令，
+  `config validate` 移入 `ops`、`pool-prebuild` 归入 `mine` 组。
+- **⚠️ workspace 目录收敛（#178）：** 一级目录 21+ → 13。`workspace/factors/` **整树退役**——
+  用户 Python 因子的唯一路径改为 `workspace/factor_store/`，三处 registry 不再扫描旧目录；
+  运维杂项归并到 `workspace/_ops/`。
+- **报告年化改几何口径（#179）：** 算术年化 `mean × 252` 在高波动下与几何年化差约 `σ²/2 × 252`，
+  日波动 1.4~1.7% 即拖累 3~4pp，足以翻号——实测同一份报告里柱状图（算术）显示各组年化全正，
+  而累计净值实际是亏的。展示一律改用与净值曲线同源的几何年化，算术值仅保留在 `summary_stats` 供跨轨比较。
 
 #### 性能
 
@@ -97,6 +135,13 @@
 - **实盘定位：** 文档中实盘对接由「不覆盖」改写为分阶段路线目标，当前处于纸面向前执行阶段。
 - **Walk-forward：** 策略 walk-forward 样本外评估改为**默认关闭**（`WalkForwardConfig.enabled` 默认 `false`），按需通过 YAML 或 `--set walk_forward.enabled=true` 开启。
 - **报告模块解耦：** `tear_sheet.py` 2986 → 1054 行（-65%），按职责拆为 `_formatting` / `_scoring` / `_charts` / `_strategy` / `_summaries` 五个模块；经 re-export 保持对外导入接口不变。
+- **报告按轨重建（#177，覆盖上一条）：** 上述 `tear_sheet.py` 随双轨分离**整体删除**——两轨共用一份报告会让 eval 轨的交易区块永远留空。
+  现拆为 `signal_report.py`（分层净值 / 分层收益 / IC 时序·累计·衰减·分布 / 分层年度热力 / 换手，顶部带毛口径横幅）
+  与 `trading_report.py`（净值 vs 基准 / 回撤 / **成本侵蚀瀑布** / **敞口时序** / **拒单原因分布** / 月度热力 / 滚动 Sharpe），两者区块零重叠。
+  后三张图的数据源（`nav` 的 `gross_return` / `cost` / `cash_weight`、`trades.block_reason`）一直存在，只是旧报告从未消费。
+- **测试库归并重构（#147–#164）：** 测试文件 326 → 97、用例 2,725 → 952，覆盖率基本持平。
+  目录按模块组织（`tests/<模块>/`），根下只留架构守卫；大量小文件归并为多断言 suite。
+  同批全仓清除 `monkeypatch.undo()`——它会撤销同实例上 fixture 打的离线 mock，导致后续断言静默走真实 API（本地绿、CI 红）。
 - **工程化：** `.pre-commit-config.yaml` 改为通过 `pixi run` 的 local hooks，保证 pre-commit / CI / 本地三者版本一致。
 - **CI：** 增加 `permissions: contents: read` 最小权限与 `concurrency` 取消重复运行；覆盖率门槛固定为 74%。
 - **可复现性：** `run_experiment` 在工作树 dirty 时告警；manifest 增记 `duration_seconds`。

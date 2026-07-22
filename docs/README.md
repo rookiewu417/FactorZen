@@ -47,7 +47,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [CLI 参考](reference/cli.md) | 14 个顶层命令 / 45 个叶子命令，含参数表与示例 |
+| [CLI 参考](reference/cli.md) | 14 个顶层命令 / 46 个叶子命令，含参数表与示例 |
 | [配置](reference/configuration.md) | 配置模型、YAML 模板、`--set` 覆盖机制 |
 | [产物布局](reference/artifacts.md) | `workspace/` 与 `data/` 目录结构、`manifest.json` 字段 |
 | [环境变量](reference/environment.md) | `TUSHARE_TOKEN`、`FACTORZEN_LLM_*` 全表与缺失行为 |
@@ -60,7 +60,8 @@
 | [release-notes/](release-notes/) | 已发布版本说明（发布后不回写） |
 | [../CHANGELOG.md](../CHANGELOG.md) | 变更日志 |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | 开发流程、验证要求、提交规范 |
-| [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html) | 真实单因子报告（GitHub Pages） |
+| [示例报告 · 信号轨](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-signal-report.html) | 真实单因子报告，毛口径（GitHub Pages） |
+| [示例报告 · 交易轨](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-trading-report.html) | 同一因子同一窗口的净口径回测，与信号轨对照 |
 
 作用域限定的局部说明随代码放置，不并入本目录：
 [`tools/`](../tools/README.md) · [`builtin_factors/qlib/`](../src/factorzen/builtin_factors/qlib/README.md) · [`research/combination/`](../src/factorzen/research/combination/README.md)

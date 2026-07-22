@@ -2,7 +2,7 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **CLI 参考**
 
-FactorZen 的全部功能都通过单一入口 `fz` 暴露。本手册覆盖 **14 个顶层命令 / 45 个叶子命令** 的完整参数面，所有默认值均取自真实 argparse 声明。
+FactorZen 的全部功能都通过单一入口 `fz` 暴露。本手册覆盖 **14 个顶层命令 / 46 个叶子命令** 的完整参数面，所有默认值均取自真实 argparse 声明。
 
 ## 如何调用
 
@@ -33,7 +33,7 @@ pixi run -- fz mine search --help
 | [`fz data`](#fz-data) | 拉取行情与财务数据、回补 crypto 数据湖、构建日内特征面板 |
 | [`fz runs`](#fz-runs) | 列出历史 run 记录 |
 | [`fz mine`](#fz-mine) | 因子挖掘：搜索 / Agent / 团队 / 库池预构建 |
-| [`fz factor-library`](#fz-factor-library) | 因子库登记簿：重建、查询、lift 准入、向前跟踪与复审 |
+| [`fz factor-library`](#fz-factor-library) | 因子库登记簿：重建、查询、lift 准入、向前跟踪与复审、资产库 store 同步/校验 |
 | [`fz research`](#fz-research) | 端到端编排：挖掘 → 组合构建 → 模拟 → 报告，同一 run_id |
 | [`fz validate`](#fz-validate) | 单因子过拟合检验（Deflated Sharpe + bootstrap CI） |
 | [`fz risk`](#fz-risk) | 构建 Barra 风险模型（风格/行业暴露 + 协方差 + 特质风险） |
@@ -514,9 +514,23 @@ pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi
 
 `patience` / `heal_rounds` / `no_library_orthogonal` / `objective` / `intraday_leaves` / `intraday_freq` / `intraday_scout` / `scout_k` / `scout_max_leaves`
 
-#### factor-library lift-test 合法 KEY
+#### factor-library lift-test 合法 KEY（旧旗标 → 等价写法）
 
-`top_m` / `queue_ic_floor` / `include_sub_floor` / `threshold` / `library_root` / `se_mult` / `allow_active` / `horizon` / `lift_workers` / `intraday_leaves` / `intraday_freq`
+| KEY | 旧默认 | 旧 CLI | `--set` 示例 |
+|---|---|---|---|
+| `top_m` | 20 | `--top-m` | `--set top_m=20`（`0` = 全测逃生口） |
+| `queue_ic_floor` | None（残差 `0.008` / 裸 IC `0.010`） | `--queue-ic-floor` | `--set queue_ic_floor=0.008` |
+| `include_sub_floor` | false | `--include-sub-floor` | `--set include_sub_floor=true` |
+| `threshold` | None（= `0.001`） | `--threshold` | `--set threshold=0.001` |
+| `library_root` | None（= `workspace/factor_library`） | `--library-root` | `--set library_root=...` |
+| `se_mult` | 1.0 | `--se-mult` | `--set se_mult=1.0` |
+| `allow_active` | false | `--allow-active` | `--set allow_active=true` |
+| `horizon` | None（跟 session manifest） | `--horizon` | `--set horizon=1` |
+| `lift_workers` | None（自适应，上限 4） | `--lift-workers` | `--set lift_workers=1`（串行） |
+| `intraday_leaves` | false | `--intraday-leaves` | `--set intraday_leaves=true` |
+| `intraday_freq` | 5min | `--intraday-freq` | `--set intraday_freq=5min` |
+
+> ⚠️ `fz factor-library forward-review --se-mult` 是**真旗标**（默认 `1.645`），与 lift-test 的 `--set se_mult=` 不是一回事，不要混用。
 
 ---
 
@@ -629,29 +643,21 @@ pixi run -- fz factor-library show --market ashare --rank 1
 | `--start` | str | — | ✅ | 评估窗口起点 `YYYYMMDD` |
 | `--end` | str | — | ✅ | 评估窗口终点 `YYYYMMDD` |
 | `--universe` | str | 无 | | A 股票池名 |
-| `--top-m` | int | `20` | | 按 \|residual_ic_train\| 取 top-M 控成本；`--top-m 0` = 全测逃生口。截断会在 stderr 大声打印并记 `truncated_from` |
-| `--queue-ic-floor` | float | 无（残差 `0.008` / 裸 IC `0.010`） | | 噪声地板：`\|train IC\|` 低于此值的候选默认剔出组门；无 IC 指标的候选（如 `--factor` 注入）不受影响 |
-| `--include-sub-floor` | flag | 关 | | 逃生口：sub-floor 候选照旧进组门（复现旧行为）。组门是等权残差组合，噪声占多数时会连坐拒掉真信号 |
-| `--threshold` | float | 无（= `0.001`） | | RankIC lift 阈值 |
 | `--seed` | int | `0` | | 随机种子 |
-| `--library-root` | str | 无（= `workspace/factor_library`） | | 因子库根目录 |
 | `--apply` | flag | 关 | | **写库**：通过者入库，并把 lift 拒绝写回 experiment_index |
 | `--dry-run` | flag | 关 | | 只打印不写库（已是默认行为，保留为兼容旗标）；与 `--apply` 互斥 |
-| `--se-mult` | float | `1.0` | | lift 准入 SE 乘数：`lift ≥ max(threshold, se_mult × SE)` |
-| `--allow-active` | flag | 关 | | 允许 lift 裁决直接写 `active`（默认封顶 `probation`） |
 | `--admission-start` | str | 无 | | 覆盖由 session manifest holdout 推导的 lift 评分窗起点 |
 | `--admission-end` | str | 无 | | 覆盖评分窗终点 |
-| `--horizon` | int | 无 | | lift 前向持有期；缺省跟随 session manifest 的挖掘 horizon |
-| `--lift-workers` | int | 无（自适应） | | 候选级 lift 线程并发，上限 4；`1` = 串行 |
 | `--top-n` | int | `50` | | crypto/futures/us 池规模 |
 | `--symbols` | str | 无 | | 仅 crypto/futures/us：逗号分隔 symbols |
-| `--intraday-leaves` | flag | 关 | | 启用日内特征叶子 `i_*` 装帧（仅 `ashare`；库内已有 `i_*` 因子时会自动置位） |
-| `--intraday-freq` | str | `5min` | | 日内特征面板频率 |
 | `--freq` | `1m` \| `5m` \| `15m` \| `1h` \| `daily` | `daily` | | crypto bar 粒度 |
+| `--set KEY=VALUE` | str，可重复 | 无 | | 高级覆盖：`top_m` / `queue_ic_floor` / `include_sub_floor` / `threshold` / `library_root` / `se_mult` / `allow_active` / `horizon` / `lift_workers` / `intraday_leaves` / `intraday_freq`（见[高级覆盖](#高级覆盖--set)） |
 
 > ⚠️ **本命令默认 dry-run**：不加 `--apply` 时只打印裁决结果，既不写因子库也不写 experiment_index。下面第一条示例**不会落库**，第二条才会。养成先 dry-run 看结果、确认后再 `--apply` 的习惯。
 
 > ⚠️ `--session` 与 `--factor` 在 argparse 层都不是 required，但**至少要给一个**，否则运行期报错。两者都是 `nargs="+"` 风格——多值用**空格分隔**（`--session a b c`），不是逗号，也不是重复旗标。
+
+> ⚠️ 高级参数已全部走 `--set`：例如 `--set top_m=0` 全测、`--set allow_active=true` 允许直接写 `active`、`--set lift_workers=1` 串行。`se_mult` 默认 `1.0`（准入：`lift ≥ max(threshold, se_mult × SE)`），与 `forward-review` 的真旗标 `--se-mult`（默认 `1.645`）不是同一个旋钮。
 
 ```bash
 # 1) 先 dry-run 看裁决（不写库）
@@ -663,6 +669,12 @@ pixi run -- fz factor-library lift-test \
 pixi run -- fz factor-library lift-test \
   --session workspace/mine_team/20260718_120000 \
   --market ashare --start 20200101 --end 20241231 --universe csi500 --apply
+
+# 3) 高级：全测 + 串行 lift
+pixi run -- fz factor-library lift-test \
+  --session workspace/mine_team/20260718_120000 \
+  --market ashare --start 20200101 --end 20241231 --universe csi500 \
+  --set top_m=0 --set lift_workers=1
 ```
 
 **产物**：仅 `--apply` 时写盘——更新 `workspace/factor_library/`（新记录 `status=probation`），并把 lift 拒绝回灌 experiment_index。
@@ -737,6 +749,47 @@ pixi run -- fz factor-library forward-review --market ashare --min-days 60 --app
 ```
 
 **产物**：仅 `--apply` 时更新 `workspace/factor_library/` 中的 `status`。
+
+### fz factor-library store sync
+
+从因子库登记簿（jsonl）同步资产库三件套：写 `meta.json` + `factor.py`；默认物化 `active` / `probation` 的 `factor.parquet`（固定 `all_a` × `2016-01-01` ~ 最新已完结交易日，与 jsonl 评估窗分离）。
+
+用户 python 因子的**唯一路径**是 `workspace/factor_store/<market>/<name>/`（见 [因子编写指南](../guides/factor-authoring.md)）。裁决真相仍在 `workspace/factor_library/<market>.jsonl`；本命令把登记簿同步到资产库载体。
+
+| 参数 | 类型 | 默认值 | 必填 | 说明 |
+|---|---|---|---|---|
+| `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
+| `--only` | str | 无（= 全库） | | 只同步这些 `name`（逗号分隔） |
+| `--no-materialize` | flag | 关 | | 只写 meta+py，不物化 parquet |
+| `--root` | str | 无（= `workspace/factor_store`） | | 资产库根目录 |
+| `--lib-root` | str | 无（= `workspace/factor_library`） | | 因子库 jsonl 根目录 |
+
+```bash
+# 全库同步（含 parquet 物化）
+pixi run -- fz factor-library store sync --market ashare
+
+# 只同步指定因子，且跳过物化
+pixi run -- fz factor-library store sync --market ashare \
+  --only my_reversal,momentum_20 --no-materialize
+```
+
+**产物**：`workspace/factor_store/<market>/<name>/` 下的 `meta.json` / `factor.py`（及默认物化的 `factor.parquet`）。
+
+### fz factor-library store verify
+
+校验资产库 `meta.expression` 与登记簿 jsonl 一致，并检查 materialization 是否仍为 store 口径（`all_a` / `2016-01-01`~最新）。
+
+| 参数 | 类型 | 默认值 | 必填 | 说明 |
+|---|---|---|---|---|
+| `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
+| `--root` | str | 无（= `workspace/factor_store`） | | 资产库根目录 |
+| `--lib-root` | str | 无（= `workspace/factor_library`） | | 因子库 jsonl 根目录 |
+
+```bash
+pixi run -- fz factor-library store verify --market ashare
+```
+
+**产物**：无，仅打印校验报告（drift / missing_in_store / missing_in_ledger）；有漂移时非零退出。
 
 ---
 

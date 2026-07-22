@@ -46,13 +46,13 @@ pixi run fz mine search \
   --method genetic --trials 200 --top-k 10 --seed 42
 ```
 
-**你会看到**：搜索进度与收尾的候选排行。窗口会自动按 `--holdout-ratio`（默认 0.2）切出一段**永久隔离的 holdout**，挖掘过程碰不到它——这段是后面做准入裁决的证据来源。
+**你会看到**：搜索进度与收尾的候选排行。窗口会自动按 `--set holdout_ratio=`（默认 0.2）切出一段**永久隔离的 holdout**，挖掘过程碰不到它——这段是后面做准入裁决的证据来源。
 
 **产物**：`workspace/mining_sessions/session_42_genetic/`，里面是 `candidates.csv`（头部候选与各项指标）+ `manifest.json`（seed、试验数、holdout 起点、全部候选详情）。
 
 > ⚠️ **session 目录名是 `session_{seed}_{method}`，不带时间戳。** 同 seed 同方法重跑会**原地覆盖**上一次的产物。要保留多次实验请换 `--seed`。
 
-**这一步已经发生了第一次准入**：护栏 `passed` 的候选在收尾时自动 upsert 进因子库（这是**入库第一通道**；`--no-library` 可关）。
+**这一步已经发生了第一次准入**：护栏 `passed` 的候选在收尾时自动 upsert 进因子库（这是**入库第一通道**；`--set no_library=true` 可关）。
 
 **怎么判断这步做对了**：
 
@@ -96,7 +96,7 @@ pixi run fz factor-library lift-test \
   --universe csi500
 ```
 
-**你会看到**：逐候选打印 `lift` / `lift_se` / 门槛 / 裁决结果。默认按 `|residual_ic_train|` 取 top-20 控成本（`--top-m 0` 全测），发生截断时会在 stderr 大声打印。
+**你会看到**：逐候选打印 `lift` / `lift_se` / 门槛 / 裁决结果。默认按 `|residual_ic_train|` 取 top-20 控成本（`--set top_m=0` 全测），发生截断时会在 stderr 大声打印。
 
 **产物**：**什么都不写。**
 
@@ -115,7 +115,7 @@ pixi run fz factor-library lift-test \
 
 **产物**：更新 `workspace/factor_library/ashare.jsonl`（新记录 `status=probation`），并把 lift 拒绝写回该 session 所属的实验登记簿 `experiment_index.jsonl`——**被拒的信息也是资产**，下次挖掘会避开同一方向。
 
-> ℹ️ 登记簿路径优先取 session `manifest.json` 里记录的 `index_path`；没有记录时回退到 **session 目录的父目录**下的 `experiment_index.jsonl`。本例即 `workspace/mining_sessions/experiment_index.jsonl`；`fz mine team` 的 session 则按其 `--index-path`（默认 `workspace/mine_team/experiment_index.jsonl`）。
+> ℹ️ 登记簿路径优先取 session `manifest.json` 里记录的 `index_path`；没有记录时回退到 **session 目录的父目录**下的 `experiment_index.jsonl`。本例即 `workspace/mining_sessions/experiment_index.jsonl`；`fz mine team` 的 session 则按其 `--set index_path=`（默认 `workspace/mine_team/experiment_index.jsonl`）。
 
 > ℹ️ 通过 lift 的候选**默认封顶在 `probation` 而不是直接 `active`**。要转正得靠真实时间累积证据：`fz factor-library forward-track` 逐日记录 paper forward RankIC，攒够天数后 `fz factor-library forward-review --apply` 裁决晋升或降级。完整生命周期见[因子库与增量准入](../concepts/factor-library.md)。
 

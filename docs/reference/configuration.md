@@ -16,7 +16,7 @@ FactorZen 的配置分三层，越靠后优先级越高：
 
 ## 1. 配置模型总览
 
-顶层模型是 `RunConfig`（`src/factorzen/config/research.py:92`），四个嵌套节：
+顶层模型是 `RunConfig`（`src/factorzen/config/research.py`），四个嵌套节：
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
@@ -29,9 +29,9 @@ FactorZen 的配置分三层，越靠后优先级越高：
 | `backtest` | `BacktestConfig` | 见 §1.2 | 策略组、成本模型、权重约束 |
 | `walk_forward` | `WalkForwardConfig` | 见 §1.3 | 滚动向前验证 |
 
-> ℹ️ `RunConfig` 沿用 pydantic 默认的 `extra="ignore"`。旧 YAML 里的 `ic_method`、`event_study`、`neutralized_ic` 等字段会被**静默忽略**，不会报错——升级配置时别指望校验器提醒你字段已废弃（`research.py:93`）。
+> ℹ️ `RunConfig` 沿用 pydantic 默认的 `extra="ignore"`。旧 YAML 里的 `ic_method`、`event_study`、`neutralized_ic` 等字段会被**静默忽略**，不会报错——升级配置时别指望校验器提醒你字段已废弃（`research.py`）。
 
-`benchmark` 留空时的推导表（`research.py:12-20`）：
+`benchmark` 留空时的推导表（`research.py`）：
 
 | universe | 推导出的 benchmark |
 |---|---|
@@ -42,7 +42,7 @@ FactorZen 的配置分三层，越靠后优先级越高：
 
 ### 1.1 `preprocessing`
 
-`PreprocessingConfig`（`research.py:23`）：
+`PreprocessingConfig`（`research.py`）：
 
 | 字段 | 取值域 | 类默认 |
 |---|---|---|
@@ -57,7 +57,7 @@ FactorZen 的配置分三层，越靠后优先级越高：
 
 ### 1.2 `backtest`
 
-`BacktestConfig`（`research.py:41`）：
+`BacktestConfig`（`research.py`）：
 
 | 字段 | 取值域 | 默认 | 说明 |
 |---|---|---|---|
@@ -71,9 +71,9 @@ FactorZen 的配置分三层，越靠后优先级越高：
 | `primary` | `str \| None` | `None` | 主策略名，用于报告与准入 |
 | `strategies` | `list[StrategySpec]` | `[]` | 多策略列表 |
 
-单条策略 `StrategySpec`（`research.py:30`）：`name`（必填）、`type`（必填，内置类型名或自定义 Strategy 子类的 dotted path）、`params`（dict）、以及可选的逐策略覆盖 `max_abs_weight` / `rebalance_threshold` / `cost_model` / `alpha` / `fallback_adv`。
+单条策略 `StrategySpec`（`research.py`）：`name`（必填）、`type`（必填，内置类型名或自定义 Strategy 子类的 dotted path）、`params`（dict）、以及可选的逐策略覆盖 `max_abs_weight` / `rebalance_threshold` / `cost_model` / `alpha` / `fallback_adv`。
 
-**自动补全规则**（`model_validator(mode="after")`，`research.py:52-65`）：
+**自动补全规则**（`model_validator(mode="after")`，`research.py`）：
 
 1. `strategies` 为空 → 自动生成**一条** `topn_long_only` 策略，名为 `topn_{top_n}`，`params={"top_n": top_n}`。
 2. `primary` 为空 → 取 `strategies` 第一条的 `name`。
@@ -82,7 +82,7 @@ FactorZen 的配置分三层，越靠后优先级越高：
 
 ### 1.3 `walk_forward`
 
-`WalkForwardConfig`（`research.py:83`）：
+`WalkForwardConfig`（`research.py`）：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -93,7 +93,7 @@ FactorZen 的配置分三层，越靠后优先级越高：
 | `embargo_days` | `5` | IS 末与 OOS 首之间的隔离带，降低泄漏 |
 | `n_trials` | `50` | IS 阶段试的 `top_n` 候选数 |
 
-候选生成是**确定性**的（`build_top_n_candidate_params`，`research.py:263`）：由 `max_abs_weight` 反推下界 `min_top_n = ceil(1 / max_abs_weight)`，在 `[min_top_n, top_n]` 区间上取 `min(span, n_trials)` 个候选。所以 `max_abs_weight=0.1` 时 `top_n` 不会试到小于 10 的值——权重上限本身就让更小的组合无解。
+候选生成是**确定性**的（`build_top_n_candidate_params`，`research.py`）：由 `max_abs_weight` 反推下界 `min_top_n = ceil(1 / max_abs_weight)`，在 `[min_top_n, top_n]` 区间上取 `min(span, n_trials)` 个候选。所以 `max_abs_weight=0.1` 时 `top_n` 不会试到小于 10 的值——权重上限本身就让更小的组合无解。
 
 ---
 
@@ -195,8 +195,10 @@ pixi run -- fz ops validate-config workspace/configs/daily/volume_return_corr_20
 >
 > | 挂载点 | 来源 |
 > |---|---|
-> | `fz factor eval` / `fz factor backtest` | `cli/parser.py` → `_add_factor_common_arguments` |
+> | `fz factor eval` / `fz factor backtest` | `cli/parser.py` → `_add_factor_common_arguments`（覆盖 RunConfig 任意字段） |
 > | `fz factor sweep` | `cli/parser.py`，语义是「应用到每个组合的固定覆盖」 |
+> | `fz mine search` / `fz mine agent` / `fz mine team` | `cli/parser.py` → `_add_set_arg`（高级挖掘参数；合法 KEY 见 [CLI 参考 · 高级覆盖](cli.md#高级覆盖--set)） |
+> | `fz factor-library lift-test` | `cli/parser.py` → `_add_set_arg`（`top_m` / `se_mult` / `lift_workers` 等） |
 > | `pixi run daily`（`python -m factorzen.pipelines.daily_single`） | `pipelines/daily_single.py` |
 
 签名 `--set KEY=VALUE`，`action="append"` 因此**可重复**：
@@ -210,11 +212,11 @@ pixi run -- fz factor backtest momentum_20d \
   --dry-run
 ```
 
-> ✅ 学 `--set` 时永远配 `--dry-run`（`parser.py:47`，"Print effective config without running"）——它打印生效后的完整配置却不跑评估，是验证覆盖是否命中的最快方式。
+> ✅ 学 `--set` 时永远配 `--dry-run`（`cli/parser.py` 顶层 `"Print effective config without running"`）——它打印生效后的完整配置却不跑评估，是验证覆盖是否命中的最快方式。
 
 ### 3.2 值的类型推断
 
-值经 **`yaml.safe_load`** 解析，与 YAML 同源（`research.py:170`）：
+值经 **`yaml.safe_load`** 解析，与 YAML 同源（`research.py`）：
 
 | 写法 | 解析结果 |
 |---|---|
@@ -226,7 +228,7 @@ pixi run -- fz factor backtest momentum_20d \
 
 ### 3.3 注入时机与错误
 
-覆盖在 **pydantic 校验之前**注入到原始 dict（`research.py:145-181`）。这个顺序有两个好处：
+覆盖在 **pydantic 校验之前**注入到原始 dict（`research.py`）。这个顺序有两个好处：
 
 1. 非法取值仍然由 pydantic 报错，`--set` 不绕过任何校验。
 2. `backtest.top_n` 这类靠 `model_validator` 自动生成策略的 legacy 字段能用**新值**正确生成策略，不需要特判。
@@ -241,9 +243,9 @@ dotted key 走嵌套 dict，中间缺失的键按需创建。三种报错：
 
 ### 3.4 `backtest.top_n` 的特殊同步
 
-覆盖 `backtest.top_n` 时，`build_run_config_from_dict`（`research.py:222-232`）会额外调 `_sync_default_top_n_strategy`：把自动生成的 `topn_50` 策略重命名成 `topn_{新值}`，同步它的 `params.top_n`，并在 `primary` 恰好指向旧名时一并改掉。否则 `--set backtest.top_n=30` 会得到一个「名叫 topn_50、实际只买 30 只」的策略。
+覆盖 `backtest.top_n` 时，`build_run_config_from_dict`（`research.py`）会额外调 `_sync_default_top_n_strategy`：把自动生成的 `topn_50` 策略重命名成 `topn_{新值}`，同步它的 `params.top_n`，并在 `primary` 恰好指向旧名时一并改掉。否则 `--set backtest.top_n=30` 会得到一个「名叫 topn_50、实际只买 30 只」的策略。
 
-> ⚠️ 这个同步**只在无 YAML 路径生效**。`load_run_config`（`research.py:235`，即 `--config` 走的入口）不调用 `_sync_default_top_n_strategy`——因为带 YAML 时策略通常是显式写死的。若你的 YAML 只写了 legacy `top_n` 又用 `--set backtest.top_n=` 覆盖，策略名会停留在旧值。
+> ⚠️ 这个同步**只在无 YAML 路径生效**。`load_run_config`（`research.py`，即 `--config` 走的入口）不调用 `_sync_default_top_n_strategy`——因为带 YAML 时策略通常是显式写死的。若你的 YAML 只写了 legacy `top_n` 又用 `--set backtest.top_n=` 覆盖，策略名会停留在旧值。
 
 ---
 
@@ -253,9 +255,9 @@ dotted key 走嵌套 dict，中间缺失的键按需创建。三种报错：
 
 | 路径 | `neutralize` | 来源 |
 |---|---|---|
-| pydantic 类默认 `PreprocessingConfig` | **`false`** | `research.py:26` |
+| pydantic 类默认 `PreprocessingConfig` | **`false`** | `research.py` |
 | YAML 模板 `daily_factor_template.yaml` | **`false`** | 模板与类默认一致 |
-| **无 YAML 的内置预设** `build_default_daily_research_config()` | **`true`**（`industry+size`） | `research.py:127` |
+| **无 YAML 的内置预设** `build_default_daily_research_config()` | **`true`**（`industry+size`） | `research.py` |
 
 也就是说：
 
@@ -272,7 +274,7 @@ pixi run -- fz factor backtest --config workspace/configs/daily/my_factor.yaml
 
 ### 内置预设全表
 
-无 YAML 时 `build_default_daily_research_config()`（`research.py:106-142`）产出的完整配置：
+无 YAML 时 `build_default_daily_research_config()`（`research.py`）产出的完整配置：
 
 | 节 | 值 |
 |---|---|
@@ -302,6 +304,6 @@ pixi run -- fz factor backtest --config workspace/configs/daily/my_factor.yaml
 
 这四个值会被原样写进 `fz sim run` 的 manifest `cost_model` 字段，可用于事后核对。
 
-> ⚠️ `constants.py:44` 定义了 `MIN_MARKET_CAP_CNY = 3e8`，但它在 `src/` 里**没有任何消费方**——常量已声明、未接线，不要当成生效的默认过滤。真正生效的流动性门槛是 `min_amount = 10_000_000`（`core/universe.py:724/1160`），见 [数据源与口径](data-sources.md)。
+> ⚠️ `constants.py` 定义了 `MIN_MARKET_CAP_CNY = 3e8`，但它在 `src/` 里**没有任何消费方**——常量已声明、未接线，不要当成生效的默认过滤。真正生效的流动性门槛是 `min_amount = 10_000_000`（`core/universe.py`），见 [数据源与口径](data-sources.md)。
 
 路径常量见 `src/factorzen/config/settings.py`，全部路径的实际落盘形态见 [产物布局](artifacts.md)。

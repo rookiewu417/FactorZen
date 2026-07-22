@@ -50,7 +50,7 @@ pixi run fz --help
 | 组 | 内容 |
 |---|---|
 | 运行时（23 个） | polars · numpy · scipy · pandas · statsmodels · lightgbm · scikit-learn · optuna · cvxpy · tushare · ccxt · pyarrow · openai · matplotlib · jinja2 · pydantic 等 |
-| 开发（9 个） | pytest · pytest-xdist · pytest-cov · coverage · ruff · mypy · jupyterlab · hypothesis |
+| 开发（8 个） | pytest · pytest-xdist · pytest-cov · coverage · ruff · mypy · jupyterlab · hypothesis |
 | 展示服务 | fastapi · uvicorn · httpx |
 | 可解释性 | shap（多因子组合的 LightGBM 重要度） |
 
@@ -140,7 +140,7 @@ pixi run smoke-data --skip-tushare
 ```bash
 pixi run lint        # ruff check，扫全仓
 pixi run typecheck   # mypy，扫全 src/factorzen
-timeout 900 pixi run test   # pytest -n auto，2,561 个测试
+timeout 900 pixi run test   # pytest -n auto，952 个测试
 ```
 
 > ⚠️ **绝不要跑 `pixi run format`。** 全仓 `ruff format` 会一次改动数百个文件、污染 diff。格式问题请按 lint 报错逐处修。

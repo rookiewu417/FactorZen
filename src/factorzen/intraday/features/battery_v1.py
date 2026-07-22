@@ -1,4 +1,4 @@
-"""日内特征电池 v1：17 个日频标量特征的规格定义。
+"""日内特征电池 v1：20 个日频标量特征的规格定义。
 
 记号（在 ``freq`` 重采样后的桶序列上，按
 ``session_bar_index(标签) // minutes`` 得 1-based 桶序 ``i=1..N``，
@@ -30,13 +30,13 @@ def _placeholder_agg(name: str) -> pl.Expr:
 
 
 def battery_v1(freq: str = "5min") -> list[IntradayFeatureSpec]:
-    """构造 v1 电池的 17 个特征规格。
+    """构造 v1 电池的 20 个特征规格。
 
     Args:
         freq: 已规范化或可规范化的 bar 频率。
 
     Returns:
-        长度 17 的 ``IntradayFeatureSpec`` 列表，顺序稳定。
+        长度 20 的 ``IntradayFeatureSpec`` 列表，顺序稳定。
     """
     freq_n = normalize_freq(freq)
     minutes = ASHARE_BAR_FREQS[freq_n].minutes

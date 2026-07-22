@@ -10,6 +10,8 @@
 
 ### Added
 
+- **portfolio build 支持 `--risk-dir`：** 可读取 `fz risk build` 落盘产物（exposures / factor_covariance / specific_risk / factor_returns / manifest），使 `--cov-half-life` 等 risk 参数对下游组合优化生效；不传则保持进程内自建（A 股零回归）。
+
 #### 因子库与增量准入
 
 - **准入架构倒置（#97）：** lift 增量检验升级为**入库的最终裁决**，单因子门降级为排序信号，硬门只剩数据质量；灰区候选进入无上界的 lift 队列，组门短路；三个消费方统一走同一套准入逻辑。
@@ -79,6 +81,7 @@
 
 #### 命令面与口径 ⚠️ 含破坏性变更
 
+- **⚠️ 破坏性变更：删除 `fz report build --reuse`**（缓存契约无生产方，对 factor eval/backtest 产物从未生效）。
 - **⚠️ 回测双轨分离（#177）：** `fz factor run` **已删除，不留别名**，拆成两条语义分明的轨：
   - `fz factor eval` —— 因子研究评估（信号层，纯向量化：IC / 分层 / 多空 / 单调性 / 换手），**毛口径**；
   - `fz factor backtest` —— 模拟交易回测（日环撮合 + 交易约束 + 成本），**净口径**，含 walk-forward。

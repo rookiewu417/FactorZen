@@ -184,7 +184,6 @@ def test_pipeline_argv_forward_suite():
                     "000300.SH",
                     "--config",
                     "workspace/configs/daily/daily_factor_template.yaml",
-                    "--reuse",
                 ]
             )
             == 0
@@ -206,7 +205,6 @@ def test_pipeline_argv_forward_suite():
             "000300.SH",
             "--config",
             "workspace/configs/daily/daily_factor_template.yaml",
-            "--reuse",
         ]
 
     with pytest.MonkeyPatch.context() as mp:

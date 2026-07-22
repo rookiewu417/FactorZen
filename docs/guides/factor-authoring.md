@@ -135,7 +135,7 @@ pixi run -- fz factor backtest my_reversal --start 20220101 --end 20241231 --uni
 
 # 3) 出单页 HTML 报告
 pixi run -- fz report build my_reversal --start 20220101 --end 20241231 \
-  --universe csi500 --reuse
+  --universe csi500
 
 # 4) 参数网格扫描
 pixi run -- fz factor sweep my_reversal --start 20220101 --end 20241231 \

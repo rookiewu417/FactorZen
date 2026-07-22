@@ -380,8 +380,6 @@ def _cmd_report_build(args: argparse.Namespace) -> int:
         forwarded.extend(["--benchmark", args.benchmark])
     if args.config:
         forwarded.extend(["--config", args.config])
-    if args.reuse:
-        forwarded.append("--reuse")
 
     old_argv = sys.argv
     try:
@@ -2980,6 +2978,9 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[portfolio] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
         return 2
+    if getattr(args, "market", "ashare") == "crypto" and getattr(args, "risk_dir", None):
+        print("[portfolio] --risk-dir 仅 ashare 支持;crypto 不支持", file=sys.stderr)
+        return 2
     if getattr(args, "market", "ashare") == "crypto":
         return _portfolio_build_crypto(args)
     import numpy as np
@@ -2988,14 +2989,22 @@ def _cmd_portfolio_build(args: argparse.Namespace) -> int:
     from factorzen.core import loader
     from factorzen.core.universe import get_universe
     from factorzen.pipelines.portfolio_build import run_portfolio
-    from factorzen.pipelines.risk_build import load_risk_inputs
+    from factorzen.pipelines.risk_build import load_risk_inputs, load_risk_model_result
     from factorzen.risk.model import RiskModel
 
     stocks = get_universe(args.end, args.universe)
     uni = stocks["ts_code"].to_list()
-    # 补 lookback 历史预热滚动风格因子（否则 build 静默退化为少数因子，见 load_risk_inputs）
-    daily, daily_basic = load_risk_inputs(loader, args.start, args.end, uni)
-    risk_result = RiskModel().build(daily, daily_basic, stocks, args.start, args.end)
+    if getattr(args, "risk_dir", None):
+        # 复用 fz risk build 产物，跳过 load_risk_inputs / RiskModel.build（保留 get_universe 供 sectors）
+        try:
+            risk_result = load_risk_model_result(args.risk_dir)
+        except ValueError as e:
+            print(f"[portfolio] --risk-dir 加载失败: {e}", file=sys.stderr)
+            return 2
+    else:
+        # 补 lookback 历史预热滚动风格因子（否则 build 静默退化为少数因子，见 load_risk_inputs）
+        daily, daily_basic = load_risk_inputs(loader, args.start, args.end, uni)
+        risk_result = RiskModel().build(daily, daily_basic, stocks, args.start, args.end)
     codes = risk_result.factor_exposures.codes
     # α：从 --alpha-file 读取截面信号(ts_code + alpha)，对齐 codes 顺序(缺失填 0)
     adf = (

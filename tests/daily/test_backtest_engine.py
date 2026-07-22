@@ -244,7 +244,7 @@ def test_daily_single_wires_direction_helpers():
 
 
 def test_meta_path_records_backtest_direction(tmp_path, monkeypatch):
-    """daily_single 写入的 meta 形状应可被 report --reuse 读取。"""
+    """daily_single 写入的 meta 形状应可被 _load_backtest_direction 读取。"""
     from factorzen.pipelines import _report_direction as direction_mod
     from factorzen.pipelines import _report_persistence as persist_mod
 

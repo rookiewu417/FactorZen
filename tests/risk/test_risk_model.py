@@ -663,3 +663,138 @@ def _make_daily(dates, codes):
     ])
 
 
+# ==== load_risk_model_result：产物反解 round-trip / 错误路径 ====
+def _write_mini_risk_dir(run_dir: Path) -> dict:
+    """手写 3 股 × 2 因子的微型 risk build 产物（非 run_risk_build 生成，避免恒真）。
+
+    specific_risk.parquet **故意打乱行序**，验证 loader 按 ts_code 对齐而非行序。
+    返回手写期望值字典，供断言。
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    codes = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    factor_names = ["size", "value"]
+    matrix = np.array(
+        [
+            [1.0, 0.2],
+            [0.0, -0.5],
+            [-1.0, 0.3],
+        ],
+        dtype=float,
+    )
+    cov = np.array([[0.04, 0.01], [0.01, 0.09]], dtype=float)
+    # codes 序的期望 specific_risk
+    specific_by_code = {
+        "000001.SZ": 0.20,
+        "000002.SZ": 0.30,
+        "000003.SZ": 0.25,
+    }
+    # 故意打乱行序写入
+    sr_order = ["000003.SZ", "000001.SZ", "000002.SZ"]
+
+    pl.DataFrame({"ts_code": codes}).hstack(
+        pl.DataFrame(matrix, schema=factor_names, orient="row")
+    ).write_parquet(run_dir / "exposures.parquet")
+    pl.DataFrame(cov, schema=factor_names, orient="row").write_parquet(
+        run_dir / "factor_covariance.parquet"
+    )
+    pl.DataFrame(
+        {
+            "ts_code": sr_order,
+            "specific_risk": [specific_by_code[c] for c in sr_order],
+        }
+    ).write_parquet(run_dir / "specific_risk.parquet")
+    pl.DataFrame(
+        {
+            "trade_date": ["20240102", "20240103"],
+            "size": [0.01, -0.02],
+            "value": [0.005, 0.003],
+        }
+    ).write_parquet(run_dir / "factor_returns.parquet")
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "r_squared": 0.42,
+                "n_valid_dates": 10,
+                "n_dropped_dates": 2,
+                "n_factor_mismatch": 1,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "codes": codes,
+        "factor_names": factor_names,
+        "matrix": matrix,
+        "cov": cov,
+        "specific_risk": np.array([specific_by_code[c] for c in codes], dtype=float),
+        "r_squared": 0.42,
+        "n_valid_dates": 10,
+        "n_dropped_dates": 2,
+        "n_factor_mismatch": 1,
+    }
+
+
+def test_load_risk_model_result_suite(tmp_path):
+    """round-trip 数值；缺 exposures → ValueError；cov 列名不一致 → ValueError；specific_risk 少一只 → ValueError。"""
+    from factorzen.pipelines.risk_build import load_risk_model_result
+
+    # -- round-trip：手写产物 + 打乱 specific_risk 行序 --
+    def _section_0_round_trip(run_dir: Path):
+        expected = _write_mini_risk_dir(run_dir)
+        result = load_risk_model_result(run_dir)
+
+        assert result.factor_names == expected["factor_names"]
+        assert result.factor_exposures.codes == expected["codes"]
+        assert result.factor_exposures.factor_names == expected["factor_names"]
+        np.testing.assert_allclose(result.factor_exposures.matrix, expected["matrix"])
+        np.testing.assert_allclose(result.factor_covariance, expected["cov"])
+        # 证明按 ts_code 对齐而非行序（写入时行序为 000003/000001/000002）
+        np.testing.assert_allclose(result.specific_risk, expected["specific_risk"])
+        assert result.r_squared == pytest.approx(expected["r_squared"])
+        assert result.n_valid_dates == expected["n_valid_dates"]
+        assert result.n_dropped_dates == expected["n_dropped_dates"]
+        assert result.n_factor_mismatch == expected["n_factor_mismatch"]
+        assert result.factor_returns.height == 2
+
+    _tp0 = tmp_path / "rt"
+    _section_0_round_trip(_tp0)
+
+    # -- 缺 exposures.parquet --
+    def _section_1_missing_exposures(run_dir: Path):
+        _write_mini_risk_dir(run_dir)
+        (run_dir / "exposures.parquet").unlink()
+        with pytest.raises(ValueError, match="exposures"):
+            load_risk_model_result(run_dir)
+
+    _tp1 = tmp_path / "miss_exp"
+    _section_1_missing_exposures(_tp1)
+
+    # -- cov 列名与 exposures 因子列不一致 --
+    def _section_2_cov_col_mismatch(run_dir: Path):
+        _write_mini_risk_dir(run_dir)
+        pl.DataFrame(
+            np.array([[0.04, 0.01], [0.01, 0.09]]),
+            schema=["beta", "size"],  # 故意错列名
+            orient="row",
+        ).write_parquet(run_dir / "factor_covariance.parquet")
+        with pytest.raises(ValueError, match="factor_covariance"):
+            load_risk_model_result(run_dir)
+
+    _tp2 = tmp_path / "cov_mismatch"
+    _section_2_cov_col_mismatch(_tp2)
+
+    # -- specific_risk 的 ts_code 少一只 --
+    def _section_3_specific_missing_code(run_dir: Path):
+        _write_mini_risk_dir(run_dir)
+        pl.DataFrame(
+            {"ts_code": ["000001.SZ", "000002.SZ"], "specific_risk": [0.2, 0.3]}
+        ).write_parquet(run_dir / "specific_risk.parquet")
+        with pytest.raises(ValueError, match="specific_risk"):
+            load_risk_model_result(run_dir)
+
+    _tp3 = tmp_path / "sr_miss"
+    _section_3_specific_missing_code(_tp3)
+
+

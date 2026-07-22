@@ -198,7 +198,7 @@ def test_load_pit_membership_suite():
 
 # ── daily_single / generate_report / research_run 接线 smoke ────────────────
 def test_pipeline_membership_integration_suite(tmp_path):
-    """smoke：mock 到 IC 前，断言评估截面无 A 的 2 月行，且落盘 membership。；research_run：面板拉取用 membership 并集，而非 get_universe(end)。；generate_report 非 reuse 路径：IC 截面经 membership 过滤。"""
+    """smoke：mock 到 IC 前，断言评估截面无 A 的 2 月行，且落盘 membership。；research_run：面板拉取用 membership 并集，而非 get_universe(end)。；generate_report：IC 截面经 membership 过滤。"""
     # -- 原 test_daily_single_filters_eval_cross_section_by_membership --
     def _section_0_test_daily_single_filters_eval_cross_section_by_membership(mp, tmp_path):
         from factorzen.config.research import RunConfig
@@ -567,7 +567,6 @@ def test_pipeline_membership_integration_suite(tmp_path):
             universe="csi300",
             frequency="daily",
             benchmark=None,
-            reuse=False,
         )
         cfg = RunConfig(factor="dummy_pit", start="20240102", end="20240205")
         cfg.walk_forward.enabled = False

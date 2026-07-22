@@ -364,6 +364,218 @@ def test_cmd_portfolio_build_suite(tmp_path, capsys):
         _section_3_test_cmd_portfolio_build_forwards_run_id_and_out_dir(_tp3, mp)
 
 
+def _write_mini_risk_dir_for_cli(run_dir):
+    """手写 3 股 × 2 因子微型 risk 产物（与 tests/risk 中 round-trip fixture 同形）。"""
+    import json
+    from pathlib import Path
+
+    import numpy as np
+    import polars as pl
+
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    codes = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    factor_names = ["size", "value"]
+    matrix = np.array([[1.0, 0.2], [0.0, -0.5], [-1.0, 0.3]], dtype=float)
+    cov = np.array([[0.04, 0.01], [0.01, 0.09]], dtype=float)
+    pl.DataFrame({"ts_code": codes}).hstack(
+        pl.DataFrame(matrix, schema=factor_names, orient="row")
+    ).write_parquet(run_dir / "exposures.parquet")
+    pl.DataFrame(cov, schema=factor_names, orient="row").write_parquet(
+        run_dir / "factor_covariance.parquet"
+    )
+    # 故意打乱行序
+    pl.DataFrame(
+        {
+            "ts_code": ["000003.SZ", "000001.SZ", "000002.SZ"],
+            "specific_risk": [0.25, 0.20, 0.30],
+        }
+    ).write_parquet(run_dir / "specific_risk.parquet")
+    pl.DataFrame(
+        {"trade_date": ["20240102"], "size": [0.01], "value": [0.005]}
+    ).write_parquet(run_dir / "factor_returns.parquet")
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"r_squared": 0.42, "n_valid_dates": 10}), encoding="utf-8"
+    )
+
+
+def test_cmd_portfolio_build_risk_dir_suite(tmp_path, capsys):
+    """无 --risk-dir：RiskModel.build 被调 1 次；有 --risk-dir：旁路 build，weights 产出且 target_weight 求和≈1。"""
+    import numpy as np
+    import polars as pl
+
+    from factorzen.cli import main as cli
+    from factorzen.risk.exposures import ExposureMatrix
+    from factorzen.risk.model import RiskModelResult
+
+    codes = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    stocks_df = pl.DataFrame(
+        {"ts_code": codes, "industry": ["银行", "地产", "银行"]}
+    )
+    mini_risk = RiskModelResult(
+        factor_exposures=ExposureMatrix(
+            codes=codes,
+            factor_names=["size", "value"],
+            matrix=np.array([[1.0, 0.2], [0.0, -0.5], [-1.0, 0.3]], dtype=float),
+        ),
+        factor_covariance=np.array([[0.04, 0.01], [0.01, 0.09]], dtype=float),
+        specific_risk=np.array([0.20, 0.30, 0.25], dtype=float),
+        factor_returns=pl.DataFrame(),
+        r_squared=0.42,
+        factor_names=["size", "value"],
+    )
+    daily_df = pl.DataFrame({"ts_code": codes, "trade_date": ["20230201"] * 3})
+    basic_df = daily_df.clone()
+
+    # -- 正控：无 --risk-dir → build 被调 1 次 --
+    def _section_0_default_calls_build(tmp_path, mp):
+        build_calls = {"n": 0}
+
+        # 先 import 下游模块，避免整类替换 RiskModel 时污染其模块级绑定
+        import factorzen.pipelines.portfolio_build  # noqa: F401
+
+        mp.setattr("factorzen.core.universe.get_universe", lambda d, u: stocks_df)
+        mp.setattr(
+            "factorzen.pipelines.risk_build.load_risk_inputs",
+            lambda loader, start, end, uni: (daily_df, basic_df),
+        )
+
+        def fake_build(self, *a, **k):
+            build_calls["n"] += 1
+            return mini_risk
+
+        mp.setattr("factorzen.risk.model.RiskModel.build", fake_build)
+        mp.setattr(
+            "factorzen.pipelines.portfolio_build.run_portfolio",
+            lambda alpha, rr, **kw: {
+                "status": "optimal",
+                "n_holdings": 2,
+                "run_dir": str(tmp_path / "po_default"),
+            },
+        )
+        alpha_file = tmp_path / "alpha.csv"
+        pl.DataFrame({"ts_code": codes, "alpha": [0.5, 0.1, -0.2]}).write_csv(alpha_file)
+
+        ret = cli.main(
+            [
+                "portfolio",
+                "build",
+                "--start",
+                "20230101",
+                "--end",
+                "20230201",
+                "--universe",
+                "csi500",
+                "--alpha-file",
+                str(alpha_file),
+                "--out-dir",
+                str(tmp_path / "po_default"),
+            ]
+        )
+        assert ret == 0
+        assert build_calls["n"] == 1
+
+    _tp0 = tmp_path / "_risk_dir_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_default_calls_build(_tp0, mp)
+
+    # -- 旁路：--risk-dir 跳过 build；weights.parquet 产出且 target_weight 求和≈1 --
+    def _section_1_risk_dir_bypasses_build(tmp_path, mp):
+        import factorzen.attribution.risk_attribution as ra_mod
+        import factorzen.pipelines.portfolio_build as pb_mod
+        import factorzen.risk.model as risk_model_mod
+
+        risk_dir = tmp_path / "risk_run"
+        _write_mini_risk_dir_for_cli(risk_dir)
+
+        def boom_build(self, *a, **k):
+            raise AssertionError("有 --risk-dir 时不应调用 RiskModel.build")
+
+        # 先前 suite 可能用整类 FakeRiskModel 污染过 risk_attribution/portfolio_build
+        # 的模块级绑定；此处强制恢复真实类，只拦截 build。
+        real_rm = risk_model_mod.RiskModel
+        mp.setattr(ra_mod, "RiskModel", real_rm)
+        mp.setattr(pb_mod, "RiskModel", real_rm)
+        mp.setattr(real_rm, "build", boom_build)
+
+        mp.setattr("factorzen.core.universe.get_universe", lambda d, u: stocks_df)
+        mp.setattr(
+            "factorzen.pipelines.risk_build.load_risk_inputs",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("有 --risk-dir 时不应 load_risk_inputs")
+            ),
+        )
+
+        alpha_file = tmp_path / "alpha.csv"
+        pl.DataFrame({"ts_code": codes, "alpha": [0.8, 0.3, 0.1]}).write_csv(alpha_file)
+        out_dir = tmp_path / "po_risk_dir"
+
+        ret = cli.main(
+            [
+                "portfolio",
+                "build",
+                "--start",
+                "20230101",
+                "--end",
+                "20230201",
+                "--universe",
+                "csi500",
+                "--alpha-file",
+                str(alpha_file),
+                "--risk-dir",
+                str(risk_dir),
+                "--out-dir",
+                str(out_dir),
+                "--run-id",
+                "from_risk",
+                # 默认 w_max=0.05 在 3 只股票上 Σw 上限 0.15 < budget=1 → infeasible
+                "--w-max",
+                "1.0",
+            ]
+        )
+        assert ret == 0
+        weights_path = out_dir / "from_risk" / "weights.parquet"
+        assert weights_path.exists(), f"应产出 weights.parquet: {weights_path}"
+        w = pl.read_parquet(weights_path)
+        assert "target_weight" in w.columns
+        assert abs(float(w["target_weight"].sum()) - 1.0) < 1e-5
+
+    _tp1 = tmp_path / "_risk_dir_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_risk_dir_bypasses_build(_tp1, mp)
+
+    # -- crypto + --risk-dir → return 2 --
+    def _section_2_crypto_rejects_risk_dir(tmp_path, mp, capsys):
+        alpha_file = tmp_path / "a.csv"
+        pl.DataFrame({"ts_code": ["BTC/USDT"], "alpha": [0.1]}).write_csv(alpha_file)
+        ret = cli.main(
+            [
+                "portfolio",
+                "build",
+                "--market",
+                "crypto",
+                "--start",
+                "20230101",
+                "--end",
+                "20230201",
+                "--alpha-file",
+                str(alpha_file),
+                "--risk-dir",
+                str(tmp_path / "any"),
+            ]
+        )
+        assert ret == 2
+        err = capsys.readouterr().err
+        assert "--risk-dir" in err
+
+    _tp2 = tmp_path / "_risk_dir_s2"
+    _tp2.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_crypto_rejects_risk_dir(_tp2, mp, capsys)
+
+
 # ==== 来自 test_risk_cli.py ====
 
 def test_risk_build_suite(capsys):

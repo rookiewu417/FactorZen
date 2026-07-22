@@ -183,13 +183,12 @@ pixi run -- fz factor sweep momentum_20 --start 20220101 --end 20241231 \
 | `--end` | str | 无 | | 终止日 `YYYYMMDD` |
 | `--universe` | str | 无 | | 票池名 |
 | `--frequency` / `--freq` | `daily` \| `weekly` \| `monthly` | `daily` | | 因子注册频率 |
-| `--reuse` | flag | 关 | | 复用已有产物，不重算 |
 | `--benchmark` | str | 无 | | 基准指数代码 |
 | `--config` | str | 无 | | YAML run config 路径 |
 
 ```bash
 pixi run -- fz report build momentum_20 --start 20220101 --end 20241231 \
-  --universe csi500 --reuse
+  --universe csi500
 ```
 
 **产物**：报告 HTML 落 `workspace/runs/artifacts/daily/reports/`（按因子分桶）。
@@ -924,6 +923,7 @@ pixi run -- fz risk build --start 20200101 --end 20241231 --universe all_a \
 | `--gross-limit` | float | `1.0` | | crypto 毛敞口上限 Σ\|w\| |
 | `--run-id` | str | 无（= `--end` 日期串） | | 产物子目录名 |
 | `--out-dir` | str | `workspace/portfolios` | | 组合产物**根目录** |
+| `--risk-dir` | str | 无 | | 读取 [`fz risk build`](#fz-risk-build) 产物目录；不传则进程内自建（默认参数） |
 | `--freq` | `1m` \| `5m` \| `15m` \| `1h` \| `daily` | `daily` | | crypto bar 粒度 |
 
 > ⚠️ **`--run-id` 不传会用 `--end` 的日期串做目录名。** 做多期构建时若忘了区分，后一期会静默覆盖前一期的产物。多期循环务必显式传不同的 `--run-id`。

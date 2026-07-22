@@ -12,7 +12,113 @@ import polars as pl
 
 from factorzen.config.settings import RISK_MODELS_DIR
 from factorzen.core.experiment import build_manifest_base
-from factorzen.risk import RiskModel
+from factorzen.risk import ExposureMatrix, RiskModel, RiskModelResult
+
+
+def load_risk_model_result(run_dir: str | Path) -> RiskModelResult:
+    """从 ``fz risk build`` 产物目录反解 ``RiskModelResult``。
+
+    严格逆向 ``run_risk_build`` 的写入格式（exposures / factor_covariance /
+    specific_risk / factor_returns / manifest），与 writer 同文件配对以防 schema 漂移。
+    specific_risk 按 ``ts_code`` 对齐到 exposures 的 codes 顺序（不假设行序一致）。
+
+    Args:
+        run_dir: ``workspace/risk_models/<run_id>/`` 一类产物目录。
+
+    Returns:
+        可直接喂给 ``run_portfolio`` 的 ``RiskModelResult``。
+
+    Raises:
+        ValueError: 文件缺失、schema 不一致、codes 集合不对齐，或解析失败。
+    """
+    run_path = Path(run_dir)
+    paths = {
+        "exposures": run_path / "exposures.parquet",
+        "factor_covariance": run_path / "factor_covariance.parquet",
+        "specific_risk": run_path / "specific_risk.parquet",
+        "factor_returns": run_path / "factor_returns.parquet",
+        "manifest": run_path / "manifest.json",
+    }
+    missing = [str(p) for p in paths.values() if not p.exists()]
+    if missing:
+        raise ValueError(
+            f"风险模型产物缺失: {', '.join(missing)}；请先跑 fz risk build"
+        )
+
+    try:
+        exp_df = pl.read_parquet(paths["exposures"])
+        if exp_df.height == 0:
+            raise ValueError(f"exposures 为空(0 行): {paths['exposures']}")
+        if "ts_code" not in exp_df.columns:
+            raise ValueError(f"exposures 缺少 ts_code 列: {paths['exposures']}")
+
+        codes = exp_df["ts_code"].to_list()
+        # 列序 = writer 的 factor_names 保序（ts_code 首列，其余为因子）
+        factor_names = [c for c in exp_df.columns if c != "ts_code"]
+        matrix = np.asarray(exp_df.select(factor_names).to_numpy(), dtype=float)
+
+        cov_df = pl.read_parquet(paths["factor_covariance"])
+        cov_cols = list(cov_df.columns)
+        if cov_cols != factor_names:
+            raise ValueError(
+                f"factor_covariance 列名须与 exposures 因子列完全一致(含顺序): "
+                f"期望 {factor_names}，实际 {cov_cols}"
+            )
+        factor_covariance = np.asarray(cov_df.to_numpy(), dtype=float)
+
+        sr_df = pl.read_parquet(paths["specific_risk"])
+        if "ts_code" not in sr_df.columns or "specific_risk" not in sr_df.columns:
+            raise ValueError(
+                f"specific_risk 须含 ts_code + specific_risk 列: {paths['specific_risk']}"
+            )
+        sr_codes = set(sr_df["ts_code"].to_list())
+        exp_codes = set(codes)
+        if sr_codes != exp_codes:
+            raise ValueError(
+                f"specific_risk 的 ts_code 集合须与 exposures 一致: "
+                f"missing={sorted(exp_codes - sr_codes)} "
+                f"extra={sorted(sr_codes - exp_codes)}"
+            )
+        # 按 exposures.codes 顺序重排（产物行序可能与 codes 不一致）
+        sr_map = dict(
+            zip(sr_df["ts_code"].to_list(), sr_df["specific_risk"].to_list(), strict=True)
+        )
+        specific_risk = np.array([float(sr_map[c]) for c in codes], dtype=float)
+
+        factor_returns = pl.read_parquet(paths["factor_returns"])
+
+        try:
+            manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raise ValueError(f"manifest.json 无法解析: {paths['manifest']}: {e}") from e
+        if not isinstance(manifest, dict):
+            raise ValueError(f"manifest.json 应为 JSON 对象: {paths['manifest']}")
+
+        # 缺键用 RiskModelResult dataclass 默认值，不炸
+        return RiskModelResult(
+            factor_exposures=ExposureMatrix(
+                codes=list(codes),
+                factor_names=list(factor_names),
+                matrix=matrix,
+            ),
+            factor_covariance=factor_covariance,
+            specific_risk=specific_risk,
+            factor_returns=factor_returns,
+            r_squared=float(manifest["r_squared"]) if "r_squared" in manifest else 0.0,
+            factor_names=list(factor_names),
+            n_dropped_dates=(
+                int(manifest["n_dropped_dates"]) if "n_dropped_dates" in manifest else 0
+            ),
+            n_valid_dates=int(manifest["n_valid_dates"]) if "n_valid_dates" in manifest else 0,
+            n_factor_mismatch=(
+                int(manifest["n_factor_mismatch"]) if "n_factor_mismatch" in manifest else 0
+            ),
+        )
+    except ValueError:
+        raise
+    except Exception as e:
+        # 解析外部输入对外只抛 ValueError（项目约定）
+        raise ValueError(f"读取风险模型产物失败 ({run_path}): {e}") from e
 
 
 def risk_lookback_start(start: str, calendar_days: int = 420) -> str:

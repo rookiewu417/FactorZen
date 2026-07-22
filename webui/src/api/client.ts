@@ -1,6 +1,10 @@
 import type {
   CampaignLogResponse,
   CampaignsResponse,
+  FileContentResponse,
+  FileDeleteResponse,
+  FileWriteResponse,
+  FilesListResponse,
   HealthResponse,
   LibraryResponse,
   NavResponse,
@@ -18,6 +22,24 @@ async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url)
   if (!res.ok) {
     throw new Error(`请求失败 ${res.status}: ${url}`)
+  }
+  return res.json() as Promise<T>
+}
+
+async function requestJson<T>(
+  url: string,
+  init: RequestInit,
+): Promise<T> {
+  const res = await fetch(url, init)
+  if (!res.ok) {
+    let detail = `${res.status}`
+    try {
+      const body = (await res.json()) as { detail?: string }
+      if (body.detail) detail = `${res.status}: ${body.detail}`
+    } catch {
+      // ignore
+    }
+    throw new Error(`请求失败 ${detail}: ${url}`)
   }
   return res.json() as Promise<T>
 }
@@ -102,4 +124,35 @@ export function fetchReports(): Promise<ReportsListResponse> {
 
 export function fetchReportFile(path: string): Promise<ReportFileResponse> {
   return getJson(`/api/reports/file?path=${encodeURIComponent(path)}`)
+}
+
+// ---- 文件管理 ----
+
+export function fetchFiles(path = ''): Promise<FilesListResponse> {
+  return getJson(`/api/files?path=${encodeURIComponent(path)}`)
+}
+
+export function fetchFileContent(path: string): Promise<FileContentResponse> {
+  return getJson(`/api/files/content?path=${encodeURIComponent(path)}`)
+}
+
+export function putFileContent(
+  path: string,
+  content: string,
+): Promise<FileWriteResponse> {
+  return requestJson('/api/files/content', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content }),
+  })
+}
+
+export function deleteFile(
+  path: string,
+  recursive = false,
+): Promise<FileDeleteResponse> {
+  return requestJson(
+    `/api/files?path=${encodeURIComponent(path)}&recursive=${recursive}`,
+    { method: 'DELETE' },
+  )
 }

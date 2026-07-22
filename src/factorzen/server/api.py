@@ -1,7 +1,8 @@
-"""FactorZen 只读 REST API。
+"""FactorZen REST API。
 
-暴露 workspace 产物(runs 列表 / manifest / NAV 序列 / 因子库 / 运营 / 报告)。
-纯读层,零侵入现有 pipeline。
+暴露 workspace 产物(runs 列表 / manifest / NAV 序列 / 因子库 / 运营 / 报告)与
+受控文件管理(列目录 / 读 / 写文本 / 删)。
+产物层仍为零侵入只读；files 编辑/删除为 workspace 内受控写接口。
 `create_app(workspace_dir)` 便于测试注入 tmp 目录;模块级 `app` 供 uvicorn 启动。
 """
 from __future__ import annotations
@@ -10,11 +11,20 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from factorzen.config.settings import WORKSPACE_DIR
 from factorzen.server.artifacts import DOMAINS, ArtifactIndex
+from factorzen.server.files import FileManager
 from factorzen.server.library import MARKETS, FactorLibraryIndex
 from factorzen.server.opsview import OpsViewIndex
+
+
+class FileWriteBody(BaseModel):
+    """PUT /api/files/content 请求体。"""
+
+    path: str = Field(..., description="相对 workspace 根的路径")
+    content: str = Field(..., description="文本内容")
 
 
 def create_app(workspace_dir: str | Path | None = None) -> FastAPI:
@@ -22,9 +32,10 @@ def create_app(workspace_dir: str | Path | None = None) -> FastAPI:
     idx = ArtifactIndex(root)
     lib = FactorLibraryIndex(root)
     ops = OpsViewIndex(root)
+    files = FileManager(root)
     app = FastAPI(
         title="FactorZen API",
-        description="A 股量化研究平台 · 只读产物 API",
+        description="A 股量化研究平台 · 产物 API + 受控文件管理",
         version="0.1.0",
     )
 
@@ -123,6 +134,56 @@ def create_app(workspace_dir: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    # ---- 文件管理（workspace 受控读写） ----
+
+    @app.get("/api/files")
+    def files_list(path: str = Query("", description="相对 workspace 根；空=根")) -> dict:
+        """列目录：dirs + files。"""
+        try:
+            return files.list_dir(path)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/files/content")
+    def files_content(
+        path: str = Query(..., description="相对 workspace 根的文件路径"),
+    ) -> dict:
+        """读文件：text / parquet / binary。"""
+        try:
+            return files.read_content(path)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/api/files/content")
+    def files_write(body: FileWriteBody) -> dict:
+        """覆盖写文本；非文本扩展名 400；父目录不存在 404。"""
+        try:
+            return files.write_content(body.path, body.content)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            # 非法扩展名
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/files")
+    def files_delete(
+        path: str = Query(..., description="相对 workspace 根"),
+        recursive: bool = Query(False, description="非空目录是否递归删除"),
+    ) -> dict:
+        """删除文件或目录。删根 400；非空目录不带 recursive 409。"""
+        try:
+            return files.delete(path, recursive=recursive)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     from factorzen.server.views import register_views
 

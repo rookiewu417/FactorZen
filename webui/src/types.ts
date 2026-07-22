@@ -149,3 +149,63 @@ export interface ReportFileResponse {
   size: number
   content: string
 }
+
+// ---- 文件管理 ----
+
+export interface FileDirEntry {
+  name: string
+  mtime: string
+}
+
+export interface FileEntry {
+  name: string
+  size: number
+  mtime: string
+}
+
+export interface FilesListResponse {
+  path: string
+  dirs: FileDirEntry[]
+  files: FileEntry[]
+}
+
+export interface FileContentText {
+  kind: 'text'
+  path: string
+  size: number
+  content: string
+}
+
+export interface ParquetSchemaCol {
+  name: string
+  dtype: string
+}
+
+export interface FileContentParquet {
+  kind: 'parquet'
+  path: string
+  n_rows: number
+  schema: ParquetSchemaCol[]
+  head: Record<string, unknown>[]
+  size?: number
+}
+
+export interface FileContentBinary {
+  kind: 'binary'
+  path: string
+  size: number
+}
+
+export type FileContentResponse =
+  | FileContentText
+  | FileContentParquet
+  | FileContentBinary
+
+export interface FileWriteResponse {
+  path: string
+  size: number
+}
+
+export interface FileDeleteResponse {
+  deleted: string
+}

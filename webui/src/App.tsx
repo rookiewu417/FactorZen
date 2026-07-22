@@ -3,6 +3,7 @@ import zhCN from 'antd/locale/zh_CN'
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './components/AppLayout'
 import { DomainListPage } from './pages/DomainList'
+import { FilesPage } from './pages/Files'
 import { LibraryPage } from './pages/Library'
 import { OpsPage } from './pages/Ops'
 import { OverviewPage } from './pages/Overview'
@@ -23,6 +24,7 @@ export default function App() {
             <Route path="store" element={<StorePage />} />
             <Route path="ops" element={<OpsPage />} />
             <Route path="reports" element={<ReportsPage />} />
+            <Route path="files" element={<FilesPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

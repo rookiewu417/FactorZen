@@ -1,17 +1,27 @@
-import { useEffect, useState } from 'react'
-import { Layout, Menu, Spin, Typography } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
+import { Layout, Menu, Spin, Tooltip, Typography } from 'antd'
+import type { MenuProps } from 'antd'
 import {
   AppstoreOutlined,
   BankOutlined,
   DatabaseOutlined,
   ExperimentOutlined,
   FileTextOutlined,
+  FolderOpenOutlined,
   FundOutlined,
 } from '@ant-design/icons'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { fetchHealth } from '../api/client'
+import {
+  DOMAIN_GROUPS,
+  domainDesc,
+  domainGroup,
+  domainLabel,
+} from '../domainMeta'
 
 const { Header, Sider, Content } = Layout
+
+type MenuItem = Required<MenuProps>['items'][number]
 
 export function AppLayout() {
   const location = useLocation()
@@ -47,6 +57,7 @@ export function AppLayout() {
     if (path.startsWith('/store')) return 'store'
     if (path.startsWith('/ops')) return 'ops'
     if (path.startsWith('/reports')) return 'reports'
+    if (path.startsWith('/files')) return 'files'
     return 'overview'
   })()
 
@@ -56,27 +67,70 @@ export function AppLayout() {
       selectedKey !== 'library' &&
       selectedKey !== 'store' &&
       selectedKey !== 'ops' &&
-      selectedKey !== 'reports'
+      selectedKey !== 'reports' &&
+      selectedKey !== 'files'
     ) {
       return ['runs']
     }
     return undefined
   })()
 
-  const menuItems = [
+  const domainChildren: MenuItem[] = useMemo(() => {
+    const byGroup = new Map<string, string[]>()
+    for (const g of DOMAIN_GROUPS) {
+      byGroup.set(g, [])
+    }
+    byGroup.set('其他', [])
+
+    for (const d of domains) {
+      const g = domainGroup(d)
+      if (!byGroup.has(g)) byGroup.set(g, [])
+      byGroup.get(g)!.push(d)
+    }
+
+    const items: MenuItem[] = []
+    const groupOrder = [...DOMAIN_GROUPS, '其他'] as const
+    for (const g of groupOrder) {
+      const keys = byGroup.get(g) ?? []
+      if (keys.length === 0) continue
+      items.push({
+        type: 'group',
+        key: `group-${g}`,
+        label: g,
+        children: keys.map((d) => {
+          const label = domainLabel(d)
+          const desc = domainDesc(d)
+          return {
+            key: d,
+            title: desc || d,
+            label: (
+              <Tooltip title={desc || d} placement="right">
+                <Link to={`/domain/${d}`}>{label}</Link>
+              </Tooltip>
+            ),
+          }
+        }),
+      })
+    }
+    return items
+  }, [domains])
+
+  const menuItems: MenuItem[] = [
     {
       key: 'overview',
       icon: <AppstoreOutlined />,
       label: <Link to="/">总览</Link>,
     },
     {
+      key: 'files',
+      icon: <FolderOpenOutlined />,
+      label: <Link to="/files">文件管理</Link>,
+    },
+    {
       key: 'runs',
       icon: <DatabaseOutlined />,
       label: '产物 Runs',
-      children: domains.map((d) => ({
-        key: d,
-        label: <Link to={`/domain/${d}`}>{d}</Link>,
-      })),
+      children: domainChildren,
     },
     {
       key: 'library',
@@ -104,7 +158,7 @@ export function AppLayout() {
     <Layout style={{ minHeight: '100vh' }}>
       <Sider
         theme="light"
-        width={220}
+        width={240}
         style={{ borderRight: '1px solid #f0f0f0' }}
       >
         <div

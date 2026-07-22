@@ -24,7 +24,9 @@ DOMAINS = [
     "combinations",
     "combine_backtests",  # 天然带 nav.parquet 的回测域
     "mine_team",
-    # risk_models：目前仅有少量 manifest、无 nav；有产物再收
+    "strategies",  # 规则型策略预置权重回测
+    "mine_agent",  # LLM 单 Agent 挖掘
+    "risk_models",  # Barra 风格/行业暴露与协方差
 ]
 
 

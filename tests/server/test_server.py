@@ -289,6 +289,14 @@ def test_server_domain_services_suite(tmp_path):
 
     _section_12_test_domains_include_combine_and_team()
 
+    # -- DOMAINS 含 strategies / mine_agent / risk_models --
+    def _section_13_test_domains_include_phase3():
+        assert "strategies" in DOMAINS
+        assert "mine_agent" in DOMAINS
+        assert "risk_models" in DOMAINS
+
+    _section_13_test_domains_include_phase3()
+
 
 def test_dashboard_nav_domain_fallback(tmp_path):
     """首页 nav：combine_backtests 有 nav 时采用；execution 优先于 combine_backtests。"""

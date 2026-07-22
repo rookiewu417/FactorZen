@@ -3,6 +3,7 @@ import { Empty, Spin, Table, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate, useParams } from 'react-router-dom'
 import { fetchRuns } from '../api/client'
+import { domainLabel } from '../domainMeta'
 import type { RunSummary } from '../types'
 
 function shortSha(sha: string | null): string {
@@ -74,10 +75,18 @@ export function DomainListPage() {
     return <Empty description={`加载失败: ${error}`} />
   }
 
+  const label = domainLabel(domain)
+
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
-        {domain}
+        {label}{' '}
+        <Typography.Text
+          type="secondary"
+          style={{ fontSize: 14, fontWeight: 400 }}
+        >
+          {domain}
+        </Typography.Text>
       </Typography.Title>
       <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
         共 {runs.length} 条产物

@@ -12,6 +12,7 @@ import {
 import { useParams } from 'react-router-dom'
 import { fetchNav, fetchRunDetail } from '../api/client'
 import { NavChart } from '../components/NavChart'
+import { domainLabel } from '../domainMeta'
 import type { RunDetailResponse } from '../types'
 
 function isNumericMetric(v: unknown): v is number {
@@ -71,7 +72,15 @@ export function RunDetailPage() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
-        {domain} / {runId}
+        {domainLabel(domain)}{' '}
+        <Typography.Text
+          type="secondary"
+          style={{ fontSize: 14, fontWeight: 400 }}
+        >
+          {domain}
+        </Typography.Text>
+        {' / '}
+        {runId}
       </Typography.Title>
 
       {metricEntries.length > 0 && (

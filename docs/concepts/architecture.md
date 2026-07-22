@@ -2,7 +2,7 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **架构**
 
-平台约 57,487 行 Python，分成职责独立的子包。层间只通过 parquet / JSON 传递数据，每个环节落 `manifest.json`。
+平台约 57,487 行 Python，分成职责独立的子包。层间只通过 parquet / JSON 传递数据，每个环节落 `manifest.json`。默认主线是 A 股日频研究链路；多市场适配见[多市场](multi-market.md)。
 
 ---
 
@@ -37,7 +37,7 @@
 ┌───────────────────────────▼──────────────────────────────────────┐
 │  挖掘与验证                                                       │
 │  discovery/   算子库 · 表达式 AST · 随机/遗传搜索 · 去相关 · 残差  │
-│  agents/      LLM 单 Agent · 4 角色团队 + Evaluator               │
+│  agents/      LLM 单 Agent · 多角色团队 + 独立评估器               │
 │  validation/  统计原语      discovery/guardrails.py  护栏咬合     │
 └───────────────────────────┬──────────────────────────────────────┘
                             │ 因子面板 / 叶子特征
@@ -46,7 +46,7 @@
 │  core/      日历 · universe 逐日快照 · 加载缓存 · 叶子 schema      │
 │  daily/     PIT 数据 · 预处理 · IC · 回测 · walk-forward           │
 │  intraday/  分钟 bar → 日内微观结构特征面板（20 特征）             │
-│  markets/   Ports & Adapters：ashare / crypto / futures / us      │
+│  markets/   多市场适配层（Ports & Adapters）                       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -58,14 +58,14 @@
 
 ```mermaid
 graph TD
-    SRC[("数据源<br/>Tushare · Vision 湖 · Yahoo")] -->|fz data fetch| RAW[("data/ parquet 缓存")]
+    SRC[("数据源<br/>Tushare 等")] -->|fz data fetch| RAW[("data/ parquet 缓存")]
     RAW --> CORE["core/<br/>universe 快照 · PIT · 日历"]
     RAW --> INTRA["intraday/<br/>分钟 bar → 20 日内特征"]
 
     CORE --> DAILY["daily/<br/>PIT 数据 · 预处理 · IC · 回测"]
     INTRA -->|i_* 叶子| DISC
     CORE --> DISC["discovery/<br/>算子库 · AST · 随机/遗传搜索"]
-    AGENTS["agents/<br/>LLM 单 Agent · 4 角色团队"] -->|生成表达式| DISC
+    AGENTS["agents/<br/>LLM 单 Agent · 多角色团队"] -->|生成表达式| DISC
 
     DISC --> GUARD["护栏<br/>bootstrap CI · DSR · PBO · holdout"]
     GUARD --> LIFT{"lift 增量裁决<br/>相对现有库"}
@@ -105,6 +105,8 @@ graph TD
 >        sim/ · execution/ ──→ reports/  （ops/ 每日驱动）
 > ```
 
+多市场数据源与适配细节见[多市场](multi-market.md)。
+
 ---
 
 ## 模块职责
@@ -114,9 +116,9 @@ graph TD
 | `discovery/` | 12,645 | 挖掘 + **因子库 + lift 准入**。全平台最大子包，迭代最密集 |
 | `daily/` | 7,288 | A 股日频主干：PIT 数据、预处理、IC、回测、walk-forward |
 | `core/` | 5,004 | 日历、universe 逐日快照、Tushare 加载与缓存、叶子 schema 单一真源 |
-| `agents/` | 4,943 | LLM 挖掘：单 Agent 闭环、4 角色团队 + Evaluator、实验索引 |
+| `agents/` | 4,943 | LLM 挖掘：单 Agent 闭环、多角色团队 + 独立评估器、实验索引 |
 | `cli/` | 4,669 | 14 个顶层命令 / 46 个叶子命令 |
-| `markets/` | 3,689 | Ports & Adapters，四市场适配 |
+| `markets/` | 3,689 | 多市场适配层（Ports & Adapters） |
 | `pipelines/` | 4,493 | 端到端编排：单因子链路、组合、research run |
 | `intraday/` | 2,973 | 分钟 bar → 日内微观结构特征面板 |
 | `risk/` | 1,737 | Barra 风险模型（仅 A 股） |
@@ -155,9 +157,10 @@ graph TD
 | `discovery/mining_session.py` | `agents/nodes.py` | 护栏判定、DSR 的 N、holdout 阈值 |
 | `pipelines/daily_single.py` | `pipelines/generate_report.py` | 回测参数、前向收益口径 |
 | `fz sim run`（`sim/`） | `fz live step`（`execution/drivers`） | 信号执行时点、成本口径 |
-| `markets/crypto` ccxt provider | Vision 湖 provider（默认） | 叶子语义、end 边界、分页 |
 | team session 末 lift 钩子 | `factor-library rebuild` 复审 · `lift-test --apply` | `lift_admission` 单一裁决 |
-| A 股引擎默认参数 | crypto 参数注入 | 「参数化带 A 股默认值」，A 股零回归是底线 |
+| A 股引擎默认参数 | 其它市场的参数注入 | 「参数化带 A 股默认值」，A 股零回归是底线 |
+
+多市场 provider 双路径等细节见[多市场](multi-market.md#成对修改提示)。
 
 > ⚠️ `portfolio/`（因子形式 QP）与 `daily/optimization/`（全 Σ）是**故意分离的双路径，不要合并**。只有 optimizer status 口径需要一致。
 
@@ -189,5 +192,5 @@ graph TD
 
 - [设计铁律](design-principles.md) —— PIT、护栏咬合、可复现的具体落地
 - [因子库与增量准入](factor-library.md) —— 裁决中枢的详细机制
-- [多市场适配](multi-market.md) —— Ports & Adapters 与四市场能力边界
+- [多市场适配](multi-market.md) —— Ports & Adapters 与各市场能力边界
 - [CLI 参考](../reference/cli.md) —— 命令到模块的映射

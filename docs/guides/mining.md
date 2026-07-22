@@ -2,7 +2,9 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **因子挖掘**
 
-挖掘的目标不是「找到 IC 高的表达式」，而是**为因子库找到有增量的候选**。这个定位决定了平台的挖掘链路和常见做法有几处明显不同：默认评估目标是**对现有库正交后的残差 IC**、搜索过程会主动避开库里已覆盖的方向、session 收尾自动把过关候选 upsert 进库并做 lift 裁决。
+挖掘的目标不是「找到 IC 高的表达式」，而是**为因子库找到有增量的候选**。单因子指标只做排序，**lift 增量检验才是入库裁决**。这一取向决定了平台与常见做法的几处不同：默认评估目标是对现有库正交后的**残差 IC**、搜索会主动避开库里已覆盖的方向、session 收尾自动 upsert 并做 lift 裁决。
+
+本文以 A 股为主线，讲清三种挖掘入口、评估与护栏、日内叶子与内存隔离。读完能独立跑一轮 `fz mine`、解读 `candidates.csv` / `manifest.json`，并接上因子库与组合。
 
 三个入口，从便宜到贵：
 
@@ -58,7 +60,7 @@ pl.Expr                          求值
 
 ## 表达式搜索
 
-不调 LLM，纯算法生成候选。
+不调 LLM，纯算法生成候选。适合大批量筛空间或无网络环境。
 
 ```bash
 pixi run -- fz mine search --start 20200101 --end 20241231 --universe csi500 \
@@ -148,12 +150,12 @@ pixi run -- fz mine search --start 20200101 --end 20241231 --universe csi500 \
 
 ## LLM 单 Agent
 
+带经济直觉的定向探索：单角色迭代提案，每轮走「生成 → 求值 → 护栏 → Critic → 反思」闭环（`agents/orchestrator.py`）。
+
 ```bash
 pixi run -- fz mine agent --start 20200101 --end 20241231 --universe csi500 \
   --iterations 5 --top-k 5 --set patience=2
 ```
-
-单个 LLM 角色迭代提案，每轮走「生成 → 求值 → 护栏 → Critic → 反思」的闭环（`agents/orchestrator.py`）。
 
 `mine agent` 独有的能力是 **`--human-review`**（人工复核环节）——`mine team` 没有这个旗标。
 
@@ -168,7 +170,7 @@ pixi run -- fz mine agent --start 20200101 --end 20241231 --universe csi500 \
 
 ## LLM 4 角色团队
 
-主力入口。流水线是 **Librarian → Hypothesis → Coder → Evaluator → Critic**，外加否决回路（`agents/team_orchestrator.py`）。
+主力入口。流水线是 **Librarian → Hypothesis → Coder → Evaluator → Critic**，外加否决回路（`agents/team_orchestrator.py`）。适合长战役与跨 session 记忆。
 
 ```bash
 pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi500 \
@@ -364,18 +366,7 @@ session 目录（`workspace/mining_sessions/` · `workspace/mine_agent/` · `wor
 
 ## 多市场
 
-挖掘类命令的 `--market` 是 4 值域 `{ashare, crypto, futures, us}`，默认 `ashare`。
-
-| 市场 | 池的选法 | 注意 |
-|---|---|---|
-| `ashare` | `--universe`（如 `csi500`） | 唯一支持日内叶子与 scout 的市场 |
-| `crypto` | `--top-n` 按成交额，或 `--symbols` 指定 | `--freq` 可选分钟级 bar 粒度 |
-| `futures` | `--top-n`，或 `--symbols` | 主力连续 + 乘法后复权 |
-| `us` | S&P 500 静态池按 `--top-n` 截断 | ⚠️ 见下 |
-
-> ⚠️ **us 的成分是 ~2024 年的静态快照（约 490 个），不是 PIT 历史成分。** 用它回看历史窗口会引入**幸存者偏差**——代码 docstring 自己标注了这一点。这是平台 PIT 铁律的已知例外，A 股侧的 PIT 是严格的。详见[多市场适配](../concepts/multi-market.md)。
-
-> ⚠️ **us / futures 只打通到挖掘 + 因子库 + 过拟合校验**，没有 `fz data fetch` 子命令、没有组合优化、没有风险模型。crypto 与 ashare 是全链路可跑的。
+默认 `--market ashare`。多市场（crypto/期货/美股）的池选法、能力边界与已知限制见[多市场](../concepts/multi-market.md)。
 
 ---
 
@@ -385,6 +376,6 @@ session 目录（`workspace/mining_sessions/` · `workspace/mine_agent/` · `wor
 - [防过拟合护栏](../concepts/guardrails.md) —— DSR / PBO / holdout 的数学与咬合方式
 - [多因子组合](combination.md) —— 库里的因子如何组合成策略
 - [因子编写](factor-authoring.md) —— 表达式表达不了的想法怎么手写
-- [多市场适配](../concepts/multi-market.md) —— 四市场的真实能力边界
+- [多市场](../concepts/multi-market.md) —— 多市场能力边界
 - [性能与资源](performance.md) —— 挖掘耗时、内存峰值与并行策略
 - [CLI 参考](../reference/cli.md#fz-mine) —— `fz mine` 全参数

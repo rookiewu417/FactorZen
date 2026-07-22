@@ -11,6 +11,8 @@ cp .env.example .env
 
 > ⚠️ **`.env` 已被 gitignore，绝不能提交。** 本文档以及任何记忆/计划文件里都不写真实 token 值，只写变量名。
 
+A 股主线取数依赖 `TUSHARE_TOKEN`；LLM 挖掘另需 `FACTORZEN_LLM_*`。多市场数据源与凭据边界见 [多市场](../concepts/multi-market.md)。
+
 ---
 
 ## 1. 变量总表
@@ -57,7 +59,7 @@ cp .env.example .env
 
 ### 2.1 `FACTORZEN_LLM_PROFILE` —— profile 切换
 
-FactorZen 支持在两套（或更多）上游之间运行时切换，避免为了换模型而反复编辑 `.env`。
+支持在两套（或更多）上游之间运行时切换，避免为了换模型而反复编辑 `.env`。
 
 **机制**（`llm/config.py`）：
 
@@ -143,7 +145,7 @@ final_enabled = 调用方传入的 enabled  AND  (FACTORZEN_LLM_ENABLED 不是 0
 
 ## 3. `.env` 的加载机制（两套，各自独立）
 
-FactorZen 里有**两个互不相干**的 `.env` 读取器，行为不同：
+有**两个互不相干**的 `.env` 读取器，行为不同：
 
 | 读取器 | 时机 | 范围 | 优先级 |
 |---|---|---|---|

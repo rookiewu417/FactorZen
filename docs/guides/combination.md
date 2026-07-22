@@ -2,9 +2,9 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **多因子组合**
 
-因子库积累起来之后，下一个问题是：**这些因子合起来能做出什么样的策略？**
+因子库积累之后，下一个问题是：**这些因子合起来能做出什么样的策略？** `fz combine` 在同一套 purged & embargoed walk-forward 协议下跑四种合成方法，给出可横向对比的样本外指标。
 
-`fz combine` 回答的就是这个。它在同一套 purged & embargoed walk-forward 协议下跑四种合成方法，给出可横向对比的样本外指标。它不是组合优化（那是 [`fz portfolio build`](risk-and-portfolio.md) 的事）——它产出的是**合成后的单个因子序列**，回答「怎么把 N 个因子揉成 1 个」，不涉及权重求解与约束。
+它不是组合优化（那是 [`fz portfolio build`](risk-and-portfolio.md) 的事）——产出的是**合成后的单个因子序列**，回答「怎么把 N 个因子揉成 1 个」，不涉及权重求解与约束。读完能从库 / session / 裸 parquet 拉因子、读懂 `comparison.csv` 的净收益口径，再桥接真回测。
 
 ---
 
@@ -77,14 +77,14 @@
 > ⚠️ **CLI 层的 CV 是 expanding（训练集展开）**，不是定长滚动（`PurgedWalkForwardCV.expanding` 默认 `True`，CLI 不透传这个参数）。意味着越靠后的折训练样本越多。
 >
 > 另外：日期数不足以构成任何一折时会直接 `ValueError`。至少要 `train_days + test_days + purge_days` 天的可用数据。
-
+>
 > ⚠️ 库内 Python API `methods.equal_weight` / `ic_weighted` / `max_ir` 的**直接调用是样本内口径**，只适合做方法对比与候选筛选。无偏的样本外结论必须走 `oos.combine_oos` / `models.combine_lgbm` / `experiment.run_combination_experiment`——也就是 `fz combine` 这三个子命令走的路径。
 
 ---
 
 ## 从因子库消费因子
 
-`from-library` 是因子库登记簿的正式消费出口，完整链路是：
+`from-library` 是因子库登记簿的正式消费出口。完整链路：
 
 ```text
 因子库登记簿
@@ -148,6 +148,8 @@ combine from-library：选品含 python 型因子时 universe 必填
 
 ## 从挖掘 session 消费
 
+一轮挖掘刚结束、还没走完准入时，用 `from-session` 做即时验收：
+
 ```bash
 pixi run -- fz combine from-session \
   --session workspace/mine_team/20260718_120000 \
@@ -163,6 +165,8 @@ pixi run -- fz combine from-session \
 ---
 
 ## 从裸 parquet 消费
+
+因子来自平台之外，或需要精确控制输入面板时走 `run`：
 
 ```bash
 pixi run -- fz combine run \

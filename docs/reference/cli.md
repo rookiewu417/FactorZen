@@ -2,7 +2,9 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **CLI 参考**
 
-FactorZen 的全部功能都通过单一入口 `fz` 暴露。本手册覆盖 **14 个顶层命令 / 46 个叶子命令** 的完整参数面，所有默认值均取自真实 argparse 声明。
+全部功能通过单一入口 `fz` 暴露。正文默认以 **A 股研究链路**为主线；多市场（crypto/期货/美股）相关旗标与子命令如实收录（与 `fz --help` 一致），能力边界见 [多市场](../concepts/multi-market.md)。
+
+本手册覆盖 **14 个顶层命令 / 46 个叶子命令** 的完整参数面，所有默认值均取自真实 argparse 声明。
 
 ## 如何调用
 
@@ -30,13 +32,13 @@ pixi run -- fz mine search --help
 |---|---|
 | [`fz factor`](#fz-factor) | 创建 / 列出 / 评估单个因子，含参数网格扫描 |
 | [`fz report`](#fz-report) | 生成单因子报告与组合仪表盘 HTML |
-| [`fz data`](#fz-data) | 拉取行情与财务数据、回补 crypto 数据湖、构建日内特征面板 |
+| [`fz data`](#fz-data) | 拉取 A 股行情与财务数据、构建日内特征面板；兼含多市场数据湖回补 |
 | [`fz runs`](#fz-runs) | 列出历史 run 记录 |
 | [`fz mine`](#fz-mine) | 因子挖掘：搜索 / Agent / 团队 / 库池预构建 |
 | [`fz factor-library`](#fz-factor-library) | 因子库登记簿：重建、查询、lift 准入、向前跟踪与复审、资产库 store 同步/校验 |
-| [`fz research`](#fz-research) | 端到端编排：挖掘 → 组合构建 → 模拟 → 报告，同一 run_id |
+| [`fz research`](#fz-research) | 端到端编排：挖掘 → 组合构建 → 模拟 → 报告，同一 run_id（A 股专属） |
 | [`fz validate`](#fz-validate) | 单因子过拟合检验（Deflated Sharpe + bootstrap CI） |
-| [`fz risk`](#fz-risk) | 构建 Barra 风险模型（风格/行业暴露 + 协方差 + 特质风险） |
+| [`fz risk`](#fz-risk) | 构建 Barra 风险模型（风格/行业暴露 + 协方差 + 特质风险；A 股专属） |
 | [`fz portfolio`](#fz-portfolio) | 组合优化求解 + 归因 |
 | [`fz sim`](#fz-sim) | 模拟交易回测与指标查看 |
 | [`fz live`](#fz-live) | 向前执行：会话初始化、逐日推进、replay、分歧归因 |
@@ -219,7 +221,7 @@ pixi run -- fz report path 20260718_120000_momentum_20
 
 > ⚠️ **`--portfolio-dir` 在这里是「单个 run 目录」**（即 `workspace/portfolios/20241231/`），而 [`fz sim run`](#fz-sim-run) 的同名参数是**组合产物根目录**（`workspace/portfolios/`，其下才是各 `{run_id}/`）。同名异义，传错会读不到文件。
 
-> ⚠️ 本命令的 `--market` 只有 `ashare` / `crypto` **两个取值**且默认为空（自动识别），而 `fz mine` / `fz factor-library` 等命令的 `--market` 是 `ashare/crypto/futures/us` **四值**、默认 `ashare`。`--market` 不是全局统一参数。
+> ⚠️ 本命令的 `--market` 只有 `ashare` / `crypto` **两个取值**且默认为空（自动识别），而 `fz mine` / `fz factor-library` 等命令的 `--market` 是 `ashare/crypto/futures/us` **四值**、默认 `ashare`。`--market` 不是全局统一参数。多市场报告口径见 [多市场](../concepts/multi-market.md)。
 
 ```bash
 pixi run -- fz report portfolio \
@@ -233,11 +235,11 @@ pixi run -- fz report portfolio \
 
 ## fz data
 
-数据工作流：原始数据拉取、crypto 数据湖回补、日内特征面板构建。
+数据工作流：A 股原始数据拉取、日内特征面板构建。多市场 crypto 数据湖回补见下方专节（能力边界见 [多市场](../concepts/multi-market.md)）。
 
 ### fz data fetch
 
-拉取原始数据进本地 parquet 缓存。
+拉取 A 股原始数据进本地 parquet 缓存。
 
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
@@ -252,6 +254,8 @@ pixi run -- fz data fetch daily --start 20200101 --end 20260718
 **产物**：`data/raw/` 下按类型分目录的 parquet 缓存。需要 `.env` 中的 `TUSHARE_TOKEN`。
 
 ### fz data crypto backfill
+
+> 多市场（crypto）数据能力，完整边界见 [多市场](../concepts/multi-market.md)。
 
 从 Binance Vision 回补 1 分钟 K 线 / 资金费率 / 持仓量到本地数据湖。
 
@@ -334,9 +338,9 @@ pixi run -- fz runs list --limit 20
 
 ## fz mine
 
-因子挖掘工作流：从无 LLM 的随机/遗传搜索，到 LLM 单 Agent，再到多角色团队。
+因子挖掘工作流：从无 LLM 的随机/遗传搜索，到 LLM 单 Agent，再到多角色团队。默认市场为 `ashare`。
 
-> ⚠️ 本组命令的 `--market` 是 **4 值域** `{ashare, crypto, futures, us}`，默认 `ashare`；而 `fz portfolio build` / `fz sim run` / `fz report portfolio` 的 `--market` 只有 `{ashare, crypto}`。跨命令拼脚本时不要假设取值域一致。
+> ⚠️ 本组命令的 `--market` 是 **4 值域** `{ashare, crypto, futures, us}`，默认 `ashare`；而 `fz portfolio build` / `fz sim run` / `fz report portfolio` 的 `--market` 只有 `{ashare, crypto}`。跨命令拼脚本时不要假设取值域一致。多市场能力边界见 [多市场](../concepts/multi-market.md)。
 
 > ⚠️ 本组命令的 `--freq {1m,5m,15m,1h,daily}` 指 **crypto 的 bar 粒度**，默认 `daily`；**A 股只支持 `daily`**。它与 `fz factor` 的因子注册频率、`fz data intraday-features` 的面板频率是三种不同语义。
 
@@ -536,9 +540,9 @@ pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi
 
 ## fz factor-library
 
-因子库登记簿：分市场、全信息、自动维护。库内每条记录带 `status`（`active` / `probation` / `correlated` / `no_lift`）与证据字段。
+因子库登记簿：分市场、全信息、自动维护。默认市场 `ashare`。库内每条记录带 `status`（`active` / `probation` / `correlated` / `no_lift`）与证据字段。
 
-> ⚠️ 本组所有子命令的 `--market` 都是 4 值域 `{ashare, crypto, futures, us}`，默认 `ashare`（`lift-null` 除外——它是纯模拟，不分市场）。
+> ⚠️ 本组所有子命令的 `--market` 都是 4 值域 `{ashare, crypto, futures, us}`，默认 `ashare`（`lift-null` 除外——它是纯模拟，不分市场）。多市场登记簿与能力边界见 [多市场](../concepts/multi-market.md)。
 
 > ⚠️ `fz factor-library --help` 的帮助字符串**漏列了 `lift-null` 子命令**，但该命令真实存在且可用，见 [下文](#fz-factor-library-lift-null)。
 
@@ -821,7 +825,7 @@ pixi run -- fz factor-library store verify --market ashare
 | `--intraday-leaves` | flag | 关 | | 启用日内特征叶子 `i_*`（需先跑 `fz data intraday-features build`；仅 A 股） |
 | `--intraday-freq` | str | `5min` | | 日内特征面板频率 |
 
-> ⚠️ 本命令**没有 `--market`**，是 A 股专属链路。crypto 需分步走 `fz mine` → `fz portfolio build --market crypto` → `fz sim run --market crypto`。
+> ⚠️ 本命令**没有 `--market`**，是 A 股专属链路。多市场需分步走 `fz mine` → `fz portfolio build --market crypto` → `fz sim run --market crypto`（能力边界见 [多市场](../concepts/multi-market.md)）。
 
 > ⚠️ 行业中性是中性到票池的**等权基准**暴露，不是绝对中性到 0——后者与 long-only + Σw=1 联立必然无解。
 
@@ -853,7 +857,7 @@ pixi run -- fz research run --start 20200101 --end 20241231 --universe csi500 \
 | `--top-n` | int | `50` | | crypto/futures/us 池规模 |
 | `--freq` | `1m` \| `5m` \| `15m` \| `1h` \| `daily` | `daily` | | crypto bar 粒度 |
 
-> ⚠️ 位置参数 `<factor>` 与 `--expression` 是两条不同入口：A 股走注册因子名，非 A 股市场没有注册表，必须走 `--expression` 传表达式。
+> ⚠️ 位置参数 `<factor>` 与 `--expression` 是两条不同入口：A 股走注册因子名；非 A 股市场没有注册表，必须走 `--expression` 传表达式（多市场见 [多市场](../concepts/multi-market.md)）。
 
 ```bash
 # A 股：注册因子名
@@ -924,7 +928,7 @@ pixi run -- fz risk build --start 20200101 --end 20241231 --universe all_a \
 
 > ⚠️ **`--run-id` 不传会用 `--end` 的日期串做目录名。** 做多期构建时若忘了区分，后一期会静默覆盖前一期的产物。多期循环务必显式传不同的 `--run-id`。
 
-> ⚠️ 本命令的 `--market` 只有 `{ashare, crypto}` 两值，与 `fz mine` / `fz factor-library` 的四值域不同。
+> ⚠️ 本命令的 `--market` 只有 `{ashare, crypto}` 两值，与 `fz mine` / `fz factor-library` 的四值域不同。crypto 相关旗标见参数表；多市场能力边界见 [多市场](../concepts/multi-market.md)。
 
 ```bash
 pixi run -- fz portfolio build --start 20200101 --end 20241231 --universe all_a \
@@ -1258,8 +1262,9 @@ pixi run -- fz ops validate-config workspace/configs/daily/volume_return_corr_20
 ## 相关文档
 
 - [架构](../concepts/architecture.md) — 各能力模块如何组织与衔接
-- [因子库与增量准入](../concepts/factor-library.md) — 平台核心裁决机制
-- [端到端教程](../getting-started/end-to-end-tutorial.md) — 从零跑通一条完整研究链路
+- [因子库与增量准入](../concepts/factor-library.md) — 平台核心裁决机制（lift 增量检验）
+- [多市场](../concepts/multi-market.md) — crypto / 期货 / 美股能力边界与适配差异
+- [端到端教程](../getting-started/end-to-end-tutorial.md) — 从零跑通一条完整 A 股研究链路
 - [因子编写](../guides/factor-authoring.md) — 自定义因子的写法
 - [因子挖掘](../guides/mining.md) — 表达式搜索、LLM 挖掘、日内叶子
 - [配置参考](configuration.md) · [产物布局](artifacts.md) · [环境变量](environment.md) · [数据源与口径](data-sources.md)

@@ -12,15 +12,15 @@
 
 | Port | 位置 | 关键方法 |
 |---|---|---|
-| `DataProvider` | `base.py:21` | `fetch_bars(symbols, start, end, freq)`、`fetch_symbol_meta()` |
-| `Calendar` | `base.py:36` | `sessions` / `is_session` / `next_session` / `prev_session` / `periods_per_year` |
-| `TradingRules` | `base.py:60` | `allow_short` / `settlement_lag` / `execution_price_col` / `tradable_mask` |
-| `CostModel` | `base.py:83` | `trade_cost(side, notional, is_maker)` / `carry_cost(..., funding_rate)` |
-| `Universe` | `base.py:100` | `snapshot(d)` / `benchmark(start, end)` |
-| `FactorSet` | `base.py:112` | `leaf_features()` / `basic_features()` / `derived_columns(bars)` |
-| `RiskModel`（可选） | `base.py:128` | `style_factors()` / `sector_classification(symbols, d)` |
+| `DataProvider` | `base.py` | `fetch_bars(symbols, start, end, freq)`、`fetch_symbol_meta()` |
+| `Calendar` | `base.py` | `sessions` / `is_session` / `next_session` / `prev_session` / `periods_per_year` |
+| `TradingRules` | `base.py` | `allow_short` / `settlement_lag` / `execution_price_col` / `tradable_mask` |
+| `CostModel` | `base.py` | `trade_cost(side, notional, is_maker)` / `carry_cost(..., funding_rate)` |
+| `Universe` | `base.py` | `snapshot(d)` / `benchmark(start, end)` |
+| `FactorSet` | `base.py` | `leaf_features()` / `basic_features()` / `derived_columns(bars)` |
+| `RiskModel`（可选） | `base.py` | `style_factors()` / `sector_classification(symbols, d)` |
 
-`MarketProfile`（`base.py:144`）把它们组装成一个市场的完整描述。`registry.py` 提供 `register` / `get` / `list_markets`，**采用惰性构造 + 缓存**——避免 import 阶段就去建 ccxt client 这类重对象。
+`MarketProfile`（`base.py`）把它们组装成一个市场的完整描述。`registry.py` 提供 `register` / `get` / `list_markets`，**采用惰性构造 + 缓存**——避免 import 阶段就去建 ccxt client 这类重对象。
 
 设计约定是「**参数化带 A 股默认值**」：新市场通过注入参数接入，A 股行为保持默认值不变。A 股零回归是接入任何新市场的底线。
 
@@ -30,10 +30,10 @@
 
 | 市场 | 数据源 | 规模 | 成熟度 |
 |---|---|---:|---|
-| `ashare` | Tushare（经 `core/loader`） | 234 行 | **薄适配层**——真实重逻辑在 `core/` 与 `daily/`，profile 只是把既有实现包成 Port |
-| `crypto` | Binance Vision 数据湖（默认）· ccxt（备用） | 1,723 行 | **最完整的 Port 实现**：唯一自带 `RiskModel`，另有自己的回测、组合、挖掘、重采样、板块分类 |
+| `ashare` | Tushare（经 `core/loader`） | 235 行 | **薄适配层**——真实重逻辑在 `core/` 与 `daily/`，profile 只是把既有实现包成 Port |
+| `crypto` | Binance Vision 数据湖（默认）· ccxt（备用） | 1,725 行 | **最完整的 Port 实现**：唯一自带 `RiskModel`，另有自己的回测、组合、挖掘、重采样、板块分类 |
 | `futures` | Tushare `fut_daily` / `fut_mapping` / `fut_basic` | 790 行 | 真实实现：主力连续拼接 + **乘法后复权**，有 ground-truth 测试；用交易日历覆盖审计判缺失 |
-| `us` | **Yahoo Finance**（非 Tushare） | 714 行 | 真实实现但 MVP universe：限流 + 指数退避，按 symbol parquet 缓存 |
+| `us` | **Yahoo Finance**（非 Tushare） | 713 行 | 真实实现但 MVP universe：限流 + 指数退避，按 symbol parquet 缓存 |
 
 `markets/` 全树内 `NotImplementedError` / `TODO` / `FIXME` 数量为 **0**——四个市场都是可跑的适配器，没有存根。
 

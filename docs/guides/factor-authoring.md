@@ -36,7 +36,7 @@ pixi run -- fz factor new my_reversal --freq daily
 
 ## 要实现什么
 
-一个日频因子就是一个 `DailyFactor` 子类（`daily/factors/base.py:19`），声明几个类属性 + 实现 `compute()`：
+一个日频因子就是一个 `DailyFactor` 子类（`daily/factors/base.py`），声明几个类属性 + 实现 `compute()`：
 
 ```python
 """20 日成交量-收益相关性。"""
@@ -74,7 +74,7 @@ class VolumeReturnCorr20D(DailyFactor):
 
 ### `compute(ctx)` 的输入
 
-`ctx` 是 `FactorDataContext`（`daily/data/context.py:14`），惰性加载、按需缓存：
+`ctx` 是 `FactorDataContext`（`daily/data/context.py`），惰性加载、按需缓存：
 
 | 属性 | 内容 |
 |---|---|
@@ -104,7 +104,7 @@ trade_date · ts_code · factor_value
 
 > ⚠️ **不要给因子类加 `@dataclass`。**
 > `DailyFactor` 刻意是普通类而非 dataclass。子类以无注解的类属性声明 `lookback_days = 30` 这种写法，只有在基类不是 dataclass 时才生效——一旦某层加上 `@dataclass`，生成的 `__init__` 会在实例化时用基类默认值把子类声明覆盖掉，而消费方（`pipelines/daily_single.py`、`discovery/python_factor.py`）读的都是**实例**属性，预热窗口会静默退化成 20 天且不报错。
-> `tests/test_factor_class_attr_declaration.py` 有全量守卫盯着这件事。
+> `tests/daily/test_correlation_registry.py` 有全量守卫盯着这件事（原 `test_factor_class_attr_declaration` 已并入该文件）。
 >
 > （日内因子 `IntradayFactor` 走的是另一套约定：基类与子类**都**用 `@dataclass` + 注解字段，那样是自洽的，照 `builtin_factors/intraday/` 的样子写即可。）
 
@@ -142,7 +142,7 @@ pixi run -- fz factor sweep my_reversal --start 20220101 --end 20241231 \
 
 `fz factor eval` / `fz factor backtest` 的产物落 `workspace/factor_evaluations/<run_id>/`，含指标、图表与 `manifest.json`。参数全表见 [CLI 参考](../reference/cli.md#fz-factor)。
 
-> ℹ️ `fz factor list` 打印的不只有手写因子——它会顺带把因子库里的**表达式型**记录动态注入注册表（`discovery/library_provider.py:14`），这些条目默认叫 `mined_<sha1 前 8 位>`。目的是让入库的挖掘因子也能用 `fz factor eval` 复现。库缺失或损坏时只打印一行跳过提示，不影响列表本身。
+> ℹ️ `fz factor list` 打印的不只有手写因子——它会顺带把因子库里的**表达式型**记录动态注入注册表（`discovery/library_provider.py` 的 `load_library_factors`），这些条目默认叫 `mined_<sha1 前 8 位>`。目的是让入库的挖掘因子也能用 `fz factor eval` 复现。库缺失或损坏时只打印一行跳过提示，不影响列表本身。
 
 > ⚠️ 因子名与内置/库因子重名时，注册表按「builtin/workspace 优先，library provider 让位」处理并打 warning。想覆盖内置因子是可以的（workspace 扫描在后），但要有意为之。
 
@@ -173,13 +173,13 @@ pixi run -- fz factor-library lift-test \
   --market ashare --universe csi500 --start 20200101 --end 20241231 --apply
 ```
 
-几条硬约束（都在 `cli/main.py:1513-1545` 里 fail-loudly，不会静默降级）：
+几条硬约束（都在 `cli/main.py` 的 `_cmd_factor_library_lift_test` 里 fail-loudly，不会静默降级）：
 
 - `--factor` 目前**只支持 `--market ashare`**，其它市场直接报错退出。
 - `--factor` 时 **`--universe` 必填**（如 `csi500`）——python 因子的物化需要 PIT membership 口径。
 - 因子名必须已在 registry 里；未注册直接报错，不会跳过。
 - `--factor` 是空格分隔多值：`--factor a b c`，不是逗号、也不是重复旗标。
-- 默认封顶写 `probation`，要让 lift 裁决直接写 `active` 需显式加 `--allow-active`。
+- 默认封顶写 `probation`，要让 lift 裁决直接写 `active` 需显式加 `--set allow_active=true`。
 
 准入通过后，登记簿里会多一条 `kind="python"` 的记录，三个显式键承载身份：
 
@@ -191,7 +191,7 @@ pixi run -- fz factor-library lift-test \
 
 `expression` 字段则填成 `py::{name}` 这样一个**故意不合法的哨兵串**——让所有以 `expression` 为主键的既有逻辑（去重、池键、台账）零改动继续工作。语义细节见[因子库与增量准入](../concepts/factor-library.md#表达式因子与-python-因子共存)。
 
-> ℹ️ **显式键优先于哨兵推断**（`discovery/factor_library.py:1083`）。老记录可能只有哨兵没有 `kind`，两种都能被正确识别。
+> ℹ️ **显式键优先于哨兵推断**（`discovery/factor_library.py`）。老记录可能只有哨兵没有 `kind`，两种都能被正确识别。
 
 入库之后，这个因子就会被 [`fz combine from-library`](combination.md) 当作候选参与多因子组合，和挖掘因子一视同仁。若裁决落在 `probation`，还要走[向前确认](../concepts/factor-library.md#probation-的完整生命周期)才能转正。
 
@@ -207,13 +207,13 @@ python 因子的物化（`discovery/python_factor.py`）比表达式因子贵得
 data/cache/python_factor_panels/{market}/{name}/{key}.parquet
 ```
 
-缓存键（`_panel_cache_key`）是这六个维度的 sha1：
+缓存键（`_panel_cache_key`）是这七个维度的 sha1：
 
 ```text
-market | name | start | end | universe | impl_sha
+market | name | start | end | universe | impl_sha | lb{lookback_days}
 ```
 
-其中 `impl_sha` 是**实现源文件的 sha1 前 16 位**——你改一行代码，缓存自动失效，不会拿旧面板骗你。
+其中 `impl_sha` 是**实现源文件的 sha1 前 16 位**——你改一行代码，缓存自动失效，不会拿旧面板骗你；`lookback_days` 预热天数也进键，避免不同预热窗口共用缓存。
 
 三条设计值得知道：
 

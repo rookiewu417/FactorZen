@@ -42,11 +42,11 @@ pixi run smoke
 改代码的循环里只跑与改动直接相关的测试，用 `-x -q` 快速失败：
 
 ```bash
-pixi run -- pytest tests/test_lift_test.py::test_lift_admission_rejects_low_se -v
+pixi run -- pytest tests/lift/test_lift_test.py::test_lift_admission_four_branches -v
 pixi run -- pytest tests/ -k "pit or neutral or membership" -x -q
 ```
 
-> ⚠️ **绝不在前台跑无界的全量 pytest**——套件有 2,561 个用例、314 个测试文件，历史上出现过挂死。全量只在合并前跑，且必须带超时。
+> ⚠️ **绝不在前台跑无界的全量 pytest**——套件有 952 个用例、97 个测试文件，历史上出现过挂死。全量只在合并前跑，且必须带超时。
 
 ### 第二层 · 提交前：lint + typecheck
 
@@ -173,7 +173,7 @@ test(backtest): 补空权重表 carry 语义的回归断言
 - 框架代码 → `src/factorzen/`
 - 用户可扩展因子 → `workspace/factor_store/<market>/<name>/`（meta.json + factor.py）
 
-各频率目录下有 `TEMPLATE.md` 手写模板，写法见[因子编写](docs/guides/factor-authoring.md)。
+模板由 `fz factor new <name> --frequency <freq>` 生成，写法见[因子编写](docs/guides/factor-authoring.md)。
 
 ### 不要提交的东西
 

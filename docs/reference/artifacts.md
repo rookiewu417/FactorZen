@@ -11,7 +11,7 @@ FactorZen 严格区分两个根目录：
 
 路径常量的唯一真源是 `src/factorzen/config/settings.py`。本页描述的是**磁盘上真实存在且有产出**的目录。
 
-> ℹ️ `settings.py` 还声明了 `MINE_AGENT_DIR`、`PORTFOLIOS_DIR`、`EXECUTION_DIR`、`OPS_DIR`、`DATA_PROCESSED` 等常量，但这些目录要么尚未跑过对应命令，要么在 `src/` 中没有消费方（`EXECUTION_DIR` / `OPS_DIR` grep 不到引用点）。本页不描述它们的内部形态——常量存在 ≠ 产物结构已定型。
+> ℹ️ `settings.py` 还声明了 `MINE_AGENT_DIR`、`EXECUTION_DIR`、`OPS_DIR`、`DATA_PROCESSED` 等常量，但这些目录要么尚未跑过对应命令，要么在 `src/` 中没有消费方（`EXECUTION_DIR` / `OPS_DIR` grep 不到引用点）。`PORTFOLIOS_DIR` 被 `fz portfolio build --out-dir` 用作默认值，但目录内部形态未在本页展开。本页不描述它们的内部形态——常量存在 ≠ 产物结构已定型。
 
 ---
 
@@ -23,7 +23,7 @@ FactorZen 严格区分两个根目录：
 | `mining_sessions/` | `fz mine search` | 随机/遗传搜索 session |
 | `mine_team/` | `fz mine team` | 多角色团队挖掘 session（含 lift 准入记录） |
 | `combinations/` | `fz combine run / from-session / from-library` | 多因子合成实验 |
-| `combine_backtests/` | 组合回测脚本 / 研究作业 | 组合回测产物 |
+| `combine_backtests/` | `fz combine backtest` | 组合回测产物 |
 | `risk_models/` | `fz risk build` | 风险模型（暴露/协方差/特质风险） |
 | `sim/` | `fz sim run` | 模拟交易 run |
 | `reports/` | `fz report portfolio` 等 | 独立报告输出 |
@@ -186,10 +186,19 @@ qlib 系列因子会再分桶：因子名前缀 `qlib_alpha158_` → `qlib158/` 
 
 > ⚠️ `git_dirty: true` 时会打 warning「无法仅凭 git SHA 复现」。**带脏工作区跑出来的结果，事后无法用 git_sha 精确重跑**——正式实验前先把改动提交掉。
 
-`outputs` 是**双份路径**，共 13 个键：
+`outputs` 是**双份路径**（全局归档键 + `run_` 前缀本地副本，见 `experiments/run_paths.py` 的 `copy_outputs_to_run_dir()`），键数按轨道不同：
 
-- 全局归档 6 键：`factor` / `ic` / `quality_report` / `walk_forward_summary` / `universe_snapshot` / `report` / `meta` → 指向 `runs/artifacts/daily/...`
+**`fz factor backtest`（交易轨）= 7 全局 + 7 个 `run_*` = 14 键**
+
+- 全局归档 7 键：`factor` / `ic` / `quality_report` / `walk_forward_summary` / `universe_snapshot` / `report` / `meta` → 指向 `runs/artifacts/daily/...`
 - run 本地 7 键：`run_factor` / `run_ic` / `run_quality_report` / `run_walk_forward_summary` / `run_universe_snapshot` / `run_report` / `run_meta` → 指向 run 目录内
+
+**`fz factor eval`（信号轨）= 8 全局 + 8 个 `run_*` = 16 键**
+
+- 全局归档 8 键：`factor` / `ic` / `quality_report` / `universe_snapshot` / `signal` / `signal_group_nav` / `report` / `meta` → 指向 `runs/artifacts/daily/...`
+- run 本地 8 键：`run_factor` / `run_ic` / `run_quality_report` / `run_universe_snapshot` / `run_signal` / `run_signal_group_nav` / `run_report` / `run_meta` → 指向 run 目录内
+
+（eval 无 `walk_forward_summary`；backtest 无 `signal` / `signal_group_nav`。两轨全局键集合见 `pipelines/daily_single.py` 的 `run_factor_eval` / `run_factor_backtest`。）
 
 **非托管顶层键会被保留**：收尾时先读回磁盘上的 manifest，把 `outputs` 与所有不在托管列表里的顶层键原样留下。这就是 `stage_timings` 这类由 pipeline 自行追加的字段能存活的机制。真实样本：
 
@@ -252,15 +261,15 @@ n_lift_evaluated, lift_dropped_coverage[], lift_error, objective, git_sha
 
 | 写入点 | 落盘位置 | 备注 |
 |---|---|---|
-| `research/combination/experiment.py:177` | `combinations/{run}/manifest.json` | 含 cv 参数 / seed / git_sha |
-| `pipelines/research_run.py:290` | `research_dir/manifest.json` | `fz research run` 编排器 |
-| `discovery/mining_session.py:591` | `mining_sessions/{session}/manifest.json` | |
-| `agents/team_orchestrator.py:1587` | `mine_team/{run}/manifest.json` | |
-| `discovery/factor_library.py:2172` | `factor_library/rebuild_{market}_manifest.json` | |
-| `markets/crypto/lake.py:131` | `data/crypto_lake/manifest.json` | 见 [数据源与口径](data-sources.md) |
-| `daily/data/intraday.py:201` | `data/derived/intraday_features/{version}/{freq}/manifest.json` | |
-| `strategies/trend_timing.py:149` | 各期 run_dir | 含 `signal_date` + `weights.parquet` |
-| `server/artifacts.py:40,77` | **读**取端 | 扫 `<workspace>/<domain>/<run_id>/manifest.json` 建索引，供只读展示 server |
+| `research/combination/experiment.py` | `combinations/{run}/manifest.json` | 含 cv 参数 / seed / git_sha |
+| `pipelines/research_run.py` | `research_dir/manifest.json` | `fz research run` 编排器 |
+| `discovery/mining_session.py` | `mining_sessions/{session}/manifest.json` | |
+| `agents/team_orchestrator.py` | `mine_team/{run}/manifest.json` | |
+| `discovery/factor_library.py` | `factor_library/rebuild_{market}_manifest.json` | |
+| `markets/crypto/lake.py` | `data/crypto_lake/manifest.json` | 见 [数据源与口径](data-sources.md) |
+| `daily/data/intraday.py` | `data/derived/intraday_features/{version}/{freq}/manifest.json` | |
+| `strategies/trend_timing.py` | 各期 run_dir | 含 `signal_date` + `weights.parquet` |
+| `server/artifacts.py` | **读**取端 | 扫 `<workspace>/<domain>/<run_id>/manifest.json` 建索引，供只读展示 server |
 
 变体文件名：`rebuild_{market}_manifest.json`、`input_manifest.json`（combinations）、`lift_test_manifest.json`（mine_team）、`job_manifest.txt`（`_ops/architecture_review`，**非 JSON**）。
 

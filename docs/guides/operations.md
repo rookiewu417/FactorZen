@@ -12,7 +12,7 @@
 
 ## 8 个阶段
 
-单一真源是 `ops/runner.py:30` 的 `STAGES` 列表，**顺序固定、不可配置**：
+单一真源是 `ops/runner.py` 的 `STAGES` 列表，**顺序固定、不可配置**：
 
 | # | 阶段 | 做什么 | 可跳过 |
 |---|---|---|---|
@@ -29,21 +29,21 @@
 
 ### 逐阶段说明
 
-**`guard`**（`stages.py:53`）—— 拉当日交易日历，判断 `is_open == 1`。
+**`guard`**（`stages.py` 的 `stage_guard`）—— 拉当日交易日历，判断 `is_open == 1`。
 
-**`data`**（`stages.py:61`）—— 调 `ensure_daily` / `ensure_adj_factor` / `ensure_daily_basic` / `ensure_index_daily`，窗口是 `[as_of − lookback_days, as_of]`。这些函数是 `strict=True` 的，缺口补不齐直接让异常冒泡，runner 统一接住。
+**`data`**（`stages.py` 的 `stage_data`）—— 调 `ensure_daily` / `ensure_adj_factor` / `ensure_daily_basic` / `ensure_index_daily`，窗口是 `[as_of − lookback_days, as_of]`。这些函数是 `strict=True` 的，缺口补不齐直接让异常冒泡，runner 统一接住。
 
-**`audit`**（`stages.py:72`）—— 对 `audit_types` 里的每种数据跑 `build_raw_data_audit`。`audit_fail_on: error` 只拦 error；设成 `warning` 则 warning 也拦。任一被拦就抛 `OpsStageError`，链路停在这里。
+**`audit`**（`stages.py` 的 `stage_audit`）—— 对 `audit_types` 里的每种数据跑 `build_raw_data_audit`。`audit_fail_on: error` 只拦 error；设成 `warning` 则 warning 也拦。任一被拦就抛 `OpsStageError`，链路停在这里。
 
-**`intraday_features`**（`stages.py:90`）—— 只有 `intraday_leaves: true` 才跑，在 `signal` **之前**把窗口内的 `i_*` 面板物化好，供后续信号的 `i_*` 因子 attach。`overwrite=False`，是增量 build。
+**`intraday_features`**（`stages.py` 的 `stage_intraday_features`）—— 只有 `intraday_leaves: true` 才跑，在 `signal` **之前**把窗口内的 `i_*` 面板物化好，供后续信号的 `i_*` 因子 attach。`overwrite=False`，是增量 build。
 
-**`signal`**（`stages.py:109`）—— `signal_command` 是一个命令数组，用 `subprocess.run(check=True, timeout=3600)` 执行。非零退出码 → `OpsStageError` 带 stderr 末 200 字符；超时 1 小时 → `OpsStageError`。省略该配置则跳过，直接消费已有的 portfolio 产物。
+**`signal`**（`stages.py` 的 `stage_signal`）—— `signal_command` 是一个命令数组，用 `subprocess.run(check=True, timeout=3600)` 执行。非零退出码 → `OpsStageError` 带 stderr 末 200 字符；超时 1 小时 → `OpsStageError`。省略该配置则跳过，直接消费已有的 portfolio 产物。
 
-**`live_step`**（`stages.py:129`）—— 拉行情 →（可选）universe 过滤 → 按 `portfolio_run_dirs_glob` 收组合产物 → 调 `run_daily_step` 推进一天。glob 无匹配直接报错（不静默空跑）。会话目录没有 `manifest.json` 时自动 `init` 一次。
+**`live_step`**（`stages.py` 的 `stage_live_step`）—— 拉行情 →（可选）universe 过滤 → 按 `portfolio_run_dirs_glob` 收组合产物 → 调 `run_daily_step` 推进一天。glob 无匹配直接报错（不静默空跑）。会话目录没有 `manifest.json` 时自动 `init` 一次。
 
-**`report`**（`stages.py:145`）—— 从 ledger 里找当日记录，算 NAV 与期间收益，拼成通知用的摘要文本。**当日无执行记录时不报错**，返回「无执行记录(空目标/跳过)」。
+**`report`**（`stages.py` 的 `stage_report`）—— 从 ledger 里找当日记录，算 NAV 与期间收益，拼成通知用的摘要文本。**当日无执行记录时不报错**，返回「无执行记录(空目标/跳过)」。
 
-**`publish`**（`stages.py:204`）—— 把净值序列渲染成 `<publish_site_dir>/index.html`（Jinja2 模板，含总收益与最大回撤）。
+**`publish`**（`stages.py` 的 `stage_publish`）—— 把净值序列渲染成 `<publish_site_dir>/index.html`（Jinja2 模板，含总收益与最大回撤）。
 
 ---
 
@@ -51,15 +51,15 @@
 
 每个交易日一个 `<state_dir>/<YYYY-MM-DD>.json`，记录各阶段的 `{status, ts, detail}`（`ops/state.py`）。
 
-- runner 开跑前先读这个文件，`is_done(name)` 为真的阶段**直接跳过**（`runner.py:54-56`）。
+- runner 开跑前先读这个文件，`is_done(name)` 为真的阶段**直接跳过**（`runner.py` 的 `run_ops_daily`）。
 - 阶段成功 → `mark_done`；抛异常 → `mark_failed` + 告警 + `return 1`。
 - 写入走「临时文件 + `os.replace`」原子替换，崩溃不会留半截 JSON。
 
 所以重跑 `fz ops daily --date 同一天` 是安全的：**已完成的阶段跳过，从失败处续跑**。
 
-> ⚠️ **非交易日不落 done。** `guard` 判定非交易日时，runner 短路返回 0，**但不调 `mark_done`**（`runner.py:66-68`）。这是有意的——如果把「非交易日」固化成已完成状态，将来日历修正或调休补交易日时就再也重跑不了了。重跑时会重新判断。
+> ⚠️ **非交易日不落 done。** `guard` 判定非交易日时，runner 短路返回 0，**但不调 `mark_done`**（`runner.py` 的 `run_ops_daily`）。这是有意的——如果把「非交易日」固化成已完成状态，将来日历修正或调休补交易日时就再也重跑不了了。重跑时会重新判断。
 
-> ⚠️ **失败不会崩掉全链路，但会中断后续阶段。** 任意阶段抛异常都被 runner 捕获（`runner.py:59-63`），标 failed、发告警、返回退出码 1。**后面的阶段不会执行**——阶段之间有数据依赖（没取到数就没法执行、没执行就没法报告），继续跑只会产生垃圾产物。修好问题重跑，前面成功的阶段会跳过。
+> ⚠️ **失败不会崩掉全链路，但会中断后续阶段。** 任意阶段抛异常都被 runner 捕获（`runner.py` 的 `run_ops_daily`），标 failed、发告警、返回退出码 1。**后面的阶段不会执行**——阶段之间有数据依赖（没取到数就没法执行、没执行就没法报告），继续跑只会产生垃圾产物。修好问题重跑，前面成功的阶段会跳过。
 
 **退出码约定**：`0` = 成功或非交易日；`1` = 某阶段失败。调度器据此判断是否需要人工介入。
 
@@ -127,7 +127,7 @@ notify_kind: stdout
 
 ## 通知
 
-两个后端（`ops/notify.py:75` 的 `build_notifier`）：
+两个后端（`ops/notify.py` 的 `build_notifier`）：
 
 | 后端 | 行为 |
 |---|---|
@@ -140,7 +140,7 @@ notify_kind: stdout
 
 > ✅ **通知失败不炸主链路。** 重试用尽后 `send` **返回 `False` 而不抛异常**。通知是旁路，推送不出去不该让整条日链路失败。
 
-> ⚠️ **但配置错要在启动期就炸。** `notify_kind: webhook` 而 `notify_url_env` 指的环境变量没设时，`build_notifier` 直接抛 `RuntimeError`（`notify.py:85-87`）——在链路开跑前就暴露，而不是等到跑完要发日报时才发现告警全丢了。设置方式：
+> ⚠️ **但配置错要在启动期就炸。** `notify_kind: webhook` 而 `notify_url_env` 指的环境变量没设时，`build_notifier` 直接抛 `RuntimeError`（`notify.py`）——在链路开跑前就暴露，而不是等到跑完要发日报时才发现告警全丢了。设置方式：
 >
 > ```bash
 > export FACTORZEN_NOTIFY_WEBHOOK='https://…'
@@ -151,7 +151,7 @@ notify_kind: stdout
 
 - **任一阶段失败** → `[FactorZen ops] {stage} 失败 {日期}`，level=`error`
 - **全链路完成** → `[FactorZen ops] 日报 {日期}`，level=`info`，内容是 `report` 阶段的摘要文本
-- **非交易日短路** → 不发通知（`runner.py:66-68` 直接 return，不走末尾的日报）
+- **非交易日短路** → 不发通知（`runner.py` 直接 return，不走末尾的日报）
 
 ---
 
@@ -161,7 +161,7 @@ notify_kind: stdout
 >
 > 因子库里 `status=probation` 的因子需要**每日**记录一条 paper forward RankIC，攒够 `--min-days`（默认 60 天）后才能由 `forward-review` 裁决转正或降级。这个每日动作**不在 `STAGES` 里**——`ops/stages.py` 完全没有引用 `forward_track`。
 >
-> 两个命令的 `--help` 自己就带着这条待办标注（`cli/parser.py:660-661` 与 `:690-691`）：
+> 两个命令的 `--help` 自己就带着这条待办标注（`cli/parser.py` 的 `forward-track` / `forward-review` help）：
 >
 > > 「确认窗口随真实时间累积；**ops 每日链路接线为后续工作**」
 >
@@ -192,7 +192,7 @@ pixi run -- fz ops daily --config deploy/ops.example.yaml --date 20241231
 pixi run -- fz ops status --config deploy/ops.example.yaml --date 20241231
 ```
 
-`--date` 缺省取**今天**（本机日期，`cli/main.py:2746`）。
+`--date` 缺省取**今天**（本机日期，`cli/main.py` 的 `_ops_as_of()` / `_cmd_ops_daily()`）。
 
 ### 接进调度
 

@@ -2,7 +2,7 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **架构**
 
-平台约 49,500 行 Python，分成职责独立的子包。层间只通过 parquet / JSON 传递数据，每个环节落 `manifest.json`。
+平台约 57,487 行 Python，分成职责独立的子包。层间只通过 parquet / JSON 传递数据，每个环节落 `manifest.json`。
 
 ---
 
@@ -45,7 +45,7 @@
 │  数据与因子基础                                                   │
 │  core/      日历 · universe 逐日快照 · 加载缓存 · 叶子 schema      │
 │  daily/     PIT 数据 · 预处理 · IC · 回测 · walk-forward           │
-│  intraday/  分钟 bar → 日内微观结构特征面板（17 特征）             │
+│  intraday/  分钟 bar → 日内微观结构特征面板（20 特征）             │
 │  markets/   Ports & Adapters：ashare / crypto / futures / us      │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -60,7 +60,7 @@
 graph TD
     SRC[("数据源<br/>Tushare · Vision 湖 · Yahoo")] -->|fz data fetch| RAW[("data/ parquet 缓存")]
     RAW --> CORE["core/<br/>universe 快照 · PIT · 日历"]
-    RAW --> INTRA["intraday/<br/>分钟 bar → 17 日内特征"]
+    RAW --> INTRA["intraday/<br/>分钟 bar → 20 日内特征"]
 
     CORE --> DAILY["daily/<br/>PIT 数据 · 预处理 · IC · 回测"]
     INTRA -->|i_* 叶子| DISC
@@ -111,37 +111,37 @@ graph TD
 
 | 子包 | 行数 | 职责 |
 |---|---:|---|
-| `discovery/` | 10,235 | 挖掘 + **因子库 + lift 准入**。全平台最大子包，迭代最密集 |
-| `daily/` | ~5,900 | A 股日频主干：PIT 数据、预处理、IC、回测、walk-forward |
-| `core/` | 4,843 | 日历、universe 逐日快照、Tushare 加载与缓存、叶子 schema 单一真源 |
-| `agents/` | 4,654 | LLM 挖掘：单 Agent 闭环、4 角色团队 + Evaluator、实验索引 |
-| `cli/` | — | 14 个顶层命令 / 45 个叶子命令 |
-| `markets/` | 3,687 | Ports & Adapters，四市场适配 |
-| `pipelines/` | 3,548 | 端到端编排：单因子链路、组合、research run |
-| `intraday/` | 2,593 | 分钟 bar → 日内微观结构特征面板 |
+| `discovery/` | 12,645 | 挖掘 + **因子库 + lift 准入**。全平台最大子包，迭代最密集 |
+| `daily/` | 7,288 | A 股日频主干：PIT 数据、预处理、IC、回测、walk-forward |
+| `core/` | 5,004 | 日历、universe 逐日快照、Tushare 加载与缓存、叶子 schema 单一真源 |
+| `agents/` | 4,943 | LLM 挖掘：单 Agent 闭环、4 角色团队 + Evaluator、实验索引 |
+| `cli/` | 4,669 | 14 个顶层命令 / 46 个叶子命令 |
+| `markets/` | 3,689 | Ports & Adapters，四市场适配 |
+| `pipelines/` | 4,493 | 端到端编排：单因子链路、组合、research run |
+| `intraday/` | 2,973 | 分钟 bar → 日内微观结构特征面板 |
 | `risk/` | 1,737 | Barra 风险模型（仅 A 股） |
-| `research/` | 1,669 | 多因子组合研究（四方法 OOS 对比） |
+| `research/` | 1,949 | 多因子组合研究（四方法 OOS 对比） |
 | `builtin_factors/` | 1,316 | 内置因子，随包分发 |
-| `llm/` | 960 | LLM 客户端（双 profile） |
+| `llm/` | 988 | LLM 客户端（双 profile） |
 | `execution/` | 809 | 向前执行引擎（纸面撮合 + 分歧归因） |
-| `reports/` | 2,195 | 信号轨/交易轨报告 + 组合 Dashboard 渲染 |
+| `reports/` | 2,259 | 信号轨/交易轨报告 + 组合 Dashboard 渲染 |
 | `ops/` | 514 | 无人值守 8 阶段日链路 |
-| `config/` | 494 | 配置模型与路径常量 |
+| `config/` | 496 | 配置模型与路径常量 |
 | `strategies/` | 470 | 规则型策略实验（择时/轮动），**CLI 不可达** |
-| `sim/` | 301 | 模拟交易（复用日频回测引擎） |
+| `sim/` | 272 | 模拟交易（复用日频回测引擎） |
 | `dataio/` | 260 | 数据迁移脚手架，由 `tools/` 脚本调用，**非运行时 IO 层** |
 | `server/` | 207 | 只读 REST API + Web 页（dev extras） |
-| `validation/` | 202 | 防过拟合**统计原语**（判定逻辑不在这里） |
+| `validation/` | 240 | 防过拟合**统计原语**（判定逻辑不在这里） |
 | `portfolio/` | 121 | 因子形式 mean-variance QP |
 | `attribution/` | 95 | Brinson-Fachler + 风险因子归因 |
-| `experiments/` | 48 | run 产物目录布局工具，**与实验追踪无关** |
+| `experiments/` | 50 | run 产物目录布局工具，**与实验追踪无关** |
 
 > ℹ️ **尺寸即信号。** `discovery/` 一个包超过全平台五分之一的代码量，`portfolio/` + `attribution/` 合起来只有 216 行。这如实反映了平台的能力权重：挖掘与准入侧成熟，组合优化侧偏薄。这不是「重实现藏在别处」——配对的 `daily/optimization/` 也只有 348 行。
 
 三个包的名字容易误导，特别说明：
 
 - **`validation/`** 只提供纯统计函数（DSR、PBO、bootstrap、holdout 切分）。真正的「护栏咬合 / `passed` 判定」在 `discovery/guardrails.py` 与 `discovery/scoring.py`。
-- **`experiments/`** 是 48 行的文件命名工具，把产物按稳定文件名复制进 run 目录，跟实验管理没有关系。
+- **`experiments/`** 是 50 行的文件命名工具，把产物按稳定文件名复制进 run 目录，跟实验管理没有关系。
 - **`dataio/`** 是一次性数据迁移的库层，只被仓库根的 `tools/` 脚本调用，`src/` 内零引用。日常研究链路的数据 IO 在 `core/loader.py` 与 `markets/*/provider.py`。
 
 ---
@@ -171,11 +171,11 @@ graph TD
 
 | 文件 | 行数 | 为什么承重 |
 |---|---:|---|
-| `cli/main.py` | 2,791 | 全仓最大文件，所有命令的实现入口 |
-| `discovery/factor_library.py` | 2,174 | 唯一登记簿，改动影响全部准入消费方 |
-| `daily/evaluation/backtest.py` | 1,473 | 单一日环引擎，sim / factor backtest / live 共用 |
-| `discovery/lift_test.py` | 1,358 | 单一准入裁决，三个消费方共用 |
-| `agents/team_orchestrator.py` | 1,589 | 团队编排 + 末端 lift 钩子 |
+| `cli/main.py` | 3,541 | 全仓最大文件，所有命令的实现入口 |
+| `discovery/factor_library.py` | 2,558 | 唯一登记簿，改动影响全部准入消费方 |
+| `daily/evaluation/backtest.py` | 1,457 | 单一日环引擎，sim / factor backtest / live 共用 |
+| `discovery/lift_test.py` | 1,876 | 单一准入裁决，三个消费方共用 |
+| `agents/team_orchestrator.py` | 1,683 | 团队编排 + 末端 lift 钩子 |
 
 ---
 

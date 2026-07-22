@@ -17,11 +17,11 @@
 
 > ⚠️ **`fz live` 全家桶跑的全部是纸面撮合。**
 >
-> - `BrokerAdapter`（`execution/broker.py:66`）定义了 4 个方法：`get_positions` / `get_cash` / `place_orders` / `poll_fills`。
-> - **唯一实现是 `PaperBroker`**（`execution/brokers/paper.py:23`）。`--broker` 参数当前只有 `paper` 一个取值。
+> - `BrokerAdapter`（`execution/broker.py`）定义了 4 个方法：`get_positions` / `get_cash` / `place_orders` / `poll_fills`。
+> - **唯一实现是 `PaperBroker`**（`execution/brokers/paper.py`）。`--broker` 参数当前只有 `paper` 一个取值。
 > - **实盘下单没有任何实现代码**。仓库里 `xtquant` / `miniQMT` 只出现在 `broker.py` 的注释里。
 >
-> 但这**不等于实盘不在路线上**。数据类的字段是照 xtquant/miniQMT 模型逐条设计的，注释里标了映射关系（`broker.py:26-35`）：
+> 但这**不等于实盘不在路线上**。数据类的字段是照 xtquant/miniQMT 模型逐条设计的，注释里标了映射关系（`broker.py`）：
 >
 > | FactorZen 字段 | xtquant 对应 |
 > |---|---|
@@ -32,7 +32,7 @@
 > | `Cash.total_asset` | `total_asset` |
 > | `Cash.market_value` | `market_value` |
 >
-> 设计目标写在 `broker.py:3`：**「实盘期零改动映射」**。也就是说接口形状已经按券商 API 预留好了，接实盘是**分阶段推进的路线目标**，落地方式是新增一个 `BrokerAdapter` 实现，上层 `engine.step` 不需要动（它「只调 4 个方法，不知后端真假」）。
+> 设计目标写在 `broker.py`：**「实盘期零改动映射」**。也就是说接口形状已经按券商 API 预留好了，接实盘是**分阶段推进的路线目标**，落地方式是新增一个 `BrokerAdapter` 实现，上层 `engine.step` 不需要动（它「只调 4 个方法，不知后端真假」）。
 >
 > 在此之前，任何把 `fz live` 的输出当作实盘业绩的说法都是错的。
 
@@ -50,7 +50,7 @@
 > #        ↑ YYYYMMDD          ↑ YYYY-MM-DD
 > ```
 >
-> 原因是这两个参数直接喂给 `date.fromisoformat()`（`cli/main.py:2537-2538`），没有做格式规整。传成 `20240601` 会抛 `ValueError`。
+> 原因是这两个参数直接喂给 `date.fromisoformat()`（`cli/main.py` 的 `_cmd_live_replay()`），没有做格式规整。传成 `20240601` 会抛 `ValueError`。
 
 ---
 
@@ -79,7 +79,7 @@ pixi run -- fz sim run --portfolio-dir workspace/portfolios \
 
 ### 哪些组合目录会被跳过（而且是静默的）
 
-`sim/engine.py:92` 的 `_load_weights_by_date` 有三条过滤，每条都会打 warning——**跑完请看日志，不要只看最终 Sharpe**：
+`sim/engine.py` 的 `_load_weights_by_date` 有三条过滤，每条都会打 warning——**跑完请看日志，不要只看最终 Sharpe**：
 
 | 情况 | 行为 |
 |---|---|
@@ -94,7 +94,7 @@ pixi run -- fz sim run --portfolio-dir workspace/portfolios \
 ### 成本与暴露口径
 
 - **默认不是零成本**。`cost_model=None` 时用项目默认费率的 `CostModel()`（佣金 + 滑点 + 印花税）。要零成本对照必须显式构造 `CostModel(commission=0, stamp_tax=0, slippage=0)`。
-- **不做二次暴露校验**。sim 把 `max_gross_exposure` / `max_abs_weight` 放到 `inf`（`sim/engine.py:230-233`），因为权重已经受过优化器自身约束；再套 daily-research 的默认上限（gross 2.0 / 单票 1.0）会让杠杆或多空组合直接 `ValueError` 崩掉整批模拟。NaN / inf / 重复 `ts_code` 的数据损坏防线仍然保留。
+- **不做二次暴露校验**。sim 把 `max_gross_exposure` / `max_abs_weight` 放到 `inf`（`sim/engine.py` 的 `run_portfolio_simulation()`），因为权重已经受过优化器自身约束；再套 daily-research 的默认上限（gross 2.0 / 单票 1.0）会让杠杆或多空组合直接 `ValueError` 崩掉整批模拟。NaN / inf / 重复 `ts_code` 的数据损坏防线仍然保留。
 - **PIT ST 阈值**：全程复用一份 `build_is_st_by_date`，ST 股票的涨跌停阈值收窄到 4.8%（主板非 ST 是 9.8%）。
 
 ---
@@ -123,11 +123,11 @@ pixi run -- fz sim run --portfolio-dir workspace/portfolios \
 | `fz live status` | 打印末记录日 / 现金 / 持仓数 |
 | `fz live report` | 生成 A 类分歧归因报告 |
 
-> ℹ️ `fz live replay` 可以直接在 `fz live init` 建好的会话上跑——`SessionStore.init` 检测到 manifest 已存在就**不覆盖**（`store.py:26-27`），否则 init 设的 `slippage_bps` / `initial_cash` 会被 replay 的默认 config 静默清掉。
+> ℹ️ `fz live replay` 可以直接在 `fz live init` 建好的会话上跑——`SessionStore.init` 检测到 manifest 已存在就**不覆盖**（`store.py`），否则 init 设的 `slippage_bps` / `initial_cash` 会被 replay 的默认 config 静默清掉。
 
 ### 一步推进做了什么
 
-`execution/engine.py:32` 的 `step`，broker 无关，只调 `BrokerAdapter` 的 4 个方法：
+`execution/engine.py` 的 `step`，broker 无关，只调 `BrokerAdapter` 的 4 个方法：
 
 ```text
 1. broker.get_positions()          查当前持仓
@@ -141,15 +141,15 @@ pixi run -- fz sim run --portfolio-dir workspace/portfolios \
 
 两个 PIT 细节：
 
-- **执行定量参考价用 `pre_close`**，不用当日 `close`（`drivers.py:40-47`）。收盘价要收盘才有，用它定量就是前视。
-- **信号次一交易日才执行**：只取 `signal_date < as_of` 的最新一次权重（`drivers.py:92`、`drivers.py:169`）。`signal_date` 是组合建仓的数据截止日（已经用了当日收盘），用 `s <= d` 会在信号当日开盘就按当日收盘算出的权重成交 = 未来函数。这一口径与 `fz sim run` 对齐。
+- **执行定量参考价用 `pre_close`**，不用当日 `close`（`drivers.py`）。收盘价要收盘才有，用它定量就是前视。
+- **信号次一交易日才执行**：只取 `signal_date < as_of` 的最新一次权重（`drivers.py` 的 `run_replay` / `run_daily_step`）。`signal_date` 是组合建仓的数据截止日（已经用了当日收盘），用 `s <= d` 会在信号当日开盘就按当日收盘算出的权重成交 = 未来函数。这一口径与 `fz sim run` 对齐。
 - 「有适用信号但目标权重为空」（risk-off 全现金）**仍会正常 step 以清仓**，只有真的没有任何适用信号才跳过。
 
-`round_lot`（`broker.py:13`）向零取整到 100 股整手，带 `+1e-6` 手的容差——吸收「权重 → 股数 → 权重」往返的浮点误差，否则 12900 整手在往返后常变成 12899.999999999998 被砍掉一整手。
+`round_lot`（`broker.py`）向零取整到 100 股整手，带 `+1e-6` 手的容差——吸收「权重 → 股数 → 权重」往返的浮点误差，否则 12900 整手在往返后常变成 12899.999999999998 被砍掉一整手。
 
 ### 纸面撮合的真实约束
 
-`PaperBroker._exec_one`（`paper.py:99`）按顺序过五道：
+`PaperBroker._exec_one`（`paper.py`）按顺序过五道：
 
 1. **无行情** → 拒单 `missing_price`
 2. **共享约束内核**（`apply_trade_constraints`，与回测同一份实现）——在权重空间判：
@@ -181,7 +181,7 @@ pixi run -- fz sim run --portfolio-dir workspace/portfolios \
 
 ### 续跑与幂等的四道守卫
 
-`run_daily_step`（`drivers.py:115`）为了扛住「每天起一个新进程」的调度模式，加了四道防线：
+`run_daily_step`（`drivers.py`）为了扛住「每天起一个新进程」的调度模式，加了四道防线：
 
 | 守卫 | 行为 | 防的是什么 |
 |---|---|---|
@@ -190,7 +190,7 @@ pixi run -- fz sim run --portfolio-dir workspace/portfolios \
 | **崩溃恢复一致性** | `state._last_as_of` 与 ledger 末行日期不符 → **抛 `RuntimeError` 要求重建会话** | 「写完 ledger、没写完 state 就崩」导致的账实分叉。宁可报错也不静默用错状态续跑 |
 | **日期单调性** | `as_of <= _last_as_of` → 跳过，`reason="stale_as_of"` | 乱序补跑：用「未来的」broker 状态去步进过去的日期，ledger 乱序、state 被污染 |
 
-`SessionStore.append`（`store.py:38`）对三个文件都做 **tmp + `os.replace` 原子替换**，写到一半崩溃不会留下损坏的 parquet/json。
+`SessionStore.append`（`store.py`）对三个文件都做 **tmp + `os.replace` 原子替换**，写到一半崩溃不会留下损坏的 parquet/json。
 
 > ⚠️ **`fz live step` 的 `--start` 要往前留足回看天数。** 容量约束用的 ADV 是 trailing 20 日均值，只给 `--date` 当天会让 ADV 为空、容量约束静默失效（`daily` 缺 `amount` 列时 `_precompute_adv_20d_by_date` 优雅降级返回 `{}`，不报错）。建议至少覆盖 `--date` 前 20 个交易日。
 
@@ -204,7 +204,7 @@ pixi run -- fz sim run --portfolio-dir workspace/portfolios \
 
 「理论上这套权重能赚多少，实际执行只拿到多少，差额去哪了？」
 
-做法是造一个 **frictionless 孪生**（`attribution.py:41`）：同一批目标权重、同一段执行窗口，但按 `close` 全额成交、零成本、无容量/整手/现金/T+1 约束。两条 NAV 的年化收益之差就是总缺口。
+做法是造一个 **frictionless 孪生**（`attribution.py` 的 `build_attribution_report`）：同一批目标权重、同一段执行窗口，但按 `close` 全额成交、零成本、无容量/整手/现金/T+1 约束。两条 NAV 的年化收益之差就是总缺口。
 
 ```text
 total_gap = ideal.ann_ret − real.ann_ret
@@ -230,9 +230,9 @@ residual  = total_gap_bps − cost_bps − slippage_bps
 
 1. **总缺口独立测量。** 不是把各桶加起来当总数，而是两条 NAV 各自算年化收益再相减。桶（成本、滑点）逐笔精确算，**剩下的进 `residual`，不做配平**。residual 大说明有未建模的分歧来源，这是要看见的信息，不是要抹平的误差。
 
-2. **年化口径必须对齐。** `ideal` / `real` 的 `ann_ret` 是「日均收益 × 252」，所以 `cost_sum` / `slip_sum` 这些整段累计的美元成本也要乘 `252 / n_days` 折成年化 bps 才能相减。短窗口尤其明显——把几天的一次性成本外推成一整年会被放大 `252/n_days` 倍，两边不做同一折算就没有可比性（`attribution.py:152-161`）。
+2. **年化口径必须对齐。** `ideal` / `real` 的 `ann_ret` 是「日均收益 × 252」，所以 `cost_sum` / `slip_sum` 这些整段累计的美元成本也要乘 `252 / n_days` 折成年化 bps 才能相减。短窗口尤其明显——把几天的一次性成本外推成一整年会被放大 `252/n_days` 倍，两边不做同一折算就没有可比性（`attribution.py`）。
 
-3. **部分成交也算踏空。** 归因不只看 `accepted=False` 的拒单。容量/现金/整手/T+1 截断的单子 `accepted=True` 但 `filled < volume`，这个缺口同样按 `shortfall × close` 归到对应 reason 下。只统计拒单会漏掉一大半（`attribution.py:129-131`）。
+3. **部分成交也算踏空。** 归因不只看 `accepted=False` 的拒单。容量/现金/整手/T+1 截断的单子 `accepted=True` 但 `filled < volume`，这个缺口同样按 `shortfall × close` 归到对应 reason 下。只统计拒单会漏掉一大半（`attribution.py` 的 `build_attribution_report`）。
 
 **两条不静默的告警**：
 

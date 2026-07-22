@@ -56,7 +56,7 @@ pixi run fz mine search \
   --method genetic --trials 200 --top-k 10 --seed 42
 ```
 
-窗口会按 `--holdout-ratio`（默认 0.2）切出一段**永久隔离的 holdout**，挖掘过程碰不到它。默认 `--objective residual`：候选的评估目标是**对库内 active 因子截面正交后的残差 IC**（库为空时自动退化为裸 RankIC）——从搜索阶段起就在找「库里没有的东西」。
+窗口会按 `--set holdout_ratio=`（默认 0.2）切出一段**永久隔离的 holdout**，挖掘过程碰不到它。默认 `--set objective=residual`：候选的评估目标是**对库内 active 因子截面正交后的残差 IC**（库为空时自动退化为裸 RankIC）——从搜索阶段起就在找「库里没有的东西」。
 
 **产物**：`workspace/mining_sessions/session_42_genetic/`
 
@@ -73,7 +73,7 @@ manifest.json     seed / 试验数 / holdout 起点 / 全部候选详情 / n_gra
 pixi run fz mine leaderboard workspace/mining_sessions/session_42_genetic --all
 ```
 
-不加 `--all` 只列护栏 `passed` 的候选。护栏 `passed` 的候选在挖掘收尾时**自动 upsert 进因子库**，这是入库第一通道（`--no-library` 可关）。
+不加 `--all` 只列护栏 `passed` 的候选。护栏 `passed` 的候选在挖掘收尾时**自动 upsert 进因子库**，这是入库第一通道（`--set no_library=true` 可关）。
 
 > ℹ️ 想用 LLM 团队挖掘，把这一步换成 `fz mine team`（4 角色 + Evaluator，session 末还会自动跑一轮组 lift 裁决）。需要配好 `FACTORZEN_LLM_*`，缺配置会直接报错退出。详见[因子挖掘指南](../guides/mining.md)。
 

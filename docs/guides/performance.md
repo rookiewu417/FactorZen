@@ -118,7 +118,7 @@ pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi800 \
   --iterations 8 --pool-subproc
 ```
 
-> ⚠️ 预构建的**窗口、票池、`--holdout-ratio` 必须与随后的挖掘完全一致**，否则口径不匹配。缓存键包含因子库指纹与窗口指纹，库有变更会自动失效并重建，不会悄悄用旧池。
+> ⚠️ 预构建的**窗口、票池、holdout 比例必须与随后的挖掘完全一致**，否则口径不匹配——`fz mine pool-prebuild` 侧是真旗标 `--holdout-ratio`，随后的 `fz mine search` / `agent` / `team` 侧是 `--set holdout_ratio=`。缓存键包含因子库指纹与窗口指纹，库有变更会自动失效并重建，不会悄悄用旧池。
 
 命令的完整参数见 [CLI 参考 · `fz mine pool-prebuild`](../reference/cli.md#fz-mine-pool-prebuild)。
 
@@ -132,17 +132,19 @@ pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi800 \
 workers = max(2, min(4, 可用内存GB // 5))
 ```
 
-上限 **4**；读取可用内存失败时回退 **2**。显式传 `--lift-workers 1` 走纯串行（语义不变，只是慢）。
+上限 **4**；读取可用内存失败时回退 **2**。显式传 `--set lift_workers=1` 走纯串行（语义不变，只是慢）。
 
 ```bash
 # 自适应（推荐）
-pixi run -- fz factor-library lift-test --market ashare
+pixi run -- fz factor-library lift-test --market ashare \
+  --start 20200101 --end 20241231
 
 # 内存紧张时手动压低
-pixi run -- fz factor-library lift-test --market ashare --lift-workers 2
+pixi run -- fz factor-library lift-test --market ashare \
+  --start 20200101 --end 20241231 --set lift_workers=2
 ```
 
-> ⚠️ 候选数较多时用 `--lift-workers 1` 会显著拖慢——批量裁决从小时级降到十分钟级正是靠这个并行。命令会在候选数大而并发为 1 时打印告警。
+> ⚠️ 候选数较多时用 `--set lift_workers=1` 会显著拖慢——批量裁决从小时级降到十分钟级正是靠这个并行。命令会在候选数大而并发为 1 时打印告警。
 
 ### 日内特征面板构建的并发
 
@@ -159,13 +161,13 @@ pixi run -- fz factor-library lift-test --market ashare --lift-workers 2
 
 | 旋钮 | 所属命令 | 默认 | 并发类型 | 内存代价 |
 |---|---|---|---|---|
-| `--workers` | `fz mine search` | `1` | 遗传搜索评分线程 | 低；同 seed 下与串行结果等价 |
+| `--set workers=` | `fz mine search` | `1` | 遗传搜索评分线程 | 低；同 seed 下与串行结果等价 |
 | `--workers` | `fz data intraday-features build` | `1` | 月级进程 | **高：约 7.6 GiB/月** |
-| `--llm-workers` | `fz mine team` | `4` | 轮内 LLM 调用 | 可忽略（网络等待） |
-| `--lift-workers` | `fz mine team` · `fz factor-library lift-test` | 自适应 | 候选级线程 | **约 5 GB/worker，上限 4** |
+| `--set llm_workers=` | `fz mine team` | `4` | 轮内 LLM 调用 | 可忽略（网络等待） |
+| `--set lift_workers=` | `fz mine team` · `fz factor-library lift-test` | 自适应 | 候选级线程 | **约 5 GB/worker，上限 4** |
 | `--pool-subproc` | `fz mine team` | 关 | 池构建放子进程 | **降低**父进程峰值 |
 
-> ✅ 判断原则：**LLM 并发几乎免费，进程/线程级计算并发按内存买单。** 内存紧张时优先关掉 `intraday-features build --workers` 与压低 `--lift-workers`，而不是压 `--llm-workers`。
+> ✅ 判断原则：**LLM 并发几乎免费，进程/线程级计算并发按内存买单。** 内存紧张时优先关掉 `intraday-features build --workers` 与压低 `--set lift_workers=`，而不是压 `--set llm_workers=`。
 
 ---
 

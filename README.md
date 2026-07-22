@@ -13,7 +13,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10--3.12-blue.svg)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
 
-[快速开始](#快速开始) · [文档](docs/README.md) · [核心机制](docs/concepts/factor-library.md) · [CLI 参考](docs/reference/cli.md) · [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html)
+[快速开始](#快速开始) · [文档](docs/README.md) · [核心机制](docs/concepts/factor-library.md) · [CLI 参考](docs/reference/cli.md) · [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-signal-report.html)
 
 </div>
 
@@ -47,7 +47,7 @@
 | 能力域 | 内容 | 入口命令 |
 |---|---|---|
 | **数据接入** | A 股（Tushare）· crypto（Binance Vision 数据湖）· 期货（主力连续后复权）· 美股（Yahoo，MVP universe） | `fz data fetch` |
-| **日内微观结构** | 分钟 bar → 日频特征面板（17 特征电池），可直接作为挖掘叶子 | `fz data intraday-features build` |
+| **日内微观结构** | 分钟 bar → 日频特征面板（20 特征电池），可直接作为挖掘叶子 | `fz data intraday-features build` |
 | **因子挖掘** | 算子库 + 表达式 AST 双向编译 + 随机/遗传搜索 | `fz mine search` |
 | **LLM 挖掘** | 单 Agent 闭环 · 4 角色团队（Hypothesis/Coder/Critic/Librarian）+ Evaluator + 跨轮否决 + 跨 session 记忆 | `fz mine agent` · `fz mine team` |
 | **因子库准入** | 唯一登记簿 + **lift 增量裁决** + 四态状态机 + 向前确认（probation → forward → promote） | `fz factor-library lift-test` |
@@ -142,14 +142,14 @@ pixi run fz factor backtest momentum_20d --start 20230101 --end 20241231 \
 ## 项目结构
 
 ```text
-src/factorzen/                  约 49,500 行
+src/factorzen/                  约 57,500 行
 ├── discovery/      因子挖掘 + 因子库 + lift 准入（最大子包）
 ├── daily/          A 股日频主干：PIT 数据、预处理、IC、回测、walk-forward
 ├── core/           日历、universe 快照、Tushare 加载与缓存、叶子 schema 单一真源
 ├── agents/         LLM 挖掘：单 Agent 闭环 + 4 角色团队 + 实验索引
 ├── markets/        Ports & Adapters：ashare / crypto / futures / us
 ├── pipelines/      端到端编排：单因子链路、组合、research run
-├── cli/            fz 命令行入口（16 个顶层命令）
+├── cli/            fz 命令行入口（14 个顶层命令）
 ├── intraday/       分钟 bar → 日内微观结构特征面板
 ├── risk/           Barra 风险模型（A 股）
 ├── research/       多因子组合研究（四方法 OOS 对比）
@@ -165,7 +165,7 @@ src/factorzen/                  约 49,500 行
 
 workspace/          研究产出（因子库、挖掘 session、评估、组合、报告）
 data/               行情数据与缓存（不入库）
-tests/              2,561 个 pytest 测试
+tests/              952 个 pytest 测试（97 个测试文件）
 ```
 
 产物布局与 `manifest.json` 字段见[产物参考](docs/reference/artifacts.md)。
@@ -182,7 +182,7 @@ tests/              2,561 个 pytest 测试
 - **数据**：tushare（A 股）/ ccxt（crypto）/ pyarrow
 - **LLM**：openai SDK（OpenAI-compatible 网关）
 - **报告**：matplotlib / jinja2
-- **质量**：2,561 个 pytest 测试 / ruff / mypy（全包扫描）
+- **质量**：952 个 pytest 测试 / ruff / mypy（全包扫描）
 
 ---
 
@@ -221,7 +221,7 @@ tests/              2,561 个 pytest 测试
 | [端到端教程](docs/getting-started/end-to-end-tutorial.md) | 从拉数据到组合 Dashboard |
 | [因子库与准入](docs/concepts/factor-library.md) | lift 裁决、状态机、向前确认 |
 | [架构](docs/concepts/architecture.md) | 分层结构、数据流、模块边界 |
-| [CLI 参考](docs/reference/cli.md) | 16 个顶层命令 / 47 个叶子命令全量 |
+| [CLI 参考](docs/reference/cli.md) | 14 个顶层命令 / 46 个叶子命令全量 |
 
 ---
 

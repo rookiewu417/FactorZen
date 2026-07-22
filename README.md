@@ -54,7 +54,7 @@
 | **风险模型** | Barra 风格（8 因子）+ 行业暴露 + Newey-West 协方差 + 特质风险收缩 + MCR 分解（A 股） | `fz risk build` |
 | **组合优化与归因** | cvxpy 因子形式 mean-variance QP + 约束体系；Brinson-Fachler + 风险因子归因 | `fz portfolio build` |
 | **多因子组合研究** | 四方法样本外对比：等权 / IC 加权 / max_ir / LightGBM | `fz combine from-library` |
-| **模拟与向前执行** | 组合权重回测 · 向前执行引擎（纸面撮合）· A 类分歧归因 | `fz sim run` · `fz live step` |
+| **模拟与向前执行** | 组合权重回测 · 非因子策略产物 · 向前执行引擎（纸面撮合）· A 类分歧归因 | `fz sim run` · `fz strategies run` · `fz live step` |
 | **无人值守运营** | 8 阶段幂等日链路（守卫→取数→审计→日内特征→信号→执行→报告→发布）+ 失败告警 | `fz ops daily` |
 | **成果展示** | 信号轨/交易轨报告 · 组合 Dashboard · 只读 REST API + Web 页 | `fz report portfolio` · `pixi run serve` |
 
@@ -150,7 +150,7 @@ src/factorzen/                  约 57,500 行
 ├── agents/         LLM 挖掘：单 Agent 闭环 + 4 角色团队 + 实验索引
 ├── markets/        Ports & Adapters：ashare / crypto / futures / us
 ├── pipelines/      端到端编排：单因子链路、组合、research run
-├── cli/            fz 命令行入口（14 个顶层命令）
+├── cli/            fz 命令行入口（15 个顶层命令）
 ├── intraday/       分钟 bar → 日内微观结构特征面板
 ├── risk/           Barra 风险模型（A 股）
 ├── research/       多因子组合研究（四方法 OOS 对比）
@@ -222,7 +222,7 @@ tests/              952 个 pytest 测试（97 个测试文件）
 | [端到端教程](docs/getting-started/end-to-end-tutorial.md) | 从拉数据到组合 Dashboard |
 | [因子库与准入](docs/concepts/factor-library.md) | lift 裁决、状态机、向前确认 |
 | [架构](docs/concepts/architecture.md) | 分层结构、数据流、模块边界 |
-| [CLI 参考](docs/reference/cli.md) | 14 个顶层命令 / 46 个叶子命令全量 |
+| [CLI 参考](docs/reference/cli.md) | 15 个顶层命令 / 47 个叶子命令全量 |
 
 ---
 

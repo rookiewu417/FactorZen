@@ -119,7 +119,7 @@ pixi run smoke
 pixi run fz --help
 ```
 
-应打印 14 个顶层命令：`factor` `report` `data` `runs` `mine` `factor-library` `research` `validate` `risk` `portfolio` `sim` `live` `combine` `ops`。
+应打印 15 个顶层命令：`factor` `report` `data` `runs` `mine` `factor-library` `research` `validate` `risk` `portfolio` `sim` `strategies` `live` `combine` `ops`。
 
 ### 4.3 数据链路 smoke
 

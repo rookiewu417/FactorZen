@@ -17,6 +17,7 @@ from factorzen.config.settings import (
     MINE_TEAM_DIR,
     PORTFOLIOS_DIR,
     REPORTS_DIR,
+    STRATEGIES_DIR,
 )
 
 
@@ -1135,5 +1136,51 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     ovc = ops_sub.add_parser("validate-config", help="Validate a YAML run config")
     ovc.add_argument("path", help="YAML run config path")
     ovc.set_defaults(func=commands._cmd_config_validate)
+
+    # ── fz strategies ──（模拟交易权重产物 + sim 闭环）
+    strategies = sub.add_parser(
+        "strategies",
+        help="非因子策略：生成 weights 产物并跑 sim 模拟交易",
+    )
+    strat_sub = strategies.add_subparsers(dest="strategies_command", required=True)
+
+    s_run = strat_sub.add_parser(
+        "run",
+        help="生成策略 weights 产物并调用 sim（name∈trend_timing/momentum_rotation/sleeve/quantile_group）",
+    )
+    s_run.add_argument(
+        "name",
+        choices=["trend_timing", "momentum_rotation", "sleeve", "quantile_group"],
+        help="策略名",
+    )
+    s_run.add_argument("--start", required=True, help="Start date YYYYMMDD")
+    s_run.add_argument("--end", required=True, help="End date YYYYMMDD")
+    s_run.add_argument(
+        "--universe",
+        default="all_a",
+        help="票池名（sleeve/quantile_group 过滤分数截面；默认 all_a）",
+    )
+    s_run.add_argument(
+        "--out-dir",
+        dest="out_dir",
+        default=str(STRATEGIES_DIR),
+        help=f"产物根目录（默认 {STRATEGIES_DIR}）",
+    )
+    s_run.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=None,
+        help="可选 run_id（默认=策略名；产物落 out_dir/<run_id>/）",
+    )
+    _add_set_arg(
+        s_run,
+        help_extra=(
+            "策略参数通配，如 ma_window=200 / top_n=50 / lookback=126 / "
+            "holding_days=10 / n_groups=5 / group=1 / scores=path / score_col=col / "
+            "rebalance=monthly|weekly|daily / index_code=000300.SH / "
+            "index_codes=000300.SH,000905.SH"
+        ),
+    )
+    s_run.set_defaults(func=commands._cmd_strategies_run)
 
     return parser

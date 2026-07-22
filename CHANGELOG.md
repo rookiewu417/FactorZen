@@ -10,6 +10,7 @@
 
 ### Added
 
+- **strategies 模块重定位（模拟交易权重产物层）：** 与因子研究回测插件 `Strategy` ABC 语义分离；新增 `run_strategy_simulation` 桥接 sim、`momentum_rotation` 编排、收编 `sleeve` / `quantile_group` 权重生成（产物契约对齐 `sim.engine`）；CLI `fz strategies run <name>`（`--set` 通配 + `--start/--end/--universe/--out-dir`）。
 - **portfolio build 支持 `--risk-dir`：** 可读取 `fz risk build` 落盘产物（exposures / factor_covariance / specific_risk / factor_returns / manifest），使 `--cov-half-life` 等 risk 参数对下游组合优化生效；不传则保持进程内自建（A 股零回归）。
 
 #### 因子库与增量准入

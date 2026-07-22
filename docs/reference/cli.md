@@ -4,7 +4,7 @@
 
 全部功能通过单一入口 `fz` 暴露。正文默认以 **A 股研究链路**为主线；多市场（crypto/期货/美股）相关旗标与子命令如实收录（与 `fz --help` 一致），能力边界见 [多市场](../concepts/multi-market.md)。
 
-本手册覆盖 **14 个顶层命令 / 46 个叶子命令** 的完整参数面，所有默认值均取自真实 argparse 声明。
+本手册覆盖 **15 个顶层命令 / 47 个叶子命令** 的完整参数面，所有默认值均取自真实 argparse 声明。
 
 ## 如何调用
 
@@ -41,6 +41,7 @@ pixi run -- fz mine search --help
 | [`fz risk`](#fz-risk) | 构建 Barra 风险模型（风格/行业暴露 + 协方差 + 特质风险；A 股专属） |
 | [`fz portfolio`](#fz-portfolio) | 组合优化求解 + 归因 |
 | [`fz sim`](#fz-sim) | 模拟交易回测与指标查看 |
+| [`fz strategies`](#fz-strategies) | 非因子策略：生成 weights 产物并跑 sim |
 | [`fz live`](#fz-live) | 向前执行：会话初始化、逐日推进、replay、分歧归因 |
 | [`fz combine`](#fz-combine) | 多因子组合的四方法 OOS 对比实验 |
 | [`fz ops`](#fz-ops) | 无人值守运营；含 `validate-config` 校验 YAML run config |
@@ -980,6 +981,70 @@ pixi run -- fz sim show --sim-dir workspace/sim/20260718_120000
 ```
 
 **产物**：无，仅打印。
+
+---
+
+## fz strategies
+
+非因子策略（模拟交易权重产物层）：生成与 `sim` 契约一致的 `weights.parquet` + `manifest.json`，并直接跑 `run_portfolio_simulation`。
+
+与因子研究回测插件 `daily.evaluation.backtest.Strategy` **语义分离**——本命令产出的是可执行目标权重，不是 IC/分层回测插件。
+
+### fz strategies run
+
+| 参数 | 类型 | 默认值 | 必填 | 说明 |
+|---|---|---|---|---|
+| `<name>` | `trend_timing` \| `momentum_rotation` \| `sleeve` \| `quantile_group` | — | ✅ | 策略名 |
+| `--start` | str | — | ✅ | 起始日 `YYYYMMDD` |
+| `--end` | str | — | ✅ | 终止日 `YYYYMMDD` |
+| `--universe` | str | `all_a` | | 票池（`sleeve` / `quantile_group` 用于 PIT membership 过滤分数截面） |
+| `--out-dir` | str | `workspace/strategies` | | 产物根目录 |
+| `--run-id` | str | 无（=`<name>`） | | 子目录名；产物落 `--out-dir`/`--run-id`/ |
+| `--set KEY=VALUE` | str（可重复） | 无 | | 策略参数通配（未知键失败并列出合法键） |
+
+**`--set` 合法键**（按策略选用；未写的用 schema 默认或 handler 按 name 补齐）：
+
+| 键 | 类型 | 默认 | 适用 |
+|---|---|---|---|
+| `ma_window` | int | `200` | trend_timing |
+| `top_n` | int | trend/momentum=`50`；sleeve=`200` | trend_timing / momentum_rotation / sleeve |
+| `index_code` | str | `000300.SH` | trend_timing |
+| `timing` | bool | `true` | trend_timing（`false`=基线始终满仓） |
+| `lookback` | int | `126` | momentum_rotation |
+| `index_codes` | str | `000300.SH,000905.SH,000852.SH` | momentum_rotation（逗号分隔） |
+| `rebalance` | `monthly` \| `weekly` \| `daily` | `monthly` | trend_timing / momentum_rotation |
+| `scores` | str | 无 | sleeve / quantile_group（分数面板 parquet 路径） |
+| `score_col` | str | 无 | sleeve / quantile_group（分数列名） |
+| `holding_days` | int | `10` | sleeve |
+| `direction` | `top` \| `bottom` | `top` | sleeve |
+| `n_groups` | int | `5` | quantile_group |
+| `group` | int | `1` | quantile_group（`1`=分数最高组） |
+
+```bash
+# HS300 200 日均线趋势择时 + sim
+pixi run -- fz strategies run trend_timing --start 20200101 --end 20241231 \
+  --set ma_window=200 --set top_n=50 --set rebalance=monthly
+
+# 宽基动量轮动
+pixi run -- fz strategies run momentum_rotation --start 20200101 --end 20241231 \
+  --set lookback=126 --set index_codes=000300.SH,000905.SH
+
+# 滚动分层建仓（需分数面板）
+pixi run -- fz strategies run sleeve --start 20160104 --end 20241231 --universe all_a \
+  --set scores=workspace/factor_evaluations/.../combined.parquet \
+  --set score_col=eq_all --set top_n=200 --set holding_days=10
+
+# 分位组 long-only
+pixi run -- fz strategies run quantile_group --start 20160104 --end 20241231 \
+  --set scores=.../combined.parquet --set score_col=eq_all \
+  --set n_groups=5 --set group=1
+```
+
+**产物**：`workspace/strategies/<run_id>/products/<signal_date>/`（weights + manifest）与
+`workspace/strategies/<run_id>/sim/`（nav.parquet / metrics.json / manifest.json）。
+stdout 打印 `run_dir` 与 `sharpe` / `max_dd` / `ann_ret`。
+
+> ⚠️ `sleeve` / `quantile_group` **必须**同时给 `--set scores=...` 与 `--set score_col=...`，否则直接退出码 2。
 
 ---
 

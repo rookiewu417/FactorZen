@@ -118,6 +118,23 @@ _LIFT_TEST_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
     "intraday_freq": (str, "5min", None),
 }
 
+# strategies run：策略参数经 --set 通配；缺省在 schema 默认 / handler 按 name 补齐。
+_STRATEGIES_RUN_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
+    "ma_window": (int, 200, None),
+    "top_n": (int, None, None),  # trend/momentum 默认 50；sleeve 默认 200
+    "index_code": (str, "000300.SH", None),
+    "timing": (bool, True, None),
+    "lookback": (int, 126, None),
+    "index_codes": (str, "000300.SH,000905.SH,000852.SH", None),
+    "rebalance": (str, "monthly", ("monthly", "weekly", "daily")),
+    "score_col": (str, None, None),
+    "scores": (str, None, None),
+    "holding_days": (int, 10, None),
+    "direction": (str, "top", ("top", "bottom")),
+    "n_groups": (int, 5, None),
+    "group": (int, 1, None),
+}
+
 
 def _apply_set_overrides(
     args: argparse.Namespace,
@@ -3080,6 +3097,202 @@ def _cmd_risk_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _strategies_rebalance_dates(trade_dates: list, freq: str) -> list:
+    """从交易日列表抽调仓日：daily=全日；weekly/monthly=该周/月首个交易日。"""
+    if freq == "daily":
+        return list(trade_dates)
+    out: list = []
+    prev = None
+    for d in trade_dates:
+        if freq == "weekly":
+            key = d.isocalendar()[:2]
+        else:  # monthly
+            key = (d.year, d.month)
+        if key != prev:
+            out.append(d)
+            prev = key
+    return out
+
+
+def _cmd_strategies_run(args: argparse.Namespace) -> int:
+    """``fz strategies run <name>``：生成 weights 产物 → sim，打印 run_dir 与关键指标。"""
+    from datetime import datetime, timedelta
+    from pathlib import Path
+
+    import polars as pl
+
+    from factorzen.core import loader
+    from factorzen.strategies.runner import run_strategy_simulation
+
+    name = args.name
+    rid = args.run_id or name
+    root = Path(args.out_dir) / rid
+    products_dir = root / "products"
+    products_dir.mkdir(parents=True, exist_ok=True)
+
+    def _extend_start(start: str, cal_days: int) -> str:
+        d = datetime.strptime(start, "%Y%m%d") - timedelta(days=cal_days)
+        return d.strftime("%Y%m%d")
+
+    # ── 生成 run_dirs ──
+    if name == "trend_timing":
+        top_n = args.top_n if args.top_n is not None else 50
+        ma_window = int(args.ma_window)
+        daily = loader.fetch_daily(args.start, args.end)
+        if daily.is_empty():
+            print("[strategies] daily 面板为空", file=sys.stderr)
+            return 2
+        idx_start = _extend_start(args.start, max(ma_window * 3, 400))
+        index_daily = loader.fetch_index_daily(args.index_code, idx_start, args.end)
+        trade_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
+        max_td = trade_dates[-1]
+        rebalance = [
+            d
+            for d in _strategies_rebalance_dates(trade_dates, args.rebalance)
+            if d < max_td
+        ]
+        if not rebalance:
+            print("[strategies] 调仓日为空（窗口过短？）", file=sys.stderr)
+            return 2
+        from factorzen.strategies.trend_timing import generate_trend_timing_products
+
+        run_dirs = generate_trend_timing_products(
+            str(products_dir),
+            index_daily,
+            daily,
+            rebalance,
+            index_code=args.index_code,
+            ma_window=ma_window,
+            top_n=top_n,
+            timing=bool(args.timing),
+        )
+    elif name == "momentum_rotation":
+        top_n = args.top_n if args.top_n is not None else 50
+        lookback = int(args.lookback)
+        daily = loader.fetch_daily(args.start, args.end)
+        if daily.is_empty():
+            print("[strategies] daily 面板为空", file=sys.stderr)
+            return 2
+        codes = [c.strip() for c in str(args.index_codes).split(",") if c.strip()]
+        if not codes:
+            print("[strategies] index_codes 为空", file=sys.stderr)
+            return 2
+        idx_start = _extend_start(args.start, max(lookback * 3, 400))
+        index_dailies = {
+            c: loader.fetch_index_daily(c, idx_start, args.end) for c in codes
+        }
+        trade_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
+        max_td = trade_dates[-1]
+        rebalance = [
+            d
+            for d in _strategies_rebalance_dates(trade_dates, args.rebalance)
+            if d < max_td
+        ]
+        if not rebalance:
+            print("[strategies] 调仓日为空（窗口过短？）", file=sys.stderr)
+            return 2
+        from factorzen.strategies.momentum_rotation import (
+            generate_momentum_rotation_products,
+        )
+
+        run_dirs = generate_momentum_rotation_products(
+            str(products_dir),
+            index_dailies,
+            daily,
+            rebalance,
+            lookback=lookback,
+            top_n=top_n,
+        )
+    elif name in ("sleeve", "quantile_group"):
+        if not args.scores or not args.score_col:
+            print(
+                f"[strategies] {name} 需要 --set scores=<parquet> --set score_col=<列名>",
+                file=sys.stderr,
+            )
+            return 2
+        from factorzen.pipelines.combine_backtest import load_market_panel
+        from factorzen.pipelines.daily_single import filter_frame_by_membership
+
+        market = load_market_panel(
+            start=args.start, end=args.end, universe=args.universe, market="ashare"
+        )
+        daily = market["price_df"]
+        trade_dates = sorted(daily.select("trade_date").unique()["trade_date"].to_list())
+        if not trade_dates:
+            print("[strategies] 行情交易日为空", file=sys.stderr)
+            return 2
+        scores = pl.read_parquet(
+            args.scores, columns=["trade_date", "ts_code", args.score_col]
+        )
+        scores = scores.filter(
+            pl.col("trade_date").is_between(trade_dates[0], trade_dates[-1])
+        )
+        scores = filter_frame_by_membership(scores, market["membership"])
+        if scores.is_empty():
+            print("[strategies] PIT membership 过滤后分数截面为空", file=sys.stderr)
+            return 2
+        if name == "sleeve":
+            top_n = args.top_n if args.top_n is not None else 200
+            from factorzen.strategies.sleeve import generate_sleeve_products
+
+            run_dirs = generate_sleeve_products(
+                str(products_dir),
+                scores,
+                score_col=args.score_col,
+                top_n=top_n,
+                holding_days=int(args.holding_days),
+                trade_dates=trade_dates,
+                direction=args.direction,
+            )
+        else:
+            from factorzen.strategies.quantile_group import (
+                generate_quantile_group_products,
+            )
+
+            run_dirs = generate_quantile_group_products(
+                str(products_dir),
+                scores,
+                score_col=args.score_col,
+                n_groups=int(args.n_groups),
+                group=int(args.group),
+                trade_dates=trade_dates,
+            )
+    else:
+        print(f"[strategies] 未知策略 {name!r}", file=sys.stderr)
+        return 2
+
+    if not run_dirs:
+        print("[strategies] 未生成任何 weights 产物", file=sys.stderr)
+        return 2
+
+    res = run_strategy_simulation(
+        run_dirs,
+        daily,
+        out_dir=str(root),
+        run_id="sim",
+    )
+    sharpe = res.get("sharpe")
+    max_dd = res.get("max_dd")
+    ann_ret = res.get("ann_ret")
+
+    def _fmt(v: object) -> str:
+        if v is None:
+            return "n/a"
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return f"{float(v):.4f}"
+        try:
+            return f"{float(str(v)):.4f}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    print(
+        f"[strategies] name={name} products={len(run_dirs)} "
+        f"run_dir={res['run_dir']} "
+        f"sharpe={_fmt(sharpe)} max_dd={_fmt(max_dd)} ann_ret={_fmt(ann_ret)}"
+    )
+    return 0
+
+
 def _cmd_sim_run(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[sim] --freq 仅 crypto 支持;ashare 只有 daily", file=sys.stderr)
@@ -3529,6 +3742,8 @@ def _schema_for_parsed_args(
             return _MINE_TEAM_SET
     if cmd == "factor-library" and getattr(args, "factor_library_command", None) == "lift-test":
         return _LIFT_TEST_SET
+    if cmd == "strategies" and getattr(args, "strategies_command", None) == "run":
+        return _STRATEGIES_RUN_SET
     return None
 
 

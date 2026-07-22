@@ -14,6 +14,8 @@ STANDARD_ARTIFACT_NAMES = {
     "ic": "ic.parquet",
     "quality_report": "quality.json",
     "walk_forward_summary": "walk_forward.json",
+    "signal": "signal.json",
+    "signal_group_nav": "signal_group_nav.parquet",
     "universe_snapshot": "universe.parquet",
     "report": "report.html",
     "llm_explanation": "llm_explanation.json",

@@ -26,7 +26,8 @@ class _ArgAdder(Protocol):
     def add_argument(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
-def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_factor_common_arguments(parser: argparse.ArgumentParser) -> None:
+    """``fz factor eval`` / ``fz factor backtest`` 共用参数面。"""
     parser.add_argument("name", nargs="?", help="Factor name")
     parser.add_argument("--start", default=None, help="Start date YYYYMMDD")
     parser.add_argument("--end", default=None, help="End date YYYYMMDD")
@@ -39,7 +40,11 @@ def _add_factor_run_arguments(parser: argparse.ArgumentParser) -> None:
         default="daily",
         help="Factor frequency",
     )
-    parser.add_argument("--benchmark", default=None, help="Benchmark index code")
+    parser.add_argument(
+        "--benchmark",
+        default=None,
+        help="Benchmark index code（仅 backtest 轨生效；eval 轨保留参数但忽略）",
+    )
     parser.add_argument("--config", default=None, help="YAML run config path")
     parser.add_argument("--seed", type=int, default=42, help="Global random seed (default 42)")
     parser.add_argument(
@@ -156,9 +161,19 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     )
     list_cmd.set_defaults(func=commands._cmd_factor_list)
 
-    run = factor_sub.add_parser("run", help="Run a single factor evaluation")
-    _add_factor_run_arguments(run)
-    run.set_defaults(func=commands._cmd_factor_run)
+    eval_cmd = factor_sub.add_parser(
+        "eval",
+        help="因子研究评估（信号层，毛口径：IC/分层/多空/单调性/换手，不跑日环）",
+    )
+    _add_factor_common_arguments(eval_cmd)
+    eval_cmd.set_defaults(func=commands._cmd_factor_eval)
+
+    backtest_cmd = factor_sub.add_parser(
+        "backtest",
+        help="模拟交易回测（日环撮合+约束+成本，净口径；含 walk-forward/benchmark）",
+    )
+    _add_factor_common_arguments(backtest_cmd)
+    backtest_cmd.set_defaults(func=commands._cmd_factor_backtest)
 
     sweep = factor_sub.add_parser("sweep", help="Parameter grid sweep over --set overrides")
     sweep.add_argument("name", nargs="?", help="Factor name (or supply via --config)")
@@ -1046,7 +1061,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     cbt.add_argument(
         "--strategy",
         default="quantile_ls_5",
-        help="策略名（默认 quantile_ls_5，与 fz factor run/daily_single 无 YAML 默认一致）；"
+        help="策略名（默认 quantile_ls_5，与 fz factor backtest/daily_single 无 YAML 默认一致）；"
         "支持 quantile_ls_5 / topn_long_only / factor_weighted 等既有 registry 类",
     )
     cbt.add_argument("--start", required=True, help="回测起 YYYYMMDD")

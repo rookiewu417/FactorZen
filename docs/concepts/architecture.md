@@ -173,7 +173,7 @@ graph TD
 |---|---:|---|
 | `cli/main.py` | 2,791 | 全仓最大文件，所有命令的实现入口 |
 | `discovery/factor_library.py` | 2,174 | 唯一登记簿，改动影响全部准入消费方 |
-| `daily/evaluation/backtest.py` | 1,473 | 单一日环引擎，sim / factor run / live 共用 |
+| `daily/evaluation/backtest.py` | 1,473 | 单一日环引擎，sim / factor backtest / live 共用 |
 | `discovery/lift_test.py` | 1,358 | 单一准入裁决，三个消费方共用 |
 | `agents/team_orchestrator.py` | 1,589 | 团队编排 + 末端 lift 钩子 |
 

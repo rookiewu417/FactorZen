@@ -24,7 +24,7 @@
 
 ```bash
 timeout 600 /usr/bin/time -f 'WALL_SEC %e' \
-  pixi run -- fz factor run momentum_20d --start 20230101 --end 20241231 --universe csi500
+  pixi run -- fz factor eval momentum_20d --start 20230101 --end 20241231 --universe csi500
 ```
 
 ---

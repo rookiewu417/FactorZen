@@ -357,7 +357,7 @@ session 目录（`workspace/mining_sessions/` · `workspace/mine_agent/` · `wor
 
 没进库的灰区候选也不算白跑：它们可以后续走 [`fz factor-library lift-test --session <session_dir>`](../concepts/factor-library.md#常用命令) 这条第二通道，单独做 lift 实验。
 
-复现一个入库因子：`fz factor-library list` 查到 `name`，然后 `fz factor run <name>`（manifest 的 `reproduce_note` 字段里也写了这条）。
+复现一个入库因子：`fz factor-library list` 查到 `name`，然后 `fz factor eval <name>`（manifest 的 `reproduce_note` 字段里也写了这条）。
 
 ---
 

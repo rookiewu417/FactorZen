@@ -19,7 +19,7 @@ FactorZen 严格区分两个根目录：
 
 | 目录 | 由谁产生 | 内容 |
 |---|---|---|
-| `factor_evaluations/` | `fz factor run` | 单因子评估 run，每 run 一个子目录 + 跨 run 索引 |
+| `factor_evaluations/` | `fz factor eval` / `fz factor backtest` | 单因子评估/回测 run，每 run 一个子目录 + 跨 run 索引 |
 | `mining_sessions/` | `fz mine search` | 随机/遗传搜索 session |
 | `mine_team/` | `fz mine team` | 多角色团队挖掘 session（含 lift 准入记录） |
 | `combinations/` | `fz combine run / from-session / from-library` | 多因子合成实验 |
@@ -67,7 +67,11 @@ FactorZen 严格区分两个根目录：
 | `ic.parquet` | 6.2 KB | 逐日 IC 序列 |
 | `quality.json` | 1.0 KB | 因子质量指标 |
 | `meta.json` | 651 B | 因子元信息 |
-| `walk_forward.json` | 42 B | 滚动验证结果；**`walk_forward.enabled=false` 时近乎空文件** |
+| `walk_forward.json` | 42 B | 滚动验证结果；**`walk_forward.enabled=false` 时近乎空文件**（仅 `fz factor backtest`） |
+| `signal.json` | ~1 KB | 信号层分层/多空毛口径统计 + 口径元信息（仅 `fz factor eval`） |
+| `signal_group_nav.parquet` | ~10 KB | 各分位组累计净值曲线（仅 `fz factor eval`） |
+
+两条轨道产出的文件集不同：`fz factor eval` 出 `signal.*` 不出 `walk_forward.json`，`fz factor backtest` 反之；`factor/universe/ic/quality/meta/report/manifest` 两轨共有。
 
 另有跨 run 索引 `factor_evaluations/experiment_index.jsonl`，每 run 追加一行：`run_id, timestamp, factor, universe, start, end, status, manifest_path`。
 
@@ -148,7 +152,7 @@ runs/artifacts/daily/charts/
 runs/artifacts/intraday/{factors,results,reports}/
 ```
 
-> ℹ️ **每次 `fz factor run` 产物落两份**：一份进 run 目录（自包含、可整体归档），一份进 `runs/artifacts/` 全局归档（按因子名+窗口命名，便于跨 run 比对）。manifest 的 `outputs` 字段同时记录两组路径。
+> ℹ️ **每次 `fz factor eval` / `fz factor backtest` 产物落两份**：一份进 run 目录（自包含、可整体归档），一份进 `runs/artifacts/` 全局归档（按因子名+窗口命名，便于跨 run 比对）。manifest 的 `outputs` 字段同时记录两组路径。
 
 qlib 系列因子会再分桶：因子名前缀 `qlib_alpha158_` → `qlib158/` 子目录，`qlib_alpha360_` → `qlib360/`（`settings.py` 的 `daily_output_bucket`）。
 

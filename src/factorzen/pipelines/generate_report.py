@@ -98,7 +98,7 @@ def _attach_close_adj(daily: pl.DataFrame, adj: pl.DataFrame) -> pl.DataFrame:
 def _load_daily_with_close_adj(start: str, end: str) -> pl.DataFrame:
     """load 日线并 join 复权因子派生 close_adj，供前向收益/IC 标签使用。
 
-    fz report build 历史上用未复权 close 构造前向收益，与 fz factor run（走
+    fz report build 历史上用未复权 close 构造前向收益，与 fz factor eval/backtest（走
     DailyContext.daily，优先 close_adj）口径分叉，且 A 股除权除息日 close 跳空
     会污染 IC/单调性/分层 IC。这里补上 close_adj；adj_factor 缺失时优雅回退。
     """
@@ -124,7 +124,7 @@ def _run_backtest_strategies(
     strategy_results: dict[str, BacktestResult] = {}
     specs = {spec.name: spec for spec in config.backtest.strategy_specs}
     # PIT ST 涨跌停阈值（4.8% 而非 9.8%）：与 daily_single 一致构建 is_st_by_date 传入，
-    # 否则本路径把回测期内曾 ST 的股票按主板 9.8% 判涨跌停，与 fz factor run 双路径漂移。
+    # 否则本路径把回测期内曾 ST 的股票按主板 9.8% 判涨跌停，与 fz factor backtest 双路径漂移。
     from factorzen.core.universe import build_is_st_by_date
     codes = daily["ts_code"].unique().to_list()
     trade_dates_list = sorted(daily["trade_date"].unique().to_list())
@@ -304,7 +304,7 @@ def _run(
 
         # ── 5. 预处理（与 daily_single 同口径：中性化 side data 齐备）+ 逐日 PIT 过滤 ──
         # 不带 side data 直调 pipeline 会让 industry+size 中性化静默跳过（仅 warning），
-        # 与 fz factor run 的因子值口径漂移——双路径登记簿。
+        # 与 fz factor eval/backtest 的因子值口径漂移——双路径登记簿。
         daily_basic_for_neutralize = None
         if (
             effective_config.preprocessing.neutralize
@@ -333,7 +333,7 @@ def _run(
             f"预处理完成 (去极值 → 填充 → 标准化 → 逐日 PIT 过滤, n={clean_df.height})"
         )
 
-        # ── 6. 前向收益（用复权价，与 fz factor run 口径一致，避免除权跳空污染 IC）──
+        # ── 6. 前向收益（用复权价，与 fz factor eval/backtest 口径一致，避免除权跳空污染 IC）──
         daily = _load_daily_with_close_adj(args.start, args.end)
         if daily.is_empty():
             logger.error("日线数据为空，无法计算收益")
@@ -440,7 +440,7 @@ def _run(
     progress.advance("benchmark")
     date_range = f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ {args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
     if quality_report is None:
-        # reuse 路径本轮未计算质量报告 → 从上次 fz factor run 落盘的 JSON 读取
+        # reuse 路径本轮未计算质量报告 → 从上次 fz factor eval/backtest 落盘的 JSON 读取
         quality_report_path = _quality_path(args.factor, args.start, args.end)
         if quality_report_path.exists():
             try:

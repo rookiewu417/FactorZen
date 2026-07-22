@@ -2,7 +2,7 @@
 
 落在 ``discovery`` 层：可静态依赖 ``intraday.sessions`` 与本包 ``expression`` /
 ``operators``（DAG：discovery → intraday → daily）。v1 DSL 仅允许逐元素算子
-（无 ``ts_*`` / 截面），日聚合后产出日频面板，供挖掘注入与 factor run / lift /
+（无 ``ts_*`` / 截面），日聚合后产出日频面板，供挖掘注入与 factor eval/backtest / lift /
 forward 复现共用。
 """
 

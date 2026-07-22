@@ -90,7 +90,7 @@ def quick_fitness(factor_df: pl.DataFrame, bundle: DataBundle,
     ret = bundle._segment_mask(bundle.fwd_returns, segment)
     # 挖掘路径只消费 1d Rank IC/IR/tstat（candidates.csv / score / 护栏均不读
     # ic_decay 5/10/20d）。显式 horizons=[1]，避免默认 [1,5,10,20] 重复截面相关。
-    # 正式 factor run / ic_overfit_report 仍走 compute_rank_ic 默认多 horizon。
+    # 正式 factor eval/backtest / ic_overfit_report 仍走 compute_rank_ic 默认多 horizon。
     res = compute_rank_ic(
         clean.select(["trade_date", "ts_code", "factor_clean"]),
         ret, factor_col="factor_clean", frequency="daily", horizons=[1],

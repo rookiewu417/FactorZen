@@ -81,9 +81,9 @@ pixi run -- fz factor list --freq daily
 
 **产物**：无，仅打印。
 
-### fz factor run
+### fz factor eval
 
-单因子评估：回测 + 指标（RankIC / 衰减 / 单调性 / 分位回测 / 换手 / walk-forward）。
+因子研究评估（信号层，毛口径）：RankIC / 衰减 / 单调性 / 信号多空分层 / 换手。**不跑**日环撮合、walk-forward、benchmark。
 
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
@@ -92,7 +92,7 @@ pixi run -- fz factor list --freq daily
 | `--end` | str | 无 | | 终止日 `YYYYMMDD` |
 | `--universe` | str | 无 | | 票池名（如 `csi500`） |
 | `--frequency` / `--freq` | `daily` \| `weekly` \| `monthly` | `daily` | | 因子注册频率（**无 `intraday`**，与 `factor new/list` 不同） |
-| `--benchmark` | str | 无 | | 基准指数代码 |
+| `--benchmark` | str | 无 | | 保留参数面一致；eval 轨忽略 |
 | `--config` | str | 无 | | YAML run config 路径 |
 | `--seed` | int | `42` | | 全局随机种子 |
 | `--set KEY=VALUE` | str，可重复 | 无 | | 覆盖任意配置字段 |
@@ -101,11 +101,37 @@ pixi run -- fz factor list --freq daily
 | `--exec-price-col` | str | `open_adj` | | 成交价格列。默认 `open_adj`（open[t+2]/open[t+1]） |
 
 ```bash
-pixi run -- fz factor run momentum_20 --start 20220101 --end 20241231 \
+pixi run -- fz factor eval momentum_20 --start 20220101 --end 20241231 \
+  --universe csi500
+```
+
+**产物**：`workspace/factor_evaluations/<run_id>/`（因子 parquet、`_ic.parquet`、`_signal.json`、`_signal_group_nav.parquet`、`_eval.html`、`_meta.json` 等）；run 记录同时进 `workspace/runs/`。HTML 报告文件名为 `{name}_{start}_{end}_eval.html`，不覆盖交易轨报告。
+
+### fz factor backtest
+
+模拟交易回测（日环撮合，净口径）：策略回测 + 约束/成本 + 换手 + walk-forward + 单调性 + benchmark。**不跑**信号层向量化回测。
+
+| 参数 | 类型 | 默认值 | 必填 | 说明 |
+|---|---|---|---|---|
+| `<name>` | str | 无 | | 因子名；可省略并改由 `--config` 提供 |
+| `--start` | str | 无 | | 起始日 `YYYYMMDD` |
+| `--end` | str | 无 | | 终止日 `YYYYMMDD` |
+| `--universe` | str | 无 | | 票池名（如 `csi500`） |
+| `--frequency` / `--freq` | `daily` \| `weekly` \| `monthly` | `daily` | | 因子注册频率（**无 `intraday`**，与 `factor new/list` 不同） |
+| `--benchmark` | str | 无 | | 基准指数代码（计算超额收益） |
+| `--config` | str | 无 | | YAML run config 路径 |
+| `--seed` | int | `42` | | 全局随机种子 |
+| `--set KEY=VALUE` | str，可重复 | 无 | | 覆盖任意配置字段 |
+| `--dry-run` | flag | 关 | | 只打印生效配置，不执行 |
+| `--exec-lag` | int | `1` | | 成交滞后（交易日）。默认 1=可实现口径；`0`=旧 close→close（不可实现，仅对照用） |
+| `--exec-price-col` | str | `open_adj` | | 成交价格列。默认 `open_adj`（open[t+2]/open[t+1]） |
+
+```bash
+pixi run -- fz factor backtest momentum_20 --start 20220101 --end 20241231 \
   --universe csi500 --set backtest.top_n=30
 ```
 
-**产物**：`workspace/factor_evaluations/<run_id>/`（指标、图表、`manifest.json`）；run 记录同时进 `workspace/runs/`。
+**产物**：`workspace/factor_evaluations/<run_id>/`（因子 parquet、`_ic.parquet`、`_walk_forward.json`、`{name}_{start}_{end}.html`、`_meta.json` 等）；文件名与拆分前单因子主命令一致，供 `fz report` / `fz runs list` 下游消费。
 
 ### fz factor sweep
 
@@ -1098,7 +1124,7 @@ pixi run -- fz combine from-library --market ashare --statuses active,probation 
 | `--run-dir` | str | — | 与 `--scores` 二选一 | combine 产物目录，读 `oos_scores/<method>.parquet` |
 | `--method` | str | `equal_weight` | | 配合 `--run-dir` 选方法 |
 | `--score-col` | str | 无（自动） | | 分数列；缺省取除键列外唯一数值列，多列则必填 |
-| `--strategy` | str | `quantile_ls_5` | | 与 `fz factor run` 默认一致；另支持 `topn_long_only` 等既有策略 |
+| `--strategy` | str | `quantile_ls_5` | | 与 `fz factor backtest` 默认一致；另支持 `topn_long_only` 等既有策略 |
 | `--start` | str | — | ✅ | 回测起 `YYYYMMDD` |
 | `--end` | str | — | ✅ | 回测止 `YYYYMMDD` |
 | `--universe` | str | `all_a` | | PIT membership 票池（全 A 为标准资产口径） |

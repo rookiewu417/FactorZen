@@ -124,11 +124,12 @@ pixi run -- fz risk build --start 20200101 --end 20241231 --universe all_a \
 
 ### 别踩的坑
 
-> ⚠️ **`fz risk build` 的产物当前没有下游消费方。**
-> `RISK_MODELS_DIR` 在全仓只有一个生产者（`pipelines/risk_build.py`），`src/` 内**零读取方**。
-> `fz portfolio build` **不会**去读 `workspace/risk_models/`，而是在进程内自建一个 `RiskModel()` 重算（`cli/main.py` 的 `_cmd_portfolio_build()`）。
+> ⚠️ **调过 `risk build` 的参数，就必须给 `portfolio build` 传 `--risk-dir`。**
+> `fz portfolio build --risk-dir workspace/risk_models/<run_id>`（仅 A 股）会读上面这批 parquet 复用；
+> **不传时**它在进程内自建一个全默认参数的 `RiskModel()`（`cli/main.py` 的 `_cmd_portfolio_build()`），
+> 你在 `risk build` 上调的 `--cov-half-life` / `--nw-lags` / `--spec-half-life` / `--spec-shrinkage` **不会**传到组合这边。
 >
-> 也就是说这两条命令看起来像流水线的上下游，实际是**各自独立**的。`fz risk build` 的用途是产出可审计的风险模型快照供人查看与分析，不是 `portfolio build` 的前置步骤——跳过它直接 `portfolio build` 完全可行，结果不受影响。想复用磁盘上的风险模型需要自己写代码加载。
+> 两种用法都合法：跳过 `risk build` 直接 `portfolio build` 仍然可行（默认参数自建），`risk build` 的产物也仍是可审计的风险模型快照。要让调参生效、或想省掉重算，就走 `--risk-dir`。
 
 > ⚠️ **回归窗口需要预热。** `momentum` 用 252 日滚动窗、`volatility` 用 60 日窗。如果只拉 `[start, end]` 的行情，窗口早期这些因子全空，模型会静默退化成少数几个非滚动因子。CLI 已经自动补足：`load_risk_inputs`（`pipelines/risk_build.py`）会往前多拉 **420 个日历日**（`risk_lookback_start`，约覆盖 252 个交易日 + 春节余量），回归区间本身不变。**自己调 `RiskModel.build` 时必须自己补这段历史。**
 

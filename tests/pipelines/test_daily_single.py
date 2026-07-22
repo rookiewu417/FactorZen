@@ -1031,7 +1031,6 @@ def test_eval_backtest_track_artifacts_suite(tmp_path):
             summary_stats={"long_short": {"ann_ret_gross": 0.1}},
             meta={"return_basis": "gross_signal_level"},
             n_groups=5,
-            cost_bps=0.0,
             group_nav=group_nav,
             summary=lambda: "signal ok",
         )

@@ -77,7 +77,7 @@ def test_signal_backtest_suite():
     def _section_gold_standard():
         factor_df, fwd = _gold_frames()
         res = run_signal_backtest(
-            factor_df, fwd, n_groups=3, cost_bps=0.0, factor_name="gold"
+            factor_df, fwd, n_groups=3, factor_name="gold"
         )
         assert res.meta.get("return_basis") == "gross_signal_level"
         assert res.meta.get("dropped_days") == 0
@@ -106,11 +106,10 @@ def test_signal_backtest_suite():
         for i, (g, e) in enumerate(zip(got_ls, _GOLD_LS, strict=True)):
             assert g == pytest.approx(e, abs=1e-12), f"ls[{i}]: got={g} exp={e}"
 
-        # cost_bps=0 → net == gross 逐位
-        for g, n in zip(
-            ls["ls_ret_gross"].to_list(), ls["ls_ret_net"].to_list(), strict=True
-        ):
-            assert g == pytest.approx(n, abs=1e-15)
+        # 信号轨是纯毛口径:不该出现任何 net/成本字段
+        assert "ls_ret_net" not in ls.columns
+        assert "nav_net" not in res.ls_nav.columns
+        assert not any(k.endswith("_net") for k in res.summary_stats["long_short"])
 
         # NAV 手算：cumprod(1+ret)，首日=1+ret
         # ls: 0.04,0.08,0.04,0.04 → nav: 1.04, 1.04*1.08, ...
@@ -170,8 +169,8 @@ def test_signal_backtest_suite():
 
     _section_group_formula()
 
-    # -- 换手与成本 --
-    def _section_turnover_cost():
+    # -- 换手率(纯毛口径,不折算成本) --
+    def _section_turnover():
         # 场景 A：两日 top/bottom 完全换仓
         # n_groups=3, 6 股；g0={s0,s1}, g2={s4,s5}
         # day0 factor 0..5；day1 反转 5..0 → top 从 {s4,s5} 换成 {s0,s1}
@@ -199,9 +198,8 @@ def test_signal_backtest_suite():
                 )
         factor_df = pl.DataFrame(f_rows)
         fwd = pl.DataFrame(r_rows)
-        cost_bps = 10.0  # 10bp
         res = run_signal_backtest(
-            factor_df, fwd, n_groups=3, cost_bps=cost_bps, factor_name="to_flip"
+            factor_df, fwd, n_groups=3, factor_name="to_flip"
         )
         ls = res.ls_returns.sort("trade_date")
         assert ls.height == 2
@@ -215,14 +213,6 @@ def test_signal_backtest_suite():
         # |Δ| 四只各 0.5 → sum=2.0 → *0.5=1.0；bottom 同理
         to1 = float(ls["ls_turnover"][1])
         assert to1 == pytest.approx(2.0, abs=1e-12)
-
-        # net - gross = -ls_turnover * cost_bps / 1e4
-        for i in range(2):
-            gross = float(ls["ls_ret_gross"][i])
-            net = float(ls["ls_ret_net"][i])
-            to = float(ls["ls_turnover"][i])
-            exp_diff = -to * cost_bps / 10000.0
-            assert (net - gross) == pytest.approx(exp_diff, abs=1e-15)
 
         # 场景 B：完全不换仓
         f_stable = []
@@ -248,25 +238,13 @@ def test_signal_backtest_suite():
             pl.DataFrame(f_stable),
             pl.DataFrame(r_stable),
             n_groups=3,
-            cost_bps=cost_bps,
         )
         ls2 = res2.ls_returns.sort("trade_date")
         assert float(ls2["ls_turnover"][0]) == pytest.approx(2.0, abs=1e-12)  # 建仓
         # 次日权重不变：leg_turnover=0 → ls_turnover=0
         assert float(ls2["ls_turnover"][1]) == pytest.approx(0.0, abs=1e-12)
 
-        # cost_bps=0 → net==gross
-        res0 = run_signal_backtest(
-            factor_df, fwd, n_groups=3, cost_bps=0.0
-        )
-        for g, n in zip(
-            res0.ls_returns["ls_ret_gross"].to_list(),
-            res0.ls_returns["ls_ret_net"].to_list(),
-            strict=True,
-        ):
-            assert g == pytest.approx(n, abs=1e-15)
-
-    _section_turnover_cost()
+    _section_turnover()
 
     # -- 退化守卫 --
     def _section_degenerate():
@@ -532,7 +510,7 @@ def test_two_track_consistency_under_controlled_conditions():
     fwd = compute_fwd_returns(price, horizons=[1], exec_lag=0, exec_price_col="close")
     sig = run_signal_backtest(
         factor, fwd, factor_col="factor_clean", n_groups=n_group,
-        cost_bps=0.0, horizons=[1], factor_name="consistency",
+        horizons=[1], factor_name="consistency",
     )
 
     # 信号轨 t 日 ls 收益(t→t+1) == 交易轨 t+1 日组合收益 → 错一位对齐
@@ -621,13 +599,12 @@ def test_silent_failure_guards_suite():
                 f_rows.append({"trade_date": d, "ts_code": code, "factor_clean": float(k)})
                 r_rows.append({"trade_date": d, "ts_code": code, "fwd_ret_1d": 0.01 * k})
         fdf, rdf = pl.DataFrame(f_rows), pl.DataFrame(r_rows)
-        # n_groups=1 时 top 组与 bottom 组是同一组:毛收益恒 0、换手照算,
-        # cost_bps>0 会凭空造出「稳定小亏」的曲线,且全程不报错。
+        # n_groups=1 时 top 组与 bottom 组是同一组 → 多空收益恒 0,是无意义的退化结果
         for bad in (1, 0, -3):
             with _pytest.raises(ValueError, match="n_groups"):
-                run_signal_backtest(fdf, rdf, n_groups=bad, cost_bps=2.0, horizons=[1])
+                run_signal_backtest(fdf, rdf, n_groups=bad, horizons=[1])
         # 合法值仍正常
-        ok = run_signal_backtest(fdf, rdf, n_groups=2, cost_bps=2.0, horizons=[1])
+        ok = run_signal_backtest(fdf, rdf, n_groups=2, horizons=[1])
         assert ok.ls_returns.height > 0
 
     _section_n_groups_guard()

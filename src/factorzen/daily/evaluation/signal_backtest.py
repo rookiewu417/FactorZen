@@ -1,8 +1,9 @@
 """向量化因子研究信号回测（毛收益口径）。
 
 与 ``backtest.py`` 日环撮合引擎分离：本模块只做分层/多空/IC 等信号层评价，
-**不含** 停牌/涨跌停/T+1/冲击成本等可交易性约束。输出的是研究口径毛收益，
-不可直接当可实现收益汇报。
+**不含** 停牌/涨跌停/T+1/容量约束与任何交易成本。输出**纯毛收益**——
+本轨刻意不提供成本参数：粗略的 bps 折算既非真实撮合、又会让人误以为这里能算净收益。
+要看成本与可实现性，走交易轨 ``fz factor backtest``。
 
 前向收益由调用方经 ``compute_fwd_returns``（含 exec_lag/exec_price_col）预计算后
 透传；本模块不调用 ``compute_fwd_returns``，遵守「四处同源」纪律。
@@ -49,12 +50,11 @@ _EMPTY_LS_RETURNS = pl.DataFrame(
     schema={
         "trade_date": pl.Utf8,
         "ls_ret_gross": pl.Float64,
-        "ls_ret_net": pl.Float64,
         "ls_turnover": pl.Float64,
     }
 )
 _EMPTY_LS_NAV = pl.DataFrame(
-    schema={"trade_date": pl.Utf8, "nav_gross": pl.Float64, "nav_net": pl.Float64}
+    schema={"trade_date": pl.Utf8, "nav_gross": pl.Float64}
 )
 
 _WARNING_LINE = (
@@ -68,11 +68,10 @@ class SignalBacktestResult:
 
     factor_name: str
     n_groups: int
-    cost_bps: float
     group_returns: pl.DataFrame  # trade_date, group, ret, n_stocks
     group_nav: pl.DataFrame  # trade_date, group, nav
-    ls_returns: pl.DataFrame  # trade_date, ls_ret_gross, ls_ret_net, ls_turnover
-    ls_nav: pl.DataFrame  # trade_date, nav_gross, nav_net
+    ls_returns: pl.DataFrame  # trade_date, ls_ret_gross, ls_turnover
+    ls_nav: pl.DataFrame  # trade_date, nav_gross
     ic: ICAnalysisResult
     monotonicity: MonotonicityResult
     turnover: TurnoverResult
@@ -83,14 +82,11 @@ class SignalBacktestResult:
         ls = self.summary_stats.get("long_short", {})
         ic = self.summary_stats.get("ic", {})
         lines = [
-            f"SignalBacktest: {self.factor_name}  n_groups={self.n_groups}  "
-            f"cost_bps={self.cost_bps}",
+            f"SignalBacktest: {self.factor_name}  n_groups={self.n_groups}  (毛口径)",
             f"  LS ann_ret_gross={ls.get('ann_ret_gross', 0.0):.4f}  "
             f"sharpe_gross={ls.get('sharpe_gross', 0.0):.2f}  "
             f"max_dd_gross={ls.get('max_dd_gross', 0.0):.2%}",
-            f"  LS ann_ret_net={ls.get('ann_ret_net', 0.0):.4f}  "
-            f"sharpe_net={ls.get('sharpe_net', 0.0):.2f}  "
-            f"avg_turnover={ls.get('avg_turnover', 0.0):.4f}",
+            f"  avg_turnover={ls.get('avg_turnover', 0.0):.4f}",
             f"  IC mean={ic.get('ic_mean', 0.0):.4f}  IR={ic.get('ir', 0.0):.2f}  "
             f"tstat={ic.get('tstat', 0.0):.2f}",
             f"  dropped_days={self.meta.get('dropped_days', 0)}",
@@ -135,12 +131,8 @@ def _zero_summary_stats() -> dict[str, Any]:
             "ann_ret_gross": 0.0,
             "sharpe_gross": 0.0,
             "max_dd_gross": 0.0,
-            "ann_ret_net": 0.0,
-            "sharpe_net": 0.0,
-            "max_dd_net": 0.0,
             "avg_turnover": 0.0,
             "ann_ret_gross_geo": 0.0,
-            "ann_ret_net_geo": 0.0,
             "cum_gross": 0.0,
             "cum_gross_ex_top1": float("nan"),
             "cum_gross_ex_top3": float("nan"),
@@ -284,7 +276,6 @@ def _empty_result(
     factor_name: str,
     factor_col: str,
     n_groups: int,
-    cost_bps: float,
     frequency: str,
     meta: dict[str, Any],
     ic: ICAnalysisResult | None = None,
@@ -294,7 +285,6 @@ def _empty_result(
     return SignalBacktestResult(
         factor_name=factor_name or factor_col,
         n_groups=n_groups,
-        cost_bps=cost_bps,
         group_returns=_EMPTY_GROUP_RETURNS.clear(),
         group_nav=_EMPTY_GROUP_NAV.clear(),
         ls_returns=_EMPTY_LS_RETURNS.clear(),
@@ -315,7 +305,6 @@ def run_signal_backtest(
     *,
     factor_col: str = "factor_clean",
     n_groups: int = 5,
-    cost_bps: float = 0.0,
     horizons: list[int] | None = None,
     frequency: str = "daily",
     factor_name: str = "",
@@ -329,8 +318,6 @@ def run_signal_backtest(
             前向收益口径由调用方决定并透传，本函数不重算。
         factor_col: 因子列名。
         n_groups: 截面分位组数。
-        cost_bps: 提示性单边成本（bp）；``ls_ret_net = gross − ls_turnover × cost_bps/1e4``。
-            cost_bps=0 时 net 与 gross 逐位相等。非撮合引擎。
         horizons: 透传 ``compute_rank_ic``。
         frequency: 频率标签。
         factor_name: 展示用名称。
@@ -345,7 +332,7 @@ def run_signal_backtest(
         3. 组收益 = 组内等权 mean(fwd_ret_1d)。
         4. ls_ret_gross = mean(group=n_groups-1) − mean(group=0)。
         5. 每腿换手 0.5·Σ|Δw|（等权，缺席 w=0，首日=1.0）；
-           ls_turnover = top + bottom；net = gross − turnover·cost_bps/1e4。
+           ls_turnover = top + bottom（**只作为信号换手强度的度量，不折算成本**）。
         6. NAV = cumprod(1+ret)，首日 nav=1+ret（无前置 1.0 行）。
     """
     out_meta: dict[str, Any] = dict(meta or {})
@@ -364,7 +351,7 @@ def run_signal_backtest(
         context="run_signal_backtest",
     )
     # 多空需要 top/bottom 两个不同的组;n_groups<2 时 top_g==0==bottom,
-    # ls_ret 恒 0 而换手照算 → cost_bps>0 会凭空造出「稳定小亏」的假信号。
+    # ls_ret 会恒 0（top 组与 bottom 组是同一组），是无意义的退化结果。
     if int(n_groups) < 2:
         raise ValueError(f"n_groups 必须 >=2(多空需要两个不同分组),收到 {n_groups}")
 
@@ -443,7 +430,6 @@ def run_signal_backtest(
             factor_name=name,
             factor_col=factor_col,
             n_groups=n_groups,
-            cost_bps=cost_bps,
             frequency=frequency,
             meta=out_meta,
             ic=ic_result,
@@ -475,7 +461,6 @@ def run_signal_backtest(
             factor_name=name,
             factor_col=factor_col,
             n_groups=n_groups,
-            cost_bps=cost_bps,
             frequency=frequency,
             meta=out_meta,
             ic=ic_result,
@@ -530,13 +515,7 @@ def run_signal_backtest(
         .with_columns(
             (pl.col("_top_to") + pl.col("_bot_to")).alias("ls_turnover"),
         )
-        .with_columns(
-            (
-                pl.col("ls_ret_gross")
-                - pl.col("ls_turnover") * (cost_bps / 10000.0)
-            ).alias("ls_ret_net")
-        )
-        .select(["trade_date", "ls_ret_gross", "ls_ret_net", "ls_turnover"])
+        .select(["trade_date", "ls_ret_gross", "ls_turnover"])
         .sort("trade_date")
     )
 
@@ -551,11 +530,8 @@ def run_signal_backtest(
     # 多空 NAV
     ls_nav = (
         ls_returns.sort("trade_date")
-        .with_columns(
-            (1.0 + pl.col("ls_ret_gross")).cum_prod().alias("nav_gross"),
-            (1.0 + pl.col("ls_ret_net")).cum_prod().alias("nav_net"),
-        )
-        .select(["trade_date", "nav_gross", "nav_net"])
+        .with_columns((1.0 + pl.col("ls_ret_gross")).cum_prod().alias("nav_gross"))
+        .select(["trade_date", "nav_gross"])
     )
 
     # 单调性：用 join 后、分组前过滤后的帧
@@ -581,11 +557,8 @@ def run_signal_backtest(
         }
 
     gross = ls_returns["ls_ret_gross"].to_numpy().astype(float)
-    net = ls_returns["ls_ret_net"].to_numpy().astype(float)
     ar_g, sh_g = _ann_ret_sharpe(gross, ppy)
-    ar_n, sh_n = _ann_ret_sharpe(net, ppy)
     nav_g = ls_nav["nav_gross"].to_numpy().astype(float)
-    nav_n = ls_nav["nav_net"].to_numpy().astype(float)
     to_arr = ls_returns["ls_turnover"].to_numpy().astype(float)
     avg_to = float(np.mean(to_arr)) if to_arr.size else 0.0
 
@@ -595,13 +568,9 @@ def run_signal_backtest(
             "ann_ret_gross": ar_g,
             "sharpe_gross": sh_g,
             "max_dd_gross": _max_drawdown(nav_g),
-            "ann_ret_net": ar_n,
-            "sharpe_net": sh_n,
-            "max_dd_net": _max_drawdown(nav_n),
             "avg_turnover": avg_to,
             "n_days": int(ls_returns.height),
             "ann_ret_gross_geo": geometric_ann_ret(gross, ppy),
-            "ann_ret_net_geo": geometric_ann_ret(net, ppy),
             # 结论是否被极少数极端日(常为不可交易的跳空)主导:三个数并排看
             "cum_gross": float(np.prod(1.0 + gross[np.isfinite(gross)]) - 1.0)
             if gross.size
@@ -621,7 +590,6 @@ def run_signal_backtest(
     return SignalBacktestResult(
         factor_name=name,
         n_groups=n_groups,
-        cost_bps=cost_bps,
         group_returns=group_returns,
         group_nav=group_nav,
         ls_returns=ls_returns,

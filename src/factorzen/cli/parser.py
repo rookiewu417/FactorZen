@@ -174,14 +174,6 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         dest="n_groups",
         help="截面分位组数（默认 5）；多空取最高组减最低组",
     )
-    eval_cmd.add_argument(
-        "--cost-bps",
-        type=float,
-        default=0.0,
-        dest="cost_bps",
-        help="提示性单边成本(bp)，仅用于给出 net 参考列；信号轨不做撮合，"
-        "可交易净值请用 fz factor backtest",
-    )
     eval_cmd.set_defaults(func=commands._cmd_factor_eval)
 
     backtest_cmd = factor_sub.add_parser(

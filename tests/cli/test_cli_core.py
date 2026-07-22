@@ -102,8 +102,7 @@ def test_pipeline_argv_forward_suite():
             # (曾漏接线——CLI 层收了参数但拼 argv 时没带,只看 --help 发现不了)
             "--n-groups",
             "5",
-            "--cost-bps",
-            "0.0",
+            # 信号轨不该有成本参数:它是纯毛口径,成本走 fz factor backtest
         ]
         assert tracks == ["eval"]
 

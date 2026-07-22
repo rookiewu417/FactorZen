@@ -83,7 +83,10 @@ pixi run -- fz factor list --freq daily
 
 ### fz factor eval
 
-因子研究评估（信号层，毛口径）：RankIC / 衰减 / 单调性 / 信号多空分层 / 换手。**不跑**日环撮合、walk-forward、benchmark。
+因子研究评估（信号层，**纯毛口径**）：RankIC / 衰减 / 单调性 / 信号多空分层 / 换手。**不跑**日环撮合、walk-forward、benchmark。
+
+> ⚠️ 本轨**刻意不提供任何成本参数**。粗略的 bps 折算既不是真实撮合，又会让人误以为这里能算净收益。
+> 要看成本、约束与可实现性，走 [`fz factor backtest`](#fz-factor-backtest)。换手率仍会给出，但它只是**信号换手强度的度量**，不折算成本。
 
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
@@ -99,10 +102,11 @@ pixi run -- fz factor list --freq daily
 | `--dry-run` | flag | 关 | | 只打印生效配置，不执行 |
 | `--exec-lag` | int | `1` | | 成交滞后（交易日）。默认 1=可实现口径；`0`=旧 close→close（不可实现，仅对照用） |
 | `--exec-price-col` | str | `open_adj` | | 成交价格列。默认 `open_adj`（open[t+2]/open[t+1]） |
+| `--n-groups` | int | `5` | | 截面分位组数；多空取最高组减最低组 |
 
 ```bash
 pixi run -- fz factor eval momentum_20 --start 20220101 --end 20241231 \
-  --universe csi500
+  --universe csi500 --n-groups 10
 ```
 
 **产物**（两处落盘，命名规则不同）：  

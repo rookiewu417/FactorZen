@@ -733,7 +733,9 @@ def test_combine_and_evaluate_signal_suite():
     groups = set(signal_result.group_returns["group"].to_list())
     assert groups == {0, 1, 2, 3, 4}, f"expected 5 groups, got {groups}"
     assert signal_result.n_groups == 5
-    assert signal_result.cost_bps == 0.0
+    # 信号轨纯毛口径:结果对象上不该再有成本/净收益字段
+    assert not hasattr(signal_result, "cost_bps")
+    assert "ls_ret_net" not in signal_result.ls_returns.columns
 
 
 # ── 2. 允许负权后：符号必须跟着 IC 符号走 ────────────────────────────────────

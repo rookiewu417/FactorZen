@@ -822,7 +822,6 @@ def run_factor_eval(
             ret_df,
             factor_col="factor_clean",
             n_groups=int(getattr(args, "n_groups", 5) or 5),
-            cost_bps=float(getattr(args, "cost_bps", 0.0) or 0.0),
             frequency=args.frequency,
             factor_name=factor.name,
             meta={
@@ -845,7 +844,6 @@ def run_factor_eval(
                 "summary_stats": signal_result.summary_stats,
                 "meta": signal_result.meta,
                 "n_groups": signal_result.n_groups,
-                "cost_bps": signal_result.cost_bps,
             },
             ensure_ascii=False,
             indent=2,
@@ -1149,10 +1147,6 @@ def main(*, track: str = "backtest") -> None:
     parser.add_argument(
         "--n-groups", type=int, default=5, dest="n_groups",
         help="信号轨截面分位组数（默认 5）",
-    )
-    parser.add_argument(
-        "--cost-bps", type=float, default=0.0, dest="cost_bps",
-        help="信号轨提示性单边成本(bp)，默认 0",
     )
     parser.add_argument(
         "--metrics-out",

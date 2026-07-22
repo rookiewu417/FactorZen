@@ -76,12 +76,11 @@ def _make_signal(
             schema={
                 "trade_date": pl.Date,
                 "ls_ret_gross": pl.Float64,
-                "ls_ret_net": pl.Float64,
                 "ls_turnover": pl.Float64,
             }
         )
         ls_nav = pl.DataFrame(
-            schema={"trade_date": pl.Date, "nav_gross": pl.Float64, "nav_net": pl.Float64}
+            schema={"trade_date": pl.Date, "nav_gross": pl.Float64}
         )
     else:
         gr_rows = []
@@ -109,7 +108,6 @@ def _make_signal(
                 {
                     "trade_date": d,
                     "ls_ret_gross": rg,
-                    "ls_ret_net": rn,
                     "ls_turnover": 0.15 + 0.01 * (i % 3),
                 }
             )
@@ -118,7 +116,6 @@ def _make_signal(
             {
                 "trade_date": dates,
                 "nav_gross": np.cumprod(1 + ls_returns["ls_ret_gross"].to_numpy()),
-                "nav_net": np.cumprod(1 + ls_returns["ls_ret_net"].to_numpy()),
             }
         )
 
@@ -132,7 +129,6 @@ def _make_signal(
     return types.SimpleNamespace(
         factor_name="momentum_20d",
         n_groups=n_groups,
-        cost_bps=10.0,
         group_returns=group_returns,
         group_nav=group_nav,
         ls_returns=ls_returns,

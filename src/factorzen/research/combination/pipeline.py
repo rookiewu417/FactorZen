@@ -46,7 +46,6 @@ def combine_and_evaluate(
     price_df: pl.DataFrame,
     method: str = "equal_weight",
     horizons: list[int] | None = None,
-    cost_bps: float = 0.0,
     ret_col: str = "ret",
 ) -> tuple[pl.DataFrame, ICAnalysisResult, SignalBacktestResult]:
     """合成多个因子并做信号层 IC / 分层评估。
@@ -60,7 +59,6 @@ def combine_and_evaluate(
         price_df: 含 trade_date, ts_code, {ret_col} 的价格 DataFrame
         method: 合成方法 ("equal_weight" | "ic_weighted" | "max_ir")
         horizons: IC 衰减窗口（默认 [1, 5]）
-        cost_bps: 信号层提示性单边成本（bp），默认 0
         ret_col: 单日收益列名
 
     Returns:
@@ -107,7 +105,6 @@ def combine_and_evaluate(
         ret_df,
         factor_col="factor_clean",
         n_groups=5,
-        cost_bps=cost_bps,
     )
 
     return combined, ic_result, signal_result

@@ -436,7 +436,8 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
             quality_path.write_text("{}", encoding="utf-8")
             raise RuntimeError("daily boom")
 
-        mp.setattr(mod, "_run", fail_after_quality)
+        # main() 默认 track="backtest" → 分派到 run_factor_backtest（双轨拆分后）
+        mp.setattr(mod, "run_factor_backtest", fail_after_quality)
 
         with pytest.raises(SystemExit) as exc:
             mod.main()

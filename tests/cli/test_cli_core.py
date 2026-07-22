@@ -98,6 +98,12 @@ def test_pipeline_argv_forward_suite():
             "1",
             "--exec-price-col",
             "open_adj",
+            # 信号轨专属旋钮:eval 子命令独有,必须真的转发下去
+            # (曾漏接线——CLI 层收了参数但拼 argv 时没带,只看 --help 发现不了)
+            "--n-groups",
+            "5",
+            "--cost-bps",
+            "0.0",
         ]
         assert tracks == ["eval"]
 

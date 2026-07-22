@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from factorzen.config.constants import TRADING_DAYS_PER_YEAR
 from factorzen.core.dates import with_iso_date
 from factorzen.core.logger import get_logger
 from factorzen.core.validation import require_columns
@@ -30,7 +31,8 @@ from factorzen.daily.evaluation.turnover import TurnoverResult, compute_turnover
 
 _logger = get_logger(__name__)
 
-_TRADING_DAYS = 252
+# 年化基数单一真源(引擎 backtest.py 导入同一常量),避免两轨漂移
+_TRADING_DAYS = TRADING_DAYS_PER_YEAR
 
 _EMPTY_GROUP_RETURNS = pl.DataFrame(
     schema={
@@ -145,25 +147,45 @@ def _zero_summary_stats() -> dict[str, Any]:
     }
 
 
-def _ann_ret_sharpe(rets: np.ndarray) -> tuple[float, float]:
-    """年化收益与 Sharpe；近常数序列 std=0 → sharpe=0.0。"""
+def periods_per_year(frequency: str) -> float:
+    """一年多少期。``--frequency`` 是可达 CLI 选项，硬编码 252 会把周频年化放大约
+    4.8 倍、月频约 21 倍。日频复用 ``config.constants`` 的单一真源。
+    """
+    return {"daily": float(_TRADING_DAYS), "weekly": 52.0, "monthly": 12.0}.get(
+        (frequency or "daily").lower(), float(_TRADING_DAYS)
+    )
+
+
+def _ann_ret_sharpe(rets: np.ndarray, ppy: float = float(_TRADING_DAYS)) -> tuple[float, float]:
+    """年化收益与 Sharpe；近常数序列 std=0 → sharpe=0.0。
+
+    ``ddof=0`` 与交易轨 ``backtest._summary_stats`` 一致——两轨 Sharpe 会被并排比较，
+    口径必须同源（样本标准差 ddof=1 在 n 小时会让信号轨系统性偏低）。
+    """
     valid = rets[np.isfinite(rets)]
     if len(valid) == 0:
         return 0.0, 0.0
-    ann_ret = float(np.mean(valid) * _TRADING_DAYS)
-    std = float(np.std(valid, ddof=1)) if len(valid) > 1 else 0.0
-    ann_vol = std * math.sqrt(_TRADING_DAYS)
+    ann_ret = float(np.mean(valid) * ppy)
+    std = float(np.std(valid)) if len(valid) > 1 else 0.0
+    ann_vol = std * math.sqrt(ppy)
     sharpe = ann_ret / ann_vol if ann_vol > 0 else 0.0
     return ann_ret, sharpe
 
 
 def _max_drawdown(nav: np.ndarray) -> float:
-    """净值相对历史峰值的最大回撤（负数或 0）。"""
+    """净值相对历史峰值的最大回撤（负数或 0）。
+
+    前置起点 1.0 与交易轨 ``backtest._summary_stats`` 的
+    ``cum = concatenate([[1.0], cumprod(1+r)])`` 对齐：``nav`` 序列自身从 ``1+r0`` 起，
+    不补起点就把**首日下跌**排除在回撤之外，结果系统性偏乐观
+    （nav=[0.90,0.95,1.10] 会得 0.0，真实值 −10%）。
+    """
     if nav.size == 0:
         return 0.0
-    peak = np.maximum.accumulate(nav)
+    full = np.concatenate([[1.0], nav])
+    peak = np.maximum.accumulate(full)
     with np.errstate(divide="ignore", invalid="ignore"):
-        dd = np.where(peak > 0, nav / peak - 1.0, 0.0)
+        dd = np.where(peak > 0, full / peak - 1.0, 0.0)
     return float(np.min(dd))
 
 
@@ -288,7 +310,9 @@ def run_signal_backtest(
         6. NAV = cumprod(1+ret)，首日 nav=1+ret（无前置 1.0 行）。
     """
     out_meta: dict[str, Any] = dict(meta or {})
-    out_meta["return_basis"] = "gross_signal_level"
+    # setdefault 而非直接赋值:调用方若已声明更具体的口径(如某条链路自定义的
+    # 收益基准),不该被本模块无条件覆盖掉。
+    out_meta.setdefault("return_basis", "gross_signal_level")
     out_meta.setdefault("dropped_days", 0)
     name = factor_name or factor_col
 
@@ -312,6 +336,18 @@ def run_signal_backtest(
     rdf = with_iso_date(fwd_returns)
     # NaN 传染防线：聚合跳过 null 但被 NaN 污染
     rdf = rdf.with_columns(pl.col("fwd_ret_1d").fill_nan(None))
+
+    # (trade_date, ts_code) 重复会在 join 后按笛卡尔积放大：重复股在组均值与等权
+    # 权重里被双计，n_stocks 也虚高。同仓 _zscore_and_merge 已有同类告警。
+    for _frame, _label in ((fdf, "factor_df"), (rdf, "fwd_returns")):
+        _dups = _frame.height - _frame.select(["trade_date", "ts_code"]).unique().height
+        if _dups > 0:
+            _logger.warning(
+                "%s 含 %d 行重复 (trade_date, ts_code)，join 后会被重复计数，"
+                "组均值/权重将失真——请先去重",
+                _label,
+                _dups,
+            )
 
     # 辅助指标基于归一化后的输入（即使主路径退化也尽量给出 IC/换手/单调性）。
     # 只接 ValueError:polars 的 SchemaError 等不是 ValueError 子类,无差别吞掉会把
@@ -379,12 +415,14 @@ def run_signal_backtest(
     merged = merged.sort(["trade_date", "ts_code"])
     grouped = assign_quantile_groups(merged, factor_col=factor_col, n_groups=n_groups)
 
-    # 当日有效样本数 < n_groups → 整日剔除
+    # 当日有效样本数 < n_groups → 整日剔除。
+    # 分母取**输入**的唯一日期数,不是 join+过滤后还剩行的日子——否则「当日 0 个
+    # 有效样本」(全 NaN / join 零命中)这类整日消失的情况会记成 dropped_days=0,
+    # 与「一天都没丢」不可区分。
+    input_days = factor_df.select("trade_date").unique().height
     day_counts = grouped.group_by("trade_date").agg(pl.len().alias("_n_valid"))
-    all_days = day_counts.height
     keep_days = day_counts.filter(pl.col("_n_valid") >= n_groups)
-    dropped = all_days - keep_days.height
-    out_meta["dropped_days"] = int(dropped)
+    out_meta["dropped_days"] = int(max(0, input_days - keep_days.height))
 
     grouped = grouped.join(
         keep_days.select("trade_date"), on="trade_date", how="inner"
@@ -489,17 +527,19 @@ def run_signal_backtest(
         n_groups=n_groups,
     )
 
-    # summary_stats
+    # summary_stats（年化基数随 frequency，非硬编码 252）
+    ppy = periods_per_year(frequency)
+    out_meta["periods_per_year"] = ppy
     groups_stats: dict[int, dict[str, float]] = {}
     for g in range(n_groups):
         g_rets = group_returns.filter(pl.col("group") == g)["ret"].to_numpy()
-        ar, sh = _ann_ret_sharpe(np.asarray(g_rets, dtype=float))
+        ar, sh = _ann_ret_sharpe(np.asarray(g_rets, dtype=float), ppy)
         groups_stats[g] = {"ann_ret": ar, "sharpe": sh}
 
     gross = ls_returns["ls_ret_gross"].to_numpy().astype(float)
     net = ls_returns["ls_ret_net"].to_numpy().astype(float)
-    ar_g, sh_g = _ann_ret_sharpe(gross)
-    ar_n, sh_n = _ann_ret_sharpe(net)
+    ar_g, sh_g = _ann_ret_sharpe(gross, ppy)
+    ar_n, sh_n = _ann_ret_sharpe(net, ppy)
     nav_g = ls_nav["nav_gross"].to_numpy().astype(float)
     nav_n = ls_nav["nav_net"].to_numpy().astype(float)
     to_arr = ls_returns["ls_turnover"].to_numpy().astype(float)

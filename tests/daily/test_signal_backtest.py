@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 
 import polars as pl
@@ -365,16 +366,9 @@ def test_signal_backtest_suite():
             }
         )
         res = run_signal_backtest(f, r, n_groups=3)
-        # s5 因 fill_nan+drop 被剔除后当日剩 5 股 ≥ 3，仍保留
-        # 但 s5 无 fwd → join 后不在 grouped
-        # 有效：s0..s4 五只；group 公式 max_rank=5：
-        # rank1→0,2→0,3→1,4→2,5→2  即 g0={s0,s1}, g1={s2}, g2={s3,s4}
-        # 等等——s5 被 drop 后因子截面变化！更干净的做法：只让 g 内一个 ret 为 nan，
-        # 但因子全有效；spec 说 fill_nan 后再 drop null on fwd_ret_1d，
-        # 所以该股整个不参与。
-        #
-        # 手算（5 有效股, n_groups=3）：
-        # rank s0..s4 → groups: (0)*3//5=0,1*3//5=0,2*3//5=1,3*3//5=1,4*3//5=2
+        # s5 因 fill_nan+drop 被剔除后当日剩 5 股 ≥ 3，仍保留；
+        # s5 无有效 fwd → 不参与分组。手算（5 有效股, n_groups=3）：
+        # rank s0..s4 → groups: 0*3//5=0, 1*3//5=0, 2*3//5=1, 3*3//5=1, 4*3//5=2
         # g0={s0,s1} mean=(0.01+0.02)/2=0.015
         # g1={s2,s3} mean=(0.03+0.04)/2=0.035
         # g2={s4} mean=0.10
@@ -383,9 +377,8 @@ def test_signal_backtest_suite():
         assert g2 == pytest.approx(0.10, abs=1e-12)
         g0 = float(gr.filter(pl.col("group") == 0)["ret"][0])
         assert g0 == pytest.approx(0.015, abs=1e-12)
-
-        # 组均值非 NaN（NaN 传染防线）
-        assert g2 == g2
+        # 组均值非 NaN（NaN 传染防线）：有限数，且与手算一致已由 approx 保证
+        assert math.isfinite(g2)
 
     _section_nan_ret()
 
@@ -638,3 +631,69 @@ def test_silent_failure_guards_suite():
         assert ok.ls_returns.height > 0
 
     _section_n_groups_guard()
+
+
+def test_metric_conventions_match_trading_track():
+    """信号轨的 MaxDD / Sharpe / 年化基数必须与交易轨同源,否则两轨数字不可比。"""
+    import numpy as np
+
+    from factorzen.config.constants import TRADING_DAYS_PER_YEAR
+    from factorzen.daily.evaluation.signal_backtest import (
+        _ann_ret_sharpe,
+        _max_drawdown,
+        periods_per_year,
+    )
+
+    # -- MaxDD 必须含首日回撤(交易轨 cum 前置 1.0,信号轨不补就系统性偏乐观) --
+    nav = np.array([0.90, 0.95, 1.10])
+    # 独立手算:起点 1.0 → 0.90 是 −10%,之后 peak 仍是 1.0,0.95/1.0−1=−5%
+    assert _max_drawdown(nav) == pytest.approx(-0.10, abs=1e-12), (
+        "首日下跌未计入回撤 → 数字偏乐观"
+    )
+    # 单调上涨无回撤
+    assert _max_drawdown(np.array([1.05, 1.10])) == pytest.approx(0.0, abs=1e-12)
+
+    # -- Sharpe 用 ddof=0(与引擎 np.std 默认一致) --
+    rets = np.array([0.01, -0.005, 0.02, 0.0, 0.015])
+    ar, sh = _ann_ret_sharpe(rets, float(TRADING_DAYS_PER_YEAR))
+    # 独立手算,不调用被测 helper
+    mean = float(np.mean(rets))
+    std0 = float(np.std(rets))  # ddof=0
+    exp_ar = mean * TRADING_DAYS_PER_YEAR
+    exp_sh = exp_ar / (std0 * np.sqrt(TRADING_DAYS_PER_YEAR))
+    assert ar == pytest.approx(exp_ar, rel=1e-12)
+    assert sh == pytest.approx(exp_sh, rel=1e-12)
+    # ddof=1 会给出不同答案 —— 确认我们没用它
+    std1 = float(np.std(rets, ddof=1))
+    assert abs(std1 - std0) > 1e-6, "构造前提:两种 ddof 应有可分辨差异"
+    assert sh != pytest.approx(exp_ar / (std1 * np.sqrt(TRADING_DAYS_PER_YEAR)), rel=1e-9)
+
+    # -- 年化基数随 frequency,不再硬编码 252 --
+    assert periods_per_year("daily") == float(TRADING_DAYS_PER_YEAR)
+    assert periods_per_year("weekly") == 52.0
+    assert periods_per_year("monthly") == 12.0
+    assert periods_per_year("") == float(TRADING_DAYS_PER_YEAR)  # 缺省回落日频
+
+
+def test_grouping_is_row_order_invariant():
+    """并列值的分组不得依赖输入行序,否则同一份数据两次跑出不同结果。
+
+    ordinal rank 按行序打散并列;并列块横跨分组边界时,正序与逆序会得到不同分组
+    (实测 monotonicity 的 ols_slope 从 0.200 变 0.100)。离散/事件类因子并列极多。
+    """
+    from factorzen.daily.evaluation.grouping import assign_quantile_groups
+
+    d = date(2024, 1, 1)
+    # 6 只票 3 组,因子值 [0,0,0,0,1,1] —— 并列块横跨 g0/g1 边界
+    rows = [
+        {"trade_date": d, "ts_code": c, "factor_clean": v}
+        for c, v in zip(["a", "b", "c", "d", "e", "f"], [0.0, 0.0, 0.0, 0.0, 1.0, 1.0], strict=True)
+    ]
+    fwd = pl.DataFrame(rows)
+    rev = pl.DataFrame(list(reversed(rows)))
+
+    g1 = assign_quantile_groups(fwd, n_groups=3).sort("ts_code")
+    g2 = assign_quantile_groups(rev, n_groups=3).sort("ts_code")
+    assert g1["group"].to_list() == g2["group"].to_list(), (
+        f"行序不同得到不同分组:{g1['group'].to_list()} vs {g2['group'].to_list()}"
+    )

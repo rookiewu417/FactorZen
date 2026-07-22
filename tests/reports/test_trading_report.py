@@ -170,7 +170,7 @@ def test_trading_report_suite():
             "回撤水下图",
             "成本侵蚀瀑布图",
             "敞口时序",
-            "拒单原因分布",
+            "成交受限原因分布",
             "月度收益热力图",
             "换手率与累计成本",
             "滚动 Sharpe",
@@ -375,3 +375,71 @@ def test_cost_erosion_not_reported_when_gross_is_nonpositive():
     # 毛收益显著为正:正常给出数值(手算:60×0.002=0.12 毛,60×0.0006=0.036 成本 → 30%)
     pos = compute_cost_erosion(_bt(0.002).nav)
     assert pos["erosion_ratio"] == pytest.approx(0.036 / 0.12, rel=1e-9)
+
+
+def test_net_exposure_excludes_synthetic_base_row():
+    """引擎前置的合成起点行不得算进敞口均值。
+
+    backtest._build_nav_frame 会在首个信号日前插一条 nav=1.0/cash_weight=1.0/
+    收益全 0 的行,它不是真实交易日。算进均值会把结果系统性往 0 拉(偏差约 1/(n+1),
+    短窗口下达数个百分点)。
+    """
+    n = 20
+    d = _dates(n + 1)
+    # 合成 base 行 + n 个真实日,真实日 cash_weight 恒 0.2 → 真实净敞口恒 0.80
+    rows = [{
+        "trade_date": d[0], "gross_return": 0.0, "cost": 0.0, "borrow_cost": 0.0,
+        "net_return": 0.0, "nav": 1.0, "cash_weight": 1.0,
+    }]
+    nav_v = 1.0
+    for i in range(n):
+        nav_v *= 1.001
+        rows.append({
+            "trade_date": d[i + 1], "gross_return": 0.0012, "cost": 0.0001,
+            "borrow_cost": 0.0001, "net_return": 0.001, "nav": nav_v,
+            "cash_weight": 0.2,
+        })
+    nav = pl.DataFrame(rows)
+
+    got = compute_avg_net_exposure(nav)
+    assert got == pytest.approx(0.80, abs=1e-12), (
+        f"应为真实日的 0.80,实得 {got}"
+        "(含 base 行时会被拉到 0.80*n/(n+1))"
+    )
+    # 确认 base 行确实有拉低效应(否则这个测试没有判别力)
+    naive = float(1.0 - np.mean(nav["cash_weight"].to_numpy()))
+    assert abs(naive - 0.80) > 1e-3, "构造前提:含 base 行的朴素均值应明显偏离"
+
+    # 没有 base 行的帧不得被误删首行
+    plain = nav.slice(1)
+    assert compute_avg_net_exposure(plain) == pytest.approx(0.80, abs=1e-12)
+
+
+def test_dirty_dtype_degrades_per_section_not_whole_page():
+    """脏 dtype 只让相关区块「未计算」,不得让整页降级。
+
+    契约是「缺数据只让该区块显示未计算」。dtype 转换若在 try 之外,ValueError 会
+    逃到 generate_* 外层的全捕获,返回两百来字节的降级页——8 个区块全丢。
+    """
+    nav = pl.DataFrame(
+        {
+            "trade_date": _dates(3),
+            "gross_return": ["a", "b", "c"],  # Utf8:np.asarray(dtype=float) 必炸
+            "cost": [0.0, 0.0, 0.0],
+            "borrow_cost": [0.0, 0.0, 0.0],
+            "net_return": [0.001, 0.001, 0.001],
+            "nav": [1.001, 1.002, 1.003],
+            "cash_weight": [0.2, 0.2, 0.2],
+        }
+    )
+    bt = SimpleNamespace(
+        nav=nav, returns=nav, positions=pl.DataFrame(),
+        trades=pl.DataFrame(schema={"block_reason": pl.Utf8}),
+        summary_stats={}, config={},
+    )
+    html = generate_trading_report("dirty_dtype", bt)
+    assert "报告生成异常" not in html, "整页降级了——契约要求单区块降级"
+    assert html.count("<h2") >= 8, f"区块被整体丢弃,只剩 {html.count('<h2')} 个"
+    assert TRADING_BANNER in html
+    # 受影响的成本区块应显示未计算而非崩溃
+    assert compute_cost_erosion(nav) is None

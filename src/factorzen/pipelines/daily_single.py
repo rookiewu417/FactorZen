@@ -271,7 +271,15 @@ def _build_dry_run_payload(
     return payload
 
 
-def _existing_run_outputs(factor_name: str, start: str, end: str) -> dict[str, str]:
+def _existing_run_outputs(
+    factor_name: str, start: str, end: str, *, track: str = "backtest"
+) -> dict[str, str]:
+    """失败时认领已落盘的部分产物。**必须按 track 分候选集**。
+
+    全局归档目录是跨 run 共享的，只按 ``path.exists()`` 认领会把**上一次别的轨道**
+    留下的陈旧文件记成本次产物：eval 轨永远不产 ``walk_forward.json``，报告也落
+    ``{prefix}_eval.html`` 而非 ``{prefix}.html``。
+    """
     prefix = f"{factor_name}_{start}_{end}"
     factor_dir = daily_factor_output_dir(factor_name)
     result_dir = daily_result_output_dir(factor_name)
@@ -280,9 +288,14 @@ def _existing_run_outputs(factor_name: str, start: str, end: str) -> dict[str, s
         "factor": factor_dir / f"{prefix}.parquet",
         "ic": result_dir / f"{prefix}_ic.parquet",
         "quality_report": result_dir / f"{prefix}_quality.json",
-        "walk_forward_summary": result_dir / f"{prefix}_walk_forward.json",
-        "report": report_dir / f"{prefix}.html",
     }
+    if track == "eval":
+        candidates["signal"] = result_dir / f"{prefix}_signal.json"
+        candidates["signal_group_nav"] = result_dir / f"{prefix}_signal_group_nav.parquet"
+        candidates["report"] = report_dir / f"{prefix}_eval.html"
+    else:
+        candidates["walk_forward_summary"] = result_dir / f"{prefix}_walk_forward.json"
+        candidates["report"] = report_dir / f"{prefix}.html"
     return {name: str(path) for name, path in candidates.items() if path.exists()}
 
 
@@ -794,11 +807,9 @@ def run_factor_eval(
     logger.info(f"meta 已更新: {meta_path}")
     progress.advance("save-core")
 
-    # ── 11. 单调性（与信号轨同一信号口径；日志侧车，信号报告读 signal_result.monotonicity）──
-    _ = _compute_monotonicity_result(backtest_df, ret_df, n_groups=5)
-    progress.advance("mono")
-
-    # ── 11b. 信号层回测（eval 轨主产物；失败直接上抛）──
+    # ── 11. 信号层回测（eval 轨主产物；失败直接上抛）──
+    # 单调性不在此处单算:run_signal_backtest 内部已算过一次，重复计算纯浪费，
+    # 日志改用返回结果里的那份（见下方 logger.info）。
     _sig_exec_lag = int(
         getattr(args, "exec_lag", 1)
         if getattr(args, "exec_lag", None) is not None
@@ -810,7 +821,8 @@ def run_factor_eval(
             backtest_df,
             ret_df,
             factor_col="factor_clean",
-            n_groups=5,
+            n_groups=int(getattr(args, "n_groups", 5) or 5),
+            cost_bps=float(getattr(args, "cost_bps", 0.0) or 0.0),
             frequency=args.frequency,
             factor_name=factor.name,
             meta={
@@ -820,6 +832,10 @@ def run_factor_eval(
             },
         )
     logger.info(f"\n{signal_result.summary()}")
+    _mono = getattr(signal_result, "monotonicity", None)
+    if _mono is not None and getattr(_mono, "monotonicity_score", None) is not None:
+        logger.info(f"单调性: score={_mono.monotonicity_score:.3f}")
+    progress.advance("mono")
     signal_json_path = (
         result_output_dir / f"{factor.name}_{args.start}_{args.end}_signal.json"
     )
@@ -1131,6 +1147,14 @@ def main(*, track: str = "backtest") -> None:
         help="成交价格列。默认 open_adj（可实现口径 open[t+2]/open[t+1]）",
     )
     parser.add_argument(
+        "--n-groups", type=int, default=5, dest="n_groups",
+        help="信号轨截面分位组数（默认 5）",
+    )
+    parser.add_argument(
+        "--cost-bps", type=float, default=0.0, dest="cost_bps",
+        help="信号轨提示性单边成本(bp)，默认 0",
+    )
+    parser.add_argument(
         "--metrics-out",
         default=None,
         dest="metrics_out",
@@ -1191,7 +1215,9 @@ def main(*, track: str = "backtest") -> None:
                 outputs = run_fn(args, effective_config, timer=timer)
             except Exception:
                 record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
-                for name, path in _existing_run_outputs(args.factor, args.start, args.end).items():
+                for name, path in _existing_run_outputs(
+                    args.factor, args.start, args.end, track=track
+                ).items():
                     record_experiment_output(exp_dir, name, path)
                 raise
             record_experiment_metadata(exp_dir, "stage_timings", timer.timings)

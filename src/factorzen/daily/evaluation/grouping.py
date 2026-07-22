@@ -29,6 +29,11 @@ def assign_quantile_groups(
         if "group" not in out.columns:
             return out.with_columns(pl.lit(None, dtype=pl.Int32).alias("group"))
         return out
+    # ordinal rank 按**行序**打散并列值：并列块横跨分组边界时，输入行序不同会得到
+    # 不同的分组结果（实测同一份数据正序 vs 逆序，monotonicity 的 ols_slope 从
+    # 0.200 变 0.100）。离散/事件类因子（涨跌停状态等）并列极多，必须先定序才可复现。
+    if "ts_code" in out.columns:
+        out = out.sort([date_col, "ts_code"])
     return (
         out.with_columns(
             pl.col(factor_col)

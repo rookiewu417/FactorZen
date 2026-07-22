@@ -43,7 +43,9 @@ _BLOCK_LABELS: dict[str, str] = {
     "suspended": "停牌",
     "limit_up": "涨停",
     "limit_down": "跌停",
-    "capacity": "容量",
+    # capacity 在 trade_constraints 里是「按 ADV 上限截断」= **部分成交**,不是拒单;
+    # 混进「拒单」会让读者以为这些单子完全没成交
+    "capacity": "容量截断(部分成交)",
     "missing_price": "缺价",
     "invalid_portfolio_value": "组合无效",
 }
@@ -96,8 +98,9 @@ def _nav_frame(bt_result: Any) -> Any | None:
 def compute_cost_erosion(nav: Any) -> dict[str, float] | None:
     """从 nav 帧累计毛收益/成本/净收益，计算成本侵蚀比例。
 
-    侵蚀比例 = (sum(cost) + sum(borrow_cost)) / |sum(gross_return)|
-    当 |sum(gross_return)| 接近 0 时返回 None。
+    侵蚀比例 = (sum(cost) + sum(borrow_cost)) / sum(gross_return)，
+    **仅在毛收益显著为正时有意义**；毛收益 ≤0 或近零时 erosion_ratio 为 NaN
+    （消费方据此显示「不适用」，不得编造比例）。
     """
     if _is_empty_frame(nav):
         return None
@@ -108,22 +111,31 @@ def compute_cost_erosion(nav: Any) -> dict[str, float] | None:
         return None
     if "gross_return" not in cols:
         return None
-    gross = np.asarray(df["gross_return"].to_numpy(), dtype=float)
-    cost = (
-        np.asarray(df["cost"].to_numpy(), dtype=float)
-        if "cost" in cols
-        else np.zeros_like(gross)
-    )
-    borrow = (
-        np.asarray(df["borrow_cost"].to_numpy(), dtype=float)
-        if "borrow_cost" in cols
-        else np.zeros_like(gross)
-    )
-    net = (
-        np.asarray(df["net_return"].to_numpy(), dtype=float)
-        if "net_return" in cols
-        else gross - cost - borrow
-    )
+    # dtype 转换必须在 try 内:脏 dtype(如收益列是 Utf8)会抛 ValueError,逃到
+    # generate_* 的外层捕获后整页降级——8 个区块全丢。契约是「缺数据只让该区块
+    # 显示未计算」,所以这里吞掉并返回 None。
+    try:
+        gross = np.asarray(df["gross_return"].to_numpy(), dtype=float)
+    except (ValueError, TypeError):
+        return None
+    try:
+        cost = (
+            np.asarray(df["cost"].to_numpy(), dtype=float)
+            if "cost" in cols
+            else np.zeros_like(gross)
+        )
+        borrow = (
+            np.asarray(df["borrow_cost"].to_numpy(), dtype=float)
+            if "borrow_cost" in cols
+            else np.zeros_like(gross)
+        )
+        net = (
+            np.asarray(df["net_return"].to_numpy(), dtype=float)
+            if "net_return" in cols
+            else gross - cost - borrow
+        )
+    except (ValueError, TypeError):
+        return None
     gross = np.where(np.isfinite(gross), gross, 0.0)
     cost = np.where(np.isfinite(cost), cost, 0.0)
     borrow = np.where(np.isfinite(borrow), borrow, 0.0)
@@ -150,6 +162,29 @@ def compute_cost_erosion(nav: Any) -> dict[str, float] | None:
     }
 
 
+def _drop_synthetic_base_row(nav: Any) -> Any:
+    """剔除引擎在 nav 帧前置的合成起点行。
+
+    ``backtest._build_nav_frame`` 会在首个信号日前插一条
+    ``gross_return=cost=borrow_cost=net_return=0, nav=1.0, cash_weight=1.0`` 的行——
+    它不是真实交易日，把它算进敞口均值会系统性地把结果往 0 拉（偏差约 1/(n+1)，
+    短窗口下可达数个百分点）。
+    """
+    try:
+        if nav.height < 2:
+            return nav
+        first = nav.row(0, named=True)
+        looks_synthetic = (
+            abs(float(first.get("nav", 0.0)) - 1.0) < 1e-12
+            and abs(float(first.get("cash_weight", 0.0)) - 1.0) < 1e-12
+            and abs(float(first.get("net_return", 1.0))) < 1e-12
+            and abs(float(first.get("gross_return", 1.0))) < 1e-12
+        )
+        return nav.slice(1) if looks_synthetic else nav
+    except Exception:
+        return nav
+
+
 def compute_avg_net_exposure(nav: Any) -> float | None:
     """平均**净**敞口 = mean(1 − cash_weight) = mean(Σw)。
 
@@ -161,7 +196,8 @@ def compute_avg_net_exposure(nav: Any) -> float | None:
     try:
         if "cash_weight" not in nav.columns:
             return None
-        cw = np.asarray(nav["cash_weight"].to_numpy(), dtype=float)
+        frame = _drop_synthetic_base_row(nav)
+        cw = np.asarray(frame["cash_weight"].to_numpy(), dtype=float)
     except Exception:
         return None
     net = 1.0 - cw
@@ -473,7 +509,7 @@ def _chart_block_reasons(bt_result: Any) -> str | None:
     ax.set_xticklabels(labels, rotation=0)
     for i, v in enumerate(values):
         ax.annotate(str(v), xy=(i, v), xytext=(0, 3), textcoords="offset points", ha="center", fontsize=8)
-    ax.set_title("拒单原因分布", fontsize=11)
+    ax.set_title("成交受限原因分布（容量截断为部分成交，其余为完全未成交）", fontsize=10)
     ax.set_ylabel("笔数")
     ax.margins(y=0.15)
     fig.tight_layout()
@@ -605,7 +641,9 @@ def _chart_rolling_sharpe(bt_result: Any, window: int = 60) -> str | None:
 
     s = pd.Series(rets)
     roll_mean = s.rolling(window, min_periods=max(10, window // 3)).mean()
-    roll_std = s.rolling(window, min_periods=max(10, window // 3)).std()
+    # ddof=0 对齐引擎 _summary_stats 的 np.std(默认 ddof=0);pandas .std() 默认 ddof=1,
+    # 不指定会让报告里的滚动 Sharpe 与核心指标卡的 Sharpe 口径不同源
+    roll_std = s.rolling(window, min_periods=max(10, window // 3)).std(ddof=0)
     sharpe = (roll_mean / roll_std) * np.sqrt(252.0)
     rpd, x_col, is_date_axis = _with_plot_dates(rpd)
     vals = sharpe.to_numpy()
@@ -884,8 +922,9 @@ def _generate_trading_report_inner(
             "缺少 cash_weight",
         ),
         (
-            "拒单原因分布",
-            "这张图回答：可交易性瓶颈卡在停牌、涨跌停还是容量？",
+            "成交受限原因分布",
+            "这张图回答：可交易性瓶颈卡在停牌、涨跌停还是容量？"
+            "（容量为按 ADV 上限截断的部分成交，其余为完全未成交）",
             lambda: _chart_block_reasons(bt_result),
             "缺少 trades 或 block_reason",
         ),

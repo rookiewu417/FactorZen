@@ -286,6 +286,11 @@ def _forward_factor_track(args: argparse.Namespace, *, track: str) -> int:
         forwarded.extend(["--exec-lag", str(int(args.exec_lag))])
     if getattr(args, "exec_price_col", None) is not None:
         forwarded.extend(["--exec-price-col", str(args.exec_price_col)])
+    # 信号轨专属旋钮(仅 eval 子命令定义,backtest 轨 args 上不存在)
+    if getattr(args, "n_groups", None) is not None:
+        forwarded.extend(["--n-groups", str(int(args.n_groups))])
+    if getattr(args, "cost_bps", None) is not None:
+        forwarded.extend(["--cost-bps", str(float(args.cost_bps))])
 
     old_argv = sys.argv
     try:

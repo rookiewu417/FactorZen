@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react'
 import { Layout, Menu, Spin, Typography } from 'antd'
 import {
   AppstoreOutlined,
+  BankOutlined,
   DatabaseOutlined,
+  ExperimentOutlined,
+  FileTextOutlined,
+  FundOutlined,
 } from '@ant-design/icons'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { fetchHealth } from '../api/client'
@@ -39,7 +43,24 @@ export function AppLayout() {
     if (path.startsWith('/run/')) {
       return path.split('/')[2] ?? 'overview'
     }
+    if (path.startsWith('/library')) return 'library'
+    if (path.startsWith('/store')) return 'store'
+    if (path.startsWith('/ops')) return 'ops'
+    if (path.startsWith('/reports')) return 'reports'
     return 'overview'
+  })()
+
+  const openKeys = (() => {
+    if (
+      selectedKey !== 'overview' &&
+      selectedKey !== 'library' &&
+      selectedKey !== 'store' &&
+      selectedKey !== 'ops' &&
+      selectedKey !== 'reports'
+    ) {
+      return ['runs']
+    }
+    return undefined
   })()
 
   const menuItems = [
@@ -48,11 +69,35 @@ export function AppLayout() {
       icon: <AppstoreOutlined />,
       label: <Link to="/">总览</Link>,
     },
-    ...domains.map((d) => ({
-      key: d,
+    {
+      key: 'runs',
       icon: <DatabaseOutlined />,
-      label: <Link to={`/domain/${d}`}>{d}</Link>,
-    })),
+      label: '产物 Runs',
+      children: domains.map((d) => ({
+        key: d,
+        label: <Link to={`/domain/${d}`}>{d}</Link>,
+      })),
+    },
+    {
+      key: 'library',
+      icon: <FundOutlined />,
+      label: <Link to="/library">因子库</Link>,
+    },
+    {
+      key: 'store',
+      icon: <BankOutlined />,
+      label: <Link to="/store">因子资产</Link>,
+    },
+    {
+      key: 'ops',
+      icon: <ExperimentOutlined />,
+      label: <Link to="/ops">运营</Link>,
+    },
+    {
+      key: 'reports',
+      icon: <FileTextOutlined />,
+      label: <Link to="/reports">报告</Link>,
+    },
   ]
 
   return (
@@ -80,6 +125,7 @@ export function AppLayout() {
           <Menu
             mode="inline"
             selectedKeys={[selectedKey]}
+            defaultOpenKeys={openKeys ?? ['runs']}
             items={menuItems}
             style={{ borderInlineEnd: 'none' }}
           />

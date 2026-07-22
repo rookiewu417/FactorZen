@@ -697,3 +697,47 @@ def test_grouping_is_row_order_invariant():
     assert g1["group"].to_list() == g2["group"].to_list(), (
         f"行序不同得到不同分组:{g1['group'].to_list()} vs {g2['group'].to_list()}"
     )
+
+
+def test_geometric_vs_arithmetic_annualization():
+    """几何年化必须与净值曲线自洽;算术年化在高波动下会翻号。
+
+    实测案例:momentum_20d/csi300/2023-2024,日波动 1.7% 的分位组算术年化 +1.37%
+    而累计净值 0.96(实际亏损)——柱状图与净值图在同一份报告里结论相反。
+    """
+    import numpy as np
+
+    from factorzen.daily.evaluation.signal_backtest import (
+        _ann_ret_sharpe,
+        cum_excluding_top_days,
+        geometric_ann_ret,
+    )
+
+    # 构造:高波动、算术均值为正但复利后亏损的序列
+    # +10% 与 −9% 交替:算术均值 +0.5%/期,几何 (1.1*0.91)^(n/2) = 1.001^(n/2) 略正
+    # 用 +20%/−18% 放大方差拖累:算术 +1%,几何 (1.2*0.82)=0.984 → 亏
+    rets = np.array([0.20, -0.18] * 60)
+    ppy = 252.0
+    ar, _ = _ann_ret_sharpe(rets, ppy)
+    geo = geometric_ann_ret(rets, ppy)
+    cum = float(np.prod(1.0 + rets) - 1.0)
+
+    assert ar > 0, f"构造前提:算术年化应为正,实得 {ar}"
+    assert cum < 0, f"构造前提:实际累计应为亏损,实得 {cum}"
+    assert geo < 0, f"几何年化必须与累计亏损同号,实得 {geo}(算术 {ar})"
+    # 独立手算几何年化
+    expected = float(np.prod(1.0 + rets)) ** (ppy / rets.size) - 1.0
+    assert geo == pytest.approx(expected, rel=1e-12)
+
+    # -- 极端日剔除:给绝对数字而非占比 --
+    base = np.full(50, 0.001)
+    spiked = base.copy()
+    spiked[10] = 0.25  # 一根不可交易的跳空
+    full = float(np.prod(1.0 + spiked) - 1.0)
+    ex1 = cum_excluding_top_days(spiked, 1)
+    # 手算:剔除后就是 50 个 0.001 里的 49 个
+    expected_ex1 = float(1.001**49 - 1.0)
+    assert ex1 == pytest.approx(expected_ex1, rel=1e-12)
+    assert full - ex1 > 0.2, "剔除极端日应显著改变累计收益,否则告警无意义"
+    # k >= 样本数 → NaN 而非崩溃
+    assert not np.isfinite(cum_excluding_top_days(np.array([0.01]), 3))

@@ -139,6 +139,11 @@ def _zero_summary_stats() -> dict[str, Any]:
             "sharpe_net": 0.0,
             "max_dd_net": 0.0,
             "avg_turnover": 0.0,
+            "ann_ret_gross_geo": 0.0,
+            "ann_ret_net_geo": 0.0,
+            "cum_gross": 0.0,
+            "cum_gross_ex_top1": float("nan"),
+            "cum_gross_ex_top3": float("nan"),
             # n_days=0 是「一天都没算出来」的判据:没有它,0.0 的年化与真实零 alpha
             # 不可区分(机器消费方读 signal.json 时尤其需要)
             "n_days": 0,
@@ -170,6 +175,40 @@ def _ann_ret_sharpe(rets: np.ndarray, ppy: float = float(_TRADING_DAYS)) -> tupl
     ann_vol = std * math.sqrt(ppy)
     sharpe = ann_ret / ann_vol if ann_vol > 0 else 0.0
     return ann_ret, sharpe
+
+
+def geometric_ann_ret(rets: np.ndarray, ppy: float) -> float:
+    """几何(复利)年化。
+
+    与 ``_ann_ret_sharpe`` 的算术年化 ``mean×ppy`` 并存,两者在高波动序列上差
+    ``≈σ²/2×ppy``:日波动 1.6% 时差约 3pp,足以让实际亏损的组显示成正收益。
+    报告展示几何(与净值曲线自洽),算术保留供跨轨比较(交易轨 ``_summary_stats``
+    同为算术口径)。
+    """
+    valid = rets[np.isfinite(rets)]
+    if valid.size == 0:
+        return 0.0
+    growth = float(np.prod(1.0 + valid))
+    if growth <= 0.0:
+        return -1.0  # 净值归零/穿仓
+    return float(growth ** (ppy / valid.size) - 1.0)
+
+
+def cum_excluding_top_days(rets: np.ndarray, k: int = 1) -> float:
+    """剔除 |单日| 最大的 k 天之后的累计收益。
+
+    与全期累计并排看,就能判断结论是否被极少数极端日主导——A 股的极端跳空
+    (如 2024-10-08 国庆后全市场涨停开盘 open→open +24%)**通常不可交易**,
+    靠它撑起来的 alpha 在交易轨会消失;反过来单个巨亏日拖垮结论也同样不稳健。
+    给绝对数字而非抽象占比:占比在累计收益近零时会爆成几百个百分点,不可读。
+    """
+    valid = rets[np.isfinite(rets)]
+    if valid.size <= k or k <= 0:
+        return float("nan")
+    drop_idx = np.argsort(-np.abs(valid))[:k]
+    mask = np.ones(valid.size, dtype=bool)
+    mask[drop_idx] = False
+    return float(np.prod(1.0 + valid[mask]) - 1.0)
 
 
 def _max_drawdown(nav: np.ndarray) -> float:
@@ -533,8 +572,13 @@ def run_signal_backtest(
     groups_stats: dict[int, dict[str, float]] = {}
     for g in range(n_groups):
         g_rets = group_returns.filter(pl.col("group") == g)["ret"].to_numpy()
-        ar, sh = _ann_ret_sharpe(np.asarray(g_rets, dtype=float), ppy)
-        groups_stats[g] = {"ann_ret": ar, "sharpe": sh}
+        g_arr = np.asarray(g_rets, dtype=float)
+        ar, sh = _ann_ret_sharpe(g_arr, ppy)
+        groups_stats[g] = {
+            "ann_ret": ar,                                  # 算术,跨轨可比
+            "ann_ret_geo": geometric_ann_ret(g_arr, ppy),   # 几何,与净值曲线自洽
+            "sharpe": sh,
+        }
 
     gross = ls_returns["ls_ret_gross"].to_numpy().astype(float)
     net = ls_returns["ls_ret_net"].to_numpy().astype(float)
@@ -556,6 +600,14 @@ def run_signal_backtest(
             "max_dd_net": _max_drawdown(nav_n),
             "avg_turnover": avg_to,
             "n_days": int(ls_returns.height),
+            "ann_ret_gross_geo": geometric_ann_ret(gross, ppy),
+            "ann_ret_net_geo": geometric_ann_ret(net, ppy),
+            # 结论是否被极少数极端日(常为不可交易的跳空)主导:三个数并排看
+            "cum_gross": float(np.prod(1.0 + gross[np.isfinite(gross)]) - 1.0)
+            if gross.size
+            else 0.0,
+            "cum_gross_ex_top1": cum_excluding_top_days(gross, 1),
+            "cum_gross_ex_top3": cum_excluding_top_days(gross, 3),
         },
         "ic": {
             "ic_mean": float(ic_result.ic_mean),

@@ -116,6 +116,11 @@ def _chart_group_nav(signal_result: Any) -> str | None:
         part, x_col, is_date_axis = _with_plot_dates(part)
         color = cmap(0.86 * idx / max(1, len(groups) - 1))
         label = f"G{int(g) + 1}" if isinstance(g, (int, float, np.integer)) else str(g)
+        # 不标明哪端是高因子值,读者无从判断多空方向
+        if idx == 0:
+            label += " 因子最低"
+        elif idx == len(groups) - 1:
+            label += " 因子最高"
         ax.plot(part[x_col], part["nav"], linewidth=1.25, color=color, label=label)
 
     ls_nav = _safe_attr(signal_result, "ls_nav")
@@ -146,7 +151,14 @@ def _chart_group_nav(signal_result: Any) -> str | None:
 
 
 def _chart_group_bar(signal_result: Any) -> str | None:
-    """各组年化平均收益柱 + 线性趋势。"""
+    """各组年化平均收益柱 + 线性趋势。
+
+    用**几何**年化(engine 的 ``groups[g].ann_ret_geo``)而非算术 ``mean×252``：
+    高波动下两者差 ≈σ²/2×252，本项目实测可达 3~4pp，足以让净值实际亏损的组
+    在柱状图上显示成正收益——同一份报告里与「分层累计净值」图自相矛盾。
+    """
+    stats = _safe_attr(signal_result, "summary_stats") or {}
+    groups_stats = stats.get("groups") if isinstance(stats, dict) else None
     group_returns = _safe_attr(signal_result, "group_returns")
     if _is_empty_frame(group_returns):
         return None
@@ -156,15 +168,32 @@ def _chart_group_bar(signal_result: Any) -> str | None:
     means = gr.groupby("group", sort=True)["ret"].mean()
     if means.empty or len(means) < 1:
         return None
-    vals = means.to_numpy(dtype=float)
-    if not np.isfinite(vals).any():
+
+    # 优先读引擎算好的几何年化;缺失才回落到算术(不在报告层重算绩效)
+    ann_list: list[float] = []
+    used_geo = True
+    for g in means.index:
+        val = None
+        if isinstance(groups_stats, dict):
+            entry = groups_stats.get(g) or groups_stats.get(int(g))
+            if isinstance(entry, dict):
+                val = entry.get("ann_ret_geo")
+        if val is None or not np.isfinite(float(val)):
+            used_geo = False
+            val = float(means.loc[g]) * 252.0
+        ann_list.append(float(val))
+    ann = np.asarray(ann_list, dtype=float)
+    if not np.isfinite(ann).any():
         return None
-    # 日均 → 年化（展示派生，非重算绩效引擎）
-    ann = vals * 252.0
-    labels = [
-        f"G{int(g) + 1}" if isinstance(g, (int, float, np.integer)) else str(g)
-        for g in means.index
-    ]
+    n_g = len(means.index)
+    labels = []
+    for i, g in enumerate(means.index):
+        base = f"G{int(g) + 1}" if isinstance(g, (int, float, np.integer)) else str(g)
+        if i == 0:
+            base += "\n(因子最低)"
+        elif i == n_g - 1:
+            base += "\n(因子最高)"
+        labels.append(base)
     colors = ["#c0392b" if v < 0 else "#27ae60" for v in ann]
 
     fig, ax = plt.subplots(figsize=(9.5, 3.6))
@@ -178,7 +207,12 @@ def _chart_group_bar(signal_result: Any) -> str | None:
         ax.legend(fontsize=8)
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
-    ax.set_title("分层平均收益（年化）", fontsize=11)
+    ax.set_title(
+        "分层平均收益（几何年化，与上方净值曲线同源）"
+        if used_geo
+        else "分层平均收益（算术年化 mean×252，高波动下会高于净值实际涨幅）",
+        fontsize=10,
+    )
     ax.set_ylabel("年化收益")
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
     ax.margins(y=0.15)
@@ -452,7 +486,12 @@ def _build_metrics(signal_result: Any) -> dict[str, str]:
         pvalue = _finite_float(_safe_attr(ic, "ic_pvalue"))
         ic_pos = _finite_float(_safe_attr(ic, "ic_positive_ratio"))
 
-    ann_g = _finite_float(ls.get("ann_ret_gross"))
+    # 展示几何年化:与净值曲线自洽。算术值(ann_ret_gross)仍在 summary_stats /
+    # signal.json 里供跨轨比较,只是不作为页面主数字。
+    ann_g = _finite_float(ls.get("ann_ret_gross_geo"))
+    ann_g_arith = _finite_float(ls.get("ann_ret_gross"))
+    if ann_g is None:
+        ann_g = ann_g_arith
     sharpe_g = _finite_float(ls.get("sharpe_gross"))
     max_dd_g = _finite_float(ls.get("max_dd_gross"))
     mono_score = _finite_float(_safe_attr(mono, "monotonicity_score"))
@@ -690,13 +729,38 @@ def _generate_signal_report_inner(
             ("t-stat", "tstat"),
             ("p-value", "pvalue"),
             ("IC>0 占比", "ic_pos"),
-            ("多空年化(毛)", "ann_ret_gross"),
+            ("多空年化(毛·几何)", "ann_ret_gross"),
             ("多空 Sharpe(毛)", "sharpe_gross"),
             ("多空最大回撤(毛)", "max_dd_gross"),
             ("单调性 score", "mono_score"),
             ("平均换手", "avg_turnover"),
         )
     )
+
+    _all_stats = _safe_attr(signal_result, "summary_stats") or {}
+    _ls_stats = (
+        (_all_stats.get("long_short") or {}) if isinstance(_all_stats, dict) else {}
+    )
+    _cum = _finite_float(_ls_stats.get("cum_gross"))
+    _ex1 = _finite_float(_ls_stats.get("cum_gross_ex_top1"))
+    _ex3 = _finite_float(_ls_stats.get("cum_gross_ex_top3"))
+    # 触发条件:剔除单日就让累计收益变化超过 1 个百分点，或直接翻号
+    if _cum is not None and _ex1 is not None and (
+        abs(_cum - _ex1) >= 0.01 or (_cum * _ex1 < 0)
+    ):
+        _flip = "，<b>符号翻转</b>" if _cum * _ex1 < 0 else ""
+        _ex3_txt = f"；剔除最大 3 日 <b>{_ex3:+.2%}</b>" if _ex3 is not None else ""
+        cards_html += (
+            "<div class='card' style='grid-column:1/-1;border-color:#d35400'>"
+            "<div class='label'>⚠️ 结论受极端单日影响</div>"
+            "<div class='value' style='font-size:0.95rem;line-height:1.5'>"
+            f"全期累计多空(毛) <b>{_cum:+.2%}</b>；剔除波动最大的 1 天后 "
+            f"<b>{_ex1:+.2%}</b>{_flip}{_ex3_txt}。"
+            "A 股极端行情的跳空(如涨停潮开盘)<b>多半不可交易</b>，"
+            "靠它撑起的 alpha 在交易轨会消失；反之单个巨亏日拖垮结论也同样不稳健。"
+            "请用 <code>fz factor backtest</code> 核对这段收益能否真正成交。"
+            "</div></div>"
+        )
 
     if metrics.get("_ic_unavailable"):
         cards_html += (

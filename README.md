@@ -4,10 +4,10 @@
 
 # FactorZen
 
-**以因子库准入为核心的多市场量化研究平台**
+**只收有增量的因子——以 A 股为主的端到端量化研究平台**
 
-因子挖掘 → 防过拟合护栏 → **增量准入进库** → 风险与组合 → 模拟与向前执行 → 无人值守运营 → 成果展示。<br>
-每一步落 `manifest.json`，可审计、可复现。
+单因子指标仅作排序，**lift 增量检验**才是入库裁决。<br>
+因子挖掘 → 防过拟合护栏 → 风险与组合 → 模拟执行 → 无人值守运营；每一步落 `manifest.json`，可审计、可复现。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10--3.12-blue.svg)](pyproject.toml)
@@ -27,7 +27,7 @@
 
 单因子指标漂亮但与在库因子高度重合，是研究里最常见的自欺。FactorZen 把**增量检验（lift）作为入库的最终裁决**——候选因子必须在既有因子库的基础上跑出统计显著的增量，才能进库；单因子门槛降级为排序信号，硬门只剩数据质量。因子库因此是一份持续收敛、互相不冗余的资产，而不是一张越堆越长的候选表。
 
-围绕这个核心，平台提供从数据接入到无人值守运营的完整链路，覆盖 A 股日频、crypto USDT-M 永续（含分钟级）、期货与美股。
+围绕这个核心，平台提供从数据接入到无人值守运营的完整链路，**以 A 股日频为主**；多市场（crypto / 期货 / 美股）架构见[多市场](docs/concepts/multi-market.md)。
 
 ---
 
@@ -46,8 +46,7 @@
 
 | 能力域 | 内容 | 入口命令 |
 |---|---|---|
-| **数据接入** | A 股（Tushare）· crypto（Binance Vision 数据湖）· 期货（主力连续后复权）· 美股（Yahoo，MVP universe） | `fz data fetch` |
-| **日内微观结构** | 分钟 bar → 日频特征面板（20 特征电池），可直接作为挖掘叶子 | `fz data intraday-features build` |
+| **数据接入** | A 股日频（Tushare）；多市场数据源见[多市场](docs/concepts/multi-market.md) | `fz data fetch` |
 | **因子挖掘** | 算子库 + 表达式 AST 双向编译 + 随机/遗传搜索 | `fz mine search` |
 | **LLM 挖掘** | 单 Agent 闭环 · 4 角色团队（Hypothesis/Coder/Critic/Librarian）+ Evaluator + 跨轮否决 + 跨 session 记忆 | `fz mine agent` · `fz mine team` |
 | **因子库准入** | 唯一登记簿 + **lift 增量裁决** + 四态状态机 + 向前确认（probation → forward → promote） | `fz factor-library lift-test` |
@@ -61,6 +60,8 @@
 
 单因子研究链路（IC / 信号评估 / 模拟交易回测 / 信号与交易报告）作为基础能力贯穿其中：`fz factor eval` · `fz factor backtest`。
 
+日内微观结构特征（分钟 bar → 日频面板）等非 A 股日频主线能力见[多市场](docs/concepts/multi-market.md)（命令：`fz data intraday-features build`）。
+
 ---
 
 ## 安装
@@ -73,7 +74,7 @@ cp .env.example .env   # 填入 TUSHARE_TOKEN
 pixi run smoke
 ```
 
-- 真实数据拉取需 `TUSHARE_TOKEN`；crypto 走本地数据湖，无需 token。
+- 真实数据拉取需 `TUSHARE_TOKEN`。多市场数据源与凭据见[多市场](docs/concepts/multi-market.md)。
 - LLM 挖掘（`fz mine agent` / `fz mine team`）需配置 `FACTORZEN_LLM_*`，**缺失会直接报错退出**，不会静默跳过。单因子评估与报告不依赖 LLM。
 - Web Dashboard 依赖 `fastapi`/`uvicorn`。pixi 默认环境已包含 dev feature，装完即可用；但二者在 `pyproject.toml` 里属 dev extras，绕开 pixi 用 `pip install factorzen` 的话需要自行补装。
 
@@ -190,7 +191,7 @@ tests/              952 个 pytest 测试（97 个测试文件）
 
 **适合**
 
-- 在多市场行情上挖掘因子，并用**相对已有因子库的增量**而非孤立指标来决定是否采纳。
+- 在 **A 股日频**上挖掘因子，并用**相对已有因子库的增量**而非孤立指标来决定是否采纳；多市场场景见[多市场](docs/concepts/multi-market.md)。
 - 用防过拟合护栏（bootstrap CI / DSR / PBO / holdout）对候选因子做严格验收。
 - 用 Barra 风险模型控制暴露、凸优化建仓、模拟交易评估组合绩效。
 - 产出可审计产物：`manifest.json`、universe 快照、parquet 结果、HTML 报告。

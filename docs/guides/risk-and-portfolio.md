@@ -2,11 +2,13 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **风险与组合优化**
 
-因子入库之后的下一步：用风险模型刻画暴露，用凸优化把 α 信号翻译成可执行的目标权重，再把结果拆回因子与行业。
+因子入库之后的下一步：用风险模型刻画暴露，用凸优化把 α 信号翻译成可执行的目标权重，再把结果拆回因子与行业。本文以 A 股为主线，覆盖 `fz risk build`、`fz portfolio build` 与随组合落盘的归因产物。
 
-本页覆盖 `fz risk build`、`fz portfolio build` 与随组合一起落盘的归因产物。参数全表见 [CLI 参考](../reference/cli.md#fz-risk)；因子从哪来见[因子库与增量准入](../concepts/factor-library.md)。
+读完能：构建/审阅风险模型快照、用 `export-alpha` 的截面 α 求解目标权重、读懂归因字段与 MVP 边界。参数全表见 [CLI 参考](../reference/cli.md#fz-risk)；因子从哪来见[因子库与增量准入](../concepts/factor-library.md)。
 
 > ⚠️ **先读这一段再决定要不要用。** 组合优化与归因是本平台**当前最轻的能力**——`portfolio/` 与 `attribution/` 合计只有 216 行，配对的 `daily/optimization/` 也只有 348 行，而挖掘侧的 `discovery/` 是 12,645 行。这个落差是真实的能力权重分布，不是「重实现藏在别处」。风险模型本身（`risk/`，1,737 行）成熟度明显更高，但**只服务 A 股**。把本页的能力当作「可用的 MVP」而非「生产级组合管理系统」。
+
+多市场（crypto/期货/美股）的风险与组合能力边界见[多市场](../concepts/multi-market.md)。
 
 ---
 
@@ -15,10 +17,7 @@
 | 能力 | 状态 |
 |---|---|
 | Barra 风险模型（8 风格 + 行业） | 完整，**仅 A 股** |
-| 风险模型接入多市场 Port | **未接入**（`markets/ashare/profile.py` 的 `risk=None`） |
-| crypto 风险 | 独立实现 `markets/crypto/risk.py`，与 `risk/` 不共用 |
-| futures / us 风险 | **无风险模型** |
-| 组合优化 `fz portfolio build` | 可用，**仅 `ashare` / `crypto`** 两个市场 |
+| 组合优化 `fz portfolio build` | 可用，`--market` 支持 ashare / crypto；本页主线 A 股，crypto 语义见[多市场](../concepts/multi-market.md) |
 | 行业中性 | 相对**等权**行业基准，不是市值加权中性 |
 | 收益归因 | Brinson-Fachler **两项法**，交互项并入选股；不提供 BHB 三项法 |
 | 建仓时点的收益归因 | **占位 0**，见[归因的可用性边界](#归因的可用性边界) |
@@ -101,7 +100,7 @@ ret_i = X_i · f + eps_i
 
 > ⚠️ **两种口径不能相加。** `total_risk` / `factor_risk` / `specific_risk` 是标准差，各因子名下的值是 MCR 份额。把 `size` 的值和 `specific_risk` 加起来没有意义。`decompose_risk` 的 docstring 就是这么标注的。
 
-年化周期数 `periods_per_year` 默认 252（A 股日频），crypto 侧传 365。
+年化周期数 `periods_per_year` 默认 252（A 股日频）。
 
 ### 运行
 
@@ -158,13 +157,13 @@ max   αᵀw − risk_aversion · ( (Xᵀw)ᵀ F (Xᵀw) + Σ (D_i w_i)² )
 
 ### 约束体系
 
-`portfolio/constraints.py` 的 `build_constraints`，由 `ConstraintConfig` 驱动。模块 docstring 归的是四类（box / budget / 中性 / 换手），实现里另有一条为 crypto 做空组合准备的杠杆约束：
+`portfolio/constraints.py` 的 `build_constraints`，由 `ConstraintConfig` 驱动。模块 docstring 归四类（box / budget / 中性 / 换手），另有杠杆约束（`gross_limit`）：
 
 | 类别 | 约束 | 配置字段 | CLI |
 |---|---|---|---|
-| **budget** | `Σw == budget` | `budget`（A 股 = 1；crypto 市场中性 = 0；`None` 不约束） | 由 `--market` 决定 |
+| **budget** | `Σw == budget` | `budget`（A 股 = 1；`None` 不约束） | 由 `--market` 决定 |
 | **box** | `w ≤ w_max`；long-only 时 `w ≥ 0`，否则 `w ≥ −w_max` | `w_max` (0.05)、`long_only` (True) | `--w-max` |
-| **杠杆** | `Σ\|w\| ≤ gross_limit` | `gross_limit` | `--gross-limit`（crypto） |
+| **杠杆** | `Σ\|w\| ≤ gross_limit` | `gross_limit` | `--gross-limit` |
 | **中性** | `X_sᵀ w == X_sᵀ w_bench`（或 `== 0`） | `neutral_factors`、`benchmark_weights` | `--industry-neutral` |
 | **换手** | `‖w − w_prev‖₁ ≤ turnover_budget` | `turnover_budget`、`prev_weights` | `--turnover` |
 
@@ -208,7 +207,7 @@ pixi run -- fz portfolio build --start 20200101 --end 20241231 --universe all_a 
 
 > ⚠️ **`--run-id` 不传会用 `--end` 的日期串做目录名。** 做多期构建时忘了区分，后一期会静默覆盖前一期。多期循环务必显式传不同的 `--run-id`。
 
-> ⚠️ `--market` 在这里只有 `{ashare, crypto}` 两个取值，与 `fz mine` / `fz factor-library` 的四值域不同。crypto 走的是另一条实现（`markets/crypto/portfolio.py`，市场中性做空 + `gross_limit`），不经过 `risk/` 的 Barra 模型。
+> ⚠️ 本页主线是 A 股（`--market ashare`）。多市场取值与实现路径见[多市场](../concepts/multi-market.md)。
 
 **产物**落 `workspace/portfolios/<run_id>/`：
 
@@ -326,5 +325,6 @@ pixi run -- fz report portfolio \
 - [因子库与增量准入](../concepts/factor-library.md) —— 进入组合的因子从哪来
 - [多因子组合](combination.md) —— 四方法样本外对比，与本页的单 α 建仓是两条不同的路
 - [模拟与向前执行](execution.md) —— 目标权重之后怎么落地成交易
+- [多市场](../concepts/multi-market.md) —— 多市场风险与组合能力边界
 - [CLI 参考](../reference/cli.md#fz-portfolio) —— `fz risk build` / `fz portfolio build` 参数全表
 - [产物布局](../reference/artifacts.md) —— `workspace/risk_models/` 与 `workspace/portfolios/` 字段

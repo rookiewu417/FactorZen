@@ -2,9 +2,9 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **部署**
 
-本文覆盖两件事：把**只读展示服务**跑起来，以及把**无人值守日链路**挂上定时触发。
+本文覆盖两件事：把**只读展示服务**跑起来，以及把**无人值守日链路**挂上定时触发。研究链路本身是一次性命令，产物落 `workspace/`；需要「长期运行」的只有这两块。
 
-平台的研究链路本身不需要部署——它是一次性命令，产物落 `workspace/`。需要「长期运行」的只有这两块：
+读完能：在本机或容器里起 Dashboard、复制并校验 `ops.yaml`、用 systemd timer / Windows 任务计划 / Docker 触发每日链路。
 
 | 部署对象 | 是什么 | 入口 |
 |---|---|---|
@@ -133,7 +133,7 @@ guard → data → audit → intraday_features → signal → live_step → repo
 
 `guard` 判定非交易日会直接短路，后续阶段不执行。每个阶段的完成状态写入 `workspace/ops/state/<YYYY-MM-DD>.json`——**同日重复触发是幂等的**，已完成阶段自动跳过，失败处续跑。这是把它挂到定时器上的前提。
 
-命令参数与产物见 [CLI 参考 · fz ops](../reference/cli.md#fz-ops)，配置字段见[配置参考](../reference/configuration.md)。
+命令参数与产物见 [CLI 参考 · fz ops](../reference/cli.md#fz-ops)，配置字段见[配置参考](../reference/configuration.md)。阶段语义与排查见[无人值守运营](operations.md)。
 
 ### 准备配置
 

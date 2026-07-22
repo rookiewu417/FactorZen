@@ -2,14 +2,14 @@
 
 > [FactorZen](../../README.md) · [文档](../README.md) · **产物布局**
 
-FactorZen 严格区分两个根目录：
+严格区分两个根目录：
 
 | 根 | 内容 | 规矩 |
 |---|---|---|
 | `data/` | 所有**数据**：行情原始落盘、数据湖、缓存、派生特征 | 新数据源一律落这里 |
 | `workspace/` | 所有**研究产出**：评估 run、挖掘 session、因子库、组合、模拟、报告 | 只放产出，不放数据 |
 
-路径常量的唯一真源是 `src/factorzen/config/settings.py`。本页描述的是**磁盘上真实存在且有产出**的目录。
+路径常量的唯一真源是 `src/factorzen/config/settings.py`。本页描述的是**磁盘上真实存在且有产出**的目录。正文默认 A 股研究链路的产物形态；多市场落盘差异见 [多市场](../concepts/multi-market.md) 与 [数据源与口径](data-sources.md)。
 
 > ℹ️ `settings.py` 还声明了 `MINE_AGENT_DIR`、`EXECUTION_DIR`、`OPS_DIR`、`DATA_PROCESSED` 等常量，但这些目录要么尚未跑过对应命令，要么在 `src/` 中没有消费方（`EXECUTION_DIR` / `OPS_DIR` grep 不到引用点）。`PORTFOLIOS_DIR` 被 `fz portfolio build --out-dir` 用作默认值，但目录内部形态未在本页展开。本页不描述它们的内部形态——常量存在 ≠ 产物结构已定型。
 
@@ -287,13 +287,13 @@ data/
 ├── raw/          Tushare 等原始落盘（分区 parquet）
 ├── cache/        月度成分快照 + python 因子面板缓存
 ├── derived/      派生特征
-├── crypto_lake/  Binance Vision 数据湖
+├── crypto_lake/  Binance Vision 数据湖（多市场）
 └── _tools/       一次性数据脚本 + logs/
 ```
 
 ### 4.1 `data/raw/` —— 原始行情
 
-分区路径格式 `{base_dir}/{data_type}/year={YYYY}/month={MM}/data.parquet`（`core/storage.py`）。真实子目录与体量：
+分区路径格式 `{base_dir}/{data_type}/year={YYYY}/month={MM}/data.parquet`（`core/storage.py`）。真实子目录与体量（A 股主线在前）：
 
 | 子目录 | 体量 | 内容 |
 |---|---|---|
@@ -302,9 +302,7 @@ data/
 | `daily/` | 296 M | 日线行情 |
 | `moneyflow/` | 221 M | 资金流 |
 | `margin_detail/` | 166 M | 两融明细 |
-| `us_daily/` | 43 M | 美股日线 |
 | `hk_hold/` | 35 M | 北向持股 |
-| `fut_daily/` | 34 M | 期货日线 |
 | `top_list/` | 12 M | 龙虎榜 |
 | `adj_factor/` | 9.7 M | 复权因子 |
 | `finance_fina_indicator/` | 7.1 M | 财务指标 |
@@ -312,8 +310,10 @@ data/
 | `finance/` | 2.0 M | 财务报表 |
 | `index_daily_000905_SH/` | 1.6 M | 中证 500 指数日线 |
 | `index_daily_000300_SH/` | 1.6 M | 沪深 300 指数日线 |
-| `fut_mapping/` | 872 K | 期货主力映射 |
-| `fut_meta/` | 8.0 K | 期货元信息 |
+| `us_daily/` | 43 M | 美股日线（多市场，见 [多市场](../concepts/multi-market.md)） |
+| `fut_daily/` | 34 M | 期货日线（多市场） |
+| `fut_mapping/` | 872 K | 期货主力映射（多市场） |
+| `fut_meta/` | 8.0 K | 期货元信息（多市场） |
 
 > ⚠️ **指数日线按指数拆目录**：是 `index_daily_000300_SH` / `index_daily_000905_SH`，不是单一的 `index_daily`。写路径拼接逻辑时别当成一个目录。
 
@@ -324,7 +324,7 @@ data/
 | `data/cache/` | 261 个 parquet：`index_member_{code}_{YYYYMM}.parquet` 月度成分快照 + `fut_basic_meta.parquet`；同时是 python 因子的面板缓存目录（`DATA_CACHE`） |
 | `data/derived/bars_5min/year=YYYY/month=MM/` | 5 分钟 bar，含自己的 `manifest.json` |
 | `data/derived/intraday_features/{version}/{freq}/` | 日内特征（`INTRADAY_FEATURES_DIR`），每 `{version}/{freq}` 一份 `manifest.json`；本机为 `v1/5min` |
-| `data/crypto_lake/` | `klines_1m/` `funding/` `metrics/` `meta.parquet` `manifest.json`，详见 [数据源与口径](data-sources.md) |
+| `data/crypto_lake/` | 多市场 crypto 数据湖：`klines_1m/` `funding/` `metrics/` `meta.parquet` `manifest.json`，详见 [数据源与口径](data-sources.md#4-多市场数据源) 与 [多市场](../concepts/multi-market.md) |
 | `data/_tools/` | 一次性数据脚本（回填/补缺）与 `logs/` |
 
 数据源接口、单位口径与缓存键完整性见 [数据源与口径](data-sources.md)。

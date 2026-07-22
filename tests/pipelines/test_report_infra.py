@@ -15,6 +15,7 @@ test_output_paths.py：无 module docstring 的测试。
 from __future__ import annotations
 
 import json
+import sys
 import time
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -176,6 +177,131 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
         "oos_max_dd": -0.05,
         "stability_ratio": 0.72,
     }
+
+
+# -- fz report build 交易轨 smoke --
+def test_generate_report_trading_track_smoke_suite(tmp_path):
+    """generate_report.main 主流程落盘交易轨 HTML（离线 mock，不碰网络）。"""
+
+    # -- main → 交易轨报告 HTML --
+    def _section_0_main_writes_trading_html(tmp_path, mp):
+        import inspect
+
+        from factorzen.core import experiment as exp_mod
+        from factorzen.pipelines import _report_persistence as persist
+        from factorzen.pipelines import generate_report as mod
+        from factorzen.reports.trading_report import TRADING_BANNER, generate_trading_report
+
+        # 接线回归：生产 _run 必须调交易轨报告（切回旧报告会红）
+        assert "generate_trading_report(" in inspect.getsource(mod._run)
+
+        experiments_dir = tmp_path / "experiments"
+        report_root = tmp_path / "reports"
+        result_root = tmp_path / "results"
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
+        mp.setattr(persist, "daily_result_output_dir", lambda factor_name: result_root)
+        mp.setattr(persist, "daily_report_output_dir", lambda factor_name: report_root)
+        mp.setattr(mod, "daily_report_output_dir", lambda factor_name: report_root)
+        mp.setattr(
+            sys,
+            "argv",
+            [
+                "generate_report.py",
+                "--factor",
+                "momentum_20d",
+                "--start",
+                "20240101",
+                "--end",
+                "20240131",
+            ],
+        )
+
+        dates = [date(2024, 1, 2) + timedelta(days=i) for i in range(8)]
+        nav_rows = []
+        nav_v = 1.0
+        for d in dates:
+            g, c, b = 0.01, 0.001, 0.0005
+            net = g - c - b
+            nav_v *= 1.0 + net
+            nav_rows.append(
+                {
+                    "trade_date": d,
+                    "gross_return": g,
+                    "cost": c,
+                    "borrow_cost": b,
+                    "net_return": net,
+                    "nav": nav_v,
+                    "cash_weight": 0.2,
+                    "turnover": 0.1,
+                }
+            )
+        nav = pl.DataFrame(nav_rows)
+        bt = SimpleNamespace(
+            factor_name="momentum_20d",
+            strategy_name="top_n",
+            n_groups=5,
+            returns=nav,
+            nav=nav,
+            positions=pl.DataFrame(),
+            trades=pl.DataFrame(
+                schema={
+                    "trade_date": pl.Date,
+                    "ts_code": pl.Utf8,
+                    "prev_weight": pl.Float64,
+                    "target_weight": pl.Float64,
+                    "filled_delta_weight": pl.Float64,
+                    "turnover": pl.Float64,
+                    "cost": pl.Float64,
+                    "block_reason": pl.Utf8,
+                }
+            ),
+            summary_stats={
+                "portfolio": {
+                    "ann_ret": 0.1,
+                    "ann_vol": 0.16,
+                    "sharpe": 0.85,
+                    "max_dd": -0.12,
+                    "avg_turnover": 0.14,
+                    "total_cost": 0.02,
+                }
+            },
+            config={"cost_model": "default"},
+            frequency="daily",
+        )
+
+        def fake_run(args, effective_config, timer=None):
+            # 与生产一致：走 generate_trading_report，落长名 HTML
+            html = generate_trading_report(
+                args.factor,
+                bt,
+                date_range=f"{args.start} ~ {args.end}",
+                universe=getattr(args, "universe", None) or "csi300",
+                strategy_name="top_n",
+            )
+            report_dir = mod.daily_report_output_dir(args.factor)
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / f"{args.factor}_{args.start}_{args.end}.html"
+            report_path.write_text(html, encoding="utf-8")
+            meta_path = result_root / f"{args.factor}_{args.start}_{args.end}_meta.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text("{}", encoding="utf-8")
+            return {"report": str(report_path), "meta": str(meta_path)}
+
+        mp.setattr(mod, "_run", fake_run)
+        mod.main()
+
+        report_path = report_root / "momentum_20d_20240101_20240131.html"
+        assert report_path.exists()
+        html = report_path.read_text(encoding="utf-8")
+        assert "— 交易轨报告" in html or "交易轨报告" in html
+        assert TRADING_BANNER in html
+        assert "<title>" in html and "交易轨" in html
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_main_writes_trading_html(_tp0, mp)
+
 
 def test_backtest_direction_from_ic_suite():
     """test_negative_significant_ic_uses_reversed_backtest_direction；test_weak_negative_ic_keeps_normal_backtest_direction；test_reversed_backtest_direction_flips_factor_clean"""

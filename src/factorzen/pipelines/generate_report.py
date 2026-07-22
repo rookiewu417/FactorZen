@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""因子 Tear Sheet 报告生成器。
+"""因子交易轨报告生成器（`fz report build`）。
 
-整合因子计算、基础评价、高级评价与 HTML 报告输出。
+整合因子计算、基础评价、高级评价与交易轨 HTML 报告输出。
 
 用法:
   pixi run report -- --factor momentum_20d --start 20250101 --end 20250513
@@ -478,7 +478,7 @@ def _run(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="因子 Tear Sheet 报告生成")
+    parser = argparse.ArgumentParser(description="因子交易轨报告生成")
     parser.add_argument("--factor", default=None, help="因子名称")
     parser.add_argument("--start", default=None, help="起始日期 YYYYMMDD")
     parser.add_argument("--end", default=None, help="截止日期 YYYYMMDD")

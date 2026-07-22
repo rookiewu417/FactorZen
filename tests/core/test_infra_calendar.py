@@ -350,7 +350,7 @@ def _single_manifest(experiments_dir):
     return json.loads(manifests[0].read_text(encoding="utf-8"))
 
 def test_failure_manifest_partial_outputs_suite(tmp_path):
-    """test_generate_report_failure_manifest_records_partial_outputs；test_run_daily_failure_manifest_records_partial_outputs"""
+    """generate_report / daily backtest / daily eval 失败时 manifest 记 partial outputs。"""
     # -- 原 test_generate_report_failure_manifest_records_partial_outputs --
     def _section_0_test_generate_report_failure_manifest_records_partial_outputs(tmp_path, mp):
         from factorzen.core import experiment as exp_mod
@@ -455,6 +455,57 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
     _tp1.mkdir(exist_ok=True)
     with pytest.MonkeyPatch.context() as mp:
         _section_1_test_run_daily_failure_manifest_records_partial_outputs(_tp1, mp)
+
+    # -- eval 轨失败 manifest --
+    def _section_2_test_run_daily_eval_failure_manifest_records_partial_outputs(tmp_path, mp):
+        from factorzen.core import experiment as exp_mod
+        from factorzen.pipelines import daily_single as mod
+
+        experiments_dir = tmp_path / "experiments"
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
+        mp.setattr(mod, "daily_factor_output_dir", lambda factor_name: tmp_path / "factors")
+        mp.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")
+        mp.setattr(mod, "daily_report_output_dir", lambda factor_name: tmp_path / "reports")
+        mp.setattr(
+            sys,
+            "argv",
+            [
+                "run_daily_single.py",
+                "--factor",
+                "momentum_20d",
+                "--start",
+                "20240101",
+                "--end",
+                "20240131",
+            ],
+        )
+
+        def fail_after_quality(args, effective_config, timer=None):
+            quality_path = mod.daily_result_output_dir(args.factor) / (
+                f"{args.factor}_{args.start}_{args.end}_quality.json"
+            )
+            quality_path.parent.mkdir(parents=True, exist_ok=True)
+            quality_path.write_text("{}", encoding="utf-8")
+            raise RuntimeError("eval boom")
+
+        mp.setattr(mod, "run_factor_eval", fail_after_quality)
+
+        with pytest.raises(SystemExit) as exc:
+            mod.main(track="eval")
+
+        assert exc.value.code == 1
+        manifest = _single_manifest(experiments_dir)
+        assert manifest["status"] == "failure"
+        assert manifest["error"] == "eval boom"
+        assert manifest["config"]["factor"] == "momentum_20d"
+        assert manifest["outputs"]["quality_report"] == str(
+            tmp_path / "results" / "momentum_20d_20240101_20240131_quality.json"
+        )
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_2_test_run_daily_eval_failure_manifest_records_partial_outputs(_tp2, mp)
 
 
 # ==== 来自 test_seed.py ====

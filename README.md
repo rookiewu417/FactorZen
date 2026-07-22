@@ -57,9 +57,9 @@
 | **多因子组合研究** | 四方法样本外对比：等权 / IC 加权 / max_ir / LightGBM | `fz combine from-library` |
 | **模拟与向前执行** | 组合权重回测 · 向前执行引擎（纸面撮合）· A 类分歧归因 | `fz sim run` · `fz live step` |
 | **无人值守运营** | 8 阶段幂等日链路（守卫→取数→审计→日内特征→信号→执行→报告→发布）+ 失败告警 | `fz ops daily` |
-| **成果展示** | 单因子 Tear Sheet · 组合 Dashboard · 只读 REST API + Web 页 | `fz report portfolio` · `pixi run serve` |
+| **成果展示** | 信号轨/交易轨报告 · 组合 Dashboard · 只读 REST API + Web 页 | `fz report portfolio` · `pixi run serve` |
 
-单因子研究链路（IC / 信号评估 / 模拟交易回测 / Tear Sheet）作为基础能力贯穿其中：`fz factor eval` · `fz factor backtest`。
+单因子研究链路（IC / 信号评估 / 模拟交易回测 / 信号与交易报告）作为基础能力贯穿其中：`fz factor eval` · `fz factor backtest`。
 
 ---
 
@@ -154,7 +154,7 @@ src/factorzen/                  约 49,500 行
 ├── risk/           Barra 风险模型（A 股）
 ├── research/       多因子组合研究（四方法 OOS 对比）
 ├── execution/      向前执行引擎（纸面撮合 + 分歧归因）
-├── reports/        Tear Sheet + 组合 Dashboard 渲染
+├── reports/        信号轨/交易轨报告 + 组合 Dashboard 渲染
 ├── ops/            无人值守 8 阶段日链路
 ├── llm/            LLM 客户端（双 profile）
 ├── validation/     防过拟合统计原语

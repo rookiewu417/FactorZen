@@ -192,7 +192,7 @@ def test_signal_report_suite():
             f"应渲染 8 张图,实际 {html.count(chr(100)+chr(97)+chr(116)+chr(97))} 处 base64"
         )
         assert "0.0350" in html  # IC mean
-        assert "exec_lag" in html or "1" in html
+        assert "exec_lag" in html
 
     _section_normal()
 

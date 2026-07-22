@@ -12,7 +12,7 @@
 ┌──────────────────────────────────────────────────────────────────┐
 │  运营与展示                                                       │
 │  ops/      无人值守 8 阶段日链路（幂等重入 + 告警）                │
-│  reports/  Tear Sheet · 组合 Dashboard        server/  只读 API   │
+│  reports/  信号轨/交易轨报告 · 组合 Dashboard  server/  只读 API   │
 └───────────────────────────┬──────────────────────────────────────┘
                             │ 净值 / 指标 / manifest
 ┌───────────────────────────▼──────────────────────────────────────┐
@@ -82,7 +82,7 @@ graph TD
     PORT --> ATTR
     PORT -->|目标权重| SIM["sim/ · execution/<br/>回测 · 向前执行"]
 
-    SIM --> RPT["reports/<br/>Tear Sheet · Dashboard"]
+    SIM --> RPT["reports/<br/>信号/交易报告 · Dashboard"]
     ATTR --> RPT
     RES --> RPT
     OPS["ops/<br/>无人值守日链路"] -.驱动.-> SIM
@@ -124,7 +124,7 @@ graph TD
 | `builtin_factors/` | 1,316 | 内置因子，随包分发 |
 | `llm/` | 960 | LLM 客户端（双 profile） |
 | `execution/` | 809 | 向前执行引擎（纸面撮合 + 分歧归因） |
-| `reports/` | 768 | Tear Sheet + 组合 Dashboard 渲染 |
+| `reports/` | 2,195 | 信号轨/交易轨报告 + 组合 Dashboard 渲染 |
 | `ops/` | 514 | 无人值守 8 阶段日链路 |
 | `config/` | 494 | 配置模型与路径常量 |
 | `strategies/` | 470 | 规则型策略实验（择时/轮动），**CLI 不可达** |

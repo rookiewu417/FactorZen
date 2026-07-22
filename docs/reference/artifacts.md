@@ -62,7 +62,7 @@ FactorZen 严格区分两个根目录：
 |---|---|---|
 | `factor.parquet` | 116 MB | 因子面板（全时段全标的），最大的文件 |
 | `universe.parquet` | 7.1 MB | 逐日 universe 快照，PIT 自查用 |
-| `report.html` | ~450 KB | 单页 tear sheet；7 张图以 base64 PNG 内嵌，故体积随图数增长 |
+| `report.html` | ~450 KB | 单页报告（eval→信号轨 / backtest→交易轨；各自 8 张图，base64 PNG 内嵌，体积随图数增长） |
 | `manifest.json` | 3.6 KB | 复现清单，见 §3.1 |
 | `ic.parquet` | 6.2 KB | 逐日 IC 序列 |
 | `quality.json` | 1.0 KB | 因子质量指标 |
@@ -146,13 +146,16 @@ candidates.csv   manifest.json   exported/
 ```text
 runs/logs/                        factor_research.log(+ 按日轮转)
 runs/artifacts/daily/factors/     {factor}_{start}_{end}.parquet
-runs/artifacts/daily/results/     {factor}_{start}_{end}_{ic,quality,universe,walk_forward,meta}.*
-runs/artifacts/daily/reports/     {factor}_{start}_{end}.html
+runs/artifacts/daily/results/     {factor}_{start}_{end}_{ic,quality,universe,meta,signal,...}.*
+runs/artifacts/daily/reports/     {factor}_{start}_{end}_eval.html（eval）· {factor}_{start}_{end}.html（backtest）
 runs/artifacts/daily/charts/
 runs/artifacts/intraday/{factors,results,reports}/
 ```
 
-> ℹ️ **每次 `fz factor eval` / `fz factor backtest` 产物落两份**：一份进 run 目录（自包含、可整体归档），一份进 `runs/artifacts/` 全局归档（按因子名+窗口命名，便于跨 run 比对）。manifest 的 `outputs` 字段同时记录两组路径。
+> ℹ️ **每次 `fz factor eval` / `fz factor backtest` 产物落两份**：  
+> - **run 目录**（`factor_evaluations/<run_id>/`）用**短名**：`ic.parquet`、`signal.json`、`report.html`、`meta.json` 等（见 §2.1）。  
+> - **全局归档**（`runs/artifacts/daily/`）用**长名**：`{factor}_{start}_{end}_ic.parquet`、`_signal.json`、`_eval.html` / `.html` 等。  
+> manifest 的 `outputs` 字段同时记录两组路径。
 
 qlib 系列因子会再分桶：因子名前缀 `qlib_alpha158_` → `qlib158/` 子目录，`qlib_alpha360_` → `qlib360/`（`settings.py` 的 `daily_output_bucket`）。
 

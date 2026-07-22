@@ -105,7 +105,9 @@ pixi run -- fz factor eval momentum_20 --start 20220101 --end 20241231 \
   --universe csi500
 ```
 
-**产物**：`workspace/factor_evaluations/<run_id>/`（因子 parquet、`_ic.parquet`、`_signal.json`、`_signal_group_nav.parquet`、`_eval.html`、`_meta.json` 等）；run 记录同时进 `workspace/runs/`。HTML 报告文件名为 `{name}_{start}_{end}_eval.html`，不覆盖交易轨报告。
+**产物**（两处落盘，命名规则不同）：  
+- **全局归档** `workspace/runs/artifacts/daily/`：长名 `{name}_{start}_{end}_ic.parquet`、`_signal.json`、`_signal_group_nav.parquet`、`_meta.json`、`_quality.json`；报告为 `{name}_{start}_{end}_eval.html`（不覆盖交易轨 `.html`）。  
+- **run 目录** `workspace/factor_evaluations/<run_id>/`：短名 `factor.parquet`、`ic.parquet`、`signal.json`、`signal_group_nav.parquet`、`report.html`、`meta.json`、`quality.json`、`universe.parquet`、`manifest.json`。
 
 ### fz factor backtest
 
@@ -131,7 +133,9 @@ pixi run -- fz factor backtest momentum_20 --start 20220101 --end 20241231 \
   --universe csi500 --set backtest.top_n=30
 ```
 
-**产物**：`workspace/factor_evaluations/<run_id>/`（因子 parquet、`_ic.parquet`、`_walk_forward.json`、`{name}_{start}_{end}.html`、`_meta.json` 等）；文件名与拆分前单因子主命令一致，供 `fz report` / `fz runs list` 下游消费。
+**产物**（两处落盘，命名规则不同）：  
+- **全局归档** `workspace/runs/artifacts/daily/`：长名 `{name}_{start}_{end}_ic.parquet`、`_walk_forward.json`、`_meta.json`、`_quality.json`；报告为 `{name}_{start}_{end}.html`（交易轨，与 eval 的 `_eval.html` 并存）。  
+- **run 目录** `workspace/factor_evaluations/<run_id>/`：短名 `factor.parquet`、`ic.parquet`、`walk_forward.json`、`report.html`、`meta.json`、`quality.json`、`universe.parquet`、`manifest.json`。
 
 ### fz factor sweep
 

@@ -385,7 +385,6 @@ def test_merge_report_config_suite():
             universe=None,
             benchmark=None,
             frequency="daily",
-            reuse=False,
             config=None,
         )
         cfg = RunConfig(
@@ -422,7 +421,6 @@ def test_merge_report_config_suite():
             universe="csi500",
             benchmark="000300.SH",
             frequency="daily",
-            reuse=True,
             config=None,
         )
         cfg = RunConfig(
@@ -436,7 +434,6 @@ def test_merge_report_config_suite():
         merged = mod._merge_report_config_args(args, cfg)
 
         assert merged.benchmark == "000300.SH"
-        assert merged.reuse is True
         assert merged.universe == "csi500"
 
     _section_1_test_merge_report_config_args_keeps_explicit_benchmark()
@@ -455,7 +452,6 @@ def test_merge_report_config_suite():
             universe=None,
             benchmark=None,
             frequency="daily",
-            reuse=False,
             config=None,
         )
 
@@ -492,7 +488,6 @@ def test_merge_report_config_suite():
             universe=None,
             benchmark=None,
             frequency="daily",
-            reuse=False,
             config=None,
         )
 

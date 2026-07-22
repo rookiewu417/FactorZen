@@ -73,7 +73,6 @@ def _add_report_build_arguments(parser: argparse.ArgumentParser) -> None:
         default="daily",
         help="Factor frequency",
     )
-    parser.add_argument("--reuse", action="store_true", help="Reuse existing artifacts")
     parser.add_argument("--benchmark", default=None, help="Benchmark index code")
     parser.add_argument("--config", default=None, help="YAML run config path")
 
@@ -872,6 +871,12 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
                          help="产物子目录名(默认=end 日期串)；多期构建须用不同 run_id 避免覆盖")
     p_build.add_argument("--out-dir", dest="out_dir", default=str(PORTFOLIOS_DIR),
                          help=f"组合产物根目录(默认 {PORTFOLIOS_DIR})")
+    p_build.add_argument(
+        "--risk-dir",
+        dest="risk_dir",
+        default=None,
+        help="读取 fz risk build 产物目录；不传则进程内自建(默认参数)",
+    )
     _add_freq_arg(p_build)
     p_build.set_defaults(func=commands._cmd_portfolio_build)
 

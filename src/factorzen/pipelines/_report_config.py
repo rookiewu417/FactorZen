@@ -35,7 +35,7 @@ def _merge_report_config_args(args: argparse.Namespace, run_config: RunConfig | 
 
 def _effective_report_config(args: argparse.Namespace, run_config: RunConfig | None) -> RunConfig:
     # 无 YAML 时与 daily_single 用同一份研究预设（quantile_ls_5 + 中性化预处理），
-    # 避免 reuse 未命中重算时两条路径口径漂移（双路径登记簿）。
+    # 避免 report 与 factor eval/backtest 两条路径口径漂移（双路径登记簿）。
     base = run_config or build_default_daily_research_config(
         factor=args.factor,
         start=args.start,

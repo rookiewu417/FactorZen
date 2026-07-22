@@ -298,17 +298,32 @@ def _save(results, **kw):
     )
 
 
-def test_save_load_round_trip(tmp_dirs, results):
+def test_save_results_writes_artifacts(tmp_dirs, results):
+    """_save_results 落盘 meta + 评价 parquet（_load_results 已随 --reuse 删除）。"""
+    import json
+
     _save(results)
-    loaded = persist._load_results("momentum_20d", "20240101", "20240131")
-    assert loaded is not None
-    _clean, ic, bt, to = loaded
-    assert ic.factor_name == "momentum_20d"
-    assert ic.ic_mean == pytest.approx(0.01)
-    assert ic.n_periods == 1
-    assert bt.factor_name == "momentum_20d"
-    assert bt.n_groups == 5
-    assert to.avg_turnover == pytest.approx(0.1)
+    meta_path = persist._meta_path("momentum_20d", "20240101", "20240131")
+    assert meta_path.exists()
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["factor_name"] == "momentum_20d"
+    assert meta["ic_mean"] == pytest.approx(0.01)
+    assert meta["n_periods"] == 1
+    assert meta["bt_factor_name"] == "momentum_20d"
+    assert meta["bt_n_groups"] == 5
+    assert meta["to_avg_turnover"] == pytest.approx(0.1)
+    result_dir = persist.daily_result_output_dir("momentum_20d")
+    prefix = "momentum_20d_20240101_20240131"
+    for suffix in (
+        "_ic.parquet",
+        "_bt_returns.parquet",
+        "_bt_nav.parquet",
+        "_bt_positions.parquet",
+        "_bt_trades.parquet",
+        "_to_daily.parquet",
+        "_to_matrix.parquet",
+    ):
+        assert (result_dir / f"{prefix}{suffix}").exists(), suffix
 
 
 def test_load_walk_forward_summary_round_trip(tmp_dirs, results):

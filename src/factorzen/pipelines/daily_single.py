@@ -967,7 +967,7 @@ def run_factor_backtest(
     factor_output_dir.mkdir(parents=True, exist_ok=True)
     result_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 落盘原始因子值（语义定义，不翻号）；回测方向写入 meta 供 report --reuse
+    # 落盘原始因子值（语义定义，不翻号）；回测方向写入 meta 供审计与后续读回
     factor_path = factor_output_dir / f"{factor.name}_{args.start}_{args.end}.parquet"
     clean_df.write_parquet(str(factor_path))
     logger.info(f"因子已保存: {factor_path}")

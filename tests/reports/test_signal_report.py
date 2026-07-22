@@ -233,3 +233,37 @@ def test_signal_report_suite():
         assert "&lt;script&gt;" in html
 
     _section_escape()
+
+
+def test_ic_unavailable_is_not_disguised_as_zero():
+    """n_periods=0 时 IC 类指标必须显示「未计算」,绝不能展示哨兵数值。
+
+    项目 P0 史(admission_ic 恒 0.0):空输入返回 0.0 哨兵被下游当合法值消费。
+    信号轨报告的核心就是 IC——若截面样本不足门槛(ic_analysis._MIN_CROSS_SAMPLES=30)
+    或 join 零命中,IC 一天都算不出来,此时展示数字会让读者把「算不出来」
+    读成「因子无预测力」。
+
+    判别力:fixture 刻意让 ic_mean=0.035(一个看起来完全合法的值)而 n_periods=0。
+    实现若不检查 n_periods,报告就会显示 0.0350,本测试即红。
+    """
+    sig = _make_signal()
+    sig.ic = _make_ic(empty=True)  # n_periods=0,但 ic_mean 仍是 0.035
+    assert sig.ic.n_periods == 0
+    assert sig.ic.ic_mean == 0.035, "fixture 前提:哨兵值非零才有判别力"
+
+    html = generate_signal_report(sig, factor_name="thin_cross_section")
+
+    idx = html.find("IC mean")
+    assert idx > 0, "报告应含 IC mean 卡片"
+    card = html[idx : idx + 200]
+    assert "未计算" in card, "n_periods=0 时 IC mean 卡片应显示未计算"
+    assert "0.0350" not in card, "绝不能展示 ic_mean 哨兵值"
+    assert "IC 不可用" in html, "应有醒目告警条说明 IC 算不出来"
+    assert "请勿把它读成" in html, "告警条应明说不要误读为无预测力"
+
+    # 正常样本不受影响:IC 数值照常展示
+    ok = _make_signal()
+    html_ok = generate_signal_report(ok, factor_name="normal")
+    assert "IC 不可用" not in html_ok
+    idx_ok = html_ok.find("IC mean")
+    assert "未计算" not in html_ok[idx_ok : idx_ok + 60]

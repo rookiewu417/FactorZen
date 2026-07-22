@@ -438,11 +438,19 @@ def _build_metrics(signal_result: Any) -> dict[str, str]:
     mono = _safe_attr(signal_result, "monotonicity")
     turnover = _safe_attr(signal_result, "turnover")
 
-    ic_mean = _finite_float(_safe_attr(ic, "ic_mean"))
-    ir = _finite_float(_safe_attr(ic, "ir"))
-    tstat = _finite_float(_safe_attr(ic, "ic_tstat"))
-    pvalue = _finite_float(_safe_attr(ic, "ic_pvalue"))
-    ic_pos = _finite_float(_safe_attr(ic, "ic_positive_ratio"))
+    # n_periods=0 → IC 一天都没算出来（截面样本不足 ic_analysis._MIN_CROSS_SAMPLES，
+    # 或 join 零命中），此时 ic_mean/ir/tstat 全是 0.0 哨兵。直接展示会让读者把
+    # 「算不出来」误读成「因子恰好无预测力」——两者在决策上天差地别，必须显式区分。
+    ic_n = _finite_float(_safe_attr(ic, "n_periods"))
+    ic_unavailable = ic_n is None or ic_n <= 0
+    if ic_unavailable:
+        ic_mean = ir = tstat = pvalue = ic_pos = None
+    else:
+        ic_mean = _finite_float(_safe_attr(ic, "ic_mean"))
+        ir = _finite_float(_safe_attr(ic, "ir"))
+        tstat = _finite_float(_safe_attr(ic, "ic_tstat"))
+        pvalue = _finite_float(_safe_attr(ic, "ic_pvalue"))
+        ic_pos = _finite_float(_safe_attr(ic, "ic_positive_ratio"))
 
     ann_g = _finite_float(ls.get("ann_ret_gross"))
     sharpe_g = _finite_float(ls.get("sharpe_gross"))
@@ -468,6 +476,8 @@ def _build_metrics(signal_result: Any) -> dict[str, str]:
         "max_dd_gross": _fmt_pct2(max_dd_g),
         "mono_score": _fmt_ratio2(mono_score),
         "avg_turnover": _fmt_pct2(avg_to),
+        # 供渲染层决定是否插入「IC 不可用」告警条
+        "_ic_unavailable": "1" if ic_unavailable else "",
     }
 
 
@@ -687,6 +697,17 @@ def _generate_signal_report_inner(
             ("平均换手", "avg_turnover"),
         )
     )
+
+    if metrics.get("_ic_unavailable"):
+        cards_html += (
+            "<div class='card' style='grid-column:1/-1;border-color:#c0392b'>"
+            "<div class='label'>⚠️ IC 不可用</div>"
+            "<div class='value' style='font-size:0.95rem;line-height:1.5'>"
+            "有效 IC 天数为 0——逐日截面有效样本不足最小门槛(30)或因子与收益 join 零命中，"
+            "IC 一天都没算出来。上方 IC 类指标显示「未计算」而非 0，"
+            "<b>请勿把它读成「因子无预测力」</b>。常见原因：票池过小、日期格式不一致、因子全为空。"
+            "</div></div>"
+        )
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     meta_bits = [

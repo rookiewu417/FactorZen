@@ -1,7 +1,7 @@
 """挖掘 session 候选读出与截面 α 导出（export-alpha / candidates.csv 契约）。
 
 不再渲染独立 .py 落入 workspace；入库候选经 factor_library + registry library
-provider 直接 `fz factor run <name>`。
+provider 直接 `fz factor eval <name>`。
 """
 from __future__ import annotations
 

@@ -60,7 +60,7 @@
 | [release-notes/](release-notes/) | 已发布版本说明（发布后不回写） |
 | [../CHANGELOG.md](../CHANGELOG.md) | 变更日志 |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | 开发流程、验证要求、提交规范 |
-| [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html) | 真实 Tear Sheet（GitHub Pages） |
+| [示例报告](https://rookiewu417.github.io/FactorZen/volume_return_corr_20d-tear-sheet.html) | 真实单因子报告（GitHub Pages） |
 
 作用域限定的局部说明随代码放置，不并入本目录：
 [`tools/`](../tools/README.md) · [`builtin_factors/qlib/`](../src/factorzen/builtin_factors/qlib/README.md) · [`research/combination/`](../src/factorzen/research/combination/README.md)

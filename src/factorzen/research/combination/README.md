@@ -43,7 +43,7 @@ print(res["comparison"])  # method × {rank_ic_mean, icir, top_bottom_spread, ma
 pixi run fz combine run --factor fa.parquet --factor fb.parquet --ret ret.parquet \
   --train-days 120 --test-days 20 --purge-days 5 --methods all --seed 42 --run-id exp1
 
-# 组合分数 → 真回测（日环引擎；默认策略 quantile_ls_5，与 fz factor run 一致）
+# 组合分数 → 真回测（日环引擎；默认策略 quantile_ls_5，与 fz factor backtest 一致）
 pixi run fz combine backtest --run-dir workspace/combinations/exp1 --method equal_weight \
   --start 20230101 --end 20231231 --universe csi300
 # 或任意分数面板：

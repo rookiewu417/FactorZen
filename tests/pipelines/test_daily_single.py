@@ -240,6 +240,19 @@ def test_write_run_metrics_suite(tmp_path):
     _tp1.mkdir(exist_ok=True)
     _section_1_test_write_run_metrics_tolerates_missing_portfolio(_tp1)
 
+    # -- eval 轨 bt_result=None --
+    def _section_2_test_write_run_metrics_tolerates_none_bt(tmp_path):
+        path = tmp_path / "metrics.json"
+        _write_run_metrics(str(path), _fake_ic_result(), None)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["ic_mean"] == 0.0397
+        assert data["sharpe"] is None
+        assert data["max_dd"] is None
+
+    _tp2 = tmp_path / "_s2"
+    _tp2.mkdir(exist_ok=True)
+    _section_2_test_write_run_metrics_tolerates_none_bt(_tp2)
+
 
 # ==== 来自 test_daily_single_set_flag.py ====
 def _run_dry(monkeypatch, argv):
@@ -897,11 +910,311 @@ def test_neutralization_and_ensure_data_suite():
         )
 
         with pytest.raises(RuntimeError, match="stop after data ensure"):
-            run_mod._run(args, RunConfig(factor="dummy_factor", start="20240102", end="20240103"))
+            run_mod._prepare_evaluation_inputs(
+                args, RunConfig(factor="dummy_factor", start="20240102", end="20240103")
+            )
 
         assert calls == ["ensure", "universe"]
 
     with pytest.MonkeyPatch.context() as mp:
         _section_2_test_run_ensures_required_data_before_loading_universe(mp)
 
+
+# -- eval / backtest 双轨拆分产物 --
+def test_eval_backtest_track_artifacts_suite(tmp_path):
+    """eval 轨与 backtest 轨产物隔离：各自该落的在、不该跑的没跑。"""
+    from datetime import date, timedelta
+
+    from factorzen.config.research import RunConfig
+    from factorzen.pipelines import daily_single as ds
+
+    n_days, n_stocks = 6, 10
+    dates = [date(2024, 1, 2) + timedelta(days=i) for i in range(n_days)]
+    codes = [f"{i:06d}.SZ" for i in range(n_stocks)]
+    start, end = "20240102", "20240107"
+    factor_name = "track_split_dummy"
+
+    def _factor_rows():
+        rows = []
+        for di, d in enumerate(dates):
+            for si, c in enumerate(codes):
+                rows.append(
+                    {
+                        "trade_date": d,
+                        "ts_code": c,
+                        "factor_value": float(si) + 0.01 * di,
+                    }
+                )
+        return pl.DataFrame(rows)
+
+    def _daily_rows():
+        rows = []
+        for di, d in enumerate(dates):
+            for si, c in enumerate(codes):
+                px = 10.0 + 0.01 * si + 0.001 * di
+                rows.append(
+                    {
+                        "trade_date": d,
+                        "ts_code": c,
+                        "close": px,
+                        "close_adj": px,
+                        "open": px,
+                        "open_adj": px,
+                        "high": px,
+                        "low": px,
+                        "vol": 1e5,
+                        "amount": 1e6,
+                    }
+                )
+        return pl.DataFrame(rows)
+
+    mem = pl.DataFrame(
+        [{"trade_date": d.strftime("%Y%m%d"), "ts_code": c} for d in dates for c in codes]
+    )
+
+    class DummyFactor:
+        name = factor_name
+        description = "track split"
+        required_data = ["daily"]
+        lookback_days = 1
+        category = "test"
+
+        def compute(self, ctx):
+            return _factor_rows()
+
+        def validate(self, df):
+            return {"coverage": 1.0, "n_rows": df.height}
+
+    class FakeCtx:
+        def __init__(self, **kw):
+            pass
+
+        @property
+        def daily(self):
+            return _daily_rows().lazy()
+
+    def _fake_ic(clean_df, ret_df, **kw):
+        ic_series = pl.DataFrame(
+            {
+                "trade_date": dates,
+                "ic": [0.02] * len(dates),
+            }
+        )
+        return SimpleNamespace(
+            ic_mean=0.02,
+            ir=0.5,
+            ic_tstat=2.0,
+            ic_pvalue=0.05,
+            n_periods=len(dates),
+            ic_positive_ratio=0.6,
+            ic_series=ic_series,
+            factor_name=None,
+            summary=lambda: "ic ok",
+        )
+
+    def _fake_turnover(df, **kw):
+        return SimpleNamespace(
+            avg_turnover=0.2,
+            factor_name=None,
+            summary=lambda: "to ok",
+        )
+
+    def _fake_signal(factor_df, ret_df, **kw):
+        group_nav = pl.DataFrame(
+            {
+                "trade_date": dates * 2,
+                "group": [0] * len(dates) + [1] * len(dates),
+                "nav": [1.0] * (len(dates) * 2),
+            }
+        )
+        return SimpleNamespace(
+            summary_stats={"long_short": {"ann_ret_gross": 0.1}},
+            meta={"return_basis": "gross_signal_level"},
+            n_groups=5,
+            cost_bps=0.0,
+            group_nav=group_nav,
+            summary=lambda: "signal ok",
+        )
+
+    def _fake_bt_strategies(config, clean_df, daily, **kw):
+        nav = pl.DataFrame({"trade_date": dates, "nav": [1.0 + i * 0.001 for i in range(len(dates))]})
+        rets = pl.DataFrame({"trade_date": dates, "ret": [0.001] * len(dates)})
+        bt = SimpleNamespace(
+            summary_stats={
+                "portfolio": {
+                    "sharpe": 0.5,
+                    "ann_ret": 0.1,
+                    "avg_turnover": 0.2,
+                    "max_dd": -0.05,
+                }
+            },
+            nav=nav,
+            returns=rets,
+            summary=lambda: "bt ok",
+        )
+        return bt, {"quantile_ls_5": bt}
+
+    def _install_common_mocks(mp, out_root):
+        mp.setattr(ds, "get_factor", lambda n: DummyFactor)
+        mp.setattr(ds, "get_trade_dates", lambda s, e: dates)
+        mp.setattr(ds, "ensure_data_for_daily_run", lambda **kw: None)
+        mp.setattr(
+            "factorzen.core.universe.get_universe_membership",
+            lambda s, e, u: mem,
+        )
+        mp.setattr(
+            ds,
+            "get_universe",
+            lambda d, u: pl.DataFrame({"ts_code": codes, "industry": ["银行"] * len(codes)}),
+        )
+        mp.setattr(ds, "FactorDataContext", FakeCtx)
+        mp.setattr(ds, "compute_rank_ic", _fake_ic)
+        mp.setattr(ds, "compute_turnover", _fake_turnover)
+        mp.setattr(
+            ds,
+            "build_daily_quality_report",
+            lambda **kw: {"warnings": [], "status": "ok"},
+        )
+        mp.setattr(
+            ds,
+            "_preprocess_factor",
+            lambda factor_df, cfg, **kw: factor_df.with_columns(
+                pl.col("factor_value").alias("factor_clean")
+            ),
+        )
+        mp.setattr(ds, "daily_factor_output_dir", lambda name: out_root / "factors" / name)
+        mp.setattr(ds, "daily_result_output_dir", lambda name: out_root / "results" / name)
+        mp.setattr(ds, "daily_report_output_dir", lambda name: out_root / "reports" / name)
+        mp.setattr(
+            "factorzen.pipelines._report_persistence.daily_result_output_dir",
+            lambda name: out_root / "results" / name,
+        )
+        mp.setattr(ds, "generate_signal_report", lambda *a, **k: "<html>ok</html>")
+        mp.setattr(ds, "generate_trading_report", lambda *a, **k: "<html>ok</html>")
+        mp.setattr(
+            ds,
+            "_compute_monotonicity_result",
+            lambda *a, **k: None,
+        )
+        mp.setattr(
+            ds,
+            "_decide_backtest_direction",
+            lambda ic: {"direction": "normal", "should_reverse": False, "reason": "test"},
+        )
+        mp.setattr(
+            ds,
+            "_apply_backtest_direction",
+            lambda df, d: df,
+        )
+
+    args = SimpleNamespace(
+        factor=factor_name,
+        start=start,
+        end=end,
+        universe="csi300",
+        frequency="daily",
+        benchmark=None,
+        seed=None,
+        metrics_out=None,
+        exec_lag=1,
+        exec_price_col="open_adj",
+    )
+    cfg = RunConfig(factor=factor_name, start=start, end=end)
+
+    # -- eval 轨 --
+    def _section_0_eval_track(tmp_path, mp):
+        out = tmp_path / "eval"
+        _install_common_mocks(mp, out)
+        signal_called = {"n": 0}
+        bt_called = {"n": 0}
+        wf_called = {"n": 0}
+
+        def fake_signal(*a, **k):
+            signal_called["n"] += 1
+            return _fake_signal(*a, **k)
+
+        def fake_bt(*a, **k):
+            bt_called["n"] += 1
+            return _fake_bt_strategies(*a, **k)
+
+        def fake_wf(*a, **k):
+            wf_called["n"] += 1
+            return {"status": "ok", "n_folds": 1}, None
+
+        mp.setattr(ds, "run_signal_backtest", fake_signal)
+        mp.setattr(ds, "_run_backtest_strategies", fake_bt)
+        mp.setattr(ds, "run_quantile_walk_forward_summary", fake_wf)
+
+        outputs = ds.run_factor_eval(args, cfg)
+        result_dir = out / "results" / factor_name
+        report_dir = out / "reports" / factor_name
+        prefix = f"{factor_name}_{start}_{end}"
+
+        assert signal_called["n"] == 1
+        assert bt_called["n"] == 0, "eval 轨不得跑策略日环"
+        assert wf_called["n"] == 0, "eval 轨不得跑 walk-forward"
+        assert (result_dir / f"{prefix}_signal.json").exists()
+        assert (result_dir / f"{prefix}_signal_group_nav.parquet").exists()
+        assert (result_dir / f"{prefix}_ic.parquet").exists()
+        assert (report_dir / f"{prefix}_eval.html").exists()
+        assert not (result_dir / f"{prefix}_walk_forward.json").exists()
+        assert not (report_dir / f"{prefix}.html").exists()
+        assert "signal" in outputs
+        assert "walk_forward_summary" not in outputs
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_eval_track(_tp0, mp)
+
+    # -- backtest 轨 --
+    def _section_1_backtest_track(tmp_path, mp):
+        out = tmp_path / "bt"
+        _install_common_mocks(mp, out)
+        signal_called = {"n": 0}
+        bt_called = {"n": 0}
+        wf_called = {"n": 0}
+
+        def fake_signal(*a, **k):
+            signal_called["n"] += 1
+            return _fake_signal(*a, **k)
+
+        def fake_bt(*a, **k):
+            bt_called["n"] += 1
+            return _fake_bt_strategies(*a, **k)
+
+        def fake_wf(*a, **k):
+            wf_called["n"] += 1
+            return {"status": "disabled", "n_folds": 0}, None
+
+        mp.setattr(ds, "run_signal_backtest", fake_signal)
+        mp.setattr(ds, "_run_backtest_strategies", fake_bt)
+        mp.setattr(ds, "run_quantile_walk_forward_summary", fake_wf)
+
+        outputs = ds.run_factor_backtest(args, cfg)
+        result_dir = out / "results" / factor_name
+        report_dir = out / "reports" / factor_name
+        prefix = f"{factor_name}_{start}_{end}"
+
+        assert bt_called["n"] == 1
+        assert signal_called["n"] == 0, "backtest 轨不得跑信号回测"
+        assert (result_dir / f"{prefix}_walk_forward.json").exists()
+        assert (result_dir / f"{prefix}_ic.parquet").exists()
+        assert (report_dir / f"{prefix}.html").exists()
+        assert not (result_dir / f"{prefix}_signal.json").exists()
+        assert not (report_dir / f"{prefix}_eval.html").exists()
+        assert "walk_forward_summary" in outputs
+        assert "signal" not in outputs
+
+    _tp1 = tmp_path / "_s1"
+    _tp1.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_1_backtest_track(_tp1, mp)
+
+
+# -- main(track=...) 非法值 --
+def test_main_invalid_track_raises():
+    """daily_single.main 对非法 track 立即抛 ValueError，不进入 argparse。"""
+    with pytest.raises(ValueError, match="unknown track"):
+        daily_single.main(track="signal")
 

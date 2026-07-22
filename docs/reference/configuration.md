@@ -130,7 +130,7 @@ walk_forward:
 跑它：
 
 ```bash
-pixi run -- fz factor run --config workspace/configs/daily/volume_return_corr_20d.yaml
+pixi run -- fz factor backtest --config workspace/configs/daily/volume_return_corr_20d.yaml
 ```
 
 ### 2.2 多策略写法
@@ -195,14 +195,14 @@ pixi run -- fz ops validate-config workspace/configs/daily/volume_return_corr_20
 >
 > | 挂载点 | 来源 |
 > |---|---|
-> | `fz factor run` | `cli/parser.py` → `_add_factor_run_arguments` |
+> | `fz factor eval` / `fz factor backtest` | `cli/parser.py` → `_add_factor_common_arguments` |
 > | `fz factor sweep` | `cli/parser.py`，语义是「应用到每个组合的固定覆盖」 |
 > | `pixi run daily`（`python -m factorzen.pipelines.daily_single`） | `pipelines/daily_single.py` |
 
 签名 `--set KEY=VALUE`，`action="append"` 因此**可重复**：
 
 ```bash
-pixi run -- fz factor run momentum_20d \
+pixi run -- fz factor backtest momentum_20d \
   --start 20230101 --end 20241231 \
   --set backtest.top_n=30 \
   --set preprocessing.normalizer=rank_normal \
@@ -261,10 +261,11 @@ dotted key 走嵌套 dict，中间缺失的键按需创建。三种报错：
 
 ```bash
 # 不给 --config → 走内置预设 → 中性化是【开】的
-pixi run -- fz factor run momentum_20d --start 20230101 --end 20241231
+pixi run -- fz factor eval momentum_20d --start 20230101 --end 20241231
+pixi run -- fz factor backtest momentum_20d --start 20230101 --end 20241231
 
 # 给了 --config 且 YAML 没写 neutralize → 吃类默认 → 中性化是【关】的
-pixi run -- fz factor run --config workspace/configs/daily/my_factor.yaml
+pixi run -- fz factor backtest --config workspace/configs/daily/my_factor.yaml
 ```
 
 > ⚠️ **同一个因子、同样的窗口，加不加 `--config` 会得到不同的中性化处理，因而 IC 数值不同。** 对比两次 run 的结果前，先用 `--dry-run` 或翻 `manifest.json` 里的 `config.preprocessing.neutralize` 确认两侧口径一致。

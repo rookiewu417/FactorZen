@@ -8,6 +8,7 @@ import numpy as np
 import polars as pl
 
 from factorzen.core.logger import get_logger
+from factorzen.daily.evaluation.grouping import assign_quantile_groups
 
 logger = get_logger(__name__)
 
@@ -67,28 +68,15 @@ def compute_monotonicity(
     Returns:
         MonotonicityResult
     """
-    # 只保留有效因子值参与截面 rank/分组（NaN 非 null，rank 排最大会污染最高组）
-    factor_df = factor_df.filter(
-        pl.col(factor_col).is_not_null() & pl.col(factor_col).is_not_nan()
-    )
-    if factor_df.is_empty():
+    # NaN/null 过滤与 ordinal 分组统一走 assign_quantile_groups（防 rank 把 NaN 排最大）
+    df = assign_quantile_groups(factor_df, factor_col=factor_col, n_groups=n_groups)
+    if df.is_empty():
         return MonotonicityResult(
             factor_name=factor_col,
             monotonicity_score=0.0,
             group_means=[],
             direction="neutral",
         )
-    df = (
-        factor_df.with_columns(
-            pl.col(factor_col).rank("ordinal", descending=False).over("trade_date").alias("_rank")
-        )
-        .with_columns(
-            ((pl.col("_rank") - 1) * n_groups // pl.col("_rank").max().over("trade_date"))
-            .cast(pl.Int32)
-            .alias("group")
-        )
-        .drop("_rank")
-    )
 
     # 每组平均收益
     group_ret = (

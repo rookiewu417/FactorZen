@@ -1,4 +1,6 @@
-"""策略化回测引擎。
+"""模拟交易回测引擎（日环撮合：约束/成本/仓位）。
+
+因子研究的信号层评估（分层/多空/IC，毛收益向量化）在 ``signal_backtest.py``。
 
 核心口径：
 - t 日因子生成目标权重。
@@ -512,7 +514,7 @@ class OptimizerStrategy(Strategy):
 
 def run_strategy_backtest(
     strategy: Strategy,
-    factor_df: pl.DataFrame,
+    factor_df: pl.DataFrame | None,
     price_df: pl.DataFrame,
     config: BacktestConfig | None = None,
     cost_model: CostModel | CostModelBase | None = None,
@@ -530,6 +532,8 @@ def run_strategy_backtest(
     其它策略在调仓日调用 ``generate_weights``（Optimizer 的 ``price_history`` 等
     最小上下文仍在日环内供给）。
 
+    ``factor_df=None`` 仅适用于不消费因子内容的策略（如 PrecomputedWeightsStrategy）。
+
     Parameters
     ----------
     is_st_by_date : dict[date, set[str]] | None, optional
@@ -539,6 +543,14 @@ def run_strategy_backtest(
         时行为与未引入此参数前完全一致：一律按非 ST 板块阈值判断涨跌停。
     """
     cfg = config or BacktestConfig()
+    if factor_df is None:
+        factor_df = pl.DataFrame(
+            schema={
+                "trade_date": pl.Date,
+                "ts_code": pl.Utf8,
+                cfg.factor_col: pl.Float64,
+            }
+        )
     factor = _prepare_factor_df(factor_df, cfg.factor_col)
     price = _prepare_price_df(price_df)
     trade_dates = price.select("trade_date").unique().sort("trade_date")["trade_date"].to_list()
@@ -567,7 +579,11 @@ def run_stratified_backtest(
     cost_model: CostModel | CostModelBase | None = None,
     config: BacktestConfig | None = None,
 ) -> StrategyBacktestResult:
-    """分层多空策略回测入口。"""
+    """交易口径的分层策略回测（完整日环：约束+成本+撮合）。
+
+    研究用途的分层/多空信号评估请用 ``signal_backtest.run_signal_backtest``
+    （向量化毛收益口径）。
+    """
     cfg = config or BacktestConfig(factor_col=factor_col, frequency=frequency)
     strategy = QuantileLongShortStrategy(n_groups=n_groups, factor_col=factor_col)
     result = run_strategy_backtest(strategy, factor_df, price_df, cfg, cost_model, factor_name)
@@ -1293,38 +1309,6 @@ def _run_day_loop_engine(
         config=asdict(config),
         frequency=config.frequency,
         ret_definition=config.ret_definition,
-    )
-
-
-def _run_precomputed_weights_backtest_fast(
-    *,
-    strategy: PrecomputedWeightsStrategy,
-    price: pl.DataFrame,
-    trade_dates: list[date],
-    config: BacktestConfig,
-    cost_model: CostModel | None,
-    factor_name: str,
-    is_st_by_date: dict[date, set[str]] | None = None,
-) -> StrategyBacktestResult:
-    """兼容薄包装：直调统一日环（测试可绕过 ``_prepare_price_df`` 注入矩阵）。
-
-    历史名保留；新代码请走 ``run_strategy_backtest``。
-    """
-    empty_factor = pl.DataFrame(
-        schema={"trade_date": pl.Date, "ts_code": pl.Utf8, config.factor_col: pl.Float64}
-    )
-    return _run_day_loop_engine(
-        strategy=strategy,
-        factor=empty_factor,
-        price=price,
-        trade_dates=trade_dates,
-        config=config,
-        cost_model=cost_model,
-        factor_name=factor_name,
-        collect_positions=False,
-        collect_trades=False,
-        include_context_positions=False,
-        is_st_by_date=is_st_by_date,
     )
 
 

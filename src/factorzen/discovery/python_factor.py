@@ -24,7 +24,7 @@ _LOG = get_logger(__name__)
 
 
 def _load_universe_codes(start: str, end: str, universe: str) -> list[str]:
-    """PIT membership 并集 ts_codes（与 fz factor run 的 load_pit_membership 同 core 入口）。
+    """PIT membership 并集 ts_codes（与 fz factor eval/backtest 的 load_pit_membership 同 core 入口）。
 
     直连 ``core.universe``（discovery 不许依赖 pipelines——架构分层）；错误语义与
     ``pipelines.daily_single.load_pit_membership`` 对齐：构造失败拒绝回退期末快照

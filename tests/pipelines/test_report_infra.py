@@ -4,7 +4,7 @@
 --- 来源 test_generate_report.py ---
 test_generate_report_is_st.py：generate_report 回测须传 is_st_by_date（与 daily_single 一致，消除 ST 涨跌停双路径）。
 test_generate_report_persistence.py：Tests for generate_report result persistence metadata.
-test_report_forward_returns.py：fz report build 前向收益/IC 标签须用复权收盘价，与 fz factor run 口径一致，
+test_report_forward_returns.py：fz report build 前向收益/IC 标签须用复权收盘价，与 fz factor eval/backtest 口径一致，
 
 --- 来源 test_pipeline_infra.py ---
 test_membership_vectorized_equiv.py：universe membership 向量化等价性：与逐日 _load_index_members 完全一致。
@@ -15,6 +15,7 @@ test_output_paths.py：无 module docstring 的测试。
 from __future__ import annotations
 
 import json
+import sys
 import time
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -177,6 +178,131 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
         "stability_ratio": 0.72,
     }
 
+
+# -- fz report build 交易轨 smoke --
+def test_generate_report_trading_track_smoke_suite(tmp_path):
+    """generate_report.main 主流程落盘交易轨 HTML（离线 mock，不碰网络）。"""
+
+    # -- main → 交易轨报告 HTML --
+    def _section_0_main_writes_trading_html(tmp_path, mp):
+        import inspect
+
+        from factorzen.core import experiment as exp_mod
+        from factorzen.pipelines import _report_persistence as persist
+        from factorzen.pipelines import generate_report as mod
+        from factorzen.reports.trading_report import TRADING_BANNER, generate_trading_report
+
+        # 接线回归：生产 _run 必须调交易轨报告（切回旧报告会红）
+        assert "generate_trading_report(" in inspect.getsource(mod._run)
+
+        experiments_dir = tmp_path / "experiments"
+        report_root = tmp_path / "reports"
+        result_root = tmp_path / "results"
+        mp.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
+        mp.setattr(persist, "daily_result_output_dir", lambda factor_name: result_root)
+        mp.setattr(persist, "daily_report_output_dir", lambda factor_name: report_root)
+        mp.setattr(mod, "daily_report_output_dir", lambda factor_name: report_root)
+        mp.setattr(
+            sys,
+            "argv",
+            [
+                "generate_report.py",
+                "--factor",
+                "momentum_20d",
+                "--start",
+                "20240101",
+                "--end",
+                "20240131",
+            ],
+        )
+
+        dates = [date(2024, 1, 2) + timedelta(days=i) for i in range(8)]
+        nav_rows = []
+        nav_v = 1.0
+        for d in dates:
+            g, c, b = 0.01, 0.001, 0.0005
+            net = g - c - b
+            nav_v *= 1.0 + net
+            nav_rows.append(
+                {
+                    "trade_date": d,
+                    "gross_return": g,
+                    "cost": c,
+                    "borrow_cost": b,
+                    "net_return": net,
+                    "nav": nav_v,
+                    "cash_weight": 0.2,
+                    "turnover": 0.1,
+                }
+            )
+        nav = pl.DataFrame(nav_rows)
+        bt = SimpleNamespace(
+            factor_name="momentum_20d",
+            strategy_name="top_n",
+            n_groups=5,
+            returns=nav,
+            nav=nav,
+            positions=pl.DataFrame(),
+            trades=pl.DataFrame(
+                schema={
+                    "trade_date": pl.Date,
+                    "ts_code": pl.Utf8,
+                    "prev_weight": pl.Float64,
+                    "target_weight": pl.Float64,
+                    "filled_delta_weight": pl.Float64,
+                    "turnover": pl.Float64,
+                    "cost": pl.Float64,
+                    "block_reason": pl.Utf8,
+                }
+            ),
+            summary_stats={
+                "portfolio": {
+                    "ann_ret": 0.1,
+                    "ann_vol": 0.16,
+                    "sharpe": 0.85,
+                    "max_dd": -0.12,
+                    "avg_turnover": 0.14,
+                    "total_cost": 0.02,
+                }
+            },
+            config={"cost_model": "default"},
+            frequency="daily",
+        )
+
+        def fake_run(args, effective_config, timer=None):
+            # 与生产一致：走 generate_trading_report，落长名 HTML
+            html = generate_trading_report(
+                args.factor,
+                bt,
+                date_range=f"{args.start} ~ {args.end}",
+                universe=getattr(args, "universe", None) or "csi300",
+                strategy_name="top_n",
+            )
+            report_dir = mod.daily_report_output_dir(args.factor)
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / f"{args.factor}_{args.start}_{args.end}.html"
+            report_path.write_text(html, encoding="utf-8")
+            meta_path = result_root / f"{args.factor}_{args.start}_{args.end}_meta.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text("{}", encoding="utf-8")
+            return {"report": str(report_path), "meta": str(meta_path)}
+
+        mp.setattr(mod, "_run", fake_run)
+        mod.main()
+
+        report_path = report_root / "momentum_20d_20240101_20240131.html"
+        assert report_path.exists()
+        html = report_path.read_text(encoding="utf-8")
+        assert "— 交易轨报告" in html or "交易轨报告" in html
+        assert TRADING_BANNER in html
+        assert "<title>" in html and "交易轨" in html
+
+    _tp0 = tmp_path / "_s0"
+    _tp0.mkdir(exist_ok=True)
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0_main_writes_trading_html(_tp0, mp)
+
+
 def test_backtest_direction_from_ic_suite():
     """test_negative_significant_ic_uses_reversed_backtest_direction；test_weak_negative_ic_keeps_normal_backtest_direction；test_reversed_backtest_direction_flips_factor_clean"""
     # -- 原 test_negative_significant_ic_uses_reversed_backtest_direction --
@@ -244,7 +370,7 @@ def test_backtest_direction_from_ic_suite():
 
 
 def test_merge_report_config_suite():
-    """test_merge_report_config_args_uses_yaml_and_defaults_benchmark；test_merge_report_config_args_keeps_explicit_benchmark；双路径对齐：report 无 YAML 时必须与 daily_single 用同一份研究预设。；无 YAML 时 universe 兜底须与 fz factor run 研究预设一致（csi500）。"""
+    """test_merge_report_config_args_uses_yaml_and_defaults_benchmark；test_merge_report_config_args_keeps_explicit_benchmark；双路径对齐：report 无 YAML 时必须与 daily_single 用同一份研究预设。；无 YAML 时 universe 兜底须与 fz factor eval/backtest 研究预设一致（csi500）。"""
     # -- 原 test_merge_report_config_args_uses_yaml_and_defaults_benchmark --
     def _section_0_test_merge_report_config_args_uses_yaml_and_defaults_benchmark():
         from argparse import Namespace

@@ -226,12 +226,12 @@ def test_apply_normal_is_noop():
 
 
 def test_daily_single_wires_direction_helpers():
-    """factor run 主路径必须 import 并调用与 report 相同的方向工具。"""
+    """factor backtest 主路径必须 import 并调用与 report 相同的方向工具。"""
     import inspect
 
     from factorzen.pipelines import daily_single as mod
 
-    src = inspect.getsource(mod._run)
+    src = inspect.getsource(mod.run_factor_backtest)
     assert "_decide_backtest_direction" in src
     assert "_apply_backtest_direction" in src
     assert "backtest_direction=backtest_direction" in src
@@ -585,8 +585,8 @@ def test_intraday_backtest_suite():
     # -- 原 test_run_intraday_backtest_has_long_short --
     def _section_2_test_run_intraday_backtest_has_long_short():
         result = run_intraday_backtest(_make_minute_factor(), _make_daily_price(), n_groups=5)
-        assert "long_short" in result.summary_stats
-        assert not result.nav.is_empty()
+        assert not result.ls_returns.is_empty()
+        assert "ann_ret_gross" in result.summary_stats["long_short"]
 
     _section_2_test_run_intraday_backtest_has_long_short()
 

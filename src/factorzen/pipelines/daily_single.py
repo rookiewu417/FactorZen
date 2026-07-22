@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ from factorzen.core.universe import build_is_st_by_date, get_universe
 from factorzen.daily.data.context import FactorDataContext
 from factorzen.daily.evaluation.backtest import run_strategy_backtest, trim_backtest_to_first_trade
 from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns, compute_rank_ic
+from factorzen.daily.evaluation.signal_backtest import run_signal_backtest
 from factorzen.daily.evaluation.turnover import compute_turnover
 from factorzen.daily.evaluation.walk_forward_summary import run_quantile_walk_forward_summary
 from factorzen.daily.factors.registry import get_factor
@@ -51,7 +53,8 @@ from factorzen.pipelines._report_direction import (
     _decide_backtest_direction,
 )
 from factorzen.pipelines._report_persistence import _meta_path
-from factorzen.reports.tear_sheet import generate_tear_sheet
+from factorzen.reports.signal_report import generate_signal_report
+from factorzen.reports.trading_report import generate_trading_report
 
 setup_logging()
 logger = get_logger(__name__)
@@ -231,11 +234,16 @@ def _effective_run_config(args: argparse.Namespace, run_config: RunConfig | None
 
 
 def _write_run_metrics(path: str, ic_result: Any, bt_result: Any) -> None:
-    """把 IC 与主策略组合级回测指标写出为 JSON（供 factor sweep 汇总，内部接口）。"""
-    try:
-        portfolio = bt_result.summary_stats.get("portfolio", {})
-    except Exception:
-        portfolio = {}
+    """把 IC 与主策略组合级回测指标写出为 JSON（供 factor sweep 汇总，内部接口）。
+
+    ``bt_result`` 可为 None（eval 轨无策略回测）：回测字段写 None，不抛异常。
+    """
+    portfolio: dict[str, Any] = {}
+    if bt_result is not None:
+        try:
+            portfolio = bt_result.summary_stats.get("portfolio", {}) or {}
+        except Exception:
+            portfolio = {}
     metrics = {
         "ic_mean": ic_result.ic_mean,
         "ir": ic_result.ir,
@@ -263,7 +271,15 @@ def _build_dry_run_payload(
     return payload
 
 
-def _existing_run_outputs(factor_name: str, start: str, end: str) -> dict[str, str]:
+def _existing_run_outputs(
+    factor_name: str, start: str, end: str, *, track: str = "backtest"
+) -> dict[str, str]:
+    """失败时认领已落盘的部分产物。**必须按 track 分候选集**。
+
+    全局归档目录是跨 run 共享的，只按 ``path.exists()`` 认领会把**上一次别的轨道**
+    留下的陈旧文件记成本次产物：eval 轨永远不产 ``walk_forward.json``，报告也落
+    ``{prefix}_eval.html`` 而非 ``{prefix}.html``。
+    """
     prefix = f"{factor_name}_{start}_{end}"
     factor_dir = daily_factor_output_dir(factor_name)
     result_dir = daily_result_output_dir(factor_name)
@@ -272,9 +288,14 @@ def _existing_run_outputs(factor_name: str, start: str, end: str) -> dict[str, s
         "factor": factor_dir / f"{prefix}.parquet",
         "ic": result_dir / f"{prefix}_ic.parquet",
         "quality_report": result_dir / f"{prefix}_quality.json",
-        "walk_forward_summary": result_dir / f"{prefix}_walk_forward.json",
-        "report": report_dir / f"{prefix}.html",
     }
+    if track == "eval":
+        candidates["signal"] = result_dir / f"{prefix}_signal.json"
+        candidates["signal_group_nav"] = result_dir / f"{prefix}_signal_group_nav.parquet"
+        candidates["report"] = report_dir / f"{prefix}_eval.html"
+    else:
+        candidates["walk_forward_summary"] = result_dir / f"{prefix}_walk_forward.json"
+        candidates["report"] = report_dir / f"{prefix}.html"
     return {name: str(path) for name, path in candidates.items() if path.exists()}
 
 
@@ -335,7 +356,7 @@ def _build_forward_return_frame(
     """Build IC forward-return labels, preferring adjusted close when available.
 
     ``exec_lag`` / ``exec_price_col`` 透传 ``compute_fwd_returns``。
-    CLI（``fz factor run`` / daily_single）默认可实现口径 1 / open_adj；
+    CLI（``fz factor eval`` / ``fz factor backtest`` / daily_single）默认可实现口径 1 / open_adj；
     本 helper 内部默认仍 0 / None，便于单测断言旧 close→close 行为。
     """
     # 可实现口径：显式成交价列必须存在——缺列 fail-loudly，禁止静默退回 close→close
@@ -463,13 +484,45 @@ def _run_backtest_strategies(
     return strategy_results[primary_name], strategy_results
 
 
-def _run(
+@dataclass
+class _EvaluationInputs:
+    """共享前半段（0b~6b）产出：两轨后续步骤所需的全部对象。"""
+
+    args: argparse.Namespace
+    effective_config: RunConfig
+    timer: StageTimer
+    progress: OverallProgress
+    factor: Any
+    factor_output_dir: Path
+    result_output_dir: Path
+    report_output_dir: Path
+    membership: pl.DataFrame
+    ts_codes: list[str]
+    universe: pl.DataFrame
+    universe_snapshot_path: Path
+    clean_df: pl.DataFrame
+    daily: pl.DataFrame
+    ret_df: pl.DataFrame
+    quality_report: dict[str, Any]
+    quality_path: Path
+
+
+def _prepare_evaluation_inputs(
     args: argparse.Namespace,
     effective_config: RunConfig,
+    *,
     timer: StageTimer | None = None,
-) -> dict[str, str]:
+    progress: OverallProgress | None = None,
+    track_label: str = "Daily",
+    progress_total: int = 14,
+) -> _EvaluationInputs:
+    """共享前半段：种子 / 因子类 / 数据 / universe / PIT / 因子计算 / 预处理 / 前向收益 / 质量审计。
+
+    语义与拆分前 ``_run`` 第 0b~6b 步完全一致，仅搬家。
+    """
     timer = timer or StageTimer()
-    progress = OverallProgress(14, label="Daily run").start()
+    progress = progress or OverallProgress(progress_total, label=track_label).start()
+
     # ── 0b. 设置全局随机种子（可选）──
     if args.seed is not None:
         from factorzen.core.seed import set_global_seed
@@ -637,7 +690,250 @@ def _run(
     logger.info(f"数据质量报告已保存: {quality_path}")
     progress.advance("returns-quality")
 
+    return _EvaluationInputs(
+        args=args,
+        effective_config=effective_config,
+        timer=timer,
+        progress=progress,
+        factor=factor,
+        factor_output_dir=factor_output_dir,
+        result_output_dir=result_output_dir,
+        report_output_dir=report_output_dir,
+        membership=membership,
+        ts_codes=ts_codes,
+        universe=universe,
+        universe_snapshot_path=universe_snapshot_path,
+        clean_df=clean_df,
+        daily=daily,
+        ret_df=ret_df,
+        quality_report=quality_report,
+        quality_path=quality_path,
+    )
+
+
+def _merge_meta(meta_path: Path, updates: dict[str, Any]) -> dict[str, Any]:
+    """读现有 meta → update → 写回（两轨增量合并，互不冲掉）。"""
+    meta_payload: dict[str, Any] = {}
+    if meta_path.exists():
+        try:
+            meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta_payload = {}
+    meta_payload.update(updates)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(
+        json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return meta_payload
+
+
+def run_factor_eval(
+    args: argparse.Namespace,
+    effective_config: RunConfig,
+    timer: StageTimer | None = None,
+) -> dict[str, str]:
+    """信号轨：IC / 换手 / 单调性 / 信号回测（毛口径）+ 信号轨报告。
+
+    不跑策略日环回测、walk-forward、benchmark。
+    """
+    timer = timer or StageTimer()
+    progress = OverallProgress(12, label="Factor eval").start()
+    prep = _prepare_evaluation_inputs(
+        args,
+        effective_config,
+        timer=timer,
+        progress=progress,
+        track_label="Factor eval",
+        progress_total=12,
+    )
+    factor = prep.factor
+    clean_df = prep.clean_df
+    ret_df = prep.ret_df
+    factor_output_dir = prep.factor_output_dir
+    result_output_dir = prep.result_output_dir
+    report_output_dir = prep.report_output_dir
+    quality_path = prep.quality_path
+    quality_report = prep.quality_report
+    universe_snapshot_path = prep.universe_snapshot_path
+
     # ── 7. IC 分析（始终基于原始 factor_clean，不翻号）──
+    with timer.stage("IC 分析"):
+        ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
+    ic_result.factor_name = factor.name
+    logger.info(f"\n{ic_result.summary()}")
+    progress.advance("ic")
+
+    backtest_direction = _decide_backtest_direction(ic_result)
+    logger.info(
+        f"回测方向判定: {backtest_direction.get('direction')} | "
+        f"{backtest_direction.get('reason')}"
+    )
+    backtest_df = _apply_backtest_direction(clean_df, backtest_direction)
+
+    # ── 9. 换手率（与信号轨同一信号口径）──
+    with timer.stage("换手率"):
+        to_result = compute_turnover(backtest_df, frequency=args.frequency)
+    to_result.factor_name = factor.name
+    logger.info(f"\n{to_result.summary()}")
+    progress.advance("turnover")
+
+    factor_output_dir.mkdir(parents=True, exist_ok=True)
+    result_output_dir.mkdir(parents=True, exist_ok=True)
+
+    factor_path = factor_output_dir / f"{factor.name}_{args.start}_{args.end}.parquet"
+    clean_df.write_parquet(str(factor_path))
+    logger.info(f"因子已保存: {factor_path}")
+
+    ic_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_ic.parquet"
+    ic_result.ic_series.write_parquet(str(ic_path))
+    logger.info(f"IC 序列已保存: {ic_path}")
+
+    meta_path = _meta_path(factor.name, args.start, args.end)
+    _merge_meta(
+        meta_path,
+        {
+            "factor_name": factor.name,
+            "start": args.start,
+            "end": args.end,
+            "ic_mean": ic_result.ic_mean,
+            "ic_tstat": ic_result.ic_tstat,
+            "ic_pvalue": ic_result.ic_pvalue,
+            "ir": ic_result.ir,
+            "n_periods": ic_result.n_periods,
+            "backtest_direction": backtest_direction,
+            "track": "eval",
+        },
+    )
+    logger.info(f"meta 已更新: {meta_path}")
+    progress.advance("save-core")
+
+    # ── 11. 信号层回测（eval 轨主产物；失败直接上抛）──
+    # 单调性不在此处单算:run_signal_backtest 内部已算过一次，重复计算纯浪费，
+    # 日志改用返回结果里的那份（见下方 logger.info）。
+    _sig_exec_lag = int(
+        getattr(args, "exec_lag", 1)
+        if getattr(args, "exec_lag", None) is not None
+        else 1
+    )
+    _sig_exec_price_col = getattr(args, "exec_price_col", "open_adj")
+    with timer.stage("SignalBacktest"):
+        signal_result = run_signal_backtest(
+            backtest_df,
+            ret_df,
+            factor_col="factor_clean",
+            n_groups=int(getattr(args, "n_groups", 5) or 5),
+            cost_bps=float(getattr(args, "cost_bps", 0.0) or 0.0),
+            frequency=args.frequency,
+            factor_name=factor.name,
+            meta={
+                "exec_lag": _sig_exec_lag,
+                "exec_price_col": _sig_exec_price_col,
+                "direction": backtest_direction.get("direction"),
+            },
+        )
+    logger.info(f"\n{signal_result.summary()}")
+    _mono = getattr(signal_result, "monotonicity", None)
+    if _mono is not None and getattr(_mono, "monotonicity_score", None) is not None:
+        logger.info(f"单调性: score={_mono.monotonicity_score:.3f}")
+    progress.advance("mono")
+    signal_json_path = (
+        result_output_dir / f"{factor.name}_{args.start}_{args.end}_signal.json"
+    )
+    signal_json_path.write_text(
+        json.dumps(
+            {
+                "summary_stats": signal_result.summary_stats,
+                "meta": signal_result.meta,
+                "n_groups": signal_result.n_groups,
+                "cost_bps": signal_result.cost_bps,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    signal_nav_path = (
+        result_output_dir
+        / f"{factor.name}_{args.start}_{args.end}_signal_group_nav.parquet"
+    )
+    signal_result.group_nav.write_parquet(str(signal_nav_path))
+    logger.info(f"信号层回测已保存: {signal_json_path}, {signal_nav_path}")
+    _merge_meta(
+        meta_path,
+        {
+            "signal_summary": signal_result.summary_stats,
+            "signal_meta": signal_result.meta,
+        },
+    )
+    progress.advance("signal")
+
+    # ── 13. HTML 报告（eval 专用文件名，不覆盖交易轨）──
+    date_range = (
+        f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ "
+        f"{args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
+    )
+    with timer.stage("报告生成"):
+        html = generate_signal_report(
+            signal_result,
+            factor_name=factor.name,
+            date_range=date_range,
+            universe=args.universe,
+            frequency=args.frequency,
+            quality_report=quality_report,
+        )
+    report_output_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_output_dir / f"{factor.name}_{args.start}_{args.end}_eval.html"
+    report_path.write_text(html, encoding="utf-8")
+    logger.info(f"报告已生成: {report_path}")
+    progress.advance("report")
+
+    outputs = {
+        "factor": str(factor_path),
+        "ic": str(ic_path),
+        "quality_report": str(quality_path),
+        "universe_snapshot": str(universe_snapshot_path),
+        "signal": str(signal_json_path),
+        "signal_group_nav": str(signal_nav_path),
+        "report": str(report_path),
+        "meta": str(meta_path),
+    }
+    if getattr(args, "metrics_out", None):
+        _write_run_metrics(args.metrics_out, ic_result, None)
+    progress.close()
+    return outputs
+
+
+def run_factor_backtest(
+    args: argparse.Namespace,
+    effective_config: RunConfig,
+    timer: StageTimer | None = None,
+) -> dict[str, str]:
+    """交易轨：IC（方向判定）/ 策略日环回测 / 换手 / walk-forward / 单调性 / benchmark + 交易轨报告。
+
+    不跑信号层回测（11b）。产物文件名与拆分前单因子主命令完全一致。
+    """
+    timer = timer or StageTimer()
+    progress = OverallProgress(14, label="Factor backtest").start()
+    prep = _prepare_evaluation_inputs(
+        args,
+        effective_config,
+        timer=timer,
+        progress=progress,
+        track_label="Factor backtest",
+        progress_total=14,
+    )
+    factor = prep.factor
+    clean_df = prep.clean_df
+    daily = prep.daily
+    ret_df = prep.ret_df
+    factor_output_dir = prep.factor_output_dir
+    result_output_dir = prep.result_output_dir
+    report_output_dir = prep.report_output_dir
+    quality_path = prep.quality_path
+    quality_report = prep.quality_report
+    universe_snapshot_path = prep.universe_snapshot_path
+
+    # ── 7. IC 分析（始终基于原始 factor_clean，不翻号；仅用于方向判定）──
     with timer.stage("IC 分析"):
         ic_result = compute_rank_ic(clean_df, ret_df, frequency=args.frequency)
     ic_result.factor_name = factor.name
@@ -683,13 +979,8 @@ def _run(
     logger.info(f"IC 序列已保存: {ic_path}")
 
     meta_path = _meta_path(factor.name, args.start, args.end)
-    meta_payload: dict[str, Any] = {}
-    if meta_path.exists():
-        try:
-            meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            meta_payload = {}
-    meta_payload.update(
+    _merge_meta(
+        meta_path,
         {
             "factor_name": factor.name,
             "start": args.start,
@@ -700,10 +991,8 @@ def _run(
             "ir": ic_result.ir,
             "n_periods": ic_result.n_periods,
             "backtest_direction": backtest_direction,
-        }
-    )
-    meta_path.write_text(
-        json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            "track": "backtest",
+        },
     )
     logger.info(f"回测方向已写入 meta: {meta_path}")
     progress.advance("save-core")
@@ -728,8 +1017,8 @@ def _run(
         logger.info("Walk-forward 已关闭，跳过")
     progress.advance("walk-forward")
 
-    # ── 11. 单调性（与回测同一信号口径）──
-    mono_result = _compute_monotonicity_result(backtest_df, ret_df, n_groups=5)
+    # ── 11. 单调性（与回测同一信号口径；日志侧车，交易报告不消费）──
+    _ = _compute_monotonicity_result(backtest_df, ret_df, n_groups=5)
 
     walk_forward_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_walk_forward.json"
     walk_forward_path.write_text(
@@ -738,11 +1027,7 @@ def _run(
     logger.info(f"Walk-forward 摘要已保存: {walk_forward_path}")
     # 回填 meta 中的 walk_forward（方向判定已先写入）
     try:
-        meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta_payload["walk_forward_summary"] = walk_forward_summary
-        meta_path.write_text(
-            json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _merge_meta(meta_path, {"walk_forward_summary": walk_forward_summary})
     except Exception as e:
         logger.warning(f"更新 meta walk_forward 失败（跳过）: {e}")
     progress.advance("mono")
@@ -770,19 +1055,19 @@ def _run(
     progress.advance("benchmark")
 
     # ── 13. HTML 报告 ──
-    date_range = f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ {args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
+    date_range = (
+        f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ "
+        f"{args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
+    )
     with timer.stage("报告生成"):
-        html = generate_tear_sheet(
+        html = generate_trading_report(
             factor.name,
-            ic_result,
             bt_result,
-            to_result,
-            frequency=args.frequency,
             date_range=date_range,
             universe=args.universe,
-            mono_result=mono_result,
-            benchmark_result=benchmark_result,
+            strategy_name=str(getattr(bt_result, "strategy_name", "") or ""),
             backtest_direction=backtest_direction,
+            benchmark_result=benchmark_result,
             walk_forward_summary=walk_forward_summary,
             quality_report=quality_report,
         )
@@ -807,8 +1092,24 @@ def _run(
     return outputs
 
 
-def main():
-    parser = argparse.ArgumentParser(description="日频单因子评估")
+def main(*, track: str = "backtest") -> None:
+    """日频单因子管线入口。
+
+    Parameters
+    ----------
+    track
+        ``\"eval\"`` 信号轨（``run_factor_eval``）或 ``\"backtest\"`` 交易轨
+        （``run_factor_backtest``）。``fz factor sweep`` 走交易轨默认。
+    """
+    if track not in ("eval", "backtest"):
+        raise ValueError(f"unknown track: {track!r}（期望 eval|backtest）")
+
+    desc = (
+        "日频单因子研究评估（信号层，毛口径）"
+        if track == "eval"
+        else "日频单因子模拟交易回测（日环撮合，净口径）"
+    )
+    parser = argparse.ArgumentParser(description=desc)
     parser.add_argument("--factor", default=None, help="因子名称")
     parser.add_argument("--start", default=None, help="起始日期 YYYYMMDD")
     parser.add_argument("--end", default=None, help="截止日期 YYYYMMDD")
@@ -819,7 +1120,10 @@ def main():
     parser.add_argument(
         "--benchmark",
         default=None,
-        help="基准指数代码（如 000300.SH），若指定则计算超额收益并生成 HTML 报告",
+        help=(
+            "基准指数代码（如 000300.SH）；仅 backtest 轨计算超额收益，"
+            "eval 轨保留参数但忽略"
+        ),
     )
     parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
     parser.add_argument(
@@ -841,6 +1145,14 @@ def main():
     parser.add_argument(
         "--exec-price-col", dest="exec_price_col", default="open_adj",
         help="成交价格列。默认 open_adj（可实现口径 open[t+2]/open[t+1]）",
+    )
+    parser.add_argument(
+        "--n-groups", type=int, default=5, dest="n_groups",
+        help="信号轨截面分位组数（默认 5）",
+    )
+    parser.add_argument(
+        "--cost-bps", type=float, default=0.0, dest="cost_bps",
+        help="信号轨提示性单边成本(bp)，默认 0",
     )
     parser.add_argument(
         "--metrics-out",
@@ -895,14 +1207,17 @@ def main():
         )
         return
 
+    run_fn = run_factor_eval if track == "eval" else run_factor_backtest
     try:
         with run_experiment(effective_config, command=sys.argv) as exp_dir:
             timer = StageTimer()
             try:
-                outputs = _run(args, effective_config, timer=timer)
+                outputs = run_fn(args, effective_config, timer=timer)
             except Exception:
                 record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
-                for name, path in _existing_run_outputs(args.factor, args.start, args.end).items():
+                for name, path in _existing_run_outputs(
+                    args.factor, args.start, args.end, track=track
+                ).items():
                     record_experiment_output(exp_dir, name, path)
                 raise
             record_experiment_metadata(exp_dir, "stage_timings", timer.timings)

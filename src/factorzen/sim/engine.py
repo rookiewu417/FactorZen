@@ -4,7 +4,7 @@
 
     run_strategy_backtest(
         strategy: Strategy,
-        factor_df: pl.DataFrame,    # 第 2 参数，非 price_df！
+        factor_df: pl.DataFrame | None,  # 第 2 参数，非 price_df！
         price_df: pl.DataFrame,
         config: BacktestConfig | None = None,
         cost_model: CostModel | CostModelBase | None = None,
@@ -147,34 +147,6 @@ def _load_weights_by_date(
     return out
 
 
-def _build_dummy_factor_df(weights_by_date: dict[date, pl.DataFrame]) -> pl.DataFrame:
-    """构造最简 factor_df（每个信号日取第一只股票 + 哑元值），仅用于通过 _prepare_factor_df 校验。
-
-    PrecomputedWeightsStrategy 不消费 factor 内容，但 run_strategy_backtest
-    仍会对 factor_df 做列校验，故须提供合法 DataFrame。
-    """
-    rows = []
-    for sig_date, weight_df in weights_by_date.items():
-        if weight_df.height > 0:
-            rows.append(
-                {
-                    "trade_date": sig_date,
-                    "ts_code": weight_df["ts_code"][0],
-                    "factor_clean": 0.0,
-                }
-            )
-    if not rows:
-        # 极端兜底
-        rows = [
-            {
-                "trade_date": next(iter(weights_by_date)),
-                "ts_code": "000001.SZ",
-                "factor_clean": 0.0,
-            }
-        ]
-    return pl.DataFrame(rows)
-
-
 def run_portfolio_simulation(
     portfolio_run_dirs: list[str],
     daily: pl.DataFrame,
@@ -206,9 +178,8 @@ def run_portfolio_simulation(
         raise ValueError("no portfolio weights with signal_date found in any run_dir")
 
     # PrecomputedWeightsStrategy：统一日环内预填 target 矩阵，不依赖 factor 内容。
-    # collect_*=False → 不写明细；factor_df 仅满足列校验（dummy）。
+    # collect_*=False → 不写明细；factor_df=None（策略不消费因子）。
     # CostModel / CostModelBase 均走同一日环；CostModelBase 在日环内 per-name 计费。
-    factor_df = _build_dummy_factor_df(weights_by_date)
     strategy = PrecomputedWeightsStrategy(weights_by_date)
     effective_cost_model: CostModel | CostModelBase = (
         cost_model if cost_model is not None else CostModel()
@@ -233,7 +204,7 @@ def run_portfolio_simulation(
     )
     bt = run_strategy_backtest(
         strategy,
-        factor_df,
+        None,
         daily,
         config=sim_config,
         cost_model=effective_cost_model,

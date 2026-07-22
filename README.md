@@ -57,9 +57,9 @@
 | **多因子组合研究** | 四方法样本外对比：等权 / IC 加权 / max_ir / LightGBM | `fz combine from-library` |
 | **模拟与向前执行** | 组合权重回测 · 向前执行引擎（纸面撮合）· A 类分歧归因 | `fz sim run` · `fz live step` |
 | **无人值守运营** | 8 阶段幂等日链路（守卫→取数→审计→日内特征→信号→执行→报告→发布）+ 失败告警 | `fz ops daily` |
-| **成果展示** | 单因子 Tear Sheet · 组合 Dashboard · 只读 REST API + Web 页 | `fz report portfolio` · `pixi run serve` |
+| **成果展示** | 信号轨/交易轨报告 · 组合 Dashboard · 只读 REST API + Web 页 | `fz report portfolio` · `pixi run serve` |
 
-单因子研究链路（IC / 分层回测 / walk-forward / Tear Sheet）作为基础能力贯穿其中：`fz factor run`。
+单因子研究链路（IC / 信号评估 / 模拟交易回测 / 信号与交易报告）作为基础能力贯穿其中：`fz factor eval` · `fz factor backtest`。
 
 ---
 
@@ -121,7 +121,8 @@ pixi run fz combine from-library --market ashare \
 ```bash
 pixi run fz factor list
 pixi run fz factor new my_alpha --frequency daily
-pixi run fz factor run my_alpha --start 20230101 --end 20241231
+pixi run fz factor eval my_alpha --start 20230101 --end 20241231
+pixi run fz factor backtest my_alpha --start 20230101 --end 20241231
 pixi run fz report path <run_id>
 ```
 
@@ -132,7 +133,7 @@ pixi run fz report path <run_id>
 `--set key=value` 可在校验前覆盖任意配置字段，可重复，且写入 `manifest.json` 保持可复现：
 
 ```bash
-pixi run fz factor run momentum_20d --start 20230101 --end 20241231 \
+pixi run fz factor backtest momentum_20d --start 20230101 --end 20241231 \
   --set backtest.top_n=30 --set walk_forward.train_days=252
 ```
 
@@ -153,7 +154,7 @@ src/factorzen/                  约 49,500 行
 ├── risk/           Barra 风险模型（A 股）
 ├── research/       多因子组合研究（四方法 OOS 对比）
 ├── execution/      向前执行引擎（纸面撮合 + 分歧归因）
-├── reports/        Tear Sheet + 组合 Dashboard 渲染
+├── reports/        信号轨/交易轨报告 + 组合 Dashboard 渲染
 ├── ops/            无人值守 8 阶段日链路
 ├── llm/            LLM 客户端（双 profile）
 ├── validation/     防过拟合统计原语

@@ -39,15 +39,17 @@ from factorzen.ops.state import OpsState
 # ==== 来自 test_cli.py ====
 
 def test_pipeline_argv_forward_suite():
-    """test_factor_run_forwards_to_daily_pipeline；test_report_build_forwards_to_report_pipeline；test_data_fetch_daily_and_daily_basic；test_data_fetch_margin_detail"""
-    # -- 原 test_factor_run_forwards_to_daily_pipeline --
-    def _section_0_test_factor_run_forwards_to_daily_pipeline(mp):
+    """test_factor_eval_forwards_to_daily_pipeline；test_factor_backtest_forwards_to_daily_pipeline；test_report_build_forwards_to_report_pipeline；test_data_fetch_daily_and_daily_basic；test_data_fetch_margin_detail"""
+    # -- factor eval 转发 --
+    def _section_0_test_factor_eval_forwards_to_daily_pipeline(mp):
         from factorzen.cli import main as cli
 
         captured: list[str] = []
+        tracks: list[str] = []
 
-        def fake_main():
+        def fake_main(*, track="backtest"):
             captured.extend(sys.argv)
+            tracks.append(track)
 
         mp.setattr("factorzen.pipelines.daily_single.main", fake_main)
 
@@ -55,7 +57,7 @@ def test_pipeline_argv_forward_suite():
             cli.main(
                 [
                     "factor",
-                    "run",
+                    "eval",
                     "momentum_20d",
                     "--start",
                     "20250101",
@@ -76,7 +78,7 @@ def test_pipeline_argv_forward_suite():
         )
 
         assert captured == [
-            "fz factor run",
+            "fz factor eval",
             "--factor",
             "momentum_20d",
             "--start",
@@ -96,10 +98,63 @@ def test_pipeline_argv_forward_suite():
             "1",
             "--exec-price-col",
             "open_adj",
+            # 信号轨专属旋钮:eval 子命令独有,必须真的转发下去
+            # (曾漏接线——CLI 层收了参数但拼 argv 时没带,只看 --help 发现不了)
+            "--n-groups",
+            "5",
+            "--cost-bps",
+            "0.0",
         ]
+        assert tracks == ["eval"]
 
     with pytest.MonkeyPatch.context() as mp:
-        _section_0_test_factor_run_forwards_to_daily_pipeline(mp)
+        _section_0_test_factor_eval_forwards_to_daily_pipeline(mp)
+
+    # -- factor backtest 转发 --
+    def _section_0b_test_factor_backtest_forwards_to_daily_pipeline(mp):
+        from factorzen.cli import main as cli
+
+        captured: list[str] = []
+        tracks: list[str] = []
+
+        def fake_main(*, track="backtest"):
+            captured.extend(sys.argv)
+            tracks.append(track)
+
+        mp.setattr("factorzen.pipelines.daily_single.main", fake_main)
+
+        assert (
+            cli.main(
+                [
+                    "factor",
+                    "backtest",
+                    "momentum_20d",
+                    "--start",
+                    "20250101",
+                    "--end",
+                    "20260513",
+                    "--universe",
+                    "csi500",
+                    "--dry-run",
+                ]
+            )
+            == 0
+        )
+
+        assert captured[0] == "fz factor backtest"
+        assert tracks == ["backtest"]
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_0b_test_factor_backtest_forwards_to_daily_pipeline(mp)
+
+    # -- 旧子命令 run 已删除 --
+    def _section_0c_test_legacy_run_subcommand_removed():
+        from factorzen.cli import main as cli
+
+        with pytest.raises(SystemExit):
+            cli.main(["factor", "run", "momentum_20d", "--start", "20250101", "--end", "20260513"])
+
+    _section_0c_test_legacy_run_subcommand_removed()
 
     # -- 原 test_report_build_forwards_to_report_pipeline --
     def _section_1_test_report_build_forwards_to_report_pipeline(mp):

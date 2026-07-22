@@ -691,6 +691,51 @@ def test_signed_weighting_suite():
     _section_9_test_unknown_method_still_raises_valueerror()
 
 
+# ── combine_and_evaluate 信号轨 ──────────────────────────────────────────────
+
+def test_combine_and_evaluate_signal_suite():
+    """combine_and_evaluate 走信号轨：返回三元组类型、group_returns 非空、return_basis 正确。"""
+    from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
+    from factorzen.daily.evaluation.signal_backtest import SignalBacktestResult
+    from factorzen.research.combination.pipeline import combine_and_evaluate
+
+    # 离线合成 2 因子小样本：10 股 × 15 日，因子 a 与收益同向
+    n_days, n_stocks = 15, 10
+    rng = np.random.default_rng(7)
+    dates = [f"2024-01-{d:02d}" for d in range(2, 2 + n_days)]
+    codes = [f"{i:06d}.SZ" for i in range(n_stocks)]
+    rows_a, rows_b, rows_px = [], [], []
+    for d in dates:
+        fa = rng.standard_normal(n_stocks)
+        fb = rng.standard_normal(n_stocks)
+        # 单日收益与 fa 正相关，保证分层后 group_returns 有内容
+        rets = 0.05 * fa + 0.01 * rng.standard_normal(n_stocks)
+        for s in range(n_stocks):
+            c = codes[s]
+            rows_a.append({"trade_date": d, "ts_code": c, "factor_value": float(fa[s])})
+            rows_b.append({"trade_date": d, "ts_code": c, "factor_value": float(fb[s])})
+            rows_px.append({"trade_date": d, "ts_code": c, "ret": float(rets[s])})
+
+    factor_dfs = {"fa": pl.DataFrame(rows_a), "fb": pl.DataFrame(rows_b)}
+    price_df = pl.DataFrame(rows_px)
+
+    combined, ic_result, signal_result = combine_and_evaluate(
+        factor_dfs, price_df, method="equal_weight"
+    )
+
+    assert isinstance(combined, pl.DataFrame)
+    assert isinstance(ic_result, ICAnalysisResult)
+    assert isinstance(signal_result, SignalBacktestResult)
+    assert not signal_result.group_returns.is_empty()
+    assert signal_result.meta.get("return_basis") == "gross_signal_level"
+    # 期望值独立构造：等权合成后截面应有 factor_clean，且 n_groups=5 时组数覆盖 0..4
+    assert "factor_clean" in combined.columns
+    groups = set(signal_result.group_returns["group"].to_list())
+    assert groups == {0, 1, 2, 3, 4}, f"expected 5 groups, got {groups}"
+    assert signal_result.n_groups == 5
+    assert signal_result.cost_bps == 0.0
+
+
 # ── 2. 允许负权后：符号必须跟着 IC 符号走 ────────────────────────────────────
 
 

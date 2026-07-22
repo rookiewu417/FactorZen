@@ -24,7 +24,7 @@
 
 ```bash
 timeout 600 /usr/bin/time -f 'WALL_SEC %e' \
-  pixi run -- fz factor run momentum_20d --start 20230101 --end 20241231 --universe csi500
+  pixi run -- fz factor eval momentum_20d --start 20230101 --end 20241231 --universe csi500
 ```
 
 ---
@@ -70,7 +70,7 @@ timeout 600 /usr/bin/time -f 'WALL_SEC %e' \
 | 单个表达式物化 | 同上面板 | 平均 0.015s |
 | IC 分析段 | — | 0.18s |
 | 换手率计算 | — | 0.05s |
-| Tear Sheet 渲染 | — | 0.67s |
+| 信号/交易报告渲染 | — | 0.67s |
 | 组合优化求解 | 单截面 | 0.09s |
 | 归因计算 | — | <5ms |
 

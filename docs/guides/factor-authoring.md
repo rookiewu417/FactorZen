@@ -126,8 +126,10 @@ trade_date · ts_code · factor_value
 # 1) 确认注册成功
 pixi run -- fz factor list --freq daily
 
-# 2) 单因子评估：RankIC / 衰减 / 单调性 / 分位回测 / 换手 / walk-forward
-pixi run -- fz factor run my_reversal --start 20220101 --end 20241231 --universe csi500
+# 2) 单因子评估：RankIC / 衰减 / 单调性 / 信号多空 / 换手（毛口径）
+pixi run -- fz factor eval my_reversal --start 20220101 --end 20241231 --universe csi500
+#    模拟交易回测：日环撮合 + walk-forward / benchmark（净口径）
+pixi run -- fz factor backtest my_reversal --start 20220101 --end 20241231 --universe csi500
 
 # 3) 出单页 HTML 报告
 pixi run -- fz report build my_reversal --start 20220101 --end 20241231 \
@@ -138,20 +140,20 @@ pixi run -- fz factor sweep my_reversal --start 20220101 --end 20241231 \
   --grid backtest.top_n=30,50,100 --sort-by ir
 ```
 
-`fz factor run` 的产物落 `workspace/factor_evaluations/<run_id>/`，含指标、图表与 `manifest.json`。参数全表见 [CLI 参考](../reference/cli.md#fz-factor)。
+`fz factor eval` / `fz factor backtest` 的产物落 `workspace/factor_evaluations/<run_id>/`，含指标、图表与 `manifest.json`。参数全表见 [CLI 参考](../reference/cli.md#fz-factor)。
 
-> ℹ️ `fz factor list` 打印的不只有手写因子——它会顺带把因子库里的**表达式型**记录动态注入注册表（`discovery/library_provider.py:14`），这些条目默认叫 `mined_<sha1 前 8 位>`。目的是让入库的挖掘因子也能用 `fz factor run` 复现。库缺失或损坏时只打印一行跳过提示，不影响列表本身。
+> ℹ️ `fz factor list` 打印的不只有手写因子——它会顺带把因子库里的**表达式型**记录动态注入注册表（`discovery/library_provider.py:14`），这些条目默认叫 `mined_<sha1 前 8 位>`。目的是让入库的挖掘因子也能用 `fz factor eval` 复现。库缺失或损坏时只打印一行跳过提示，不影响列表本身。
 
 > ⚠️ 因子名与内置/库因子重名时，注册表按「builtin/workspace 优先，library provider 让位」处理并打 warning。想覆盖内置因子是可以的（workspace 扫描在后），但要有意为之。
 
 调试单因子时用 `--dry-run` 先看生效配置，用 `--set key=value` 临时改参数而不动 YAML：
 
 ```bash
-pixi run -- fz factor run my_reversal --start 20220101 --end 20241231 \
+pixi run -- fz factor backtest my_reversal --start 20220101 --end 20241231 \
   --set backtest.top_n=30 --dry-run
 ```
 
-> ⚠️ `--set` **不是全局旗标**，只挂在 `fz factor run` / `test` / `sweep` 上。值经 `yaml.safe_load` 解析后在 pydantic 校验前注入。
+> ⚠️ `--set` **不是全局旗标**，只挂在 `fz factor eval` / `backtest` / `sweep` 上。值经 `yaml.safe_load` 解析后在 pydantic 校验前注入。
 
 ---
 

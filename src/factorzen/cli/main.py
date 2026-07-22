@@ -257,7 +257,8 @@ def _cmd_factor_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_factor_run(args: argparse.Namespace) -> int:
+def _forward_factor_track(args: argparse.Namespace, *, track: str) -> int:
+    """将 CLI 参数转发到 ``daily_single.main(track=...)``。"""
     from factorzen.pipelines import daily_single
 
     forwarded = [f"fz factor {args.factor_command}"]
@@ -285,14 +286,29 @@ def _cmd_factor_run(args: argparse.Namespace) -> int:
         forwarded.extend(["--exec-lag", str(int(args.exec_lag))])
     if getattr(args, "exec_price_col", None) is not None:
         forwarded.extend(["--exec-price-col", str(args.exec_price_col)])
+    # 信号轨专属旋钮(仅 eval 子命令定义,backtest 轨 args 上不存在)
+    if getattr(args, "n_groups", None) is not None:
+        forwarded.extend(["--n-groups", str(int(args.n_groups))])
+    if getattr(args, "cost_bps", None) is not None:
+        forwarded.extend(["--cost-bps", str(float(args.cost_bps))])
 
     old_argv = sys.argv
     try:
         sys.argv = forwarded
-        daily_single.main()
+        daily_single.main(track=track)
     finally:
         sys.argv = old_argv
     return 0
+
+
+def _cmd_factor_eval(args: argparse.Namespace) -> int:
+    """因子研究评估（信号层，毛口径）。"""
+    return _forward_factor_track(args, track="eval")
+
+
+def _cmd_factor_backtest(args: argparse.Namespace) -> int:
+    """模拟交易回测（日环撮合，净口径）。"""
+    return _forward_factor_track(args, track="backtest")
 
 
 def _cmd_factor_sweep(args: argparse.Namespace) -> int:
@@ -693,12 +709,12 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
     print(f"[mine] 完成：{len(res['candidates'])} 个候选 → {sd}")
     print(
         "[mine] 复现：入库候选 fz factor-library list 查 name 后 "
-        "fz factor run <name> --set preprocessing.neutralize=false；"
+        "fz factor eval <name> --set preprocessing.neutralize=false；"
         "未入库候选：表达式在 candidates.csv"
     )
     print(
         "[mine] 注：candidates.csv 的 IC 为挖掘内估计(plain zscore)；"
-        "fz factor run 默认带中性化，IC parity 需 neutralize=false"
+        "fz factor eval 默认带中性化，IC parity 需 neutralize=false"
     )
     return 0
 

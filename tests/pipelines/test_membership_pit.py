@@ -302,7 +302,7 @@ def test_pipeline_membership_integration_suite(tmp_path):
         cfg = RunConfig(factor="dummy_pit", start="20240102", end="20240205")
 
         with pytest.raises(RuntimeError, match="STOP_AFTER_IC"):
-            ds._run(args, cfg)
+            ds.run_factor_eval(args, cfg)
 
         assert set(captured["ctx_universe"]) == {"A.SZ", "B.SZ", "C.SZ"}
         clean = captured["ic_clean"]

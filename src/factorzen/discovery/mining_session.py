@@ -598,7 +598,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 "objective": eff_objective,
                 "reproduce_note": (
                     "入库候选：fz factor-library list 查 name 后 "
-                    "fz factor run <name> --set preprocessing.neutralize=false；"
+                    "fz factor eval <name> --set preprocessing.neutralize=false；"
                     "未入库候选：表达式在 candidates.csv"
                 )}
     (session_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))

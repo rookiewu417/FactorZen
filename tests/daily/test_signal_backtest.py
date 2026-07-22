@@ -465,3 +465,93 @@ def test_signal_backtest_suite():
         assert mono.ols_slope == pytest.approx(0.01, abs=1e-12)
 
     _section_refactor_regression()
+
+
+def test_two_track_consistency_under_controlled_conditions():
+    """双路径登记簿:信号轨与交易轨在受控条件下必须收敛。
+
+    两轨是本项目故意分离的两条实现(向量化信号层 vs 日环撮合),按登记簿规矩
+    必须有一致性测试。它们日常数字不同是**成本与交易约束**造成的,不该是算法分歧
+    ——本测试把成本与约束全部关掉,并令 ``open[t] == close[t-1]``(无隔夜跳空)
+    使两轨收益口径等价,此时两轨的多空收益序列必须逐位相同。
+
+    任一侧的分组规则、腿权重、收益归属被改动,此测试即红。
+    """
+    import numpy as np
+
+    from factorzen.daily.evaluation.backtest import (
+        BacktestConfig,
+        CostModel,
+        QuantileLongShortStrategy,
+        run_strategy_backtest,
+    )
+    from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
+
+    n_stock, n_day, n_group = 12, 30, 3
+    rng = np.random.default_rng(20260721)
+    codes = [f"{i:06d}.SZ" for i in range(n_stock)]
+    dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(n_day)]
+
+    closes = np.zeros((n_day, n_stock))
+    closes[0] = 10.0
+    rets = rng.normal(0.0, 0.02, size=(n_day, n_stock))
+    for t in range(1, n_day):
+        closes[t] = closes[t - 1] * (1.0 + rets[t])
+
+    price_rows, factor_rows = [], []
+    for ti, d in enumerate(dates):
+        for si, code in enumerate(codes):
+            prev_close = closes[ti - 1, si] if ti > 0 else closes[0, si]
+            price_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": code,
+                    "open": float(prev_close),  # 无隔夜跳空:开盘=昨收
+                    "close": float(closes[ti, si]),
+                    "pre_close": float(prev_close),
+                    "pct_chg": float((closes[ti, si] / prev_close - 1.0) * 100.0),
+                    "vol": 1e9,
+                    "amount": 1e12,  # ADV 巨大 → participation 不绑定
+                }
+            )
+            factor_rows.append(
+                {"trade_date": d, "ts_code": code, "factor_clean": float(rng.normal())}
+            )
+    price = pl.DataFrame(price_rows)
+    factor = pl.DataFrame(factor_rows)
+
+    bt = run_strategy_backtest(
+        QuantileLongShortStrategy(n_groups=n_group, factor_col="factor_clean"),
+        factor,
+        price,
+        config=BacktestConfig(
+            factor_col="factor_clean",
+            initial_capital=1e12,
+            max_participation_rate=1.0,
+            max_gross_exposure=float("inf"),
+            max_abs_weight=float("inf"),
+            limit_up_pct=1e9,
+            limit_down_pct=-1e9,
+        ),
+        cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
+        factor_name="consistency",
+    )
+    fwd = compute_fwd_returns(price, horizons=[1], exec_lag=0, exec_price_col="close")
+    sig = run_signal_backtest(
+        factor, fwd, factor_col="factor_clean", n_groups=n_group,
+        cost_bps=0.0, horizons=[1], factor_name="consistency",
+    )
+
+    # 信号轨 t 日 ls 收益(t→t+1) == 交易轨 t+1 日组合收益 → 错一位对齐
+    sg = sig.ls_returns.sort("trade_date")["ls_ret_gross"].to_numpy()
+    tr = bt.nav.sort("trade_date")["net_return"].to_numpy()
+    n = min(sg.size, tr.size - 1)
+    assert n >= 20, f"对齐后样本过少 n={n}"
+    a, b = sg[:n], tr[1 : n + 1]
+
+    assert np.all(np.isfinite(a)) and np.all(np.isfinite(b))
+    max_diff = float(np.max(np.abs(a - b)))
+    assert max_diff < 1e-12, (
+        f"两轨在零成本零约束下应逐位相同,实测最大差={max_diff:.3e}。"
+        "差异非零说明分组规则/腿权重/收益归属在某一侧被改动。"
+    )

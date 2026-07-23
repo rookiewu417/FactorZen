@@ -85,13 +85,6 @@ export interface LibraryResponse {
   factors: FactorRecord[]
 }
 
-export interface LibraryStatusUpdateResponse {
-  market: string
-  expression: string
-  status: string
-  source: string
-}
-
 export interface TrackPoint {
   date: string | null
   ic: number | null

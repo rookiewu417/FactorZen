@@ -2,9 +2,6 @@
 
 扫描 workspace/factor_library 与 workspace/factor_store，供 REST API 消费。
 损坏行/文件跳过并记 warning，绝不因单个坏产物炸接口。
-
-改 factor_library 的 status 必须按 jsonl 行直接读改写（不经 FactorRecord），
-以免 from_dict 丢弃未知字段。
 """
 from __future__ import annotations
 
@@ -20,11 +17,6 @@ logger = get_logger("factorzen.server.library")
 # 市场白名单
 MARKETS = frozenset({"ashare", "crypto", "us", "futures"})
 
-# 合法因子状态（含手写 manual）
-VALID_STATUSES = frozenset(
-    {"active", "correlated", "probation", "no_lift", "manual"}
-)
-
 # store 手写因子并入列表时从 ledger_snapshot 透出的指标键
 _SNAPSHOT_METRIC_KEYS = (
     "ic_train",
@@ -35,7 +27,7 @@ _SNAPSHOT_METRIC_KEYS = (
 
 
 class FactorLibraryIndex:
-    """因子库 + 因子资产索引（list 合并手写因子；status 可写）。"""
+    """因子库 + 因子资产索引（list 合并手写因子；status 只读）。"""
 
     def __init__(self, workspace_dir: str | Path) -> None:
         self.root = Path(workspace_dir)
@@ -163,168 +155,6 @@ class FactorLibraryIndex:
             "by_status": dict(status_counter),
             "factors": factors,
         }
-
-    def update_status(
-        self,
-        market: str,
-        expression: str,
-        new_status: str,
-        source: str,
-    ) -> dict[str, Any]:
-        """更新因子 status。library 按行改写 jsonl；store 改 meta.ledger_snapshot。"""
-        self._check_market(market)
-        if new_status not in VALID_STATUSES:
-            raise ValueError(
-                f"非法 status: {new_status}；合法值: {sorted(VALID_STATUSES)}"
-            )
-        if source == "library":
-            self._update_library_status(market, expression, new_status)
-        elif source == "store":
-            self._update_store_status(market, expression, new_status)
-        else:
-            raise ValueError(f"非法 source: {source}；合法值: library | store")
-        return {
-            "market": market,
-            "expression": expression,
-            "status": new_status,
-            "source": source,
-        }
-
-    def _update_library_status(
-        self, market: str, expression: str, new_status: str
-    ) -> None:
-        """按行读改写 factor_library/<market>.jsonl，不经 FactorRecord。"""
-        path = self.lib_root / f"{market}.jsonl"
-        if not path.exists():
-            raise FileNotFoundError(f"因子库不存在: {market}")
-
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise FileNotFoundError(f"读取因子库失败: {market}") from exc
-
-        # 保留末尾换行风格：原文件若以 \n 结尾则回写也带
-        ends_with_nl = text.endswith("\n") if text else True
-        raw_lines = text.splitlines()
-        out_lines: list[str] = []
-        found = False
-
-        for line in raw_lines:
-            stripped = line.strip()
-            if not stripped:
-                # 空行原样保留（保持行结构）
-                out_lines.append(line if line == "" else stripped)
-                continue
-            try:
-                obj = json.loads(stripped)
-            except json.JSONDecodeError:
-                # 坏行原样保留
-                out_lines.append(stripped)
-                continue
-            if not isinstance(obj, dict):
-                out_lines.append(stripped)
-                continue
-
-            if (
-                not found
-                and obj.get("expression") == expression
-            ):
-                obj["status"] = new_status
-                found = True
-                out_lines.append(
-                    json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
-                )
-            else:
-                # 未改行：再 dumps 保持字段，或直接保留原文更稳妥
-                # 为「未知字段原样」与格式稳定，未匹配行保留原文
-                out_lines.append(stripped)
-
-        if not found:
-            raise FileNotFoundError(
-                f"未找到 expression: {expression} (market={market})"
-            )
-
-        body = "\n".join(out_lines)
-        if ends_with_nl:
-            body += "\n"
-        path.write_text(body, encoding="utf-8")
-
-    def _resolve_store_name_for_expression(
-        self, market: str, expression: str
-    ) -> str:
-        """从 expression 或 store 目录解析资产 name；路径遍历由 _safe_store_dir 兜底。"""
-        # 优先 py::<name> 解析
-        if expression.startswith("py::"):
-            name = expression[4:]
-            if name and "/" not in name and "\\" not in name and ".." not in name:
-                try:
-                    d = self._safe_store_dir(market, name)
-                    meta_path = d / "meta.json"
-                    if meta_path.exists():
-                        return name
-                except FileNotFoundError:
-                    pass
-
-        # 回退：扫描 store 找 meta.expression 匹配
-        base = self.store_root / market
-        if not base.exists():
-            raise FileNotFoundError(
-                f"未找到 store 因子 expression={expression} (market={market})"
-            )
-        try:
-            subdirs = sorted(p for p in base.iterdir() if p.is_dir())
-        except OSError as exc:
-            raise FileNotFoundError(
-                f"列举 store 失败: {market}"
-            ) from exc
-
-        for d in subdirs:
-            # 只认 base 直接子目录（防异常项）
-            try:
-                self._safe_store_dir(market, d.name)
-            except FileNotFoundError:
-                continue
-            meta_path = d / "meta.json"
-            if not meta_path.exists():
-                continue
-            try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                continue
-            if isinstance(meta, dict) and meta.get("expression") == expression:
-                return d.name
-
-        raise FileNotFoundError(
-            f"未找到 store 因子 expression={expression} (market={market})"
-        )
-
-    def _update_store_status(
-        self, market: str, expression: str, new_status: str
-    ) -> None:
-        """改 factor_store/<market>/<name>/meta.json 的 ledger_snapshot.status。"""
-        name = self._resolve_store_name_for_expression(market, expression)
-        d = self._safe_store_dir(market, name)
-        meta_path = d / "meta.json"
-        if not meta_path.exists():
-            raise FileNotFoundError(f"资产不存在: {market}/{name}")
-
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            raise FileNotFoundError(f"资产 meta 损坏: {market}/{name}") from exc
-        if not isinstance(meta, dict):
-            raise FileNotFoundError(f"资产 meta 非法: {market}/{name}")
-
-        snap = meta.get("ledger_snapshot")
-        if not isinstance(snap, dict):
-            snap = {}
-        snap["status"] = new_status
-        meta["ledger_snapshot"] = snap
-
-        meta_path.write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
 
     def forward_track(self, market: str, expression: str) -> dict[str, Any]:
         """从 forward_track/<market>.jsonl 过滤 expression，按 date 升序。"""

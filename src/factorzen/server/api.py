@@ -39,14 +39,6 @@ class JobSubmitBody(BaseModel):
     title: str = Field(..., description="任务标题")
 
 
-class LibraryStatusBody(BaseModel):
-    """POST /api/library/{market}/status 请求体。"""
-
-    expression: str = Field(..., description="因子表达式 / py::name 哨兵")
-    status: str = Field(..., description="新状态: active|correlated|probation|no_lift|manual")
-    source: str = Field(..., description="library | store")
-
-
 def create_app(workspace_dir: str | Path | None = None) -> FastAPI:
     root = Path(workspace_dir) if workspace_dir is not None else Path(WORKSPACE_DIR)
     idx = ArtifactIndex(root)
@@ -112,20 +104,6 @@ def create_app(workspace_dir: str | Path | None = None) -> FastAPI:
         if market not in MARKETS:
             raise HTTPException(status_code=404, detail=f"未知 market: {market}")
         return lib.forward_track(market, expression)
-
-    @app.post("/api/library/{market}/status")
-    def library_update_status(market: str, body: LibraryStatusBody) -> dict:
-        """更新因子状态（library 按行改写 jsonl；store 改 meta.ledger_snapshot）。"""
-        if market not in MARKETS:
-            raise HTTPException(status_code=404, detail=f"未知 market: {market}")
-        try:
-            return lib.update_status(
-                market, body.expression, body.status, body.source
-            )
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/store/{market}")
     def store_list(market: str) -> dict:

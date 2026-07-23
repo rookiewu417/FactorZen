@@ -171,7 +171,7 @@ test(backtest): 补空权重表 carry 语义的回归断言
 ### 代码放哪
 
 - 框架代码 → `src/factorzen/`
-- 用户可扩展因子 → `workspace/factor_store/<market>/<name>/`（meta.json + factor.py）
+- 用户可扩展因子 → `workspace/factors/<market>/<name>/`（meta.json + factor.py）
 
 模板由 `fz factor new <name> --frequency <freq>` 生成，写法见[因子编写](docs/guides/factor-authoring.md)。
 

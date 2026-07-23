@@ -68,7 +68,7 @@ pixi run -- fz mine search --help
 pixi run -- fz factor new my_reversal --freq daily
 ```
 
-**产物**：`workspace/factor_store/ashare/<name>/factor.py` + `meta.json`（三件套脚手架）。
+**产物**：`workspace/factors/ashare/<name>/factor.py` + `meta.json`（三件套脚手架）。
 
 ### fz factor list
 
@@ -112,9 +112,11 @@ pixi run -- fz factor eval momentum_20 --start 20220101 --end 20241231 \
   --universe csi500 --n-groups 10
 ```
 
-**产物**（两处落盘，命名规则不同）：  
-- **全局归档** `workspace/runs/artifacts/daily/`：长名 `{name}_{start}_{end}_ic.parquet`、`_signal.json`、`_signal_group_nav.parquet`、`_meta.json`、`_quality.json`；报告为 `{name}_{start}_{end}_eval.html`（不覆盖交易轨 `.html`）。  
-- **run 目录** `workspace/factor_evaluations/<run_id>/`：短名 `factor.parquet`、`ic.parquet`、`signal.json`、`signal_group_nav.parquet`、`report.html`、`meta.json`、`quality.json`、`universe.parquet`、`manifest.json`。
+**产物**：  
+- **因子面板** `workspace/factors/<market>/<name>/factor.parquet`（4 列：`trade_date, ts_code, factor_value, factor_clean`）——数值唯一落点。  
+- **run 目录** `workspace/factors/<market>/<name>/evaluations/<run_id>/`：仅 `manifest.json`、`meta.json`、`quality.json`、`signal.json`、`report.html`（**无 parquet**）。  
+- **报告镜像** `workspace/factors/reports/daily/{name}_{start}_{end}_eval.html`。  
+- 旧 `workspace/runs/artifacts/daily/` 已废除。
 
 ### fz factor backtest
 
@@ -140,9 +142,11 @@ pixi run -- fz factor backtest momentum_20 --start 20220101 --end 20241231 \
   --universe csi500 --set backtest.top_n=30
 ```
 
-**产物**（两处落盘，命名规则不同）：  
-- **全局归档** `workspace/runs/artifacts/daily/`：长名 `{name}_{start}_{end}_ic.parquet`、`_walk_forward.json`、`_meta.json`、`_quality.json`；报告为 `{name}_{start}_{end}.html`（交易轨，与 eval 的 `_eval.html` 并存）。  
-- **run 目录** `workspace/factor_evaluations/<run_id>/`：短名 `factor.parquet`、`ic.parquet`、`walk_forward.json`、`report.html`、`meta.json`、`quality.json`、`universe.parquet`、`manifest.json`。
+**产物**：  
+- **因子面板** `workspace/factors/<market>/<name>/factor.parquet`（4 列，同上）。  
+- **run 目录** `workspace/factors/<market>/<name>/evaluations/<run_id>/`：仅 json/html（`walk_forward.json`、`meta`、`quality`、`report`、`manifest`；**无 parquet**）。  
+- **报告镜像** `workspace/factors/reports/daily/{name}_{start}_{end}.html`。  
+- 旧 `workspace/runs/artifacts/daily/` 已废除。
 
 ### fz factor sweep
 
@@ -164,7 +168,7 @@ pixi run -- fz factor sweep momentum_20 --start 20220101 --end 20241231 \
   --grid backtest.top_n=30,50,100 --sort-by ir
 ```
 
-**产物**：`workspace/factor_evaluations/sweep_<YYYYMMDD_HHMMSS>/sweep_results.csv`。
+**产物**：`workspace/factors/ashare/<factor>/evaluations/sweep_<YYYYMMDD_HHMMSS>/sweep_results.csv`。
 
 ---
 
@@ -192,7 +196,7 @@ pixi run -- fz report build momentum_20 --start 20220101 --end 20241231 \
   --universe csi500
 ```
 
-**产物**：报告 HTML 落 `workspace/reports/daily/`（按因子分桶）。
+**产物**：报告 HTML 落 `workspace/factors/reports/daily/`（按因子分桶）。
 
 ### fz report path
 
@@ -216,7 +220,7 @@ pixi run -- fz report path 20260718_120000_momentum_20
 |---|---|---|---|---|
 | `--sim-dir` | str | 无 | | 模拟产物目录（含 `metrics.json`） |
 | `--portfolio-dir` | str | 无 | | 组合构建产物目录（含 `attribution.csv` / `risk_summary.csv` / `manifest.json`） |
-| `--out` | str | 无 | | HTML 输出路径；缺省落 `workspace/reports/portfolio_<run_id>.html` |
+| `--out` | str | 无 | | HTML 输出路径；缺省落 `workspace/factors/reports/portfolio_<run_id>.html` |
 | `--market` | `ashare` \| `crypto` | **无（自动识别）** | | 市场语境；缺省从 sim manifest 推断。`crypto` = USDT 计价 / 365 日年化 / 计资金费 / 按 sector 归因 |
 
 > ⚠️ **`--portfolio-dir` 在这里是「单个 run 目录」**（即 `workspace/portfolios/20241231/`），而 [`fz sim run`](#fz-sim-run) 的同名参数是**组合产物根目录**（`workspace/portfolios/`，其下才是各 `{run_id}/`）。同名异义，传错会读不到文件。
@@ -229,7 +233,7 @@ pixi run -- fz report portfolio \
   --portfolio-dir workspace/portfolios/20241231
 ```
 
-**产物**：`workspace/reports/portfolio_<run_id>.html`（或 `--out` 指定路径）。
+**产物**：`workspace/factors/reports/portfolio_<run_id>.html`（或 `--out` 指定路径）。
 
 ---
 
@@ -318,7 +322,7 @@ pixi run -- fz data intraday-features status --freq 5min --version v1
 
 ## fz runs
 
-历史 run 记录查询（仅 list；单条 manifest 请直接读 `workspace/factor_evaluations/<run_id>/manifest.json`）。
+历史 run 记录查询（仅 list；单条 manifest 请直接读 `workspace/factors/<market>/<name>/evaluations/<run_id>/manifest.json`）。
 
 ### fz runs list
 
@@ -758,14 +762,14 @@ pixi run -- fz factor-library forward-review --market ashare --min-days 60 --app
 
 从因子库登记簿（jsonl）同步资产库三件套：写 `meta.json` + `factor.py`；默认物化 `active` / `probation` 的 `factor.parquet`（固定 `all_a` × `2016-01-01` ~ 最新已完结交易日，与 jsonl 评估窗分离）。
 
-用户 python 因子的**唯一路径**是 `workspace/factor_store/<market>/<name>/`（见 [因子编写指南](../guides/factor-authoring.md)）。裁决真相仍在 `workspace/factor_library/<market>.jsonl`；本命令把登记簿同步到资产库载体。
+用户 python 因子的**唯一路径**是 `workspace/factors/<market>/<name>/`（见 [因子编写指南](../guides/factor-authoring.md)）。裁决真相仍在 `workspace/factor_library/<market>.jsonl`；本命令把登记簿同步到资产库载体。
 
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
 | `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
 | `--only` | str | 无（= 全库） | | 只同步这些 `name`（逗号分隔） |
 | `--no-materialize` | flag | 关 | | 只写 meta+py，不物化 parquet |
-| `--root` | str | 无（= `workspace/factor_store`） | | 资产库根目录 |
+| `--root` | str | 无（= `workspace/factors`） | | 资产库根目录 |
 | `--lib-root` | str | 无（= `workspace/factor_library`） | | 因子库 jsonl 根目录 |
 
 ```bash
@@ -777,7 +781,7 @@ pixi run -- fz factor-library store sync --market ashare \
   --only my_reversal,momentum_20 --no-materialize
 ```
 
-**产物**：`workspace/factor_store/<market>/<name>/` 下的 `meta.json` / `factor.py`（及默认物化的 `factor.parquet`）。
+**产物**：`workspace/factors/<market>/<name>/` 下的 `meta.json` / `factor.py`（及默认物化的 `factor.parquet`）。
 
 ### fz factor-library store verify
 
@@ -786,7 +790,7 @@ pixi run -- fz factor-library store sync --market ashare \
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
 | `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
-| `--root` | str | 无（= `workspace/factor_store`） | | 资产库根目录 |
+| `--root` | str | 无（= `workspace/factors`） | | 资产库根目录 |
 | `--lib-root` | str | 无（= `workspace/factor_library`） | | 因子库 jsonl 根目录 |
 
 ```bash
@@ -834,7 +838,7 @@ pixi run -- fz research run --start 20200101 --end 20241231 --universe csi500 \
   --method genetic --trials 300 --rebalance-days 20 --w-max 0.05 --industry-neutral
 ```
 
-**产物**：同一 `run_id` 贯穿多个阶段目录——挖掘 session、`workspace/portfolios/<run_id>/`、`workspace/sim/<run_id>/`，报告 HTML 落 `workspace/reports/portfolio_<run_id>.html`。
+**产物**：同一 `run_id` 贯穿多个阶段目录——挖掘 session、`workspace/portfolios/<run_id>/`、`workspace/sim/<run_id>/`，报告 HTML 落 `workspace/factors/reports/portfolio_<run_id>.html`。
 
 ---
 
@@ -1031,7 +1035,7 @@ pixi run -- fz strategies run momentum_rotation --start 20200101 --end 20241231 
 
 # 滚动分层建仓（需分数面板）
 pixi run -- fz strategies run sleeve --start 20160104 --end 20241231 --universe all_a \
-  --set scores=workspace/factor_evaluations/.../combined.parquet \
+  --set scores=workspace/factors/.../evaluations/.../combined.parquet \
   --set score_col=eq_all --set top_n=200 --set holding_days=10
 
 # 分位组 long-only
@@ -1233,10 +1237,10 @@ pixi run -- fz combine from-session \
 | `--horizon` | int | `5` | | 前向收益持有期（交易日） |
 | `--top-n` | int | 无（全取） | | 只取库前 N 个因子 |
 | `--decorr-threshold` | float | `0.7` | | 贪心去相关阈值；`1.0` = 关闭 |
-| `--no-store` | flag | 关 | | 强制重算 expression 因子，不读 factor_store 物化 parquet（逃生口） |
+| `--no-store` | flag | 关 | | 强制重算 expression 因子，不读 factors 物化 parquet（逃生口） |
 | 共享参数 | | | | 见上表 |
 
-> expression 因子默认优先读 `factor_store` 物化 parquet（命中条件：expression/universe 严格一致 + 窗口覆盖），miss 则回退重算，manifest 的 `store_usage` 记录命中与 miss 原因分布。
+> expression 因子默认优先读 `factors` 物化 parquet（命中条件：expression/universe 严格一致 + 窗口覆盖），miss 则回退重算，manifest 的 `store_usage` 记录命中与 miss 原因分布。
 
 > ⚠️ 本子命令**没有 `--all`**（`from-session` 才有）。要放宽选品范围请用 `--statuses`，例如 `--statuses active,probation`。`--statuses` 有自定义校验：非法值或空串会被 argparse 直接拒绝。
 

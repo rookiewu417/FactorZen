@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    # feat/webui 是长期分支：不进 CI 会让回归潜伏到合并 master 时才爆
+    branches: [main, master, feat/webui]
   pull_request:
     branches: [main, master]
   workflow_dispatch:

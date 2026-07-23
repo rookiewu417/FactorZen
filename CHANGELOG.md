@@ -8,6 +8,15 @@
 
 自 v0.3.0 起，项目从「端到端可复现的量化研究平台」重心转向**以因子库准入为核心的多市场研究平台**：候选因子必须相对既有因子库跑出统计显著的增量（lift）才能进库。同期完成了多市场扩展、分钟级研究一等公民化、一轮全链路性能优化、一轮内存治理，以及回测双轨分离与一轮结构级清障。测试套件经归并重构后为 952 个用例 / 97 个测试文件。
 
+### Changed
+
+- **因子面板单文件复用 + `factor_store`→`factors` 改名 + 评估产物收口：**
+  1. **单一面板复用与增量补行**：每个因子仅一份 `workspace/factors/<market>/<name>/factor.parquet`（4 列）；评估通过 `ensure_factor_store_panel` 复用，覆盖不足时只补缺失头/尾段，**永不**用评估窗子集覆盖写 store。
+  2. **目录改名**：磁盘路径 `workspace/factor_store` → `workspace/factors`（Python 标识符 `FACTOR_STORE_DIR` / 模块名 `factor_store` 保留）。
+  3. **评估/报告收口**：废除顶层 `factor_evaluations/` 与 `reports/`；run 落 `factors/<market>/<name>/evaluations/{run_id}/`（无因子名 → `factors/_runs/`）；HTML 落 `factors/reports/`；全局索引 `factors/experiment_index.jsonl`。API domain 名 `factor_evaluations` 保持不变（前端零改动）。
+- **废除 `runs/artifacts/daily` 评估双写：** `fz factor eval` / `backtest` / `fz report build` 的大文件只写评估 run 目录（短名 json/html）；HTML 镜像到 `workspace/factors/reports/daily/`。去掉 `OUTPUT_DAILY_FACTORS` / `OUTPUT_DAILY_RESULTS` / `copy_outputs_to_run_dir` 中间层。
+- **因子数值面板唯一落点 `factors`（4 列）：** 每因子一份 `factors/<market>/<name>/factor.parquet`，列为 `trade_date, ts_code, factor_value, factor_clean`。评估 run **不写任何 parquet**，只留 json/html + manifest。
+
 ### Added
 
 - **strategies 模块重定位（模拟交易权重产物层）：** 与因子研究回测插件 `Strategy` ABC 语义分离；新增 `run_strategy_simulation` 桥接 sim、`momentum_rotation` 编排、收编 `sleeve` / `quantile_group` 权重生成（产物契约对齐 `sim.engine`）；CLI `fz strategies run <name>`（`--set` 通配 + `--start/--end/--universe/--out-dir`）。

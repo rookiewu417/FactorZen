@@ -20,7 +20,7 @@
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `factor` | `str` | **必填** | 因子名，对应内置因子或 `workspace/factor_store/` 下的 python 因子 |
+| `factor` | `str` | **必填** | 因子名，对应内置因子或 `workspace/factors/` 下的 python 因子 |
 | `universe` | `str` | `"csi500"` | 股票池名 |
 | `start` / `end` | `str` | **必填** | 日期，格式 `YYYYMMDD`（YAML 里务必加引号，否则被解析成整数） |
 | `benchmark` | `str \| None` | `None` | 留空则按 `universe` 推导，见下 |

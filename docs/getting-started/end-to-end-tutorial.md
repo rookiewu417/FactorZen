@@ -291,7 +291,7 @@ pixi run fz report portfolio \
   --portfolio-dir workspace/portfolios/20241231
 ```
 
-**产物**：`workspace/reports/portfolio_<run_id>.html`（`--out` 可指定别的路径）。
+**产物**：`workspace/factors/reports/portfolio_<run_id>.html`（`--out` 可指定别的路径）。
 
 报告包含净值曲线、模拟指标、归因与风险摘要。`--market` 缺省时从 sim 的 `manifest.json` 自动识别。
 
@@ -318,7 +318,7 @@ pixi run fz report portfolio \
 | 5 α | `workspace/alpha/*.parquet` | 行数接近 universe 规模 |
 | 6 组合 | `workspace/portfolios/{date}/` | 每期 `manifest.json` 的 `status=optimal` |
 | 7 模拟 | `workspace/sim/tutorial_2024/` | `n_exec_dates` = 组合期数 |
-| 8 报告 | `workspace/reports/portfolio_*.html` | 曲线与指标一致 |
+| 8 报告 | `workspace/factors/reports/portfolio_*.html` | 曲线与指标一致 |
 
 每一份 `manifest.json` 都记着配置、命令、`git_sha`、seed、窗口与 universe。
 
@@ -338,7 +338,7 @@ pixi run fz research run \
   --rebalance-days 20 --w-max 0.05 --industry-neutral
 ```
 
-**产物**：同一 `run_id` 贯穿挖掘 session、`workspace/portfolios/<run_id>/`、`workspace/sim/<run_id>/`，报告落 `workspace/reports/portfolio_<run_id>.html`。
+**产物**：同一 `run_id` 贯穿挖掘 session、`workspace/portfolios/<run_id>/`、`workspace/sim/<run_id>/`，报告落 `workspace/factors/reports/portfolio_<run_id>.html`。
 
 > ⚠️ **`fz research run` 目前是单因子 + in-sample 编排**，且**没有 `--market`**（A 股专属）。它适合快速看一条链路通不通，**不能替代**上面的分步流程——尤其是它不含增量准入这一步，而准入才是平台的核心主张。
 

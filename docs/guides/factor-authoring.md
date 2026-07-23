@@ -14,11 +14,11 @@
 
 | 位置 | 用途 | 是否随包分发 |
 |---|---|---|
-| `workspace/factor_store/<market>/<name>/` | **你自己的 python 因子**（三件套：meta.json + factor.py + 可选 parquet） | ❌ 属于研究产出，不进 pip 包 |
+| `workspace/factors/<market>/<name>/` | **你自己的 python 因子**（三件套：meta.json + factor.py + 可选 parquet） | ❌ 属于研究产出，不进 pip 包 |
 | `src/factorzen/builtin_factors/<freq>/` | 平台自带因子（动量/反转/波动率/Barra 风格等） | ✅ 随包分发 |
 | `src/factorzen/builtin_factors/qlib/` | 框架自动生成的 Alpha158 / Alpha360 移植 | ✅ 随包分发，**不要手写** |
 
-用户因子**唯一**加载路径：`load_library_factors()` 扫描 `factor_store` 并把 `DailyFactor` 子类注入 registry。内置同名时 builtin 优先（`register(override=False)` 让位）。
+用户因子**唯一**加载路径：`load_library_factors()` 扫描资产库（`workspace/factors/`）并把 `DailyFactor` 子类注入 registry。内置同名时 builtin 优先（`register(override=False)` 让位）。
 
 裁决真相仍是 `workspace/factor_library/<market>.jsonl`；资产库是载体，用 `fz factor-library store sync` / `verify` 维护。
 
@@ -30,7 +30,7 @@
 pixi run -- fz factor new my_reversal --freq daily
 ```
 
-命令在 `workspace/factor_store/ashare/my_reversal/` 生成 `factor.py` + 最小 `meta.json` 并打印路径。`--freq` 写入 meta 并决定骨架继承哪个基类；已存在同名文件时需要 `--force` 才覆盖。
+命令在 `workspace/factors/ashare/my_reversal/` 生成 `factor.py` + 最小 `meta.json` 并打印路径。`--freq` 写入 meta 并决定骨架继承哪个基类；已存在同名文件时需要 `--force` 才覆盖。
 
 > ⚠️ 这里的 `--freq` 是**因子注册频率**（`daily/weekly/monthly/intraday`），跟 `fz mine` 的 bar 粒度 `--freq {1m,5m,15m,1h,daily}` 完全是两回事。全 CLI 有三套 `--freq` 语义，见 [CLI 参考](../reference/cli.md)。
 
@@ -61,7 +61,7 @@ class VolumeReturnCorr20D(DailyFactor):
         ...  # 返回 [trade_date, ts_code, factor_value]
 ```
 
-完整可跑的实现见 `workspace/factor_store/ashare/volume_return_corr_20d/factor.py`。
+完整可跑的实现见 `workspace/factors/ashare/volume_return_corr_20d/factor.py`。
 
 ### 类属性契约
 
@@ -142,7 +142,7 @@ pixi run -- fz factor sweep my_reversal --start 20220101 --end 20241231 \
   --grid backtest.top_n=30,50,100 --sort-by ir
 ```
 
-`fz factor eval` / `fz factor backtest` 的产物落 `workspace/factor_evaluations/<run_id>/`，含指标、图表与 `manifest.json`。参数全表见 [CLI 参考](../reference/cli.md#fz-factor)。
+`fz factor eval` / `fz factor backtest` 的产物落 `workspace/factors/<market>/<name>/evaluations/<run_id>/`，含指标、图表与 `manifest.json`。参数全表见 [CLI 参考](../reference/cli.md#fz-factor)。
 
 > ℹ️ `fz factor list` 打印的不只有手写因子——它会顺带把因子库里的**表达式型**记录动态注入注册表（`discovery/library_provider.py` 的 `load_library_factors`），这些条目默认叫 `mined_<sha1 前 8 位>`。目的是让入库的挖掘因子也能用 `fz factor eval` 复现。库缺失或损坏时只打印一行跳过提示，不影响列表本身。
 

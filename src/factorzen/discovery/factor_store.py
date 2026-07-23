@@ -266,6 +266,7 @@ def load_materialized_factor(
     start: str,
     end: str,
     universe: str,
+    allow_warmup_head: bool = False,
 ) -> tuple[pl.DataFrame | None, str | None, dict[str, Any] | None]:
     """读 factor_store 物化 parquet；门控全过才返回帧。
 
@@ -279,9 +280,14 @@ def load_materialized_factor(
         1. 资产目录与 factor.parquet 存在
         2. meta.expression 与 record.expression 完全一致
         3. materialization 非 null 且 universe 与请求严格相等
-        4. parquet 实际 min(trade_date) <= start，且 materialization.end >= end
-           （下界用 parquet 实际最小日：预热吃掉头部后 meta.start 不可信）
+        4. 下界：默认要求 parquet 实际 min(trade_date) <= start；
+           ``allow_warmup_head=True`` 时放宽为 meta.materialization.start <= start
+           （滚动因子预热吃掉头部是正常语义，不视为 miss）
+           上界仍要求 materialization.end >= end
         5. 过滤到 [start, end] 后非空
+
+    ``allow_warmup_head`` 默认 False：combine 调用点不传，行为零变化。
+    eval 轨显式传 True 以吃预热头。
 
     返回帧 schema：``trade_date(Date) / ts_code(Utf8) / factor_value(Float64)``。
     读盘损坏 → miss + warning，不炸。
@@ -376,7 +382,7 @@ def load_materialized_factor(
     if df.is_empty() or df["trade_date"].null_count() == df.height:
         return None, "parquet_empty", None
 
-    # 下界：parquet 实际最小交易日（预热吃掉头部后 meta.start 不可作下界）
+    # 下界：默认看 parquet 实际最小日；eval 放宽看 meta.materialization.start
     pq_min = df["trade_date"].min()
     if pq_min is None:
         return None, "parquet_empty", None
@@ -384,7 +390,13 @@ def load_materialized_factor(
         pq_min.isoformat() if hasattr(pq_min, "isoformat") else str(pq_min)
     )
     if pq_min_key > start_key:
-        return None, "window_start_uncovered", None
+        if allow_warmup_head:
+            # 预热吃头：口径 start 覆盖请求 start 即可，不要求 parquet min
+            mat_start_key = _date_key(mat.get("start"))
+            if not mat_start_key or mat_start_key > start_key:
+                return None, "window_start_uncovered", None
+        else:
+            return None, "window_start_uncovered", None
 
     # 过滤到请求窗 [start, end]
     from datetime import date as _date
@@ -539,6 +551,223 @@ def _materialization_fresh(
     if not _materialization_window_fresh(mat):
         return False
     return bool(mat.get("n_rows"))
+
+
+def _asset_materialization_fresh(meta: dict[str, Any] | None, pq_path: Path) -> bool:
+    """store 资产目录增量：materialization 口径新鲜且 parquet 存在 → 可 skip。
+
+    不经 library / status 门；expression 以 meta 自身为准
+    （mat.expression 若与 meta.expression 冲突则重物化）。
+    """
+    if meta is None or not pq_path.exists():
+        return False
+    mat = meta.get("materialization")
+    if not isinstance(mat, dict):
+        return False
+    meta_expr = meta.get("expression")
+    mat_expr = mat.get("expression")
+    if mat_expr not in (None, meta_expr) and mat_expr != meta_expr:
+        return False
+    if not _materialization_window_fresh(mat):
+        return False
+    return bool(mat.get("n_rows"))
+
+
+def _apply_asset_materialization(
+    asset_path: Path,
+    panel: pl.DataFrame,
+    *,
+    expression: str,
+) -> None:
+    """写 factor.parquet 并更新 meta.materialization（保留 ledger 等其余字段）。
+
+    不走 write_factor_asset 的 status 门——correlated / store-only python
+    也可落盘物化。
+    """
+    needed = {"trade_date", "ts_code", "factor_value"}
+    if not needed.issubset(set(panel.columns)):
+        raise ValueError(f"panel must have columns {needed}, got {panel.columns}")
+    out = panel.select(["trade_date", "ts_code", "factor_value"])
+    out.write_parquet(asset_path / "factor.parquet")
+    meta = _read_json(asset_path / "meta.json") or {}
+    meta["materialization"] = {
+        "start": STORE_MATERIALIZE_START,
+        "end": store_materialize_end(),
+        "universe": STORE_MATERIALIZE_UNIVERSE,
+        "git_sha": _git_sha(),
+        "n_rows": int(out.height),
+        "generated_at": _utc_now_iso(),
+        "expression": expression,
+    }
+    _write_json(asset_path / "meta.json", meta)
+
+
+def materialize_assets(
+    market: str,
+    names: Iterable[str] | None = None,
+    root: str = DEFAULT_ROOT,
+    *,
+    panel_loader: PanelLoader | None = None,
+) -> dict[str, Any]:
+    """直接遍历 factor_store 资产目录物化 parquet（不经 library / status 门）。
+
+    覆盖 correlated、仅 store 有的 python 手写因子等 sync_store 不会物化的资产。
+    物化口径与 sync 一致：``STORE_MATERIALIZE_*`` × ``store_materialize_end()``。
+    增量：materialization 新鲜且 parquet 存在 → skip。
+    单资产失败记入 errors 继续下一条，不炸整批。
+
+    Parameters
+    ----------
+    names:
+        只物化这些目录名；None = 该 market 下全部有 meta.json 的子目录。
+    panel_loader:
+        CLI 注入的数据装配；需要物化却未注入 → ``ValueError``。
+
+    Returns
+    -------
+    dict
+        materialized / skipped / errors(list[str]) / total
+    """
+    from factorzen.discovery.factor_library import (
+        is_python_identity,
+        python_identity,
+    )
+    from factorzen.discovery.lift_test import _materializer_from_prepped
+    from factorzen.discovery.preparation import expressions_need_intraday
+
+    market_root = Path(root) / market
+    if names is None:
+        if not market_root.is_dir():
+            return {"materialized": 0, "skipped": 0, "errors": [], "total": 0}
+        asset_names = sorted(
+            p.name
+            for p in market_root.iterdir()
+            if p.is_dir() and (p / "meta.json").exists()
+        )
+    else:
+        asset_names = [str(n).strip() for n in names if str(n).strip()]
+
+    stats: dict[str, Any] = {
+        "materialized": 0,
+        "skipped": 0,
+        "errors": [],
+        "total": len(asset_names),
+    }
+
+    # name -> (asset_dir, meta, expression)
+    to_do: list[tuple[str, Path, dict[str, Any], str]] = []
+    for name in asset_names:
+        d = asset_dir(market, name, root=root)
+        try:
+            if not d.is_dir():
+                stats["errors"].append(name)
+                continue
+            meta = _read_json(d / "meta.json")
+            if meta is None:
+                stats["errors"].append(name)
+                continue
+            pq = d / "factor.parquet"
+            if _asset_materialization_fresh(meta, pq):
+                stats["skipped"] += 1
+                continue
+            kind = meta.get("kind") or "expression"
+            expr = meta.get("expression")
+            if kind == "python" and (not expr or not is_python_identity(str(expr))):
+                expr = python_identity(name)
+            if not expr:
+                stats["errors"].append(name)
+                continue
+            to_do.append((name, d, meta, str(expr)))
+        except Exception as exc:
+            _LOG.warning(
+                "factor_store materialize_assets 扫描 %s 失败: %s: %s",
+                name,
+                type(exc).__name__,
+                exc,
+            )
+            stats["errors"].append(name)
+
+    if not to_do:
+        return stats
+
+    if panel_loader is None:
+        raise ValueError(
+            "materialize_assets 需要 panel_loader（由 CLI 层注入；discovery 层不拉数）"
+        )
+
+    start = STORE_MATERIALIZE_START
+    end = store_materialize_end()
+    univ = STORE_MATERIALIZE_UNIVERSE
+    start8 = _to_ymd8(start)
+    end8 = _to_ymd8(end)
+
+    # 按 need_intraday 分组装帧（与 _materialize_records 同策略）
+    groups: dict[bool, list[tuple[str, Path, dict[str, Any], str]]] = {}
+    for item in to_do:
+        name, _d, _meta, expr = item
+        need_ix = False
+        if not is_python_identity(expr):
+            try:
+                need_ix = bool(expressions_need_intraday([expr]))
+            except Exception:
+                need_ix = False
+        groups.setdefault(need_ix, []).append(item)
+
+    for need_ix, items in groups.items():
+        try:
+            prepped = panel_loader(
+                start=start8,
+                end=end8,
+                universe=univ,
+                market=market,
+                intraday_leaves=need_ix,
+            )
+        except Exception as exc:
+            _LOG.warning(
+                "factor_store materialize_assets: load panel failed %s–%s u=%s ix=%s: %s: %s",
+                start8,
+                end8,
+                univ,
+                need_ix,
+                type(exc).__name__,
+                exc,
+            )
+            for name, *_rest in items:
+                stats["errors"].append(name)
+            continue
+
+        mat = _materializer_from_prepped(
+            prepped,
+            leaf_map=None,
+            python_universe=univ,
+            python_market=market,
+        )
+        for name, d, _meta, expr in items:
+            try:
+                panel = mat(expr)
+                if panel is None or (hasattr(panel, "is_empty") and panel.is_empty()):
+                    _LOG.warning("factor_store materialize_assets: empty for %s", name)
+                    stats["errors"].append(name)
+                    continue
+                _apply_asset_materialization(d, panel, expression=expr)
+                stats["materialized"] += 1
+                _LOG.info(
+                    "factor_store materialize_assets: %s n_rows=%s",
+                    name,
+                    panel.height,
+                )
+            except Exception as exc:
+                _LOG.warning(
+                    "factor_store materialize_assets: %s failed: %s: %s",
+                    name,
+                    type(exc).__name__,
+                    exc,
+                )
+                stats["errors"].append(name)
+            panel = None  # type: ignore[assignment]
+        del prepped, mat
+
+    return stats
 
 
 def _materialize_records(

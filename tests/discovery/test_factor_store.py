@@ -716,3 +716,214 @@ def test_default_root_equals_factor_store_dir():
     from factorzen.discovery.factor_store import DEFAULT_ROOT
 
     assert str(FACTOR_STORE_DIR) == DEFAULT_ROOT
+
+
+# ── materialize_assets / allow_warmup_head ───────────────────────────────────
+
+
+def test_materialize_assets_expr_python_skip_and_errors(tmp_path, monkeypatch):
+    """tmp store 造 2 个资产(表达式+假 python)：物化后 parquet/meta 齐、二次 skip、errors 不炸。"""
+    from factorzen.discovery import factor_store as fs
+    from factorzen.discovery.factor_store import materialize_assets
+
+    fixed_end = "2026-07-20"
+    monkeypatch.setattr(fs, "store_materialize_end", lambda: fixed_end)
+
+    store = tmp_path / "factor_store"
+    # 1) expression 资产
+    expr_name = "mat_assets_rank"
+    expr_dir = store / "ashare" / expr_name
+    expr_dir.mkdir(parents=True)
+    (expr_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "name": expr_name,
+                "kind": "expression",
+                "expression": "rank(close)",
+                "frequency": "daily",
+                "description": "",
+                "source_run_id": None,
+                "created_at": "2026-07-21",
+                "ledger_snapshot": {
+                    "status": "correlated",
+                    "lift": None,
+                    "admission_ic": None,
+                    "ic_train": 0.01,
+                    "holdout_ic": 0.01,
+                    "truth": "workspace/factor_library/ashare.jsonl",
+                },
+                "materialization": None,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (expr_dir / "factor.py").write_text("# stub\n", encoding="utf-8")
+
+    # 2) python 资产（假 py::）
+    py_name = "mat_assets_py_fake"
+    py_dir = store / "ashare" / py_name
+    py_dir.mkdir(parents=True)
+    (py_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "name": py_name,
+                "kind": "python",
+                "expression": f"py::{py_name}",
+                "frequency": "daily",
+                "description": "fake",
+                "source_run_id": None,
+                "created_at": "2026-07-21",
+                "ledger_snapshot": {
+                    "status": "active",
+                    "lift": None,
+                    "admission_ic": None,
+                    "ic_train": None,
+                    "holdout_ic": None,
+                    "truth": "workspace/factor_library/ashare.jsonl",
+                },
+                "materialization": None,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (py_dir / "factor.py").write_text("# stub python\n", encoding="utf-8")
+
+    # 3) 坏资产：无 expression → errors
+    bad_name = "mat_assets_bad"
+    bad_dir = store / "ashare" / bad_name
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "meta.json").write_text(
+        json.dumps({"name": bad_name, "kind": "expression", "expression": ""}) + "\n",
+        encoding="utf-8",
+    )
+
+    daily = _tiny_daily(n_days=5, n_stocks=3)
+
+    def fake_loader(**kw):
+        return daily
+
+    # 拦截 materializer：expression 返回真实 rank 面板；python 返回假面板
+    from factorzen.discovery.expression import evaluate_materialized, parse_expr
+
+    def fake_mat_factory(prepped, leaf_map, **kw):
+        def _mat(expr: str):
+            if expr.startswith("py::"):
+                return pl.DataFrame(
+                    {
+                        "trade_date": [date(2024, 1, 2), date(2024, 1, 3)],
+                        "ts_code": ["000001.SH", "000001.SH"],
+                        "factor_value": [0.1, 0.2],
+                    }
+                )
+            node = parse_expr(expr)
+            return (
+                prepped.select(["trade_date", "ts_code"])
+                .with_columns(
+                    evaluate_materialized(node, prepped).alias("factor_value")
+                )
+                .filter(
+                    pl.col("factor_value").is_not_null()
+                    & pl.col("factor_value").is_finite()
+                )
+            )
+
+        return _mat
+
+    monkeypatch.setattr(
+        "factorzen.discovery.lift_test._materializer_from_prepped", fake_mat_factory
+    )
+
+    stats1 = materialize_assets(
+        "ashare",
+        names=[expr_name, py_name, bad_name],
+        root=str(store),
+        panel_loader=fake_loader,
+    )
+    assert stats1["total"] == 3
+    assert stats1["materialized"] == 2
+    assert stats1["skipped"] == 0
+    assert bad_name in stats1["errors"]
+    assert (expr_dir / "factor.parquet").is_file()
+    assert (py_dir / "factor.parquet").is_file()
+
+    for d, expected_expr in (
+        (expr_dir, "rank(close)"),
+        (py_dir, f"py::{py_name}"),
+    ):
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        mat = meta["materialization"]
+        assert mat is not None
+        for key in ("start", "end", "universe", "generated_at", "git_sha", "n_rows"):
+            assert key in mat, f"missing mat key {key}"
+        assert mat["start"] == fs.STORE_MATERIALIZE_START
+        assert mat["end"] == fixed_end
+        assert mat["universe"] == fs.STORE_MATERIALIZE_UNIVERSE
+        assert mat["expression"] == expected_expr
+        # ledger 状态保留（correlated 不被改写）
+        if d == expr_dir:
+            assert meta["ledger_snapshot"]["status"] == "correlated"
+
+    # 二次调用 → skip
+    stats2 = materialize_assets(
+        "ashare",
+        names=[expr_name, py_name],
+        root=str(store),
+        panel_loader=fake_loader,
+    )
+    assert stats2["materialized"] == 0
+    assert stats2["skipped"] == 2
+    assert stats2["errors"] == []
+
+
+def test_load_materialized_factor_allow_warmup_head(tmp_path):
+    """预热头部：parquet min > start 时 allow_warmup_head True 命中、False miss。"""
+    from factorzen.discovery.factor_store import load_materialized_factor
+
+    store = tmp_path / "factor_store"
+    # parquet 从 2024-01-10 起（模拟预热吃掉 01-01~01-09）
+    values = [
+        (date(2024, 1, 10), "000001.SZ", 1.0),
+        (date(2024, 1, 11), "000001.SZ", 2.0),
+        (date(2024, 1, 12), "000001.SZ", 3.0),
+    ]
+    _write_mini_asset(
+        store,
+        name="warmup_f",
+        expression="rank(close)",
+        mat_start="2016-01-01",
+        mat_end="2024-12-31",
+        values=values,
+    )
+    rec = _expr_record("rank(close)", name="warmup_f")
+
+    # 默认：parquet min > start → miss
+    df, reason, meta = load_materialized_factor(
+        rec,
+        market="ashare",
+        root=str(store),
+        start="20240101",
+        end="20240112",
+        universe="all_a",
+        allow_warmup_head=False,
+    )
+    assert df is None and reason == "window_start_uncovered"
+
+    # 放宽：meta.start(2016) <= 请求 start → 命中，滤到 [start,end] 后非空
+    df, reason, meta = load_materialized_factor(
+        rec,
+        market="ashare",
+        root=str(store),
+        start="20240101",
+        end="20240112",
+        universe="all_a",
+        allow_warmup_head=True,
+    )
+    assert reason is None and df is not None
+    assert df.height == 3
+    assert meta is not None

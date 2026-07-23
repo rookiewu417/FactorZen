@@ -60,6 +60,78 @@ setup_logging()
 logger = get_logger(__name__)
 
 
+def _try_load_factor_store_cache(
+    factor_name: str,
+    start: str,
+    end: str,
+    universe: str | None,
+    *,
+    market: str = "ashare",
+    root: str | None = None,
+) -> pl.DataFrame | None:
+    """若 factor_store 有资产且物化命中，返回 factor 帧；否则 None。
+
+    缓存判定只走 ``load_materialized_factor(..., allow_warmup_head=True)``，
+    不在本函数另写窗口门控（与 combine 共享单点）。
+    """
+    # import 放函数内：pipelines→discovery 反向依赖禁止模块级
+    from factorzen.discovery.factor_library import FactorRecord
+    from factorzen.discovery.factor_store import (
+        DEFAULT_ROOT,
+        _read_json,
+        asset_dir,
+        load_materialized_factor,
+    )
+
+    store_root = root if root is not None else DEFAULT_ROOT
+    d = asset_dir(market, factor_name, root=store_root)
+    if not d.is_dir():
+        logger.info("factor cache miss %s: missing_asset", factor_name)
+        return None
+    meta = _read_json(d / "meta.json")
+    if meta is None:
+        logger.info("factor cache miss %s: meta_unreadable", factor_name)
+        return None
+    expr = meta.get("expression")
+    if not expr:
+        logger.info("factor cache miss %s: no_expression", factor_name)
+        return None
+    rec = FactorRecord(
+        expression=str(expr),
+        market=market,
+        name=factor_name,
+        kind=meta.get("kind") or "expression",
+        frequency=meta.get("frequency") or "daily",
+    )
+    univ = universe or "all_a"
+    df, reason, _hit = load_materialized_factor(
+        rec,
+        market=market,
+        root=store_root,
+        start=start,
+        end=end,
+        universe=univ,
+        allow_warmup_head=True,
+    )
+    if df is not None:
+        logger.info("factor cache HIT %s", factor_name)
+        return df
+    logger.info("factor cache miss %s: %s", factor_name, reason or "unknown")
+    return None
+
+
+def _read_factors_file(path: str | Path) -> list[str]:
+    """读 --factors-file：每行一个因子名；# 注释与空行跳过。"""
+    p = Path(path)
+    names: list[str] = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        names.append(s)
+    return names
+
+
 def filter_frame_by_membership(
     df: pl.DataFrame,
     membership: pl.DataFrame,
@@ -485,6 +557,18 @@ def _run_backtest_strategies(
 
 
 @dataclass
+class _SharedEvaluationData:
+    """批量 eval/backtest 循环外共享的因子无关数据。"""
+
+    membership: pl.DataFrame
+    ts_codes: list[str]
+    universe: pl.DataFrame
+    daily: pl.DataFrame
+    ret_df: pl.DataFrame
+    daily_basic_for_neutralize: pl.DataFrame | None
+
+
+@dataclass
 class _EvaluationInputs:
     """共享前半段（0b~6b）产出：两轨后续步骤所需的全部对象。"""
 
@@ -507,6 +591,85 @@ class _EvaluationInputs:
     quality_path: Path
 
 
+def _prepare_shared_evaluation_data(
+    args: argparse.Namespace,
+    effective_config: RunConfig,
+    *,
+    lookback_days: int = 120,
+) -> _SharedEvaluationData:
+    """批量入口：日线 / universe / 前向收益等与因子无关的部分只装一次。"""
+    trade_dates = get_trade_dates(args.start, args.end)
+    logger.info(f"[batch] 共享 prep | 交易日数: {len(trade_dates)}")
+    if len(trade_dates) < 30:
+        logger.warning("交易日不足 30 天，IC 分析可能不稳定")
+
+    try:
+        ensure_data_for_daily_run(
+            required_data=["daily", "daily_basic"],
+            start=args.start,
+            end=args.end,
+            universe=args.universe,
+            benchmark=args.benchmark,
+            needs_size_neutralization=(
+                effective_config.preprocessing.neutralize
+                and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
+            ),
+            is_qlib_factor=False,
+        )
+    except Exception as e:
+        logger.error(f"数据保障失败: {e}")
+        raise RuntimeError(f"ensure_data_for_daily_run failed: {e}") from e
+
+    membership, ts_codes, universe = load_pit_membership(
+        args.start, args.end, args.universe
+    )
+    if not ts_codes and args.universe != "all_a":
+        raise RuntimeError(f"empty universe membership: {args.universe}")
+    logger.info(
+        f"[batch] 股票池(PIT): union={len(ts_codes)} 只, rows={membership.height}"
+    )
+
+    ctx = FactorDataContext(
+        start=args.start,
+        end=args.end,
+        required_data=["daily"],
+        lookback_days=lookback_days,
+        universe=ts_codes if ts_codes else None,
+        snapshot_mode=getattr(args, "frequency", "daily") or "daily",
+    )
+    daily = ctx.daily.collect()
+    if daily.is_empty():
+        raise RuntimeError("empty daily data")
+    ret_df = _build_forward_return_frame(
+        daily,
+        exec_lag=int(
+            getattr(args, "exec_lag", 1)
+            if getattr(args, "exec_lag", None) is not None
+            else 1
+        ),
+        exec_price_col=getattr(args, "exec_price_col", "open_adj"),
+    )
+    logger.info("[batch] 前向收益计算完成 (horizons: 1/5/10/20d)")
+
+    daily_basic_for_neutralize = None
+    if (
+        effective_config.preprocessing.neutralize
+        and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
+    ):
+        daily_basic_for_neutralize = _load_daily_basic_for_neutralization(
+            args.start, args.end
+        )
+
+    return _SharedEvaluationData(
+        membership=membership,
+        ts_codes=ts_codes,
+        universe=universe,
+        daily=daily,
+        ret_df=ret_df,
+        daily_basic_for_neutralize=daily_basic_for_neutralize,
+    )
+
+
 def _prepare_evaluation_inputs(
     args: argparse.Namespace,
     effective_config: RunConfig,
@@ -515,10 +678,12 @@ def _prepare_evaluation_inputs(
     progress: OverallProgress | None = None,
     track_label: str = "Daily",
     progress_total: int = 14,
+    shared: _SharedEvaluationData | None = None,
 ) -> _EvaluationInputs:
     """共享前半段：种子 / 因子类 / 数据 / universe / PIT / 因子计算 / 预处理 / 前向收益 / 质量审计。
 
     语义与拆分前 ``_run`` 第 0b~6b 步完全一致，仅搬家。
+    ``shared`` 非空时复用批量装帧（universe/daily/ret），跳过重复拉数。
     """
     timer = timer or StageTimer()
     progress = progress or OverallProgress(progress_total, label=track_label).start()
@@ -551,46 +716,56 @@ def _prepare_evaluation_inputs(
     report_output_dir = daily_report_output_dir(factor.name)
     progress.advance("init")
 
-    # ── 2. 准备数据 ──
-    trade_dates = get_trade_dates(args.start, args.end)
-    logger.info(f"交易日数: {len(trade_dates)}")
-    if len(trade_dates) < 30:
-        logger.warning("交易日不足 30 天，IC 分析可能不稳定")
+    # ── 2~3. 数据 + 股票池（batch 时复用 shared）──
+    if shared is None:
+        trade_dates = get_trade_dates(args.start, args.end)
+        logger.info(f"交易日数: {len(trade_dates)}")
+        if len(trade_dates) < 30:
+            logger.warning("交易日不足 30 天，IC 分析可能不稳定")
 
-    try:
-        ensure_data_for_daily_run(
-            required_data=factor.required_data,
-            start=args.start,
-            end=args.end,
-            universe=args.universe,
-            benchmark=args.benchmark,
-            needs_size_neutralization=(
-                effective_config.preprocessing.neutralize
-                and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
-            ),
-            is_qlib_factor=getattr(factor, "category", "") == "qlib"
-            or factor.name.startswith("qlib_"),
-        )
-    except Exception as e:
-        logger.error(f"数据保障失败: {e}")
-        raise RuntimeError(f"ensure_data_for_daily_run failed: {e}") from e
-    progress.advance("data")
+        try:
+            ensure_data_for_daily_run(
+                required_data=factor.required_data,
+                start=args.start,
+                end=args.end,
+                universe=args.universe,
+                benchmark=args.benchmark,
+                needs_size_neutralization=(
+                    effective_config.preprocessing.neutralize
+                    and effective_config.preprocessing.neutralize_by
+                    in ("size", "industry+size")
+                ),
+                is_qlib_factor=getattr(factor, "category", "") == "qlib"
+                or factor.name.startswith("qlib_"),
+            )
+        except Exception as e:
+            logger.error(f"数据保障失败: {e}")
+            raise RuntimeError(f"ensure_data_for_daily_run failed: {e}") from e
+        progress.advance("data")
 
-    # ── 3. 股票池（逐日 PIT membership；union 供拉取，评估截面再按日过滤）──
-    try:
-        membership, ts_codes, universe = load_pit_membership(
-            args.start, args.end, args.universe
+        try:
+            membership, ts_codes, universe = load_pit_membership(
+                args.start, args.end, args.universe
+            )
+        except (ValueError, RuntimeError) as e:
+            logger.error(f"股票池 membership 失败: {e}")
+            raise
+        if not ts_codes and args.universe != "all_a":
+            logger.error(f"股票池为空: {args.universe} [{args.start},{args.end}]")
+            raise RuntimeError(f"empty universe membership: {args.universe}")
+        logger.info(
+            f"股票池(PIT membership): union={len(ts_codes)} 只, "
+            f"membership_rows={membership.height}"
         )
-    except (ValueError, RuntimeError) as e:
-        logger.error(f"股票池 membership 失败: {e}")
-        raise
-    if not ts_codes and args.universe != "all_a":
-        logger.error(f"股票池为空: {args.universe} [{args.start},{args.end}]")
-        raise RuntimeError(f"empty universe membership: {args.universe}")
-    logger.info(
-        f"股票池(PIT membership): union={len(ts_codes)} 只, "
-        f"membership_rows={membership.height}"
-    )
+    else:
+        membership = shared.membership
+        ts_codes = shared.ts_codes
+        universe = shared.universe
+        progress.advance("data")
+        logger.info(
+            f"股票池(PIT membership, shared): union={len(ts_codes)} 只, "
+            f"membership_rows={membership.height}"
+        )
 
     # ── 3b. 保存逐日 membership（供复现和审计；口径=PIT，非期末快照）──
     result_output_dir.mkdir(parents=True, exist_ok=True)
@@ -604,7 +779,22 @@ def _prepare_evaluation_inputs(
     )
     progress.advance("universe")
 
-    # ── 4. 计算因子 ──
+    # ── 4. 计算因子（优先 factor_store 物化缓存；--no-factor-cache 跳过）──
+    use_cache = not bool(getattr(args, "no_factor_cache", False))
+    factor_df: pl.DataFrame | None = None
+    if use_cache:
+        factor_df = _try_load_factor_store_cache(
+            factor.name,
+            args.start,
+            args.end,
+            args.universe,
+        )
+        # 物化帧含 all_a 全体股票，直算帧只含评估 universe union——
+        # 预处理在 union 截面上做，行集不同会让 winsorize/中性化统计量漂移
+        # （实测 IC 差 0.3%）。过滤对齐直算行集，保证 cache/no-cache 数值等价。
+        if factor_df is not None and ts_codes:
+            factor_df = factor_df.filter(pl.col("ts_code").is_in(ts_codes))
+
     ctx = FactorDataContext(
         start=args.start,
         end=args.end,
@@ -613,11 +803,12 @@ def _prepare_evaluation_inputs(
         universe=ts_codes if ts_codes else None,
         snapshot_mode=args.frequency,
     )
-    try:
-        factor_df = factor.compute(ctx)
-    except Exception as e:
-        logger.error(f"因子计算失败: {e}")
-        raise RuntimeError(f"factor compute failed: {e}") from e
+    if factor_df is None:
+        try:
+            factor_df = factor.compute(ctx)
+        except Exception as e:
+            logger.error(f"因子计算失败: {e}")
+            raise RuntimeError(f"factor compute failed: {e}") from e
 
     validation = factor.validate(factor_df)
     logger.info(f"因子计算完成: {validation}")
@@ -630,16 +821,23 @@ def _prepare_evaluation_inputs(
 
     # ── 5. 预处理（先预处理再按日 PIT 过滤评估截面——预处理可在 union 上做，
     #    截面统计更稳；IC/回测/换手只看当日成分）──
-    daily_basic_for_neutralize = None
-    if (
-        effective_config.preprocessing.neutralize
-        and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
-    ):
-        try:
-            daily_basic_for_neutralize = _load_daily_basic_for_neutralization(args.start, args.end)
-        except Exception as e:
-            logger.error(f"daily_basic 本地缓存读取失败，无法执行市值中性化: {e}")
-            raise RuntimeError(f"load daily_basic cache failed for neutralization: {e}") from e
+    if shared is not None:
+        daily_basic_for_neutralize = shared.daily_basic_for_neutralize
+    else:
+        daily_basic_for_neutralize = None
+        if (
+            effective_config.preprocessing.neutralize
+            and effective_config.preprocessing.neutralize_by in ("size", "industry+size")
+        ):
+            try:
+                daily_basic_for_neutralize = _load_daily_basic_for_neutralization(
+                    args.start, args.end
+                )
+            except Exception as e:
+                logger.error(f"daily_basic 本地缓存读取失败，无法执行市值中性化: {e}")
+                raise RuntimeError(
+                    f"load daily_basic cache failed for neutralization: {e}"
+                ) from e
 
     clean_df = _preprocess_factor(
         factor_df,
@@ -656,17 +854,25 @@ def _prepare_evaluation_inputs(
     )
     progress.advance("preprocess")
 
-    # ── 6. 计算前向收益 ──
-    daily = ctx.daily.collect()
-    if daily.is_empty():
-        logger.error("日线数据为空，无法计算收益")
-        raise RuntimeError("empty daily data")
-    ret_df = _build_forward_return_frame(
-        daily,
-        exec_lag=int(getattr(args, "exec_lag", 1) if getattr(args, "exec_lag", None) is not None else 1),
-        exec_price_col=getattr(args, "exec_price_col", "open_adj"),
-    )
-    logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
+    # ── 6. 计算前向收益（batch 复用 shared.daily / shared.ret_df）──
+    if shared is not None:
+        daily = shared.daily
+        ret_df = shared.ret_df
+    else:
+        daily = ctx.daily.collect()
+        if daily.is_empty():
+            logger.error("日线数据为空，无法计算收益")
+            raise RuntimeError("empty daily data")
+        ret_df = _build_forward_return_frame(
+            daily,
+            exec_lag=int(
+                getattr(args, "exec_lag", 1)
+                if getattr(args, "exec_lag", None) is not None
+                else 1
+            ),
+            exec_price_col=getattr(args, "exec_price_col", "open_adj"),
+        )
+        logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
 
     # ── 6b. 数据质量审计 ──
     try:
@@ -711,6 +917,7 @@ def _prepare_evaluation_inputs(
     )
 
 
+
 def _merge_meta(meta_path: Path, updates: dict[str, Any]) -> dict[str, Any]:
     """读现有 meta → update → 写回（两轨增量合并，互不冲掉）。"""
     meta_payload: dict[str, Any] = {}
@@ -731,6 +938,8 @@ def run_factor_eval(
     args: argparse.Namespace,
     effective_config: RunConfig,
     timer: StageTimer | None = None,
+    *,
+    shared: _SharedEvaluationData | None = None,
 ) -> dict[str, str]:
     """信号轨：IC / 换手 / 单调性 / 信号回测（毛口径）+ 信号轨报告。
 
@@ -745,6 +954,7 @@ def run_factor_eval(
         progress=progress,
         track_label="Factor eval",
         progress_total=12,
+        shared=shared,
     )
     factor = prep.factor
     clean_df = prep.clean_df
@@ -905,6 +1115,8 @@ def run_factor_backtest(
     args: argparse.Namespace,
     effective_config: RunConfig,
     timer: StageTimer | None = None,
+    *,
+    shared: _SharedEvaluationData | None = None,
 ) -> dict[str, str]:
     """交易轨：IC（方向判定）/ 策略日环回测 / 换手 / walk-forward / 单调性 / benchmark + 交易轨报告。
 
@@ -919,6 +1131,7 @@ def run_factor_backtest(
         progress=progress,
         track_label="Factor backtest",
         progress_total=14,
+        shared=shared,
     )
     factor = prep.factor
     clean_df = prep.clean_df
@@ -1090,6 +1303,58 @@ def run_factor_backtest(
     return outputs
 
 
+def _run_one_factor_experiment(
+    args: argparse.Namespace,
+    effective_config: RunConfig,
+    *,
+    track: str,
+    shared: _SharedEvaluationData | None = None,
+) -> None:
+    """单因子：独立 run_id / manifest / 报告 / experiment_index（与单跑同构）。"""
+    run_fn = run_factor_eval if track == "eval" else run_factor_backtest
+    with run_experiment(effective_config, command=sys.argv) as exp_dir:
+        timer = StageTimer()
+        try:
+            outputs = run_fn(args, effective_config, timer=timer, shared=shared)
+        except Exception:
+            record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
+            for name, path in _existing_run_outputs(
+                args.factor, args.start, args.end, track=track
+            ).items():
+                record_experiment_output(exp_dir, name, path)
+            raise
+        record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
+        for name, path in outputs.items():
+            record_experiment_output(exp_dir, name, path)
+        for name, path in copy_outputs_to_run_dir(outputs, exp_dir).items():
+            record_experiment_output(exp_dir, name, path)
+        # evidence 链接：评估成功后挂 run_id 到库（非裁决指标；失败只 warning）
+        try:
+            from datetime import datetime
+
+            from factorzen.discovery.factor_library import link_evaluation_to_library
+
+            linked = link_evaluation_to_library(
+                args.factor,
+                exp_dir.name,
+                datetime.now().date().isoformat(),
+                market="ashare",
+            )
+            if not linked:
+                logger.warning(
+                    "link_evaluation_to_library 未挂上 name=%s run_id=%s",
+                    args.factor,
+                    exp_dir.name,
+                )
+        except Exception as link_exc:
+            logger.warning(
+                "link_evaluation_to_library 异常 name=%s: %s: %s",
+                args.factor,
+                type(link_exc).__name__,
+                link_exc,
+            )
+
+
 def main(*, track: str = "backtest") -> None:
     """日频单因子管线入口。
 
@@ -1109,6 +1374,12 @@ def main(*, track: str = "backtest") -> None:
     )
     parser = argparse.ArgumentParser(description=desc)
     parser.add_argument("--factor", default=None, help="因子名称")
+    parser.add_argument(
+        "--factors-file",
+        default=None,
+        dest="factors_file",
+        help="批量因子清单（每行一个名字）；与 --factor 互斥",
+    )
     parser.add_argument("--start", default=None, help="起始日期 YYYYMMDD")
     parser.add_argument("--end", default=None, help="截止日期 YYYYMMDD")
     parser.add_argument("--universe", type=str, default=None, help="股票池")
@@ -1149,12 +1420,36 @@ def main(*, track: str = "backtest") -> None:
         help="信号轨截面分位组数（默认 5）",
     )
     parser.add_argument(
+        "--no-factor-cache",
+        action="store_true",
+        dest="no_factor_cache",
+        help="禁用 factor_store 物化缓存（默认启用；miss 时回落直算）",
+    )
+    parser.add_argument(
         "--metrics-out",
         default=None,
         dest="metrics_out",
         help=argparse.SUPPRESS,  # 内部接口：评估完写 IC + 主策略回测指标 JSON，供 factor sweep 读取
     )
     args = parser.parse_args()
+
+    # --factors-file 与 --factor 互斥
+    if getattr(args, "factors_file", None) and args.factor:
+        logger.error("--factors-file 与 --factor 互斥，请只给其一")
+        sys.exit(2)
+
+    batch_names: list[str] | None = None
+    if getattr(args, "factors_file", None):
+        try:
+            batch_names = _read_factors_file(args.factors_file)
+        except OSError as e:
+            logger.error(f"读取 --factors-file 失败: {e}")
+            sys.exit(2)
+        if not batch_names:
+            logger.error(f"--factors-file 为空或无可解析因子名: {args.factors_file}")
+            sys.exit(2)
+        # 配置合并需要 factor 字段；用清单首个占位，循环内覆盖
+        args.factor = batch_names[0]
 
     # ── 0. 加载 YAML 配置（可选），CLI 参数优先级更高 ──
     run_config = None
@@ -1192,59 +1487,73 @@ def main(*, track: str = "backtest") -> None:
         logger.error(str(e))
         sys.exit(2)
 
-    effective_config = _effective_run_config(args, run_config)
     if args.dry_run:
-        print(
-            json.dumps(
-                _build_dry_run_payload(effective_config, args=args), ensure_ascii=False, indent=2
-            )
-        )
+        effective_config = _effective_run_config(args, run_config)
+        payload = _build_dry_run_payload(effective_config, args=args)
+        if batch_names is not None:
+            payload["factors"] = batch_names
+            payload["batch"] = True
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
 
-    run_fn = run_factor_eval if track == "eval" else run_factor_backtest
+    # ── 批量：共享 prep + 每因子独立 experiment ──
+    if batch_names is not None:
+        # 用首因子构共享装帧配置（window/universe 相同）
+        base_cfg = _effective_run_config(args, run_config)
+        try:
+            shared = _prepare_shared_evaluation_data(args, base_cfg)
+        except Exception as e:
+            logger.error(str(e))
+            sys.exit(1)
+
+        ok_list: list[str] = []
+        fail_list: list[str] = []
+        for fname in batch_names:
+            args.factor = fname
+            # 每因子独立 effective_config（run_id 含 factor 名）
+            if run_config is not None and hasattr(run_config, "model_copy"):
+                factor_cfg = run_config.model_copy(update={"factor": fname})
+            else:
+                factor_cfg = None
+            effective_config = _effective_run_config(args, factor_cfg or run_config)
+            try:
+                _run_one_factor_experiment(
+                    args, effective_config, track=track, shared=shared
+                )
+                ok_list.append(fname)
+                logger.info("[batch] OK %s", fname)
+            except Exception as e:
+                logger.error("[batch] FAIL %s: %s", fname, e)
+                fail_list.append(fname)
+
+        logger.info(
+            "[batch] 完成 ok=%d fail=%d | ok=%s | fail=%s",
+            len(ok_list),
+            len(fail_list),
+            ok_list,
+            fail_list,
+        )
+        print(
+            f"[batch] ok={len(ok_list)} fail={len(fail_list)}\n"
+            f"  ok: {ok_list}\n"
+            f"  fail: {fail_list}",
+            flush=True,
+        )
+        if fail_list:
+            sys.exit(1)
+        logger.info("Done.")
+        return
+
+    # ── 单因子 ──
+    effective_config = _effective_run_config(args, run_config)
     try:
-        with run_experiment(effective_config, command=sys.argv) as exp_dir:
-            timer = StageTimer()
-            try:
-                outputs = run_fn(args, effective_config, timer=timer)
-            except Exception:
-                record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
-                for name, path in _existing_run_outputs(
-                    args.factor, args.start, args.end, track=track
-                ).items():
-                    record_experiment_output(exp_dir, name, path)
-                raise
-            record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
-            for name, path in outputs.items():
-                record_experiment_output(exp_dir, name, path)
-            for name, path in copy_outputs_to_run_dir(outputs, exp_dir).items():
-                record_experiment_output(exp_dir, name, path)
-            # evidence 链接：评估成功后挂 run_id 到库（非裁决指标；失败只 warning）
-            try:
-                from datetime import datetime
-
-                from factorzen.discovery.factor_library import link_evaluation_to_library
-
-                linked = link_evaluation_to_library(
-                    args.factor,
-                    exp_dir.name,
-                    datetime.now().date().isoformat(),
-                    market="ashare",
-                )
-                if not linked:
-                    logger.warning(
-                        "link_evaluation_to_library 未挂上 name=%s run_id=%s",
-                        args.factor, exp_dir.name,
-                    )
-            except Exception as link_exc:
-                logger.warning(
-                    "link_evaluation_to_library 异常 name=%s: %s: %s",
-                    args.factor, type(link_exc).__name__, link_exc,
-                )
+        _run_one_factor_experiment(args, effective_config, track=track, shared=None)
     except Exception as e:
         logger.error(str(e))
         sys.exit(1)
     logger.info("Done.")
+
+
 
 
 if __name__ == "__main__":

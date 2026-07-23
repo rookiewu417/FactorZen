@@ -24,6 +24,8 @@ from factorzen.pipelines import daily_single
 from factorzen.pipelines import daily_single as ds
 from factorzen.pipelines.daily_single import _write_run_metrics
 
+# json/date used by factor-cache / factors-file 批测
+
 
 # ==== 来自 test_daily_single.py ====
 # ==== 来自 test_daily_single_helpers.py ====
@@ -1217,3 +1219,252 @@ def test_main_invalid_track_raises():
     with pytest.raises(ValueError, match="unknown track"):
         daily_single.main(track="signal")
 
+
+
+# ==== factor cache + factors-file batch ====
+
+
+def test_load_factor_store_cache_hit_and_no_cache_flag(tmp_path, monkeypatch, caplog):
+    """物化小表达式后 cache HIT；allow_warmup 请求窗命中。"""
+    import logging
+    from datetime import timedelta
+
+    from factorzen.discovery.factor_store import _apply_asset_materialization
+    from factorzen.pipelines import daily_single as ds
+
+    name = "cache_hit_rank_close"
+    store = tmp_path / "factor_store"
+    asset = store / "ashare" / name
+    asset.mkdir(parents=True)
+
+    dates = [date(2020, 1, 2) + timedelta(days=i) for i in range(10)]
+    rows = []
+    for d in dates:
+        for i, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ"]):
+            rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": code,
+                    "factor_value": float(i) + d.toordinal() * 0.001,
+                }
+            )
+    panel = pl.DataFrame(rows)
+    (asset / "meta.json").write_text(
+        json.dumps(
+            {
+                "name": name,
+                "kind": "expression",
+                "expression": "rank(close)",
+                "frequency": "daily",
+                "description": "",
+                "materialization": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "factorzen.discovery.factor_store.store_materialize_end",
+        lambda: "2020-12-31",
+    )
+    _apply_asset_materialization(asset, panel, expression="rank(close)")
+
+    cached = ds._try_load_factor_store_cache(
+        name,
+        "20200101",
+        "20200111",
+        "all_a",
+        root=str(store),
+    )
+    assert cached is not None
+    assert set(cached.columns) >= {"trade_date", "ts_code", "factor_value"}
+
+    with caplog.at_level(logging.INFO):
+        hit = ds._try_load_factor_store_cache(
+            name, "20200101", "20200111", "all_a", root=str(store)
+        )
+    assert hit is not None
+    assert any("factor cache HIT" in r.message for r in caplog.records)
+
+    miss = ds._try_load_factor_store_cache(
+        "no_such_factor_xyz", "20200101", "20200111", "all_a", root=str(store)
+    )
+    assert miss is None
+
+
+def test_factor_cache_ic_parity_with_direct_compute(tmp_path, monkeypatch):
+    """cache HIT 与直算同一面板：frame_equal + IC 序列一致。"""
+    from datetime import timedelta
+
+    import numpy as np
+
+    from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
+    from factorzen.discovery.factor_store import _apply_asset_materialization
+    from factorzen.pipelines import daily_single as ds
+
+    name = "parity_rank_f"
+    store = tmp_path / "factor_store"
+    asset = store / "ashare" / name
+    asset.mkdir(parents=True)
+
+    n_days, n_stocks = 15, 5
+    dates = [date(2020, 3, 1) + timedelta(days=i) for i in range(n_days)]
+    codes = [f"{i:06d}.SZ" for i in range(n_stocks)]
+    f_rows, d_rows = [], []
+    rng = np.random.default_rng(0)
+    for d in dates:
+        for i, code in enumerate(codes):
+            fv = float(rng.normal())
+            px = 10.0 + i + 0.01 * d.toordinal()
+            f_rows.append({"trade_date": d, "ts_code": code, "factor_value": fv})
+            d_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": code,
+                    "close": px,
+                    "open": px * 0.99,
+                    "high": px * 1.01,
+                    "low": px * 0.98,
+                    "vol": 1e5,
+                    "amount": 1e7,
+                    "close_adj": px,
+                    "open_adj": px * 0.99,
+                    "high_adj": px * 1.01,
+                    "low_adj": px * 0.98,
+                }
+            )
+    factor_panel = pl.DataFrame(f_rows)
+    daily = pl.DataFrame(d_rows)
+
+    (asset / "meta.json").write_text(
+        json.dumps(
+            {
+                "name": name,
+                "kind": "expression",
+                "expression": "rank(close)",
+                "frequency": "daily",
+                "description": "",
+                "materialization": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "factorzen.discovery.factor_store.store_materialize_end",
+        lambda: "2020-12-31",
+    )
+    _apply_asset_materialization(asset, factor_panel, expression="rank(close)")
+
+    cached = ds._try_load_factor_store_cache(
+        name, "20200301", "20200315", "all_a", root=str(store)
+    )
+    assert cached is not None
+
+    assert cached.sort(["trade_date", "ts_code"]).select(
+        ["trade_date", "ts_code", "factor_value"]
+    ).equals(
+        factor_panel.sort(["trade_date", "ts_code"]).select(
+            ["trade_date", "ts_code", "factor_value"]
+        )
+    )
+
+    ret_df = ds._build_forward_return_frame(daily, exec_lag=1, exec_price_col="open_adj")
+    clean = factor_panel.rename({"factor_value": "factor_clean"})
+    ic1 = compute_rank_ic(clean, ret_df, frequency="daily")
+    ic2 = compute_rank_ic(
+        cached.rename({"factor_value": "factor_clean"}), ret_df, frequency="daily"
+    )
+    assert abs(ic1.ic_mean - ic2.ic_mean) < 1e-12
+    assert ic1.ic_series.sort("trade_date").equals(ic2.ic_series.sort("trade_date"))
+
+
+def test_factors_file_batch_shared_prep_and_fail_continue(tmp_path, monkeypatch):
+    """--factors-file 3 个因子(含 1 假名)：独立 run、失败继续、exit 1、prep 只调 1 次。"""
+    import sys
+
+    factors_path = tmp_path / "factors.txt"
+    factors_path.write_text(
+        "ok_factor_a\nok_factor_b\nno_such_fake_factor\n", encoding="utf-8"
+    )
+
+    prep_calls = {"n": 0}
+    run_calls: list[str] = []
+
+    def fake_shared(args, effective_config, **kw):
+        prep_calls["n"] += 1
+        return ds._SharedEvaluationData(
+            membership=pl.DataFrame(
+                {"trade_date": [date(2020, 1, 2)], "ts_code": ["000001.SZ"]}
+            ),
+            ts_codes=["000001.SZ"],
+            universe=pl.DataFrame({"ts_code": ["000001.SZ"]}),
+            daily=pl.DataFrame(
+                {
+                    "trade_date": [date(2020, 1, 2)],
+                    "ts_code": ["000001.SZ"],
+                    "close_adj": [10.0],
+                    "open_adj": [10.0],
+                }
+            ),
+            ret_df=pl.DataFrame(
+                {
+                    "trade_date": [date(2020, 1, 2)],
+                    "ts_code": ["000001.SZ"],
+                    "fwd_ret_1d": [0.01],
+                }
+            ),
+            daily_basic_for_neutralize=None,
+        )
+
+    def fake_run_one(args, effective_config, *, track, shared=None):
+        run_calls.append(args.factor)
+        if args.factor == "no_such_fake_factor":
+            raise RuntimeError("unknown factor: no_such_fake_factor")
+        exp = tmp_path / "experiments" / f"{args.factor}_run"
+        exp.mkdir(parents=True, exist_ok=True)
+        (exp / "manifest.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(ds, "_prepare_shared_evaluation_data", fake_shared)
+    monkeypatch.setattr(ds, "_run_one_factor_experiment", fake_run_one)
+    monkeypatch.setattr(ds, "_merge_run_config_args", lambda a, rc: a)
+    monkeypatch.setattr(
+        ds,
+        "_effective_run_config",
+        lambda a, rc: SimpleNamespace(
+            factor=a.factor,
+            start=a.start,
+            end=a.end,
+            universe=a.universe,
+            model_dump=lambda: {
+                "factor": a.factor,
+                "start": a.start,
+                "end": a.end,
+            },
+        ),
+    )
+
+    argv = [
+        "daily_single",
+        "--factors-file",
+        str(factors_path),
+        "--start",
+        "20200101",
+        "--end",
+        "20200331",
+        "--universe",
+        "all_a",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as ei:
+        ds.main(track="eval")
+    assert ei.value.code == 1
+    assert prep_calls["n"] == 1
+    assert run_calls == ["ok_factor_a", "ok_factor_b", "no_such_fake_factor"]
+    assert (tmp_path / "experiments" / "ok_factor_a_run" / "manifest.json").is_file()
+    assert (tmp_path / "experiments" / "ok_factor_b_run" / "manifest.json").is_file()
+
+
+def test_read_factors_file(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("# comment\n\nfoo\nbar\n  # x\nbaz\n", encoding="utf-8")
+    assert ds._read_factors_file(p) == ["foo", "bar", "baz"]

@@ -29,7 +29,13 @@ class _ArgAdder(Protocol):
 
 def _add_factor_common_arguments(parser: argparse.ArgumentParser) -> None:
     """``fz factor eval`` / ``fz factor backtest`` 共用参数面。"""
-    parser.add_argument("name", nargs="?", help="Factor name")
+    parser.add_argument("name", nargs="?", help="Factor name（与 --factors-file 互斥）")
+    parser.add_argument(
+        "--factors-file",
+        default=None,
+        dest="factors_file",
+        help="批量因子清单文件（每行一个名字）；与位置参数 name 互斥",
+    )
     parser.add_argument("--start", default=None, help="Start date YYYYMMDD")
     parser.add_argument("--end", default=None, help="End date YYYYMMDD")
     parser.add_argument("--universe", default=None, help="Universe name")
@@ -57,6 +63,12 @@ def _add_factor_common_arguments(parser: argparse.ArgumentParser) -> None:
         help="Override any config field, repeatable: --set backtest.top_n=30",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print effective config without running")
+    parser.add_argument(
+        "--no-factor-cache",
+        action="store_true",
+        dest="no_factor_cache",
+        help="禁用 factor_store 物化缓存（默认启用；miss 时回落直算）",
+    )
     _add_exec_convention_args(parser)
 
 
@@ -722,7 +734,9 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "sync",
         help=(
             "从 jsonl 同步资产库：写 meta+py；默认物化 active/probation 的 parquet "
-            "（固定 all_a × 2016-01-01~最新已完结交易日，与 jsonl 评估窗分离）"
+            "（固定 all_a × 2016-01-01~最新已完结交易日，与 jsonl 评估窗分离）。"
+            "加 --assets 则改为直接遍历 factor_store 资产目录物化（不经 library/status 门，"
+            "含 correlated 与仅 store 有的 python 因子）"
         ),
     )
     fl_st_sync.add_argument(
@@ -731,13 +745,23 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_st_sync.add_argument(
         "--only",
         default=None,
-        help="只同步这些 name（逗号分隔）；缺省=全库",
+        help="只同步/物化这些 name（逗号分隔）；缺省=全库或全部资产目录",
+    )
+    fl_st_sync.add_argument(
+        "--assets",
+        action="store_true",
+        dest="assets",
+        help=(
+            "不经 library 记录路径：直接遍历 factor_store 资产目录写 parquet "
+            "（忽略 status 门，覆盖 correlated / store-only python）；"
+            "可与 --only 组合限定 name"
+        ),
     )
     fl_st_sync.add_argument(
         "--no-materialize",
         dest="no_materialize",
         action="store_true",
-        help="只写 meta+py，不物化 parquet",
+        help="只写 meta+py，不物化 parquet（与 --assets 互斥：assets 路径本就是物化）",
     )
     fl_st_sync.add_argument(
         "--root",

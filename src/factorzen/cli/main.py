@@ -278,9 +278,15 @@ def _forward_factor_track(args: argparse.Namespace, *, track: str) -> int:
     """将 CLI 参数转发到 ``daily_single.main(track=...)``。"""
     from factorzen.pipelines import daily_single
 
+    if getattr(args, "factors_file", None) and args.name:
+        print("--factors-file 与位置参数 name 互斥，请只给其一", file=sys.stderr)
+        return 2
+
     forwarded = [f"fz factor {args.factor_command}"]
     if args.name:
         forwarded.extend(["--factor", args.name])
+    if getattr(args, "factors_file", None):
+        forwarded.extend(["--factors-file", str(args.factors_file)])
     if args.start:
         forwarded.extend(["--start", args.start])
     if args.end:
@@ -296,6 +302,8 @@ def _forward_factor_track(args: argparse.Namespace, *, track: str) -> int:
         forwarded.extend(["--benchmark", args.benchmark])
     if args.dry_run:
         forwarded.append("--dry-run")
+    if getattr(args, "no_factor_cache", False):
+        forwarded.append("--no-factor-cache")
     for override in getattr(args, "set_overrides", None) or []:
         forwarded.extend(["--set", override])
     # 成交口径：CLI 默认可实现 (1 / open_adj)；显式 --exec-lag 0 回旧口径对照
@@ -312,6 +320,11 @@ def _forward_factor_track(args: argparse.Namespace, *, track: str) -> int:
     try:
         sys.argv = forwarded
         daily_single.main(track=track)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            return 0
+        return int(code) if isinstance(code, int) else 1
     finally:
         sys.argv = old_argv
     return 0
@@ -1553,7 +1566,7 @@ def _factor_store_panel_loader(
 
 
 def _cmd_factor_library_store_sync(args: argparse.Namespace) -> int:
-    """从 jsonl 同步 factor_store 三件套（meta + factor.py + 可选 parquet）。"""
+    """从 jsonl 同步 factor_store 三件套；或 --assets 直接遍历资产目录物化。"""
     import time
 
     from factorzen.discovery import factor_library as fl
@@ -1565,9 +1578,37 @@ def _cmd_factor_library_store_sync(args: argparse.Namespace) -> int:
     only_raw = getattr(args, "only", None)
     only = [x.strip() for x in only_raw.split(",") if x.strip()] if only_raw else None
     materialize = not bool(getattr(args, "no_materialize", False))
+    assets_mode = bool(getattr(args, "assets", False))
     mat_start = fs.STORE_MATERIALIZE_START
     mat_end = fs.store_materialize_end()
     mat_univ = fs.STORE_MATERIALIZE_UNIVERSE
+
+    if assets_mode:
+        # 不经 library / status 门：直接物化 store 资产目录
+        print(
+            f"[factor-library store sync --assets] market={market} root={store_root} "
+            f"window={mat_start}..{mat_end} universe={mat_univ}"
+            + (f" only={only}" if only else " only=ALL_ASSETS"),
+            flush=True,
+        )
+        t0 = time.perf_counter()
+        stats = fs.materialize_assets(
+            market,
+            names=only,
+            root=store_root,
+            panel_loader=_factor_store_panel_loader,
+        )
+        elapsed = time.perf_counter() - t0
+        print(
+            f"[factor-library store sync --assets] done in {elapsed:.1f}s: "
+            f"materialized={stats.get('materialized')} skipped={stats.get('skipped')} "
+            f"errors={len(stats.get('errors') or [])} total={stats.get('total')}",
+            flush=True,
+        )
+        for err in (stats.get("errors") or [])[:20]:
+            print(f"  ! {err}", flush=True)
+        return 1 if stats.get("errors") else 0
+
     print(
         f"[factor-library store sync] market={market} root={store_root} "
         f"lib_root={lib_root} materialize={materialize} "

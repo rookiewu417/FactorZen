@@ -8,9 +8,9 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKSPACE_DIR = ROOT / "workspace"
 WORKSPACE_RUNS = WORKSPACE_DIR / "runs"
 WORKSPACE_OPS_DIR = WORKSPACE_DIR / "_ops"  # 运维杂项统一屋（下划线前缀：非产品 stage）
-FACTOR_EVALUATIONS_DIR = WORKSPACE_DIR / "factor_evaluations"
 FACTOR_LIBRARY_DIR = WORKSPACE_DIR / "factor_library"
-FACTOR_STORE_DIR = WORKSPACE_DIR / "factor_store"  # 三件套资产库（meta/py/parquet）
+# 因子资产三件套（meta/py/parquet）+ 评估 run / reports 收口根
+FACTOR_STORE_DIR = WORKSPACE_DIR / "factors"
 MINING_SESSIONS_DIR = WORKSPACE_DIR / "mining_sessions"
 MINE_AGENT_DIR = WORKSPACE_DIR / "mine_agent"
 MINE_TEAM_DIR = WORKSPACE_DIR / "mine_team"
@@ -20,7 +20,8 @@ RISK_MODELS_DIR = WORKSPACE_DIR / "risk_models"
 PORTFOLIOS_DIR = WORKSPACE_DIR / "portfolios"
 SIM_DIR = WORKSPACE_DIR / "sim"
 STRATEGIES_DIR = WORKSPACE_DIR / "strategies"
-REPORTS_DIR = WORKSPACE_DIR / "reports"
+# HTML 报告集中收口：workspace/factors/reports/
+REPORTS_DIR = FACTOR_STORE_DIR / "reports"
 EXECUTION_DIR = WORKSPACE_DIR / "execution"
 OPS_DIR = WORKSPACE_DIR / "ops"
 OPS_SITE_DIR = OPS_DIR / "site"
@@ -44,13 +45,13 @@ DATA_DERIVED = DATA_DIR / "derived"
 INTRADAY_FEATURES_DIR = DATA_DERIVED / "intraday_features"
 CRYPTO_LAKE = DATA_DIR / "crypto_lake"  # crypto 永续数据湖（Binance Vision）
 
-OUTPUT_DIR = WORKSPACE_RUNS / "artifacts"
-OUTPUT_DAILY = OUTPUT_DIR / "daily"
-OUTPUT_DAILY_FACTORS = OUTPUT_DAILY / "factors"
-OUTPUT_DAILY_RESULTS = OUTPUT_DAILY / "results"
-OUTPUT_DAILY_CHARTS = OUTPUT_DAILY / "charts"
-# HTML 报告统一收口到 workspace/reports/（前端「报告」栏单点可见）；
-# 中间产物 factors/results/charts 仍留在 runs/artifacts/daily/ 下。
+# 评估产物落点：
+#   有因子名 → workspace/factors/<market>/<name>/evaluations/{run_id}/
+#   无因子名 → workspace/factors/_runs/{run_id}/
+# 全局索引：workspace/factors/experiment_index.jsonl
+# 旧 runs/artifacts/daily/{factors,results} 中间层已废除。
+# HTML 报告收口到 workspace/factors/reports/（前端「报告」栏单点可见）。
+OUTPUT_DIR = WORKSPACE_RUNS / "artifacts"  # 仅残留 intraday 等历史约定；日频评估不再写入
 OUTPUT_DAILY_REPORTS = REPORTS_DIR / "daily"
 
 OUTPUT_INTRADAY = OUTPUT_DIR / "intraday"
@@ -66,7 +67,7 @@ TESTS_DIR = ROOT / "tests"
 
 
 def daily_output_bucket(factor_name: str) -> str | None:
-    """Return the output subdirectory for grouped daily factor artifacts."""
+    """Return the output subdirectory for grouped daily report HTML."""
     if factor_name.startswith("qlib_alpha158_"):
         return "qlib158"
     if factor_name.startswith("qlib_alpha360_"):
@@ -74,16 +75,7 @@ def daily_output_bucket(factor_name: str) -> str | None:
     return None
 
 
-def daily_factor_output_dir(factor_name: str) -> Path:
-    bucket = daily_output_bucket(factor_name)
-    return OUTPUT_DAILY_FACTORS / bucket if bucket else OUTPUT_DAILY_FACTORS
-
-
-def daily_result_output_dir(factor_name: str) -> Path:
-    bucket = daily_output_bucket(factor_name)
-    return OUTPUT_DAILY_RESULTS / bucket if bucket else OUTPUT_DAILY_RESULTS
-
-
 def daily_report_output_dir(factor_name: str) -> Path:
+    """HTML 报告集中目录（非评估 run 的大文件落点）。"""
     bucket = daily_output_bucket(factor_name)
     return OUTPUT_DAILY_REPORTS / bucket if bucket else OUTPUT_DAILY_REPORTS

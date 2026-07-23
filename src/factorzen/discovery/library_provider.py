@@ -5,7 +5,7 @@
 而 discovery→daily 边已存在（ExpressionFactor 继承 DailyFactor）。
 
 - expression 型：从 jsonl 动态生成 ExpressionFactor 子类
-- python 型：从 ``workspace/factor_store/<market>/<name>/factor.py`` 加载（唯一用户路径）
+- python 型：从 ``workspace/factors/<market>/<name>/factor.py`` 加载（唯一用户路径）
 """
 
 from __future__ import annotations

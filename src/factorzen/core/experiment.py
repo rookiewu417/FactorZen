@@ -1,4 +1,10 @@
-﻿"""实验记录：写 manifest.json 到 workspace/factor_evaluations/{run_id}/"""
+"""实验记录：写 manifest.json 到 factors 下评估 run 目录。
+
+落点：
+- 有 factor → ``workspace/factors/<market>/<name>/evaluations/{run_id}/``
+- 无 factor → ``workspace/factors/_runs/{run_id}/``
+全局索引：``workspace/factors/experiment_index.jsonl``
+"""
 from __future__ import annotations
 
 import hashlib
@@ -10,13 +16,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from factorzen.config.settings import FACTOR_EVALUATIONS_DIR, ROOT
+from factorzen.config.settings import FACTOR_STORE_DIR, ROOT
 from factorzen.core.logger import get_logger
 
 logger = get_logger(__name__)
 
-EXPERIMENTS_DIR = FACTOR_EVALUATIONS_DIR
-_EXPERIMENT_INDEX = EXPERIMENTS_DIR / "experiment_index.jsonl"
+# 实验根 = 因子资产根；测试可 monkeypatch 本模块 EXPERIMENTS_DIR 做隔离
+EXPERIMENTS_DIR = FACTOR_STORE_DIR
 _RUN_ID_SAFE_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -54,7 +60,7 @@ def _get_pixi_lock_hash() -> str:
 
 
 def _update_experiment_index(manifest: dict[str, Any], exp_dir: Path) -> None:
-    """Append a one-line summary to experiment_index.jsonl for cross-run lookup."""
+    """Append a one-line summary to 全局 experiment_index.jsonl for cross-run lookup."""
     config = manifest.get("config", {})
     entry: dict[str, Any] = {
         "run_id": manifest.get("run_id"),
@@ -67,7 +73,8 @@ def _update_experiment_index(manifest: dict[str, Any], exp_dir: Path) -> None:
         "manifest_path": str(exp_dir / "manifest.json"),
     }
     try:
-        index_path = exp_dir.parent / "experiment_index.jsonl"
+        # 固定全局索引：factors/experiment_index.jsonl（不再写 exp_dir.parent）
+        index_path = EXPERIMENTS_DIR / "experiment_index.jsonl"
         index_path.parent.mkdir(parents=True, exist_ok=True)
         with open(index_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -196,7 +203,18 @@ def run_experiment(
             else timestamp
         )
 
-    exp_dir = EXPERIMENTS_DIR / run_id
+    factor_name = config_dict.get("factor")
+    market = config_dict.get("market") or "ashare"
+    if factor_name:
+        exp_dir = (
+            EXPERIMENTS_DIR
+            / str(market)
+            / _safe_run_id_part(factor_name)
+            / "evaluations"
+            / run_id
+        )
+    else:
+        exp_dir = EXPERIMENTS_DIR / "_runs" / run_id
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     start_dt = datetime.now()
@@ -246,4 +264,3 @@ def run_experiment(
                     manifest[key] = value
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
         _update_experiment_index(manifest, exp_dir)
-

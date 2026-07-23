@@ -67,7 +67,7 @@ def _add_factor_common_arguments(parser: argparse.ArgumentParser) -> None:
         "--no-factor-cache",
         action="store_true",
         dest="no_factor_cache",
-        help="禁用 factor_store 物化缓存（默认启用；miss 时回落直算）",
+        help="禁用 factors 物化缓存（默认启用；miss 时回落直算）",
     )
     _add_exec_convention_args(parser)
 
@@ -88,6 +88,12 @@ def _add_report_build_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--benchmark", default=None, help="Benchmark index code")
     parser.add_argument("--config", default=None, help="YAML run config path")
+    parser.add_argument(
+        "--no-factor-cache",
+        action="store_true",
+        dest="no_factor_cache",
+        help="禁用 factors 物化缓存（默认启用；miss 时回落直算）",
+    )
 
 
 def _add_freq_arg(p: _ArgAdder) -> None:
@@ -735,7 +741,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         help=(
             "从 jsonl 同步资产库：写 meta+py；默认物化 active/probation 的 parquet "
             "（固定 all_a × 2016-01-01~最新已完结交易日，与 jsonl 评估窗分离）。"
-            "加 --assets 则改为直接遍历 factor_store 资产目录物化（不经 library/status 门，"
+            "加 --assets 则改为直接遍历 factors 资产目录物化（不经 library/status 门，"
             "含 correlated 与仅 store 有的 python 因子）"
         ),
     )
@@ -752,7 +758,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         action="store_true",
         dest="assets",
         help=(
-            "不经 library 记录路径：直接遍历 factor_store 资产目录写 parquet "
+            "不经 library 记录路径：直接遍历 factors 资产目录写 parquet "
             "（忽略 status 门，覆盖 correlated / store-only python）；"
             "可与 --only 组合限定 name"
         ),
@@ -766,7 +772,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_st_sync.add_argument(
         "--root",
         default=None,
-        help="资产库根目录（默认 workspace/factor_store）",
+        help="资产库根目录（默认 workspace/factors）",
     )
     fl_st_sync.add_argument(
         "--lib-root",
@@ -789,7 +795,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_st_ver.add_argument(
         "--root",
         default=None,
-        help="资产库根目录（默认 workspace/factor_store）",
+        help="资产库根目录（默认 workspace/factors）",
     )
     fl_st_ver.add_argument(
         "--lib-root",
@@ -1070,7 +1076,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "--no-store",
         action="store_true",
         dest="no_store",
-        help="强制重算 expression 因子，不读 factor_store 物化 parquet（逃生口）",
+        help="强制重算 expression 因子，不读 factors 物化 parquet（逃生口）",
     )
     cfl.set_defaults(func=commands._cmd_combine_from_library)
 

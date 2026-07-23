@@ -1,6 +1,6 @@
 """因子库与因子资产的索引。
 
-扫描 workspace/factor_library 与 workspace/factor_store，供 REST API 消费。
+扫描 workspace/factor_library 与 workspace/factors，供 REST API 消费。
 损坏行/文件跳过并记 warning，绝不因单个坏产物炸接口。
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ class FactorLibraryIndex:
     def __init__(self, workspace_dir: str | Path) -> None:
         self.root = Path(workspace_dir)
         self.lib_root = self.root / "factor_library"
-        self.store_root = self.root / "factor_store"
+        self.store_root = self.root / "factors"
         self.track_root = self.lib_root / "forward_track"
 
     def _check_market(self, market: str) -> None:
@@ -72,7 +72,7 @@ class FactorLibraryIndex:
     def _store_handwritten_extras(
         self, market: str, lib_exprs: set[str]
     ) -> list[dict[str, Any]]:
-        """扫描 factor_store 中 kind=python 且 expression 不在 lib 的手写因子。"""
+        """扫描 factors 中 kind=python 且 expression 不在 lib 的手写因子。"""
         base = self.store_root / market
         extras: list[dict[str, Any]] = []
         if not base.exists():
@@ -195,7 +195,7 @@ class FactorLibraryIndex:
         return {"expression": expression, "points": points}
 
     def list_store(self, market: str) -> dict[str, Any]:
-        """遍历 factor_store/<market>/<name>/meta.json。"""
+        """遍历 factors/<market>/<name>/meta.json。"""
         self._check_market(market)
         base = self.store_root / market
         entries: list[dict[str, Any]] = []

@@ -97,7 +97,8 @@ def _write_report(sim_res: dict, build_dirs: list[str], out_root: str, run_id: s
         attribution_df=attribution_df, risk_summary_df=risk_summary_df,
         portfolio_manifest=portfolio_manifest, market="ashare",
     )
-    out_path = Path(out_root) / "reports" / f"portfolio_{run_id}.html"
+    # HTML 报告收口：{out_root}/factors/reports/（与 REPORTS_DIR=workspace/factors/reports 同构）
+    out_path = Path(out_root) / "factors" / "reports" / f"portfolio_{run_id}.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
     return out_path

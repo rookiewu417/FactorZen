@@ -9,14 +9,13 @@
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Any
 
 import polars as pl
 
 from factorzen.config.research import RunConfig, load_run_config
-from factorzen.config.settings import (
-    daily_report_output_dir,
-)
+from factorzen.config.settings import daily_report_output_dir
 from factorzen.core.calendar import get_trade_dates
 from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
 from factorzen.core.experiment import (
@@ -44,7 +43,7 @@ from factorzen.daily.runtime import (
     build_cost_model,
     build_runtime_backtest_config,
 )
-from factorzen.experiments.run_paths import copy_outputs_to_run_dir
+from factorzen.experiments.run_paths import artifact_path
 from factorzen.pipelines._report_config import (
     _effective_report_config,
     _merge_report_config_args,
@@ -70,7 +69,8 @@ from factorzen.pipelines.daily_single import (
 )
 from factorzen.reports.trading_report import generate_trading_report
 
-setup_logging()
+# setup_logging() 只在 main() 入口调用——模块级会让任何 import 本模块的测试
+# 向真实 workspace/runs/logs/ 追加日志（写逃逸）
 logger = get_logger(__name__)
 
 
@@ -178,10 +178,13 @@ def _run_advanced_evaluation(
 def _run(
     args: argparse.Namespace,
     effective_config: RunConfig,
+    run_dir: Path,
     timer: StageTimer | None = None,
 ) -> dict[str, str]:
     timer = timer or StageTimer()
     progress = OverallProgress(4, label="Report run").start()
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"──── 因子报告生成: {args.factor} | {args.start} ~ {args.end} ────")
 
     # ── 1. 获取因子类 ──
@@ -226,7 +229,48 @@ def _run(
         f"membership_rows={membership.height}"
     )
 
-    # ── 4. 计算因子 ──
+    # ── 4. 计算因子（与 daily_single 一致：ensure store 面板，失败回落直算）──
+    # 面板缓存是日频口径；weekly/monthly 必须直算（与 daily_single 同门）
+    from factorzen.pipelines.factor_panel_cache import is_daily_frequency
+
+    _freq_daily = is_daily_frequency(args, factor)
+    use_cache = not bool(getattr(args, "no_factor_cache", False)) and _freq_daily
+    if not _freq_daily:
+        logger.info("非日频评估（factor/args frequency != daily），跳过面板缓存直算")
+    factor_df = None
+    if use_cache:
+        from datetime import datetime as _dt
+
+        from factorzen.pipelines.factor_panel_cache import ensure_factor_store_panel
+
+        full_panel = ensure_factor_store_panel(
+            factor,
+            args.start,
+            args.end,
+            market=getattr(args, "market", None) or "ashare",
+            benchmark=getattr(args, "benchmark", None),
+        )
+        if full_panel is not None:
+            def _parse_ymd(s: str):
+                k = str(s).replace("-", "").replace("/", "")[:8]
+                return _dt.strptime(k, "%Y%m%d").date()
+
+            win_start = _parse_ymd(args.start)
+            win_end = _parse_ymd(args.end)
+            factor_df = full_panel.filter(
+                (pl.col("trade_date") >= win_start) & (pl.col("trade_date") <= win_end)
+            )
+            if ts_codes:
+                factor_df = factor_df.filter(pl.col("ts_code").is_in(ts_codes))
+            if "factor_value" in factor_df.columns:
+                factor_df = factor_df.select(
+                    [
+                        c
+                        for c in ("trade_date", "ts_code", "factor_value")
+                        if c in factor_df.columns
+                    ]
+                )
+
     ctx = FactorDataContext(
         start=args.start,
         end=args.end,
@@ -235,11 +279,12 @@ def _run(
         universe=ts_codes if ts_codes else None,
         snapshot_mode=args.frequency,
     )
-    try:
-        factor_df = factor.compute(ctx)
-    except Exception as e:
-        logger.error(f"因子计算失败: {e}")
-        raise RuntimeError(f"factor compute failed: {e}") from e
+    if factor_df is None:
+        try:
+            factor_df = factor.compute(ctx)
+        except Exception as e:
+            logger.error(f"因子计算失败: {e}")
+            raise RuntimeError(f"factor compute failed: {e}") from e
 
     validation = factor.validate(factor_df)
     logger.info(f"因子计算完成: {validation}")
@@ -299,9 +344,7 @@ def _run(
     except QualityCheckError as e:
         logger.error(f"数据质量检查失败: {e}")
         raise RuntimeError(f"quality check failed: {e}") from e
-    quality_report_path = _save_quality_report(
-        factor.name, args.start, args.end, quality_report
-    )
+    quality_report_path = _save_quality_report(run_dir, quality_report)
     if quality_report["warnings"]:
         logger.warning(f"数据质量警告: {quality_report['warnings']}")
     logger.info(f"数据质量报告已保存: {quality_report_path}")
@@ -354,8 +397,9 @@ def _run(
         backtest_df, ret_df, args.frequency, args.start, args.end, n_groups=5
     )
 
-    # ── 持久化中间结果 ──
+    # ── 持久化中间结果（只写 run_dir）──
     _save_results(
+        run_dir,
         args.factor,
         args.start,
         args.end,
@@ -400,26 +444,30 @@ def _run(
             quality_report=quality_report,
         )
 
-    # ── 12. 落盘 HTML ──
+    # ── 12. 落盘 HTML（run 内 + reports/daily 镜像）──
+    report_path = artifact_path(run_dir, "report")
+    report_path.write_text(html, encoding="utf-8")
     report_dir = daily_report_output_dir(factor.name)
     report_dir.mkdir(parents=True, exist_ok=True)
-    report_path = report_dir / f"{factor.name}_{args.start}_{args.end}.html"
-    report_path.write_text(html, encoding="utf-8")
+    mirror = report_dir / f"{factor.name}_{args.start}_{args.end}.html"
+    mirror.write_text(html, encoding="utf-8")
     progress.advance("report")
-    logger.info(f"报告已生成: {report_path}")
+    logger.info(f"报告已生成: {report_path} (镜像 {mirror})")
 
     outputs = {
         "report": str(report_path),
-        "meta": str(_meta_path(args.factor, args.start, args.end)),
+        "meta": str(_meta_path(run_dir)),
     }
-    quality_report_path = _quality_path(args.factor, args.start, args.end)
+    quality_report_path = _quality_path(run_dir)
     if quality_report_path.exists():
         outputs["quality_report"] = str(quality_report_path)
+    # factor 面板在 factors/，路径记在 meta.store_panel
     progress.close()
     return outputs
 
 
 def main():
+    setup_logging()
     parser = argparse.ArgumentParser(description="因子交易轨报告生成")
     parser.add_argument("--factor", default=None, help="因子名称")
     parser.add_argument("--start", default=None, help="起始日期 YYYYMMDD")
@@ -434,6 +482,12 @@ def main():
         help="基准指数代码（如 000300.SH），若指定则计算超额收益与 benchmark 对比",
     )
     parser.add_argument("--config", type=str, default=None, help="YAML 运行配置文件路径")
+    parser.add_argument(
+        "--no-factor-cache",
+        action="store_true",
+        dest="no_factor_cache",
+        help="禁用 factors 物化缓存（默认启用；miss 时回落直算）",
+    )
     args = parser.parse_args()
 
     run_config = load_run_config(args.config) if args.config else None
@@ -448,18 +502,14 @@ def main():
         with run_experiment(effective_config, command=sys.argv) as exp_dir:
             timer = StageTimer()
             try:
-                outputs = _run(args, effective_config, timer=timer)
+                outputs = _run(args, effective_config, exp_dir, timer=timer)
             except Exception:
                 record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
-                for name, path in _existing_report_outputs(
-                    args.factor, args.start, args.end
-                ).items():
+                for name, path in _existing_report_outputs(exp_dir).items():
                     record_experiment_output(exp_dir, name, path)
                 raise
             record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
             for name, path in outputs.items():
-                record_experiment_output(exp_dir, name, path)
-            for name, path in copy_outputs_to_run_dir(outputs, exp_dir).items():
                 record_experiment_output(exp_dir, name, path)
     except Exception as e:
         logger.error(str(e))

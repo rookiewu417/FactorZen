@@ -10,15 +10,15 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from factorzen.config.settings import (
-    FACTOR_EVALUATIONS_DIR,
     FACTOR_LIBRARY_DIR,
+    FACTOR_STORE_DIR,
     MINE_TEAM_DIR,
     PORTFOLIOS_DIR,
     REPORTS_DIR,
-    ROOT,
+    ROOT,  # noqa: F401  # re-export；测试 monkeypatch 用
     SIM_DIR,
 )
-from factorzen.experiments.run_paths import run_dir
+from factorzen.experiments.run_paths import find_run_dir
 
 if TYPE_CHECKING:  # 本模块 Path 一律函数内导入（保持 CLI 启动开销）；此处仅供注解
     from pathlib import Path
@@ -213,12 +213,12 @@ def _class_name(name: str) -> str:
 
 
 def _cmd_factor_new(args: argparse.Namespace) -> int:
-    """脚手架：写 factor_store 三件套中的 factor.py + 最小 meta.json。"""
+    """脚手架：写 factors 三件套中的 factor.py + 最小 meta.json。"""
     import json
     from datetime import date
 
     market = getattr(args, "market", None) or "ashare"
-    asset_dir = ROOT / "workspace" / "factor_store" / market / args.name
+    asset_dir = FACTOR_STORE_DIR / market / args.name
     target = asset_dir / "factor.py"
     meta_path = asset_dir / "meta.json"
     if target.exists() and not args.force:
@@ -343,7 +343,6 @@ def _cmd_factor_backtest(args: argparse.Namespace) -> int:
 def _cmd_factor_sweep(args: argparse.Namespace) -> int:
     from datetime import datetime
 
-    from factorzen.config.settings import FACTOR_EVALUATIONS_DIR
     from factorzen.pipelines.factor_sweep import (
         format_sweep_csv,
         format_sweep_table,
@@ -384,7 +383,14 @@ def _cmd_factor_sweep(args: argparse.Namespace) -> int:
     )
     print(format_sweep_table(rows))
 
-    out_dir = FACTOR_EVALUATIONS_DIR / f"sweep_{datetime.now():%Y%m%d_%H%M%S}"
+    # sweep 有明确 factor → factors/ashare/<factor>/evaluations/sweep_<ts>
+    out_dir = (
+        FACTOR_STORE_DIR
+        / "ashare"
+        / str(factor)
+        / "evaluations"
+        / f"sweep_{datetime.now():%Y%m%d_%H%M%S}"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "sweep_results.csv"
     csv_path.write_text(format_sweep_csv(rows), encoding="utf-8")
@@ -410,6 +416,8 @@ def _cmd_report_build(args: argparse.Namespace) -> int:
         forwarded.extend(["--benchmark", args.benchmark])
     if args.config:
         forwarded.extend(["--config", args.config])
+    if getattr(args, "no_factor_cache", False):
+        forwarded.append("--no-factor-cache")
 
     old_argv = sys.argv
     try:
@@ -421,7 +429,11 @@ def _cmd_report_build(args: argparse.Namespace) -> int:
 
 
 def _cmd_report_path(args: argparse.Namespace) -> int:
-    report = run_dir(args.run_id) / "report.html"
+    found = find_run_dir(args.run_id)
+    if found is None:
+        print(f"Run not found: {args.run_id}", file=sys.stderr)
+        return 2
+    report = found / "report.html"
     if not report.exists():
         print(f"Report not found: {report}", file=sys.stderr)
         return 2
@@ -551,14 +563,16 @@ def _cmd_config_validate(args: argparse.Namespace) -> int:
     effective = config.model_copy(update={"benchmark": benchmark})
     payload = {
         "config": effective.model_dump(),
-        "output_dir": (ROOT / "workspace" / "factor_evaluations" / "<run_id>").as_posix(),
+        "output_dir": (
+            FACTOR_STORE_DIR / "<market>" / "<factor>" / "evaluations" / "<run_id>"
+        ).as_posix(),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 
 def _cmd_runs_list(args: argparse.Namespace) -> int:
-    index_path = FACTOR_EVALUATIONS_DIR / "experiment_index.jsonl"
+    index_path = FACTOR_STORE_DIR / "experiment_index.jsonl"
     if not index_path.exists():
         print(f"No runs index found: {index_path}", file=sys.stderr)
         return 2

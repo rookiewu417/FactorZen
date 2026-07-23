@@ -15,12 +15,7 @@ from factorzen.config.research import (
     build_default_daily_research_config,
     default_benchmark_for_universe,
 )
-from factorzen.config.settings import (
-    ROOT,
-    daily_factor_output_dir,
-    daily_report_output_dir,
-    daily_result_output_dir,
-)
+from factorzen.config.settings import ROOT, daily_report_output_dir
 from factorzen.core.calendar import get_trade_dates
 from factorzen.core.data_ensure import ensure_data_for_daily_run
 from factorzen.core.data_quality import QualityCheckError, build_daily_quality_report
@@ -47,7 +42,7 @@ from factorzen.daily.runtime import (
     build_preprocessing_pipeline,
     build_runtime_backtest_config,
 )
-from factorzen.experiments.run_paths import copy_outputs_to_run_dir
+from factorzen.experiments.run_paths import artifact_path
 from factorzen.pipelines._report_direction import (
     _apply_backtest_direction,
     _decide_backtest_direction,
@@ -56,68 +51,9 @@ from factorzen.pipelines._report_persistence import _meta_path
 from factorzen.reports.signal_report import generate_signal_report
 from factorzen.reports.trading_report import generate_trading_report
 
-setup_logging()
+# setup_logging() 只在 main() 入口调用——模块级会让任何 import 本模块的测试
+# 向真实 workspace/runs/logs/ 追加日志（写逃逸）
 logger = get_logger(__name__)
-
-
-def _try_load_factor_store_cache(
-    factor_name: str,
-    start: str,
-    end: str,
-    universe: str | None,
-    *,
-    market: str = "ashare",
-    root: str | None = None,
-) -> pl.DataFrame | None:
-    """若 factor_store 有资产且物化命中，返回 factor 帧；否则 None。
-
-    缓存判定只走 ``load_materialized_factor(..., allow_warmup_head=True)``，
-    不在本函数另写窗口门控（与 combine 共享单点）。
-    """
-    # import 放函数内：pipelines→discovery 反向依赖禁止模块级
-    from factorzen.discovery.factor_library import FactorRecord
-    from factorzen.discovery.factor_store import (
-        DEFAULT_ROOT,
-        _read_json,
-        asset_dir,
-        load_materialized_factor,
-    )
-
-    store_root = root if root is not None else DEFAULT_ROOT
-    d = asset_dir(market, factor_name, root=store_root)
-    if not d.is_dir():
-        logger.info("factor cache miss %s: missing_asset", factor_name)
-        return None
-    meta = _read_json(d / "meta.json")
-    if meta is None:
-        logger.info("factor cache miss %s: meta_unreadable", factor_name)
-        return None
-    expr = meta.get("expression")
-    if not expr:
-        logger.info("factor cache miss %s: no_expression", factor_name)
-        return None
-    rec = FactorRecord(
-        expression=str(expr),
-        market=market,
-        name=factor_name,
-        kind=meta.get("kind") or "expression",
-        frequency=meta.get("frequency") or "daily",
-    )
-    univ = universe or "all_a"
-    df, reason, _hit = load_materialized_factor(
-        rec,
-        market=market,
-        root=store_root,
-        start=start,
-        end=end,
-        universe=univ,
-        allow_warmup_head=True,
-    )
-    if df is not None:
-        logger.info("factor cache HIT %s", factor_name)
-        return df
-    logger.info("factor cache miss %s: %s", factor_name, reason or "unknown")
-    return None
 
 
 def _read_factors_file(path: str | Path) -> list[str]:
@@ -337,38 +273,47 @@ def _build_dry_run_payload(
 ) -> dict[str, Any]:
     payload = {
         "config": config.model_dump(),
-        "output_dir": (ROOT / "workspace" / "factor_evaluations" / "<run_id>").as_posix(),
+        "output_dir": (
+            ROOT / "workspace" / "factors" / "<market>" / "<factor>" / "evaluations" / "<run_id>"
+        ).as_posix(),
     }
     # args 保留形参以兼容调用方；execution 深度旗标已移除
     return payload
 
 
-def _existing_run_outputs(
-    factor_name: str, start: str, end: str, *, track: str = "backtest"
-) -> dict[str, str]:
-    """失败时认领已落盘的部分产物。**必须按 track 分候选集**。
+def _existing_run_outputs(run_dir: Path, *, track: str = "backtest") -> dict[str, str]:
+    """失败时认领已落盘的部分产物（run_dir 仅 json/html，无 parquet）。
 
-    全局归档目录是跨 run 共享的，只按 ``path.exists()`` 认领会把**上一次别的轨道**
-    留下的陈旧文件记成本次产物：eval 轨永远不产 ``walk_forward.json``，报告也落
-    ``{prefix}_eval.html`` 而非 ``{prefix}.html``。
+    **必须按 track 分候选集**：eval 轨永远不产 ``walk_forward.json``，
+    backtest 轨不产 ``signal``。
     """
-    prefix = f"{factor_name}_{start}_{end}"
-    factor_dir = daily_factor_output_dir(factor_name)
-    result_dir = daily_result_output_dir(factor_name)
-    report_dir = daily_report_output_dir(factor_name)
-    candidates = {
-        "factor": factor_dir / f"{prefix}.parquet",
-        "ic": result_dir / f"{prefix}_ic.parquet",
-        "quality_report": result_dir / f"{prefix}_quality.json",
+    candidates: dict[str, Path] = {
+        "quality_report": artifact_path(run_dir, "quality_report"),
+        "meta": artifact_path(run_dir, "meta"),
+        "report": artifact_path(run_dir, "report"),
     }
     if track == "eval":
-        candidates["signal"] = result_dir / f"{prefix}_signal.json"
-        candidates["signal_group_nav"] = result_dir / f"{prefix}_signal_group_nav.parquet"
-        candidates["report"] = report_dir / f"{prefix}_eval.html"
+        candidates["signal"] = artifact_path(run_dir, "signal")
     else:
-        candidates["walk_forward_summary"] = result_dir / f"{prefix}_walk_forward.json"
-        candidates["report"] = report_dir / f"{prefix}.html"
+        candidates["walk_forward_summary"] = artifact_path(run_dir, "walk_forward_summary")
     return {name: str(path) for name, path in candidates.items() if path.exists()}
+
+
+def _mirror_report_html(
+    html: str,
+    factor_name: str,
+    start: str,
+    end: str,
+    *,
+    track: str,
+) -> Path:
+    """额外写一份到 workspace/factors/reports/daily/ 供前端报告栏；run 内另有 report.html。"""
+    report_dir = daily_report_output_dir(factor_name)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "_eval.html" if track == "eval" else ".html"
+    path = report_dir / f"{factor_name}_{start}_{end}{suffix}"
+    path.write_text(html, encoding="utf-8")
+    return path
 
 
 def _preprocess_factor(
@@ -577,18 +522,16 @@ class _EvaluationInputs:
     timer: StageTimer
     progress: OverallProgress
     factor: Any
-    factor_output_dir: Path
-    result_output_dir: Path
-    report_output_dir: Path
+    run_dir: Path
     membership: pl.DataFrame
     ts_codes: list[str]
     universe: pl.DataFrame
-    universe_snapshot_path: Path
     clean_df: pl.DataFrame
     daily: pl.DataFrame
     ret_df: pl.DataFrame
     quality_report: dict[str, Any]
     quality_path: Path
+    store_panel_path: str | None
 
 
 def _prepare_shared_evaluation_data(
@@ -673,6 +616,7 @@ def _prepare_shared_evaluation_data(
 def _prepare_evaluation_inputs(
     args: argparse.Namespace,
     effective_config: RunConfig,
+    run_dir: Path,
     *,
     timer: StageTimer | None = None,
     progress: OverallProgress | None = None,
@@ -683,10 +627,13 @@ def _prepare_evaluation_inputs(
     """共享前半段：种子 / 因子类 / 数据 / universe / PIT / 因子计算 / 预处理 / 前向收益 / 质量审计。
 
     语义与拆分前 ``_run`` 第 0b~6b 步完全一致，仅搬家。
+    全部产物写入 ``run_dir``（``factors/<market>/<name>/evaluations/{run_id}/``）。
     ``shared`` 非空时复用批量装帧（universe/daily/ret），跳过重复拉数。
     """
     timer = timer or StageTimer()
     progress = progress or OverallProgress(progress_total, label=track_label).start()
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 0b. 设置全局随机种子（可选）──
     if args.seed is not None:
@@ -711,9 +658,6 @@ def _prepare_evaluation_inputs(
         raise RuntimeError(f"unknown factor: {args.factor}") from e
     factor = factor_cls()
     logger.info(f"因子: {factor.name} | {factor.description}")
-    factor_output_dir = daily_factor_output_dir(factor.name)
-    result_output_dir = daily_result_output_dir(factor.name)
-    report_output_dir = daily_report_output_dir(factor.name)
     progress.advance("init")
 
     # ── 2~3. 数据 + 股票池（batch 时复用 shared）──
@@ -767,33 +711,76 @@ def _prepare_evaluation_inputs(
             f"membership_rows={membership.height}"
         )
 
-    # ── 3b. 保存逐日 membership（供复现和审计；口径=PIT，非期末快照）──
-    result_output_dir.mkdir(parents=True, exist_ok=True)
-    universe_snapshot_path = (
-        result_output_dir / f"{factor.name}_{args.start}_{args.end}_universe.parquet"
-    )
-    membership.write_parquet(str(universe_snapshot_path))
+    # ── 3b. universe membership 仅内存使用；不落 parquet（评估 run 零 parquet）──
     logger.info(
-        f"Universe membership 已保存: {universe_snapshot_path} "
-        f"(rows={membership.height}, union={len(ts_codes)})"
+        f"Universe membership (in-memory): rows={membership.height}, union={len(ts_codes)}"
     )
     progress.advance("universe")
 
-    # ── 4. 计算因子（优先 factor_store 物化缓存；--no-factor-cache 跳过）──
-    use_cache = not bool(getattr(args, "no_factor_cache", False))
+    # ── 4. 计算因子（优先 store 面板 ensure；--no-factor-cache 跳过且不写 store）──
+    # 面板缓存是日频口径（snapshot_mode="daily"）；weekly/monthly 评估或
+    # 非日频因子必须直算，否则快照日程整个变掉（IC 期数/换手/调仓全错）
+    from factorzen.pipelines.factor_panel_cache import is_daily_frequency
+
+    _freq_daily = is_daily_frequency(args, factor)
+    use_cache = not bool(getattr(args, "no_factor_cache", False)) and _freq_daily
+    if not _freq_daily:
+        logger.info("非日频评估（factor/args frequency != daily），跳过面板缓存直算")
     factor_df: pl.DataFrame | None = None
+    store_panel_path: str | None = None
     if use_cache:
-        factor_df = _try_load_factor_store_cache(
-            factor.name,
+        from factorzen.pipelines.factor_panel_cache import ensure_factor_store_panel
+
+        full_panel = ensure_factor_store_panel(
+            factor,
             args.start,
             args.end,
-            args.universe,
+            market=getattr(args, "market", None) or "ashare",
+            benchmark=args.benchmark,
         )
-        # 物化帧含 all_a 全体股票，直算帧只含评估 universe union——
-        # 预处理在 union 截面上做，行集不同会让 winsorize/中性化统计量漂移
-        # （实测 IC 差 0.3%）。过滤对齐直算行集，保证 cache/no-cache 数值等价。
-        if factor_df is not None and ts_codes:
-            factor_df = factor_df.filter(pl.col("ts_code").is_in(ts_codes))
+        if full_panel is not None:
+            # 切片评估窗 + universe；只保留三列喂入管线（与 cache/no-cache 数值等价）
+            from datetime import datetime as _dt
+
+            def _parse_ymd(s: str):
+                k = str(s).replace("-", "").replace("/", "")[:8]
+                return _dt.strptime(k, "%Y%m%d").date()
+
+            win_start = _parse_ymd(args.start)
+            win_end = _parse_ymd(args.end)
+            factor_df = full_panel.filter(
+                (pl.col("trade_date") >= win_start) & (pl.col("trade_date") <= win_end)
+            )
+            # 物化帧含 all_a 全体股票，直算帧只含评估 universe union——
+            # 预处理在 union 截面上做，行集不同会让 winsorize/中性化统计量漂移
+            # （实测 IC 差 0.3%）。过滤对齐直算行集，保证 cache/no-cache 数值等价。
+            if ts_codes:
+                factor_df = factor_df.filter(pl.col("ts_code").is_in(ts_codes))
+            # store 可能已有 factor_clean；预处理会再生成同名列——只保留原始三列喂入管线
+            if "factor_value" in factor_df.columns:
+                factor_df = factor_df.select(
+                    [
+                        c
+                        for c in ("trade_date", "ts_code", "factor_value")
+                        if c in factor_df.columns
+                    ]
+                )
+            try:
+                from factorzen.discovery.factor_store import DEFAULT_ROOT, asset_dir
+
+                mkt = getattr(args, "market", None) or "ashare"
+                p = asset_dir(mkt, factor.name, root=DEFAULT_ROOT) / "factor.parquet"
+                if p.exists():
+                    store_panel_path = str(p)
+            except Exception:
+                store_panel_path = None
+            logger.info(
+                "factor store panel reused %s rows=%s window=%s~%s",
+                factor.name,
+                factor_df.height,
+                args.start,
+                args.end,
+            )
 
     ctx = FactorDataContext(
         start=args.start,
@@ -852,6 +839,19 @@ def _prepare_evaluation_inputs(
     logger.info(
         f"预处理完成 (去极值 → 填充 → 标准化 → 逐日 PIT 过滤, n={clean_df.height})"
     )
+    # 评估永不覆盖写 store 面板；若 ensure 已落库则记下路径
+    if store_panel_path is None:
+        try:
+            from factorzen.discovery.factor_store import DEFAULT_ROOT, asset_dir
+
+            mkt = getattr(args, "market", None) or "ashare"
+            p = asset_dir(mkt, factor.name, root=DEFAULT_ROOT) / "factor.parquet"
+            if p.exists():
+                store_panel_path = str(p)
+        except Exception:
+            store_panel_path = None
+    if store_panel_path:
+        logger.info(f"因子 store 面板: {store_panel_path}")
     progress.advance("preprocess")
 
     # ── 6. 计算前向收益（batch 复用 shared.daily / shared.ret_df）──
@@ -886,8 +886,7 @@ def _prepare_evaluation_inputs(
     except QualityCheckError as e:
         logger.error(f"数据质量检查失败: {e}")
         raise RuntimeError(f"quality check failed: {e}") from e
-    result_output_dir.mkdir(parents=True, exist_ok=True)
-    quality_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_quality.json"
+    quality_path = artifact_path(run_dir, "quality_report")
     quality_path.write_text(
         json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -902,18 +901,16 @@ def _prepare_evaluation_inputs(
         timer=timer,
         progress=progress,
         factor=factor,
-        factor_output_dir=factor_output_dir,
-        result_output_dir=result_output_dir,
-        report_output_dir=report_output_dir,
+        run_dir=run_dir,
         membership=membership,
         ts_codes=ts_codes,
         universe=universe,
-        universe_snapshot_path=universe_snapshot_path,
         clean_df=clean_df,
         daily=daily,
         ret_df=ret_df,
         quality_report=quality_report,
         quality_path=quality_path,
+        store_panel_path=store_panel_path,
     )
 
 
@@ -937,6 +934,7 @@ def _merge_meta(meta_path: Path, updates: dict[str, Any]) -> dict[str, Any]:
 def run_factor_eval(
     args: argparse.Namespace,
     effective_config: RunConfig,
+    run_dir: Path,
     timer: StageTimer | None = None,
     *,
     shared: _SharedEvaluationData | None = None,
@@ -944,12 +942,14 @@ def run_factor_eval(
     """信号轨：IC / 换手 / 单调性 / 信号回测（毛口径）+ 信号轨报告。
 
     不跑策略日环回测、walk-forward、benchmark。
+    产物只写 ``run_dir``（短名）。
     """
     timer = timer or StageTimer()
     progress = OverallProgress(12, label="Factor eval").start()
     prep = _prepare_evaluation_inputs(
         args,
         effective_config,
+        run_dir,
         timer=timer,
         progress=progress,
         track_label="Factor eval",
@@ -959,12 +959,10 @@ def run_factor_eval(
     factor = prep.factor
     clean_df = prep.clean_df
     ret_df = prep.ret_df
-    factor_output_dir = prep.factor_output_dir
-    result_output_dir = prep.result_output_dir
-    report_output_dir = prep.report_output_dir
+    run_dir = prep.run_dir
     quality_path = prep.quality_path
     quality_report = prep.quality_report
-    universe_snapshot_path = prep.universe_snapshot_path
+    store_panel_path = prep.store_panel_path
 
     # ── 7. IC 分析（始终基于原始 factor_clean，不翻号）──
     with timer.stage("IC 分析"):
@@ -995,18 +993,8 @@ def run_factor_eval(
     logger.info(f"\n{to_result.summary()}")
     progress.advance("turnover")
 
-    factor_output_dir.mkdir(parents=True, exist_ok=True)
-    result_output_dir.mkdir(parents=True, exist_ok=True)
-
-    factor_path = factor_output_dir / f"{factor.name}_{args.start}_{args.end}.parquet"
-    clean_df.write_parquet(str(factor_path))
-    logger.info(f"因子已保存: {factor_path}")
-
-    ic_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_ic.parquet"
-    ic_result.ic_series.write_parquet(str(ic_path))
-    logger.info(f"IC 序列已保存: {ic_path}")
-
-    meta_path = _meta_path(factor.name, args.start, args.end)
+    # 评估 run 零 parquet：IC 序列只进 meta 摘要，完整面板在 factors
+    meta_path = _meta_path(run_dir)
     _merge_meta(
         meta_path,
         {
@@ -1020,6 +1008,7 @@ def run_factor_eval(
             "n_periods": ic_result.n_periods,
             "backtest_direction": backtest_direction,
             "track": "eval",
+            "store_panel": store_panel_path,
         },
     )
     logger.info(f"meta 已更新: {meta_path}")
@@ -1064,9 +1053,7 @@ def run_factor_eval(
     if _mono is not None and getattr(_mono, "monotonicity_score", None) is not None:
         logger.info(f"单调性: score={_mono.monotonicity_score:.3f}")
     progress.advance("mono")
-    signal_json_path = (
-        result_output_dir / f"{factor.name}_{args.start}_{args.end}_signal.json"
-    )
+    signal_json_path = artifact_path(run_dir, "signal")
     signal_json_path.write_text(
         json.dumps(
             {
@@ -1079,12 +1066,7 @@ def run_factor_eval(
         ),
         encoding="utf-8",
     )
-    signal_nav_path = (
-        result_output_dir
-        / f"{factor.name}_{args.start}_{args.end}_signal_group_nav.parquet"
-    )
-    signal_result.group_nav.write_parquet(str(signal_nav_path))
-    logger.info(f"信号层回测已保存: {signal_json_path}, {signal_nav_path}")
+    logger.info(f"信号层回测已保存: {signal_json_path}")
     _merge_meta(
         meta_path,
         {
@@ -1094,7 +1076,7 @@ def run_factor_eval(
     )
     progress.advance("signal")
 
-    # ── 13. HTML 报告（eval 专用文件名，不覆盖交易轨）──
+    # ── 13. HTML 报告（run 内 report.html + reports/daily 镜像）──
     date_range = (
         f"{args.start[:4]}-{args.start[4:6]}-{args.start[6:]} ~ "
         f"{args.end[:4]}-{args.end[4:6]}-{args.end[6:]}"
@@ -1108,22 +1090,22 @@ def run_factor_eval(
             frequency=args.frequency,
             quality_report=quality_report,
         )
-    report_output_dir.mkdir(parents=True, exist_ok=True)
-    report_path = report_output_dir / f"{factor.name}_{args.start}_{args.end}_eval.html"
+    report_path = artifact_path(run_dir, "report")
     report_path.write_text(html, encoding="utf-8")
-    logger.info(f"报告已生成: {report_path}")
+    mirror = _mirror_report_html(
+        html, factor.name, args.start, args.end, track="eval"
+    )
+    logger.info(f"报告已生成: {report_path} (镜像 {mirror})")
     progress.advance("report")
 
     outputs = {
-        "factor": str(factor_path),
-        "ic": str(ic_path),
         "quality_report": str(quality_path),
-        "universe_snapshot": str(universe_snapshot_path),
         "signal": str(signal_json_path),
-        "signal_group_nav": str(signal_nav_path),
         "report": str(report_path),
         "meta": str(meta_path),
     }
+    if store_panel_path:
+        outputs["factor"] = store_panel_path
     if getattr(args, "metrics_out", None):
         _write_run_metrics(args.metrics_out, ic_result, None)
     progress.close()
@@ -1133,19 +1115,21 @@ def run_factor_eval(
 def run_factor_backtest(
     args: argparse.Namespace,
     effective_config: RunConfig,
+    run_dir: Path,
     timer: StageTimer | None = None,
     *,
     shared: _SharedEvaluationData | None = None,
 ) -> dict[str, str]:
     """交易轨：IC（方向判定）/ 策略日环回测 / 换手 / walk-forward / 单调性 / benchmark + 交易轨报告。
 
-    不跑信号层回测（11b）。产物文件名与拆分前单因子主命令完全一致。
+    不跑信号层回测（11b）。run_dir 仅 json/html；面板在 factors/。
     """
     timer = timer or StageTimer()
     progress = OverallProgress(14, label="Factor backtest").start()
     prep = _prepare_evaluation_inputs(
         args,
         effective_config,
+        run_dir,
         timer=timer,
         progress=progress,
         track_label="Factor backtest",
@@ -1156,12 +1140,10 @@ def run_factor_backtest(
     clean_df = prep.clean_df
     daily = prep.daily
     ret_df = prep.ret_df
-    factor_output_dir = prep.factor_output_dir
-    result_output_dir = prep.result_output_dir
-    report_output_dir = prep.report_output_dir
+    run_dir = prep.run_dir
     quality_path = prep.quality_path
     quality_report = prep.quality_report
-    universe_snapshot_path = prep.universe_snapshot_path
+    store_panel_path = prep.store_panel_path
 
     # ── 7. IC 分析（始终基于原始 factor_clean，不翻号；仅用于方向判定）──
     with timer.stage("IC 分析"):
@@ -1196,19 +1178,7 @@ def run_factor_backtest(
     logger.info(f"\n{to_result.summary()}")
     progress.advance("turnover")
 
-    factor_output_dir.mkdir(parents=True, exist_ok=True)
-    result_output_dir.mkdir(parents=True, exist_ok=True)
-
-    # 落盘原始因子值（语义定义，不翻号）；回测方向写入 meta 供审计与后续读回
-    factor_path = factor_output_dir / f"{factor.name}_{args.start}_{args.end}.parquet"
-    clean_df.write_parquet(str(factor_path))
-    logger.info(f"因子已保存: {factor_path}")
-
-    ic_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_ic.parquet"
-    ic_result.ic_series.write_parquet(str(ic_path))
-    logger.info(f"IC 序列已保存: {ic_path}")
-
-    meta_path = _meta_path(factor.name, args.start, args.end)
+    meta_path = _meta_path(run_dir)
     _merge_meta(
         meta_path,
         {
@@ -1222,6 +1192,7 @@ def run_factor_backtest(
             "n_periods": ic_result.n_periods,
             "backtest_direction": backtest_direction,
             "track": "backtest",
+            "store_panel": store_panel_path,
         },
     )
     logger.info(f"回测方向已写入 meta: {meta_path}")
@@ -1250,7 +1221,7 @@ def run_factor_backtest(
     # ── 11. 单调性（与回测同一信号口径；日志侧车，交易报告不消费）──
     _ = _compute_monotonicity_result(backtest_df, ret_df, n_groups=5)
 
-    walk_forward_path = result_output_dir / f"{factor.name}_{args.start}_{args.end}_walk_forward.json"
+    walk_forward_path = artifact_path(run_dir, "walk_forward_summary")
     walk_forward_path.write_text(
         json.dumps(walk_forward_summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -1301,21 +1272,22 @@ def run_factor_backtest(
             walk_forward_summary=walk_forward_summary,
             quality_report=quality_report,
         )
-    report_output_dir.mkdir(parents=True, exist_ok=True)
-    report_path = report_output_dir / f"{factor.name}_{args.start}_{args.end}.html"
+    report_path = artifact_path(run_dir, "report")
     report_path.write_text(html, encoding="utf-8")
-    logger.info(f"报告已生成: {report_path}")
+    mirror = _mirror_report_html(
+        html, factor.name, args.start, args.end, track="backtest"
+    )
+    logger.info(f"报告已生成: {report_path} (镜像 {mirror})")
     progress.advance("report")
 
     outputs = {
-        "factor": str(factor_path),
-        "ic": str(result_output_dir / f"{factor.name}_{args.start}_{args.end}_ic.parquet"),
         "quality_report": str(quality_path),
         "walk_forward_summary": str(walk_forward_path),
-        "universe_snapshot": str(universe_snapshot_path),
         "report": str(report_path),
         "meta": str(meta_path),
     }
+    if store_panel_path:
+        outputs["factor"] = store_panel_path
     if getattr(args, "metrics_out", None):
         _write_run_metrics(args.metrics_out, ic_result, bt_result)
     progress.close()
@@ -1334,18 +1306,16 @@ def _run_one_factor_experiment(
     with run_experiment(effective_config, command=sys.argv) as exp_dir:
         timer = StageTimer()
         try:
-            outputs = run_fn(args, effective_config, timer=timer, shared=shared)
+            outputs = run_fn(
+                args, effective_config, exp_dir, timer=timer, shared=shared
+            )
         except Exception:
             record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
-            for name, path in _existing_run_outputs(
-                args.factor, args.start, args.end, track=track
-            ).items():
+            for name, path in _existing_run_outputs(exp_dir, track=track).items():
                 record_experiment_output(exp_dir, name, path)
             raise
         record_experiment_metadata(exp_dir, "stage_timings", timer.timings)
         for name, path in outputs.items():
-            record_experiment_output(exp_dir, name, path)
-        for name, path in copy_outputs_to_run_dir(outputs, exp_dir).items():
             record_experiment_output(exp_dir, name, path)
         # evidence 链接：评估成功后挂 run_id 到库（非裁决指标；失败只 warning）
         try:
@@ -1383,6 +1353,7 @@ def main(*, track: str = "backtest") -> None:
         ``\"eval\"`` 信号轨（``run_factor_eval``）或 ``\"backtest\"`` 交易轨
         （``run_factor_backtest``）。``fz factor sweep`` 走交易轨默认。
     """
+    setup_logging()
     if track not in ("eval", "backtest"):
         raise ValueError(f"unknown track: {track!r}（期望 eval|backtest）")
 
@@ -1442,7 +1413,7 @@ def main(*, track: str = "backtest") -> None:
         "--no-factor-cache",
         action="store_true",
         dest="no_factor_cache",
-        help="禁用 factor_store 物化缓存（默认启用；miss 时回落直算）",
+        help="禁用 factors 物化缓存（默认启用；miss 时回落直算）",
     )
     parser.add_argument(
         "--metrics-out",

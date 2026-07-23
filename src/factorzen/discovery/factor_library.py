@@ -210,7 +210,7 @@ class FactorRecord:
     name: str | None = None  # 业务名；python 型必填=registry 名；expression 型可空后回填
     impl: str | None = None  # python 型实现引用（一期=registry 名；预留 import path）
     # evidence 链接，非裁决指标（任意 CLI 评估的 run 指针；不覆盖 ic/lift/status）
-    last_eval_run_id: str | None = None  # 最近一次 fz factor eval/backtest 的 run_id（factor_evaluations/{run_id}/）
+    last_eval_run_id: str | None = None  # 最近一次 fz factor eval/backtest 的 run_id（factors/.../evaluations/{run_id}/）
     last_eval_at: str | None = None  # ISO 日期
     # 日内特征叶子溯源（旧 jsonl 无此字段 → from_dict 向前兼容读入不崩）
     intraday_leaves: list[str] | None = None

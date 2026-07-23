@@ -1,21 +1,21 @@
-"""因子资产库三件套：meta.json + factor.py + factor.parquet。
+"""因子资产库：meta.json + factor.py + factor.parquet（4 列面板唯一落点）。
 
-**架构裁决**（用户拍板）：
+**架构裁决**：
 - ``workspace/factor_library/{market}.jsonl`` 仍是裁决唯一真相
   （status / lift / admission / forward）。
-- 本模块是资产库载体：把库内记录物化为可读、可 import、可复现的磁盘资产。
-- 入库/rebuild 写入单点同步两处；``verify_store`` 校验一致。
-- **物化口径与评估口径分离**：``factor.parquet`` / ``meta.materialization``
-  固定 ``all_a`` × ``2016-01-01`` ~ 最新已完结交易日
-  （``STORE_MATERIALIZE_*``）；jsonl 的 ``eval_start``/``eval_end``/``universe``
-  仍是挖掘评估窗，不随 store 改写。
+- 本模块是资产库载体：可 import 的 ``factor.py`` + 元数据 + **数值面板**。
+- **因子数值面板唯一落点**是 ``factors/<market>/<name>/factor.parquet``
+  （4 列：trade_date / ts_code / factor_value / factor_clean）。
+- 评估 run 只留 json/html 等轻量产物，**不写任何 parquet**
+  （落 ``factors/<market>/<name>/evaluations/{run_id}/``）。
 
-目录布局（定死）::
+目录布局::
 
-    workspace/factor_store/<market>/<name>/
+    workspace/factors/<market>/<name>/
     ├── meta.json
     ├── factor.py
-    └── factor.parquet   # 仅 active/probation；correlated 省算力不写
+    ├── factor.parquet   # 4 列面板（每因子一份）
+    └── evaluations/     # 评估 run 产物（json/html）
 """
 
 from __future__ import annotations
@@ -47,6 +47,14 @@ _LOG = logging.getLogger(__name__)
 
 DEFAULT_ROOT = str(FACTOR_STORE_DIR)
 MATERIALIZE_STATUSES = frozenset({"active", "probation"})
+# 因子数值面板唯一落点；False 时跳过写/读（仅测试逃生）。
+STORE_FACTOR_PARQUET_ENABLED = True
+FACTOR_PANEL_COLUMNS = (
+    "trade_date",
+    "ts_code",
+    "factor_value",
+    "factor_clean",
+)
 _HYPOTHESIS_MAX = 200
 
 # 资产库 parquet 物化口径（与 jsonl 裁决/评估口径分离）：
@@ -68,6 +76,122 @@ def store_materialize_end() -> str:
     from factorzen.core.calendar import prev_trade_date
 
     return prev_trade_date(_date.today()).isoformat()
+
+
+def finalize_factor_panel(
+    panel: pl.DataFrame,
+    *,
+    stock_basic: pl.DataFrame | None = None,
+    daily_basic: pl.DataFrame | None = None,
+    neutralize: bool = False,
+) -> pl.DataFrame:
+    """规范为 4 列面板；缺 ``factor_clean`` 时跑默认预处理补上。
+
+    dtype 在此单点收口（ts_code=Utf8 等），否则 mining prepped 帧的
+    Categorical ts_code 会直接落盘，与 eval 路径写的 Utf8 产生 on-disk 分叉。
+    """
+    if not {"trade_date", "ts_code"}.issubset(panel.columns):
+        raise ValueError(
+            f"panel must have trade_date/ts_code, got {list(panel.columns)}"
+        )
+    if set(FACTOR_PANEL_COLUMNS).issubset(panel.columns):
+        return _cast_panel_dtypes(panel.select(list(FACTOR_PANEL_COLUMNS)))
+    if "factor_value" not in panel.columns:
+        raise ValueError(
+            f"panel must have factor_value (or full 4-col), got {list(panel.columns)}"
+        )
+    from factorzen.daily.preprocessing.pipeline import PreprocessingPipeline
+
+    cleaned = PreprocessingPipeline(
+        steps=["outlier", "missing", "normalize"],
+        neutralize=bool(
+            neutralize and (stock_basic is not None or daily_basic is not None)
+        ),
+    ).run(
+        panel,
+        col="factor_value",
+        stock_basic=stock_basic,
+        daily_basic=daily_basic,
+    )
+    return _cast_panel_dtypes(cleaned.select(list(FACTOR_PANEL_COLUMNS)))
+
+
+def _cast_panel_dtypes(df: pl.DataFrame) -> pl.DataFrame:
+    """4 列面板落盘 dtype 单点：Date / Utf8 / Float64 / Float64。"""
+    cols: list[pl.Expr] = []
+    if df["trade_date"].dtype != pl.Date:
+        if df["trade_date"].dtype == pl.Utf8:
+            sample = ""
+            s = df["trade_date"].drop_nulls().head(1)
+            if s.len():
+                sample = str(s.to_list()[0])
+            fmt = "%Y%m%d" if "-" not in sample else "%Y-%m-%d"
+            cols.append(pl.col("trade_date").str.strptime(pl.Date, fmt, strict=False))
+        else:
+            cols.append(pl.col("trade_date").cast(pl.Date, strict=False))
+    cols.extend(
+        [
+            pl.col("ts_code").cast(pl.Utf8),
+            pl.col("factor_value").cast(pl.Float64),
+            pl.col("factor_clean").cast(pl.Float64),
+        ]
+    )
+    return df.with_columns(cols)
+
+
+def write_factor_panel(
+    market: str,
+    name: str,
+    panel: pl.DataFrame,
+    *,
+    root: str | None = None,
+    expression: str | None = None,
+    stock_basic: pl.DataFrame | None = None,
+    daily_basic: pl.DataFrame | None = None,
+    neutralize: bool = False,
+) -> Path | None:
+    """把 4 列因子面板写入 ``factors/<market>/<name>/factor.parquet``。
+
+    手动/脚本用的整面板写入口；**生产评估路径已不调用**（评估经
+    ``pipelines.factor_panel_cache.ensure_factor_store_panel`` 增量维护）。
+    注意：meta.materialization 固定标 store 口径窗（2016-01-01~最新完结日），
+    **不看实际面板行**——只用于写入完整口径面板，子集面板勿经此落盘。
+    """
+    if not STORE_FACTOR_PARQUET_ENABLED:
+        return None
+    root = DEFAULT_ROOT if root is None else root
+    d = asset_dir(market, name, root=root)
+    d.mkdir(parents=True, exist_ok=True)
+    out = finalize_factor_panel(
+        panel,
+        stock_basic=stock_basic,
+        daily_basic=daily_basic,
+        neutralize=neutralize,
+    )
+    pq_path = d / "factor.parquet"
+    out.write_parquet(pq_path)
+    meta = _read_json(d / "meta.json") or {"name": name, "market": market}
+    meta["materialization"] = {
+        "start": STORE_MATERIALIZE_START,
+        "end": store_materialize_end(),
+        "universe": STORE_MATERIALIZE_UNIVERSE,
+        "git_sha": _git_sha(),
+        "n_rows": int(out.height),
+        "generated_at": _utc_now_iso(),
+        "expression": expression if expression is not None else meta.get("expression"),
+        "columns": list(FACTOR_PANEL_COLUMNS),
+    }
+    if expression is not None:
+        meta["expression"] = expression
+    _write_json(d / "meta.json", meta)
+    _LOG.info(
+        "factor_store panel written %s/%s n_rows=%s path=%s",
+        market,
+        name,
+        out.height,
+        pq_path,
+    )
+    return pq_path
 
 
 def _date_key(s: str | None) -> str:
@@ -132,17 +256,17 @@ def compute(daily: pl.DataFrame) -> pl.DataFrame:
 
 
 def store_root_for_library(lib_root: str | None = None) -> str:
-    """把 factor_library 根目录映射到 factor_store 根。
+    """把 factor_library 根目录映射到 factors 资产根。
 
-    - 生产默认库根 → ``workspace/factor_store``
-    - 测试/自定义库根 → ``{lib_root}/factor_store``（与 jsonl 同树，隔离）
+    - 生产默认库根 → ``workspace/factors``
+    - 测试/自定义库根 → ``{lib_root}/factors``（与 jsonl 同树，隔离）
     """
     if lib_root is None:
         return DEFAULT_ROOT
     p = Path(lib_root).resolve()
     if p == Path(DEFAULT_LIB_ROOT).resolve() or p == Path(FACTOR_LIBRARY_DIR).resolve():
         return DEFAULT_ROOT
-    return str(p / "factor_store")
+    return str(p / "factors")
 
 
 def asset_dir(market: str, name: str, *, root: str = DEFAULT_ROOT) -> Path:
@@ -289,9 +413,15 @@ def load_materialized_factor(
     ``allow_warmup_head`` 默认 False：combine 调用点不传，行为零变化。
     eval 轨显式传 True 以吃预热头。
 
-    返回帧 schema：``trade_date(Date) / ts_code(Utf8) / factor_value(Float64)``。
+    返回帧 schema：至少 ``trade_date / ts_code / factor_value``；
+    若盘上有 ``factor_clean`` 则一并返回（4 列完整面板）。
     读盘损坏 → miss + warning，不炸。
+
+    ``STORE_FACTOR_PARQUET_ENABLED=False`` 时恒 miss。
     """
+    if not STORE_FACTOR_PARQUET_ENABLED:
+        return None, "store_parquet_disabled", None
+
     try:
         name = record_asset_name(record)
     except ValueError:
@@ -363,13 +493,14 @@ def load_materialized_factor(
                 )
             else:
                 df = df.with_columns(pl.col("trade_date").cast(pl.Date, strict=False))
-        df = df.select(
-            [
-                pl.col("trade_date").cast(pl.Date),
-                pl.col("ts_code").cast(pl.Utf8),
-                pl.col("factor_value").cast(pl.Float64),
-            ]
-        )
+        cols = [
+            pl.col("trade_date").cast(pl.Date),
+            pl.col("ts_code").cast(pl.Utf8),
+            pl.col("factor_value").cast(pl.Float64),
+        ]
+        if "factor_clean" in df.columns:
+            cols.append(pl.col("factor_clean").cast(pl.Float64))
+        df = df.select(cols)
     except Exception as exc:
         _LOG.warning(
             "factor_store: parquet schema cast 失败 %s: %s: %s",
@@ -465,19 +596,19 @@ def write_factor_asset(
                 encoding="utf-8",
             )
 
-    # materialization：仅 active/probation 且 materialize=True 时写 parquet
+    # materialization / factor.parquet：默认废除（大面板只在 factors 资产）
     mat_info: dict[str, Any] | None = None
     pq_path = d / "factor.parquet"
     prev_meta = _read_json(d / "meta.json") or {}
     prev_mat = prev_meta.get("materialization")
-    should_mat = materialize and (record.status or "") in MATERIALIZE_STATUSES
+    should_mat = (
+        STORE_FACTOR_PARQUET_ENABLED
+        and materialize
+        and (record.status or "") in MATERIALIZE_STATUSES
+    )
 
     if should_mat and panel is not None:
-        out = panel
-        needed = {"trade_date", "ts_code", "factor_value"}
-        if not needed.issubset(set(out.columns)):
-            raise ValueError(f"panel must have columns {needed}, got {out.columns}")
-        out = out.select(["trade_date", "ts_code", "factor_value"])
+        out = finalize_factor_panel(panel)
         out.write_parquet(pq_path)
         mat_info = {
             "start": STORE_MATERIALIZE_START,
@@ -487,12 +618,11 @@ def write_factor_asset(
             "n_rows": int(out.height),
             "generated_at": _utc_now_iso(),
             "expression": record.expression,
+            "columns": list(FACTOR_PANEL_COLUMNS),
         }
     elif (record.status or "") not in MATERIALIZE_STATUSES:
-        # correlated / 其他：规格要求 materialization=null（不强制删 parquet）
         mat_info = None
     elif isinstance(prev_mat, dict) and pq_path.exists():
-        # 刷新 meta/py 时：expression + store 物化口径仍新鲜则保留 provenance
         if prev_meta.get("expression") == record.expression and _materialization_window_fresh(
             prev_mat
         ):
@@ -512,13 +642,15 @@ def _materialization_window_fresh(mat: dict[str, Any]) -> bool:
 
     增量判据（end 语义 = 物化时最新已完结交易日）::
 
-        start == STORE_MATERIALIZE_START
+        start <= STORE_MATERIALIZE_START   # 超集覆盖即新鲜（eval 补头可写更早 start，
+                                           # 严格相等会与 ensure 乒乓互踩、丢头部行）
         AND universe == STORE_MATERIALIZE_UNIVERSE
         AND mat.end 已覆盖「上一个已完结交易日」(>= store_materialize_end())
 
     未覆盖则需重物化（例如日历推进一天、或历史 csi300/csi500 资产）。
     """
-    if mat.get("start") != STORE_MATERIALIZE_START:
+    mat_start = mat.get("start")
+    if not mat_start or _date_key(mat_start) > _date_key(STORE_MATERIALIZE_START):
         return False
     if mat.get("universe") != STORE_MATERIALIZE_UNIVERSE:
         return False
@@ -583,11 +715,13 @@ def _apply_asset_materialization(
 
     不走 write_factor_asset 的 status 门——correlated / store-only python
     也可落盘物化。
+
+    ``STORE_FACTOR_PARQUET_ENABLED=False`` 时为 no-op。
     """
-    needed = {"trade_date", "ts_code", "factor_value"}
-    if not needed.issubset(set(panel.columns)):
-        raise ValueError(f"panel must have columns {needed}, got {panel.columns}")
-    out = panel.select(["trade_date", "ts_code", "factor_value"])
+    if not STORE_FACTOR_PARQUET_ENABLED:
+        return
+
+    out = finalize_factor_panel(panel)
     out.write_parquet(asset_path / "factor.parquet")
     meta = _read_json(asset_path / "meta.json") or {}
     meta["materialization"] = {
@@ -598,6 +732,7 @@ def _apply_asset_materialization(
         "n_rows": int(out.height),
         "generated_at": _utc_now_iso(),
         "expression": expression,
+        "columns": list(FACTOR_PANEL_COLUMNS),
     }
     _write_json(asset_path / "meta.json", meta)
 
@@ -628,6 +763,15 @@ def materialize_assets(
     dict
         materialized / skipped / errors(list[str]) / total
     """
+    if not STORE_FACTOR_PARQUET_ENABLED:
+        _LOG.warning("factor_store parquet 物化已关闭（STORE_FACTOR_PARQUET_ENABLED=False）")
+        return {
+            "materialized": 0,
+            "skipped": 0,
+            "errors": ["store_parquet_disabled"],
+            "total": 0,
+        }
+
     from factorzen.discovery.factor_library import (
         is_python_identity,
         python_identity,
@@ -1060,7 +1204,9 @@ def verify_store(
             and (pq_path.exists() or bool(mat.get("n_rows")))
         ):
             target_end = store_materialize_end()
-            if mat.get("start") != STORE_MATERIALIZE_START:
+            # 超集覆盖（start 更早）不算漂移，与 _materialization_window_fresh 同口径
+            mat_start = mat.get("start")
+            if not mat_start or _date_key(mat_start) > _date_key(STORE_MATERIALIZE_START):
                 drifts.append(
                     {
                         "name": name,

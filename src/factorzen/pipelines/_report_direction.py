@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -74,8 +75,9 @@ def _apply_backtest_direction(
     return clean_df.with_columns((-pl.col("factor_clean")).alias("factor_clean"))
 
 
-def _load_backtest_direction(factor_name: str, start: str, end: str) -> dict[str, Any] | None:
-    mp = _meta_path(factor_name, start, end)
+def _load_backtest_direction(run_dir: Path) -> dict[str, Any] | None:
+    """从评估 run 目录的 meta.json 读取回测方向。"""
+    mp = _meta_path(run_dir)
     if not mp.exists():
         return None
     meta = json.loads(mp.read_text(encoding="utf-8"))

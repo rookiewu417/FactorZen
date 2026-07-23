@@ -1,6 +1,6 @@
 """运营任务与报告的只读索引。
 
-扫描 workspace/_ops 与 workspace/reports，供 REST API 消费。
+扫描 workspace/_ops 与 workspace/factors/reports，供 REST API 消费。
 损坏/缺文件跳过并记 warning，绝不因单个坏产物炸接口。
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ class OpsViewIndex:
         self.root = Path(workspace_dir)
         self.ops_root = self.root / "_ops"
         self.campaigns_root = self.ops_root / "campaigns"
-        self.reports_root = self.root / "reports"
+        self.reports_root = self.root / "factors" / "reports"
 
     def list_campaigns(self) -> dict[str, Any]:
         """列出 _ops/campaigns 下各 campaign 摘要。"""

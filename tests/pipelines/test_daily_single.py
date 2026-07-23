@@ -95,33 +95,28 @@ def test_ensure_date_column_suite():
 def test_existing_run_outputs_suite(tmp_path):
     """test_existing_run_outputs_lists_present；test_existing_run_outputs_empty_when_none"""
     # -- 原 test_existing_run_outputs_lists_present --
-    def _section_0_test_existing_run_outputs_lists_present(tmp_path, mp):
-        mp.setattr(ds, "daily_factor_output_dir", lambda f: tmp_path / "factors")
-        mp.setattr(ds, "daily_result_output_dir", lambda f: tmp_path / "results")
-        mp.setattr(ds, "daily_report_output_dir", lambda f: tmp_path / "reports")
-        (tmp_path / "results").mkdir(parents=True)
-        (tmp_path / "results" / "mom_20240101_20240131_ic.parquet").write_text("x")
+    def _section_0_test_existing_run_outputs_lists_present(tmp_path):
+        run = tmp_path / "run"
+        run.mkdir(parents=True)
+        (run / "meta.json").write_text("{}")
 
-        out = ds._existing_run_outputs("mom", "20240101", "20240131")
-        assert set(out) == {"ic"}
-        assert out["ic"].endswith("_ic.parquet")
+        out = ds._existing_run_outputs(run, track="backtest")
+        assert set(out) == {"meta"}
+        assert out["meta"].endswith("meta.json")
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    with pytest.MonkeyPatch.context() as mp:
-        _section_0_test_existing_run_outputs_lists_present(_tp0, mp)
+    _section_0_test_existing_run_outputs_lists_present(_tp0)
 
     # -- 原 test_existing_run_outputs_empty_when_none --
-    def _section_1_test_existing_run_outputs_empty_when_none(tmp_path, mp):
-        mp.setattr(ds, "daily_factor_output_dir", lambda f: tmp_path / "factors")
-        mp.setattr(ds, "daily_result_output_dir", lambda f: tmp_path / "results")
-        mp.setattr(ds, "daily_report_output_dir", lambda f: tmp_path / "reports")
-        assert ds._existing_run_outputs("mom", "20240101", "20240131") == {}
+    def _section_1_test_existing_run_outputs_empty_when_none(tmp_path):
+        run = tmp_path / "run"
+        run.mkdir(parents=True)
+        assert ds._existing_run_outputs(run, track="backtest") == {}
 
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
-    with pytest.MonkeyPatch.context() as mp:
-        _section_1_test_existing_run_outputs_empty_when_none(_tp1, mp)
+    _section_1_test_existing_run_outputs_empty_when_none(_tp1)
 
 
 # ── _find_default_run_config_path ───────────────────────────
@@ -737,7 +732,9 @@ def test_merge_run_config_and_dry_run_suite():
         assert payload["config"]["benchmark"] == "000905.SH"
         assert payload["config"]["backtest"]["top_n"] == 25
         assert payload["config"]["walk_forward"]["n_trials"] == 3
-        assert payload["output_dir"].endswith("workspace/factor_evaluations/<run_id>")
+        assert payload["output_dir"].endswith(
+            "workspace/factors/<market>/<factor>/evaluations/<run_id>"
+        )
         assert "execution" not in payload
         for banned in ("ic_method", "neutralized_ic", "event_study", "llm_explain", "llm_refresh"):
             assert banned not in payload["config"]
@@ -803,7 +800,7 @@ def test_merge_run_config_and_dry_run_suite():
     _section_5_test_effective_run_config_without_yaml_uses_quantile_ls_5()
 
 
-def test_neutralization_and_ensure_data_suite():
+def test_neutralization_and_ensure_data_suite(tmp_path):
     """test_preprocess_with_industry_neutralization_uses_universe_industry；test_load_daily_basic_for_neutralization_reads_ensured_cache；test_run_ensures_required_data_before_loading_universe"""
     # -- 原 test_preprocess_with_industry_neutralization_uses_universe_industry --
     def _section_0_test_preprocess_with_industry_neutralization_uses_universe_industry():
@@ -874,7 +871,7 @@ def test_neutralization_and_ensure_data_suite():
         _section_1_test_load_daily_basic_for_neutralization_reads_ensured_cache(mp)
 
     # -- 原 test_run_ensures_required_data_before_loading_universe --
-    def _section_2_test_run_ensures_required_data_before_loading_universe(mp):
+    def _section_2_test_run_ensures_required_data_before_loading_universe(mp, tmp_path):
         import factorzen.pipelines.daily_single as run_mod
         from factorzen.config.research import RunConfig
 
@@ -913,13 +910,15 @@ def test_neutralization_and_ensure_data_suite():
 
         with pytest.raises(RuntimeError, match="stop after data ensure"):
             run_mod._prepare_evaluation_inputs(
-                args, RunConfig(factor="dummy_factor", start="20240102", end="20240103")
+                args,
+                RunConfig(factor="dummy_factor", start="20240102", end="20240103"),
+                tmp_path / "run",
             )
 
         assert calls == ["ensure", "universe"]
 
     with pytest.MonkeyPatch.context() as mp:
-        _section_2_test_run_ensures_required_data_before_loading_universe(mp)
+        _section_2_test_run_ensures_required_data_before_loading_universe(mp, tmp_path)
 
 
 # -- eval / backtest 双轨拆分产物 --
@@ -1083,12 +1082,16 @@ def test_eval_backtest_track_artifacts_suite(tmp_path):
                 pl.col("factor_value").alias("factor_clean")
             ),
         )
-        mp.setattr(ds, "daily_factor_output_dir", lambda name: out_root / "factors" / name)
-        mp.setattr(ds, "daily_result_output_dir", lambda name: out_root / "results" / name)
         mp.setattr(ds, "daily_report_output_dir", lambda name: out_root / "reports" / name)
+        # ensure 回落 None → 走 factor.compute（FakeCtx 路径）
         mp.setattr(
-            "factorzen.pipelines._report_persistence.daily_result_output_dir",
-            lambda name: out_root / "results" / name,
+            "factorzen.pipelines.factor_panel_cache.ensure_factor_store_panel",
+            lambda *a, **k: None,
+        )
+        # 隔离 store 根：store_panel 路径解析不得依赖真实 workspace/factors 的内容
+        mp.setattr(
+            "factorzen.discovery.factor_store.DEFAULT_ROOT",
+            str(out_root / "_store_isolated"),
         )
         mp.setattr(ds, "generate_signal_report", lambda *a, **k: "<html>ok</html>")
         mp.setattr(ds, "generate_trading_report", lambda *a, **k: "<html>ok</html>")
@@ -1125,6 +1128,7 @@ def test_eval_backtest_track_artifacts_suite(tmp_path):
     # -- eval 轨 --
     def _section_0_eval_track(tmp_path, mp):
         out = tmp_path / "eval"
+        run = out / "run"
         _install_common_mocks(mp, out)
         signal_called = {"n": 0}
         bt_called = {"n": 0}
@@ -1146,22 +1150,22 @@ def test_eval_backtest_track_artifacts_suite(tmp_path):
         mp.setattr(ds, "_run_backtest_strategies", fake_bt)
         mp.setattr(ds, "run_quantile_walk_forward_summary", fake_wf)
 
-        outputs = ds.run_factor_eval(args, cfg)
-        result_dir = out / "results" / factor_name
+        outputs = ds.run_factor_eval(args, cfg, run)
         report_dir = out / "reports" / factor_name
         prefix = f"{factor_name}_{start}_{end}"
 
         assert signal_called["n"] == 1
         assert bt_called["n"] == 0, "eval 轨不得跑策略日环"
         assert wf_called["n"] == 0, "eval 轨不得跑 walk-forward"
-        assert (result_dir / f"{prefix}_signal.json").exists()
-        assert (result_dir / f"{prefix}_signal_group_nav.parquet").exists()
-        assert (result_dir / f"{prefix}_ic.parquet").exists()
+        assert (run / "signal.json").exists()
+        assert (run / "report.html").exists()
         assert (report_dir / f"{prefix}_eval.html").exists()
-        assert not (result_dir / f"{prefix}_walk_forward.json").exists()
-        assert not (report_dir / f"{prefix}.html").exists()
+        assert not list(run.glob("*.parquet")), "evaluations 不得落 parquet"
+        assert not (run / "walk_forward.json").exists()
         assert "signal" in outputs
         assert "walk_forward_summary" not in outputs
+        # 评估不再 clobber 写 store；无既有 panel 时 outputs 不记 factor
+        assert "factor" not in outputs
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
@@ -1171,6 +1175,7 @@ def test_eval_backtest_track_artifacts_suite(tmp_path):
     # -- backtest 轨 --
     def _section_1_backtest_track(tmp_path, mp):
         out = tmp_path / "bt"
+        run = out / "run"
         _install_common_mocks(mp, out)
         signal_called = {"n": 0}
         bt_called = {"n": 0}
@@ -1192,17 +1197,17 @@ def test_eval_backtest_track_artifacts_suite(tmp_path):
         mp.setattr(ds, "_run_backtest_strategies", fake_bt)
         mp.setattr(ds, "run_quantile_walk_forward_summary", fake_wf)
 
-        outputs = ds.run_factor_backtest(args, cfg)
-        result_dir = out / "results" / factor_name
+        outputs = ds.run_factor_backtest(args, cfg, run)
         report_dir = out / "reports" / factor_name
         prefix = f"{factor_name}_{start}_{end}"
 
         assert bt_called["n"] == 1
         assert signal_called["n"] == 0, "backtest 轨不得跑信号回测"
-        assert (result_dir / f"{prefix}_walk_forward.json").exists()
-        assert (result_dir / f"{prefix}_ic.parquet").exists()
+        assert (run / "walk_forward.json").exists()
+        assert (run / "report.html").exists()
         assert (report_dir / f"{prefix}.html").exists()
-        assert not (result_dir / f"{prefix}_signal.json").exists()
+        assert not list(run.glob("*.parquet")), "evaluations 不得落 parquet"
+        assert not (run / "signal.json").exists()
         assert not (report_dir / f"{prefix}_eval.html").exists()
         assert "walk_forward_summary" in outputs
         assert "signal" not in outputs
@@ -1222,159 +1227,6 @@ def test_main_invalid_track_raises():
 
 
 # ==== factor cache + factors-file batch ====
-
-
-def test_load_factor_store_cache_hit_and_no_cache_flag(tmp_path, monkeypatch, caplog):
-    """物化小表达式后 cache HIT；allow_warmup 请求窗命中。"""
-    import logging
-    from datetime import timedelta
-
-    from factorzen.discovery.factor_store import _apply_asset_materialization
-    from factorzen.pipelines import daily_single as ds
-
-    name = "cache_hit_rank_close"
-    store = tmp_path / "factor_store"
-    asset = store / "ashare" / name
-    asset.mkdir(parents=True)
-
-    dates = [date(2020, 1, 2) + timedelta(days=i) for i in range(10)]
-    rows = []
-    for d in dates:
-        for i, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ"]):
-            rows.append(
-                {
-                    "trade_date": d,
-                    "ts_code": code,
-                    "factor_value": float(i) + d.toordinal() * 0.001,
-                }
-            )
-    panel = pl.DataFrame(rows)
-    (asset / "meta.json").write_text(
-        json.dumps(
-            {
-                "name": name,
-                "kind": "expression",
-                "expression": "rank(close)",
-                "frequency": "daily",
-                "description": "",
-                "materialization": None,
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "factorzen.discovery.factor_store.store_materialize_end",
-        lambda: "2020-12-31",
-    )
-    _apply_asset_materialization(asset, panel, expression="rank(close)")
-
-    cached = ds._try_load_factor_store_cache(
-        name,
-        "20200101",
-        "20200111",
-        "all_a",
-        root=str(store),
-    )
-    assert cached is not None
-    assert set(cached.columns) >= {"trade_date", "ts_code", "factor_value"}
-
-    with caplog.at_level(logging.INFO):
-        hit = ds._try_load_factor_store_cache(
-            name, "20200101", "20200111", "all_a", root=str(store)
-        )
-    assert hit is not None
-    assert any("factor cache HIT" in r.message for r in caplog.records)
-
-    miss = ds._try_load_factor_store_cache(
-        "no_such_factor_xyz", "20200101", "20200111", "all_a", root=str(store)
-    )
-    assert miss is None
-
-
-def test_factor_cache_ic_parity_with_direct_compute(tmp_path, monkeypatch):
-    """cache HIT 与直算同一面板：frame_equal + IC 序列一致。"""
-    from datetime import timedelta
-
-    import numpy as np
-
-    from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
-    from factorzen.discovery.factor_store import _apply_asset_materialization
-    from factorzen.pipelines import daily_single as ds
-
-    name = "parity_rank_f"
-    store = tmp_path / "factor_store"
-    asset = store / "ashare" / name
-    asset.mkdir(parents=True)
-
-    n_days, n_stocks = 15, 5
-    dates = [date(2020, 3, 1) + timedelta(days=i) for i in range(n_days)]
-    codes = [f"{i:06d}.SZ" for i in range(n_stocks)]
-    f_rows, d_rows = [], []
-    rng = np.random.default_rng(0)
-    for d in dates:
-        for i, code in enumerate(codes):
-            fv = float(rng.normal())
-            px = 10.0 + i + 0.01 * d.toordinal()
-            f_rows.append({"trade_date": d, "ts_code": code, "factor_value": fv})
-            d_rows.append(
-                {
-                    "trade_date": d,
-                    "ts_code": code,
-                    "close": px,
-                    "open": px * 0.99,
-                    "high": px * 1.01,
-                    "low": px * 0.98,
-                    "vol": 1e5,
-                    "amount": 1e7,
-                    "close_adj": px,
-                    "open_adj": px * 0.99,
-                    "high_adj": px * 1.01,
-                    "low_adj": px * 0.98,
-                }
-            )
-    factor_panel = pl.DataFrame(f_rows)
-    daily = pl.DataFrame(d_rows)
-
-    (asset / "meta.json").write_text(
-        json.dumps(
-            {
-                "name": name,
-                "kind": "expression",
-                "expression": "rank(close)",
-                "frequency": "daily",
-                "description": "",
-                "materialization": None,
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "factorzen.discovery.factor_store.store_materialize_end",
-        lambda: "2020-12-31",
-    )
-    _apply_asset_materialization(asset, factor_panel, expression="rank(close)")
-
-    cached = ds._try_load_factor_store_cache(
-        name, "20200301", "20200315", "all_a", root=str(store)
-    )
-    assert cached is not None
-
-    assert cached.sort(["trade_date", "ts_code"]).select(
-        ["trade_date", "ts_code", "factor_value"]
-    ).equals(
-        factor_panel.sort(["trade_date", "ts_code"]).select(
-            ["trade_date", "ts_code", "factor_value"]
-        )
-    )
-
-    ret_df = ds._build_forward_return_frame(daily, exec_lag=1, exec_price_col="open_adj")
-    clean = factor_panel.rename({"factor_value": "factor_clean"})
-    ic1 = compute_rank_ic(clean, ret_df, frequency="daily")
-    ic2 = compute_rank_ic(
-        cached.rename({"factor_value": "factor_clean"}), ret_df, frequency="daily"
-    )
-    assert abs(ic1.ic_mean - ic2.ic_mean) < 1e-12
-    assert ic1.ic_series.sort("trade_date").equals(ic2.ic_series.sort("trade_date"))
 
 
 def test_factors_file_batch_shared_prep_and_fail_continue(tmp_path, monkeypatch):

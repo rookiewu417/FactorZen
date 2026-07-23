@@ -134,7 +134,7 @@ def test_library_track_empty(tmp_path):
 
 def test_store_list_and_detail(tmp_path):
     """meta.json + factor.py 读取。"""
-    d = tmp_path / "factor_store" / "ashare" / "alpha_1"
+    d = tmp_path / "factors" / "ashare" / "alpha_1"
     d.mkdir(parents=True)
     meta = {
         "name": "alpha_1",
@@ -147,7 +147,7 @@ def test_store_list_and_detail(tmp_path):
     (d / "factor.py").write_text("# source\nprint(1)\n", encoding="utf-8")
 
     # 无 meta 的目录应跳过
-    (tmp_path / "factor_store" / "ashare" / "orphan").mkdir(parents=True)
+    (tmp_path / "factors" / "ashare" / "orphan").mkdir(parents=True)
 
     r = _client(tmp_path).get("/api/store/ashare")
     assert r.status_code == 200
@@ -166,7 +166,7 @@ def test_store_list_and_detail(tmp_path):
 
 
 def test_store_detail_missing_source_null(tmp_path):
-    d = tmp_path / "factor_store" / "crypto" / "f1"
+    d = tmp_path / "factors" / "crypto" / "f1"
     d.mkdir(parents=True)
     (d / "meta.json").write_text(
         json.dumps({"name": "f1", "expression": "x"}), encoding="utf-8"
@@ -182,7 +182,7 @@ def test_store_path_traversal_404(tmp_path):
     evil = tmp_path / "secret"
     evil.mkdir()
     (evil / "meta.json").write_text('{"secret": 1}', encoding="utf-8")
-    (tmp_path / "factor_store" / "ashare").mkdir(parents=True)
+    (tmp_path / "factors" / "ashare").mkdir(parents=True)
 
     client = _client(tmp_path)
     for name in ("../secret", "../../secret", "..%2Fsecret"):
@@ -203,7 +203,7 @@ def test_store_invalid_market_404(tmp_path):
 
 
 def test_store_missing_404(tmp_path):
-    (tmp_path / "factor_store" / "ashare").mkdir(parents=True)
+    (tmp_path / "factors" / "ashare").mkdir(parents=True)
     assert _client(tmp_path).get("/api/store/ashare/nope").status_code == 404
 
 
@@ -212,7 +212,7 @@ def test_store_missing_404(tmp_path):
 
 def _write_store_python(tmp_path, market, name, *, status=None, extra_snap=None):
     """写入 kind=python 的 factor_store 资产。"""
-    d = tmp_path / "factor_store" / market / name
+    d = tmp_path / "factors" / market / name
     d.mkdir(parents=True)
     snap = {"status": status, "ic_train": 0.01, "holdout_ic": None}
     if extra_snap:
@@ -261,7 +261,7 @@ def test_list_factors_merges_handwritten_store(tmp_path):
     # 不在 library：应以 manual + source=store 出现
     _write_store_python(tmp_path, "ashare", "hand_alpha", status=None)
     # 非 python 资产不并入
-    expr_dir = tmp_path / "factor_store" / "ashare" / "expr_only"
+    expr_dir = tmp_path / "factors" / "ashare" / "expr_only"
     expr_dir.mkdir(parents=True)
     (expr_dir / "meta.json").write_text(
         json.dumps(

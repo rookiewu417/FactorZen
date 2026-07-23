@@ -272,14 +272,9 @@ def test_pipeline_membership_integration_suite(tmp_path):
             lambda **kw: {"warnings": [], "status": "ok"},
         )
         mp.setattr(
-            ds, "daily_factor_output_dir", lambda name: tmp_path / "factors" / name
-        )
-        mp.setattr(
-            ds, "daily_result_output_dir", lambda name: tmp_path / "results" / name
-        )
-        mp.setattr(
             ds, "daily_report_output_dir", lambda name: tmp_path / "reports" / name
         )
+
         # 预处理恒等（保留 factor_value → factor_clean）
         mp.setattr(
             ds,
@@ -298,11 +293,14 @@ def test_pipeline_membership_integration_suite(tmp_path):
             benchmark=None,
             seed=None,
             metrics_out=None,
+            # 隔离：不走 ensure_factor_store_panel（会写真实 workspace/factors）
+            no_factor_cache=True,
         )
         cfg = RunConfig(factor="dummy_pit", start="20240102", end="20240205")
+        run_dir = tmp_path / "run"
 
         with pytest.raises(RuntimeError, match="STOP_AFTER_IC"):
-            ds.run_factor_eval(args, cfg)
+            ds.run_factor_eval(args, cfg, run_dir)
 
         assert set(captured["ctx_universe"]) == {"A.SZ", "B.SZ", "C.SZ"}
         clean = captured["ic_clean"]
@@ -319,11 +317,9 @@ def test_pipeline_membership_integration_suite(tmp_path):
             == len(_JAN)
         ), "调出前半段应保留"
 
-        snap = list((tmp_path / "results").rglob("*_universe.parquet"))
-        assert snap, "应落 universe/membership parquet"
-        saved = pl.read_parquet(snap[0])
-        assert "trade_date" in saved.columns
-        assert set(saved["ts_code"].unique().to_list()) == {"A.SZ", "B.SZ", "C.SZ"}
+        # evaluations 不落 universe parquet；membership 仅内存使用
+        assert not (run_dir / "universe.parquet").exists()
+        assert not list(run_dir.glob("*.parquet"))
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
@@ -567,12 +563,14 @@ def test_pipeline_membership_integration_suite(tmp_path):
             universe="csi300",
             frequency="daily",
             benchmark=None,
+            # 隔离：不走 ensure_factor_store_panel（会写真实 workspace/factors）
+            no_factor_cache=True,
         )
         cfg = RunConfig(factor="dummy_pit", start="20240102", end="20240205")
         cfg.walk_forward.enabled = False
 
         with pytest.raises(RuntimeError, match="STOP_AFTER_IC"):
-            gr._run(args, cfg)
+            gr._run(args, cfg, tmp_path / "run")
 
         assert set(captured["ctx_uni"]) == {"A.SZ", "B.SZ", "C.SZ"}
         clean = captured["ic_clean"]

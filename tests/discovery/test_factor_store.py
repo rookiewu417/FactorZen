@@ -5,6 +5,8 @@ TDD 覆盖：
 - python 类迁移后 provider 能加载、compute 可跑
 - sync 增量：第二次 sync 跳过未变因子
 - verify：人为改 meta.expression → 报漂移
+
+生产默认 ``STORE_FACTOR_PARQUET_ENABLED=False``；本文件测试物化路径时 monkeypatch 开回。
 """
 from __future__ import annotations
 
@@ -266,7 +268,7 @@ class StorePyAlphaTdd(DailyFactor):
 
 StorePyAlphaTdd()
 '''
-    asset = tmp_path / "factor_store" / "ashare" / name
+    asset = tmp_path / "factors" / "ashare" / name
     asset.mkdir(parents=True)
     (asset / "factor.py").write_text(factor_code, encoding="utf-8")
     (asset / "meta.json").write_text(
@@ -319,7 +321,7 @@ StorePyAlphaTdd()
     n = load_library_factors(
         market="ashare",
         root=str(lib_root),
-        store_root=str(tmp_path / "factor_store"),
+        store_root=str(tmp_path / "factors"),
     )
     assert n >= 1
     cls = reg_mod.get_factor(name)
@@ -338,7 +340,7 @@ def test_sync_skips_unchanged_materialization(tmp_path, monkeypatch):
 
     rec = _expr_record("rank(close)", name="mined_sync_skip", status="active")
     lib_root = tmp_path / "factor_library"
-    store_root = tmp_path / "factor_store"
+    store_root = tmp_path / "factors"
     lib_root.mkdir()
     _save_library("ashare", [rec], root=str(lib_root))
 
@@ -418,7 +420,7 @@ def test_verify_reports_expression_drift(tmp_path):
 
     rec = _expr_record("rank(close)", name="mined_drift")
     lib_root = tmp_path / "factor_library"
-    store_root = tmp_path / "factor_store"
+    store_root = tmp_path / "factors"
     lib_root.mkdir()
     _save_library("ashare", [rec], root=str(lib_root))
     write_factor_asset(rec, market="ashare", root=str(store_root), materialize=False)
@@ -445,7 +447,7 @@ def test_verify_clean_when_consistent(tmp_path):
 
     rec = _expr_record("rank(close)", name="mined_ok")
     lib_root = tmp_path / "factor_library"
-    store_root = tmp_path / "factor_store"
+    store_root = tmp_path / "factors"
     lib_root.mkdir()
     _save_library("ashare", [rec], root=str(lib_root))
     write_factor_asset(rec, market="ashare", root=str(store_root), materialize=False)
@@ -472,7 +474,7 @@ def test_verify_reports_materialization_universe_drift(tmp_path, monkeypatch):
         universe="csi500",
     )
     lib_root = tmp_path / "factor_library"
-    store_root = tmp_path / "factor_store"
+    store_root = tmp_path / "factors"
     lib_root.mkdir()
     _save_library("ashare", [rec], root=str(lib_root))
     write_factor_asset(rec, market="ashare", root=str(store_root), materialize=False)
@@ -646,7 +648,7 @@ def test_load_materialized_factor_gates(tmp_path):
     """loader 门逐个：universe / 窗下界 / 窗上界 / expression / 全对齐切片。"""
     from factorzen.discovery.factor_store import load_materialized_factor
 
-    store = tmp_path / "factor_store"
+    store = tmp_path / "factors"
     dates = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
     values = [
         (date(2024, 1, 2), "000001.SZ", 1.0),
@@ -729,7 +731,7 @@ def test_materialize_assets_expr_python_skip_and_errors(tmp_path, monkeypatch):
     fixed_end = "2026-07-20"
     monkeypatch.setattr(fs, "store_materialize_end", lambda: fixed_end)
 
-    store = tmp_path / "factor_store"
+    store = tmp_path / "factors"
     # 1) expression 资产
     expr_name = "mat_assets_rank"
     expr_dir = store / "ashare" / expr_name
@@ -885,7 +887,7 @@ def test_load_materialized_factor_allow_warmup_head(tmp_path):
     """预热头部：parquet min > start 时 allow_warmup_head True 命中、False miss。"""
     from factorzen.discovery.factor_store import load_materialized_factor
 
-    store = tmp_path / "factor_store"
+    store = tmp_path / "factors"
     # parquet 从 2024-01-10 起（模拟预热吃掉 01-01~01-09）
     values = [
         (date(2024, 1, 10), "000001.SZ", 1.0),
@@ -927,3 +929,35 @@ def test_load_materialized_factor_allow_warmup_head(tmp_path):
     assert reason is None and df is not None
     assert df.height == 3
     assert meta is not None
+
+
+def test_materialization_window_fresh_accepts_superset_start(monkeypatch):
+    """回归：eval 补头把 mat.start 写早于 2016 后，sync 必须判新鲜（严格相等会乒乓重物化丢头部）。"""
+    from factorzen.discovery import factor_store as fs
+
+    monkeypatch.setattr(fs, "store_materialize_end", lambda: "2026-07-22")
+    base = {"universe": "all_a", "end": "2026-07-22"}
+    assert fs._materialization_window_fresh({**base, "start": "2016-01-01"})
+    assert fs._materialization_window_fresh({**base, "start": "2015-06-01"})
+    assert not fs._materialization_window_fresh({**base, "start": "2017-01-01"})
+    assert not fs._materialization_window_fresh({**base, "start": None})
+
+
+def test_finalize_factor_panel_normalizes_ts_code_dtype():
+    """dtype 单点收口：Categorical ts_code（mining prepped 帧）落盘前必须转 Utf8。"""
+    import polars as pl
+
+    from factorzen.discovery.factor_store import finalize_factor_panel
+
+    panel = pl.DataFrame(
+        {
+            "trade_date": [__import__("datetime").date(2024, 1, 2)],
+            "ts_code": ["000001.SZ"],
+            "factor_value": [1.0],
+            "factor_clean": [0.5],
+        }
+    ).with_columns(pl.col("ts_code").cast(pl.Categorical))
+    out = finalize_factor_panel(panel)
+    assert out["ts_code"].dtype == pl.Utf8
+    assert out["trade_date"].dtype == pl.Date
+    assert out["factor_value"].dtype == pl.Float64

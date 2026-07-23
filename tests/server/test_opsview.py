@@ -104,7 +104,7 @@ def test_ops_campaign_path_traversal_404(tmp_path):
 
 def test_reports_list_filters_extensions(tmp_path):
     """只列 .json/.md/.html/.txt；按 mtime 降序。"""
-    base = tmp_path / "reports"
+    base = tmp_path / "factors" / "reports"
     (base / "sub").mkdir(parents=True)
     (base / "a.json").write_text("{}", encoding="utf-8")
     (base / "b.md").write_text("# hi", encoding="utf-8")
@@ -126,8 +126,8 @@ def test_reports_list_filters_extensions(tmp_path):
 
 
 def test_reports_file_read(tmp_path):
-    base = tmp_path / "reports"
-    base.mkdir()
+    base = tmp_path / "factors" / "reports"
+    base.mkdir(parents=True)
     (base / "note.md").write_text("# title\nbody\n", encoding="utf-8")
 
     r = _client(tmp_path).get("/api/reports/file", params={"path": "note.md"})
@@ -139,7 +139,7 @@ def test_reports_file_read(tmp_path):
 
 
 def test_reports_path_traversal_404(tmp_path):
-    (tmp_path / "reports").mkdir()
+    (tmp_path / "factors" / "reports").mkdir(parents=True)
     (tmp_path / "secret.txt").write_text("leak", encoding="utf-8")
 
     client = _client(tmp_path)
@@ -149,8 +149,8 @@ def test_reports_path_traversal_404(tmp_path):
 
 
 def test_reports_disallowed_extension_404(tmp_path):
-    base = tmp_path / "reports"
-    base.mkdir()
+    base = tmp_path / "factors" / "reports"
+    base.mkdir(parents=True)
     (base / "x.bin").write_text("data", encoding="utf-8")
     r = _client(tmp_path).get("/api/reports/file", params={"path": "x.bin"})
     assert r.status_code == 404
@@ -159,8 +159,8 @@ def test_reports_disallowed_extension_404(tmp_path):
 def test_reports_file_too_large_413(tmp_path, monkeypatch):
     """超限返回 413；上限 monkeypatch 为小值。"""
     monkeypatch.setattr(opsview_mod, "REPORT_MAX_BYTES", 10)
-    base = tmp_path / "reports"
-    base.mkdir()
+    base = tmp_path / "factors" / "reports"
+    base.mkdir(parents=True)
     (base / "big.txt").write_text("x" * 50, encoding="utf-8")
 
     r = _client(tmp_path).get("/api/reports/file", params={"path": "big.txt"})

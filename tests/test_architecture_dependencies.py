@@ -170,8 +170,8 @@ _DIR_ZERO_REF_ALLOWLIST: dict[str, str] = {
         "tools/download_tushare_lake 直接引用，src 层保持子路径粒度"
     ),
     "OUTPUT_DIR": (
-        "legacy artifacts 根；OUTPUT_DAILY_* / daily_factor_output_dir 等派生路径"
-        "在 settings 内消费，包外无直接引用"
+        "历史 artifacts 根；日频评估已废除 factors/results 双写，仅 OUTPUT_INTRADAY_* "
+        "等派生路径在 settings 内保留，包外无直接引用"
     ),
     "COMMON_DIR": "历史源码路径别名（core/），现用包 import 而非路径常量，保留供文档/脚本",
     "REPORTING_DIR": "历史 reports 路径别名，现用 factorzen.reports 包导入，保留供文档/脚本",

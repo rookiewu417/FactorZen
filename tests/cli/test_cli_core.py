@@ -272,13 +272,14 @@ def test_runs_config_report_path_suite(tmp_path, capsys):
     def _section_0_test_report_path_prints_stable_run_report_path(tmp_path, mp, capsys):
         from factorzen.cli import main as cli
 
-        run_dir = tmp_path / "workspace" / "factor_evaluations" / "run-1"
+        store = tmp_path / "workspace" / "factors"
+        run_dir = store / "_runs" / "run-1"
         run_dir.mkdir(parents=True)
         report = run_dir / "report.html"
         report.write_text("<html></html>", encoding="utf-8")
         mp.setattr(
-            "factorzen.experiments.run_paths.FACTOR_EVALUATIONS_DIR",
-            tmp_path / "workspace" / "factor_evaluations",
+            "factorzen.experiments.run_paths.FACTOR_STORE_DIR",
+            store,
         )
 
         assert cli.main(["report", "path", "run-1"]) == 0
@@ -306,13 +307,13 @@ def test_runs_config_report_path_suite(tmp_path, capsys):
             ),
             encoding="utf-8",
         )
-        mp.setattr(cli, "ROOT", tmp_path)
-
         assert cli.main(["ops", "validate-config", str(config)]) == 0
 
         payload = json.loads(capsys.readouterr().out)
         assert payload["config"]["benchmark"] == "000905.SH"
-        assert payload["output_dir"].endswith("workspace/factor_evaluations/<run_id>")
+        assert payload["output_dir"].endswith(
+            "workspace/factors/<market>/<factor>/evaluations/<run_id>"
+        )
 
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
@@ -323,7 +324,7 @@ def test_runs_config_report_path_suite(tmp_path, capsys):
     def _section_2_test_runs_list_reads_experiment_index(tmp_path, mp, capsys):
         from factorzen.cli import main as cli
 
-        root = tmp_path / "workspace" / "factor_evaluations"
+        root = tmp_path / "workspace" / "factors"
         root.mkdir(parents=True)
         (root / "experiment_index.jsonl").write_text(
             json.dumps(
@@ -338,7 +339,7 @@ def test_runs_config_report_path_suite(tmp_path, capsys):
             + "\n",
             encoding="utf-8",
         )
-        mp.setattr(cli, "FACTOR_EVALUATIONS_DIR", root)
+        mp.setattr(cli, "FACTOR_STORE_DIR", root)
 
         assert cli.main(["runs", "list"]) == 0
 
@@ -527,27 +528,26 @@ def test_cli_market_parser_suite(capsys):
 def test_workspace_factor_new_suite(tmp_path):
     """test_run_artifacts_are_copied_with_stable_names；test_run_dir_uses_factor_evaluations_folder；test_fz_factor_new_writes_to_workspace；test_fz_factor_new_accepts_frequency_alias"""
     # -- 原 test_run_artifacts_are_copied_with_stable_names --
-    def _section_0_test_run_artifacts_are_copied_with_stable_names(tmp_path):
-        from factorzen.experiments.run_paths import copy_outputs_to_run_dir
+    def _section_0_test_run_artifact_stable_names(tmp_path):
+        from factorzen.experiments.run_paths import artifact_path, standard_artifact_name
 
-        report = tmp_path / "momentum_20d_20240101_20240131.html"
+        run = tmp_path / "run"
+        run.mkdir()
+        report = artifact_path(run, "report")
+        quality = artifact_path(run, "quality_report")
         report.write_text("<html></html>", encoding="utf-8")
-        quality = tmp_path / "momentum_20d_20240101_20240131_quality.json"
         quality.write_text("{}", encoding="utf-8")
 
-        copied = copy_outputs_to_run_dir(
-            {"report": str(report), "quality_report": str(quality)},
-            tmp_path / "run",
-        )
-
-        assert Path(copied["run_report"]).name == "report.html"
-        assert Path(copied["run_quality_report"]).name == "quality.json"
-        assert (tmp_path / "run" / "report.html").read_text(encoding="utf-8") == "<html></html>"
-        assert (tmp_path / "run" / "quality.json").read_text(encoding="utf-8") == "{}"
+        assert standard_artifact_name("report") == "report.html"
+        assert standard_artifact_name("quality_report") == "quality.json"
+        assert report.name == "report.html"
+        assert quality.name == "quality.json"
+        assert report.read_text(encoding="utf-8") == "<html></html>"
+        assert quality.read_text(encoding="utf-8") == "{}"
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
-    _section_0_test_run_artifacts_are_copied_with_stable_names(_tp0)
+    _section_0_test_run_artifact_stable_names(_tp0)
 
     # -- 原 test_run_dir_uses_factor_evaluations_folder --
     def _section_1_test_run_dir_uses_factor_evaluations_folder():
@@ -555,7 +555,15 @@ def test_workspace_factor_new_suite(tmp_path):
         from factorzen.experiments.run_paths import run_dir
 
         assert run_dir("momentum_12_1_20260530_031234") == (
-            WORKSPACE_DIR / "factor_evaluations" / "momentum_12_1_20260530_031234"
+            WORKSPACE_DIR
+            / "factors"
+            / "ashare"
+            / "momentum_12_1"
+            / "evaluations"
+            / "momentum_12_1_20260530_031234"
+        )
+        assert run_dir("plain_run", factor=None) == (
+            WORKSPACE_DIR / "factors" / "_runs" / "plain_run"
         )
 
     _section_1_test_run_dir_uses_factor_evaluations_folder()
@@ -565,10 +573,11 @@ def test_workspace_factor_new_suite(tmp_path):
         from factorzen.cli import main as cli
 
         mp.setattr(cli, "ROOT", tmp_path)
+        mp.setattr(cli, "FACTOR_STORE_DIR", tmp_path / "workspace" / "factors")
 
         assert cli.main(["factor", "new", "my_alpha", "--freq", "daily"]) == 0
 
-        asset = tmp_path / "workspace" / "factor_store" / "ashare" / "my_alpha"
+        asset = tmp_path / "workspace" / "factors" / "ashare" / "my_alpha"
         factor_path = asset / "factor.py"
         assert factor_path.exists()
         text = factor_path.read_text(encoding="utf-8")
@@ -586,10 +595,11 @@ def test_workspace_factor_new_suite(tmp_path):
         from factorzen.cli import main as cli
 
         mp.setattr(cli, "ROOT", tmp_path)
+        mp.setattr(cli, "FACTOR_STORE_DIR", tmp_path / "workspace" / "factors")
 
         assert cli.main(["factor", "new", "my_weekly_alpha", "--frequency", "weekly"]) == 0
 
-        asset = tmp_path / "workspace" / "factor_store" / "ashare" / "my_weekly_alpha"
+        asset = tmp_path / "workspace" / "factors" / "ashare" / "my_weekly_alpha"
         assert (asset / "factor.py").exists()
         meta = (asset / "meta.json").read_text(encoding="utf-8")
         assert '"frequency": "weekly"' in meta
@@ -899,10 +909,10 @@ def test_parser_report_portfolio_suite():
                 "--sim-dir",
                 "workspace/sim/run-001",
                 "--out",
-                "workspace/reports/my_report.html",
+                "workspace/factors/reports/my_report.html",
             ]
         )
-        assert args.out == "workspace/reports/my_report.html"
+        assert args.out == "workspace/factors/reports/my_report.html"
 
     _section_3_test_parser_report_portfolio_out_explicit()
 

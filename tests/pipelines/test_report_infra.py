@@ -25,12 +25,8 @@ import polars as pl
 import pytest
 
 from factorzen.config.settings import (
-    OUTPUT_DAILY_FACTORS,
     OUTPUT_DAILY_REPORTS,
-    OUTPUT_DAILY_RESULTS,
-    daily_factor_output_dir,
     daily_report_output_dir,
-    daily_result_output_dir,
 )
 
 
@@ -71,14 +67,25 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
     from factorzen.daily.evaluation.ic_analysis import ICAnalysisResult
     from factorzen.daily.evaluation.turnover import TurnoverResult
 
-    # _save_results 已拆到 _report_persistence，路径构造函数在该模块命名空间解析
+    # _save_results 已拆到 _report_persistence，产物只写 run_dir
     from factorzen.pipelines import _report_persistence as mod
 
-    monkeypatch.setattr(mod, "daily_factor_output_dir", lambda factor_name: tmp_path / "factors")
-    monkeypatch.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")
+    # 隔离 store 根：_existing_store_panel_path 不得读真实 workspace/factors
+    monkeypatch.setattr(
+        "factorzen.discovery.factor_store.DEFAULT_ROOT",
+        str(tmp_path / "_store_isolated"),
+    )
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
 
     clean_df = pl.DataFrame(
-        {"trade_date": [date(2024, 1, 2)], "ts_code": ["000001.SZ"], "factor_clean": [1.0]}
+        {
+            "trade_date": [date(2024, 1, 2)],
+            "ts_code": ["000001.SZ"],
+            "factor_value": [1.0],
+            "factor_clean": [1.0],
+        }
     )
     ic_result = ICAnalysisResult(
         factor_name="momentum_20d",
@@ -140,6 +147,7 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
     )
 
     mod._save_results(
+        run_dir,
         "momentum_20d",
         "20240101",
         "20240131",
@@ -148,7 +156,7 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
         bt_result,
         to_result,
         quality_report={"status": "warning", "warnings": ["low coverage"]},
-        quality_path=tmp_path / "quality.json",
+        quality_path=run_dir / "quality.json",
         walk_forward_summary={
             "status": "ok",
             "n_folds": 2,
@@ -161,13 +169,13 @@ def test_save_results_persists_quality_report_metadata(tmp_path, monkeypatch):
     )
 
     meta = json.loads(
-        (tmp_path / "results" / "momentum_20d_20240101_20240131_meta.json").read_text(
+        (run_dir / "meta.json").read_text(
             encoding="utf-8"
         )
     )
     assert meta["quality_status"] == "warning"
     assert meta["quality_warnings"] == ["low coverage"]
-    assert meta["quality_report_path"] == str(tmp_path / "quality.json")
+    assert meta["quality_report_path"] == str(run_dir / "quality.json")
     assert meta["walk_forward_summary"] == {
         "status": "ok",
         "n_folds": 2,
@@ -188,7 +196,6 @@ def test_generate_report_trading_track_smoke_suite(tmp_path):
         import inspect
 
         from factorzen.core import experiment as exp_mod
-        from factorzen.pipelines import _report_persistence as persist
         from factorzen.pipelines import generate_report as mod
         from factorzen.reports.trading_report import TRADING_BANNER, generate_trading_report
 
@@ -197,10 +204,7 @@ def test_generate_report_trading_track_smoke_suite(tmp_path):
 
         experiments_dir = tmp_path / "experiments"
         report_root = tmp_path / "reports"
-        result_root = tmp_path / "results"
         mp.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
-        mp.setattr(persist, "daily_result_output_dir", lambda factor_name: result_root)
-        mp.setattr(persist, "daily_report_output_dir", lambda factor_name: report_root)
         mp.setattr(mod, "daily_report_output_dir", lambda factor_name: report_root)
         mp.setattr(
             sys,
@@ -269,8 +273,8 @@ def test_generate_report_trading_track_smoke_suite(tmp_path):
             frequency="daily",
         )
 
-        def fake_run(args, effective_config, timer=None):
-            # 与生产一致：走 generate_trading_report，落长名 HTML
+        def fake_run(args, effective_config, run_dir, timer=None):
+            # 与生产一致：走 generate_trading_report，写 run_dir + reports 镜像
             html = generate_trading_report(
                 args.factor,
                 bt,
@@ -278,12 +282,13 @@ def test_generate_report_trading_track_smoke_suite(tmp_path):
                 universe=getattr(args, "universe", None) or "csi300",
                 strategy_name="top_n",
             )
+            report_path = run_dir / "report.html"
+            report_path.write_text(html, encoding="utf-8")
             report_dir = mod.daily_report_output_dir(args.factor)
             report_dir.mkdir(parents=True, exist_ok=True)
-            report_path = report_dir / f"{args.factor}_{args.start}_{args.end}.html"
-            report_path.write_text(html, encoding="utf-8")
-            meta_path = result_root / f"{args.factor}_{args.start}_{args.end}_meta.json"
-            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            mirror = report_dir / f"{args.factor}_{args.start}_{args.end}.html"
+            mirror.write_text(html, encoding="utf-8")
+            meta_path = run_dir / "meta.json"
             meta_path.write_text("{}", encoding="utf-8")
             return {"report": str(report_path), "meta": str(meta_path)}
 
@@ -1045,13 +1050,10 @@ def test_walk_forward_summary_suite():
 
 # ==== 来自 test_output_paths.py ====
 def test_qlib_output_bucket_suite():
-    """test_qlib_alpha158_outputs_go_to_qlib158_bucket；test_qlib_alpha360_outputs_go_to_qlib360_bucket；test_personal_factor_outputs_stay_in_daily_roots"""
+    """报告 HTML 分桶仍保留；factors/results 全局归档已废除。"""
     # -- 原 test_qlib_alpha158_outputs_go_to_qlib158_bucket --
     def _section_0_test_qlib_alpha158_outputs_go_to_qlib158_bucket():
         factor = "qlib_alpha158_kmid"
-
-        assert daily_factor_output_dir(factor) == OUTPUT_DAILY_FACTORS / "qlib158"
-        assert daily_result_output_dir(factor) == OUTPUT_DAILY_RESULTS / "qlib158"
         assert daily_report_output_dir(factor) == OUTPUT_DAILY_REPORTS / "qlib158"
 
     _section_0_test_qlib_alpha158_outputs_go_to_qlib158_bucket()
@@ -1059,9 +1061,6 @@ def test_qlib_output_bucket_suite():
     # -- 原 test_qlib_alpha360_outputs_go_to_qlib360_bucket --
     def _section_1_test_qlib_alpha360_outputs_go_to_qlib360_bucket():
         factor = "qlib_alpha360_close0"
-
-        assert daily_factor_output_dir(factor) == OUTPUT_DAILY_FACTORS / "qlib360"
-        assert daily_result_output_dir(factor) == OUTPUT_DAILY_RESULTS / "qlib360"
         assert daily_report_output_dir(factor) == OUTPUT_DAILY_REPORTS / "qlib360"
 
     _section_1_test_qlib_alpha360_outputs_go_to_qlib360_bucket()
@@ -1069,9 +1068,6 @@ def test_qlib_output_bucket_suite():
     # -- 原 test_personal_factor_outputs_stay_in_daily_roots --
     def _section_2_test_personal_factor_outputs_stay_in_daily_roots():
         factor = "momentum_20d"
-
-        assert daily_factor_output_dir(factor) == OUTPUT_DAILY_FACTORS
-        assert daily_result_output_dir(factor) == OUTPUT_DAILY_RESULTS
         assert daily_report_output_dir(factor) == OUTPUT_DAILY_REPORTS
 
     _section_2_test_personal_factor_outputs_stay_in_daily_roots()

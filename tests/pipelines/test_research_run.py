@@ -521,10 +521,13 @@ def test_experiment_lifecycle_suite(tmp_path, caplog):
         mp.setattr(exp_mod, "EXPERIMENTS_DIR", tmp_path / "experiments")
         cfg = RunConfig(factor="momentum_20d", start="20230101", end="20241231")
 
-        with exp_mod.run_experiment(cfg, run_id="dur_run"):
+        with exp_mod.run_experiment(cfg, run_id="dur_run") as exp_dir:
             pass
 
-        manifest = json.loads((tmp_path / "experiments" / "dur_run" / "manifest.json").read_text())
+        manifest = json.loads((exp_dir / "manifest.json").read_text())
+        assert exp_dir == (
+            tmp_path / "experiments" / "ashare" / "momentum_20d" / "evaluations" / "dur_run"
+        )
         assert "duration_seconds" in manifest
         assert isinstance(manifest["duration_seconds"], (int, float))
         assert manifest["duration_seconds"] >= 0

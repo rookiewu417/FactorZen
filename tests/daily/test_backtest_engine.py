@@ -243,16 +243,14 @@ def test_daily_single_wires_direction_helpers():
     assert "compute_turnover(backtest_df" in src
 
 
-def test_meta_path_records_backtest_direction(tmp_path, monkeypatch):
+def test_meta_path_records_backtest_direction(tmp_path):
     """daily_single 写入的 meta 形状应可被 _load_backtest_direction 读取。"""
     from factorzen.pipelines import _report_direction as direction_mod
     from factorzen.pipelines import _report_persistence as persist_mod
 
-    monkeypatch.setattr(
-        persist_mod, "daily_result_output_dir", lambda _name: tmp_path / "results"
-    )
-    # _meta_path 在 persist 模块解析 daily_result_output_dir
-    path = persist_mod._meta_path("hf_resiliency", "20200101", "20201231")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    path = persist_mod._meta_path(run_dir)
     decision = direction_mod._decide_backtest_direction(
         _ic(ic_mean=-0.03, ic_tstat=-5.0, ic_pvalue=0.001)
     )
@@ -260,12 +258,7 @@ def test_meta_path_records_backtest_direction(tmp_path, monkeypatch):
         json.dumps({"backtest_direction": decision}, ensure_ascii=False),
         encoding="utf-8",
     )
-    loaded = direction_mod._load_backtest_direction("hf_resiliency", "20200101", "20201231")
-    # _load_backtest_direction 也走 _meta_path → 需同样 patch
-    monkeypatch.setattr(
-        direction_mod, "_meta_path", lambda *a, **k: path
-    )
-    loaded = direction_mod._load_backtest_direction("hf_resiliency", "20200101", "20201231")
+    loaded = direction_mod._load_backtest_direction(run_dir)
     assert loaded is not None
     assert loaded["direction"] == "reversed"
     assert loaded["should_reverse"] is True

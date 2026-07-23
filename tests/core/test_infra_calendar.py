@@ -227,9 +227,11 @@ class TestExpressionFactorParity:
         monkeypatch.setattr(
             "factorzen.discovery.intraday_expr.INTRADAY_FEATURES_DIR", base
         )
-        monkeypatch.setattr(
-            "factorzen.discovery.intraday_expr.DATA_RAW", src
-        )
+        # 绝不 patch intraday_expr.DATA_RAW：materialize 的防脏门靠
+        # 「source_dir != DATA_RAW」判断自定义源并关闭共享 bars 缓存；
+        # 把 DATA_RAW 也指到 src 会让门失效，本机有真实 5min bars 缓存时
+        # 读穿真实数据（5095 只真股 + 停牌 null），机器没数据才「碰巧」绿。
+        # 全部调用点都显式传 source_dir=src，无须动 DATA_RAW。
 
         # 预热缓存（稀疏帧需 min_bar_coverage=0）
         mat = _seed_expr_cache(base, src, spec)
@@ -345,27 +347,21 @@ class TestIntradayExprLeafNames:
 
 # ==== 来自 test_script_manifest_wrapping.py ====
 def _single_manifest(experiments_dir):
-    manifests = list(experiments_dir.glob("*/manifest.json"))
-    assert len(manifests) == 1
-    return json.loads(manifests[0].read_text(encoding="utf-8"))
+    # 新布局：factors/<market>/<name>/evaluations/<run_id>/manifest.json
+    manifests = list(experiments_dir.rglob("manifest.json"))
+    assert len(manifests) == 1, manifests
+    return json.loads(manifests[0].read_text(encoding="utf-8")), manifests[0].parent
+
 
 def test_failure_manifest_partial_outputs_suite(tmp_path):
     """generate_report / daily backtest / daily eval 失败时 manifest 记 partial outputs。"""
     # -- 原 test_generate_report_failure_manifest_records_partial_outputs --
     def _section_0_test_generate_report_failure_manifest_records_partial_outputs(tmp_path, mp):
         from factorzen.core import experiment as exp_mod
-        from factorzen.pipelines import _report_persistence as persist
         from factorzen.pipelines import generate_report as mod
 
         experiments_dir = tmp_path / "experiments"
         mp.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
-        # _meta_path / _existing_report_outputs 已拆到 _report_persistence，在该模块解析路径函数
-        mp.setattr(
-            persist, "daily_result_output_dir", lambda factor_name: tmp_path / "results"
-        )
-        mp.setattr(
-            persist, "daily_report_output_dir", lambda factor_name: tmp_path / "reports"
-        )
         mp.setattr(
             sys,
             "argv",
@@ -380,8 +376,8 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
             ],
         )
 
-        def fail_after_meta(args, effective_config, timer=None):
-            meta_path = mod._meta_path(args.factor, args.start, args.end)
+        def fail_after_meta(args, effective_config, run_dir, timer=None):
+            meta_path = mod._meta_path(run_dir)
             meta_path.write_text("{}", encoding="utf-8")
             raise RuntimeError("report boom")
 
@@ -391,13 +387,14 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
             mod.main()
 
         assert exc.value.code == 1
-        manifest = _single_manifest(experiments_dir)
+        manifest, exp_dir = _single_manifest(experiments_dir)
         assert manifest["status"] == "failure"
         assert manifest["error"] == "report boom"
         assert manifest["config"]["factor"] == "momentum_20d"
-        assert manifest["outputs"]["meta"] == str(
-            tmp_path / "results" / "momentum_20d_20240101_20240131_meta.json"
+        assert exp_dir == (
+            experiments_dir / "ashare" / "momentum_20d" / "evaluations" / manifest["run_id"]
         )
+        assert manifest["outputs"]["meta"] == str(exp_dir / "meta.json")
 
     _tp0 = tmp_path / "_s0"
     _tp0.mkdir(exist_ok=True)
@@ -411,8 +408,6 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
 
         experiments_dir = tmp_path / "experiments"
         mp.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
-        mp.setattr(mod, "daily_factor_output_dir", lambda factor_name: tmp_path / "factors")
-        mp.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")
         mp.setattr(mod, "daily_report_output_dir", lambda factor_name: tmp_path / "reports")
         mp.setattr(
             sys,
@@ -428,10 +423,8 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
             ],
         )
 
-        def fail_after_quality(args, effective_config, timer=None):
-            quality_path = mod.daily_result_output_dir(args.factor) / (
-                f"{args.factor}_{args.start}_{args.end}_quality.json"
-            )
+        def fail_after_quality(args, effective_config, run_dir, timer=None, shared=None):
+            quality_path = run_dir / "quality.json"
             quality_path.parent.mkdir(parents=True, exist_ok=True)
             quality_path.write_text("{}", encoding="utf-8")
             raise RuntimeError("daily boom")
@@ -443,13 +436,14 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
             mod.main()
 
         assert exc.value.code == 1
-        manifest = _single_manifest(experiments_dir)
+        manifest, exp_dir = _single_manifest(experiments_dir)
         assert manifest["status"] == "failure"
         assert manifest["error"] == "daily boom"
         assert manifest["config"]["factor"] == "momentum_20d"
-        assert manifest["outputs"]["quality_report"] == str(
-            tmp_path / "results" / "momentum_20d_20240101_20240131_quality.json"
+        assert exp_dir == (
+            experiments_dir / "ashare" / "momentum_20d" / "evaluations" / manifest["run_id"]
         )
+        assert manifest["outputs"]["quality_report"] == str(exp_dir / "quality.json")
 
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
@@ -463,8 +457,6 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
 
         experiments_dir = tmp_path / "experiments"
         mp.setattr(exp_mod, "EXPERIMENTS_DIR", experiments_dir)
-        mp.setattr(mod, "daily_factor_output_dir", lambda factor_name: tmp_path / "factors")
-        mp.setattr(mod, "daily_result_output_dir", lambda factor_name: tmp_path / "results")
         mp.setattr(mod, "daily_report_output_dir", lambda factor_name: tmp_path / "reports")
         mp.setattr(
             sys,
@@ -480,10 +472,8 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
             ],
         )
 
-        def fail_after_quality(args, effective_config, timer=None):
-            quality_path = mod.daily_result_output_dir(args.factor) / (
-                f"{args.factor}_{args.start}_{args.end}_quality.json"
-            )
+        def fail_after_quality(args, effective_config, run_dir, timer=None, shared=None):
+            quality_path = run_dir / "quality.json"
             quality_path.parent.mkdir(parents=True, exist_ok=True)
             quality_path.write_text("{}", encoding="utf-8")
             raise RuntimeError("eval boom")
@@ -494,13 +484,14 @@ def test_failure_manifest_partial_outputs_suite(tmp_path):
             mod.main(track="eval")
 
         assert exc.value.code == 1
-        manifest = _single_manifest(experiments_dir)
+        manifest, exp_dir = _single_manifest(experiments_dir)
         assert manifest["status"] == "failure"
         assert manifest["error"] == "eval boom"
         assert manifest["config"]["factor"] == "momentum_20d"
-        assert manifest["outputs"]["quality_report"] == str(
-            tmp_path / "results" / "momentum_20d_20240101_20240131_quality.json"
+        assert exp_dir == (
+            experiments_dir / "ashare" / "momentum_20d" / "evaluations" / manifest["run_id"]
         )
+        assert manifest["outputs"]["quality_report"] == str(exp_dir / "quality.json")
 
     _tp2 = tmp_path / "_s2"
     _tp2.mkdir(exist_ok=True)

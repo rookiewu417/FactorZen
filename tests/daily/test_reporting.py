@@ -219,7 +219,12 @@ def results():
     from factorzen.daily.evaluation.turnover import TurnoverResult
 
     clean_df = pl.DataFrame(
-        {"trade_date": [date(2024, 1, 2)], "ts_code": ["000001.SZ"], "factor_clean": [1.0]}
+        {
+            "trade_date": [date(2024, 1, 2)],
+            "ts_code": ["000001.SZ"],
+            "factor_value": [1.0],
+            "factor_clean": [1.0],
+        }
     )
     ic_result = ICAnalysisResult(
         factor_name="momentum_20d",
@@ -283,27 +288,60 @@ def results():
 
 
 @pytest.fixture
-def tmp_dirs(tmp_path, monkeypatch):
-    """把 persist 的输出目录重定向到 tmp_path。"""
-    monkeypatch.setattr(persist, "daily_factor_output_dir", lambda f: tmp_path / "factors")
-    monkeypatch.setattr(persist, "daily_result_output_dir", lambda f: tmp_path / "results")
-    monkeypatch.setattr(persist, "daily_report_output_dir", lambda f: tmp_path / "reports")
-    return tmp_path
+def tmp_dirs(tmp_path):
+    """评估 run 目录（产物只写此处）。"""
+    run = tmp_path / "run"
+    run.mkdir(parents=True)
+    return run
 
 
-def _save(results, **kw):
-    clean_df, ic_result, bt_result, to_result = results
-    persist._save_results(
-        "momentum_20d", "20240101", "20240131", clean_df, ic_result, bt_result, to_result, **kw
+@pytest.fixture(autouse=True)
+def _isolate_store_root(monkeypatch, tmp_path):
+    """_existing_store_panel_path 解析 DEFAULT_ROOT；不隔离会读到真实 workspace/factors。"""
+    monkeypatch.setattr(
+        "factorzen.discovery.factor_store.DEFAULT_ROOT",
+        str(tmp_path / "_store_isolated"),
     )
 
 
-def test_save_results_writes_artifacts(tmp_dirs, results):
-    """_save_results 落盘 meta + 评价 parquet（_load_results 已随 --reuse 删除）。"""
+def _save(run_dir, results, **kw):
+    clean_df, ic_result, bt_result, to_result = results
+    persist._save_results(
+        run_dir,
+        "momentum_20d",
+        "20240101",
+        "20240131",
+        clean_df,
+        ic_result,
+        bt_result,
+        to_result,
+        **kw,
+    )
+
+
+def test_save_results_writes_artifacts(tmp_dirs, results, monkeypatch, tmp_path):
+    """_save_results 落盘 meta；不覆盖写 store 面板；已有 parquet 则记路径。"""
     import json
 
-    _save(results)
-    meta_path = persist._meta_path("momentum_20d", "20240101", "20240131")
+    import polars as pl
+
+    store = tmp_path / "store"
+    panel = store / "ashare" / "momentum_20d" / "factor.parquet"
+    panel.parent.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2)],
+            "ts_code": ["000001.SZ"],
+            "factor_value": [1.0],
+            "factor_clean": [0.5],
+        }
+    ).write_parquet(panel)
+    monkeypatch.setattr(
+        "factorzen.discovery.factor_store.DEFAULT_ROOT",
+        str(store),
+    )
+    _save(tmp_dirs, results)
+    meta_path = persist._meta_path(tmp_dirs)
     assert meta_path.exists()
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     assert meta["factor_name"] == "momentum_20d"
@@ -312,48 +350,44 @@ def test_save_results_writes_artifacts(tmp_dirs, results):
     assert meta["bt_factor_name"] == "momentum_20d"
     assert meta["bt_n_groups"] == 5
     assert meta["to_avg_turnover"] == pytest.approx(0.1)
-    result_dir = persist.daily_result_output_dir("momentum_20d")
-    prefix = "momentum_20d_20240101_20240131"
-    for suffix in (
-        "_ic.parquet",
-        "_bt_returns.parquet",
-        "_bt_nav.parquet",
-        "_bt_positions.parquet",
-        "_bt_trades.parquet",
-        "_to_daily.parquet",
-        "_to_matrix.parquet",
-    ):
-        assert (result_dir / f"{prefix}{suffix}").exists(), suffix
+    assert (tmp_dirs / "meta.json").exists()
+    assert not list(tmp_dirs.glob("*.parquet"))
+    # 评估不 clobber：预置面板仍在，meta 记路径
+    assert panel.exists()
+    assert meta["store_panel"] == str(panel)
+    df = pl.read_parquet(panel)
+    assert df.height == 1
+    assert df.columns == ["trade_date", "ts_code", "factor_value", "factor_clean"]
 
 
 def test_load_walk_forward_summary_round_trip(tmp_dirs, results):
     summary = {"status": "ok", "n_folds": 3, "oos_sharpe_mean": 0.7}
-    _save(results, walk_forward_summary=summary)
-    assert persist._load_walk_forward_summary("momentum_20d", "20240101", "20240131") == summary
+    _save(tmp_dirs, results, walk_forward_summary=summary)
+    assert persist._load_walk_forward_summary(tmp_dirs) == summary
 
 
 def test_load_backtest_direction_round_trip(tmp_dirs, results):
     decision = {"direction": "reversed", "should_reverse": True, "reason": "neg IC"}
-    _save(results, backtest_direction=decision)
-    loaded = direction._load_backtest_direction("momentum_20d", "20240101", "20240131")
+    _save(tmp_dirs, results, backtest_direction=decision)
+    loaded = direction._load_backtest_direction(tmp_dirs)
     assert loaded["direction"] == "reversed"
     assert loaded["should_reverse"] is True
 
 
 def test_existing_report_outputs_lists_present_files(tmp_dirs, results):
-    _save(results)
-    persist._save_quality_report("momentum_20d", "20240101", "20240131", {"status": "ok"})
-    outputs = persist._existing_report_outputs("momentum_20d", "20240101", "20240131")
+    _save(tmp_dirs, results)
+    persist._save_quality_report(tmp_dirs, {"status": "ok"})
+    outputs = persist._existing_report_outputs(tmp_dirs)
     assert "meta" in outputs
     assert "quality_report" in outputs
-    assert outputs["meta"].endswith("_meta.json")
+    assert outputs["meta"].endswith("meta.json")
 
 
 def test_save_quality_report_writes_json(tmp_dirs):
     import json
 
     path = persist._save_quality_report(
-        "momentum_20d", "20240101", "20240131", {"status": "warning", "warnings": ["w"]}
+        tmp_dirs, {"status": "warning", "warnings": ["w"]}
     )
     assert path.exists()
     loaded = json.loads(path.read_text(encoding="utf-8"))

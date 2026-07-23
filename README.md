@@ -124,7 +124,7 @@ pixi run fz factor list
 pixi run fz factor new my_alpha --frequency daily
 pixi run fz factor eval my_alpha --start 20230101 --end 20241231
 pixi run fz factor backtest my_alpha --start 20230101 --end 20241231
-pixi run fz report path <run_id>
+pixi run fz runs path <run_id>
 ```
 
 无 `--config` 时使用内置研究级默认配置（`csi500`、匹配 benchmark、`seed=42`、行业+市值中性化、walk-forward 默认关闭）。

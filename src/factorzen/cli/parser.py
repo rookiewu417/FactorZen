@@ -60,24 +60,6 @@ def _add_factor_common_arguments(parser: argparse.ArgumentParser) -> None:
     _add_exec_convention_args(parser)
 
 
-def _add_report_build_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("name", nargs="?", help="Factor name")
-    parser.add_argument("--factor", default=None, help="Factor name")
-    parser.add_argument("--start", default=None, help="Start date YYYYMMDD")
-    parser.add_argument("--end", default=None, help="End date YYYYMMDD")
-    parser.add_argument("--universe", default=None, help="Universe name")
-    parser.add_argument(
-        "--frequency",
-        "--freq",
-        dest="frequency",
-        choices=["daily", "weekly", "monthly"],
-        default="daily",
-        help="Factor frequency",
-    )
-    parser.add_argument("--benchmark", default=None, help="Benchmark index code")
-    parser.add_argument("--config", default=None, help="YAML run config path")
-
-
 def _add_freq_arg(p: _ArgAdder) -> None:
     p.add_argument("--freq", choices=["1m", "5m", "15m", "1h", "daily"], default="daily",
                    help="bar 粒度(仅 crypto;ashare 只支持 daily)")
@@ -212,16 +194,10 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     )
     sweep.set_defaults(func=commands._cmd_factor_sweep)
 
-    report = sub.add_parser("report", help="Report workflows")
+    # 因子报告已收敛到 fz factor eval / fz factor backtest（同一 daily_single 引擎）；
+    # report 命名空间只保留组合 dashboard。查 run 报告路径见 fz runs path。
+    report = sub.add_parser("report", help="组合报告工作流（因子报告见 fz factor eval/backtest）")
     report_sub = report.add_subparsers(dest="report_command", required=True)
-
-    build_cmd = report_sub.add_parser("build", help="Build a factor report")
-    _add_report_build_arguments(build_cmd)
-    build_cmd.set_defaults(func=commands._cmd_report_build)
-
-    path_cmd = report_sub.add_parser("path", help="Print report path for a run")
-    path_cmd.add_argument("run_id")
-    path_cmd.set_defaults(func=commands._cmd_report_path)
 
     pf_report = report_sub.add_parser("portfolio", help="Generate portfolio dashboard HTML report")
     pf_report.add_argument(
@@ -318,6 +294,9 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     list_cmd.add_argument("--limit", type=int, default=20, help="Maximum rows to print")
     list_cmd.set_defaults(func=commands._cmd_runs_list)
     # runs show 已删（低频查看；manifest 直接 cat）
+    path_cmd = runs_sub.add_parser("path", help="Print report path for a run")
+    path_cmd.add_argument("run_id")
+    path_cmd.set_defaults(func=commands._cmd_runs_path)
 
     # ── fz mine ──（与 fz factor 并列的顶层命令组）
     mine = sub.add_parser("mine", help="Factor mining workflows")

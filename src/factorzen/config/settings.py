@@ -49,12 +49,14 @@ OUTPUT_DAILY = OUTPUT_DIR / "daily"
 OUTPUT_DAILY_FACTORS = OUTPUT_DAILY / "factors"
 OUTPUT_DAILY_RESULTS = OUTPUT_DAILY / "results"
 OUTPUT_DAILY_CHARTS = OUTPUT_DAILY / "charts"
-OUTPUT_DAILY_REPORTS = OUTPUT_DAILY / "reports"
+# HTML 报告统一收口到 workspace/reports/（前端「报告」栏单点可见）；
+# 中间产物 factors/results/charts 仍留在 runs/artifacts/daily/ 下。
+OUTPUT_DAILY_REPORTS = REPORTS_DIR / "daily"
 
 OUTPUT_INTRADAY = OUTPUT_DIR / "intraday"
 OUTPUT_INTRADAY_FACTORS = OUTPUT_INTRADAY / "factors"
 OUTPUT_INTRADAY_RESULTS = OUTPUT_INTRADAY / "results"
-OUTPUT_INTRADAY_REPORTS = OUTPUT_INTRADAY / "reports"
+OUTPUT_INTRADAY_REPORTS = REPORTS_DIR / "intraday"
 
 # source
 COMMON_DIR = ROOT / "src" / "factorzen" / "core"

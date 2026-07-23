@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  Button,
   Drawer,
   Empty,
   Spin,
@@ -7,13 +8,22 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { fetchReportFile, fetchReports } from '../api/client'
+import { fetchReportFile, fetchReports, fileRawUrl } from '../api/client'
 import type { ReportFile } from '../types'
 
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(2)} MB`
+}
+
+// 报告文件 path 相对 workspace/reports/；raw 端点要相对 workspace 根。
+function isHtml(path: string): boolean {
+  return /\.html?$/i.test(path)
+}
+
+function openRaw(path: string): void {
+  window.open(fileRawUrl(`reports/${path}`), '_blank', 'noopener,noreferrer')
 }
 
 function fmtMtime(iso: string): string {
@@ -109,6 +119,34 @@ export function ReportsPage() {
       width: 180,
       render: (v: string) => fmtMtime(v),
     },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 120,
+      render: (_: unknown, record) =>
+        isHtml(record.path) ? (
+          <Button
+            size="small"
+            type="primary"
+            onClick={(e) => {
+              e.stopPropagation()
+              openRaw(record.path)
+            }}
+          >
+            打开报告
+          </Button>
+        ) : (
+          <Button
+            size="small"
+            onClick={(e) => {
+              e.stopPropagation()
+              openFile(record.path)
+            }}
+          >
+            查看
+          </Button>
+        ),
+    },
   ]
 
   if (loading) {
@@ -138,7 +176,8 @@ export function ReportsPage() {
         dataSource={files}
         pagination={{ pageSize: 50, showSizeChanger: true }}
         onRow={(record) => ({
-          onClick: () => openFile(record.path),
+          onClick: () =>
+            isHtml(record.path) ? openRaw(record.path) : openFile(record.path),
           style: { cursor: 'pointer' },
         })}
         locale={{ emptyText: '暂无报告' }}

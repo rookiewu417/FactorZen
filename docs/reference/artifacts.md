@@ -26,7 +26,7 @@
 | `combine_backtests/` | `fz combine backtest` | 组合回测产物 |
 | `risk_models/` | `fz risk build` | 风险模型（暴露/协方差/特质风险） |
 | `sim/` | `fz sim run` | 模拟交易 run |
-| `reports/` | `fz report portfolio` 等 | 独立报告输出 |
+| `reports/` | 全部 HTML 报告集中收口 | `daily/` 因子报告 · `intraday/` · portfolio dashboard（前端「报告」栏单点可见） |
 | `factor_library/` | lift 准入、`fz factor-library rebuild` | **因子库登记簿本体，不是 run 目录** |
 | `factor_store/` | `fz factor new`、`fz factor-library store sync` | python/expression 因子三件套（meta/py/parquet） |
 | `configs/` | 用户手写 | YAML 运行配置模板，非产物（见 [配置参考](configuration.md)） |
@@ -147,17 +147,29 @@ candidates.csv   manifest.json   exported/
 runs/logs/                        factor_research.log(+ 按日轮转)
 runs/artifacts/daily/factors/     {factor}_{start}_{end}.parquet
 runs/artifacts/daily/results/     {factor}_{start}_{end}_{ic,quality,universe,meta,signal,...}.*
-runs/artifacts/daily/reports/     {factor}_{start}_{end}_eval.html（eval）· {factor}_{start}_{end}.html（backtest）
 runs/artifacts/daily/charts/
-runs/artifacts/intraday/{factors,results,reports}/
+runs/artifacts/intraday/{factors,results}/
+# HTML 报告不再落 runs/artifacts/，已收口到 workspace/reports/（见 §2.9）
 ```
 
 > ℹ️ **每次 `fz factor eval` / `fz factor backtest` 产物落两份**：  
 > - **run 目录**（`factor_evaluations/<run_id>/`）用**短名**：`ic.parquet`、`signal.json`、`report.html`、`meta.json` 等（见 §2.1）。  
-> - **全局归档**（`runs/artifacts/daily/`）用**长名**：`{factor}_{start}_{end}_ic.parquet`、`_signal.json`、`_eval.html` / `.html` 等。  
+> - **全局归档**：数据类（`_ic.parquet`、`_signal.json` 等长名）落 `runs/artifacts/daily/`；**HTML 报告已收口到 `workspace/reports/daily/`**（`{factor}_{start}_{end}_eval.html` / `.html`），前端「报告」栏单点可见。  
 > manifest 的 `outputs` 字段同时记录两组路径。
 
 qlib 系列因子会再分桶：因子名前缀 `qlib_alpha158_` → `qlib158/` 子目录，`qlib_alpha360_` → `qlib360/`（`settings.py` 的 `daily_output_bucket`）。
+
+### 2.9 `workspace/reports/` —— HTML 报告统一收口
+
+所有 HTML 报告集中于此，前端「报告」栏单点可见、可直接在浏览器打开：
+
+```text
+workspace/reports/daily/       fz factor eval / backtest 的因子报告（{factor}_{start}_{end}[_eval].html）
+workspace/reports/intraday/    日内因子报告
+workspace/reports/portfolio_<run_id>.html   fz report portfolio / research run 的组合 dashboard
+```
+
+> ℹ️ run 目录内仍各自保留一份短名 `report.html`（run 自包含产物，见 §2.1）；`workspace/reports/` 是跨 run 的集中归档。
 
 ---
 

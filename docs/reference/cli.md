@@ -192,7 +192,7 @@ pixi run -- fz report build momentum_20 --start 20220101 --end 20241231 \
   --universe csi500
 ```
 
-**产物**：报告 HTML 落 `workspace/runs/artifacts/daily/reports/`（按因子分桶）。
+**产物**：报告 HTML 落 `workspace/reports/daily/`（按因子分桶）。
 
 ### fz report path
 

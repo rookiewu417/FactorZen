@@ -379,35 +379,7 @@ def _cmd_factor_sweep(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_report_build(args: argparse.Namespace) -> int:
-    from factorzen.pipelines import generate_report
-
-    factor_name = args.name or args.factor
-    forwarded = [f"fz report {args.report_command}"]
-    if factor_name:
-        forwarded.extend(["--factor", factor_name])
-    if args.start:
-        forwarded.extend(["--start", args.start])
-    if args.end:
-        forwarded.extend(["--end", args.end])
-    if args.universe:
-        forwarded.extend(["--universe", args.universe])
-    forwarded.extend(["--frequency", args.frequency])
-    if args.benchmark:
-        forwarded.extend(["--benchmark", args.benchmark])
-    if args.config:
-        forwarded.extend(["--config", args.config])
-
-    old_argv = sys.argv
-    try:
-        sys.argv = forwarded
-        generate_report.main()
-    finally:
-        sys.argv = old_argv
-    return 0
-
-
-def _cmd_report_path(args: argparse.Namespace) -> int:
+def _cmd_runs_path(args: argparse.Namespace) -> int:
     report = run_dir(args.run_id) / "report.html"
     if not report.exists():
         print(f"Report not found: {report}", file=sys.stderr)

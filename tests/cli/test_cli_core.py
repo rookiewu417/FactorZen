@@ -155,60 +155,8 @@ def test_pipeline_argv_forward_suite():
 
     _section_0c_test_legacy_run_subcommand_removed()
 
-    # -- 原 test_report_build_forwards_to_report_pipeline --
-    def _section_1_test_report_build_forwards_to_report_pipeline(mp):
-        from factorzen.cli import main as cli
-
-        captured: list[str] = []
-
-        def fake_main():
-            captured.extend(sys.argv)
-
-        mp.setattr("factorzen.pipelines.generate_report.main", fake_main)
-
-        assert (
-            cli.main(
-                [
-                    "report",
-                    "build",
-                    "momentum_20d",
-                    "--start",
-                    "20250101",
-                    "--end",
-                    "20260513",
-                    "--universe",
-                    "csi300",
-                    "--frequency",
-                    "monthly",
-                    "--benchmark",
-                    "000300.SH",
-                    "--config",
-                    "workspace/configs/daily/daily_factor_template.yaml",
-                ]
-            )
-            == 0
-        )
-
-        assert captured == [
-            "fz report build",
-            "--factor",
-            "momentum_20d",
-            "--start",
-            "20250101",
-            "--end",
-            "20260513",
-            "--universe",
-            "csi300",
-            "--frequency",
-            "monthly",
-            "--benchmark",
-            "000300.SH",
-            "--config",
-            "workspace/configs/daily/daily_factor_template.yaml",
-        ]
-
-    with pytest.MonkeyPatch.context() as mp:
-        _section_1_test_report_build_forwards_to_report_pipeline(mp)
+    # 注：原 test_report_build_forwards_to_report_pipeline 段已删——
+    # `fz report build` 命令已移除，因子交易轨报告统一走 fz factor backtest。
 
     # -- 原 test_data_fetch_daily_and_daily_basic --
     def _section_2_test_data_fetch_daily_and_daily_basic(mp):
@@ -281,7 +229,7 @@ def test_runs_config_report_path_suite(tmp_path, capsys):
             tmp_path / "workspace" / "factor_evaluations",
         )
 
-        assert cli.main(["report", "path", "run-1"]) == 0
+        assert cli.main(["runs", "path", "run-1"]) == 0
 
         assert capsys.readouterr().out.strip() == str(report)
 

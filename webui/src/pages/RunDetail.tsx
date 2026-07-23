@@ -85,10 +85,11 @@ export function RunDetailPage() {
   }, [domain, runId])
 
   useEffect(() => {
-    if (!domain || !runId) return
+    if (!domain || !runId || !detail) return
     let cancelled = false
     setArtLoading(true)
-    const runPath = `${domain}/${runId}`
+    // 真实 run 目录以 server 返回的 path 为准（factor_evaluations 为嵌套路径）
+    const runPath = detail.path ?? `${domain}/${runId}`
     fetchFiles(runPath)
       .then((res) => {
         if (!cancelled) setArtifacts(res.files)
@@ -102,7 +103,7 @@ export function RunDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [domain, runId])
+  }, [domain, runId, detail])
 
   const openView = (relPath: string) => {
     setViewPath(relPath)
@@ -135,7 +136,7 @@ export function RunDetailPage() {
     isNumericMetric(v) || typeof v === 'string',
   )
 
-  const runPath = `${domain}/${runId}`
+  const runPath = detail.path ?? `${domain}/${runId}`
 
   const artColumns: ColumnsType<FileEntry> = [
     {

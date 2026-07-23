@@ -37,6 +37,8 @@ export interface RunsResponse {
 export interface RunDetailResponse {
   run_id: string
   domain: string
+  /** workspace 相对真实 run 目录（factor_evaluations 为嵌套路径），产物链接以此为准 */
+  path?: string
   manifest: Record<string, unknown>
   metrics?: Record<string, unknown>
 }

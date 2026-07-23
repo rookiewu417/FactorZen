@@ -17,13 +17,13 @@ function fmtSize(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(2)} MB`
 }
 
-// 报告文件 path 相对 workspace/reports/；raw 端点要相对 workspace 根。
+// 报告文件 path 相对 workspace/factors/reports/；raw 端点要相对 workspace 根。
 function isHtml(path: string): boolean {
   return /\.html?$/i.test(path)
 }
 
 function openRaw(path: string): void {
-  window.open(fileRawUrl(`reports/${path}`), '_blank', 'noopener,noreferrer')
+  window.open(fileRawUrl(`factors/reports/${path}`), '_blank', 'noopener,noreferrer')
 }
 
 function fmtMtime(iso: string): string {

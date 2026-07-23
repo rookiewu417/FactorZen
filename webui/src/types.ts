@@ -51,15 +51,30 @@ export interface NavResponse {
 
 export type Market = 'ashare' | 'crypto' | 'us' | 'futures'
 
+/** 因子状态五态（含手写 manual） */
+export type FactorStatus =
+  | 'active'
+  | 'correlated'
+  | 'probation'
+  | 'no_lift'
+  | 'manual'
+
+/** 因子来源：library=登记簿挖掘；store=手写资产 */
+export type FactorSource = 'library' | 'store'
+
 export interface FactorRecord {
   expression?: string
   market?: string
-  status?: string | null
+  name?: string
+  kind?: string
+  status?: FactorStatus | string | null
+  source?: FactorSource | string
   ic_train?: number | null
   holdout_ic?: number | null
   dsr?: number | null
   turnover?: number | null
   admission_track?: string | null
+  created_at?: string | null
   [key: string]: unknown
 }
 
@@ -68,6 +83,13 @@ export interface LibraryResponse {
   count: number
   by_status: Record<string, number>
   factors: FactorRecord[]
+}
+
+export interface LibraryStatusUpdateResponse {
+  market: string
+  expression: string
+  status: string
+  source: string
 }
 
 export interface TrackPoint {

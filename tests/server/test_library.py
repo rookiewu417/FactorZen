@@ -205,3 +205,257 @@ def test_store_invalid_market_404(tmp_path):
 def test_store_missing_404(tmp_path):
     (tmp_path / "factor_store" / "ashare").mkdir(parents=True)
     assert _client(tmp_path).get("/api/store/ashare/nope").status_code == 404
+
+
+# ---- 手写因子合并 + 改状态 ----
+
+
+def _write_store_python(tmp_path, market, name, *, status=None, extra_snap=None):
+    """写入 kind=python 的 factor_store 资产。"""
+    d = tmp_path / "factor_store" / market / name
+    d.mkdir(parents=True)
+    snap = {"status": status, "ic_train": 0.01, "holdout_ic": None}
+    if extra_snap:
+        snap.update(extra_snap)
+    meta = {
+        "name": name,
+        "kind": "python",
+        "expression": f"py::{name}",
+        "created_at": "2026-07-20",
+        "ledger_snapshot": snap,
+    }
+    (d / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return meta
+
+
+def test_list_factors_merges_handwritten_store(tmp_path):
+    """library 2 条 + store 两个 python：一个已在 lib 不重复、一个以 manual+store 出现。"""
+    lib = tmp_path / "factor_library"
+    _write_jsonl(
+        lib / "ashare.jsonl",
+        [
+            json.dumps(
+                {
+                    "expression": "ts_mean(close, 5)",
+                    "status": "active",
+                    "ic_train": 0.02,
+                    "extra_unknown": "keep-me",
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "expression": "py::already_in_lib",
+                    "status": "correlated",
+                    "kind": "python",
+                    "name": "already_in_lib",
+                },
+                ensure_ascii=False,
+            ),
+        ],
+    )
+    # 已在 library：不应重复出现
+    _write_store_python(tmp_path, "ashare", "already_in_lib", status="active")
+    # 不在 library：应以 manual + source=store 出现
+    _write_store_python(tmp_path, "ashare", "hand_alpha", status=None)
+    # 非 python 资产不并入
+    expr_dir = tmp_path / "factor_store" / "ashare" / "expr_only"
+    expr_dir.mkdir(parents=True)
+    (expr_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "name": "expr_only",
+                "kind": "expression",
+                "expression": "ts_std(volume, 10)",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    r = _client(tmp_path).get("/api/library/ashare")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 3
+    assert body["by_status"]["active"] == 1
+    assert body["by_status"]["correlated"] == 1
+    assert body["by_status"]["manual"] == 1
+
+    by_expr = {f["expression"]: f for f in body["factors"]}
+    assert set(by_expr) == {
+        "ts_mean(close, 5)",
+        "py::already_in_lib",
+        "py::hand_alpha",
+    }
+    assert by_expr["ts_mean(close, 5)"]["source"] == "library"
+    assert by_expr["py::already_in_lib"]["source"] == "library"
+    assert by_expr["py::already_in_lib"]["status"] == "correlated"  # 用 library 那条
+    hand = by_expr["py::hand_alpha"]
+    assert hand["source"] == "store"
+    assert hand["status"] == "manual"
+    assert hand["admission_track"] == "manual"
+    assert hand["kind"] == "python"
+    assert hand["name"] == "hand_alpha"
+
+
+def test_update_status_library_preserves_unknown_fields(tmp_path):
+    """按行改写：目标行 status 变；其它行未知字段原样；行数不变。"""
+    path = tmp_path / "factor_library" / "ashare.jsonl"
+    line_a = json.dumps(
+        {
+            "expression": "factor_a",
+            "status": "active",
+            "weird_field": {"nested": 1},
+            "keep_me": "yes",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    line_b = json.dumps(
+        {
+            "expression": "factor_b",
+            "status": "correlated",
+            "another_unknown": [1, 2, 3],
+            "z_extra": True,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    bad = "{ not json"
+    _write_jsonl(path, [line_a, bad, line_b])
+
+    idx = FactorLibraryIndex(tmp_path)
+    out = idx.update_status("ashare", "factor_a", "probation", "library")
+    assert out["status"] == "probation"
+    assert out["source"] == "library"
+
+    text = path.read_text(encoding="utf-8")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    assert len(lines) == 3
+    assert lines[1] == bad  # 坏行原样
+
+    parsed = []
+    for ln in lines:
+        try:
+            parsed.append(json.loads(ln))
+        except json.JSONDecodeError:
+            parsed.append(None)
+
+    assert parsed[0]["status"] == "probation"
+    assert parsed[0]["weird_field"] == {"nested": 1}
+    assert parsed[0]["keep_me"] == "yes"
+    assert parsed[0]["expression"] == "factor_a"
+
+    # 未改行：原文完全一致（未知字段 + 格式）
+    assert lines[2] == line_b
+    assert parsed[2]["another_unknown"] == [1, 2, 3]
+    assert parsed[2]["z_extra"] is True
+    assert parsed[2]["status"] == "correlated"
+
+    # 非法 status
+    import pytest
+
+    with pytest.raises(ValueError, match="非法 status"):
+        idx.update_status("ashare", "factor_a", "rejected", "library")
+
+
+def test_update_status_store_and_path_traversal(tmp_path):
+    """store：改 ledger_snapshot.status；路径遍历 → FileNotFoundError。"""
+    _write_store_python(tmp_path, "ashare", "hand_beta", status=None)
+    idx = FactorLibraryIndex(tmp_path)
+
+    out = idx.update_status("ashare", "py::hand_beta", "active", "store")
+    assert out == {
+        "market": "ashare",
+        "expression": "py::hand_beta",
+        "status": "active",
+        "source": "store",
+    }
+    meta = json.loads(
+        (tmp_path / "factor_store" / "ashare" / "hand_beta" / "meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert meta["ledger_snapshot"]["status"] == "active"
+    # 其它字段保留
+    assert meta["name"] == "hand_beta"
+    assert meta["kind"] == "python"
+
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        idx.update_status("ashare", "py::../x", "manual", "store")
+
+
+def test_api_update_status_endpoints(tmp_path):
+    """POST /status：200 / 非法 market 404 / 非法 status 400 / store 路径遍历 404。"""
+    lib = tmp_path / "factor_library"
+    _write_jsonl(
+        lib / "ashare.jsonl",
+        [
+            json.dumps(
+                {"expression": "ts_mean(close, 5)", "status": "active", "x": 1}
+            ),
+        ],
+    )
+    _write_store_python(tmp_path, "ashare", "hand_g", status="manual")
+    client = _client(tmp_path)
+
+    # 正常 library
+    r = client.post(
+        "/api/library/ashare/status",
+        json={
+            "expression": "ts_mean(close, 5)",
+            "status": "no_lift",
+            "source": "library",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "market": "ashare",
+        "expression": "ts_mean(close, 5)",
+        "status": "no_lift",
+        "source": "library",
+    }
+
+    # 正常 store
+    r2 = client.post(
+        "/api/library/ashare/status",
+        json={
+            "expression": "py::hand_g",
+            "status": "probation",
+            "source": "store",
+        },
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["status"] == "probation"
+
+    # 非法 market
+    r3 = client.post(
+        "/api/library/bitcoin/status",
+        json={"expression": "x", "status": "manual", "source": "library"},
+    )
+    assert r3.status_code == 404
+
+    # 非法 status
+    r4 = client.post(
+        "/api/library/ashare/status",
+        json={
+            "expression": "ts_mean(close, 5)",
+            "status": "rejected",
+            "source": "library",
+        },
+    )
+    assert r4.status_code == 400
+
+    # store 路径遍历
+    r5 = client.post(
+        "/api/library/ashare/status",
+        json={
+            "expression": "py::../secret",
+            "status": "manual",
+            "source": "store",
+        },
+    )
+    assert r5.status_code == 404

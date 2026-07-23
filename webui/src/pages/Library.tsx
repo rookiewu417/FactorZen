@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Card,
   Col,
@@ -6,7 +6,10 @@ import {
   Drawer,
   Empty,
   Input,
+  message,
+  Popconfirm,
   Row,
+  Select,
   Spin,
   Statistic,
   Table,
@@ -15,24 +18,49 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType, TableProps } from 'antd/es/table'
-import { fetchLibrary, fetchTrack } from '../api/client'
+import { fetchLibrary, fetchTrack, updateFactorStatus } from '../api/client'
 import { IcChart } from '../components/IcChart'
-import type { FactorRecord, Market, TrackPoint } from '../types'
+import type {
+  FactorRecord,
+  FactorSource,
+  FactorStatus,
+  Market,
+  TrackPoint,
+} from '../types'
 
 const MARKETS: Market[] = ['ashare', 'crypto', 'us', 'futures']
+
+const STATUS_OPTIONS: FactorStatus[] = [
+  'active',
+  'correlated',
+  'probation',
+  'no_lift',
+  'manual',
+]
 
 const STATUS_COLOR: Record<string, string> = {
   active: 'green',
   correlated: 'orange',
-  rejected: 'red',
-  candidate: 'blue',
-  pending: 'default',
+  probation: 'gold',
+  no_lift: 'default',
+  manual: 'blue',
 }
+
+/** 改为 active/probation 会进入物化与组合优化，需二次确认 */
+const GUARDRAIL_STATUSES = new Set(['active', 'probation'])
 
 function fmtNum(v: unknown, digits = 4): string {
   if (v == null || v === '') return '—'
   if (typeof v === 'number' && Number.isFinite(v)) return v.toFixed(digits)
   return String(v)
+}
+
+function sourceLabel(source: string | undefined): string {
+  return source === 'store' ? '手写' : '挖掘'
+}
+
+function sourceColor(source: string | undefined): string {
+  return source === 'store' ? 'blue' : 'default'
 }
 
 export function LibraryPage() {
@@ -46,6 +74,39 @@ export function LibraryPage() {
   const [selected, setSelected] = useState<FactorRecord | null>(null)
   const [trackPoints, setTrackPoints] = useState<TrackPoint[]>([])
   const [trackLoading, setTrackLoading] = useState(false)
+  const [updatingKey, setUpdatingKey] = useState<string | null>(null)
+  // 待确认的「高风险」状态切换（active/probation）
+  const [pendingChange, setPendingChange] = useState<{
+    record: FactorRecord
+    next: string
+  } | null>(null)
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    return fetchLibrary(market)
+      .then((res) => {
+        setFactors(res.factors)
+        setByStatus(res.by_status)
+        setCount(res.count)
+        setError(null)
+        // 同步刷新已打开的 Drawer
+        setSelected((prev) => {
+          if (!prev?.expression) return prev
+          const next = res.factors.find(
+            (f) =>
+              f.expression === prev.expression &&
+              (f.source ?? 'library') === (prev.source ?? 'library'),
+          )
+          return next ?? prev
+        })
+      })
+      .catch((e: Error) => {
+        setError(e.message)
+      })
+      .finally(() => {
+        setLoading(false)
+      })
+  }, [market])
 
   useEffect(() => {
     let cancelled = false
@@ -92,6 +153,43 @@ export function LibraryPage() {
     }
   }, [selected, market])
 
+  const applyStatus = useCallback(
+    async (record: FactorRecord, nextStatus: string) => {
+      const expr = record.expression
+      if (!expr) {
+        message.error('缺少 expression，无法改状态')
+        return
+      }
+      const source = (record.source ?? 'library') as FactorSource
+      const key = `${source}:${expr}`
+      setUpdatingKey(key)
+      try {
+        await updateFactorStatus(market, expr, nextStatus, source)
+        message.success(`已更新 status → ${nextStatus}`)
+        await reload()
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : String(e))
+      } finally {
+        setUpdatingKey(null)
+        setPendingChange(null)
+      }
+    },
+    [market, reload],
+  )
+
+  const onStatusSelect = useCallback(
+    (record: FactorRecord, nextStatus: string) => {
+      const cur = String(record.status ?? '')
+      if (nextStatus === cur) return
+      if (GUARDRAIL_STATUSES.has(nextStatus)) {
+        setPendingChange({ record, next: nextStatus })
+        return
+      }
+      void applyStatus(record, nextStatus)
+    },
+    [applyStatus],
+  )
+
   const statusFilters = useMemo(
     () =>
       Object.keys(byStatus)
@@ -110,6 +208,38 @@ export function LibraryPage() {
     )
   }, [factors, search])
 
+  const renderStatusSelect = (record: FactorRecord) => {
+    const s = String(record.status ?? 'unknown')
+    const expr = record.expression ?? ''
+    const source = (record.source ?? 'library') as string
+    const key = `${source}:${expr}`
+    const busy = updatingKey === key
+    return (
+      <Select
+        size="small"
+        value={STATUS_OPTIONS.includes(s as FactorStatus) ? s : s}
+        style={{ width: 118 }}
+        loading={busy}
+        disabled={busy || !expr}
+        options={STATUS_OPTIONS.map((st) => ({
+          value: st,
+          label: (
+            <Tag
+              color={STATUS_COLOR[st] ?? 'default'}
+              style={{ marginInlineEnd: 0 }}
+            >
+              {st}
+            </Tag>
+          ),
+        }))}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(v) => {
+          onStatusSelect(record, String(v))
+        }}
+      />
+    )
+  }
+
   const columns: ColumnsType<FactorRecord> = [
     {
       title: 'expression',
@@ -127,16 +257,28 @@ export function LibraryPage() {
       ),
     },
     {
+      title: '来源',
+      dataIndex: 'source',
+      key: 'source',
+      width: 80,
+      filters: [
+        { text: '挖掘', value: 'library' },
+        { text: '手写', value: 'store' },
+      ],
+      onFilter: (value, record) =>
+        String(record.source ?? 'library') === String(value),
+      render: (v: string | undefined) => (
+        <Tag color={sourceColor(v)}>{sourceLabel(v)}</Tag>
+      ),
+    },
+    {
       title: 'status',
       dataIndex: 'status',
       key: 'status',
-      width: 120,
+      width: 140,
       filters: statusFilters,
       onFilter: (value, record) => String(record.status ?? '') === String(value),
-      render: (v: string | null | undefined) => {
-        const s = v ?? 'unknown'
-        return <Tag color={STATUS_COLOR[s] ?? 'default'}>{s}</Tag>
-      },
+      render: (_v, record) => renderStatusSelect(record),
     },
     {
       title: 'ic_train',
@@ -183,7 +325,7 @@ export function LibraryPage() {
   ]
 
   const tableProps: TableProps<FactorRecord> = {
-    rowKey: (r, i) => `${r.expression ?? ''}-${i}`,
+    rowKey: (r, i) => `${r.source ?? 'library'}-${r.expression ?? ''}-${i}`,
     size: 'middle',
     columns,
     dataSource: filtered,
@@ -193,7 +335,7 @@ export function LibraryPage() {
       style: { cursor: 'pointer' },
     }),
     locale: { emptyText: '暂无因子' },
-    scroll: { x: 960 },
+    scroll: { x: 1040 },
   }
 
   return (
@@ -207,6 +349,7 @@ export function LibraryPage() {
           setMarket(k as Market)
           setSelected(null)
           setSearch('')
+          setPendingChange(null)
         }}
         items={MARKETS.map((m) => ({ key: m, label: m }))}
         style={{ marginBottom: 8 }}
@@ -238,8 +381,8 @@ export function LibraryPage() {
                         color:
                           STATUS_COLOR[st] === 'green'
                             ? '#3f8600'
-                            : STATUS_COLOR[st] === 'red'
-                              ? '#cf1322'
+                            : STATUS_COLOR[st] === 'blue'
+                              ? '#1677ff'
                               : undefined,
                       }}
                     />
@@ -269,6 +412,19 @@ export function LibraryPage() {
       >
         {selected && (
           <>
+            <div style={{ marginBottom: 16 }}>
+              <Typography.Text type="secondary" style={{ marginRight: 8 }}>
+                改状态
+              </Typography.Text>
+              {renderStatusSelect(selected)}
+              <Tag
+                color={sourceColor(selected.source as string | undefined)}
+                style={{ marginLeft: 12 }}
+              >
+                {sourceLabel(selected.source as string | undefined)}
+              </Tag>
+            </div>
+
             <Descriptions
               size="small"
               column={1}
@@ -321,6 +477,26 @@ export function LibraryPage() {
           </>
         )}
       </Drawer>
+
+      {/* 改成 active/probation 的护栏确认 */}
+      <Popconfirm
+        title="确认修改状态？"
+        description="会让该因子进入物化与组合优化，覆盖护栏裁决"
+        open={!!pendingChange}
+        onConfirm={() => {
+          if (pendingChange) {
+            void applyStatus(pendingChange.record, pendingChange.next)
+          }
+        }}
+        onCancel={() => setPendingChange(null)}
+        okText="确认"
+        cancelText="取消"
+        // 锚定到页面中心附近（无具体 DOM 触发时仍可用）
+        placement="top"
+      >
+        {/* 占位，保证 Popconfirm 有 mount 节点 */}
+        <span style={{ position: 'fixed', bottom: 24, right: 24, width: 0, height: 0 }} />
+      </Popconfirm>
     </div>
   )
 }

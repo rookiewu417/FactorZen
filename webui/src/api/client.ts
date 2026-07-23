@@ -12,6 +12,7 @@ import type {
   JobSummary,
   JobsListResponse,
   LibraryResponse,
+  LibraryStatusUpdateResponse,
   NavResponse,
   OverviewResponse,
   ReportFileResponse,
@@ -88,6 +89,23 @@ export function fetchTrack(
 ): Promise<TrackResponse> {
   return getJson(
     `/api/library/${encodeURIComponent(market)}/track?expression=${encodeURIComponent(expression)}`,
+  )
+}
+
+/** 更新因子状态（library 按行改写 / store 改 meta）。 */
+export function updateFactorStatus(
+  market: string,
+  expression: string,
+  status: string,
+  source: string,
+): Promise<LibraryStatusUpdateResponse> {
+  return requestJson(
+    `/api/library/${encodeURIComponent(market)}/status`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expression, status, source }),
+    },
   )
 }
 

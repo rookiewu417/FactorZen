@@ -398,37 +398,8 @@ def _cmd_factor_sweep(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_report_build(args: argparse.Namespace) -> int:
-    from factorzen.pipelines import generate_report
-
-    factor_name = args.name or args.factor
-    forwarded = [f"fz report {args.report_command}"]
-    if factor_name:
-        forwarded.extend(["--factor", factor_name])
-    if args.start:
-        forwarded.extend(["--start", args.start])
-    if args.end:
-        forwarded.extend(["--end", args.end])
-    if args.universe:
-        forwarded.extend(["--universe", args.universe])
-    forwarded.extend(["--frequency", args.frequency])
-    if args.benchmark:
-        forwarded.extend(["--benchmark", args.benchmark])
-    if args.config:
-        forwarded.extend(["--config", args.config])
-    if getattr(args, "no_factor_cache", False):
-        forwarded.append("--no-factor-cache")
-
-    old_argv = sys.argv
-    try:
-        sys.argv = forwarded
-        generate_report.main()
-    finally:
-        sys.argv = old_argv
-    return 0
-
-
-def _cmd_report_path(args: argparse.Namespace) -> int:
+def _cmd_runs_path(args: argparse.Namespace) -> int:
+    # 嵌套布局（factors/<market>/<name>/evaluations/<run_id>）按 run_id 反查
     found = find_run_dir(args.run_id)
     if found is None:
         print(f"Run not found: {args.run_id}", file=sys.stderr)

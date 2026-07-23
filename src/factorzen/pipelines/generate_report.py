@@ -1,10 +1,14 @@
 #!/usr/bin/env python
-"""因子交易轨报告生成器（`fz report build`）。
+"""因子交易轨报告生成器（历史模块，CLI 入口已移除）。
+
+.. deprecated::
+    `fz report build` 与 `pixi run report` 已删除——因子交易轨报告统一由
+    `fz factor backtest`（daily_single track=backtest，与本模块共用
+    generate_trading_report 渲染层）产出。本模块暂留仅因其独有测试覆盖
+    （ST 涨跌停对齐 / 结果持久化 / 负 IC 反向方向判定守卫），待后续清理；
+    勿新增对它的调用。
 
 整合因子计算、基础评价、高级评价与交易轨 HTML 报告输出。
-
-用法:
-  pixi run report -- --factor momentum_20d --start 20250101 --end 20250513
 """
 
 import argparse

@@ -133,9 +133,8 @@ pixi run -- fz factor eval my_reversal --start 20220101 --end 20241231 --univers
 #    模拟交易回测：日环撮合 + walk-forward / benchmark（净口径）
 pixi run -- fz factor backtest my_reversal --start 20220101 --end 20241231 --universe csi500
 
-# 3) 出单页 HTML 报告
-pixi run -- fz report build my_reversal --start 20220101 --end 20241231 \
-  --universe csi500
+# 3) HTML 报告已随上面的 eval / backtest 落盘；打印其路径
+pixi run -- fz runs path <run_id>
 
 # 4) 参数网格扫描
 pixi run -- fz factor sweep my_reversal --start 20220101 --end 20241231 \

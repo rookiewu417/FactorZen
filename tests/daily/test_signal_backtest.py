@@ -718,3 +718,129 @@ def test_geometric_vs_arithmetic_annualization():
     assert full - ex1 > 0.2, "剔除极端日应显著改变累计收益,否则告警无意义"
     # k >= 样本数 → NaN 而非崩溃
     assert not np.isfinite(cum_excluding_top_days(np.array([0.01]), 3))
+
+
+def _precompute_panel(n_days: int = 12, n_stocks: int = 40, seed: int = 7):
+    """构造足够厚的截面小帧（≥ min_samples=30），供 precomputed 等价性测试。"""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    f_rows, r_rows = [], []
+    for di in range(n_days):
+        d = date(2024, 1, 2) + timedelta(days=di)
+        x = rng.normal(0, 1, n_stocks)
+        # 部分 NaN 收益，覆盖 fill_nan / is_finite 路径
+        fwd = x * 0.5 + rng.normal(0, 0.4, n_stocks)
+        if di % 4 == 0:
+            fwd[0] = float("nan")
+        for si in range(n_stocks):
+            code = f"{si:06d}.SZ"
+            f_rows.append(
+                {"trade_date": d, "ts_code": code, "factor_clean": float(x[si])}
+            )
+            r_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": code,
+                    "fwd_ret_1d": float(fwd[si]),
+                    "fwd_ret_5d": float(fwd[si] * 0.8 + rng.normal() * 0.1),
+                }
+            )
+    return pl.DataFrame(f_rows), pl.DataFrame(r_rows)
+
+
+def test_run_signal_backtest_precomputed_equivalence_and_injection():
+    """改动 A：precomputed_ic/turnover 传 vs 不传等价；伪造注入确实用了预计算。"""
+    from factorzen.core.dates import with_iso_date
+    from factorzen.daily.evaluation.ic_analysis import (
+        ICAnalysisResult,
+        compute_rank_ic,
+    )
+    from factorzen.daily.evaluation.turnover import TurnoverResult, compute_turnover
+
+    fdf, rdf = _precompute_panel()
+    n_groups = 5
+    horizons = [1, 5]
+    frequency = "daily"
+
+    # 与 run_signal_backtest 内部一致的归一化后输入上预计算
+    f_norm = with_iso_date(fdf)
+    r_norm = with_iso_date(rdf).with_columns(pl.col("fwd_ret_1d").fill_nan(None))
+    ic_pre = compute_rank_ic(
+        f_norm, r_norm, factor_col="factor_clean", horizons=horizons, frequency=frequency
+    )
+    to_pre = compute_turnover(
+        f_norm, factor_col="factor_clean", n_groups=n_groups, frequency=frequency
+    )
+
+    res_self = run_signal_backtest(
+        fdf, rdf, n_groups=n_groups, horizons=horizons, frequency=frequency
+    )
+    res_pre = run_signal_backtest(
+        fdf,
+        rdf,
+        n_groups=n_groups,
+        horizons=horizons,
+        frequency=frequency,
+        precomputed_ic=ic_pre,
+        precomputed_turnover=to_pre,
+    )
+
+    # IC 字段逐位一致
+    assert res_pre.ic.ic_mean == res_self.ic.ic_mean
+    assert res_pre.ic.ir == res_self.ic.ir
+    assert res_pre.ic.ic_tstat == res_self.ic.ic_tstat
+    assert res_pre.ic.ic_std == res_self.ic.ic_std
+    assert res_pre.ic.n_periods == res_self.ic.n_periods
+    assert res_pre.ic.decay == res_self.ic.decay
+    assert res_pre.ic.multi_period == res_self.ic.multi_period
+    assert res_pre.ic.ic_series.equals(res_self.ic.ic_series)
+
+    # 换手字段一致
+    assert res_pre.turnover.avg_turnover == res_self.turnover.avg_turnover
+    assert res_pre.turnover.daily_turnover.equals(res_self.turnover.daily_turnover)
+    assert res_pre.turnover.migration_matrix.equals(res_self.turnover.migration_matrix)
+
+    # summary 里透传的 IC 一致
+    assert res_pre.summary_stats["ic"] == res_self.summary_stats["ic"]
+
+    # 注入检验：伪造预计算必须原样出现在结果中（证明跳过了内部自算）
+    fake_ic = ICAnalysisResult(
+        factor_name="injected",
+        ic_mean=0.123456789,
+        ic_std=0.01,
+        ir=12.345,
+        ic_positive_ratio=0.99,
+        n_periods=42,
+        ic_series=pl.DataFrame({"trade_date": ["2099-01-01"], "ic": [0.123456789]}),
+        frequency=frequency,
+        ic_tstat=9.876,
+        ic_pvalue=1e-9,
+        decay={1: 0.123456789},
+    )
+    fake_to = TurnoverResult(
+        factor_name="injected_to",
+        avg_turnover=0.424242,
+        migration_matrix=pl.DataFrame(
+            {"prev_group": [0], "group": [1], "prob": [1.0]}
+        ),
+        daily_turnover=pl.DataFrame(
+            {"trade_date": ["2099-01-01"], "turnover": [0.424242]}
+        ),
+        frequency=frequency,
+    )
+    res_inj = run_signal_backtest(
+        fdf,
+        rdf,
+        n_groups=n_groups,
+        horizons=horizons,
+        frequency=frequency,
+        precomputed_ic=fake_ic,
+        precomputed_turnover=fake_to,
+    )
+    assert res_inj.ic is fake_ic
+    assert res_inj.ic.ic_mean == 0.123456789
+    assert res_inj.ic.factor_name == "injected"
+    assert res_inj.turnover is fake_to
+    assert res_inj.turnover.avg_turnover == 0.424242
+    assert res_inj.summary_stats["ic"]["ic_mean"] == 0.123456789

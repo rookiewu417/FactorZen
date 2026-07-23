@@ -309,6 +309,8 @@ def run_signal_backtest(
     frequency: str = "daily",
     factor_name: str = "",
     meta: dict | None = None,
+    precomputed_ic: ICAnalysisResult | None = None,
+    precomputed_turnover: TurnoverResult | None = None,
 ) -> SignalBacktestResult:
     """纯向量化信号层回测（分层收益 / 多空 / IC / 换手粗成本）。
 
@@ -322,6 +324,17 @@ def run_signal_backtest(
         frequency: 频率标签。
         factor_name: 展示用名称。
         meta: 附加元信息；会写入 ``return_basis`` 与 ``dropped_days``。
+        precomputed_ic: 可选预计算 IC。非 None 时直接使用，跳过内部
+            ``compute_rank_ic``（含 try/except）。**调用方必须保证**预计算
+            输入与本函数的 ``factor_df`` / ``fwd_returns`` 同源同参
+            （``factor_col`` / ``horizons`` / ``frequency``，且帧在
+            ``with_iso_date`` + ``fwd_ret_1d.fill_nan`` 后语义一致），
+            否则结果与自算不一致——责任在调用方。None 时行为与历史逐字不变。
+        precomputed_turnover: 可选预计算换手。非 None 时直接使用，跳过内部
+            ``compute_turnover``（含 try/except）。**调用方必须保证**预计算
+            输入与本函数 ``factor_df`` 同源同参（``factor_col`` / ``n_groups`` /
+            ``frequency``），否则结果与自算不一致——责任在调用方。
+            None 时行为与历史逐字不变。
 
     Returns:
         SignalBacktestResult。join 后为空或全部日被剔除时返回空结构，不抛异常。
@@ -378,25 +391,32 @@ def run_signal_backtest(
     # 辅助指标基于归一化后的输入（即使主路径退化也尽量给出 IC/换手/单调性）。
     # 只接 ValueError:polars 的 SchemaError 等不是 ValueError 子类,无差别吞掉会把
     # 响亮的报错降级成 0.0 哨兵,与「异常契约统一」相悖。
-    try:
-        ic_result = compute_rank_ic(
-            fdf,
-            rdf,
-            factor_col=factor_col,
-            horizons=horizons,
-            frequency=frequency,
-        )
-    except ValueError as exc:
-        _logger.warning("compute_rank_ic 失败,IC 置空: %s", exc)
-        ic_result = _empty_ic(factor_col, frequency)
+    # 预计算非 None → 直接用，连 try/except 一起跳过（消 daily_single 双算）。
+    if precomputed_ic is not None:
+        ic_result = precomputed_ic
+    else:
+        try:
+            ic_result = compute_rank_ic(
+                fdf,
+                rdf,
+                factor_col=factor_col,
+                horizons=horizons,
+                frequency=frequency,
+            )
+        except ValueError as exc:
+            _logger.warning("compute_rank_ic 失败,IC 置空: %s", exc)
+            ic_result = _empty_ic(factor_col, frequency)
 
-    try:
-        to_result = compute_turnover(
-            fdf, factor_col=factor_col, n_groups=n_groups, frequency=frequency
-        )
-    except ValueError as exc:
-        _logger.warning("compute_turnover 失败,换手置空: %s", exc)
-        to_result = _empty_turnover(frequency)
+    if precomputed_turnover is not None:
+        to_result = precomputed_turnover
+    else:
+        try:
+            to_result = compute_turnover(
+                fdf, factor_col=factor_col, n_groups=n_groups, frequency=frequency
+            )
+        except ValueError as exc:
+            _logger.warning("compute_turnover 失败,换手置空: %s", exc)
+            to_result = _empty_turnover(frequency)
 
     merged = fdf.join(
         rdf.select(["trade_date", "ts_code", "fwd_ret_1d"]),

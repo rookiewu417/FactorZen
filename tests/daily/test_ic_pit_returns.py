@@ -988,3 +988,153 @@ def test_fwd_returns_suite():
     _section_4_test_fwd_returns_compound_from_ret_when_close_is_absent()
 
 
+def test_compute_rank_ic_factor_rank_reuse_bit_exact():
+    """改动 B：factor_rank_col 开/关 + compute_rank_ic 与旧实现（每 horizon 独立算）逐位一致。
+
+    随机小帧含 NaN / null / 并列值，覆盖 :204 NaN rank 陷阱路径。
+    """
+    import numpy as np
+
+    from factorzen.daily.evaluation.ic_analysis import (
+        ICAnalysisResult,
+        _compute_walk_forward_ic,
+        _ic_stats,
+        _rank_ic_by_date,
+        compute_rank_ic,
+    )
+
+    rng = np.random.default_rng(20260723)
+    n_days, n_stocks = 15, 40
+    horizons = [1, 5, 10, 20]
+    d0 = date(2024, 3, 1)
+    f_rows: list[dict] = []
+    r_rows: list[dict] = []
+    for di in range(n_days):
+        d = d0 + timedelta(days=di)
+        base = rng.integers(0, 8, size=n_stocks).astype(float)
+        base[0] = base[1]  # 并列
+        factor_vals = base.copy()
+        if di % 3 == 0:
+            factor_vals[2] = np.nan  # NaN 因子
+        rets = {
+            h: base * (0.3 / max(h, 1)) + rng.normal(0, 0.2, n_stocks) for h in horizons
+        }
+        for h in horizons:
+            if di % 4 == (h % 4):
+                rets[h][5] = np.nan  # 各 horizon 不同 NaN 掩码
+            if di % 7 == 0:
+                rets[h][6] = np.inf
+        for si in range(n_stocks):
+            code = f"{si:06d}.SZ"
+            if di % 5 == 0 and si == 3:
+                fv: float | None = None  # null 因子
+            else:
+                fv = float(factor_vals[si])
+            f_rows.append({"trade_date": d, "ts_code": code, "factor_clean": fv})
+            r_rows.append(
+                {
+                    "trade_date": d,
+                    "ts_code": code,
+                    **{f"fwd_ret_{h}d": float(rets[h][si]) for h in horizons},
+                }
+            )
+
+    factor_df = pl.DataFrame(f_rows)
+    ret_df = pl.DataFrame(r_rows)
+
+    # ---- 1) factor_rank_col 开/关：同一有效集上预计算秩应与自算逐位一致 ----
+    merged = factor_df.join(ret_df, on=["trade_date", "ts_code"], how="inner")
+    for ret_col in [f"fwd_ret_{h}d" for h in horizons]:
+        self_ic = _rank_ic_by_date(merged, "factor_clean", ret_col)
+        valid = merged.filter(
+            pl.col("factor_clean").is_not_null()
+            & pl.col("factor_clean").is_finite()
+            & pl.col(ret_col).is_not_null()
+            & pl.col(ret_col).is_finite()
+        )
+        if valid.is_empty():
+            continue
+        with_fr = valid.with_columns(
+            pl.col("factor_clean")
+            .rank(method="average")
+            .over("trade_date")
+            .alias("_factor_rank")
+        )
+        reuse_ic = _rank_ic_by_date(
+            with_fr, "factor_clean", ret_col, factor_rank_col="_factor_rank"
+        )
+        assert reuse_ic.equals(self_ic), f"factor_rank_col 复用与自算不一致 ret={ret_col}"
+
+    # ---- 2) compute_rank_ic 与内联旧实现（无缓存、无 factor_rank_col）逐位一致 ----
+    def _legacy_compute_rank_ic(factor_df, daily_ret, factor_col="factor_clean", horizons=None, frequency="daily", oos_split=0.7):
+        if horizons is None:
+            horizons = [1, 5, 10, 20]
+        merged = factor_df.join(daily_ret, on=["trade_date", "ts_code"], how="inner")
+        ic_series = _rank_ic_by_date(merged, factor_col, "fwd_ret_1d")
+        ic_values = ic_series["ic"].drop_nulls().drop_nans().to_numpy()
+        ic_mean, ic_std, ir, ic_pos, tstat, pvalue = _ic_stats(ic_values)
+        decay = {}
+        for h in horizons:
+            ret_col = f"fwd_ret_{h}d"
+            if ret_col not in merged.columns:
+                continue
+            h_ic_df = _rank_ic_by_date(merged, factor_col, ret_col)
+            h_vals = h_ic_df["ic"].drop_nulls().drop_nans().to_numpy()
+            if len(h_vals) > 0:
+                decay[h] = float(np.mean(h_vals))
+        multi_period = {}
+        for h in horizons:
+            ret_col = f"fwd_ret_{h}d"
+            if ret_col not in merged.columns:
+                continue
+            h_ic_df = _rank_ic_by_date(merged, factor_col, ret_col)
+            h_vals = h_ic_df["ic"].drop_nulls().drop_nans().to_numpy()
+            if len(h_vals) > 0:
+                h_mean, h_std, h_ir, h_pos, h_t, h_p = _ic_stats(h_vals)
+                multi_period[h] = {
+                    "ic_mean": h_mean,
+                    "ic_std": h_std,
+                    "ir": h_ir,
+                    "ic_positive_ratio": h_pos,
+                    "tstat": h_t,
+                    "pvalue": h_p,
+                }
+        oos_ic = {}
+        if len(ic_values) >= 4:
+            n_train = max(2, int(len(ic_values) * oos_split))
+            oos_ic["train"] = float(np.mean(ic_values[:n_train]))
+            oos_ic["test"] = float(np.mean(ic_values[n_train:]))
+        walk_forward_ic = _compute_walk_forward_ic(ic_values, n_folds=5, embargo=5)
+        return ICAnalysisResult(
+            factor_name=factor_col,
+            ic_mean=ic_mean,
+            ic_std=ic_std,
+            ir=ir,
+            ic_positive_ratio=ic_pos,
+            n_periods=len(ic_values),
+            ic_series=ic_series,
+            decay=decay,
+            frequency=frequency,
+            ic_tstat=tstat,
+            ic_pvalue=pvalue,
+            multi_period=multi_period,
+            oos_ic=oos_ic,
+            walk_forward_ic=walk_forward_ic,
+        )
+
+    new_res = compute_rank_ic(factor_df, ret_df, factor_col="factor_clean", horizons=horizons)
+    old_res = _legacy_compute_rank_ic(factor_df, ret_df, factor_col="factor_clean", horizons=horizons)
+
+    assert new_res.ic_mean == old_res.ic_mean
+    assert new_res.ic_std == old_res.ic_std
+    assert new_res.ir == old_res.ir
+    assert new_res.ic_tstat == old_res.ic_tstat
+    assert new_res.ic_pvalue == old_res.ic_pvalue
+    assert new_res.n_periods == old_res.n_periods
+    assert new_res.ic_positive_ratio == old_res.ic_positive_ratio
+    assert new_res.decay == old_res.decay
+    assert new_res.multi_period == old_res.multi_period
+    assert new_res.oos_ic == old_res.oos_ic
+    assert new_res.walk_forward_ic == old_res.walk_forward_ic
+    assert new_res.ic_series.equals(old_res.ic_series)
+

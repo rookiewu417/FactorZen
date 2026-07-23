@@ -980,9 +980,17 @@ def run_factor_eval(
     )
     backtest_df = _apply_backtest_direction(clean_df, backtest_direction)
 
-    # ── 9. 换手率（与信号轨同一信号口径）──
+    # 信号层分组数：stage 换手与 run_signal_backtest 必须同 n_groups 才能透传预计算
+    _sig_n_groups = int(getattr(args, "n_groups", 5) or 5)
+
+    # ── 9. 换手率（与信号轨同一信号口径：同 backtest_df / factor_col / n_groups）──
     with timer.stage("换手率"):
-        to_result = compute_turnover(backtest_df, frequency=args.frequency)
+        to_result = compute_turnover(
+            backtest_df,
+            factor_col="factor_clean",
+            n_groups=_sig_n_groups,
+            frequency=args.frequency,
+        )
     to_result.factor_name = factor.name
     logger.info(f"\n{to_result.summary()}")
     progress.advance("turnover")
@@ -1020,18 +1028,27 @@ def run_factor_eval(
     # ── 11. 信号层回测（eval 轨主产物；失败直接上抛）──
     # 单调性不在此处单算:run_signal_backtest 内部已算过一次，重复计算纯浪费，
     # 日志改用返回结果里的那份（见下方 logger.info）。
+    #
+    # 预计算透传（消 signal 内二次 IC/换手）：
+    # - 换手：stage 已按同 backtest_df / factor_clean / n_groups / frequency 计算 → 传。
+    # - IC：stage 在 clean_df（未翻号）上算；signal 吃 backtest_df。仅 direction=normal
+    #   时两帧因子值相同可传；reversed 时 IC 会翻号，不传以免改数值。
+    # - factor_col/horizons/frequency：两边均为 factor_clean / 默认[1,5,10,20] / args.frequency。
     _sig_exec_lag = int(
         getattr(args, "exec_lag", 1)
         if getattr(args, "exec_lag", None) is not None
         else 1
     )
     _sig_exec_price_col = getattr(args, "exec_price_col", "open_adj")
+    _pre_ic = (
+        ic_result if not backtest_direction.get("should_reverse") else None
+    )
     with timer.stage("SignalBacktest"):
         signal_result = run_signal_backtest(
             backtest_df,
             ret_df,
             factor_col="factor_clean",
-            n_groups=int(getattr(args, "n_groups", 5) or 5),
+            n_groups=_sig_n_groups,
             frequency=args.frequency,
             factor_name=factor.name,
             meta={
@@ -1039,6 +1056,8 @@ def run_factor_eval(
                 "exec_price_col": _sig_exec_price_col,
                 "direction": backtest_direction.get("direction"),
             },
+            precomputed_ic=_pre_ic,
+            precomputed_turnover=to_result,
         )
     logger.info(f"\n{signal_result.summary()}")
     _mono = getattr(signal_result, "monotonicity", None)

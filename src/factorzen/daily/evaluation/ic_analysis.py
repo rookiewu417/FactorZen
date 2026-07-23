@@ -190,6 +190,7 @@ def _rank_ic_by_date(
     factor_col: str,
     ret_col: str,
     min_samples: int = _MIN_CROSS_SAMPLES,
+    factor_rank_col: str | None = None,
 ) -> pl.DataFrame:
     """计算每日截面 Rank IC（polars vectorized 实现）。
 
@@ -197,12 +198,20 @@ def _rank_ic_by_date(
     用 polars 的 `.rank().over("trade_date")` + `pearson_corr` group_by 实现，
     避免 Python-level for 循环。
 
+    Args:
+        factor_rank_col: 可选，预计算的因子截面秩列名。非 None 时跳过因子
+            ``rank().over(trade_date)``，直接复用该列。**调用方必须保证**该列
+            是在与本函数相同的有效掩码（因子+收益均 finite）过滤之后、以
+            ``method="average"`` 按 ``trade_date`` 计算的秩；否则结果与自算不一致。
+            None 时行为与历史完全一致（内部自行 rank 因子列）。
+
     Returns:
         pl.DataFrame with columns [trade_date, ic]，已按 trade_date 排序。
     """
     # 联合有效掩码（因子 + 前向收益都不为 null/NaN/inf）
     # 注意：polars 中 NaN 不是 null，且 rank 把 NaN 排为最大值——因子列必须显式
     # is_finite() 排除 NaN/inf，否则 NaN 行以最高秩参与 Rank IC 污染结果。
+    # NaN 处理顺序绝不能变：先 filter 有效行，再 rank。
     valid_df = df.filter(
         pl.col(factor_col).is_not_null()
         & pl.col(factor_col).is_finite()
@@ -216,12 +225,21 @@ def _rank_ic_by_date(
         )
 
     # 截面内排名（average 方法，与 scipy.stats.spearmanr 默认一致）
-    ranked = valid_df.with_columns(
-        [
-            pl.col(factor_col).rank(method="average").over("trade_date").alias("_factor_rank"),
-            pl.col(ret_col).rank(method="average").over("trade_date").alias("_ret_rank"),
-        ]
-    )
+    # 收益秩始终现算；因子秩可复用预计算列（同一有效集合内）。
+    if factor_rank_col is not None:
+        ranked = valid_df.with_columns(
+            [
+                pl.col(factor_rank_col).alias("_factor_rank"),
+                pl.col(ret_col).rank(method="average").over("trade_date").alias("_ret_rank"),
+            ]
+        )
+    else:
+        ranked = valid_df.with_columns(
+            [
+                pl.col(factor_col).rank(method="average").over("trade_date").alias("_factor_rank"),
+                pl.col(ret_col).rank(method="average").over("trade_date").alias("_ret_rank"),
+            ]
+        )
 
     # group_by 日期，计算排名 Pearson 相关（= Spearman），过滤样本不足的日期
     per_date = ranked.group_by("trade_date").agg(
@@ -454,8 +472,20 @@ def compute_rank_ic(
 
     merged = factor_df.join(daily_ret, on=["trade_date", "ts_code"], how="inner")
 
+    # ---------- 按收益列缓存 IC 序列（消 primary/decay/multi_period 重复）----------
+    # 历史路径对同一 ret_col 最多算 3 次（1d 主 IC + decay + multi_period）。
+    # 不同 horizon 的 ret 有效掩码不同，因子截面秩必须在「因子+该 horizon 收益」
+    # 联合有效集上重算才与历史逐位一致——不能跨 horizon 裸复用因子秩。
+    # 同一有效集内的因子秩复用见 _rank_ic_by_date(factor_rank_col=...)。
+    ic_by_ret: dict[str, pl.DataFrame] = {}
+
+    def _cached_ic(ret_col: str) -> pl.DataFrame:
+        if ret_col not in ic_by_ret:
+            ic_by_ret[ret_col] = _rank_ic_by_date(merged, factor_col, ret_col)
+        return ic_by_ret[ret_col]
+
     # ---------- Primary IC (horizon=1d) ----------
-    ic_series = _rank_ic_by_date(merged, factor_col, "fwd_ret_1d")
+    ic_series = _cached_ic("fwd_ret_1d")
     # drop_nulls() only removes polars nulls; pl.corr() can also return float NaN
     # for degenerate cases (constant column). Filter both here.
     ic_values = ic_series["ic"].drop_nulls().drop_nans().to_numpy()
@@ -467,7 +497,7 @@ def compute_rank_ic(
         ret_col = f"fwd_ret_{h}d"
         if ret_col not in merged.columns:
             continue
-        h_ic_df = _rank_ic_by_date(merged, factor_col, ret_col)
+        h_ic_df = _cached_ic(ret_col)
         h_vals = h_ic_df["ic"].drop_nulls().drop_nans().to_numpy()
         if len(h_vals) > 0:
             decay[h] = float(np.mean(h_vals))
@@ -478,7 +508,7 @@ def compute_rank_ic(
         ret_col = f"fwd_ret_{h}d"
         if ret_col not in merged.columns:
             continue
-        h_ic_df = _rank_ic_by_date(merged, factor_col, ret_col)
+        h_ic_df = _cached_ic(ret_col)
         h_vals = h_ic_df["ic"].drop_nulls().drop_nans().to_numpy()
         if len(h_vals) > 0:
             h_mean, h_std, h_ir, h_pos, h_t, h_p = _ic_stats(h_vals)

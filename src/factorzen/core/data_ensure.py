@@ -14,7 +14,12 @@ import polars as pl
 
 from factorzen.config.settings import DATA_RAW
 from factorzen.core.calendar import get_trade_dates
-from factorzen.core.loader import _retry, init_tushare
+from factorzen.core.loader import (
+    DAILY_BASIC_COLS,
+    DAILY_STD_COLS,
+    _retry,
+    init_tushare,
+)
 from factorzen.core.logger import get_logger
 from factorzen.core.storage import load_parquet, save_parquet
 
@@ -47,33 +52,12 @@ class DataRequirement:
     params: dict[str, str] = field(default_factory=dict)
 
 
-DAILY_COLUMNS = [
-    "trade_date",
-    "ts_code",
-    "open",
-    "high",
-    "low",
-    "close",
-    "pre_close",
-    "change",
-    "pct_chg",
-    "vol",
-    "amount",
-]
+# 列集单一真源 = loader（全量拉取写湖的一方）。增量补拉若自带窄副本，
+# 追加帧与既有分区列数不一致会在 concat 处直接炸（2026-07-23 daily_basic
+# 11 列副本 vs 湖 17 列实锤），窄集静默写入还会丢 turnover 类字段。
+DAILY_COLUMNS = DAILY_STD_COLS
 ADJ_FACTOR_COLUMNS = ["ts_code", "trade_date", "adj_factor"]
-DAILY_BASIC_COLUMNS = [
-    "trade_date",
-    "ts_code",
-    "pe",
-    "pe_ttm",
-    "pb",
-    "ps",
-    "ps_ttm",
-    "dv_ratio",
-    "dv_ttm",
-    "total_mv",
-    "circ_mv",
-]
+DAILY_BASIC_COLUMNS = DAILY_BASIC_COLS
 INDEX_DAILY_COLUMNS = [
     "trade_date",
     "ts_code",

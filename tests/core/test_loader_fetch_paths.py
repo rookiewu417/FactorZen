@@ -1411,3 +1411,18 @@ def test_hk_hold_clean_suite():
     _section_1_test_hk_hold_clean_keeps_hk_only_day_nonempty()
 
 
+
+
+def test_data_ensure_columns_match_loader_lake_schema():
+    """双路径守卫：data_ensure 增量补拉的列集必须与 loader 全量拉取（湖 schema）一致。
+
+    2026-07-23 实锤：daily_basic 湖是 17 列（loader 写入），data_ensure 只规范 11 列，
+    增量追加与既有分区 concat 直接 schema lengths differ 崩掉批量评估。
+    """
+    from factorzen.core import data_ensure as de
+    from factorzen.core import loader as ld
+
+    assert list(de.DAILY_BASIC_COLUMNS) == list(ld.DAILY_BASIC_COLS)
+    assert list(de.DAILY_COLUMNS) == list(ld.DAILY_STD_COLS)
+    # adj_factor loader 侧为调用点内联 std_cols，与 ensure 常量对齐
+    assert list(de.ADJ_FACTOR_COLUMNS) == ["ts_code", "trade_date", "adj_factor"]

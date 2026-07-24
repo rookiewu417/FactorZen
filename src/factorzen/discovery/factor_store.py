@@ -1300,7 +1300,14 @@ def discover_python_factor_files(
 
 
 def load_python_factor_module(path: Path, *, mod_name: str | None = None):
-    """从路径动态 import factor 模块。"""
+    """从路径动态 import factor 模块。
+
+    **源文件未变则复用已加载模块**：批量评估每因子都会重扫注册，若无条件
+    del+重载，multiprocessing 型因子持有的旧模块函数与 sys.modules 新实例
+    身份不一致 → ``PicklingError: not the same object``（2026-07-23
+    hf_resiliency/return_asym_mmd 实锤）。mtime 变了才重载（保住改
+    factor.py 后的热重载语义）。
+    """
     import sys
 
     name = mod_name or f"factorzen_store_{path.parent.name}"
@@ -1308,6 +1315,14 @@ def load_python_factor_module(path: Path, *, mod_name: str | None = None):
         name = f"factorzen_store_{abs(hash(str(path))) % 10**8}"
     # 去点
     name = name.replace(".", "_").replace("-", "_")
+    src_mtime = path.stat().st_mtime_ns
+    prev = sys.modules.get(name)
+    if (
+        prev is not None
+        and getattr(prev, "__file__", None) == str(path)
+        and getattr(prev, "_fz_src_mtime", None) == src_mtime
+    ):
+        return prev
     if name in sys.modules:
         del sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
@@ -1316,6 +1331,7 @@ def load_python_factor_module(path: Path, *, mod_name: str | None = None):
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
+    setattr(mod, "_fz_src_mtime", src_mtime)  # noqa: B010 —— 动态模块打标,mypy attr-defined
     return mod
 
 

@@ -961,3 +961,28 @@ def test_finalize_factor_panel_normalizes_ts_code_dtype():
     assert out["ts_code"].dtype == pl.Utf8
     assert out["trade_date"].dtype == pl.Date
     assert out["factor_value"].dtype == pl.Float64
+
+
+def test_load_python_factor_module_reuses_until_source_changes(tmp_path):
+    """回归：批量重扫时源文件未变必须复用同一模块对象（del+重载会破坏
+    multiprocessing 因子的 pickle 身份 → not the same object）；改文件后须重载。"""
+    import os
+    import time
+
+    from factorzen.discovery.factor_store import load_python_factor_module
+
+    d = tmp_path / "myfac"
+    d.mkdir()
+    py = d / "factor.py"
+    py.write_text("MARK = 1\n", encoding="utf-8")
+
+    m1 = load_python_factor_module(py)
+    m2 = load_python_factor_module(py)
+    assert m1 is m2, "源文件未变必须复用同一模块实例"
+
+    py.write_text("MARK = 2\n", encoding="utf-8")
+    # 文件系统 mtime 分辨率可能到秒级：显式推 1s，别赌粒度
+    t = time.time_ns() + 10**9
+    os.utime(py, ns=(t, t))
+    m3 = load_python_factor_module(py)
+    assert m3 is not m1 and m3.MARK == 2, "源文件变更必须重载"

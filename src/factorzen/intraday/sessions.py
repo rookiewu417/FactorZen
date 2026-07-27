@@ -10,8 +10,6 @@
   政策：**一律剔除 >15:00 的 bar**（``AFTER_HOURS_POLICY = "drop"``）。
 - 分钟 vol=股、amount=元；日线 vol=手、amount=千元；分钟按日求和与日线精确闭合（×100 / ×1000）。
 - 覆盖：2017 全年、2018 十个月、**2019 整年缺失**、2020-2025 全、2026 到 04-10。
-
-实证审计见 ``docs/plans/20260715-minute-upgrade.md``。
 """
 
 from __future__ import annotations

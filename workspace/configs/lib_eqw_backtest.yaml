@@ -1,0 +1,42 @@
+# 因子库等权组合分数面板回测配置（一次性研究）
+#
+# 因子面板已在 workspace/factors/_runs/20260721_library_eqw_alla_2016_2026/
+# combined.parquet 中预计算（逐日截面 z 后等权），此处只做回测口径设置：
+#
+# - preprocessing.neutralize=false：忠实回测面板原值。zscore/mad 都是保序变换，
+#   不改分组排序；行业+市值中性化会改写分数，故关闭。
+# - 两个策略并跑：quantile_ls_5（项目单因子默认主策略，5 分位多空）
+#   与 topn_50（long-only Top50，A 股可实现形态）。
+# - 回测执行口径由引擎给定：t 日信号 → t+1 开盘执行，含涨跌停/ST/停牌/T+1 约束。
+#
+# factor / start / end / universe 由 CLI 传入覆盖。
+
+factor: lib_eqw_all
+start: "20160104"
+end: "20260720"
+universe: csi500
+seed: 42
+
+preprocessing:
+  outlier: mad
+  normalizer: zscore
+  neutralize: false
+
+backtest:
+  primary: quantile_ls_5
+  strategies:
+    - name: quantile_ls_5
+      type: quantile_long_short
+      params:
+        quantiles: 5
+      max_abs_weight: 0.1
+      cost_model: linear
+    - name: topn_50
+      type: topn_long_only
+      params:
+        top_n: 50
+      max_abs_weight: 0.1
+      cost_model: linear
+
+walk_forward:
+  enabled: false

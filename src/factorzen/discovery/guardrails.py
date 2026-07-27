@@ -65,6 +65,21 @@ REJECT_CATEGORY_LIFT_REJECTED = "lift_rejected"
 # 主门 |IC| 低于 floor（「残差IC太弱」/「train_IC 太弱」）：强度不足 ≠ 方向已验证无效。
 # 不进 known_invalid 负例回灌，避免事件式提案被稀释后自强化「方向无效」死循环。
 REJECT_CATEGORY_IC_TOO_WEAK = "ic_too_weak"
+# 分年 IC 符号一致性门失败：强度够但方向按年翻转 = **方向性**失败（真证据）。
+# 与上面几类相反，**故意不加进 `experiment_index.known_invalid` 的排除表**——
+# 它该进 known_invalid 负例回灌（「这方向在别的年份是反的」正是 LLM 需要的信息）。
+REJECT_CATEGORY_YEARLY_SIGN_UNSTABLE = "yearly_sign_unstable"
+
+# ── 分年 IC 符号一致性门（时变稳定性）────────────────────────────────────────
+# 「完整年」的有效 IC 天数下限。A 股一年约 240 个交易日，120 ≈ 半年：
+# 首尾残年（session 窗口很少正好卡在自然年边界）被剔除，不让 20 天的尾巴左右裁决。
+# 模块常量而非默认参数 —— 函数体内按名读取，测试可 monkeypatch 本名。
+YEARLY_FULL_YEAR_MIN_DAYS = 120
+# 完整年数下限：少于此判样本不足 → 占比返回 None → 门**自动跳过**（零误杀）。
+DEFAULT_YEARLY_MIN_FULL_YEARS = 2
+# 同号年占比下限。3 年里允许 1 年反向（2/3≈67%≥60%），4 年里允许 1 年（75%），
+# 2 年里要求全同号（50%<60%）。改这一处即全局生效。
+DEFAULT_YEARLY_MIN_AGREE_RATIO = 0.6
 
 # ── 稀疏因子 sleeve 旁路（事件子集口径；不改主门阈值）────────────────────────
 # |subset_ic_train| 下限：战役 express_yoy 真子集 ~0.02–0.05；0.03 为工程入队门槛。
@@ -103,6 +118,97 @@ def _coverage_reason(
     if holdout_n_days < holdout_min_days:
         return f"holdout覆盖不足(days={holdout_n_days}/需{holdout_min_days})"
     return None
+
+
+def _year_expr(dtype) -> pl.Expr:
+    """从 ``trade_date`` 取自然年。Date/Datetime 走 ``dt.year()``；其余（Utf8 "YYYYMMDD"
+    或 "YYYY-MM-DD"、Int 20200105）取前 4 位——两种字符串格式的前 4 位都是年。"""
+    if dtype in (pl.Date, pl.Datetime):
+        return pl.col("trade_date").dt.year().cast(pl.Int32)
+    return pl.col("trade_date").cast(pl.Utf8).str.slice(0, 4).cast(pl.Int32, strict=False)
+
+
+def yearly_sign_consistency(
+    daily_ic: pl.DataFrame | None,
+    *,
+    min_full_years: int = DEFAULT_YEARLY_MIN_FULL_YEARS,
+    min_agree_ratio: float = DEFAULT_YEARLY_MIN_AGREE_RATIO,
+) -> tuple[float | None, int]:
+    """train 段逐日 IC 按自然年分组 → ``(与全窗符号同号的完整年占比, 完整年数)``。
+
+    ``daily_ic``：``[trade_date, ic]`` 帧（``compute_rank_ic(...).ic_series`` /
+    `discovery.residual.daily_residual_rank_ic` 的原生形状）。``trade_date`` 可为
+    Date/Datetime/Utf8("YYYYMMDD" 或 "YYYY-MM-DD")/整数日期。``None``/空/缺列 → ``(None, 0)``。
+
+    口径：
+    - null / NaN / inf 的 IC 行先剔除，**「该年天数」= 剔除后的有效天数**（不是行数）。
+    - 「完整年」= 有效天数 ≥ ``YEARLY_FULL_YEAR_MIN_DAYS``（模块常量，可 monkeypatch）。
+      首尾残年被剔除：session 窗口极少正好卡在自然年边界，20 天的尾巴不该参与裁决。
+    - 「全窗符号」= **全部**有效日 IC 的均值符号（含残年）——与 ``ic_train`` 同口径，
+      避免「按完整年重算的均值」与主门用的 IC 各说各话。
+    - 年均恰为 0 的完整年**不算同号**（无方向 ≠ 同向）。
+
+    退化即返回 ``None``（占比不可判 → 调用方跳过本门，**零误杀**）：
+    - 完整年数 < ``min_full_years``（样本不足以谈「时变稳定」）
+    - 全窗均值为 NaN 或**恰为 0**（符号未定义，无从比对）
+
+    ``min_agree_ratio``：**本函数不用它计算**，只作为「统计量与其阈值同签名声明」的
+    单一真源，防止各调用方各写各的默认值漂移；判决（``ratio < min_agree_ratio``）由
+    `_yearly_sign_reason` 施加。
+    """
+    if daily_ic is None:
+        return (None, 0)
+    cols = set(getattr(daily_ic, "columns", ()) or ())
+    if not {"trade_date", "ic"} <= cols:
+        return (None, 0)
+    df = daily_ic.select(["trade_date", "ic"]).with_columns(
+        pl.col("ic").cast(pl.Float64, strict=False)
+    )
+    df = df.filter(pl.col("ic").is_not_null() & pl.col("ic").is_finite())
+    if df.is_empty():
+        return (None, 0)
+
+    df = df.with_columns(_year_expr(df.schema["trade_date"]).alias("_year"))
+    by_year = df.group_by("_year").agg(
+        pl.len().alias("_n"), pl.col("ic").mean().alias("_ic_year")
+    )
+    full = by_year.filter(pl.col("_n") >= YEARLY_FULL_YEAR_MIN_DAYS)
+    n_full = int(full.height)
+    if n_full < min_full_years:
+        return (None, n_full)
+
+    overall = float(df["ic"].mean())  # type: ignore[arg-type]
+    if overall != overall or overall == 0.0:  # NaN 或恰 0 → 符号未定义
+        return (None, n_full)
+
+    overall_pos = overall > 0
+    agree = 0
+    for v in full["_ic_year"].to_list():
+        if v is None or v != v or v == 0.0:
+            continue  # 年均缺失 / 恰为 0 → 不算同号
+        if (float(v) > 0) == overall_pos:
+            agree += 1
+    return (agree / n_full, n_full)
+
+
+def _yearly_sign_reason(
+    daily_ic: pl.DataFrame | None,
+    *,
+    min_full_years: int = DEFAULT_YEARLY_MIN_FULL_YEARS,
+    min_agree_ratio: float = DEFAULT_YEARLY_MIN_AGREE_RATIO,
+) -> str | None:
+    """分年符号门文案；``daily_ic=None``（旧调用方未传）→ 跳过，零回归。
+
+    占比 ``None``（完整年不足 / 全窗符号未定义）同样跳过——本门只在证据充分时开火。
+    """
+    if daily_ic is None:
+        return None
+    ratio, n_full = yearly_sign_consistency(
+        daily_ic, min_full_years=min_full_years, min_agree_ratio=min_agree_ratio,
+    )
+    if ratio is None or ratio >= min_agree_ratio:
+        return None
+    return f"分年IC不稳(同号年占比{ratio:.0%}<{min_agree_ratio:.0%}, {n_full}年)"
 
 
 @dataclass(frozen=True)
@@ -180,16 +286,22 @@ def guardrail_reasons(
     dsr_alpha: float = DEFAULT_DSR_ALPHA,
     holdout_n_days: int | None = None,
     holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
+    daily_ic_train: pl.DataFrame | None = None,
+    yearly_min_full_years: int = DEFAULT_YEARLY_MIN_FULL_YEARS,
+    yearly_min_agree_ratio: float = DEFAULT_YEARLY_MIN_AGREE_RATIO,
 ) -> list[str]:
     """返回**未通过**的护栏门（空列表 = 全过）。`guardrail_passed` 委托本函数（无失败即通过），
     两者共用同一套门，杜绝「判定 / 解释」双路径漂移（陷阱#2）。
 
-    门（2026-07「松一档」+ 覆盖守卫）：DSR 显著(pval<dsr_alpha，默认 0.10) + holdout 覆盖充足
-    + holdout 与 train **严格同号**。必需量 ic_train/holdout_ic/dsr_pvalue 任一 None/NaN → 判缺失。
+    门（2026-07「松一档」+ 覆盖守卫 + 分年符号）：DSR 显著(pval<dsr_alpha，默认 0.10)
+    + holdout 覆盖充足 + holdout 与 train **严格同号** + train 段分年 IC 符号一致。
+    必需量 ic_train/holdout_ic/dsr_pvalue 任一 None/NaN → 判缺失。
     覆盖不足优先于同号门（不叫反号）；holdout 精确 0 →「无信号」。
 
     ``ci_low``/``ci_high`` 仍接收（供报告与向后兼容），不再参与判定。
     ``holdout_n_days=None``（旧调用方）跳过覆盖门，零回归。
+    ``daily_ic_train=None``（旧调用方）跳过分年符号门，零回归；覆盖不足的早退分支同样
+    不叠加分年门（缺数据是数据性失败，不与时变稳定性口径混谈）。
     """
     # 覆盖不足时 holdout_ic 常为 nan（空因子帧）——覆盖门优先，不把缺数伪装成「缺失/NaN」。
     cov = _coverage_reason(holdout_n_days, holdout_min_days)
@@ -211,6 +323,12 @@ def guardrail_reasons(
     if not (dsr_pvalue < dsr_alpha):  # type: ignore[operator]
         reasons.append(f"DSR 不显著(p={dsr_pvalue:.4f}≥{dsr_alpha})")
     reasons.extend(_holdout_direction_reasons(ic_train, holdout_ic))  # type: ignore[arg-type]
+    yearly = _yearly_sign_reason(
+        daily_ic_train, min_full_years=yearly_min_full_years,
+        min_agree_ratio=yearly_min_agree_ratio,
+    )
+    if yearly is not None:
+        reasons.append(yearly)
     return reasons
 
 
@@ -224,15 +342,22 @@ def guardrail_passed(
     dsr_alpha: float = DEFAULT_DSR_ALPHA,
     holdout_n_days: int | None = None,
     holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
+    daily_ic_train: pl.DataFrame | None = None,
+    yearly_min_full_years: int = DEFAULT_YEARLY_MIN_FULL_YEARS,
+    yearly_min_agree_ratio: float = DEFAULT_YEARLY_MIN_AGREE_RATIO,
 ) -> bool:
-    """DSR 显著(pval<dsr_alpha，默认 0.10) + holdout 覆盖 + 点估计同号。必需量 None/NaN → False。
+    """DSR 显著(pval<dsr_alpha，默认 0.10) + holdout 覆盖 + 点估计同号 + 分年符号一致。
+    必需量 None/NaN → False。
 
     委托 `guardrail_reasons`（无失败原因即通过），保证「过/不过」与「为什么不过」同源。
     """
     return not guardrail_reasons(
         ic_train=ic_train, holdout_ic=holdout_ic, dsr_pvalue=dsr_pvalue,
         ci_low=ci_low, ci_high=ci_high, dsr_alpha=dsr_alpha,
-        holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days)
+        holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days,
+        daily_ic_train=daily_ic_train,
+        yearly_min_full_years=yearly_min_full_years,
+        yearly_min_agree_ratio=yearly_min_agree_ratio)
 
 
 def _ic_weak_reason(ic_train: float, ic_floor: float, *, reason_style: str = "raw") -> str:
@@ -249,15 +374,20 @@ def library_reasons(
     holdout_n_days: int | None = None,
     holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
     reason_style: str = "raw",
+    daily_ic_train: pl.DataFrame | None = None,
+    yearly_min_full_years: int = DEFAULT_YEARLY_MIN_FULL_YEARS,
+    yearly_min_agree_ratio: float = DEFAULT_YEARLY_MIN_AGREE_RATIO,
 ) -> list[str]:
-    """因子**库**入池判据（2026-07 因子库化 + 覆盖守卫）：
-    覆盖充足 + 真（holdout 与 train 严格同号）+ 有信号（``|train_IC| >= ic_floor``）。
+    """因子**库**入池判据（2026-07 因子库化 + 覆盖守卫 + 分年符号门）：
+    覆盖充足 + 真（holdout 与 train 严格同号）+ 有信号（``|train_IC| >= ic_floor``）
+    + 稳（train 段分年 IC 符号与全窗一致）。
 
     **不含 DSR 单星显著性**——显著性挪到组合层。去相关由 `max_correlation` 另判。
 
     挡三类：**覆盖不足**（缺数据，非方向证据）、**假**（真反号）、**纯噪声**（|IC| 太弱）。
     覆盖不足优先报告、不与「反号」并用；holdout 精确 0 →「无信号」。
     ``holdout_n_days=None`` 跳过覆盖门（旧调用方零回归）。
+    ``daily_ic_train=None`` 跳过分年符号门（旧调用方零回归）；覆盖不足早退分支不叠加该门。
     必需量 None/NaN → 判缺失（保守不入池）。
 
     ``reason_style="residual"``：挖掘残差目标路径——死因文案写「残差IC太弱/残差holdout反号」，
@@ -283,6 +413,12 @@ def library_reasons(
         reasons.append(_ic_weak_reason(ic_train, ic_floor, reason_style=reason_style))  # type: ignore[arg-type]
     reasons.extend(_holdout_direction_reasons(
         ic_train, holdout_ic, reason_style=reason_style))  # type: ignore[arg-type]
+    yearly = _yearly_sign_reason(
+        daily_ic_train, min_full_years=yearly_min_full_years,
+        min_agree_ratio=yearly_min_agree_ratio,
+    )
+    if yearly is not None:
+        reasons.append(yearly)
     return reasons
 
 
@@ -290,7 +426,12 @@ def classify_reject_category(reasons: list[str]) -> str | None:
     """从护栏 reason 列表提取死因类别（供 experiment_index 过滤）。无匹配 → None。
 
     优先级：覆盖不足 > 反号/无信号（维持 None，方向证据可进 known_invalid）
-    > 太弱（``ic_too_weak``，强度不足不进 known_invalid）。
+    > 太弱（``ic_too_weak``，强度不足不进 known_invalid）
+    > 分年不稳（``yearly_sign_unstable``，方向性证据，**可**进 known_invalid）。
+
+    分年门排在「太弱」**之后**：|IC| 低于地板时各年符号本就是噪声抽样，强度失败应主导；
+    只有强度够、方向却按年翻转时才打 ``yearly_sign_unstable``（真时变证据）。
+    新文案「分年IC不稳」不与任何既有关键词重叠 ⇒ 旧 reason 集合的归类逐字节零回归。
     """
     for r in reasons:
         if "覆盖不足" in r:
@@ -302,6 +443,9 @@ def classify_reject_category(reasons: list[str]) -> str | None:
     for r in reasons:
         if "太弱" in r:
             return REJECT_CATEGORY_IC_TOO_WEAK
+    for r in reasons:
+        if "分年IC不稳" in r:
+            return REJECT_CATEGORY_YEARLY_SIGN_UNSTABLE
     return None
 
 
@@ -493,6 +637,9 @@ def acceptance_reasons(
     holdout_n_days: int | None = None,
     holdout_min_days: int = DEFAULT_HOLDOUT_MIN_DAYS,
     reason_style: str = "raw",
+    daily_ic_train: pl.DataFrame | None = None,
+    yearly_min_full_years: int = DEFAULT_YEARLY_MIN_FULL_YEARS,
+    yearly_min_agree_ratio: float = DEFAULT_YEARLY_MIN_AGREE_RATIO,
 ) -> list[str]:
     """按 ``gate`` 口径返回未通过的入池判据（空=入池）。两条挖掘路径的**统一入口**，防漂移。
 
@@ -502,18 +649,29 @@ def acceptance_reasons(
     ``reason_style="residual"`` 只影响 library 门文案（残差IC太弱/残差holdout反号）；
     调用方负责把残差指标填进 ic_train/holdout_ic 并把 ic_floor 设为
     ``DEFAULT_RESIDUAL_IC_FLOOR``。
+
+    ``daily_ic_train``：train 段逐日 IC（``[trade_date, ic]``）。**两种 gate 都接**——
+    只挂在 strict 门上的话，默认 ``gate="library"`` 的整条挖掘链上分年门是死的。
+    ``None``（旧调用方）→ 两侧都跳过，零回归。口径须与 ``ic_train`` 一致
+    （residual 口径就传残差逐日 IC）。
     """
     if gate == "strict":
         return guardrail_reasons(
             ic_train=ic_train, holdout_ic=holdout_ic, dsr_pvalue=dsr_pvalue,
             ci_low=ci_low, ci_high=ci_high, dsr_alpha=dsr_alpha,
-            holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days)
+            holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days,
+            daily_ic_train=daily_ic_train,
+            yearly_min_full_years=yearly_min_full_years,
+            yearly_min_agree_ratio=yearly_min_agree_ratio)
     if gate != "library":
         raise ValueError(f"未知 gate={gate!r}，应为 'library' 或 'strict'")
     return library_reasons(
         ic_train=ic_train, holdout_ic=holdout_ic, ic_floor=ic_floor,
         holdout_n_days=holdout_n_days, holdout_min_days=holdout_min_days,
-        reason_style=reason_style)
+        reason_style=reason_style,
+        daily_ic_train=daily_ic_train,
+        yearly_min_full_years=yearly_min_full_years,
+        yearly_min_agree_ratio=yearly_min_agree_ratio)
 
 
 def pool_pbo(

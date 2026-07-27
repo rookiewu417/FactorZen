@@ -173,6 +173,47 @@ def compute_subset_rank_ic(
     return float(np.mean(vals)), int(vals.size)
 
 
+def segment_daily_ic(
+    factor_df: pl.DataFrame | None,
+    bundle,
+    *,
+    segment: str = "train",
+) -> pl.DataFrame:
+    """某一段（train/valid）的**逐日** Rank IC 序列 ``[trade_date, ic]``。
+
+    **配对路径 = `discovery/scoring.py::quick_fitness`**：同一段掩码
+    (``bundle._segment_mask``)、同一截面 zscore、同一 1d Rank IC。quick_fitness 把
+    ``compute_rank_ic`` 的 ``ic_series`` 丢掉只留标量 ``{ic_mean, ir, tstat, n}``，
+    而分年 IC 符号一致性门要的正是那条序列，故在此按同口径重取。
+    **改任一侧（段掩码 / zscore / horizon）必须同步另一侧**——否则 ``ic_train`` 与分年门
+    会算在两套样本上、各说各话。
+
+    ``horizons=[1]`` 与 quick_fitness 一致；``ic_series`` 只由 1d 决定，与 horizons 无关，
+    显式传 [1] 只为省掉 5/10/20d 的重复截面相关。
+
+    空帧 / 空段 → 空帧（``[trade_date: Utf8, ic: Float64]``），调用方按「无序列」处理。
+    ``ic_series`` **保留 null/NaN 行**（与 ``compute_rank_ic`` 原生一致），消费方自行剔除。
+    """
+    from factorzen.daily.evaluation.ic_analysis import compute_rank_ic
+    from factorzen.daily.preprocessing.normalizer import cross_sectional_zscore
+
+    empty = pl.DataFrame(schema={"trade_date": pl.Utf8, "ic": pl.Float64})
+    if factor_df is None or factor_df.is_empty() or "factor_value" not in factor_df.columns:
+        return empty
+    seg = bundle._segment_mask(factor_df, segment)
+    if seg.is_empty():
+        return empty
+    clean = cross_sectional_zscore(seg, col="factor_value").rename(
+        {"factor_value_z": "factor_clean"}
+    )
+    ret = bundle._segment_mask(bundle.fwd_returns, segment)
+    res = compute_rank_ic(
+        clean.select(["trade_date", "ts_code", "factor_clean"]),
+        ret, factor_col="factor_clean", frequency="daily", horizons=[1],
+    )
+    return res.ic_series
+
+
 def _sparse_subset_train_fields(
     fdf: pl.DataFrame,
     bundle,

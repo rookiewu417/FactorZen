@@ -81,6 +81,11 @@ def quick_fitness(factor_df: pl.DataFrame, bundle: DataBundle,
     ``tstat`` 为 IC 序列的 Newey-West HAC t 统计量（``compute_rank_ic`` 已算），
     仅当有效 IC 天数 >4 且 ic_std>0 时非零，天然惩罚低样本 —— 用作排序键可避免
     小样本 ic_std 虚低把 IR 撑爆的假象（见 score_candidate）。
+
+    **配对路径 = `discovery/evaluation.py::segment_daily_ic`**：分年 IC 符号门在那里
+    按本函数同一口径（同段掩码 / 同截面 zscore / 同 1d Rank IC）重取**逐日**序列
+    （本函数只留标量、丢 ``ic_series``）。改这里的段掩码 / zscore / horizon
+    必须同步那侧，否则 ``ic_train`` 与分年门算在两套样本上、各说各话。
     """
     seg = bundle._segment_mask(factor_df, segment)
     if seg.is_empty():

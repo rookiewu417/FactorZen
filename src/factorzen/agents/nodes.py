@@ -211,6 +211,48 @@ def node_evaluate(state: AgentState, *, daily, bundle,
     return state
 
 
+def _train_daily_ic(
+    node,
+    *,
+    prepped_train,
+    bundle,
+    leaf_map,
+    lib_panel=None,
+    projector=None,
+    train_fwd=None,
+    expression: str = "",
+):
+    """train 段**逐日** IC 序列 ``[trade_date, ic]``，供 `guardrails` 的分年符号一致性门。
+
+    口径跟随该候选主门用的 ic_train：
+    - ``lib_panel`` 非 None（residual 门）→ `daily_residual_rank_ic`，与 ``residual_ic_train``
+      同源（同 lib_panel / 同 projector / 同 train fwd，全 mining 帧不再切段）。
+    - 否则（raw 门）→ `segment_daily_ic(..., segment="train")`，与 ``quick_fitness`` 算出的
+      ``ic_train`` 同段同 zscore。
+
+    **异常一律吞成 None**：分年序列是统计辅助量，取不到时门自动跳过（零误杀），
+    绝不能让它把候选整条判成「护栏计算异常」。
+
+    成本：每轮至多 ``top_k`` 次额外 `_factor_df_from_prepped`（默认 5）。
+    residual 模式下与全量残差预计算循环有重复，但那个循环不留逐日帧，
+    不为省这 5 次去改它的数值路径。
+    """
+    from factorzen.discovery.evaluation import _factor_df_from_prepped, segment_daily_ic
+
+    try:
+        fdf = _factor_df_from_prepped(node, prepped_train, leaf_map=leaf_map)
+        if lib_panel is not None:
+            from factorzen.discovery.residual import daily_residual_rank_ic
+            return daily_residual_rank_ic(
+                fdf, lib_panel, train_fwd, projector=projector,
+            )
+        return segment_daily_ic(fdf, bundle, segment="train")
+    except Exception as exc:
+        _LOG.debug("train 逐日 IC（分年门输入）计算失败 %s: %s: %s",
+                   expression, type(exc).__name__, exc)
+        return None
+
+
 def node_guardrails(
     state: AgentState,
     *,
@@ -252,6 +294,13 @@ def node_guardrails(
     入池判定委托 discovery.guardrails.acceptance_reasons（``gate`` 口径，默认 "library"：真+有
     信号，不含 DSR；"strict" 才用 DSR），与 M1 `_guard_passed` 统一，消除双路径漂移。DSR 仍算出来
     存进候选供组合层/报告用（只是 library 口径下不当门）。池级 PBO 记入 state.pbo。
+
+    **分年 IC 符号一致性门**：top-K 验收时按 `_train_daily_ic` 取该候选 train 段逐日 IC
+    （residual 门取残差逐日 IC、raw 门取裸逐日 IC，各自与本门用的 ic_train 同源），
+    交由 `acceptance_reasons(daily_ic_train=...)` 判「完整年年均 IC 与全窗同号占比」。
+    完整年不足 2 个 / 序列取不到 → 门自动跳过（零误杀）。
+    收尾复核 `node_finalize_guardrails` **不重跑本门**：失败者从未进 candidates，
+    而收尾只做「只减不增」的降级，故无漏网口径。
 
     ``lib_pool``：库内 active 因子在**与 session 去相关同帧**上的物化面板
     （``build_library_pool`` 产出）。与之算 ``library_orthogonal_check``：
@@ -496,22 +545,34 @@ def node_guardrails(
                 n_residual_h = r_h.n_days
                 a.residual_holdout_ic = residual_ic_h  # type: ignore[attr-defined]
                 a.n_residual_holdout_days = n_residual_h  # type: ignore[attr-defined]
+                # 分年符号门输入：train 段逐日**残差** IC（与 residual_ic_train 同源）
+                daily_ic_tr = _train_daily_ic(
+                    node, prepped_train=_prepped_train, bundle=bundle,
+                    leaf_map=leaf_map, lib_panel=lib_panel, projector=projector,
+                    train_fwd=_train_fwd, expression=a.expression,
+                )
                 reasons = acceptance_reasons(
                     gate=gate, ic_train=residual_ic_tr, holdout_ic=residual_ic_h,
                     dsr_pvalue=pval, ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
                     ic_floor=DEFAULT_RESIDUAL_IC_FLOOR,
                     holdout_n_days=n_residual_h,
                     reason_style="residual",
+                    daily_ic_train=daily_ic_tr,
                 )
                 # 库相关软信号：挡快速通道，不硬拒、不进 known_invalid
                 if abs(float(mc_lib)) >= DEFAULT_DECORR_THRESHOLD:
                     reasons = [*reasons, f"库相关持保留(corr={mc_lib:.2f})"]
             else:
                 # raw（或库空退化）：裸 IC 门，顺序与 P4 零回归一致
+                # 分年符号门输入：train 段逐日裸 IC（与 quick_fitness 的 ic_train 同段同口径）
+                daily_ic_tr = _train_daily_ic(
+                    node, prepped_train=_prepped_train, bundle=bundle,
+                    leaf_map=leaf_map, expression=a.expression,
+                )
                 reasons = acceptance_reasons(
                     gate=gate, ic_train=ic_tr, holdout_ic=ic_h, dsr_pvalue=pval,
                     ci_low=ci_lo, ci_high=ci_hi, dsr_alpha=dsr_alpha,
-                    holdout_n_days=n_h,
+                    holdout_n_days=n_h, daily_ic_train=daily_ic_tr,
                 )
 
             if not reasons:

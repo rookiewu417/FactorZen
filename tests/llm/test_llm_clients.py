@@ -934,3 +934,39 @@ def test_llm_profile_suite(tmp_path):
         _section_6_test_stream_env_override_and_invalid_raises(_tp6, mp)
 
 
+
+
+def test_unlabeled_provider_placeholder_is_not_a_violation():
+    """aiping 2026-07 起流式 chunk 的 provider 恒为占位符 '-'（未标注），is_fallback 仍有效。
+
+    '-'/空串 = 平台未标注实际上游，**不是**路由违规——按字段缺失（None）同等对待。
+    判别力：镜像用例（真实名不符 'OpenAI' 仍拒）在同一 mock 形状上取反，
+    证明放行来自占位符白名单而非校验器被整体削弱。
+    """
+    import factorzen.llm.client as client_mod
+
+    for placeholder in ("-", ""):
+        with pytest.MonkeyPatch.context() as mp:
+            client_mod._openai_client.cache_clear()
+            client_mod._warned_provider_unpinned = False
+            client_mod._warned_openai_provider_ignored = False
+            _install_fake(mp, [
+                _chunk(choices=False, provider=placeholder, is_fallback=False),
+                _chunk('{"a":', provider=placeholder),
+                _chunk("1}", provider=placeholder),
+            ])
+            assert request_chat(_cfg(), _MSGS__llm_client_resilience) == '{"a":1}'
+
+    # 镜像：同形状、真实名不符 → 仍拒（校验器没有被整体关掉）
+    with pytest.MonkeyPatch.context() as mp:
+        client_mod._openai_client.cache_clear()
+        _install_fake(mp, [_chunk('{"a":1}', provider="OpenAI")])
+        with pytest.raises(LLMClientError, match="provider 不符"):
+            request_chat(_cfg(), _MSGS__llm_client_resilience)
+
+    # 镜像：占位符 provider 但 is_fallback=True → 仍拒（fallback 校验独立有效）
+    with pytest.MonkeyPatch.context() as mp:
+        client_mod._openai_client.cache_clear()
+        _install_fake(mp, [_chunk('{"a":1}', provider="-", is_fallback=True)])
+        with pytest.raises(LLMClientError, match="fallback"):
+            request_chat(_cfg(), _MSGS__llm_client_resilience)

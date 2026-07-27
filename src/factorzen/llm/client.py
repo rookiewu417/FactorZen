@@ -138,6 +138,11 @@ def _validate_gateway_chunk(config: LLMConfig, chunk: Any) -> None:
     if not config.provider:
         return
     actual = _extra_field(chunk, "provider")
+    # aiping 2026-07 起流式 chunk 的 provider 恒为占位符 "-"（未标注实际上游），
+    # 不是路由违规——与字段缺失（None）同等对待。路由锁定仍由请求侧
+    # provider.only 允许列表承担；is_fallback 校验独立生效，不受此白名单影响。
+    if actual in ("-", ""):
+        actual = None
     if actual is not None and actual != config.provider:
         raise LLMClientError(f"上游 provider 不符：锁定 {config.provider}，实得 {actual}")
     if _extra_field(chunk, "is_fallback"):

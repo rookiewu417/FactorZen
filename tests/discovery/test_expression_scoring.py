@@ -580,3 +580,49 @@ def test_prepare_mining_daily_default_warmup_covers_search_space(monkeypatch):
 
     assert captured["lookback_days"] == search_space_max_lookback()
 
+
+# ==== 结构模板签名（structural_signature）====
+def test_structural_signature_normalizes_leaves_and_windows():
+    """同一模板换叶子/换窗口 → 同签名；换结构 → 不同签名。
+
+    期望串在测试里**独立手写**（不调用被测函数生成），避免恒真断言。
+    """
+    from factorzen.discovery.expression import parse_expr, structural_signature
+
+    def sig(s: str) -> str:
+        return structural_signature(parse_expr(s))
+
+    # 同构不同叶：模板一致 → 同签名，且等于独立手写的规范串
+    assert sig("div(close, ts_mean(close, 20))") == "div(L0, ts_mean(L0, W))"
+    assert sig("div(vol, ts_mean(vol, 20))") == "div(L0, ts_mean(L0, W))"
+
+    # 判别用例：同叶复现共享编号 ≠ 两个不同叶子
+    assert sig("div(close, ts_mean(vol, 20))") == "div(L0, ts_mean(L1, W))"
+    assert sig("div(close, ts_mean(close, 20))") != sig("div(close, ts_mean(vol, 20))")
+
+    # 叶编号按先序首次出现序：换个顺序放同两个叶子，编号跟着位置走
+    assert sig("div(vol, ts_mean(close, 20))") == "div(L0, ts_mean(L1, W))"
+
+    # 窗口字面量归一：不同窗口同模板
+    assert sig("ts_rank(close, 20)") == "ts_rank(L0, W)"
+    assert sig("ts_rank(close, 5)") == "ts_rank(L0, W)"
+
+    # 常量字面量归一（幅度旋钮，不是结构差异）
+    assert sig("mul(close, 2.0)") == "mul(L0, C)"
+    assert sig("mul(close, 3.0)") == "mul(L0, C)"
+
+    # 换算子 / 换结构 → 不同签名
+    assert sig("sub(close, ts_mean(close, 20))") == "sub(L0, ts_mean(L0, W))"
+    assert sig("sub(close, ts_mean(close, 20))") != sig("div(close, ts_mean(close, 20))")
+    assert sig("ts_mean(close, 20)") != sig("ts_mean(rank(close), 20)")
+
+    # 任务动机场景：同一模板在 64 个叶子上各试一遍 → 全部同族（签名集合大小 1）
+    from factorzen.discovery.operators import LEAF_FEATURES
+
+    leaves = sorted(LEAF_FEATURES)
+    fam = {sig(f"sub(ts_rank({L}, 20), ts_rank({L}, 5))") for L in leaves}
+    assert fam == {"sub(ts_rank(L0, W), ts_rank(L0, W))"}
+    assert len(leaves) > 1  # 集合塌成 1 是归一的功劳，不是样本只有一条
+    # 异族模板不被卷进去
+    assert sig("sub(ts_rank(close, 20), ts_mean(close, 5))") not in fam
+

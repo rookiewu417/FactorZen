@@ -496,3 +496,50 @@ def filter_exhausted_expressions(
             quota_used[leaf] = quota_used.get(leaf, 0) + 1
         kept.append(e)
     return kept, n_drop
+
+
+def filter_template_quota(
+    exprs: list[str],
+    *,
+    leaf_map: dict[str, str] | set[str] | None,
+    quota_used: dict[str, int],
+    per_template_quota: int = 3,
+) -> tuple[list[str], int]:
+    """同族（结构模板）每轮配额：每个 ``structural_signature`` 本轮最多放行 N 条。
+
+    补的是**结构**维度去重。既有三重去重（表达式归一化、截面 rank 指纹、相关系数
+    0.7/0.95）都是逐条/数值维度：同一模板 ``sub(ts_rank(X,20), ts_rank(X,5))`` 在
+    64 个叶子上各试一遍，数值互不相关、三重去重全放行，但 64 次同模板试探的**有效
+    自由度远低于 64**——总有几个偶然显著。配额把同族试探压到可控条数。
+
+    规则（按序，风格对齐 ``filter_exhausted_expressions``）：
+    1. parse 失败 → **保留且不计配额**（语法坑归自愈；它反正会在评估处 compile 失败
+       落盘，配额不该吞掉这个诊断信息）；
+    2. 该族 ``quota_used`` 已达 ``per_template_quota`` → 丢弃（丢弃不再累加计数）；
+    3. 否则计数 +1、保留。
+
+    ``per_template_quota <= 0`` → 直通（视作关闭配额，不做"全丢"）。``quota_used``
+    由调用方持有（键=签名串），**跨假设批与预热回灌批共享同一份**，否则每批重开配额
+    等于没有轮级上限。放行顺序 = 生成顺序（先到先得）。返回 ``(保留列表, 丢弃数)``。
+
+    只影响"哪些表达式进评估"，不碰护栏判定/DSR/任何 N 计数语义。
+    """
+    if not exprs or per_template_quota <= 0:
+        return list(exprs), 0
+
+    from factorzen.discovery.expression import parse_expr, structural_signature
+
+    kept: list[str] = []
+    n_drop = 0
+    for e in exprs:
+        try:
+            sig = structural_signature(parse_expr(e, leaf_map))
+        except (ValueError, TypeError, IndexError):
+            kept.append(e)
+            continue
+        if quota_used.get(sig, 0) >= per_template_quota:
+            n_drop += 1
+            continue
+        quota_used[sig] = quota_used.get(sig, 0) + 1
+        kept.append(e)
+    return kept, n_drop

@@ -228,6 +228,49 @@ def complexity(node: Node) -> int:
     return 1 + sum(complexity(c) for c in node.children)  # type: ignore[attr-defined, misc]
 
 
+def structural_signature(node: Node) -> str:
+    """表达式的**结构模板签名**：同一模板换叶子/换窗口 → 同一个串。
+
+    去重的第四维。既有三重去重（表达式归一化、截面 rank 指纹、相关系数）都是
+    **逐条/数值**维度：同一模板 ``sub(ts_rank(X,20), ts_rank(X,5))`` 在 64 个叶子上
+    各试一遍，数值互不相关、三重去重全放行，但 64 次同模板试探的**有效自由度远低于 64**
+    ——总有几个偶然显著。本签名给"同族"一个可数的 key（每轮配额、族记忆的数据地基）。
+
+    归一规则：
+    - **算子名与树形保留**（``div`` ≠ ``sub``，嵌套位置不同即不同族）；
+    - **叶子名 → ``L0``/``L1``/…**，按**先序遍历首次出现序**编号，同叶复现共享编号：
+      ``div(close, ts_mean(close,20))`` → ``div(L0, ts_mean(L0, W))``，与
+      ``div(vol, ts_mean(vol,20))`` 同族、与 ``div(close, ts_mean(vol,20))``
+      （``div(L0, ts_mean(L1, W))``）不同族；
+    - **窗口字面量 → ``W``**，**常量字面量 → ``C``**：二者都是幅度旋钮而非结构差异
+      （``ts_rank(X,20)`` 与 ``ts_rank(X,5)`` 是同一个模板试了两个窗口，正是要计数的病）。
+
+    **不做**交换律归一（``add(a,b)`` 与 ``add(b,a)`` 签名不同）：算子表里没有交换律元信息，
+    擅自排序会把 ``sub``/``div`` 这类非交换算子误并，宁可少并不可错并。
+
+    ``complexity()`` 数节点、本函数数"形状"，两者都是纯 AST 遍历，无副作用。
+    """
+    slots: dict[str, str] = {}
+
+    def walk(n: Node) -> str:
+        if isinstance(n, Feature):
+            slot = slots.get(n.name)
+            if slot is None:
+                slot = f"L{len(slots)}"
+                slots[n.name] = slot
+            return slot
+        if isinstance(n, Constant):
+            return "C"
+        if isinstance(n, OpNode):
+            parts = [walk(c) for c in n.children]
+            if n.window is not None:
+                parts.append("W")
+            return f"{n.op}({', '.join(parts)})"
+        raise TypeError(f"未知节点: {n!r}")
+
+    return walk(node)
+
+
 def required_lookback(node: Node) -> int:
     """表达式求值所需的最小历史 bar 数：沿最深时序路径累加各 ts 算子的 window。
 

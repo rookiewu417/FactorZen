@@ -44,6 +44,12 @@ class AttemptRecord:
     subset_mask_leaves: list[str] | None = None
     # sleeve 旁路进 lift 队列标记（不直接 passed；lift 层零改）
     sleeve_candidate: bool = False
+    # 结构化假设声明的预期 IC 符号（+1/-1）；None = 非结构化轮、LLM 未给、或值不可解析。
+    expected_sign: int | None = None
+    # 预期符号与实测 ic_train 符号是否相反（**纯记账，不参与 passed 判定**）。
+    # None = 无从判定（非结构化轮 / ic_train 缺失或恰为 0 / expected_sign 非 ±1）；
+    # False = 已对账且相符。三态不可塌成 bool——把「没查」写成「相符」会伪造证据。
+    sign_mismatch: bool | None = None
 
 
 @dataclass

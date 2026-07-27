@@ -605,6 +605,130 @@ def test_filter_exhausted_suite():
     _section_3_test_filter_exhausted_none_passthrough()
 
 
+# ── C2 同族（结构模板）每轮配额 ───────────────────────────────────────────────
+
+
+def test_filter_template_quota_suite():
+    """同族每轮配额：4 同族 + 1 异族 → 放行 3+1 丢 1；配额 dict 跨批共享；parse 失败放行。"""
+    from factorzen.agents.scout_support import filter_template_quota
+
+    # 同一模板 sub(ts_rank(X, w1), ts_rank(X, w2)) 换叶/换窗口 → 同族
+    same_family = [
+        "sub(ts_rank(close, 20), ts_rank(close, 5))",
+        "sub(ts_rank(vol, 20), ts_rank(vol, 5))",
+        "sub(ts_rank(amount, 60), ts_rank(amount, 10))",
+        "sub(ts_rank(high, 20), ts_rank(high, 5))",
+    ]
+    other = "div(close, ts_mean(close, 20))"
+
+    quota: dict[str, int] = {}
+    kept, n_drop = filter_template_quota(
+        [*same_family, other],
+        leaf_map=None,
+        quota_used=quota,
+        per_template_quota=3,
+    )
+    # 放行顺序 = 生成顺序；超额的是同族第 4 条，异族那条不受牵连
+    assert kept == [*same_family[:3], other]
+    assert n_drop == 1
+    # 签名串独立手写（不调用被测签名函数生成），否则断言恒真
+    assert quota == {
+        "sub(ts_rank(L0, W), ts_rank(L0, W))": 3,
+        "div(L0, ts_mean(L0, W))": 1,
+    }
+
+    # 配额 dict 跨批共享：回灌批不得重开一份配额
+    kept2, n2 = filter_template_quota(
+        [same_family[3]], leaf_map=None, quota_used=quota, per_template_quota=3,
+    )
+    assert kept2 == []
+    assert n2 == 1
+    assert quota["sub(ts_rank(L0, W), ts_rank(L0, W))"] == 3   # 丢弃不计数
+
+    # parse 失败放行且不吃配额（语法坑要留到评估处 compile 失败落盘，配额不许吞诊断）
+    q_bad: dict[str, int] = {}
+    bad = ["this_is_not(valid", "rank(no_such_leaf)"]
+    kept3, n3 = filter_template_quota(
+        bad, leaf_map=None, quota_used=q_bad, per_template_quota=1,
+    )
+    assert kept3 == bad
+    assert n3 == 0
+    assert q_bad == {}
+
+    # 空输入 / 非正配额 → 直通零回归
+    assert filter_template_quota([], leaf_map=None, quota_used={}) == ([], 0)
+    q_off: dict[str, int] = {}
+    kept4, n4 = filter_template_quota(
+        list(same_family), leaf_map=None, quota_used=q_off, per_template_quota=0,
+    )
+    assert kept4 == same_family
+    assert n4 == 0
+    assert q_off == {}
+
+
+def test_round_template_quota_in_rounds_log(tmp_path, monkeypatch):
+    """轮内接线：同族超配额被丢，计数进 rounds_log 的 n_template_quota_dropped。"""
+    import datetime as dt
+
+    import numpy as np
+    import polars as pl
+
+    from factorzen.agents import team_orchestrator as team_mod
+    from factorzen.agents.team_orchestrator import run_team_agent
+
+    monkeypatch.setattr(team_mod, "TEMPLATE_QUOTA_PER_ROUND", 2)
+
+    days, d = [], dt.date(2022, 1, 3)
+    while len(days) < 80:
+        if d.weekday() < 5:
+            days.append(d)
+        d += dt.timedelta(days=1)
+    rows = []
+    rng = np.random.default_rng(0)
+    for c in [f"{i:06d}.SZ" for i in range(20)]:
+        px = 10.0
+        for dd in days:
+            px *= 1 + rng.standard_normal() * 0.01
+            rows.append({
+                "trade_date": dd, "ts_code": c, "close": px,
+                "open": px, "high": px, "low": px,
+                "vol": 1e6, "amount": 1e7,
+            })
+    daily = pl.DataFrame(rows)
+
+    # 4 条同族（同模板换叶/换窗口）→ 配额 2 → 丢 2
+    def llm_fn(messages):
+        text = "\n".join(m["content"] for m in messages)
+        if "风控审计员" in text:
+            return json.dumps({"verdict": "keep", "reason": "ok"})
+        if "翻译成" in text:
+            return json.dumps({"expressions": [
+                "sub(ts_rank(close, 20), ts_rank(close, 5))",
+                "sub(ts_rank(vol, 20), ts_rank(vol, 5))",
+                "sub(ts_rank(high, 20), ts_rank(high, 5))",
+                "sub(ts_rank(low, 60), ts_rank(low, 10))",
+            ]})
+        return json.dumps({"hypotheses": ["短长期时序排名差"]})
+
+    result = run_team_agent(
+        daily, llm_fn,
+        n_rounds=1, seed=1, top_k=3,
+        index_path=str(tmp_path / "experiment_index.jsonl"),
+        data_window={"start": "20220101", "end": "20220630",
+                     "universe": "csi300", "market": "ashare"},
+        library_orthogonal=False,
+        auto_lift=False,
+        heal_rounds=0,
+    )
+    assert result.rounds_log
+    assert result.rounds_log[0]["n_template_quota_dropped"] == 2
+    # 只有配额内的 2 条进了评估（表达式串按生成序取前两条）
+    assert result.rounds_log[0]["expressions"] == [
+        "sub(ts_rank(close, 20), ts_rank(close, 5))",
+        "sub(ts_rank(vol, 20), ts_rank(vol, 5))",
+    ]
+
+
 # ── D library family ─────────────────────────────────────────────────────────
 
 

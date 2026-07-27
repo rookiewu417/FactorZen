@@ -658,6 +658,32 @@ def test_window_scoping_suite(tmp_path, caplog):
 # ── 按窗口分族 ──────────────────────────────────────────────────────────────
 
 
+def test_record_persists_structural_family(tmp_path):
+    """`record()` 落盘结构模板族（后续"模板族记忆"的数据地基）。
+
+    有值才写、parse 失败不写（口径同 `_normalize`）。期望签名串独立手写。
+    """
+    idx = ExperimentIndex(str(tmp_path / "i.jsonl"))
+    record(idx, [
+        _attempt("div(close, ts_mean(close, 20))"),
+        _attempt("div(vol, ts_mean(vol, 60))"),       # 同族：换叶+换窗口
+        _attempt("div(close, ts_mean(vol, 20))"),     # 异族：两个不同叶子
+        _attempt("this_is_not(valid"),                # parse 失败 → 不写该字段
+    ], run_id="r1", data_window=_W1)
+
+    rows = idx.load()
+    assert [r.get("structural_family") for r in rows] == [
+        "div(L0, ts_mean(L0, W))",
+        "div(L0, ts_mean(L0, W))",
+        "div(L0, ts_mean(L1, W))",
+        None,
+    ]
+    assert "structural_family" not in rows[3], "parse 失败不落该字段（不写假值）"
+    # 其余字段零回归
+    assert rows[0]["ir_train"] == 0.3
+    assert rows[3]["expression"] == "this_is_not(valid"
+
+
 # ── 端到端接线：能力实现了不算，team 路径得真的传下去 ────────────────────────
 
 

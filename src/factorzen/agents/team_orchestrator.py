@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -46,6 +47,13 @@ from factorzen.validation.multiple_testing import TrialLedger
 _LOG = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+# 同一结构模板（`structural_signature`：叶名与窗口/常量字面量归一后的 AST 形状）
+# 本轮最多进评估的表达式条数。既有三重去重（表达式归一化 / 截面 rank 指纹 / 相关系数）
+# 都是逐条·数值维度：同模板在 64 个叶子上各试一遍，数值互不相关、全部放行，但这 64 次
+# 试探的有效自由度远低于 64——总有几个偶然显著。配额补的是**结构**维度。
+# 模块常量（在 `_run_one_round` 内按名查全局，测试可 monkeypatch）。
+TEMPLATE_QUOTA_PER_ROUND = 3
 
 
 def _step(msg: str) -> None:
@@ -128,6 +136,46 @@ def _normalize(expr: str, leaf_map: dict[str, str] | None = None) -> str:
         return expr
 
 
+def _coerce_expected_sign(raw: Any) -> int | None:
+    """把 LLM 给的 ``expected_sign`` 归一成 ``+1``/``-1``；无方向或不可解析 → ``None``。
+
+    `propose_structured` 原样透传 ``h.get("expected_sign")``（不校验），实测出现过
+    ``"1"`` / ``1.0`` / 文字描述等形状，故这里兜住脏值。``0``、``NaN``、``bool``、
+    空串一律 None——「没方向」必须与「方向是负」区分开，否则 0 会被当成负号记一笔假账。
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = float(raw.strip())
+        except ValueError:
+            return None
+    if not isinstance(raw, (int, float)):
+        return None
+    val = float(raw)
+    if not math.isfinite(val) or val == 0.0:
+        return None
+    return 1 if val > 0 else -1
+
+
+def _sign_mismatch(ic_train: float | None, expected_sign: int | None) -> bool | None:
+    """假设声明的预期 IC 符号 vs 实测 train IC 符号是否**相反**。
+
+    三态：``None`` = 无从判定（未出值 / IC 恰为 0 或非有限 / 无 expected_sign）；
+    ``False`` = 已对账相符；``True`` = 相反（要么机制解释错、要么 Coder 把方向翻译反了）。
+
+    **纯记账**：调用方只把结果写进 `AttemptRecord`，不得据此改 ``passed_guardrails``。
+    退化守卫：``NaN``/``inf`` 既不 >0 也不 <0，不做 isfinite 判断会被 ``ic > 0`` 静默
+    当成负号。
+    """
+    if expected_sign not in (1, -1) or ic_train is None:
+        return None
+    ic = float(ic_train)
+    if not math.isfinite(ic) or ic == 0.0:
+        return None
+    return (ic > 0) != (expected_sign > 0)
+
+
 def _task_text(task: dict) -> str:
     """把分解出的因子任务渲染成供 Coder 翻译的方向文本（名称 + 描述 + 构造理由）。"""
     parts = [task.get("name", ""), task.get("description", "")]
@@ -167,7 +215,7 @@ def _narrow_holdout_price_frame(holdout_df: pl.DataFrame) -> pl.DataFrame:
 
 def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
                          eval_start=None, eval_end=None, profile=None, leaf_map=None,
-                         prepped=None):
+                         prepped=None, expected_sign: int | None = None):
     """评估一批表达式（跳过 mem_seen 去重），写 AttemptRecord，返回本批新评估的结果列表。
 
     灵魂约束：此函数不碰 ledger，N 诚实记账由外层 node_guardrails 统一负责（每轮恰好一次）。
@@ -179,6 +227,10 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
     （mining_df 还是 warmup_daily），本函数只透传，不做二次判断。
 
     ``prepped``：session 级已 prep 帧（可选）；透传给 ``evaluate_expressions`` 避免重复 prep。
+
+    ``expected_sign``：本批所属结构化假设声明的预期 IC 符号（``+1``/``-1``，非结构化轮或
+    查不到映射时 None）。仅用于写 `AttemptRecord.expected_sign` / `sign_mismatch` 记账，
+    **不进护栏、不改 `passed`**——`passed_guardrails` 在这里恒为 False，由 node_guardrails 定。
     """
     # **批内也要去重**：heal_rounds=0 时 heal_expressions 的去重不生效，多个 task 很容易
     # 翻译出同一表达式。重复评估会让 node_guardrails 把同一个 trial 记两次 → N over-count
@@ -208,6 +260,8 @@ def _evaluate_and_record(state, exprs, hypothesis, *, daily, bundle, mem_seen,
             subset_ic_train=r.get("subset_ic_train"),
             subset_n_days_train=r.get("subset_n_days_train"),
             subset_mask_leaves=r.get("subset_mask_leaves"),
+            expected_sign=expected_sign,
+            sign_mismatch=_sign_mismatch(r["ic_train"], expected_sign),
         ))
         state.seen_expressions.add(r["expression"])
     return results
@@ -271,13 +325,21 @@ def _run_one_round(
     fb = pending["reason"] if pending and pending["kind"] in (
         "revise_hypothesis", "revise_expr") else ""
 
-    def _do_revise() -> list[str]:
+    # 生成期产物 = (假设/表达式文本列表, 假设文本→expected_sign 映射)。带上映射是因为
+    # `format_structured` 会把结构化 dict 压成一条文本，expected_sign 就此丢失、再也无法
+    # 与实测 IC 对账。**返回值携带**而非闭包写共享 dict：`_llm_map` 的契约是「生成阶段
+    # 只产纯结果、不写共享 state」（llm_workers>1 时这些 callable 跑在线程里）。
+    _GenOut = tuple[list[str], dict[str, int]]
+
+    def _do_revise() -> _GenOut:
         assert pending is not None
-        return revise_expressions(
+        revised = revise_expressions(
             pending["hypothesis"], pending["exprs"], pending["reason"], llm_fn,
             leaf_budgets=leaf_budgets, market=ctx.market, leaf_names=ctx.leaf_names)
+        # 修订批挂在**上一轮**的假设上，本轮 sign_map 无该键 → 空映射（expected_sign 留 None）
+        return revised, {}
 
-    def _do_propose() -> list[str]:
+    def _do_propose() -> _GenOut:
         if structured:
             shyps = propose_structured(
                 llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
@@ -285,16 +347,26 @@ def _run_one_round(
                 leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
                 lift_rejected=rec.lift_rejected, library_crowded=library_crowded,
             )
-            return [format_structured(h) for h in shyps]
+            texts: list[str] = []
+            signs: dict[str, int] = {}
+            for h in shyps:
+                text = format_structured(h)
+                texts.append(text)
+                sign = _coerce_expected_sign(h.get("expected_sign"))
+                if sign is not None:
+                    # 同轮两条假设渲染出同一文本时后写覆盖：文本相同则 Coder 收到的输入
+                    # 也相同，无从区分归属，取其一比崩掉或乱记强。
+                    signs[text] = sign
+            return texts, signs
         return propose_hypotheses(
             llm_fn, known_invalid=rec.known_invalid, known_valid=rec.known_valid,
             feedback=fb, n=hypotheses_per_round, market=ctx.market,
             leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
             lift_rejected=rec.lift_rejected, library_crowded=library_crowded,
-        )
+        ), {}
 
     # 修订批 ∥ propose（互相独立）；提交序：revise（若有）→ propose
-    gen_fns: list[Callable[[], list[str]]] = []
+    gen_fns: list[Callable[[], _GenOut]] = []
     gen_tags: list[str] = []
     if pending and pending["kind"] == "revise_expr":
         _step("  ②→③ Coder 依 Critic 反馈修订表达式（与新假设并行）")
@@ -307,7 +379,11 @@ def _run_one_round(
     gen_tags.append("propose")
     gen_outs = _llm_map(gen_fns, llm_workers)
     hyps: list[str] = []
-    for tag, out in zip(gen_tags, gen_outs, strict=True):
+    # 本轮「假设文本 → expected_sign」。轮内有效：revise 批携带的是**上一轮**的假设文本，
+    # 这里查不到 → expected_sign 留 None（无从判定），不许崩也不许猜。
+    sign_map: dict[str, int] = {}
+    for tag, (out, signs) in zip(gen_tags, gen_outs, strict=True):
+        sign_map.update(signs)
         if tag == "revise":
             if out and pending is not None:
                 hyp_batches.append((str(pending["hypothesis"]), list(out)))
@@ -373,7 +449,10 @@ def _run_one_round(
 
     # ③½ exhausted 叶子硬过滤（coder/heal 产出 → 进评估前；None/空 exhausted → 直通）
     # 配额 dict 本轮新建，跨 hyp_batches 共享（混族组合配额内放行）。
-    from factorzen.agents.scout_support import filter_exhausted_expressions
+    from factorzen.agents.scout_support import (
+        filter_exhausted_expressions,
+        filter_template_quota,
+    )
 
     exh_set = set(rec.exhausted_leaves or []) if rec.exhausted_leaves else None
     quota_used: dict[str, int] = {}
@@ -392,6 +471,27 @@ def _run_one_round(
         hyp_batches = filtered_batches
         if n_exhausted_filtered:
             _step(f"  ③½ exhausted 硬过滤 ▸ 丢弃 {n_exhausted_filtered} 条纯重挖/超配额")
+
+    # ③¾ 同族（结构模板）每轮配额：同一 `structural_signature` 本轮最多放行
+    # TEMPLATE_QUOTA_PER_ROUND 条。配额 dict 本轮新建、跨 hyp_batches 共享（与
+    # exhausted 闸同款），放行顺序=生成顺序。parse 失败放行（诊断留给评估处落盘）。
+    # 只决定"哪些表达式进评估"——护栏判定 / DSR / N 计数语义一概不动。
+    template_quota_used: dict[str, int] = {}
+    n_template_quota_dropped = 0
+    quota_batches: list[tuple[str, list[str]]] = []
+    for h, h_exprs in hyp_batches:
+        kept_t, n_tq = filter_template_quota(
+            h_exprs,
+            leaf_map=ctx.leaf_map,
+            quota_used=template_quota_used,
+            per_template_quota=TEMPLATE_QUOTA_PER_ROUND,
+        )
+        n_template_quota_dropped += n_tq
+        quota_batches.append((h, kept_t))
+    hyp_batches = quota_batches
+    if n_template_quota_dropped:
+        _step(f"  ③¾ 同族模板配额 ▸ 丢弃 {n_template_quota_dropped} 条超族配额"
+              f"（每族每轮 ≤{TEMPLATE_QUOTA_PER_ROUND}）")
 
     # ④ Evaluator：逐假设评估（跨 session + session 内去重）+ 预热错误回灌（只一轮，B3）
     # _evaluate_and_record 不碰 ledger；node_guardrails 本轮恰好一次（N 诚实）。
@@ -416,10 +516,12 @@ def _run_one_round(
                 clamped.append(ce)
             h_exprs = clamped
         _step(f"  ④ Evaluator 评估 {len(h_exprs)} 个表达式")
+        # 本批所属假设的预期 IC 符号（结构化轮才有；revise 批的旧假设查不到 → None）
+        h_sign = sign_map.get(h)
         h_results = _evaluate_and_record(
             state, h_exprs, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
             eval_start=eval_start, eval_end=ev_end, profile=profile, leaf_map=ctx.leaf_map,
-            prepped=prepped,
+            prepped=prepped, expected_sign=h_sign,
         )
         results += h_results
         # B3 预热错误回灌：把「预热不足」诊断（连同 leaf_budgets）回灌 Coder 修正，修正版
@@ -458,12 +560,20 @@ def _run_one_round(
                         quota_used=quota_used,
                     )
                     n_exhausted_filtered += n_ref_drop
+                # 同族模板配额同样共享本轮 dict——回灌批重开配额等于没有轮级上限
+                refed, n_ref_tq = filter_template_quota(
+                    refed, leaf_map=ctx.leaf_map,
+                    quota_used=template_quota_used,
+                    per_template_quota=TEMPLATE_QUOTA_PER_ROUND,
+                )
+                n_template_quota_dropped += n_ref_tq
                 if refed:
                     _step(f"  ④+ 预热错误回灌 revise（{len(warm_errs)} 条 → {len(refed)} 修正）")
                     results += _evaluate_and_record(
                         state, refed, h, daily=ev_daily, bundle=bundle, mem_seen=rec.seen,
                         eval_start=eval_start, eval_end=ev_end, profile=profile,
                         leaf_map=ctx.leaf_map, prepped=prepped,
+                        expected_sign=h_sign,   # 回灌批同属假设 h，符号归属不变
                     )
     # 代表假设/表达式：供 Critic stub 与 revise pending（多假设时取最后一个批次，同现状语义；
     # 纯修订轮——新假设为空但修订批次在——回退到修订批次的假设，不许空串）
@@ -584,6 +694,12 @@ def _run_one_round(
         }
         if _lg is not None else None
     )
+    # 预期符号与实测 IC 反号的条数（纯记账；False=已对账相符、None=无从判定都不计）。
+    # 非结构化轮恒为 0（expected_sign 全 None → sign_mismatch 全 None）。
+    n_sign_mismatch = sum(
+        1 for a in state.attempts
+        if a.iteration == state.iteration and a.sign_mismatch is True
+    )
     rounds_log.append({
         "round": state.iteration,
         # 多假设时记全部（"；" 连接）；单假设时即该假设字符串（零回归）。
@@ -597,9 +713,11 @@ def _run_one_round(
         "verdicts": group_verdicts,           # 全组按组序，审计用
         "leaf_guidance": _lg_summary,
         "n_exhausted_filtered": n_exhausted_filtered,
+        "n_template_quota_dropped": n_template_quota_dropped,
         "n_fingerprint_dup": n_fingerprint_dup,
         "n_unknown_op_dropped": n_unknown_op_dropped,
         "n_window_clamped": n_window_clamped,
+        "n_sign_mismatch": n_sign_mismatch,
         "critic_skipped": critic_skipped,
     })
 

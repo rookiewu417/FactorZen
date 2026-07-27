@@ -5,7 +5,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from factorzen.discovery.expression import parse_expr, to_expr_string
+from factorzen.discovery.expression import (
+    parse_expr,
+    structural_signature,
+    to_expr_string,
+)
 
 # 叶子级指导阈值：方向尝试（排除 coverage 失败）≥ 此值、0 过关、**且库内无该叶因子**
 # → 挖穿区。第三个条件是 2026-07-19 补的：`n_passed` 数的是已被 PR#97 降级的单因子
@@ -20,6 +24,18 @@ def _normalize(expr: str) -> str:
         return to_expr_string(parse_expr(expr))
     except ValueError:
         return expr
+
+
+def _structural_family(expr: str) -> str | None:
+    """表达式的结构模板签名；parse 失败 → None（不落假值，口径同 `_normalize`）。
+
+    parse 用默认 A 股叶集：别市场表达式解析不了就不写这个字段（缺字段消费方须容忍），
+    与 `_normalize` 的既有限制一致——record() 拿不到 market 上下文。
+    """
+    try:
+        return structural_signature(parse_expr(expr))
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -260,7 +276,11 @@ def record(
             "campaign_id": campaign_id,             # 完整统计问题族（顶层，非 data_window）
             "run_id": run_id,
         }
-        # 稀疏因子子集评估 + sleeve 旁路（及残差双指标）— 有值才写；消费方缺字段须容忍
+        # 稀疏因子子集评估 + sleeve 旁路（及残差双指标、expected_sign 记账）
+        # — 有值才写；消费方缺字段须容忍。
+        # `sign_mismatch` 走通用分支（`is not None`）而非 is_sparse 那种 truthy 分支：
+        # False 是「已对账且相符」这个结论，与「无从判定」（None → 不落键）语义不同，
+        # 塌成 truthy 会把两者一起抹掉。
         for _k in (
             "nonzero_coverage", "is_sparse",
             "subset_ic_train", "subset_n_days_train",
@@ -268,6 +288,7 @@ def record(
             "subset_mask_leaves",
             "sleeve_candidate",
             "residual_ic_train", "residual_holdout_ic", "n_residual_holdout_days",
+            "expected_sign", "sign_mismatch",
         ):
             _v = getattr(a, _k, None)
             if _k in ("is_sparse", "sleeve_candidate"):
@@ -275,6 +296,11 @@ def record(
                     rec[_k] = True
             elif _v is not None:
                 rec[_k] = _v
+        # 结构模板族（叶名/窗口归一后的 AST 形状）：同族试探的有效自由度远低于条数，
+        # 落盘是后续「模板族记忆」的数据地基。有值才写，parse 失败不写（不落假值）。
+        fam = _structural_family(a.expression)
+        if fam is not None:
+            rec["structural_family"] = fam
         # 回填 holdout_ic（归一化匹配）
         hic = hic_map.get(_normalize(a.expression))
         if hic is not None:

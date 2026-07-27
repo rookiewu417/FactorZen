@@ -280,6 +280,7 @@ def _run_one_round(
     exec_price_col: str | None = None,
     sleeve_gate: bool = True,
     leaf_scheduler: bool = False,
+    focus_picks: dict[str, int] | None = None,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -294,6 +295,12 @@ def _run_one_round(
     Hypothesis prompt 并落 `rounds_log["focus_leaves"]`。默认 False → 不算不注入不落键
     （rounds_log 逐字节零回归）。只影响**新假设** propose；revise 通道不受影响
     ——修订是针对上一轮某条具体表达式的定向修补，换方向会让 Critic 的反馈落空。
+
+    ``focus_picks``：session 级「叶 → 已被选为焦点的轮数」计数，由 `run_team_agent`
+    在循环外持有、逐轮传入，本函数选出焦点后**就地** +1（与 state/ledger/rounds_log
+    同款可变对象风格）。喂给 `ucb_focus_leaves(session_picks=...)` 做 session 内衰减，
+    否则单 session 里 leaf_stats 增量太小、排序几十轮不动，焦点会锁死在同一批叶上。
+    ``None``（默认）→ 不计数不衰减，纯 UCB 零回归。
 
     ``eval_start``：会话级 train 段起点（date，或 None，由 `run_team_agent` 解析一次后逐轮传入）。
     **None-gating**：为 None 时 train 段求值走裸 `evaluate_expressions(exprs, mining_df, bundle)`
@@ -327,8 +334,14 @@ def _run_one_round(
             rec.leaf_stats, list(ctx.leaf_names),
             exhausted=set(rec.exhausted_leaves or []),
             crowded=dict(library_crowded or []),
+            session_picks=focus_picks,
         ) or None
         if focus_leaves:
+            # 本轮选中即计数（就地更新调用方持有的 session 级 dict）：下一轮这些叶的
+            # 「利用+探索」再乘一次衰减，几轮后自动让位给后排 —— 修 focus 固化。
+            if focus_picks is not None:
+                for _leaf, _ in focus_leaves:
+                    focus_picks[_leaf] = focus_picks.get(_leaf, 0) + 1
             _step("  ①½ 叶子 UCB 调度 ▸ 焦点叶: "
                   + "、".join(f"{n}({s:.2f})" for n, s in focus_leaves))
     tasks: list[dict] = []
@@ -1058,6 +1071,11 @@ def run_team_agent(
         scout_state = ScoutState()
         _step(f"日内 Scout 启用 ▸ k={scout_k} max_leaves={scout_max_leaves} freq={scout_freq}")
 
+    # 叶子调度的 session 级选择计数（叶 → 已被选为焦点的轮数）。**必须活在循环外**：
+    # 衰减的整个意义就是跨轮累计，放进 _run_one_round 每轮都会重置成空、等于没衰减。
+    # leaf_scheduler 关着时无人写它，恒为空 dict → 逐值零回归。
+    focus_picks: dict[str, int] = {}
+
     for round_i in range(n_rounds):
         # 自适应早停：连续 patience 轮无新 passed 候选则停（patience=None → 跑满，零回归）
         if patience is not None and round_i > 0:
@@ -1127,6 +1145,7 @@ def run_team_agent(
                 exec_lag=exec_lag, exec_price_col=exec_price_col,
                 sleeve_gate=sleeve_gate,
                 leaf_scheduler=leaf_scheduler,
+                focus_picks=focus_picks,
             )
         except LLMClientError as exc:
             llm_failures += 1

@@ -21,6 +21,13 @@ DEFAULT_UCB_C = 1.4
 # 会被扣掉约 1.5，足以把冷启动优势抹平——「已充分开采」不该再当探索目标。
 DEFAULT_CROWD_PENALTY = 0.15
 DEFAULT_FOCUS_K = 3
+# 本 session 每被选为焦点一次，该叶的「利用+探索」乘一次这个因子（0.7 → 三轮后剩 34%）。
+# 定这个量级的依据：UCB 探索项 sqrt(ln N/(1+n)) 只随**跨 session 累计**的尝试数衰减，
+# 单 session 内 leaf_stats 每叶增量很小（一轮往往只 +1~2 条表达式），分数排序几十轮不动
+# ——20 轮 A/B 里 vwap 被选 16 轮、log_vol 14 轮、high 13 轮，"探索" 退化成锁定同 3 叶连挖。
+# 0.7 让一个领跑叶大约 3~4 轮后被后排追上（0.7^4≈0.24），既能轮换又不至于一轮就丢掉
+# 真正强的方向；`pick_decay=1.0` 即关闭衰减，回到纯 UCB。
+DEFAULT_PICK_DECAY = 0.7
 
 
 def _direction_tries(st: dict | None) -> int:
@@ -46,13 +53,15 @@ def ucb_focus_leaves(
     k: int = DEFAULT_FOCUS_K,
     c: float = DEFAULT_UCB_C,
     crowd_penalty: float = DEFAULT_CROWD_PENALTY,
+    session_picks: dict[str, int] | None = None,
+    pick_decay: float = DEFAULT_PICK_DECAY,
 ) -> list[tuple[str, float]]:
     """按 UCB 分数选出本轮的 K 个焦点叶子，返回 ``[(leaf, score), ...]`` 降序。
 
-    分数 = 利用 + 探索 - 拥挤惩罚::
+    分数 = (利用 + 探索) × 本 session 选择衰减 - 拥挤惩罚::
 
-        score_i = best_abs_ic_i
-                + c * sqrt(ln(1 + N_total) / (1 + n_i))
+        score_i = ( best_abs_ic_i
+                  + c * sqrt(ln(1 + N_total) / (1 + n_i)) ) * pick_decay ** picks_i
                 - crowd_penalty * crowded[i]
 
     - **利用项** ``best_abs_ic``：该叶历史最好的 |IC|（`leaf_stats` 产出，缺省 0）。
@@ -63,8 +72,30 @@ def ucb_focus_leaves(
       库里已经很多的方向，再挖出来的东西大概率过不了 lift 增量闸。``crowded`` 里
       不在 ``leaf_names`` 的键被忽略。
 
+    - **本 session 选择衰减** ``session_picks``：叶 → 本 session 已被选为焦点的**轮数**，
+      每一轮乘一次 ``pick_decay``。``None`` / 空 dict → 不衰减（旧调用者逐值零回归）；
+      ``pick_decay=1.0`` 同样等于关闭。不在 ``leaf_names`` 的键被忽略，负数按 0 处理。
+
     ``exhausted``：挖穿叶，**硬排除**。必须与 `filter_exhausted_expressions` 用的同一份
     ——被调度器选中、又被硬闸过滤掉是自相矛盾，会让整轮空转。
+
+    **为什么需要 session 内衰减**（参照 AlphaPROBE 的 retrieval penalty ``(1-ω)^k``：
+    同一条被检索 k 次的记忆，其权重按 ``(1-ω)^k`` 递减，防止检索塌缩到少数几条）：
+    UCB 的探索项只随**跨 session 累计**的 ``n_i`` 衰减，而 ``leaf_stats`` 在单 session 内
+    每叶增量很小（一轮往往只 +1~2 条表达式），``sqrt(ln N/(1+n))`` 的变化被 ``ln`` 压平，
+    分数排序几十轮基本不动 —— 实测 20 轮 session 里 vwap 被选 16 轮、log_vol 14 轮、
+    high 13 轮，"探索" 退化成锁定同 3 叶连挖。按本 session 已选轮数额外乘一个衰减因子，
+    几轮后领跑叶被后排追上，自动轮换到下一批方向。
+
+    **衰减不作用于拥挤惩罚**（这是个反直觉但要命的取舍）：惩罚是**负项**，若把整个分数
+    （含惩罚）一起乘 ``pick_decay``，重复选择反而会把惩罚一起缩小 —— 拥挤叶越挖越便宜，
+    与惩罚项的语义正好反了。惩罚衡量的是「库里已有多少同族因子」，这是 session 外的客观
+    事实，不该随本 session 挑了几次而变。因此衰减只乘正项（利用+探索），惩罚原样减。
+
+    **设计取舍**：衰减是**乘性**而非加性（加性罚需要与 IC/探索项同量纲，一旦 ``c`` 或
+    ``crowd_penalty`` 改了标度就得跟着重调；乘性对标度免疫）；且**不进 leaf_stats**
+    ——它是本 session 的调度状态，不是该叶的历史事实，落库会污染跨 session 的 UCB 统计。
+    计数由调用方（`run_team_agent` 的 session 级 dict）持有并逐轮透传，本函数保持纯函数。
 
     **冷启动天然优先是设计意图**：``n_i = 0`` 时探索项取到最大值
     ``c * sqrt(ln(1 + N_total))``，从没试过的叶子必然排在前面。挖掘的瓶颈是覆盖面，
@@ -79,6 +110,7 @@ def ucb_focus_leaves(
         return []
     exhausted = exhausted or set()
     crowded = crowded or {}
+    session_picks = session_picks or {}
 
     survivors = [name for name in leaf_names if name not in exhausted]
     if not survivors:
@@ -96,7 +128,10 @@ def ucb_focus_leaves(
         best = float((st or {}).get("best_abs_ic") or 0.0)
         explore = c * math.sqrt(log_term / (1 + tries[name]))
         penalty = crowd_penalty * float(crowded.get(name, 0) or 0)
-        scored.append((name, best + explore - penalty))
+        picks = max(0, int(session_picks.get(name, 0) or 0))
+        # picks=0 → 因子恰为 1.0，乘法是精确的 → 无 session_picks 时逐值零回归。
+        # 衰减**只乘正项**：penalty 是负项，一起乘会让重复选择反而减轻拥挤惩罚（见 docstring）。
+        scored.append((name, (best + explore) * pick_decay**picks - penalty))
 
     scored.sort(key=lambda kv: (-kv[1], kv[0]))
     return scored[:k]

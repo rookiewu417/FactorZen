@@ -62,6 +62,7 @@ def run_team_mine(
     exec_lag: int = 0,
     exec_price_col: str | None = None,
     sleeve_gate: bool = True,
+    leaf_scheduler: bool = False,
 ) -> dict:
     """跑多 Agent 团队挖掘，每轮增量落 manifest，收尾写 candidates.csv + 导出候选。
 
@@ -96,6 +97,9 @@ def run_team_mine(
         "eval_start": eval_start,
         "hypotheses_per_round": hypotheses_per_round,
         "llm_workers": llm_workers,
+        # 叶子 UCB 调度开关：开着时每轮焦点叶落在 rounds_log[*].focus_leaves，
+        # 但「这次运行到底开没开」只有这里记得住（关闭时 rounds_log 不留任何痕迹）。
+        "leaf_scheduler": leaf_scheduler,
         # 成交口径（可复现铁律：不落盘则事后无法复现评估世界）
         "exec_lag": exec_lag,
         "exec_price_col": exec_price_col,
@@ -150,6 +154,7 @@ def run_team_mine(
         exec_lag=exec_lag,
         exec_price_col=exec_price_col,
         sleeve_gate=sleeve_gate,
+        leaf_scheduler=leaf_scheduler,
     )
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

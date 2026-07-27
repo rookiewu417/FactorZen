@@ -1244,6 +1244,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
         exec_price_col=getattr(args, "exec_price_col", "open_adj"),
         sleeve_gate=not bool(getattr(args, "no_sleeve_gate", False)),
+        leaf_scheduler=bool(getattr(args, "leaf_scheduler", False)),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0

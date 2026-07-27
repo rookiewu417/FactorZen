@@ -279,6 +279,7 @@ def _run_one_round(
     exec_lag: int = 0,
     exec_price_col: str | None = None,
     sleeve_gate: bool = True,
+    leaf_scheduler: bool = False,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -288,6 +289,11 @@ def _run_one_round(
 
     `state` / `ledger` / `rounds_log` / `index` 为可变对象，就地更新；返回下一轮的 Critic 反馈。
     抽成独立函数是为了让主循环能整轮 `try/except LLMClientError` 而不必把 120 行内联进 try 块。
+
+    ``leaf_scheduler``：True 时按 UCB 分数确定性选出本轮焦点叶，作为**指令**注入
+    Hypothesis prompt 并落 `rounds_log["focus_leaves"]`。默认 False → 不算不注入不落键
+    （rounds_log 逐字节零回归）。只影响**新假设** propose；revise 通道不受影响
+    ——修订是针对上一轮某条具体表达式的定向修补，换方向会让 Critic 的反馈落空。
 
     ``eval_start``：会话级 train 段起点（date，或 None，由 `run_team_agent` 解析一次后逐轮传入）。
     **None-gating**：为 None 时 train 段求值走裸 `evaluate_expressions(exprs, mining_df, bundle)`
@@ -308,6 +314,23 @@ def _run_one_round(
         index, k=5, data_window=data_window, leaf_names=list(ctx.leaf_names),
         library_covered=library_covered, library_exprs=library_exprs,
     )
+    # ①½ 叶子 UCB 调度（默认关）：把探索/利用从提示词文案变成**采样决策**。
+    # stats 直接取 recall 已算好的那份——`leaf_stats` 要流式扫全量 index，一轮算两遍
+    # 既浪费又会让「同参」退化成人工约定（见 Recall.leaf_stats docstring）。
+    # exhausted 用 rec.exhausted_leaves：与 ③½ 的 filter_exhausted_expressions 同一份，
+    # 否则会出现「调度器选中该叶 → 硬闸把它产的表达式全丢」的自相矛盾空转。
+    focus_leaves: list[tuple[str, float]] | None = None
+    if leaf_scheduler and rec.leaf_stats is not None:
+        from factorzen.agents.leaf_scheduler import ucb_focus_leaves
+
+        focus_leaves = ucb_focus_leaves(
+            rec.leaf_stats, list(ctx.leaf_names),
+            exhausted=set(rec.exhausted_leaves or []),
+            crowded=dict(library_crowded or []),
+        ) or None
+        if focus_leaves:
+            _step("  ①½ 叶子 UCB 调度 ▸ 焦点叶: "
+                  + "、".join(f"{n}({s:.2f})" for n, s in focus_leaves))
     tasks: list[dict] = []
 
     # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
@@ -346,6 +369,7 @@ def _run_one_round(
                 feedback=fb, n=hypotheses_per_round, market=ctx.market,
                 leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
                 lift_rejected=rec.lift_rejected, library_crowded=library_crowded,
+                focus_leaves=focus_leaves,
             )
             texts: list[str] = []
             signs: dict[str, int] = {}
@@ -363,6 +387,7 @@ def _run_one_round(
             feedback=fb, n=hypotheses_per_round, market=ctx.market,
             leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
             lift_rejected=rec.lift_rejected, library_crowded=library_crowded,
+            focus_leaves=focus_leaves,
         ), {}
 
     # 修订批 ∥ propose（互相独立）；提交序：revise（若有）→ propose
@@ -700,7 +725,7 @@ def _run_one_round(
         1 for a in state.attempts
         if a.iteration == state.iteration and a.sign_mismatch is True
     )
-    rounds_log.append({
+    _round_entry: dict = {
         "round": state.iteration,
         # 多假设时记全部（"；" 连接）；单假设时即该假设字符串（零回归）。
         # rounds_log.hypothesis 只进 manifest 溯源，无下游按单字符串解析（per-attempt 归属
@@ -719,7 +744,15 @@ def _run_one_round(
         "n_window_clamped": n_window_clamped,
         "n_sign_mismatch": n_sign_mismatch,
         "critic_skipped": critic_skipped,
-    })
+    }
+    # UCB 焦点叶：**有选择才落键**。恒写空列表会给所有旧 run 的 rounds_log 加一个新字段，
+    # 调度器关着时 manifest 形状就该与引入本特性前逐字节一致（零回归）。
+    # 分数 round 到 4 位：进 JSON 的是决策证据，不需要 double 全精度。
+    if focus_leaves:
+        _round_entry["focus_leaves"] = [
+            [name, round(score, 4)] for name, score in focus_leaves
+        ]
+    rounds_log.append(_round_entry)
 
     # 最后一组 verdict → 下一轮 feedback（跨轮；不在本轮重跑护栏，避免 N 三角和）
     # drop 的 candidates/new_cands 清理已在分组循环完成；stub 无新增候选可删。
@@ -805,6 +838,9 @@ def run_team_agent(
     exec_price_col: str | None = None,
     # 稀疏因子 sleeve 旁路（子集 IC → lift_queue）；False=关闭，稠密路径不变。
     sleeve_gate: bool = True,
+    # 叶子 UCB 调度：每轮确定性选 K 个焦点叶注入 Hypothesis prompt + 落 rounds_log。
+    # 默认 False → 不算不注入不落键，零回归。
+    leaf_scheduler: bool = False,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -1090,6 +1126,7 @@ def run_team_agent(
                 prepped=session_prepped,
                 exec_lag=exec_lag, exec_price_col=exec_price_col,
                 sleeve_gate=sleeve_gate,
+                leaf_scheduler=leaf_scheduler,
             )
         except LLMClientError as exc:
             llm_failures += 1

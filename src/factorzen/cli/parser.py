@@ -427,6 +427,10 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     m_team.add_argument("--structured", action="store_true",
                         help="结构化假设(机制/预期符号/证伪判据) + 任务分解后逐任务翻译")
     m_team.add_argument(
+        "--leaf-scheduler", dest="leaf_scheduler", action="store_true",
+        help="叶子 UCB 调度:每轮按探索价值确定性选焦点叶注入假设 prompt(落 rounds_log)",
+    )
+    m_team.add_argument(
         "--pool-subproc", dest="pool_subproc", action="store_true",
         help="池构建放子进程，退出全额归还内存；等效 env FACTORZEN_POOL_SUBPROC=1",
     )

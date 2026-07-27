@@ -46,6 +46,12 @@ class Recall:
     ``library_covered``：库内 active 高 |IC| 表达式（供 Hypothesis 追求正交）；None → 不注入。
     ``lift_rejected``：组合层 lift 拒绝方向（``known_lift_rejects``）；空列表落 None。
     ``exhausted_leaves``：原始挖穿叶名列表（硬过滤用，非格式化文案）；无 dig 时 None。
+
+    ``leaf_stats``：本次召回算出的 `ExperimentIndex.leaf_stats` 原始产物；``leaf_names``
+    未传入时为 None。挂在这里是为了让**下游调度器**（`agents.leaf_scheduler`）与挖穿
+    判定共用同一份统计：`leaf_stats` 要流式扫全量 index 文件、每记录 × 每叶跑正则，
+    一轮内不该算两遍；更要紧的是「两处必须同参」由**构造**保证，而不是靠调用方
+    人工对齐 ``data_window`` / ``leaf_names``（口径一漂移，调度选中的叶会被硬闸丢弃）。
     """
     seen: set[str]
     known_invalid: list[str]
@@ -54,6 +60,7 @@ class Recall:
     library_covered: list[str] | None = None
     lift_rejected: list[dict] | None = None
     exhausted_leaves: list[str] | None = None
+    leaf_stats: dict[str, dict] | None = None
 
 
 # 向后兼容别名（任务文档称 LibrarianBriefing）
@@ -197,6 +204,7 @@ def recall(
     """
     leaf_guidance = None
     exhausted_leaves: list[str] | None = None
+    stats: dict[str, dict] | None = None
     if leaf_names is not None:
         stats = index.leaf_stats(leaf_names, data_window=data_window)
         # 两个消费方（提示词 / 硬过滤）必须同参，否则 LLM 看到「未枯竭」却仍被丢弃
@@ -216,6 +224,7 @@ def recall(
         library_covered=library_covered,
         lift_rejected=lift_rej or None,
         exhausted_leaves=exhausted_leaves,
+        leaf_stats=stats,
     )
 
 

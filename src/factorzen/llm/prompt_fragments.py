@@ -145,6 +145,24 @@ def format_library_crowded(crowded: list[tuple[str, int]] | None) -> str:
     )
 
 
+def format_focus_leaves(focus: list[tuple[str, float]] | None) -> str:
+    """本轮 UCB 焦点叶子。None/[] → \"\"（零回归）。
+
+    与 `format_leaf_guidance` / `format_library_crowded` 的**背景信息**语气不同：这条是
+    **明确指令**——焦点叶由 `agents.leaf_scheduler.ucb_focus_leaves` 确定性选出并落
+    rounds_log，prompt 若只把它当参考，落盘的调度决策就与实际生成脱钩、无从归因。
+    分数不进文案（LLM 无从校准这个尺度），只保留排序。
+    """
+    if not focus:
+        return ""
+    names = "、".join(str(name) for name, _score in focus)
+    return (
+        f"本轮焦点叶子(按探索价值排序):{names}"
+        "——请让大部分假设围绕这些叶子展开(可与其它族组合),"
+        "除非有更强的经济直觉理由"
+    )
+
+
 def format_lift_rejected(items: list[dict] | None) -> str:
     """组合层 lift 拒绝方向提示。None/[] → \"\"（零回归）。"""
     if not items:

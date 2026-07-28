@@ -26,10 +26,11 @@ import hashlib
 import logging
 import math
 import os
+import threading
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -553,6 +554,102 @@ def _zero_ic_daily_from_factor_panel(
     )
 
 
+class LiftBaselineCache:
+    """跨 ``run_lift_tests`` / ``run_group_lift`` 调用复用的**基线侧**重设施。
+
+    为什么需要：``factor_library.rebuild`` 的 lift 轨复审是**逐条记录**调
+    ``run_lift_tests`` 的，每次都对同一个 active 池重建 ``build_library_panel``
+    + ``ResidualProjector``（逐日 QR 全集）+ ``library_equal_weight_score_panel``、
+    对同一 ``prepped`` 重建 ret 面板——全 A 2016-2026（10.7M 行 × 87 active）
+    实测峰值随记录数反复出现，第 2 条记录时被内核 OOM-kill（23.2G）。
+    ``fz factor-library lift-test`` 逐组 ``dataclasses.replace(base_ctx, ...)``
+    共享同一实例（replace 原样传字段值），组门 ``run_group_lift`` 与逐条
+    ``run_lift_tests`` 之间也复用；team session 末钩子单 ctx 喂三处同理。
+
+    命中判定是**对象同一性**（``is``），不是值相等：缓存持强引用把键对象钉住
+    （防 id 回收复用造成误命中），换了池/面板/帧一律重建。缓存只决定「算不算」，
+    **不参与任何数值** —— lift 是单一准入裁决，任何口径漂移都不可接受。
+
+    线程安全：``run_lift_tests`` 的候选级 ``ThreadPoolExecutor`` 只会并发触达
+    ``scores_for``（sleeve 惰性路径），整锁保证只建一次。
+    """
+
+    # 五组槽：panel / projector / scores / ret（各带自己的命中键）+ 一把整锁
+    __slots__ = (
+        "_lock",
+        "_panel",
+        "_panel_key",
+        "_proj",
+        "_proj_key",
+        "_ret",
+        "_ret_key",
+        "_ret_src",
+        "_scores",
+        "_scores_key",
+    )
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._panel_key: Any = None
+        self._panel: Any = None
+        self._proj_key: Any = None
+        self._proj: Any = None
+        self._scores_key: Any = None
+        self._scores: pl.DataFrame | None = None
+        self._ret_key: tuple | None = None
+        self._ret_src: Any = None
+        self._ret: pl.DataFrame | None = None
+
+    def panel_for(self, pool: Any, build: Callable[[Any], Any]) -> Any:
+        """``build_library_panel(pool)``，按 pool 对象同一性缓存。"""
+        with self._lock:
+            if self._panel_key is not None and self._panel_key is pool:
+                return self._panel
+            panel = build(pool)
+            self._panel_key, self._panel = pool, panel
+            return panel
+
+    def projector_for(self, panel: Any, build: Callable[[Any], Any]) -> Any:
+        """``ResidualProjector(panel)``（逐日 QR），按 panel 对象同一性缓存。"""
+        with self._lock:
+            if self._proj_key is not None and self._proj_key is panel:
+                return self._proj
+            proj = build(panel)
+            self._proj_key, self._proj = panel, proj
+            return proj
+
+    def scores_for(self, panel: Any, build: Callable[[Any], Any]) -> pl.DataFrame:
+        """``library_equal_weight_score_panel(panel)``，按 panel 对象同一性缓存。"""
+        with self._lock:
+            if self._scores_key is not None and self._scores_key is panel:
+                assert self._scores is not None
+                return self._scores
+            scores = build(panel)
+            self._scores_key, self._scores = panel, scores
+            return scores
+
+    def ret_for(
+        self, src: Any, key: tuple, build: Callable[[Any], pl.DataFrame],
+    ) -> pl.DataFrame:
+        """``_build_ret_panel(src, ...)``，按（源帧同一性 + 口径标量）缓存。
+
+        ``key`` = ``(horizon, exec_lag, exec_price_col)``——ret 面板随这三者变，
+        同一 ctx 被 ``dataclasses.replace`` 换过口径时必须重建。
+        """
+        with self._lock:
+            if (
+                self._ret_key is not None
+                and self._ret_key == key
+                and self._ret_src is not None
+                and self._ret_src is src
+            ):
+                assert self._ret is not None
+                return self._ret
+            ret = build(src)
+            self._ret_key, self._ret_src, self._ret = key, src, ret
+            return ret
+
+
 @dataclass
 class LiftEvalContext:
     """统一 lift 评估上下文：一次 prep、显式 horizon、可选 admission 评分窗。
@@ -562,6 +659,9 @@ class LiftEvalContext:
     - ``profile_name``：provenance；profile 对象不进 ctx（防序列化坑）。
     - ``python_universe`` / ``python_market``：python 型（``py::``）候选物化口径；
       构建 materializer 时透传（expression 路径忽略）。
+    - ``baseline_cache``：基线设施跨调用复用（见 ``LiftBaselineCache``）。不进
+      ``__eq__``/``repr``；``dataclasses.replace`` 会把同一实例传给副本，
+      故逐组 replace 的 CLI lift-test 也命中同一 panel/projector。
     """
 
     market: str
@@ -578,6 +678,9 @@ class LiftEvalContext:
     # 1 + "open_adj" = t+1 开盘成交（可实现）。见 compute_fwd_returns docstring。
     exec_lag: int = 0
     exec_price_col: str | None = None
+    baseline_cache: LiftBaselineCache = field(
+        default_factory=LiftBaselineCache, compare=False, repr=False,
+    )
 
 
 def make_lift_context(
@@ -1293,12 +1396,22 @@ def run_lift_tests(
         _LOG.warning("lift_test: 库内无 active 因子，无法建残差投影；全部判不过")
         return _batch_error_rows("empty_active_library")
 
-    panel = build_library_panel(active_factor_dfs)
+    # 基线设施走 ctx 缓存（逐条复审场景下 panel/QR/ret 只建一次）；无 ctx 时原路径
+    _cache = ctx.baseline_cache if ctx is not None else None
+    panel = (
+        _cache.panel_for(active_factor_dfs, build_library_panel)
+        if _cache is not None
+        else build_library_panel(active_factor_dfs)
+    )
     if panel is None or panel.k == 0:
         _LOG.warning("lift_test: active 物化面板为空（empty_library_panel）")
         return _batch_error_rows("empty_library_panel", n_lib=0)
 
-    projector = ResidualProjector(panel)
+    projector = (
+        _cache.projector_for(panel, ResidualProjector)
+        if _cache is not None
+        else ResidualProjector(panel)
+    )
     n_lib_k = int(panel.k)
     meta = _lift_run_meta(
         n_input=n_input,
@@ -1312,15 +1425,30 @@ def run_lift_tests(
         seed=seed,
         n_lib_factors=n_lib_k,
     )
-    # overlay 共用：等权基线分数 + 基线日 IC（admission 窗）一次构建
-    base_scores = library_equal_weight_score_panel(panel)
+    # overlay 共用：等权基线分数 + 基线日 IC（admission 窗）。
+    # **惰性**：它把 (n_dates × n_stocks) 展平成三条 Python list 再建长表
+    # （全 A ≈ 1.2e7 行/次），而稠密 residual 分支从头到尾不读它——rebuild 逐条
+    # 复审全是稠密路径，急建等于每条记录白付一次 GB 级构造。
+    _scores_local: dict[str, pl.DataFrame] = {}
+
+    def _base_scores() -> pl.DataFrame:
+        if _cache is not None:
+            return _cache.scores_for(panel, library_equal_weight_score_panel)
+        if "v" not in _scores_local:
+            _scores_local["v"] = library_equal_weight_score_panel(panel)
+        return _scores_local["v"]
 
     if ret_df is None:
         ret_src = ctx.prepped if ctx is not None else daily
-        ret_df = _build_ret_panel(
-            ret_src, horizon=_horizon,
-            exec_lag=(ctx.exec_lag if ctx is not None else 0),
-            exec_price_col=(ctx.exec_price_col if ctx is not None else None),
+        _exec_lag = ctx.exec_lag if ctx is not None else 0
+        _exec_col = ctx.exec_price_col if ctx is not None else None
+        _ret_build = lambda src: _build_ret_panel(  # noqa: E731
+            src, horizon=_horizon, exec_lag=_exec_lag, exec_price_col=_exec_col,
+        )
+        ret_df = (
+            _cache.ret_for(ret_src, (_horizon, _exec_lag, _exec_col), _ret_build)
+            if _cache is not None
+            else _ret_build(ret_src)
         )
 
     if materialize_candidate is None:
@@ -1340,7 +1468,7 @@ def run_lift_tests(
         key = f"{adm_start}|{adm_end}"
         if key not in _base_daily_cache:
             _base_daily_cache[key] = _daily_oos_rank_ic(
-                base_scores, ret_df, start=adm_start, end=adm_end,
+                _base_scores(), ret_df, start=adm_start, end=adm_end,
             )
         return _base_daily_cache[key]
 
@@ -1402,7 +1530,7 @@ def run_lift_tests(
                 )
 
                 combined, n_mask_applied = apply_sleeve_overlay(
-                    base_scores, cand_sel, w=float(DEFAULT_OVERLAY_W),
+                    _base_scores(), cand_sel, w=float(DEFAULT_OVERLAY_W),
                 )
                 # 与守卫计数对齐（apply 全窗；评分仍裁 admission）
                 row["n_mask_days"] = n_mask
@@ -1604,19 +1732,35 @@ def run_group_lift(
     if not active_factor_dfs:
         return _err("empty_active_library")
 
-    panel = build_library_panel(active_factor_dfs)
+    # 与 run_lift_tests 共用同一 ctx 缓存：组门跑完紧接着逐条测，panel/QR/ret
+    # 本就同源，重建一次全 A 是 GB 级纯重复（CLI lift-test 与 team 钩子都这样连着调）
+    _cache = ctx.baseline_cache if ctx is not None else None
+    panel = (
+        _cache.panel_for(active_factor_dfs, build_library_panel)
+        if _cache is not None
+        else build_library_panel(active_factor_dfs)
+    )
     if panel is None or panel.k == 0:
         return _err("empty_library_panel", n_lib=0)
 
-    projector = ResidualProjector(panel)
+    projector = (
+        _cache.projector_for(panel, ResidualProjector)
+        if _cache is not None
+        else ResidualProjector(panel)
+    )
     n_lib = int(panel.k)
 
     if ret_df is None:
         ret_src = ctx.prepped if ctx is not None else daily
-        ret_df = _build_ret_panel(
-            ret_src, horizon=_horizon,
-            exec_lag=(ctx.exec_lag if ctx is not None else 0),
-            exec_price_col=(ctx.exec_price_col if ctx is not None else None),
+        _exec_lag = ctx.exec_lag if ctx is not None else 0
+        _exec_col = ctx.exec_price_col if ctx is not None else None
+        _ret_build = lambda src: _build_ret_panel(  # noqa: E731
+            src, horizon=_horizon, exec_lag=_exec_lag, exec_price_col=_exec_col,
+        )
+        ret_df = (
+            _cache.ret_for(ret_src, (_horizon, _exec_lag, _exec_col), _ret_build)
+            if _cache is not None
+            else _ret_build(ret_src)
         )
 
     if materialize_candidate is None:

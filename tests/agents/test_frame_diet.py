@@ -1192,10 +1192,14 @@ def test_p7_evaluator_external_prepped_golden_parity():
 def test_p7_cli_rebuild_preps_frame_once(tmp_path):
     """``factor-library rebuild`` 全链路只 ``_preprocess_daily`` 一次。
 
-    三个消费方（evaluator / 复审物化器 / rebuild 内 lift 复审 ctx）共用同一份
+    三个消费方（evaluator / 复审 active 池 / rebuild 内 lift 复审 ctx）共用同一份
     prepped。判别力：修复前这条链会 prep 3 次（外加 evaluate 每批一次），
     三份全宽帧叠加正是 OOM 成因。走 ``--only``（fresh=False）保证库内 active
-    留存 → 复审物化器真的被调到，三个消费方全覆盖。
+    留存 → 复审 active 池真的被建到，三个消费方全覆盖。
+
+    第二个消费方原本是 CLI 的复审物化器（逐条 ``materialize(expr)`` 自建池）；
+    该自建路径已换成 ``build_library_pool``（compact/f32/spill），故恒真防护改成
+    「池构建收到的帧**就是**那份单例 prepped」——比原来的「materialize 被调过」更强。
     """
     import factorzen.cli.main as cli_main
     import factorzen.discovery.evaluation as ev
@@ -1212,9 +1216,11 @@ def test_p7_cli_rebuild_preps_frame_once(tmp_path):
         root=str(tmp_path),
     )
 
-    mat_calls: list[str] = []
+    pool_frames: list = []
+    prepped_seen: list = []
     calls: list[str] = []
     real = ev._preprocess_daily
+    real_pool = fl.build_library_pool
     with pytest.MonkeyPatch.context() as mp:
         def _counting(*a, **k):
             calls.append("prep")
@@ -1226,17 +1232,17 @@ def test_p7_cli_rebuild_preps_frame_once(tmp_path):
         mp.setattr(fl, "collect_source_expressions", lambda market: ["rank(close)"])
         mp.setattr(fl, "DEFAULT_ROOT", str(tmp_path), raising=False)
 
+        def _spy_pool(market, frame, leaf_map=None, **kw):
+            pool_frames.append(frame)
+            return real_pool(market, frame, leaf_map, **kw)
+
+        mp.setattr(fl, "build_library_pool", _spy_pool)
+
         orig_rebuild = fl.rebuild
 
         def _rebuild(*a, **kw):
             kw.setdefault("root", str(tmp_path))
-            mat = kw.get("materialize")
-            if mat is not None:
-                def _spy_mat(expr, _m=mat):
-                    mat_calls.append(expr)
-                    return _m(expr)
-
-                kw["materialize"] = _spy_mat
+            prepped_seen.append(kw.get("prepped"))
             return orig_rebuild(*a, **kw)
 
         mp.setattr(fl, "rebuild", _rebuild)
@@ -1248,8 +1254,14 @@ def test_p7_cli_rebuild_preps_frame_once(tmp_path):
         args.library_root = str(tmp_path)
         cli_main._cmd_factor_library_rebuild(args)
 
-    # 恒真防护：复审物化器必须真的被调到，否则「只 prep 一次」是因为没走到那条路
-    assert mat_calls, "复审物化器未被调用，本用例覆盖不到第三个消费方"
+    # 恒真防护：复审 active 池必须真的被建到，否则「只 prep 一次」是因为没走到那条路
+    assert pool_frames, "复审 active 池未被构建，本用例覆盖不到第二个消费方"
+    assert prepped_seen and prepped_seen[0] is not None
+    # 池是从**单例 prepped 的列子集**上建的：投影后 columns ⊂ prepped.columns，
+    # 行数不变（`select` 近零拷贝，不是另建一份帧）
+    singleton = prepped_seen[0]
+    assert pool_frames[0].height == singleton.height
+    assert set(pool_frames[0].columns) <= set(singleton.columns)
     assert len(calls) == 1, f"rebuild 链路 prep 了 {len(calls)} 次（应恰好 1 次）"
 
 

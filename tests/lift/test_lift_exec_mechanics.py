@@ -160,7 +160,7 @@ def _patch_cli(monkeypatch, *, group_lift: float = -0.0007, seen: dict | None = 
 
 
 def test_sub_floor_cli_group_gate_suite(tmp_path, capsys):
-    """事故复现：130 噪声 + 20 真信号，--top-m 0 全测。；--include-sub-floor → sub-floor 照旧进组门（可复现旧行为/连坐）。；--queue-ic-floor 显式抬高地板 → 更多候选被判 sub-floor。；全员 sub-floor → 组门根本不跑，零 results 行（不产生连坐拒绝）。"""
+    """事故复现：130 噪声 + 20 真信号，--top-m 0 全测。；--include-sub-floor → sub-floor 照旧进组门（P0a 后 K>20 不再连坐，只标 group_gate_weak）。；--queue-ic-floor 显式抬高地板 → 更多候选被判 sub-floor。；全员 sub-floor → 组门根本不跑，零 results 行（不产生连坐拒绝）。"""
     # -- 原 test_sub_floor_candidates_excluded_from_group_gate_by_default --
     def _section_0_test_sub_floor_candidates_excluded_from_group_gate_by_default(tmp_path, mp, capsys):
         import factorzen.cli.main as cli_main
@@ -219,8 +219,11 @@ def test_sub_floor_cli_group_gate_suite(tmp_path, capsys):
         man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
         assert man["n_sub_floor"] == 130      # 仍如实记账
         assert man["sub_floor_filtered"] is False
-        # 旧行为：组门不过 → 全体连坐
-        assert all(
+        # 逃生口恢复的是「噪声也进组门」，**不是**连坐：P0a 后 K=150>20 →
+        # 组门只标 group_gate_weak，150 条照样逐条测（组门零功效增益，见 R1）
+        assert man["lift_group"]["group_gate_weak"] is True
+        assert man["lift_group"]["group_gate_short_circuit"] is False
+        assert not any(
             str(r.get("error") or "").startswith("group_gate") for r in man["results"]
         )
         assert len(man["results"]) == 150

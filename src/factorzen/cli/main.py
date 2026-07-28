@@ -95,7 +95,10 @@ _MINE_TEAM_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
     "llm_workers": (int, 4, None),
     "no_auto_lift": (bool, False, None),
     "no_sleeve_gate": (bool, False, None),
-    "lift_se_mult": (float, 1.0, None),
+    # P1（R1 2026-07-28）：调用方默认 1.0 → 1.645（≈单侧 95%）。1×SE 在 df=12 下
+    # 是单侧 p≈0.169，生产 lift_null.calibration_table 实测 p_active 0.155；
+    # 1.645 把它压到 0.064（R1 表 5）。lift_admission 形参默认保持 1.0 不动。
+    "lift_se_mult": (float, 1.645, None),
     "lift_workers": (int, None, None),
     "intraday_leaves": (bool, False, None),
     "intraday_freq": (str, "5min", None),
@@ -110,7 +113,9 @@ _LIFT_TEST_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
     "include_sub_floor": (bool, False, None),
     "threshold": (float, None, None),
     "library_root": (str, None, None),
-    "se_mult": (float, 1.0, None),
+    # P1（R1 2026-07-28）：见 _MINE_TEAM_SET["lift_se_mult"] 同款注释（生产
+    # lift_null p_active 0.155 → 0.064）。--set se_mult=1.0 仍是逃生口。
+    "se_mult": (float, 1.645, None),
     "allow_active": (bool, False, None),
     "horizon": (int, None, None),
     "lift_workers": (int, None, None),
@@ -1232,7 +1237,7 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         objective=getattr(args, "objective", "residual"),
         llm_workers=getattr(args, "llm_workers", 4),
         auto_lift=not bool(getattr(args, "no_auto_lift", False)),
-        lift_se_mult=float(getattr(args, "lift_se_mult", 1.0)),
+        lift_se_mult=float(getattr(args, "lift_se_mult", 1.645)),
         lift_workers=getattr(args, "lift_workers", None),  # None→自适应(按可用内存)
         campaign_prior_enabled=not bool(getattr(args, "no_campaign_prior", False)),
         intraday_scout=bool(getattr(args, "intraday_scout", False)),
@@ -2066,6 +2071,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         extract_gray_candidates_from_manifest,
         filter_candidates_by_coverage,
         group_gate_ok,
+        group_gate_short_circuit,
         make_lift_context,
         partition_lift_queue_by_sleeve,
         resolve_lift_workers,
@@ -2257,7 +2263,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     else:
         top_m = int(top_m_raw)
     seed = getattr(args, "seed", 0) or 0
-    se_mult = float(getattr(args, "se_mult", 1.0) or 1.0)
+    se_mult = float(getattr(args, "se_mult", 1.645) or 1.645)
     python_universe = getattr(args, "universe", None)
 
     # base_ctx：prep 一次；admission 窗 per-group replace（不改 horizon）
@@ -2496,14 +2502,27 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 lift_se_mult=se_mult,
             )
             g_lift, g_se = group.get("lift"), group.get("lift_se")
+            # P0a（R1 2026-07-28）：组门不再一票否决整批——它检验的是**批内平均**
+            # 增量（√K_eff 精确抵消，零功效增益），用它否决个体是假阴性发生器。
+            # 组门不过 → 标 group_gate_weak，继续逐条测；仅 K≤20 且组 t<0 维持短路。
+            short_circuit = (not group_ok) and group_gate_short_circuit(
+                group, n_candidates=len(dense_kept),
+            )
+            group_view["group_gate_ok"] = bool(group_ok)
+            group_view["group_gate_bar"] = float(bar)
+            if not group_ok:
+                group_view["group_gate_weak"] = True
+                group_view["group_gate_short_circuit"] = bool(short_circuit)
             print(
                 f"[factor-library lift-test] 组门(residual) lift={g_lift!r} se={g_se!r} "
-                f"bar={bar:.4f} → {'过' if group_ok else '拒'}"
-                f"（dense={len(dense_kept)}）",
+                f"bar={bar:.4f} → {'过' if group_ok else '弱(group_gate_weak)'}"
+                f"（dense={len(dense_kept)}"
+                + ("，短路跳过逐条" if short_circuit else "，继续逐条")
+                + "）",
                 flush=True,
             )
-            if not group_ok:
-                # 组门不过：仅稠密 skip 逐候选；sleeve 仍走 overlay
+            if short_circuit:
+                # 算力豁免：小批（K≤20）且组 t<0 → 维持旧短路，全批写 group_gate_fail
                 reason = f"group_gate_fail(lift={g_lift!r},se={g_se!r},bar={bar:.4f})"
                 for c in dense_kept:
                     results.append(

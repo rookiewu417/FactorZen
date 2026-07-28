@@ -51,7 +51,7 @@ def run_team_mine(
     objective: str = "residual",
     llm_workers: int = 1,
     auto_lift: bool = True,
-    lift_se_mult: float = 1.0,
+    lift_se_mult: float = 1.645,  # 与 run_team_agent 同款调用方默认（P1，R1 2026-07-28）
     lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     campaign_prior_enabled: bool = True,
     intraday_scout: bool = False,

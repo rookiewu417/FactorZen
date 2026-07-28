@@ -777,7 +777,7 @@ def test_rebuild_admission_ic_writeback_suite(tmp_path):
 # ── C1: lift_admission SE 契约 ───────────────────────────────────────────────
 
 def test_lift_admission_unit_gates_suite():
-    """SE 缺失/非有限 → reject；finite 0.0 仍合法，过门可 active/probation。；裸 IC 为负的候选必拒——即使残差 lift 远超门槛。；`admission_ic` 缺失 → **跳过**该门，不因缺失而拒。；`require_positive_naked_ic=False` 关闭该门——留对照/复检逃生口。"""
+    """SE 缺失/非有限 → reject；finite 0.0 仍合法，过门可 active/probation。；裸 IC 为负的候选封顶 probation——残差 lift 再高也拿不到 active（P0b）。；`admission_ic` 缺失 → **跳过**该门，不因缺失而拒。；`require_positive_naked_ic=False` 关闭该门——留对照/复检逃生口。"""
     # -- 原 test_lift_admission_nonfinite_se_rejects --
     def _section_0_test_lift_admission_nonfinite_se_rejects():
         from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
@@ -804,21 +804,29 @@ def test_lift_admission_unit_gates_suite():
     _section_0_test_lift_admission_nonfinite_se_rejects()
 
     # -- 原 test_naked_ic_sign_gate_rejects_negative_admission_ic --
-    def _section_1_test_naked_ic_sign_gate_rejects_negative_admission_ic():
+    # P0b（R1 2026-07-28）：负裸 IC 由 reject 降级为**封顶 probation**——
+    # 抑制变量型真阳被本门 48–100% 屏蔽（历史 2 条 i_limit_up_* 真阳即死于此）。
+    def _section_1_test_naked_ic_sign_gate_caps_negative_admission_ic():
         from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD
         from factorzen.discovery.lift_test import lift_admission
 
         thr = DEFAULT_LIFT_THRESHOLD
         strong = {"lift": thr * 10, "lift_se": 0.0, "lift_second_half": 0.01}
 
-        # 裸 IC 为负 → 拒（lift 再高也拒）
-        assert lift_admission({**strong, "admission_ic": -0.0001}, threshold=thr) == "reject"
-        assert lift_admission({**strong, "admission_ic": -0.02}, threshold=thr) == "reject"
+        # 裸 IC 为负 → 最高 probation（lift 再高也拿不到 active，但不再出局）
+        assert lift_admission({**strong, "admission_ic": -0.0001}, threshold=thr) == "probation"
+        assert lift_admission({**strong, "admission_ic": -0.02}, threshold=thr) == "probation"
         # 裸 IC 非负 → 正常裁决
         assert lift_admission({**strong, "admission_ic": 0.0}, threshold=thr) == "active"
         assert lift_admission({**strong, "admission_ic": 0.03}, threshold=thr) == "active"
+        # 没过 bar 的照旧 reject（降级只作用于已过 bar 的候选）
+        assert lift_admission(
+            {"lift": thr * 0.1, "lift_se": 0.0, "lift_second_half": 0.01,
+             "admission_ic": -0.02},
+            threshold=thr,
+        ) == "reject"
 
-    _section_1_test_naked_ic_sign_gate_rejects_negative_admission_ic()
+    _section_1_test_naked_ic_sign_gate_caps_negative_admission_ic()
 
     # -- 原 test_naked_ic_sign_gate_skips_when_field_absent --
     def _section_2_test_naked_ic_sign_gate_skips_when_field_absent():
@@ -842,7 +850,7 @@ def test_lift_admission_unit_gates_suite():
         thr = DEFAULT_LIFT_THRESHOLD
         row = {"lift": thr * 10, "lift_se": 0.0, "lift_second_half": 0.01,
                "admission_ic": -0.02}
-        assert lift_admission(row, threshold=thr) == "reject"
+        assert lift_admission(row, threshold=thr) == "probation"  # 门开着=封顶 probation
         assert lift_admission(
             row, threshold=thr, require_positive_naked_ic=False,
         ) == "active"

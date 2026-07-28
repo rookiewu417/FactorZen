@@ -51,27 +51,33 @@ lift_se 为 None / 非有限                → reject
 lift < bar                              → reject
 lift ≥ bar 且 lift_second_half > 0      → active
 lift ≥ bar 且 second_half ≤ 0 或缺失    → probation
+上述结果为 active 但裸 IC（admission_ic）有限且 < 0 → 降级 probation
 ```
 
-三处设计值得留意：
+四处设计值得留意：
 
 **门槛取 `max(绝对阈值, SE 倍数)`。** 绝对阈值挡住「统计显著但幅度小到没有经济意义」的候选；SE 倍数挡住「幅度看着大但噪声更大」的候选。两道都要过。
 
 **SE 不可用即 reject，不退化为裸阈值。** 这是刻意的保守：区间证据不完整时，平台选择拒绝而不是假装 SE 为 0 从而让门槛塌缩成 `threshold`。同样的约定也用在组门（`lift_test.py` 的 `group_gate_ok()`），代码注释明确写了「不再把『无 SE』当『零方差』」。
 
+> ℹ️ **组门是筛选标记，不是裁决。** 批量 lift 先算一次「整批等权残差组合」的组 lift。它检验的是**批内平均**增量——等权组合的 `√K_eff` 与 SE 精确抵消，所以 150 条批里 2 条真阳给出的组 t 只有 0.15，永远过不了。2026-07-28 起组门不过**不再全批 reject**，只在 manifest 的组元信息里标 `group_gate_weak` 然后继续逐条测（`lift_admission()` 才是唯一裁决）。唯一保留的算力短路：批规模 ≤ 20 **且** 组 `t = lift/lift_se < 0` 时跳过逐条（`group_gate_short_circuit()`）。
+
 **后半段决定是 `active` 还是 `probation`。** 把评估窗口切两半，若后半段的增量为正，说明贡献不是集中在样本前期的一次性效应，直接给 `active`；否则先收进 `probation`，等真实时间累积更多证据再定。
+
+**裸 IC 为负只封顶不出局。** 准入判据是**残差** IC（对库正交化后），而 `combine_from_library` 部署是**裸值等权**，等权无法表达负贡献。所以裸 IC 为负的候选拿不到 `active`——但也不再直接 `reject`：R1 研究（2026-07-28）实测该门对抑制变量型真阳的屏蔽率 48–100%，历史上仅有的 2 条过门真阳全死于此。现在它们进 `probation`，由 `forward-track` 的真实向前证据裁决，记录上落 `naked_ic_negative=True`。`admission_ic` 缺失/非有限 → 跳过该门（缺证据 ≠ 证据为负）。
 
 ### 实际阈值
 
 | 常量 | 值 | 定义处 |
 |---|---|---|
 | `DEFAULT_LIFT_THRESHOLD` | `0.001` | `discovery/guardrails.py` |
-| `se_mult` 默认 | `1.0` | `lift_test.py` 的 `lift_admission()`，CLI `--set se_mult=` |
+| `se_mult` 调用方默认 | `1.645` | CLI `--set se_mult=`（lift-test）/ `--set lift_se_mult=`（mine team）/ `run_team_agent` |
+| `se_mult` 函数形参默认 | `1.0` | `lift_test.py` 的 `lift_admission()`（向后兼容，不随调用方漂移） |
 | `DEFAULT_HOLDOUT_MIN_DAYS` | `60` | `discovery/guardrails.py` |
 | 交叉验证默认 | `train_days=250, test_days=40, purge_days=5, embargo_days=0` | `lift_test.py` 的 `DEFAULT_LIFT_CV` |
 | `DEFAULT_TOP_M` / `DEFAULT_HORIZON` / `DEFAULT_BLOCK_DAYS` | `10` / `5` / `20` | `lift_test.py` |
 
-> ⚠️ **两套 `se_mult` 别混淆。** lift 准入（`fz factor-library lift-test --set se_mult=1.0`）默认 **1.0**；向前复审（`fz factor-library forward-review --se-mult`）默认 **1.645**（单侧 95%）。两者作用于不同证据、不同时间尺度，阈值不通用。
+> ⚠️ **两套 `se_mult` 别混淆。** lift 准入（`fz factor-library lift-test --set se_mult=`）与向前复审（`fz factor-library forward-review --se-mult`）现在数值都是 **1.645**（≈单侧 95%），但仍是两个独立旋钮，作用于不同证据、不同时间尺度，改一个不影响另一个。lift 准入的 1.0 → 1.645 是 2026-07-28 R1 校准结论（`lift_null` 的 `p_active` 0.155 → 0.064）。
 >
 > ℹ️ **`DEFAULT_TOP_M` 与 CLI `--set top_m` 默认不同。** 模块常量 `DEFAULT_TOP_M = 10`（`lift_test.py`）；`fz factor-library lift-test` 的 argparse 默认是 `--set top_m` / `top_m=20`。库函数默认与 CLI 默认是两套值，不要混为一谈。
 

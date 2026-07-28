@@ -826,7 +826,10 @@ def run_team_agent(
     objective: str = "residual",
     llm_workers: int = 1,
     auto_lift: bool = True,
-    lift_se_mult: float = 1.0,
+    # P1（R1 2026-07-28）：调用方默认 1.0 → 1.645（≈单侧 95%）。1×SE 在 df=12 下
+    # 单侧 p≈0.169，生产 lift_null.calibration_table p_active 0.155 → 1.645 降到 0.064。
+    # `lift_admission` 形参默认保持 1.0（向后兼容），只动调用方实参默认。
+    lift_se_mult: float = 1.645,
     lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     # 测试注入：session 末 lift 钩子（materialize / active 面板 / ret）
     lift_materialize_candidate=None,
@@ -1429,7 +1432,7 @@ def _session_end_auto_lift(
     seed: int,
     horizon: int,
     auto_lift: bool = True,
-    lift_se_mult: float = 1.0,
+    lift_se_mult: float = 1.645,  # 与 run_team_agent 同款调用方默认（P1）
     lift_workers: int | None = None,  # None→run_lift_tests 按可用内存自适应
     data_window: dict | None = None,
     prepped=None,
@@ -1517,6 +1520,7 @@ def _session_end_auto_lift(
         from factorzen.discovery.lift_test import (
             filter_candidates_by_coverage,
             group_gate_ok,
+            group_gate_short_circuit,
             partition_lift_queue_by_sleeve,
         )
         kept, dropped = filter_candidates_by_coverage(
@@ -1565,12 +1569,28 @@ def _session_end_auto_lift(
             )
             g_lift = group.get("lift")
             g_se = group.get("lift_se")
+            # P0a（R1 2026-07-28）：与 CLI lift-test 成对——组门不再一票否决整批
+            # （它检验批内平均，√K_eff 精确抵消 → 零功效增益），改标 group_gate_weak
+            # 继续逐条测；仅 K≤20 且组 t<0 维持旧短路。两处必须逐字段同判。
+            short_circuit = (not group_ok) and group_gate_short_circuit(
+                group, n_candidates=len(dense_kept),
+            )
+            lg_meta = meta["lift_group"]
+            if isinstance(lg_meta, dict):
+                lg_meta["group_gate_ok"] = bool(group_ok)
+                lg_meta["group_gate_bar"] = float(bar)
+                if not group_ok:
+                    lg_meta["group_gate_weak"] = True
+                    lg_meta["group_gate_short_circuit"] = bool(short_circuit)
             _step(
                 f"lift 钩子 ▸ 组 lift={g_lift!r} se={g_se!r} bar={bar:.4f} "
-                f"→ {'过' if group_ok else '拒'}（dense={len(dense_kept)}）"
+                f"→ {'过' if group_ok else '弱(group_gate_weak)'}"
+                f"（dense={len(dense_kept)}"
+                + ("，短路跳过逐条" if short_circuit else "，继续逐条")
+                + "）"
             )
-            if not group_ok:
-                # 组门不过：仅稠密 reject；sleeve 仍走 overlay
+            if short_circuit:
+                # 算力豁免：小批（K≤20）且组 t<0 → 维持旧短路，整批写 group_gate_fail
                 _append_lift_rejects_to_index(
                     index,
                     dense_kept,

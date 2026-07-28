@@ -506,7 +506,7 @@ pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi
 | `no_campaign_prior` | false | `--no-campaign-prior` | `--set no_campaign_prior=true` |
 | `no_auto_lift` | false | `--no-auto-lift` | `--set no_auto_lift=true` |
 | `no_sleeve_gate` | false | `--no-sleeve-gate` | `--set no_sleeve_gate=true` |
-| `lift_se_mult` | 1.0 | `--lift-se-mult` | `--set lift_se_mult=1.5` |
+| `lift_se_mult` | 1.645 | `--lift-se-mult` | `--set lift_se_mult=1.5` |
 | `lift_workers` | None | `--lift-workers` | `--set lift_workers=1` |
 | `intraday_leaves` | false | `--intraday-leaves` | `--set intraday_leaves=true` |
 | `intraday_freq` | 5min | `--intraday-freq` | `--set intraday_freq=5min` |
@@ -531,14 +531,14 @@ pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi
 | `include_sub_floor` | false | `--include-sub-floor` | `--set include_sub_floor=true` |
 | `threshold` | None（= `0.001`） | `--threshold` | `--set threshold=0.001` |
 | `library_root` | None（= `workspace/factor_library`） | `--library-root` | `--set library_root=...` |
-| `se_mult` | 1.0 | `--se-mult` | `--set se_mult=1.0` |
+| `se_mult` | 1.645 | `--se-mult` | `--set se_mult=1.0` |
 | `allow_active` | false | `--allow-active` | `--set allow_active=true` |
 | `horizon` | None（跟 session manifest） | `--horizon` | `--set horizon=1` |
 | `lift_workers` | None（自适应，上限 4） | `--lift-workers` | `--set lift_workers=1`（串行） |
 | `intraday_leaves` | false | `--intraday-leaves` | `--set intraday_leaves=true` |
 | `intraday_freq` | 5min | `--intraday-freq` | `--set intraday_freq=5min` |
 
-> ⚠️ `fz factor-library forward-review --se-mult` 是**真旗标**（默认 `1.645`），与 lift-test 的 `--set se_mult=` 不是一回事，不要混用。
+> ⚠️ `fz factor-library forward-review --se-mult` 是**真旗标**（默认 `1.645`），与 lift-test 的 `--set se_mult=`（2026-07-28 起同样默认 `1.645`）不是一回事：两个独立旋钮、作用于不同证据，改一个不影响另一个，不要混用。
 
 ---
 
@@ -665,7 +665,7 @@ pixi run -- fz factor-library show --market ashare --rank 1
 
 > ⚠️ `--session` 与 `--factor` 在 argparse 层都不是 required，但**至少要给一个**，否则运行期报错。两者都是 `nargs="+"` 风格——多值用**空格分隔**（`--session a b c`），不是逗号，也不是重复旗标。
 
-> ⚠️ 高级参数已全部走 `--set`：例如 `--set top_m=0` 全测、`--set allow_active=true` 允许直接写 `active`、`--set lift_workers=1` 串行。`se_mult` 默认 `1.0`（准入：`lift ≥ max(threshold, se_mult × SE)`），与 `forward-review` 的真旗标 `--se-mult`（默认 `1.645`）不是同一个旋钮。
+> ⚠️ 高级参数已全部走 `--set`：例如 `--set top_m=0` 全测、`--set allow_active=true` 允许直接写 `active`、`--set lift_workers=1` 串行。`se_mult` 默认 `1.645`（准入：`lift ≥ max(threshold, se_mult × SE)`；2026-07-28 由 `1.0` 上调，R1 校准把 `lift_null` 的 `p_active` 从 0.155 压到 0.064），与 `forward-review` 的真旗标 `--se-mult`（同样 `1.645`）不是同一个旋钮。
 
 ```bash
 # 1) 先 dry-run 看裁决（不写库）

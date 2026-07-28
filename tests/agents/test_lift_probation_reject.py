@@ -659,9 +659,10 @@ def test_lift_reject_writeback_session_suite(monkeypatch, tmp_path):
         daily, holdout, mat = _holdout_and_mat()
         dw = {"start": "20220101", "end": "20221231", "universe": "csi300", "market": "ashare"}
 
+        # P0a：K=2≤20 且组 t=lift/lift_se<0 → 命中短路豁免（唯一保留的整批连坐）
         def fake_group(*a, **k):
             return {
-                "lift": 0.0001, "lift_se": 0.01, "error": None,
+                "lift": -0.0001, "lift_se": 0.01, "error": None,
                 "n_candidates": 2, "expressions": ["ts_mean(close, 5)", "rank(vol)"],
             }
 
@@ -1004,8 +1005,9 @@ def test_lift_reject_writeback_cli_suite(tmp_path, monkeypatch):
         )
         patch_cli_lift_pre_gates(mp)
 
+        # P0a：K=1≤20 且组 t<0 → 短路豁免，整批仍写 group_gate_fail
         def fake_group(*a, **k):
-            return {"lift": 0.0001, "lift_se": 0.01, "error": None, "n_candidates": 1}
+            return {"lift": -0.0001, "lift_se": 0.01, "error": None, "n_candidates": 1}
 
         mp.setattr(lt_mod, "run_group_lift", fake_group)
         mp.setattr(

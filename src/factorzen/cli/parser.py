@@ -454,7 +454,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         llm_workers=4,
         no_auto_lift=False,
         no_sleeve_gate=False,
-        lift_se_mult=1.0,
+        lift_se_mult=1.645,  # P1（R1 2026-07-28）：lift_null p_active 0.155→0.064
         lift_workers=None,
         intraday_leaves=False,
         intraday_freq="5min",
@@ -620,7 +620,7 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         include_sub_floor=False,
         threshold=None,
         library_root=None,
-        se_mult=1.0,
+        se_mult=1.645,  # P1（R1 2026-07-28）：lift_null p_active 0.155→0.064
         allow_active=False,
         horizon=None,
         lift_workers=None,

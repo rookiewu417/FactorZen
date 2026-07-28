@@ -599,7 +599,7 @@ def test_cli_top_m_truncation_suite(tmp_path, capsys):
 
 
 def test_cli_group_coverage_pipeline_suite(tmp_path):
-    """组 lift 不过 → run_lift_tests 不被调用，manifest 有 lift_group。；覆盖 30 天剔除、200 天保留；dropped 进 manifest；低覆盖不进组门。"""
+    """组门不过 + 短路豁免（K≤20 且组 t<0）→ run_lift_tests 不被调用，manifest 有 lift_group。；覆盖 30 天剔除、200 天保留；dropped 进 manifest；低覆盖不进组门。"""
     # -- 原 test_cli_group_gate_fail_skips_run_lift_tests --
     def _section_0_test_cli_group_gate_fail_skips_run_lift_tests(tmp_path, mp):
         import factorzen.cli.main as cli_main
@@ -624,11 +624,12 @@ def test_cli_group_coverage_pipeline_suite(tmp_path):
         mp.setattr(
             lt_mod, "run_group_lift",
             lambda queue, **k: {
-                "lift": 0.0001, "lift_se": 0.01, "error": None,
+                "lift": -0.0001, "lift_se": 0.01, "error": None,
                 "lift_metric": "residual_ic_v1",
             },
         )
-        # se_mult=1 → bar=max(0.001, 0.01)=0.01 > lift 0.0001 → 不过
+        # bar=max(0.001, 1.645*0.01)=0.01645 > lift -0.0001 → 组门不过；
+        # 且 K=3≤20 且组 t=-0.01<0 → 命中短路豁免（P0a 唯一保留的算力短路）
         lift_calls = []
         mp.setattr(
             lt_mod, "run_lift_tests",
@@ -638,10 +639,12 @@ def test_cli_group_coverage_pipeline_suite(tmp_path):
 
         rc = cli_main._cmd_factor_library_lift_test(args)
         assert rc == 0
-        assert lift_calls == [], "组门不过不应调 run_lift_tests"
+        assert lift_calls == [], "K≤20 且组 t<0 → 短路，不调 run_lift_tests"
         man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
         assert man["lift_group"] is not None
-        assert man["lift_group"].get("lift") == 0.0001
+        assert man["lift_group"].get("lift") == -0.0001
+        assert man["lift_group"]["group_gate_weak"] is True
+        assert man["lift_group"]["group_gate_short_circuit"] is True
         assert all(
             str(r.get("error") or "").startswith("group_gate")
             for r in man["results"]

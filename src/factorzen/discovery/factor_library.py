@@ -166,6 +166,10 @@ class FactorRecord:
     # 单因子 admission 窗 RankIC（方向权威；forward_review 调向优先用此字段）
     # 非组合 candidate_rank_ic（组合后≈恒正无判别力）
     admission_ic: float | None = None
+    # 裸 IC 同号门（P0b，2026-07-28）：admission_ic 有限且 <0 → 该记录被封顶 probation。
+    # 标记它是为了让 forward-review / 组合侧能一眼认出「靠 forward 证据翻案中的抑制变量」。
+    # 旧 jsonl 无此字段 → from_dict 得 None（≠ False：None 表示未判过，不是判过为负）
+    naked_ic_negative: bool | None = None
     # 审计：holdout 有效覆盖天数（single 轨 upsert 若调用方传入则落盘）
     holdout_n_days: int | None = None
     # paper forward 确认（forward_review --apply 写入）：不进 schema 会被
@@ -1189,7 +1193,7 @@ _TARGETED_STATE_FIELDS = (
 _TARGETED_CARRY_IF_MISSING_FIELDS = (
     # 注：evidence_tier 不在此列——定向重估的 ic/holdout/dsr 是当期评估器现算的，
     # 标 v2 是诚实的；沿用 prev 的 legacy 反而谎报证据层级。
-    "hypothesis", "name", "impl", "admission_ic",
+    "hypothesis", "name", "impl", "admission_ic", "naked_ic_negative",
     "lift", "lift_baseline", "lift_se", "lift_first_half", "lift_second_half",
     "lift_metric", "n_lib_factors",
     "admission_start", "admission_end", "scored_start", "scored_end",
@@ -1519,7 +1523,7 @@ def upsert_lift_admissions(
     root: str = DEFAULT_ROOT,
     meta: dict | None = None,
     threshold: float = DEFAULT_LIFT_THRESHOLD,
-    se_mult: float = 1.0,
+    se_mult: float = 1.645,  # P1（R1 2026-07-28）：与 rebuild / CLI / 钩子同一套门
     allow_active: bool = False,
     materialize: Materializer | None = None,
     compact_materialize: CompactMaterializer | None = None,
@@ -1555,6 +1559,11 @@ def upsert_lift_admissions(
     已存在同 expression：更新指标与 status（保留 ``added_at``），不重复添加。
     逐行 try/except：一行坏数据不崩整批，进 ``errors`` 列表。
 
+    **``naked_ic_negative`` 留痕（P0b，2026-07-28）**：``admission_ic`` 有限且 <0 的
+    行由 ``lift_admission`` 封顶 probation（不再 reject），落盘 ``naked_ic_negative=True``
+    供 forward-review / 组合侧识别「靠 forward 证据翻案中的抑制变量」。判定单点复用
+    ``lift_test.naked_ic_negative``；非负/缺失写 None（复测可翻案清标）。
+
     **相关性门（W1）**：准入行走完后过一次 ``_decorrelate``（全仓单一实现，
     与单因子轨同阈值同裁决）。它**不是**回退到硬质量门——残差 lift 是对冻结基线
     算的，同批候选共用同一基线快照，两条互为重复的候选会拿到相同的正 lift 双双
@@ -1570,7 +1579,7 @@ def upsert_lift_admissions(
     "capped_active", "correlated", "decorrelation_skipped", "errors"}``
     （后四项仅在发生时出现）。
     """
-    from factorzen.discovery.lift_test import lift_admission
+    from factorzen.discovery.lift_test import lift_admission, naked_ic_negative
 
     meta = meta or {}
     eval_start = meta.get("eval_start")
@@ -1729,6 +1738,9 @@ def upsert_lift_admissions(
                 rec.status = decision  # probation
                 out["added_probation"] += 1
             rec.evidence_tier = "v2"  # 新写入路径一律 v2
+            # 裸 IC 同号门降级留痕（P0b）：单点判定复用 lift_test.naked_ic_negative，
+            # 不在这里重写一遍符号判断。正裸 IC/缺失 → 显式 None（复测可翻案清标）。
+            rec.naked_ic_negative = True if naked_ic_negative(row) else None
             rec.lift = _as_float(row.get("lift"))
             rec.lift_baseline = _as_float(row.get("lift_baseline", row.get("baseline")))
             rec.lift_se = _as_float(row.get("lift_se"))
@@ -2118,7 +2130,10 @@ def rebuild(
     active_factor_dfs: dict[str, pl.DataFrame] | None = None,
     daily: pl.DataFrame | None = None,
     lift_threshold: float = DEFAULT_LIFT_THRESHOLD,
-    se_mult: float = 1.0,
+    # P1（R1 2026-07-28）：调用方默认 1.0 → 1.645。CLI `factor-library rebuild`
+    # **不传** se_mult，用的就是这个默认——留 1.0 会让三个 lift_admission 消费方
+    # （session 钩子 / lift-test / rebuild 复审）拿着两套门，正是 CLAUDE.md 点名的双路径漂移。
+    se_mult: float = 1.645,
     profile=None,
     admission_start: str | None = None,
     admission_end: str | None = None,
@@ -2473,6 +2488,13 @@ def rebuild(
                     # 判门实际用的阈值/SE 倍数（rebuild 入参，非 row 反推）
                     updated.lift_threshold = float(lift_threshold)
                     updated.lift_se_mult = float(se_mult)
+                    # 裸 IC 同号门降级留痕（P0b）：与 upsert_lift_admissions 同步刷新——
+                    # 只在 row 真给了 admission_ic 时改写（error 行不许把标记抹成 None）
+                    if lift_row.get("admission_ic") is not None:
+                        from factorzen.discovery.lift_test import naked_ic_negative
+                        updated.naked_ic_negative = (
+                            True if naked_ic_negative(lift_row) else None
+                        )
 
                 # 复审不 cap：decision 即 status（保留既有 active，非 auto-lift 新晋升）
                 if decision == "active":

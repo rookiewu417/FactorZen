@@ -393,8 +393,11 @@ def _holdout_and_mat(n_days=120):
 
 
 def test_lift_hook_session_suite(monkeypatch, tmp_path):
-    """组门不过 → 不跑逐候选且 upsert 未被调用。；组门 SE 缺失/非有限 = 区间证据不完整 → 拒，不跑逐候选（不再按 0 处理）。；组门过 → 逐候选进 manifest、upsert 收到正确行。；钩子内部异常 → 返回 lift_error，不向外抛；run_team_agent 仍完成。；物化后 OOS 天数不足 → lift_dropped_coverage，不进 lift。；同一 expression 多 attempt → 队列去重。；test_write_team_manifest_includes_lift_fields"""
+    """组门不过 + 短路豁免（K≤20 且组 t<0）→ 不跑逐候选且 upsert 未被调用。；组门 SE 缺失/非有限 = 区间证据不完整 → 组门不过但 t 不可算 → 仍逐条（不搭便车短路）。；组门过 → 逐候选进 manifest、upsert 收到正确行。；钩子内部异常 → 返回 lift_error，不向外抛；run_team_agent 仍完成。；物化后 OOS 天数不足 → lift_dropped_coverage，不进 lift。；同一 expression 多 attempt → 队列去重。；test_write_team_manifest_includes_lift_fields"""
     # -- 原 test_lift_hook_group_fail_skips_per_candidate --
+    # P0a（R1 2026-07-28）：组门不过**不再**默认跳过逐候选；本段测的是唯一保留的
+    # 算力豁免——K=2≤20 且组 t=lift/lift_se<0 → 短路。t≥0 或大批的逐条覆盖见
+    # tests/lift/test_lift_power_reform.py。
     def _section_0_test_lift_hook_group_fail_skips_per_candidate(mp):
         state = _state_with_lift_queue(["ts_mean(close, 5)", "rank(vol)"])
         daily, holdout, mat = _holdout_and_mat()
@@ -404,7 +407,7 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
         def fake_group(*a, **k):
             calls["group"] += 1
             return {
-                "lift": 0.0001, "lift_se": 0.01, "error": None,
+                "lift": -0.0001, "lift_se": 0.01, "error": None,
                 "n_candidates": 2, "expressions": ["ts_mean(close, 5)", "rank(vol)"],
             }
 
@@ -436,6 +439,8 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
         assert calls["per"] == 0
         assert calls["upsert"] == 0
         assert meta["lift_group"] is not None
+        assert meta["lift_group"]["group_gate_weak"] is True
+        assert meta["lift_group"]["group_gate_short_circuit"] is True
         assert meta["lift_results"] == []
         assert meta["n_lift_evaluated"] == 1
 
@@ -471,7 +476,12 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
                 ret_df=_panel(100).rename({"factor_value": "ret"}),
                 horizon=1,
             )
-            assert calls["per"] == 0, f"SE={bad_se!r} 时组门应拒、不跑逐候选"
+            # 组门仍判不过（SE 缺失 = 区间证据不完整），但 P0a 后**不再连坐**：
+            # 组 t 不可算 → 不许搭便车短路，逐候选照跑（缺证据 ≠ 证据为负）
+            assert meta["lift_group"]["group_gate_ok"] is False, f"SE={bad_se!r} 组门应不过"
+            assert meta["lift_group"]["group_gate_weak"] is True
+            assert meta["lift_group"]["group_gate_short_circuit"] is False
+            assert calls["per"] == 1, f"SE={bad_se!r} 时 t 不可算 → 必逐条"
             assert meta["lift_results"] == []
 
     with pytest.MonkeyPatch.context() as mp:
@@ -792,7 +802,8 @@ def test_lift_cli_and_baseline_suite(monkeypatch, tmp_path):
             "mine", "team", "--start", "20220101", "--end", "20231231",
         ])
         assert getattr(args, "no_auto_lift", False) is False
-        assert args.lift_se_mult == 1.0
+        # P1（R1 2026-07-28）：调用方默认 1.0 → 1.645（≈单侧 95%）
+        assert args.lift_se_mult == 1.645
 
     _section_1_test_cli_auto_lift_default_is_on()
 

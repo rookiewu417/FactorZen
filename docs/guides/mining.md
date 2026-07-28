@@ -201,7 +201,7 @@ Librarian 的记忆不是摆设，它有具体阈值（`agents/roles/librarian.p
 | `--set llm_workers=` | `4` | 轮内独立 LLM 调用并发度，`1` = 串行零回归 |
 | `--set no_campaign_prior=true` | 关 | 关闭跨 session 试验族记账 |
 | `--set no_auto_lift=true` | 关 | 关闭 session 末的自动组 lift 裁决 |
-| `--set lift_se_mult=` | `1.0` | lift 准入 SE 乘数 |
+| `--set lift_se_mult=` | `1.645` | lift 准入 SE 乘数（≈单侧 95%；2026-07-28 由 `1.0` 上调） |
 | `--set lift_workers=` | 自适应 | session 末 lift 的并发，上限 4 |
 | `--pool-subproc` | 关 | 池构建放子进程，见[内存隔离](#内存隔离pool-prebuild) |
 

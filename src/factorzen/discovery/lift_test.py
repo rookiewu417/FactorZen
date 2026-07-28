@@ -142,6 +142,58 @@ def group_gate_ok(
     return ok, bar
 
 
+# 组门短路豁免的批规模上限：K 超过它一律逐条测，不再全批连坐。
+GROUP_GATE_SHORTCIRCUIT_MAX_K = 20
+
+
+def group_gate_short_circuit(group: dict, *, n_candidates: int) -> bool:
+    """组门不过时**是否**维持旧短路（跳过逐候选）。仅算力豁免，非裁决。
+
+    R1（2026-07-28，``.artifacts/r1_lift_power/REPORT.md``）证明组门数学上零功效
+    增益：``t_group = mean_i(δ_i)·√T/σ_u``，等权组合的 √K_eff 精确抵消——它检验的
+    是**批内平均**增量，150 条批里 2 条真阳给出 t=0.15，永远不过。以组门一票否决
+    整批（历史 88% 的拒绝来源）等于用批内平均否决个体，是**假阴性发生器**。
+
+    故组门降级为筛选标记（``group_gate_weak``），默认继续逐条测。只保留一处算力
+    豁免：``K ≤ GROUP_GATE_SHORTCIRCUIT_MAX_K`` **且** 组 t = lift/lift_se < 0——
+    小批且方向明确为负时逐条翻案的概率可忽略，省算力。
+
+    t 不可算（lift/SE 缺失、非有限、SE=0）→ **不短路**：缺证据不能当成"证据为负"
+    搭便车省算力。
+    """
+    if int(n_candidates) > GROUP_GATE_SHORTCIRCUIT_MAX_K:
+        return False
+    g_lift, g_se = group.get("lift"), group.get("lift_se")
+    if g_lift is None or g_se is None:
+        return False
+    try:
+        lift_f, se_f = float(g_lift), float(g_se)
+    except (TypeError, ValueError):
+        return False
+    if not (np.isfinite(lift_f) and np.isfinite(se_f)) or se_f <= 0.0:
+        return False
+    return bool(lift_f / se_f < 0.0)
+
+
+def naked_ic_negative(row: dict) -> bool:
+    """裸 IC（``admission_ic``）有限且 < 0。
+
+    缺失 / 不可解析 / 非有限 → ``False``（**缺证据 ≠ 证据为负**；历史库记录与
+    ``lift_null`` 零假设校准本就不带该字段）。
+
+    单点语义：``lift_admission`` 的同号门降级判定与 ``upsert_lift_admissions``
+    落盘 ``naked_ic_negative`` 共用本函数，避免两处各判一次而漂移。
+    """
+    raw = row.get("admission_ic")
+    if raw is None:
+        return False
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return False
+    return bool(np.isfinite(val) and val < 0.0)
+
+
 def filter_candidates_by_coverage(
     candidates: list[dict],
     *,
@@ -745,36 +797,45 @@ def lift_admission(
     - lift is None / 非有限 → reject
     - lift_se is None / 转换失败 / 非有限（NaN、±inf）→ reject
       （区间证据不完整，不再按 0 处理）
-    - **admission_ic（裸 IC）为负 → reject**（P1-① 同号门，见下）
     - lift ≥ max(threshold, se_mult × lift_se) 且 lift_second_half > 0 → active
       （``row["overlay"]`` 为真且调用方未显式改门时，threshold 换
       ``OVERLAY_LIFT_THRESHOLD=3.35e-4``——overlay 口径量纲校准，见下方注释）
     - lift ≥ 同上门槛但 second_half 为 None 或 ≤ 0 → probation
+    - **admission_ic（裸 IC）有限且 < 0 → 该候选封顶 probation**（同号门降级，见下）
     - 否则 reject
 
     finite lift_se（含 0.0）合法：bar = max(threshold, se_mult × se)。
     orchestrator / rebuild / CLI 三处共用此单一实现。
 
-    **裸 IC 同号门（P1-① 口径错配的解法 ②）**：准入判据用**残差** IC
-    （``residual_ic_v1``，对库正交化后），而部署 ``combine_from_library`` 是
-    **裸值等权**（z-score 后等权相加，无正交化）。等权无法表达负贡献，
-    故裸 IC 为负的因子在部署时是纯拖累。
+    **裸 IC 同号门：reject → 强制 probation（P0b，2026-07-28 R1 改造）**
 
-    实证（2026-07-19，csi300 2020-2026 全窗，同 CV）：库内 85 条 active 有
-    23 条统一窗口裸 IC 为负；剔除后等权组合 rank_ic **0.05601 → 0.06048**、
-    ICIR **0.2282 → 0.2416**，**配对 t = +5.338（n=1454）显著**。
-    （两组共享 62 因子高度相关必须配对——独立样本 SE 是配对 SE 的 11 倍，
-    用它得 t=+0.486「不显著」，结论相反。）
+    门的动机（未变）：准入判据用**残差** IC（``residual_ic_v1``，对库正交化后），
+    而部署 ``combine_from_library`` 是**裸值等权**（z-score 后等权相加，无正交化）。
+    等权无法表达负贡献，故裸 IC 为负的因子在等权部署下是拖累。
 
-    代价已知并接受：W4 已证符号反向属**抑制变量效应**（设计行为，非 bug），
-    本门会误杀部分真抑制变量；实测整体净收益为正。
-    **结论绑定「等权部署」前提**——若部署改用能表达负贡献的权重，此门须重估
+    但**「拒之门外」是过度处置**——R1（``.artifacts/r1_lift_power/REPORT.md``）
+    量化了代价：对 ρ ≤ −0.15 且 δ ≤ 0.02 的**抑制变量型真阳，本门屏蔽率 48–100%**；
+    历史回放显示现行门本可放行的 2 条真阳（``i_limit_up_*`` 涨停封板族，残差
+    IC ≈ +0.0093、裸 IC ≈ 0/负）**全部**是被这道门杀的（回放 + 排除法闭合证明）。
+    抑制变量符号反向是 W4 已证的**设计行为**，不是坏因子。
+
+    故降级为：过 bar 的负裸 IC 候选**最高只能拿 probation**（进 forward-track，
+    由真实 paper forward 证据裁决是否转 active），而不是直接出局。没过 bar 仍 reject。
+
+    **与 2026-07-19 剔负实证的关系（口径差异，互不背书）**：那次实测（csi300
+    2020-2026，库内 85 条 active 中 23 条裸 IC 为负，剔除后等权组合 rank_ic
+    0.05601 → 0.06048、ICIR 0.2282 → 0.2416、配对 t = +5.338，n=1454）测的是
+    **部署收益**——「已在库的负裸 IC 因子该不该进等权组合」；R1 测的是**准入功效**
+    ——「负裸 IC 候选该不该有机会入库」。前者不蕴含后者：等权部署阶段可以继续排除
+    它们（组合侧的事），准入阶段没有理由销毁证据。两条结论并存，原记录保留。
+    **结论仍绑定「等权部署」前提**——若部署改用能表达负贡献的权重，本门须重估
     （signed 权重已于 2026-07-18 实测证伪，见 ``research/combination/methods``）。
 
     ``admission_ic`` 缺失/非有限 → **跳过**该门（与 lift_se 缺失即拒**有意不同**：
     SE 缺失算不出 bar，而裸 IC 缺失只是少一道门；历史库记录与 ``lift_null``
     零假设校准本就不带该字段，按缺失即拒会全部误杀）。
-    ``require_positive_naked_ic=False`` 关门，留对照/复检逃生口。
+    ``require_positive_naked_ic=False`` 关门（语义不变：完全不看裸 IC，可拿 active），
+    留对照/复检逃生口。
     """
     lift = row.get("lift")
     if lift is None:
@@ -807,17 +868,10 @@ def lift_admission(
     if lift_f < bar:
         return "reject"
 
-    # 裸 IC 同号门（P1-①）：部署是裸值等权，负裸 IC 因子是纯拖累。
+    # 裸 IC 同号门（P0b）：负裸 IC **不再 reject**，改为封顶 probation——
+    # 已过 bar 的抑制变量型真阳交给 forward-track 用真实 forward 证据裁决。
     # 缺失/不可解析/非有限一律跳过——缺证据 ≠ 证据为负。
-    if require_positive_naked_ic:
-        naked_raw = row.get("admission_ic")
-        if naked_raw is not None:
-            try:
-                naked = float(naked_raw)
-            except (TypeError, ValueError):
-                naked = float("nan")
-            if np.isfinite(naked) and naked < 0.0:
-                return "reject"
+    naked_negative = require_positive_naked_ic and naked_ic_negative(row)
 
     sh = row.get("lift_second_half")
     if sh is not None:
@@ -825,7 +879,7 @@ def lift_admission(
             sh_f = float(sh)
         except (TypeError, ValueError):
             return "probation"
-        if sh_f == sh_f and sh_f > 0:
+        if sh_f == sh_f and sh_f > 0 and not naked_negative:
             return "active"
     return "probation"
 
@@ -1854,6 +1908,7 @@ __all__ = [
     "DEFAULT_OVERLAY_W",
     "DEFAULT_RESIDUAL_LIFT_THRESHOLD",
     "DEFAULT_TOP_M",
+    "GROUP_GATE_SHORTCIRCUIT_MAX_K",
     "LIFT_QUEUE_CATEGORY",
     "OVERLAY_MIN_CROSS",
     "OVERLAY_MIN_MASK_DAYS",
@@ -1864,9 +1919,11 @@ __all__ = [
     "extract_lift_queue_from_manifest",
     "filter_candidates_by_coverage",
     "group_gate_ok",
+    "group_gate_short_circuit",
     "library_equal_weight_score_panel",
     "lift_admission",
     "make_lift_context",
+    "naked_ic_negative",
     "paired_lift_stats",
     "partition_lift_queue_by_sleeve",
     "resolve_lift_workers",

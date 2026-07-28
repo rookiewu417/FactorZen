@@ -591,15 +591,17 @@ def test_team_focus_scores_fall_each_round(tmp_path, monkeypatch):
 
 
 def test_cli_mine_team_has_leaf_scheduler_flag():
-    """CLI 旗标存在、默认关。"""
+    """CLI 关闭旗标存在、默认开（92439dc 三组对照后转默认，--no-leaf-scheduler 关）。"""
     from factorzen.cli.main import build_parser
 
     parser = build_parser()
     args = parser.parse_args([
         "mine", "team", "--start", "20220101", "--end", "20220630",
     ])
-    assert args.leaf_scheduler is False
-    args_on = parser.parse_args([
-        "mine", "team", "--start", "20220101", "--end", "20220630", "--leaf-scheduler",
+    # 默认开：无关闭旗标 → handler 里 leaf_scheduler = not no_leaf_scheduler = True
+    assert getattr(args, "no_leaf_scheduler", False) is False
+    args_off = parser.parse_args([
+        "mine", "team", "--start", "20220101", "--end", "20220630",
+        "--no-leaf-scheduler",
     ])
-    assert args_on.leaf_scheduler is True
+    assert args_off.no_leaf_scheduler is True

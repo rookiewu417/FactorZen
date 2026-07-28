@@ -78,7 +78,7 @@ holdout 段与训练/验证期严格分离，用于最终验收。
 |---|---|---|
 | `DEFAULT_LIFT_THRESHOLD` | `0.001` | lift 绝对门槛下界 |
 | `DEFAULT_HOLDOUT_MIN_DAYS` | `60` | holdout 最少天数 |
-| lift `se_mult` | `1.0` | 准入的 SE 倍数 |
+| lift `se_mult` | `1.645` | 准入的 SE 倍数（调用方默认；`lift_admission()` 形参默认仍 `1.0`） |
 | forward `se_mult` | `1.645` | 向前复审的 SE 倍数（单侧 95%） |
 | forward `min_days` | `60` | 向前确认最少天数 |
 | CV 默认 | `train=250, test=40, purge=5, embargo=0` | lift 交叉验证 |

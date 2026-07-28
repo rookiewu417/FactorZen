@@ -97,6 +97,22 @@ def test_dsr_parity_node_suite(_stub_holdout):
 
     _section_0_test_cross_path_parity_m1_delegates_to_shared()
 
+    # -- 回归：_stub_holdout 的桩不得经 mining_session 顶层 from-import 别名泄漏出去 --
+    # _section_0 在打桩窗口内导入 mining_session；若那是本 worker 的首次导入，模块体的
+    # `from ...scoring import max_correlation` 会把桩绑成别名，teardown 还原不到 →
+    # 同 worker 后续 run_session 测试全崩（-n auto 下随机复发）。
+    def _section_0b_stub_must_not_leak_into_mining_session_alias():
+        from factorzen.discovery import mining_session
+        for name in ("max_correlation", "library_orthogonal_check", "holdout_ic_result",
+                     "acceptance_reasons", "build_library_panel", "compute_residual_ic"):
+            fn = getattr(mining_session, name)
+            assert fn.__qualname__ == name, (
+                f"stub 泄漏进 mining_session.{name}（实为 {fn.__qualname__}）："
+                f"打桩必须晚于 mining_session 首次导入"
+            )
+
+    _section_0b_stub_must_not_leak_into_mining_session_alias()
+
     # -- 原 test_node_guardrails_pbo_is_a_probability_when_pool_is_big_enough --
     def _section_1_test_node_guardrails_pbo_is_a_probability_when_pool_is_big_enough():
         state = _run_guardrails_with(n_candidates=3)
@@ -335,10 +351,27 @@ def _stub_holdout(monkeypatch):
     """把 holdout 关卡固定为「同号且 CI 方向正确」，隔离出 DSR 这一关。
 
     只 stub holdout（外部关卡），DSR 走真实 `deflated_sharpe`——被测的就是它的入参。
+
+    打桩顺序不可调换：必须先把 `mining_session` 导入完毕再 setattr。本 suite 的
+    `_section_0` 会在打桩窗口内执行 `from factorzen.discovery.mining_session import
+    _guard_passed`，而 tests/agents 下**所有** mining_session 的 import 都是函数内懒加载
+    （collection 阶段进不了 sys.modules）。若模块体首次执行落在窗口内，它顶层的
+    `from factorzen.discovery.scoring import (..., max_correlation, ...)` 会把 stub 固化成
+    别名 `mining_session.max_correlation`——monkeypatch teardown 只还原
+    `scoring.max_correlation`，管不到这个别名，于是同 worker 后续任何跑 `run_session` 的
+    测试都会在 `mining_session.py` 的 `max_correlation(fdf, pool, panel=sel_panel)` 上崩。
+    谁先导入 mining_session 取决于 xdist 的 `--dist load` 负载均衡（本 env 未装
+    pytest-randomly，随机性纯来自调度），故只在 `-n auto` 下随机复发；串行时按文件名序
+    `test_deflation_objective.py` 先一步导入了 mining_session，所以永远绿。
     """
+    import factorzen.discovery.mining_session  # noqa: F401  # 见 docstring：必须早于 setattr
+
     monkeypatch.setattr("factorzen.validation.holdout.holdout_ic",
                         lambda *a, **k: (0.05, 0.5, (0.01, 0.09)))
-    monkeypatch.setattr("factorzen.discovery.scoring.max_correlation", lambda fdf, pool: 0.0)
+    # 签名必须跟住 scoring.max_correlation 的真实签名（含 panel 关键字），
+    # 否则调用方走矩阵化路径时 stub 直接 TypeError。
+    monkeypatch.setattr("factorzen.discovery.scoring.max_correlation",
+                        lambda factor_df, pool, panel=None: 0.0)
 
 
 # ==== 来自 test_dsr_sidedness.py ====

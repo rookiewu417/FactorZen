@@ -1115,3 +1115,210 @@ def test_p6_prepare_agent_mining_data_defaults_to_no_trim():
         mp.setattr(fm, "prepare_mining_daily", _fake_prepare)
         cli_main._prepare_agent_mining_data(ns2)
     assert set(seen["keep_leaves"]) == {"close", "vol"}
+
+
+# ── P7：rebuild 帧生命周期收敛（prepped 单例 + daily 及早释放）────────────────
+
+
+def _p7_lib_record(expr: str, **kw):
+    from factorzen.discovery.factor_library import FactorRecord
+
+    base = dict(
+        expression=expr, market="ashare", status="active", admission_track="lift",
+        ic_train=0.05, holdout_ic=0.04, n_train=60, horizon=5,
+    )
+    base.update(kw)
+    return FactorRecord(**base)  # type: ignore[arg-type]
+
+
+def test_p7_evaluator_external_prepped_golden_parity():
+    """``build_library_evaluator(prepped=...)`` 与内部自 prep 路径**逐值等价**。
+
+    判别力：拿内部自 prep 路径当 golden，逐字段比 evaluate 输出的全部指标 +
+    compact 矩阵逐元素；同时断言外部注入路径**一次都不调** ``_preprocess_daily``
+    （否则「复用」是假的，内存不会降）。
+    """
+    import factorzen.discovery.evaluation as ev
+    from factorzen.discovery.evaluation import _preprocess_daily
+    from factorzen.discovery.factor_library import build_library_evaluator
+
+    daily = _mock_daily(n_stocks=40, n_days=120, seed=5)
+    dates = sorted(daily["trade_date"].unique().to_list())
+    eval_start = dates[25].strftime("%Y%m%d")
+    exprs = ["rank(close)", "ts_mean(close, 5)", "sub(vwap, delay(vwap, 1))"]
+
+    ev_a, compact_a = build_library_evaluator(daily, eval_start=eval_start)
+    rows_a = ev_a(exprs)
+
+    prepped = _preprocess_daily(daily, None).sort(["ts_code", "trade_date"])
+    calls: list[int] = []
+    real = ev._preprocess_daily
+    with pytest.MonkeyPatch.context() as mp:
+        def _counting(*a, **k):
+            calls.append(1)
+            return real(*a, **k)
+
+        mp.setattr(ev, "_preprocess_daily", _counting)
+        ev_b, compact_b = build_library_evaluator(
+            None, eval_start=eval_start, prepped=prepped,
+        )
+        rows_b = ev_b(exprs)
+
+    assert calls == [], f"注入 prepped 后仍 prep 了 {len(calls)} 次"
+    assert len(rows_a) == len(rows_b) > 0
+    by_a = {r["expression"]: r for r in rows_a}
+    by_b = {r["expression"]: r for r in rows_b}
+    assert set(by_a) == set(by_b)
+    # 恒真防护：golden 侧必须真的算出了非平凡指标
+    assert any(r["ic_train"] not in (None, 0.0) for r in rows_a)
+    for e, ra in by_a.items():
+        rb = by_b[e]
+        assert set(ra) == set(rb), e
+        for k, va in ra.items():
+            vb = rb[k]
+            if isinstance(va, float) and va != va:
+                assert isinstance(vb, float) and vb != vb, f"{e}.{k}: {va} vs {vb}"
+            else:
+                assert va == vb, f"{e}.{k}: {va} vs {vb}"
+
+    for e in exprs:
+        ma, mb = compact_a(e), compact_b(e)
+        assert (ma is None) == (mb is None), e
+        if ma is not None:
+            assert ma.shape == mb.shape and ma.dtype == mb.dtype, e
+            assert np.array_equal(ma, mb, equal_nan=True), f"compact 矩阵漂移: {e}"
+
+
+def test_p7_cli_rebuild_preps_frame_once(tmp_path):
+    """``factor-library rebuild`` 全链路只 ``_preprocess_daily`` 一次。
+
+    三个消费方（evaluator / 复审物化器 / rebuild 内 lift 复审 ctx）共用同一份
+    prepped。判别力：修复前这条链会 prep 3 次（外加 evaluate 每批一次），
+    三份全宽帧叠加正是 OOM 成因。走 ``--only``（fresh=False）保证库内 active
+    留存 → 复审物化器真的被调到，三个消费方全覆盖。
+    """
+    import factorzen.cli.main as cli_main
+    import factorzen.discovery.evaluation as ev
+    from factorzen.cli.main import build_parser
+    from factorzen.discovery import factor_library as fl
+    from factorzen.discovery.factor_library import _save_library
+
+    daily = _mock_daily(n_stocks=40, n_days=120, seed=11)
+    dates = sorted(daily["trade_date"].unique().to_list())
+    start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
+    _save_library(
+        "ashare",
+        [_p7_lib_record("rank(close)"), _p7_lib_record("rank(vol)")],
+        root=str(tmp_path),
+    )
+
+    mat_calls: list[str] = []
+    calls: list[str] = []
+    real = ev._preprocess_daily
+    with pytest.MonkeyPatch.context() as mp:
+        def _counting(*a, **k):
+            calls.append("prep")
+            return real(*a, **k)
+
+        mp.setattr(ev, "_preprocess_daily", _counting)
+        mp.setattr(cli_main, "_prepare_agent_mining_data",
+                   lambda args: (daily, None, {}))
+        mp.setattr(fl, "collect_source_expressions", lambda market: ["rank(close)"])
+        mp.setattr(fl, "DEFAULT_ROOT", str(tmp_path), raising=False)
+
+        orig_rebuild = fl.rebuild
+
+        def _rebuild(*a, **kw):
+            kw.setdefault("root", str(tmp_path))
+            mat = kw.get("materialize")
+            if mat is not None:
+                def _spy_mat(expr, _m=mat):
+                    mat_calls.append(expr)
+                    return _m(expr)
+
+                kw["materialize"] = _spy_mat
+            return orig_rebuild(*a, **kw)
+
+        mp.setattr(fl, "rebuild", _rebuild)
+        args = build_parser().parse_args([
+            "factor-library", "rebuild", "--market", "ashare",
+            "--universe", "csi300", "--start", start, "--end", end,
+            "--only", "rank(close)",
+        ])
+        args.library_root = str(tmp_path)
+        cli_main._cmd_factor_library_rebuild(args)
+
+    # 恒真防护：复审物化器必须真的被调到，否则「只 prep 一次」是因为没走到那条路
+    assert mat_calls, "复审物化器未被调用，本用例覆盖不到第三个消费方"
+    assert len(calls) == 1, f"rebuild 链路 prep 了 {len(calls)} 次（应恰好 1 次）"
+
+
+def test_p7_rebuild_materializer_reuses_prepped_values_match():
+    """复审物化器复用 CLI 单例 prepped 后，物化结果与「自己 prep」旧路径逐值一致。"""
+    from factorzen.discovery.evaluation import _preprocess_daily
+    from factorzen.discovery.lift_test import (
+        _default_materializer,
+        _materializer_from_prepped,
+    )
+
+    daily = _mock_daily(n_stocks=40, n_days=90, seed=13)
+    prepped = _preprocess_daily(daily, None).sort(["ts_code", "trade_date"])
+    reuse = _materializer_from_prepped(prepped, None)
+    legacy = _default_materializer(daily, None)
+    for e in ("rank(close)", "ts_mean(vol, 5)", "sub(vwap, delay(vwap, 1))"):
+        a = reuse(e).sort(["ts_code", "trade_date"])
+        b = legacy(e).sort(["ts_code", "trade_date"])
+        assert a.height == b.height > 0, e
+        assert a["factor_value"].to_list() == b["factor_value"].to_list(), e
+
+
+def test_p7_rebuild_prepped_arg_matches_daily_path(tmp_path):
+    """``fl.rebuild(prepped=...)`` 与 ``daily=...`` 旧路径产出的库记录逐值一致。"""
+    import factorzen.discovery.evaluation as ev
+    from factorzen.discovery.evaluation import _preprocess_daily
+    from factorzen.discovery.factor_library import (
+        _save_library,
+        build_library_evaluator,
+        load_library,
+        rebuild,
+    )
+
+    daily = _mock_daily(n_stocks=40, n_days=120, seed=17)
+    dates = sorted(daily["trade_date"].unique().to_list())
+    start, end = dates[0].strftime("%Y%m%d"), dates[-1].strftime("%Y%m%d")
+    prepped = _preprocess_daily(daily, None).sort(["ts_code", "trade_date"])
+
+    def _run(root, **rebuild_kw):
+        _save_library("ashare", [_p7_lib_record("rank(close)")], root=str(root))
+        evaluate, compact = build_library_evaluator(
+            daily, eval_start=start, prepped=rebuild_kw.get("prepped"),
+        )
+        rebuild("ashare", sources=["rank(close)"], eval_window=(start, end),
+                universe="csi300", horizon=5, evaluate=evaluate,
+                compact_materialize=compact, git_sha="x", now="2026-07-28",
+                root=str(root), fresh=False, **rebuild_kw)
+        return {r.expression: r for r in load_library("ashare", root=str(root))}
+
+    a_root, b_root = tmp_path / "a", tmp_path / "b"
+    a_root.mkdir()
+    b_root.mkdir()
+    got_a = _run(a_root, daily=daily)
+
+    calls: list[str] = []
+    real = ev._preprocess_daily
+    with pytest.MonkeyPatch.context() as mp:
+        def _counting(*a, **k):
+            calls.append("prep")
+            return real(*a, **k)
+
+        mp.setattr(ev, "_preprocess_daily", _counting)
+        got_b = _run(b_root, prepped=prepped)
+
+    assert calls == [], f"注入 prepped 后 rebuild 仍 prep 了 {len(calls)} 次"
+    assert set(got_a) == set(got_b) and got_a
+    for e, ra in got_a.items():
+        da, db = ra.__dict__.copy(), got_b[e].__dict__.copy()
+        for k in ("added_at", "updated_at"):
+            da.pop(k, None)
+            db.pop(k, None)
+        assert da == db, e

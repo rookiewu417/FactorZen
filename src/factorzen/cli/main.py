@@ -1374,6 +1374,7 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     from factorzen.core.experiment import get_git_sha
     from factorzen.discovery import factor_library as fl
     from factorzen.discovery.backtest_window import default_window
+    from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.validation.holdout import split_holdout
 
     market = args.market
@@ -1465,29 +1466,58 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     leaf_map = profile.factors.leaf_features() if profile is not None else None
     if not sources:
         print(f"[factor-library] 提示：未从历史产物收集到 {market} 候选（将产出空库文件）")
+    # ── prepped 单例（rebuild 帧生命周期收敛）──────────────────────────────────
+    # 这条链上曾有**四份**同源全宽帧同时在世：raw 装配帧 `daily` + evaluator 内 prep
+    # + 复审物化器 prep + `fl.rebuild` 内 lift 复审 ctx 的 prep，全 A × 多年实测被
+    # 内核 OOM-kill（anon-rss 18-19G）。此处 prep **一次**，raw 帧当场释放，三个
+    # 消费方共用同一份——它们要的形态本来就完全相同
+    # （`_preprocess_daily(daily, profile).sort(["ts_code","trade_date"])`）。
+    # prep 失败（缺列的退化帧/测试桩）→ 回退旧路径，各消费方各自 prep，行为零回归。
+    prepped: pl.DataFrame | None = None
+    try:
+        prepped = _preprocess_daily(daily, profile)
+    except Exception as exc:
+        print(
+            f"[factor-library] 装配帧预处理失败（{type(exc).__name__}: {exc}），"
+            f"回退为各消费方各自预处理",
+            file=sys.stderr,
+        )
+    else:
+        # 先丢 raw 再 sort：sort 是拷贝，瞬时峰值从 daily+2×prepped 降到 2×prepped
+        daily = None
+        prepped = prepped.sort(["ts_code", "trade_date"])
     evaluate, compact_materialize = fl.build_library_evaluator(
         daily,
         holdout_ratio=args.holdout_ratio,
         eval_start=start,
         leaf_map=leaf_map,
         profile=profile,
+        prepped=prepped,
     )
     # lift 复审评分窗 = single 轨 evaluator 的 holdout 尾段（同 split_holdout 口径）
-    # build_library_evaluator 内部：sample = prepped[trade_date>=eval_start] 再 split；
-    # prep 不改 trade_date 集合，这里对 daily 同边界切分即可复用同一 holdout 起止。
+    # build_library_evaluator 内部：按 [trade_date>=eval_start] 的日期集切 holdout；
+    # prep 不改 trade_date 集合，这里同边界切分即可复用同一 holdout 起止。
+    # **只投影 trade_date 一列**：split_holdout 只读它，全宽切分会白造两份全宽副本。
     es_date = _dt.strptime(start, "%Y%m%d").date() if start else None
-    sample = daily if es_date is None else daily.filter(pl.col("trade_date") >= es_date)
+    _dates_only = (prepped if prepped is not None else daily).select(["trade_date"])
+    sample = _dates_only if es_date is None else _dates_only.filter(
+        pl.col("trade_date") >= es_date
+    )
     _, holdout_df, holdout_start = split_holdout(
         sample,
         holdout_ratio=float(args.holdout_ratio),
     )
+    del _dates_only, sample
     lift_adm_start = _lift_admission_str(holdout_start)
     lift_adm_end = _lift_admission_str(holdout_df["trade_date"].max())
+    del holdout_df
 
     # lift 复审 active 池物化：透传 python_universe（expression + py:: 统一入口）。
-    # 惰性构建：只有 rebuild 真调物化（存在 lift 轨复审 + active 记录）才 prep——
-    # ①无复审的 rebuild 不多付一次 prep；②退化帧（缺列的小样本/测试）prep 失败
+    # 惰性构建：只有 rebuild 真调物化（存在 lift 轨复审 + active 记录）才建——
+    # ①无复审的 rebuild 不多付一次构建；②退化帧（缺列的小样本/测试）prep 失败
     # 降级为 materialize 恒 None（旧行为），不许在 CLI 层直接崩。
+    # 帧来源：优先复用上面的单例 `prepped`（不再自造第二份全宽帧）；单例缺席
+    # （prep 失败的回退路径）才对 raw 帧现 prep。
     def _make_lazy_rebuild_materializer():
         state: dict = {"mat": None, "failed": False}
 
@@ -1496,10 +1526,14 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
                 return None
             if state["mat"] is None:
                 try:
-                    from factorzen.discovery.evaluation import _preprocess_daily
                     from factorzen.discovery.lift_test import _materializer_from_prepped
 
-                    prepped_mat = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
+                    prepped_mat = (
+                        prepped if prepped is not None
+                        else _preprocess_daily(daily, profile).sort(
+                            ["ts_code", "trade_date"]
+                        )
+                    )
                     state["mat"] = _materializer_from_prepped(
                         prepped_mat,
                         leaf_map,
@@ -1533,6 +1567,7 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
         leaf_map=leaf_map,
         decorr_threshold=args.decorr_threshold,
         daily=daily,
+        prepped=prepped,
         profile=profile,
         admission_start=lift_adm_start,
         admission_end=lift_adm_end,

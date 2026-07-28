@@ -1766,8 +1766,17 @@ def _build_ret_panel(
     from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
 
     price_col = "close_adj" if "close_adj" in daily.columns else "close"
+    # 先投影再 sort：`sort` 是全量拷贝，而 compute_fwd_returns 只读键 + 价列
+    # （输出也只保留 fwd_ret_*）。全宽 prepped 上原地 sort 会多造一份全宽副本，
+    # 是 rebuild 复审期峰值的一大块。语义零变化。
+    _keep = ["trade_date", "ts_code", price_col]
+    if exec_price_col:
+        _keep.append(exec_price_col)
+    if "ret_1d" in daily.columns:
+        _keep.append("ret_1d")
+    _src = daily.select([c for c in dict.fromkeys(_keep) if c in daily.columns])
     fwd = compute_fwd_returns(
-        daily.sort(["ts_code", "trade_date"]), horizons=[horizon], price_col=price_col,
+        _src.sort(["ts_code", "trade_date"]), horizons=[horizon], price_col=price_col,
         exec_lag=exec_lag, exec_price_col=exec_price_col,
     )
     return (

@@ -2142,9 +2142,10 @@ def collect_source_expressions(
 
 
 def build_library_evaluator(
-    daily: pl.DataFrame, *, holdout_ratio: float = 0.2, eval_start: str | None = None,
+    daily: pl.DataFrame | None, *, holdout_ratio: float = 0.2, eval_start: str | None = None,
     leaf_map: dict[str, str] | None = None, profile=None,
     batch_size: int = DEFAULT_EVAL_BATCH, decorr_max_dates: int = DEFAULT_DECORR_MAX_DATES,
+    prepped: pl.DataFrame | None = None,
 ) -> tuple[Callable[[list[str]], list[dict]], CompactMaterializer]:
     """在给定 ``daily``（含预热前缀）上构造 ``(evaluate, compact_materialize)`` 供 `rebuild`。
 
@@ -2156,19 +2157,45 @@ def build_library_evaluator(
     （批间释放，不一次性把数百表达式全塞 `evaluate_expressions`）；holdout 全帧面板逐表达式瞬态
     （算完即弃，不缓存）；去相关走 ``compact_materialize``（紧凑 float32 矩阵，单因子只驻小矩阵，
     见 `make_compact_materializer`），内存随因子数有界而非随因子数爆。
+
+    ``prepped``：可选的**已 `_preprocess_daily` 并 sort(ts_code, trade_date)** 的帧。
+    ``None``（默认）→ 内部对 ``daily`` 自 prep，既有调用方逐字节零回归。非 ``None`` →
+    跳过内部 prep 并**透传给 `evaluate_expressions`**（消灭每批一次的 re-prep），
+    此时 ``daily`` 可为 ``None``（CLI rebuild 就是 prep 完立刻释放 raw 装配帧）。
+    契约同 `evaluate_expressions`：须与 ``daily``/profile 同源。
     """
     from datetime import datetime as _dt
 
     from factorzen.discovery.evaluation import _preprocess_daily, evaluate_expressions
     from factorzen.discovery.guardrails import DeflationBasis, deflated_pvalue
     from factorzen.discovery.scoring import DataBundle
-    from factorzen.validation.holdout import holdout_ic_result, split_holdout
+    from factorzen.validation.holdout import holdout_boundary, holdout_ic_result
 
-    prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
+    # 注入路径把同一份帧透传到 evaluate_expressions；自 prep 路径保持旧行为（不透传）
+    eval_prepped = prepped
+    if prepped is None:
+        if daily is None:
+            raise ValueError("build_library_evaluator 需要 daily 或 prepped 之一")
+        prepped = _preprocess_daily(daily, profile).sort(["ts_code", "trade_date"])
+    eval_daily = daily if daily is not None else prepped
     es_date = _dt.strptime(eval_start, "%Y%m%d").date() if eval_start else None
-    sample = prepped if es_date is None else prepped.filter(pl.col("trade_date") >= es_date)
-    mining_df, holdout_df, holdout_start = split_holdout(sample, holdout_ratio=holdout_ratio)
-    bundle = DataBundle.build(mining_df)
+    # 切窗**不落全宽中间帧**：`sample`（近全宽 filter 副本）与 `split_holdout` 的
+    # mining/holdout 两份全宽副本，叠在常驻 prepped 上就是三份全宽帧。等价改写为
+    # 「先按日期算边界，再在 select 好的窄帧上 filter」——语义与
+    # `split_holdout(sample)` 逐值一致（它只读 trade_date 切分），内存降一个量级。
+    _all_dates = sorted(prepped["trade_date"].unique().to_list())
+    _dates = _all_dates if es_date is None else [d for d in _all_dates if d >= es_date]
+    holdout_start = holdout_boundary(_dates, holdout_ratio)
+    # bundle / holdout IC 的消费面只需键 + 价列（`compute_fwd_returns` 只读它们，
+    # 输出也只保留 fwd_ret_*），窄帧化后 mining/holdout 段不再各拖一份全宽副本。
+    _px = [c for c in ("close_adj", "close", "ret_1d") if c in prepped.columns]
+    _narrow = prepped.select(["trade_date", "ts_code", *_px])
+    _mining_mask = pl.col("trade_date") < holdout_start
+    if es_date is not None:
+        _mining_mask = _mining_mask & (pl.col("trade_date") >= es_date)
+    holdout_df = _narrow.filter(pl.col("trade_date") >= holdout_start)
+    bundle = DataBundle.build(_narrow.filter(_mining_mask))
+    del _narrow
     train_end = _dt.strptime(bundle.train_end, "%Y%m%d").date()
 
     def _holdout_ic_of(expr: str):
@@ -2198,8 +2225,9 @@ def build_library_evaluator(
         # 分批评估：批间 evaluate_expressions 的 prepped/中间帧被释放，内存不随候选总数增长。
         for i in range(0, len(exprs), max(1, batch_size)):
             batch = exprs[i:i + max(1, batch_size)]
-            results = evaluate_expressions(batch, daily, bundle, eval_start=es_date,
-                                           eval_end=train_end, profile=profile)
+            results = evaluate_expressions(batch, eval_daily, bundle, eval_start=es_date,
+                                           eval_end=train_end, profile=profile,
+                                           prepped=eval_prepped)
             for r in results:
                 if r["ic_train"] is None:  # 编译失败/预热不足/死表达式 → 不入候选
                     continue
@@ -2234,6 +2262,7 @@ def rebuild(
     lift_runner: Callable[..., list[dict]] | None = None,
     active_factor_dfs: dict[str, pl.DataFrame] | None = None,
     daily: pl.DataFrame | None = None,
+    prepped: pl.DataFrame | None = None,
     lift_threshold: float = DEFAULT_LIFT_THRESHOLD,
     # P1（R1 2026-07-28）：调用方默认 1.0 → 1.645。CLI `factor-library rebuild`
     # **不传** se_mult，用的就是这个默认——留 1.0 会让三个 lift_admission 消费方
@@ -2269,6 +2298,8 @@ def rebuild(
 
     注入点：``lift_runner(cands, *, active_factor_dfs, **kw) -> list[dict]``；
     残差口径（``residual_ic_v1``）无 combine_fn；``active_factor_dfs`` / ``daily`` 供生产默认路径。
+    ``prepped``：可选的已 ``_preprocess_daily``+sort 帧；传入时复审 ctx 直接复用它、
+    **不再自 prep**（``daily`` 可为 ``None``），避免与 CLI/evaluator 的同源帧三份叠加。
     落 ``rebuild_{market}_manifest.json``（窗口/源/git_sha/时间 + lift 复审计数，可复现）。
 
     ── 定向重估 ``only`` ────────────────────────────────────────────────────
@@ -2460,10 +2491,10 @@ def rebuild(
 
             runner = lift_runner
             if runner is None:
-                # 生产默认：run_lift_tests（需 daily）+ LiftEvalContext
-                if daily is None:
+                # 生产默认：run_lift_tests（需 daily 或已 prep 帧）+ LiftEvalContext
+                if daily is None and prepped is None:
                     raise RuntimeError(
-                        "lift 轨复审需要 lift_runner 或 daily（默认 run_lift_tests）"
+                        "lift 轨复审需要 lift_runner 或 daily/prepped（默认 run_lift_tests）"
                     )
                 from factorzen.discovery.evaluation import _preprocess_daily
                 from factorzen.discovery.lift_test import (
@@ -2471,10 +2502,17 @@ def rebuild(
                     run_lift_tests,
                 )
 
-                # prep 一次；按 horizon 缓存 ctx（ret panel 依赖 horizon，不可共享）
-                prepped = _preprocess_daily(daily, profile).sort(
-                    ["ts_code", "trade_date"]
-                )
+                # prep 一次；按 horizon 缓存 ctx（ret panel 依赖 horizon，不可共享）。
+                # 调用方已给同源 prepped（CLI rebuild）时直接复用——这条链上
+                # evaluator / 复审物化器 / 本 ctx 三处曾各造一份全宽帧，实测 OOM。
+                if prepped is not None:
+                    _prepped = prepped
+                else:
+                    assert daily is not None  # 上面的守卫已排除两者皆 None
+                    _prepped = _preprocess_daily(daily, profile).sort(
+                        ["ts_code", "trade_date"]
+                    )
+                _lift_daily = daily if daily is not None else _prepped
                 profile_name = (
                     getattr(profile, "name", None) if profile is not None else None
                 )
@@ -2486,7 +2524,7 @@ def rebuild(
                     if h not in ctx_by_h:
                         ctx_by_h[h] = LiftEvalContext(
                             market=market,
-                            prepped=prepped,
+                            prepped=_prepped,
                             leaf_map=leaf_map,
                             horizon=int(h),
                             admission_start=admission_start,
@@ -2512,7 +2550,9 @@ def rebuild(
                     return run_lift_tests(
                         cands,
                         market=market,
-                        daily=daily,
+                        # ctx 非 None 时 run_lift_tests 完全不读 daily（池/收益/物化器
+                        # 三处全走 ctx.prepped）；此处仅为满足签名
+                        daily=_lift_daily,
                         leaf_map=leaf_map,
                         library_root=root,
                         top_m=None,

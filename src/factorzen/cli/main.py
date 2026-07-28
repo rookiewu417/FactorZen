@@ -956,6 +956,7 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
     from factorzen.discovery.factor_library import (
         build_library_pool,
         library_file_hash,
+        library_pool_required_columns,
         python_pool_cache_key,
         write_pool_cache,
     )
@@ -1012,6 +1013,30 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
 
         market = getattr(profile, "name", None) or getattr(args, "market", "ashare") or "ashare"
         lib_root = args.library_root or str(Path(args.index_path).parent / "factor_library")
+
+        # ── prepped 帧裁列（本子进程独占持有该帧，构建期 OOM 修复之一）──────────
+        # 保留列集 = library_pool_required_columns（键列 ∪ 库表达式引用的叶列）。
+        # 依据：evaluate_materialized 入口本就自裁到同一列集、python 记录只用键列，
+        # 所以裁列**不改变任何求值结果**，只砍掉子进程长期持有的字节
+        # （all_a 10.7M 行 × 全部叶列 f64 估 6-9G，是 OOM 三项叠加中最大的一项；
+        #   build_library_pool 入口的 sort(["ts_code","trade_date"]) 全列复制成本同比下降）。
+        # polars select 与原帧共享 buffer：重绑定后旧帧引用归零，被裁掉的列真正释放，
+        # 保留列不复制。build 之后本函数只再用 height / trade_date min-max（都保留）。
+        # **与 team_orchestrator.run_team_agent 的差异（故意不成对改）**：那侧
+        # session_prepped 被整个 session 共享（挖掘搜索、评估、残差都要全部叶列），
+        # 裁了不省内存反而会崩后续求值；本裁剪只在池预构建子进程入口成立。
+        _keep_cols = library_pool_required_columns(
+            market, ctx.leaf_map, statuses=("active",), root=lib_root,
+        )
+        _sel_cols = [c for c in session_prepped.columns if c in _keep_cols]
+        if len(_sel_cols) < len(session_prepped.columns):
+            print(
+                f"[pool-prebuild] prepped 裁列 {len(session_prepped.columns)}"
+                f" → {len(_sel_cols)}（库表达式引用叶列 + 键列）",
+                flush=True,
+            )
+            session_prepped = session_prepped.select(_sel_cols)
+
         # 强制 compact（与父进程装载 CompactLibraryPool 契约一致）
         # universe：库含 python 记录时物化必需（与 run_team_agent 池调用同口径）
         _pool_universe = getattr(args, "universe", None)

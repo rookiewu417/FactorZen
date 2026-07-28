@@ -800,6 +800,11 @@ def run_team_agent(
             # 全 A 9.57M 行时池行数 -24%(≈-1.6G),None 时不裁零回归。
             # cache_dir:CLI pool-prebuild 子进程产物;命中/未命中日志在 build_library_pool 内。
             # 池前序列(prep→剪叶→build_library_pool)与 _cmd_pool_prebuild 同源——改一侧必查另一侧。
+            # **已知的一处故意不成对**:_cmd_pool_prebuild 在 build 前把 session_prepped 裁到
+            # library_pool_required_columns(键列 ∪ 库表达式叶列)。那是纯构建输入优化(不改语义:
+            # evaluate_materialized 入口本就只读这些列),前提是**该子进程独占持有帧、build 完就退**。
+            # 这里的 session_prepped 被整个 session 共享(挖掘搜索/评估/残差都要全部叶列),
+            # 裁了既不省内存又会崩后续求值 → 本侧不做、也不需要做同样的裁剪。
             lib_pool = build_library_pool(
                 market, session_prepped, ctx.leaf_map, root=lib_root,
                 eval_start=_eval_start_date,

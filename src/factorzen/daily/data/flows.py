@@ -31,6 +31,7 @@ lag 均在 attach 层按 ts_code 组内交易日序 ``shift(1)`` 结构性完成
 from __future__ import annotations
 
 import warnings
+from collections.abc import Iterable
 
 import polars as pl
 
@@ -90,18 +91,33 @@ _NET_AMOUNT_TO_YUAN = 1e4  # top_list net_amount 万元
 _TOPLIST_EMPTY_CODE = "__EMPTY__"  # fetch 空日 sentinel，attach 过滤
 
 
-def attach_flows(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame] | None = None) -> pl.DataFrame:
+def attach_flows(
+    daily: pl.DataFrame,
+    *,
+    injected: dict[str, pl.DataFrame] | None = None,
+    keep: Iterable[str] | None = None,
+) -> pl.DataFrame:
     """把资金流/北向/两融/龙虎榜日频信号按 (trade_date, ts_code) join 进日线帧,作为叶子列。
 
     缺数据 / 读取失败 → 原样返回,缺的叶子补 null(表达式引用到时得 null 而非 KeyError)。
     ``injected``:``{分区名: DataFrame}`` 供测试注入,绕过 parquet 读取。
     两融/龙虎榜在 join 前对源列做组内 lag(1)；龙虎榜对已知日条件 fill 0。
+
+    ``keep``(默认 ``None`` = 全部叶子,零回归):只 attach 这些资金流叶。与白名单交集为空
+    的**子源整个跳过** —— 尤其 ``_attach_toplist`` 末尾有一次全帧 ``sort``（全 A 级
+    ~5G 复制），跳掉它是装配期内存的大头。
+    ``margin_ratio`` / ``margin_buy_ratio`` 的分母取自 daily 帧的 ``circ_mv`` / ``amount``；
+    调用方裁列时必须一并保留（见 `preparation.CROSS_SOURCE_LEAF_DEPS`），否则这里会
+    **静默**走 denom_cols 空分支、根本不产出该叶。
     """
     if daily.is_empty() or "trade_date" not in daily.columns:
         return daily
     injected = injected or {}
+    keep_set = None if keep is None else set(keep)
     # 仅处理 plain flow 源(两融/龙虎榜走专用路径)
     plain = sorted(FLOW_FEATURES - MARGIN_FEATURES - TOPLIST_FEATURES)
+    if keep_set is not None:
+        plain = [leaf for leaf in plain if leaf in keep_set]
     by_part: dict[str, list[tuple[str, str]]] = {}
     for leaf in plain:
         part, col = _FLOW_SOURCES[leaf]
@@ -120,12 +136,19 @@ def attach_flows(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame] | Non
         sel = _dedup_join_key(sel, source=part)
         daily = daily.join(sel, on=["trade_date", "ts_code"], how="left")
 
-    daily = _attach_margin(daily, injected=injected)
-    daily = _attach_toplist(daily, injected=injected)
-    return _ensure_flow_cols(daily)
+    if keep_set is None or (MARGIN_FEATURES & keep_set):
+        daily = _attach_margin(daily, injected=injected, keep=keep_set)
+    if keep_set is None or (TOPLIST_FEATURES & keep_set):
+        daily = _attach_toplist(daily, injected=injected, keep=keep_set)
+    return _ensure_flow_cols(daily, keep_set)
 
 
-def _attach_margin(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) -> pl.DataFrame:
+def _attach_margin(
+    daily: pl.DataFrame,
+    *,
+    injected: dict[str, pl.DataFrame],
+    keep: set[str] | None = None,
+) -> pl.DataFrame:
     """两融叶子:源日**同日**算比值 → 全部叶子整体 lag(1) → left-join。
 
     披露时点:T 日两融 T+1 早间披露 → t 日信号 = t-1 日的两融状态/参与度。
@@ -180,8 +203,10 @@ def _attach_margin(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) ->
             .otherwise(None).alias("margin_buy_ratio")
         )
     sel = sel.with_columns(exprs)
-    leaf_cols = [c for c in ("margin_balance", "short_balance",
-                             "margin_ratio", "margin_buy_ratio") if c in sel.columns]
+    leaf_cols = [
+        c for c in ("margin_balance", "short_balance", "margin_ratio", "margin_buy_ratio")
+        if c in sel.columns and (keep is None or c in keep)
+    ]
     if not leaf_cols:
         return daily
     # 全部叶子整体 lag(1):按 ts_code 组内交易日序 shift,首日 null(披露 T+1)
@@ -191,7 +216,12 @@ def _attach_margin(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) ->
     return daily.join(sel, on=["trade_date", "ts_code"], how="left")
 
 
-def _attach_toplist(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) -> pl.DataFrame:
+def _attach_toplist(
+    daily: pl.DataFrame,
+    *,
+    injected: dict[str, pl.DataFrame],
+    keep: set[str] | None = None,
+) -> pl.DataFrame:
     """龙虎榜叶子:同日聚合 → 比值 → join daily → **条件 fill 0** → 整列 lag(1)。
 
     披露时点:t 日龙虎榜 t 日盘后(晚间)披露 → t 日信号只能用 t-1 上榜信息。
@@ -210,7 +240,12 @@ def _attach_toplist(daily: pl.DataFrame, *, injected: dict[str, pl.DataFrame]) -
     if df is None:
         # 保留 sentinel 行以便构建已知日集合
         df = _load_flow("top_list", _TOPLIST_SRC_COLS, keep_toplist_sentinel=True)
-    leaf_cols = ["top_list_net_buy", "top_list_flag"]
+    leaf_cols = [
+        c for c in ("top_list_net_buy", "top_list_flag")
+        if keep is None or c in keep
+    ]
+    if not leaf_cols:
+        return daily
     if df is None or df.is_empty():
         return daily.with_columns([
             pl.lit(None, dtype=pl.Float64).alias(c)
@@ -318,8 +353,13 @@ def _align_trade_date(sel: pl.DataFrame, daily: pl.DataFrame) -> pl.DataFrame:
     return sel
 
 
-def _ensure_flow_cols(daily: pl.DataFrame) -> pl.DataFrame:
-    missing = [c for c in sorted(FLOW_FEATURES) if c not in daily.columns]
+def _ensure_flow_cols(
+    daily: pl.DataFrame, keep: set[str] | None = None,
+) -> pl.DataFrame:
+    missing = [
+        c for c in sorted(FLOW_FEATURES)
+        if c not in daily.columns and (keep is None or c in keep)
+    ]
     if missing:
         daily = daily.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
     return daily

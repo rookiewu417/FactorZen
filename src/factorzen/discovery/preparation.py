@@ -104,6 +104,115 @@ _DAILY_RAW_DEAD_COLS = frozenset({"change", "pct_chg"})
 KEYS_CATEGORICAL_ROWS_THRESHOLD = 4_000_000
 
 
+# ── P6：keep_leaves 列白名单 ────────────────────────────────────────────────
+#
+# 派生叶 → 它在**装配帧**里需要的 raw 列。单一真源是
+# `discovery/derived.py:add_derived_columns`；改那边必须同步本表
+# （守卫：tests/agents/test_frame_diet.py::test_p6_derived_deps_table_is_exact
+#   逐条验充分性与必要性）。
+DERIVED_LEAF_RAW_DEPS: dict[str, frozenset[str]] = {
+    "vwap": frozenset({"amount", "vol"}),
+    "log_vol": frozenset({"vol"}),
+    "ret_1d": frozenset({"close_adj"}),
+    "amplitude": frozenset({"high", "low", "pre_close"}),
+    "intraday_ret": frozenset({"close", "open"}),
+    "overnight_ret": frozenset({"open", "pre_close"}),
+}
+
+# 跨源叶依赖：某个叶的计算要用到**别的源**产出的列，裁掉分母不会报错、只会让该叶
+# 静默消失或全 null（`flows._attach_margin` 的 denom_cols 空分支），故必须显式声明。
+CROSS_SOURCE_LEAF_DEPS: dict[str, frozenset[str]] = {
+    "margin_ratio": frozenset({"circ_mv"}),      # rzye / (circ_mv × 1e4)
+    "margin_buy_ratio": frozenset({"amount"}),   # rzmre / (amount × 1e3)
+}
+
+# 无论白名单怎么写都**必须**保留的列。理由：装配帧的下游 `_preprocess_daily` →
+# `add_derived_columns` 无条件引用这些 raw 列（缺列直接 ColumnNotFoundError）；
+# 且 `_preprocess_daily` 在 ``*_adj`` 缺失时会拿**未复权**价补别名——那是静默的
+# 值漂移，比崩掉更坏，所以复权价列一并锁死。
+MINING_MANDATORY_COLS: frozenset[str] = frozenset({
+    "trade_date", "ts_code", "in_universe",
+    "open", "high", "low", "close", "pre_close", "vol", "amount",
+    "open_adj", "high_adj", "low_adj", "close_adj",
+})
+
+
+def _trimmable_leaf_cols() -> frozenset[str]:
+    """白名单可裁掉的叶列全集（出口兜底 select 只敢动这些列）。"""
+    from factorzen.core.feature_schema import (
+        BASIC_FEATURES,
+        EXPRESS_FEATURES,
+        FLOW_FEATURES,
+        FORECAST_FEATURES,
+        FUNDAMENTAL_FEATURES,
+        HOLDER_FEATURES,
+        INTRADAY_FEATURES,
+    )
+
+    return frozenset(
+        set(BASIC_FEATURES)
+        | set(FUNDAMENTAL_FEATURES)
+        | set(HOLDER_FEATURES)
+        | set(FLOW_FEATURES)
+        | set(FORECAST_FEATURES)
+        | set(EXPRESS_FEATURES)
+        | set(INTRADAY_FEATURES)
+    ) - MINING_MANDATORY_COLS
+
+
+def resolve_keep_columns(
+    keep_leaves: Iterable[str],
+    leaf_map: dict[str, str] | None = None,
+) -> set[str]:
+    """叶名白名单 → 装配帧保留列集。
+
+    ``keep_leaves`` 取 `expression.feature_names` 的输出口径（叶**名**，如 ``close`` /
+    ``grossprofit_margin`` / ``i_rv``），经 ``leaf_map`` 映射到列名（``close`` → ``close_adj``）；
+    映射外的名字（``ix_*``、直接给的列名）原样保留。
+
+    返回列集 = 强制核心列 ∪ 白名单叶列 ∪ 派生叶 raw 依赖 ∪ 跨源叶依赖。
+    **宁多勿漏**：少给一列会让叶子静默变 null（不报错），多给一列只是多占字节。
+    """
+    from factorzen.discovery.operators import LEAF_FEATURES
+
+    lm = leaf_map if leaf_map is not None else LEAF_FEATURES
+    keep = set(MINING_MANDATORY_COLS)
+    for raw in keep_leaves:
+        leaf = str(raw)
+        keep.add(lm.get(leaf, leaf))
+        keep |= DERIVED_LEAF_RAW_DEPS.get(leaf, frozenset())
+        keep |= CROSS_SOURCE_LEAF_DEPS.get(leaf, frozenset())
+    return keep
+
+
+def _collect_daily_basic(
+    context,
+    *,
+    slim: bool,
+    keep_cols: set[str] | None,
+) -> pl.DataFrame | None:
+    """collect ``daily_basic``，列裁剪在 **lazy 链上**完成（parquet 投影下推）。
+
+    返回 ``None`` = 与白名单交集为空 → 调用方整源跳过 join。
+    ``slim=False and keep_cols is None`` 走原样 collect，逐字节零回归。
+    """
+    from factorzen.core.feature_schema import BASIC_FEATURES
+
+    lf = context.daily_basic
+    if not slim and keep_cols is None:
+        return lf.collect()
+    names = lf.collect_schema().names()
+    if slim:
+        cols = [c for c in sorted(BASIC_FEATURES) if c in names]
+    else:
+        cols = [c for c in names if c not in ("trade_date", "ts_code")]
+    if keep_cols is not None:
+        cols = [c for c in cols if c in keep_cols]
+        if not cols:
+            return None
+    return lf.select(["trade_date", "ts_code", *cols]).collect()
+
+
 def prepare_mining_daily(
     start: str,
     end: str,
@@ -116,6 +225,7 @@ def prepare_mining_daily(
     intraday_version: str = "v1",
     intraday_expr_leaves: Sequence[str] | None = None,
     slim: bool = True,
+    keep_leaves: Iterable[str] | None = None,
     categorical_keys: bool | None = None,
 ) -> pl.DataFrame:
     """Build the canonical A-share frame used by every discovery path.
@@ -140,19 +250,48 @@ def prepare_mining_daily(
     ``slim=False`` 逃生口：完整旧帧（全 basic + change/pct_chg），供对照/非挖掘复用。
     白名单依据：叶子 schema + 挖掘链 grep 消费面（见帧瘦身 mapping D2）。
 
+    ``keep_leaves``（默认 ``None`` = 不裁，完全零回归）：**本次真正会被求值的叶名集合**
+    （`expression.feature_names` 口径）。给了就按 `resolve_keep_columns` 解析成列白名单，
+    并在**源头**生效而不是出口补刀——每个 attach 源 join 前先裁到白名单交集，交集为空的
+    源整个跳过（不 join、不补 null 列）。动机是全 A × 12.5 年 rebuild 的装配期 OOM：
+    ~13M 行帧被逐步 eager join 加宽到 ~66 列，每次 join 瞬时双份，叠上源帧打满 23G 被
+    OOM killer 杀（dmesg anon-rss 19.3G）。少 join 一个源既省常驻列、也省那一次全帧复制。
+    强制核心列（`MINING_MANDATORY_COLS`）永不裁——下游 `_preprocess_daily` 无条件要它们。
+
     ``categorical_keys``：出口将 ``ts_code`` cast 为 ``pl.Categorical``（P4c）。
     - ``None``（默认）→ 仅当 ``slim`` 且 ``height >= KEYS_CATEGORICAL_ROWS_THRESHOLD`` 自动开；
     - ``True`` / ``False`` 显式开关（测试与逃生）。
     membership/basic join 在 cast **之前**完成（外部 Utf8 帧无需预先对齐）。
     跨帧 join 消费点须对小帧 cast 对齐（见 scoring._align_join_key）；落盘再转回 Utf8。
     """
-    from factorzen.core.feature_schema import BASIC_FEATURES
+    from factorzen.core.feature_schema import (
+        EXPRESS_FEATURES,
+        FLOW_FEATURES,
+        FORECAST_FEATURES,
+        FUNDAMENTAL_FEATURES,
+        HOLDER_FEATURES,
+        INTRADAY_FEATURES,
+    )
     from factorzen.core.universe import get_universe_membership, membership_hash
     from factorzen.daily.data.context import FactorDataContext
     from factorzen.discovery.search.random_search import search_space_max_lookback
 
     if lookback_days is None:
         lookback_days = search_space_max_lookback()
+
+    keep_cols: set[str] | None = (
+        None if keep_leaves is None else resolve_keep_columns(keep_leaves)
+    )
+
+    def _src_keep(features: Iterable[str]) -> list[str] | None:
+        """源叶集 ∩ 白名单。``None`` = 不裁（全要）；空 list = 该源整体跳过。"""
+        if keep_cols is None:
+            return None
+        return sorted(set(features) & keep_cols)
+
+    def _kw(keep: list[str] | None) -> dict:
+        """``keep=None`` 时**不传该参数**——既有测试替身多为 ``lambda d: d``，零回归。"""
+        return {} if keep is None else {"keep": keep}
 
     universe_codes: list[str] | None = None
     membership: pl.DataFrame | None = None
@@ -198,16 +337,23 @@ def prepare_mining_daily(
         lookback_days=lookback_days,
         universe=universe_codes,
     )
-    daily = context.daily.collect()
-    basic = context.daily_basic.collect()
-    if not basic.is_empty():
-        if slim:
-            # 白名单：键 + BASIC 叶子列（以 schema 为准；源表缺列则跳过）
-            basic_keep = ["trade_date", "ts_code", *[
-                c for c in BASIC_FEATURES if c in basic.columns
-            ]]
-            basic = basic.select(basic_keep)
+    # daily raw：slim 时把死重 drop 推进 lazy 链，parquet 直接少读两列
+    # （原实现是 collect 全部再在出口 drop，多付一次读+一份常驻）。
+    daily_lf = context.daily
+    if slim:
+        _dead = [
+            c for c in _DAILY_RAW_DEAD_COLS
+            if c in daily_lf.collect_schema().names()
+        ]
+        if _dead:
+            daily_lf = daily_lf.drop(_dead)
+    daily = daily_lf.collect()
+    del daily_lf
+
+    basic = _collect_daily_basic(context, slim=slim, keep_cols=keep_cols)
+    if basic is not None and not basic.is_empty():
         daily = daily.join(basic, on=["trade_date", "ts_code"], how="left")
+    del basic
 
     # Mining and materialisation deliberately share these attach functions so the
     # same expression has identical leaves on both paths.
@@ -215,22 +361,35 @@ def prepare_mining_daily(
     from factorzen.daily.data.flows import attach_flows
     from factorzen.daily.data.pit import attach_fundamentals, attach_holders
 
-    daily = attach_fundamentals(daily)
-    daily = attach_holders(daily)
-    daily = attach_flows(daily)
-    daily = attach_forecast(daily)
-    daily = attach_express(daily)
+    _fund = _src_keep(FUNDAMENTAL_FEATURES)
+    if _fund is None or _fund:
+        daily = attach_fundamentals(daily, **_kw(_fund))
+    _hold = _src_keep(HOLDER_FEATURES)
+    if _hold is None or _hold:
+        daily = attach_holders(daily, **_kw(_hold))
+    _flow = _src_keep(FLOW_FEATURES)
+    if _flow is None or _flow:
+        daily = attach_flows(daily, **_kw(_flow))
+    _fc = _src_keep(FORECAST_FEATURES)
+    if _fc is None or _fc:
+        daily = attach_forecast(daily, **_kw(_fc))
+    _ex = _src_keep(EXPRESS_FEATURES)
+    if _ex is None or _ex:
+        daily = attach_express(daily, **_kw(_ex))
 
     if intraday:
         from factorzen.daily.data.intraday import attach_intraday
 
-        daily = attach_intraday(
-            daily,
-            freq=intraday_freq,
-            version=intraday_version,
-            require=True,
-            out_meta=out_meta,
-        )
+        _ix = _src_keep(INTRADAY_FEATURES)
+        if _ix is None or _ix:
+            daily = attach_intraday(
+                daily,
+                freq=intraday_freq,
+                version=intraday_version,
+                require=True,
+                out_meta=out_meta,
+                **_kw(_ix),
+            )
         # 面板 coverage 起点晚于扩窗取数起点 → 短历史由 leaf 预算/warmup 门处理，只 warn
         if out_meta is not None:
             panel_meta = out_meta.get("intraday_panel") or {}
@@ -256,6 +415,15 @@ def prepare_mining_daily(
 
     if membership is not None:
         daily = _attach_in_universe(daily, membership)
+
+    if keep_cols is not None:
+        # 出口兜底：源头已按白名单裁过，这里只收尾 `ix_*` 之外的漏网叶列。
+        # 只敢动 `_trimmable_leaf_cols()`（已知叶列）——未登记的列一律留着，
+        # 免得把 ix_* / 未来新增的键列误裁掉（宁多勿漏）。
+        trimmable = _trimmable_leaf_cols()
+        sel = [c for c in daily.columns if c in keep_cols or c not in trimmable]
+        if len(sel) < len(daily.columns):
+            daily = daily.select(sel)
 
     if slim:
         drop = [c for c in _DAILY_RAW_DEAD_COLS if c in daily.columns]

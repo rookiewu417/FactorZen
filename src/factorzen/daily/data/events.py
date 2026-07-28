@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date
 
 import polars as pl
@@ -214,13 +215,22 @@ def _expand_window_asof(
 def attach_forecast(
     daily: pl.DataFrame,
     forecast_df: pl.DataFrame | None = None,
+    *,
+    keep: Iterable[str] | None = None,
 ) -> pl.DataFrame:
     """把业绩预告事件叶 join 进日线帧。
 
     ``forecast_df is None`` 时从 ``data/raw/forecast/`` 读取；
     空源 → 叶子列全 null；有源 → 窗外/无事件 fill 0。
+
+    ``keep``（默认 ``None`` = 全部三个叶，零回归）：只 attach 白名单内的预告叶；
+    交集为空 → 原样返回（连 join_asof 与事件窗展开都省掉）。
     """
-    cols = _FC_LEAF_COLS
+    cols = _FC_LEAF_COLS if keep is None else [
+        c for c in _FC_LEAF_COLS if c in set(keep)
+    ]
+    if not cols:
+        return daily
     if daily.is_empty() or "trade_date" not in daily.columns:
         return daily
     if forecast_df is None:
@@ -252,7 +262,9 @@ def attach_forecast(
             _surprise_expr(),
             pl.lit(1.0).alias("fc_flag"),
         ],
-        sort_keys=["fc_type_score", "fc_surprise", "fc_flag"],
+        # sort_keys 即事件帧的输出值列：只留白名单内的叶（事件帧本身很小，
+        # 三个表达式照算不亏，但 join 回 13M 行日频帧的列数按白名单收）
+        sort_keys=cols,
     )
     if events.is_empty():
         return _ensure_cols(daily, cols)
@@ -264,6 +276,8 @@ def attach_forecast(
 def attach_express(
     daily: pl.DataFrame,
     express_df: pl.DataFrame | None = None,
+    *,
+    keep: Iterable[str] | None = None,
 ) -> pl.DataFrame:
     """把业绩快报 ``express_yoy`` join 进日线帧（真同比 n_income/yoy_net_profit−1，20 日窗）。
 
@@ -272,8 +286,14 @@ def attach_express(
     子集 IC +0.05 混入估值效应不是干净 PEAD)。真同比 = n_income/yoy_net_profit − 1;
     分母 ≤0 时同比语义破碎(负基数增长率符号反转)→ 0;clip ±5(扭亏/微基数极值会统治
     mul/zscore 类算子,rank 不受影响但算子组合受)。
+
+    ``keep``（默认 ``None`` = 全部，零回归）：交集为空 → 原样返回，整源跳过。
     """
-    cols = _EX_LEAF_COLS
+    cols = _EX_LEAF_COLS if keep is None else [
+        c for c in _EX_LEAF_COLS if c in set(keep)
+    ]
+    if not cols:
+        return daily
     if daily.is_empty() or "trade_date" not in daily.columns:
         return daily
     if express_df is None:
@@ -304,7 +324,7 @@ def attach_express(
         express_df,
         calendar,
         value_exprs=[yoy],
-        sort_keys=["express_yoy"],
+        sort_keys=cols,
     )
     if events.is_empty():
         return _ensure_cols(daily, cols)

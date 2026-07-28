@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import warnings
+from collections.abc import Iterable
 from datetime import date, datetime
 from typing import Any
 
@@ -37,6 +38,7 @@ def attach_intraday(
     injected: pl.DataFrame | None = None,
     require: bool = False,
     out_meta: dict | None = None,
+    keep: Iterable[str] | None = None,
 ) -> pl.DataFrame:
     """把日内特征面板按 ``(trade_date, ts_code)`` left-join 进日线帧。
 
@@ -46,21 +48,29 @@ def attach_intraday(
         injected: 测试注入面板（优先于读盘）；列至少含 ``trade_date``/``ts_code`` 与部分 ``i_*``。
         require: ``True`` 时面板缺失/为空 → ``ValueError``；``False`` 时补全 null 列并 warn。
         out_meta: 非 None 时回填 ``intraday_panel`` 溯源字典。
+        keep: ``i_*`` 列白名单（默认 ``None`` = 全部 20 列，零回归）。读盘时下推成
+            parquet 投影（只读白名单列），join 也只带这些列——全 A × 12.5 年下
+            少 join 几列就是几百 MB 常驻 + 一次全帧复制。交集为空 → 原样返回。
 
     Returns:
-        含全部 17 个 ``i_*`` 列的日线帧（缺失列为 null）。
+        含白名单内 ``i_*`` 列的日线帧（缺失列为 null；``keep=None`` 时为全部 20 列）。
     """
+    cols = _INTRADAY_COLS if keep is None else [
+        c for c in _INTRADAY_COLS if c in set(keep)
+    ]
+    if not cols:
+        return daily
     if daily.is_empty() or "trade_date" not in daily.columns:
         if out_meta is not None:
             out_meta["intraday_panel"] = _panel_meta(
                 version, freq, battery_hash=None,
                 coverage_start=None, coverage_end=None,
             )
-        return _ensure_intraday_cols(daily)
+        return _ensure_intraday_cols(daily, cols)
 
     panel = injected
     if panel is None:
-        panel = _load_panel(daily, freq=freq, version=version)
+        panel = _load_panel(daily, freq=freq, version=version, cols=cols)
 
     if panel is None or panel.is_empty():
         if require:
@@ -81,9 +91,9 @@ def attach_intraday(
                 version, freq, battery_hash=bhash,
                 coverage_start=cov_s, coverage_end=cov_e,
             )
-        return _ensure_intraday_cols(daily)
+        return _ensure_intraday_cols(daily, cols)
 
-    have = [c for c in _INTRADAY_COLS if c in panel.columns]
+    have = [c for c in cols if c in panel.columns]
     sel = panel.select(["trade_date", "ts_code", *have])
     sel = _align_trade_date(sel, daily)
     # 已存在同名列时先 drop 再 join，避免 suffix 污染
@@ -91,7 +101,7 @@ def attach_intraday(
     if drop_cols:
         daily = daily.drop(drop_cols)
     daily = daily.join(sel, on=["trade_date", "ts_code"], how="left")
-    daily = _ensure_intraday_cols(daily)
+    daily = _ensure_intraday_cols(daily, cols)
 
     if out_meta is not None:
         bhash, cov_s, cov_e = _read_manifest_fields(version, freq)
@@ -109,8 +119,13 @@ def attach_intraday(
 
 def _load_panel(
     daily: pl.DataFrame, *, freq: str, version: str,
+    cols: list[str] | None = None,
 ) -> pl.DataFrame | None:
-    """从 ``INTRADAY_FEATURES_DIR`` 按日频帧日期窗加载面板；失败返回 None。"""
+    """从 ``INTRADAY_FEATURES_DIR`` 按日频帧日期窗加载面板；失败返回 None。
+
+    ``cols`` 非 None 时把列投影推进 lazy 链——parquet 天然支持列裁剪，
+    不需要的 ``i_*`` 列根本不从盘上读进内存。
+    """
     start_s, end_s = _frame_date_bounds(daily)
     if start_s is None or end_s is None:
         return None
@@ -125,6 +140,12 @@ def _load_panel(
             date_col="trade_date",
             base_dir=INTRADAY_FEATURES_DIR,
         )
+        if cols is not None:
+            names = lf.collect_schema().names()
+            sel = [c for c in ("trade_date", "ts_code") if c in names]
+            sel += [c for c in cols if c in names]
+            if len(sel) < len(names):
+                lf = lf.select(sel)
         return lf.collect()
     except Exception:
         return None
@@ -177,9 +198,11 @@ def _align_trade_date(sel: pl.DataFrame, daily: pl.DataFrame) -> pl.DataFrame:
     return sel
 
 
-def _ensure_intraday_cols(daily: pl.DataFrame) -> pl.DataFrame:
-    """补全缺失的 17 个 i_* 列为 Float64 null。"""
-    missing = [c for c in _INTRADAY_COLS if c not in daily.columns]
+def _ensure_intraday_cols(
+    daily: pl.DataFrame, cols: list[str] | None = None,
+) -> pl.DataFrame:
+    """补全缺失的 i_* 列为 Float64 null（``cols`` 缺省 = 全部）。"""
+    missing = [c for c in (cols or _INTRADAY_COLS) if c not in daily.columns]
     if missing:
         daily = daily.with_columns(
             [pl.lit(None, dtype=pl.Float64).alias(c) for c in missing]

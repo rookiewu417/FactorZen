@@ -841,6 +841,11 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
 
     - ashare：`prepare_mining_daily`（复权价 + daily_basic + 全叶子），profile=None（零回归）；
       ``prep_meta`` 含 ``membership_mode`` / ``membership_hash`` / ``membership_n_rows`` / ``universe``。
+      ``args.keep_leaves``（非 CLI 旗标，命令内部置位；缺省 = 不裁）透传成
+      ``prepare_mining_daily(keep_leaves=...)`` 的列白名单——与 ``args.intraday_leaves`` /
+      ``args.intraday_expr_leaves`` 同款接线。目前**只有 ``factor-library rebuild`` 置位**：
+      它知道本次会评估哪些表达式，能算出叶并集；mine / team / pool-prebuild 的候选是
+      运行中现生成的，裁不得（裁了新候选的叶子就没数据）。
     - crypto：`build_crypto_daily`（Vision 湖），向前多拉 `AGENT_WARMUP_LOOKBACK` 自然日作预热前缀
       （crypto 24/7，1 bar≈1 自然日，与 A 股口径一致）；symbols 取 --symbols 或 universe Top-N；
       membership 不适用 → mode=None。
@@ -926,6 +931,7 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
         intraday=bool(getattr(args, "intraday_leaves", False)),
         intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
         intraday_expr_leaves=getattr(args, "intraday_expr_leaves", None),
+        keep_leaves=getattr(args, "keep_leaves", None),
     )
     if not prep_meta:
         # 替身实现可能不填 out_meta：补占位，调用方仍能稳定解包
@@ -1293,6 +1299,71 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     return 0
 
 
+def _rebuild_keep_leaves(
+    scan_exprs: list[str],
+    only: list[str] | None,
+    market: str,
+    lib_root: str,
+) -> list[str] | None:
+    """`factor-library rebuild` 的装配帧列白名单 = 本次会被求值的表达式的叶并集。
+
+    与 `factor_library.library_pool_required_columns` 同款写法（`feature_names(parse_expr(...))`），
+    区别是这里返回**叶名**（`prepare_mining_daily(keep_leaves=...)` 的口径，由
+    `preparation.resolve_keep_columns` 再解析成列名 + 派生/跨源依赖）。
+
+    - ``only is None``（全量）→ ``scan_exprs`` 全集（历史源 ∪ 库）；
+    - 定向 → ``only`` ∪ 库内**全部**记录（不止 active：lift 复审物化 active，
+      去相关还会碰到 correlated/no_lift）。
+    解析失败的表达式跳过（与 rebuild 侧 `_normalize` 失败记 targeted_missing 同口径，
+    坏记录不阻塞装帧）；库读不出来 → 返回 None（不裁，绝不因为读不到库就少给列）。
+    并集覆盖全部已知叶 → None（不裁）。
+
+    只对 ashare 生效：其它市场叶映射不同（profile.factors.leaf_features），且
+    `_prepare_agent_mining_data` 的非 ashare 分支根本不走 `prepare_mining_daily`。
+    """
+    from factorzen.discovery import factor_library as fl
+    from factorzen.discovery.expression import feature_names, parse_expr
+    from factorzen.discovery.operators import LEAF_FEATURES
+
+    if market != "ashare":
+        return None
+    # `ix_*` 表达式叶不在默认 LEAF_FEATURES 里 → 不扩 map 的话整条表达式 parse 失败、
+    # 被跳过，它引用的**其它**叶子也就漏出白名单（叶子静默变全 null）。
+    # 与 `preparation.intraday_expr_leaf_names` 同款扩法。
+    leaf_map: dict[str, str] | None = None
+    try:
+        from factorzen.discovery.intraday_expr import load_expr_registry
+
+        reg = load_expr_registry()
+        if reg:
+            leaf_map = {**LEAF_FEATURES, **{n: n for n in reg}}
+    except Exception:
+        leaf_map = None
+
+    if only is None:
+        exprs: list[str] = list(scan_exprs)
+    else:
+        exprs = [str(e) for e in only if e and not fl.is_python_identity(str(e))]
+        try:
+            exprs += [
+                str(r.expression)
+                for r in fl.load_library(market, root=lib_root)
+                if r.expression and not fl.is_python_identity(str(r.expression))
+            ]
+        except Exception:
+            return None
+
+    leaves: set[str] = set()
+    for e in exprs:
+        try:
+            leaves |= feature_names(parse_expr(str(e), leaf_map))
+        except Exception:
+            continue
+    if not leaves or set(LEAF_FEATURES) <= leaves:
+        return None
+    return sorted(leaves)
+
+
 def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     from datetime import date
     from datetime import datetime as _dt
@@ -1377,6 +1448,14 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     if _ix:
         args.intraday_expr_leaves = _ix
         args.intraday_leaves = True
+    # ── 装配帧列白名单（全 A × 多年 rebuild 的装配期 OOM 修复）────────────────
+    # 本次真正会被求值的表达式集合的叶并集：
+    # - 全量 rebuild：`_scan_exprs`（历史源 ∪ 库内全部记录）都会进 evaluate；
+    # - 定向 `--only`：只评估 only 子集，但 lift 复审要物化库内 active 作 add-one 基线、
+    #   去相关也会碰库内记录 → 白名单必须覆盖 only ∪ **库内全部记录**（宁多勿漏：
+    #   少一个叶子会让某条表达式静默变全 null，而不是报错）。
+    # 覆盖到全部叶时退化成 None（不裁，省掉一次 select）。
+    args.keep_leaves = _rebuild_keep_leaves(_scan_exprs, only, market, _lib_root)
     daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print(

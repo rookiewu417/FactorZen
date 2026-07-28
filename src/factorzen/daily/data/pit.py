@@ -1,5 +1,6 @@
 """Point-In-Time 财务数据对齐。确保月末调仓不使用未公告的财报。"""
 
+from collections.abc import Iterable
 from datetime import date
 
 import polars as pl
@@ -108,6 +109,8 @@ def _fundamental_cols() -> list[str]:
 def attach_fundamentals(
     daily: pl.DataFrame,
     fina_df: pl.DataFrame | None = None,
+    *,
+    keep: Iterable[str] | None = None,
 ) -> pl.DataFrame:
     """把**按公告日 PIT 对齐**的基本面(roe/assets_yoy)join 进日线帧，作为叶子列。
 
@@ -122,23 +125,33 @@ def attach_fundamentals(
 
     挖掘(`prepare_mining_daily`)与物化(`ExpressionFactor.compute`)两条路都调它，保证
     同一因子在挖掘与回测里逐值一致。
+
+    ``keep``（默认 ``None`` = 全部叶子，零回归）：只 attach 这些基本面叶。取自
+    `prepare_mining_daily(keep_leaves=...)` 的列白名单，源头 select 就少读少 join；
+    交集为空时调用方根本不会调进来（也兜底成原样返回，不补 null 列）。
     """
-    cols = _fundamental_cols()
+    cols = _fundamental_cols() if keep is None else [
+        c for c in _fundamental_cols() if c in set(keep)
+    ]
+    if not cols:
+        return daily
     if daily.is_empty() or "trade_date" not in daily.columns:
         return daily
     if fina_df is None:
         fina_df = _load_fina(cols)
     if fina_df is None or fina_df.is_empty():
-        return _ensure_fundamental_cols(daily)
+        return _ensure_fundamental_cols(daily, cols)
 
     snapshot_dates = daily["trade_date"].unique().sort().to_list()
     pit = pit_align(fina_df, snapshot_dates)
     if pit.is_empty():
-        return _ensure_fundamental_cols(daily)
+        return _ensure_fundamental_cols(daily, cols)
 
     have = [c for c in cols if c in pit.columns]
     pit = pit.select(["snapshot_date", "ts_code", *have]).rename({"snapshot_date": "trade_date"})
-    return _ensure_fundamental_cols(daily.join(pit, on=["trade_date", "ts_code"], how="left"))
+    return _ensure_fundamental_cols(
+        daily.join(pit, on=["trade_date", "ts_code"], how="left"), cols
+    )
 
 
 def _load_fina(cols: list[str]) -> pl.DataFrame | None:
@@ -157,9 +170,11 @@ def _load_fina(cols: list[str]) -> pl.DataFrame | None:
     return None
 
 
-def _ensure_fundamental_cols(daily: pl.DataFrame) -> pl.DataFrame:
+def _ensure_fundamental_cols(
+    daily: pl.DataFrame, cols: list[str] | None = None,
+) -> pl.DataFrame:
     """补齐缺失的基本面列为 null——表达式引用到未成功 attach 的叶子时得到 null 而非崩溃。"""
-    missing = [c for c in _fundamental_cols() if c not in daily.columns]
+    missing = [c for c in (cols or _fundamental_cols()) if c not in daily.columns]
     if missing:
         daily = daily.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
     return daily
@@ -175,6 +190,8 @@ def _holder_cols() -> list[str]:
 def attach_holders(
     daily: pl.DataFrame,
     holder_df: pl.DataFrame | None = None,
+    *,
+    keep: Iterable[str] | None = None,
 ) -> pl.DataFrame:
     """把**按公告日 PIT 对齐**的股东户数 join 进日线帧。
 
@@ -189,27 +206,37 @@ def attach_holders(
 
     无数据股票 → null（诚实缺测）。``holder_df is None`` 时从 ``stk_holdernumber``
     parquet 读；缺数据/失败 → 原样返回并补 null 列。
+
+    ``keep``（默认 ``None`` = 全部，零回归）：只 attach 这些股东叶。``holder_num_chg``
+    是期际环比，源侧仍需 ``holder_num`` 参与计算（`_prepare_holder_df` 内部完成），
+    这里只裁**输出**列。
     """
-    cols = _holder_cols()
+    cols = _holder_cols() if keep is None else [
+        c for c in _holder_cols() if c in set(keep)
+    ]
+    if not cols:
+        return daily
     if daily.is_empty() or "trade_date" not in daily.columns:
         return daily
     if holder_df is None:
         holder_df = _load_holder()
     if holder_df is None or holder_df.is_empty():
-        return _ensure_holder_cols(daily)
+        return _ensure_holder_cols(daily, cols)
 
     prepared = _prepare_holder_df(holder_df)
     if prepared.is_empty():
-        return _ensure_holder_cols(daily)
+        return _ensure_holder_cols(daily, cols)
 
     snapshot_dates = daily["trade_date"].unique().sort().to_list()
     pit = pit_align(prepared, snapshot_dates)
     if pit.is_empty():
-        return _ensure_holder_cols(daily)
+        return _ensure_holder_cols(daily, cols)
 
     have = [c for c in cols if c in pit.columns]
     pit = pit.select(["snapshot_date", "ts_code", *have]).rename({"snapshot_date": "trade_date"})
-    return _ensure_holder_cols(daily.join(pit, on=["trade_date", "ts_code"], how="left"))
+    return _ensure_holder_cols(
+        daily.join(pit, on=["trade_date", "ts_code"], how="left"), cols
+    )
 
 
 def _prepare_holder_df(holder_df: pl.DataFrame) -> pl.DataFrame:
@@ -252,8 +279,10 @@ def _load_holder() -> pl.DataFrame | None:
         return None
 
 
-def _ensure_holder_cols(daily: pl.DataFrame) -> pl.DataFrame:
-    missing = [c for c in _holder_cols() if c not in daily.columns]
+def _ensure_holder_cols(
+    daily: pl.DataFrame, cols: list[str] | None = None,
+) -> pl.DataFrame:
+    missing = [c for c in (cols or _holder_cols()) if c not in daily.columns]
     if missing:
         daily = daily.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
     return daily

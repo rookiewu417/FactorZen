@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -339,17 +340,27 @@ def _project_with_Q_or_lstsq(y: np.ndarray, X: np.ndarray, Q: np.ndarray | None)
     return residualize_cross_section(y, X)
 
 
-class ResidualProjector:
-    """库面板 per-date QR 预计算：多候选残差化时复用每日 Q。
+_Q_UNSET = object()  # 「该日 Q 尚未算过」哨兵（区别于「算过、结果是 None」）
 
-    构造时对每个 ``trade_date`` 的设计矩阵 ``[1 | X_lib]``（面板全体 ``ts_code`` 行）
-    做 reduced QR，缓存 Q 与行索引（即 ``panel.stock_idx`` / ``panel.stocks``）。
+
+class ResidualProjector:
+    """库面板 per-date QR 缓存：多候选残差化时复用每日 Q。
+
+    对每个 ``trade_date`` 的设计矩阵 ``[1 | X_lib]``（面板全体 ``ts_code`` 行）做
+    reduced QR，按日缓存 Q（行索引即 ``panel.stock_idx`` / ``panel.stocks``）。
 
     ``residualize`` / ``project_day`` 语义对齐 ``residualize_cross_section`` +
     ``compute_residual_ic`` 的日守卫与对齐规则（候选∩库、``max(30, k+10)``、NaN/null）。
 
     快路径：对齐后的股票集覆盖全日面板轴时，直接 ``y - Q@(Q.T@y)``（两次 matvec）。
     子集日：对子矩阵现场 reduced QR（仍避免 SVD lstsq）；子矩阵秩亏则 lstsq 回退。
+
+    **Q 惰性**（原为构造期全量预计算）：全日 Q 只有快路径用得上，而快路径要求候选
+    在该日铺满**全窗并集**股票轴——全 A 2016-2026 的轴是 10 年并集（含未上市/已退市），
+    真实候选一天覆盖不到，于是 2500+ 日 × n_stocks × (k+1) 的 Q 全集（f32 也有 GB 级）
+    是纯常驻浪费，还白算 2500+ 次 QR。改成按日首次命中快路径才算并缓存：
+    命中的日照旧只算一次，没命中的日一次都不算。**数值零变化**（``_qr_basis``
+    确定性，同输入同输出），只改「什么时候算」。
     """
 
     def __init__(self, panel: LibraryPanel) -> None:
@@ -357,14 +368,20 @@ class ResidualProjector:
             raise ValueError("ResidualProjector 需要 k>0 的 LibraryPanel")
         self.panel = panel
         self._min_n = _day_min_samples(panel.k)
-        # di → Q (n_stocks, k+1) 或 None（该日全截面秩亏 → project 走 lstsq）
-        self._Q: list[np.ndarray | None] = [
-            _qr_basis(panel.X[di]) for di in range(panel.n_dates)
-        ]
+        # di → Q (n_stocks, k+1) / None（该日全截面秩亏 → project 走 lstsq）/ 哨兵（未算）
+        self._Q: list[Any] = [_Q_UNSET] * panel.n_dates
 
     @classmethod
     def from_panel(cls, panel: LibraryPanel) -> ResidualProjector:
         return cls(panel)
+
+    def _q_full(self, di: int) -> np.ndarray | None:
+        """该日全截面 Q（首次命中才算）。列表下标赋值在 GIL 下原子，多线程最多重算一次。"""
+        q = self._Q[di]
+        if q is _Q_UNSET:
+            q = _qr_basis(self.panel.X[di])
+            self._Q[di] = q
+        return q  # type: ignore[return-value]
 
     def project_day(
         self, di: int, y_v: np.ndarray, si_v: np.ndarray,
@@ -376,18 +393,19 @@ class ResidualProjector:
             raise ValueError(
                 f"y/si 行数不一致: y={y_v.shape[0]}, si={si_v.shape[0]}"
             )
-        X_day = self.panel.X[di, si_v, :]
         n_full = self.panel.n_stocks
-        Q_full = self._Q[di]
+        # 形状条件先判：不满足就永远走子集分支，全日 Q 连算都不用算
+        Q_full = (
+            self._q_full(di)
+            if si_v.shape[0] == n_full and np.unique(si_v).size == n_full
+            else None
+        )
         # 全日覆盖（任意行置换）：置换后的 Q 列仍标准正交，可直接投影
-        if (
-            Q_full is not None
-            and si_v.shape[0] == n_full
-            and np.unique(si_v).size == n_full
-        ):
+        if Q_full is not None:
             Q = Q_full[si_v]
             return y_v - Q @ (Q.T @ y_v)
-        # 子集：对 [1|X_sub] 现场 QR；秩亏 → lstsq
+        # 子集（或全日秩亏）：对 [1|X_sub] 现场 QR；秩亏 → lstsq
+        X_day = self.panel.X[di, si_v, :]
         Q_sub = _qr_basis(X_day)
         return _project_with_Q_or_lstsq(y_v, X_day, Q_sub)
 

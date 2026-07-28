@@ -624,6 +624,45 @@ def library_pool_required_columns(
     return keep
 
 
+def _sorted_by_pool_keys(df: pl.DataFrame) -> bool:
+    """帧是否**已按** ``(ts_code, trade_date)`` 升序 —— 是则跳过池构建里那次 sort。
+
+    ``sort`` 是全量物化拷贝：全 A 2016-2026 上库池源帧（键 + active 表达式叶列）
+    这一份副本就是 GB 级，而调用方（CLI rebuild / ``make_lift_context``）交进来的
+    ``prepped`` **本来就已经排好序**，白付一次。
+
+    这里**实测**而不是靠调用方声明——排序契约一旦被违反，时序算子会静默算错
+    （PIT 铁律），不能拿一个布尔入参赌。判据逐行：``code > 前一行 code`` 或
+    （``code == 前一行`` 且 ``date >= 前一行``）。两次 shift + 比较，只碰 2 列。
+    缺键列 / 空帧 → False（照旧 sort，零回归）。
+    """
+    if df.is_empty() or "ts_code" not in df.columns or "trade_date" not in df.columns:
+        return False
+    # 键含 null：``fill_null(True)`` 会把「null 行」当成有序，而 polars ``sort`` 把 null
+    # 排在最前 —— 两者不一致，直接判「未排序」照旧 sort。
+    if df["ts_code"].null_count() or df["trade_date"].null_count():
+        return False
+    prev_code = pl.col("ts_code").shift(1)
+    prev_date = pl.col("trade_date").shift(1)
+    try:
+        ok = df.select(
+            (
+                (pl.col("ts_code") > prev_code)
+                | (
+                    (pl.col("ts_code") == prev_code)
+                    & (pl.col("trade_date") >= prev_date)
+                )
+            )
+            .fill_null(True)
+            .all()
+            .alias("ok")
+        ).item()
+    except Exception:
+        # dtype 不可比（如跨源 Categorical）→ 判「未排序」，照旧 sort
+        return False
+    return bool(ok)
+
+
 def build_library_pool(
     market: str,
     daily: pl.DataFrame,
@@ -688,7 +727,7 @@ def build_library_pool(
         return {}
     recs.sort(key=lambda r: (-abs(r.ic_train or 0.0), r.expression))
 
-    df = daily.sort(["ts_code", "trade_date"])
+    df = daily if _sorted_by_pool_keys(daily) else daily.sort(["ts_code", "trade_date"])
     auto = compact is None
     use_compact = (
         should_use_compact_pool(
@@ -2249,6 +2288,99 @@ def build_library_evaluator(
     return evaluate, compact_materialize
 
 
+def _restrict_pool_to_keys(
+    pool: dict[str, pl.DataFrame] | CompactLibraryPool,
+    keys: pl.DataFrame,
+) -> dict[str, pl.DataFrame] | CompactLibraryPool:
+    """把库池裁到 ``keys``（(trade_date, ts_code) 白名单）。
+
+    只在 ``in_universe`` 真的剔行时才被调用（见 ``_rebuild_active_pool``）。
+    semi-join 不引入列、不改行序语义，compact 与 legacy 两种容器同口径。
+    """
+    on = ["trade_date", "ts_code"]
+    if isinstance(pool, CompactLibraryPool):
+        return CompactLibraryPool(
+            pool.wide.join(keys, on=on, how="semi"), pool.factor_names,
+        )
+    return {k: v.join(keys, on=on, how="semi") for k, v in pool.items()}
+
+
+def _rebuild_active_pool(
+    market: str,
+    frame: pl.DataFrame | None,
+    *,
+    leaf_map: dict[str, str] | None,
+    root: str,
+    universe: str | None,
+    materialize: Materializer | None,
+) -> dict[str, pl.DataFrame] | CompactLibraryPool | None:
+    """rebuild lift 轨复审的 active 基线池（add-one 的「已有库」侧）。
+
+    走 ``build_library_pool`` —— compact 单骨架 / 值列 f32 / 值列 spill 三件套的
+    **唯一**入口。历史上这里是自建 dict-of-frames（逐条 ``materialize(expr)``），
+    每条自带一份键副本，全 A 2016-2026（10.7M 行 × 87 active）实测建到一半就被
+    内核 OOM-kill（23.2G）：那条自建路径把 ``build_library_pool`` 的三件套整个绕过了。
+    额外收益：compact 池让 ``build_library_panel`` 走宽表分支，``LibraryPanel.X``
+    与 ``ResidualProjector`` 的逐日 Q 双双降到 f32（dict 池强制 f64，两者各翻倍）。
+
+    与旧自建路径的语义对齐：
+
+    - **列裁剪**：先投影到 ``library_pool_required_columns``（键 ∪ active 表达式引用的
+      叶列）。该函数明写「调用方据此裁列不改变任何求值结果」；polars ``select`` 子集
+      近零拷贝，而 ``build_library_pool`` 内部那次 ``sort`` 是全量拷贝，裁列直接把它
+      从全宽压到窄帧。
+    - **``in_universe``**：旧路径的 ``materialize`` 是 ``_materializer_from_prepped``
+      → ``_factor_df_from_prepped``，帧含 ``in_universe`` 时**只留成分内行**；
+      ``build_library_pool`` 不做这件事。故此处求值后按同一掩码 semi-join 回来
+      （全 True 时跳过，零成本零拷贝）。**不能**在求值前滤行——滚动算子需要连续时序。
+    - **python(``py::``) 记录**：透传 ``universe``，走
+      ``_materialize_python_on_grid``，与 ``_materializer_from_prepped`` 的 py 分支
+      同一函数，口径一致。
+    - **空面板**：旧路径把 ``materialize`` 返回的空帧也塞进池（给 panel 贡献一列全零，
+      污染 QR 基）；``build_library_pool`` 显式跳过并计数，与其余三个 lift 消费方一致。
+
+    ``frame`` 为 ``None``（只注入 ``materialize`` 的测试桩/退化帧）→ 回退旧自建循环，
+    行为零回归。
+    """
+    if frame is None:
+        if materialize is None:
+            return None
+        pool_legacy: dict[str, pl.DataFrame] = {}
+        for r in load_library(market, root=root):
+            if r.status != "active":
+                continue
+            try:
+                panel = materialize(r.expression)
+            except Exception:
+                panel = None
+            if panel is not None:
+                pool_legacy[r.expression] = panel
+        return pool_legacy
+
+    keep = library_pool_required_columns(
+        market, leaf_map, statuses=("active",), root=root,
+    )
+    univ_keys: pl.DataFrame | None = None
+    if "in_universe" in frame.columns:
+        keep = keep | {"in_universe"}
+    cols = [c for c in frame.columns if c in keep]
+    src = frame.select(cols) if len(cols) < len(frame.columns) else frame
+    if "in_universe" in src.columns:
+        mask = src["in_universe"].fill_null(False)
+        if int(mask.sum() or 0) < src.height:
+            univ_keys = src.filter(pl.col("in_universe")).select(
+                ["trade_date", "ts_code"],
+            )
+
+    pool = build_library_pool(
+        market, src, leaf_map,
+        statuses=("active",), root=root, universe=universe,
+    )
+    if univ_keys is not None and pool:
+        pool = _restrict_pool_to_keys(pool, univ_keys)
+    return pool
+
+
 def rebuild(
     market: str, *, sources: list[str], eval_window: tuple[str, str],
     universe: str | None, horizon: int | None,
@@ -2298,6 +2430,8 @@ def rebuild(
 
     注入点：``lift_runner(cands, *, active_factor_dfs, **kw) -> list[dict]``；
     残差口径（``residual_ic_v1``）无 combine_fn；``active_factor_dfs`` / ``daily`` 供生产默认路径。
+    未注入 ``active_factor_dfs`` 时基线池由 ``_rebuild_active_pool`` 建
+    （= ``build_library_pool``，compact/f32/spill 全走到；旧自建 dict-of-frames 已删）。
     ``prepped``：可选的已 ``_preprocess_daily``+sort 帧；传入时复审 ctx 直接复用它、
     **不再自 prep**（``daily`` 可为 ``None``），避免与 CLI/evaluator 的同源帧三份叠加。
     落 ``rebuild_{market}_manifest.json``（窗口/源/git_sha/时间 + lift 复审计数，可复现）。
@@ -2474,18 +2608,18 @@ def rebuild(
     if preserved_lift:
         try:
             # 新 active 池物化（供 add-one 基线）；优先注入的 active_factor_dfs
-            pool_dfs = active_factor_dfs
-            if pool_dfs is None and materialize is not None:
-                pool_dfs = {}
-                for r in load_library(market, root=root):
-                    if r.status != "active":
-                        continue
-                    try:
-                        panel = materialize(r.expression)
-                    except Exception:
-                        panel = None
-                    if panel is not None:
-                        pool_dfs[r.expression] = panel
+            pool_dfs: dict[str, pl.DataFrame] | CompactLibraryPool | None = (
+                active_factor_dfs
+            )
+            if pool_dfs is None:
+                pool_dfs = _rebuild_active_pool(
+                    market,
+                    prepped if prepped is not None else daily,
+                    leaf_map=leaf_map,
+                    root=root,
+                    universe=universe,
+                    materialize=materialize,
+                )
             if pool_dfs is None:
                 pool_dfs = {}
 

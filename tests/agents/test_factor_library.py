@@ -301,6 +301,97 @@ def test_default_window_suite(monkeypatch):
         _section_3_test_default_window_raises_when_cache_missing(mp)
 
 
+# ── 评估窗下界的真实预热预留（数据湖左边界撞上 --start 的静默空转）───────────
+
+def _weekday_dates(n: int, first: date = date(2016, 1, 4)) -> list[date]:
+    out, d = [], first
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def test_clamp_eval_start_for_warmup_suite():
+    """`clamp_eval_start_for_warmup`：把评估窗下界前推到「之前真有 N 根 bar」的那天。
+
+    判别力：不比对实现返回的 `warm_bars_effective`，而是拿原始日期表**独立重数**
+    `sum(1 for d in dates if d < effective)`，避免「实现算错、断言跟着错」的恒真。
+    """
+    from datetime import datetime as _dtm
+
+    from factorzen.discovery.backtest_window import clamp_eval_start_for_warmup
+
+    days = _weekday_dates(300)
+    ymd = "%Y%m%d"
+
+    # (1) 请求起点 == 帧左边界（复刻 --start 20160104 撞上数据湖左边界）→ 必须前推
+    c = clamp_eval_start_for_warmup(days, days[0].strftime(ymd), 20)
+    assert c.clamped and not c.degenerate
+    eff = _dtm.strptime(c.effective_start, ymd).date()
+    assert sum(1 for d in days if d < eff) == 20        # 独立重数：预热真有 20 根
+    assert eff == days[20] and eff > days[0]
+    assert c.requested_start == days[0].strftime(ymd)
+    assert c.warm_bars_requested == 0                    # 请求起点之前一根都没有
+
+    # (2) 预热已足（默认 6 年窗口那条路）→ 逐字节不动，零回归
+    req = days[25].strftime(ymd)
+    c2 = clamp_eval_start_for_warmup(days, req, 20)
+    assert not c2.clamped and c2.effective_start == req and c2.warm_bars_requested == 25
+
+    # (3) 恰好够（have == reserved）→ 不动（门是 have < need，不是 <=）
+    c3 = clamp_eval_start_for_warmup(days, days[20].strftime(ymd), 20)
+    assert not c3.clamped and c3.effective_start == days[20].strftime(ymd)
+
+    # (4) 差一根 → 只前推一根，不多吃
+    c4 = clamp_eval_start_for_warmup(days, days[19].strftime(ymd), 20)
+    assert c4.clamped and c4.effective_start == days[20].strftime(ymd)
+
+    # (5) 退化：整帧都短于预留量 → 无从前推，如实报 degenerate 且**不动**起点
+    c5 = clamp_eval_start_for_warmup(days[:15], days[0].strftime(ymd), 20)
+    assert c5.degenerate and not c5.clamped
+    assert c5.effective_start == days[0].strftime(ymd)
+
+    # (6) 空帧 → 退化，不崩
+    c6 = clamp_eval_start_for_warmup([], days[0].strftime(ymd), 20)
+    assert c6.degenerate and not c6.clamped
+
+    # (7) 起点在帧尾之后（窗口与数据不重叠）→ 预热充足，不动
+    c7 = clamp_eval_start_for_warmup(days[:30], days[299].strftime(ymd), 20)
+    assert not c7.clamped and c7.warm_bars_requested == 30
+
+    # (8) 字符串日期（YYYYMMDD）与 date 混入都能吃
+    c8 = clamp_eval_start_for_warmup([d.strftime(ymd) for d in days],
+                                     days[0].strftime(ymd), 20)
+    assert c8.clamped and c8.effective_start == days[20].strftime(ymd)
+
+
+def test_warmup_clamp_unblocks_temporal_expressions():
+    """真凶复现 + 修复证明：帧左边界 == eval_start 时，带时序算子的表达式**全部**被
+    预热门丢（ic_train=None → evaluate 返回空）；按 clamp 后的下界重评则全部拿到指标。
+
+    判别力：先断言 bug 现状（空列表），再断言修复后同一批表达式全部有值——
+    两个方向都断言，任何一侧恒真都会红。
+    """
+    from factorzen.discovery.backtest_window import clamp_eval_start_for_warmup
+    from factorzen.discovery.factor_library import build_library_evaluator
+
+    daily = _mining_daily(n_days=150)
+    dates = sorted(daily["trade_date"].unique().to_list())
+    requested = dates[0].strftime("%Y%m%d")            # 请求起点 == 帧左边界
+    exprs = ["delay(close, 1)", "ts_mean(close, 5)"]
+
+    ev_bug, _ = build_library_evaluator(daily, eval_start=requested)
+    assert ev_bug(exprs) == [], "预热前缀为空时时序表达式本应被预热门全部丢弃"
+
+    c = clamp_eval_start_for_warmup(dates, requested, 20)
+    assert c.clamped
+    ev_fix, _ = build_library_evaluator(daily, eval_start=c.effective_start)
+    rows = ev_fix(exprs)
+    assert {r["expression"] for r in rows} == set(exprs)
+    assert all(r["ic_train"] is not None and r["n_train"] > 0 for r in rows)
+
+
 def test_latest_data_date_scans_partitions(tmp_path, monkeypatch):
     """真实探测：Hive 分区 parquet 取最新分区的 trade_date 最大值；crypto 读 manifest.json。"""
     import json as _json

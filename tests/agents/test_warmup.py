@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import datetime as dt
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -343,6 +344,69 @@ def test_insufficient_warmup_expression_is_rejected_not_silently_noisy():
     assert res["ic_train"] is None and res["ir_train"] is None
     assert res["n_train"] == 0
     assert "预热不足" in res["error"]
+
+
+def test_prepare_mining_daily_reports_short_warmup_prefix():
+    """装帧侧的曝光面：扩窗预热是请求不是保证，前缀不足必须出声 + 进 out_meta。
+
+    挖掘（`fz mine`/`mine-team`）与 `factor-library rebuild` 共用 `prepare_mining_daily`
+    装帧，所以共用这条曝光面。判别力：`available_bars` 用日期表**独立重数**核对，
+    并给「预热充足」的反例断言不 warn（单侧断言会被恒 warn 的实现骗过）。
+    """
+    from factorzen.discovery.preparation import _warn_short_warmup_prefix
+
+    full = _synthetic_daily(n_days=120)                    # 2020-01-01 起逐日
+    dates = sorted(full["trade_date"].unique().to_list())
+
+    # (1) 起点 == 帧左边界（复刻 --start 撞上数据湖左边界）→ 预热 0 根，必须 warn
+    meta: dict = {}
+    with pytest.warns(UserWarning, match="预热前缀不足"):
+        _warn_short_warmup_prefix(full, dates[0].strftime("%Y%m%d"), 10, meta)
+    assert meta["warmup_prefix"] == {"requested_bars": 10, "available_bars": 0}
+
+    # (2) 差一根仍要 warn，且账目与独立重数一致
+    meta2: dict = {}
+    cut = dates[9]
+    with pytest.warns(UserWarning, match="预热前缀不足"):
+        _warn_short_warmup_prefix(full, cut.strftime("%Y%m%d"), 10, meta2)
+    assert meta2["warmup_prefix"]["available_bars"] == sum(1 for d in dates if d < cut) == 9
+
+    # (3) 预热充足 → 绝不 warn（反例：防「恒 warn」实现）
+    meta3: dict = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _warn_short_warmup_prefix(full, dates[10].strftime("%Y%m%d"), 10, meta3)
+    assert meta3["warmup_prefix"] == {"requested_bars": 10, "available_bars": 10}
+
+
+def test_prepare_mining_daily_wires_warmup_prefix_report(monkeypatch):
+    """接线：`prepare_mining_daily` 真的会填 ``out_meta['warmup_prefix']``（否则上面是死代码）。"""
+    import factorzen.daily.data.context as ctx_mod
+    import factorzen.discovery.preparation as prep
+
+    full = _synthetic_daily(n_days=30)
+    dates = sorted(full["trade_date"].unique().to_list())
+
+    class _Ctx:
+        def __init__(self, **kw):
+            self.expanded_start = "19700101"
+
+        @property
+        def daily(self):
+            return full.lazy()
+
+        @property
+        def daily_basic(self):
+            return None
+
+    monkeypatch.setattr(ctx_mod, "FactorDataContext", _Ctx)
+    monkeypatch.setattr(prep, "_collect_daily_basic", lambda *a, **k: None)
+    meta: dict = {}
+    with pytest.warns(UserWarning, match="预热前缀不足"):
+        prep.prepare_mining_daily(dates[0].strftime("%Y%m%d"),
+                                  dates[-1].strftime("%Y%m%d"),
+                                  lookback_days=20, out_meta=meta)
+    assert meta["warmup_prefix"] == {"requested_bars": 20, "available_bars": 0}
 
 
 # ── Task 1.4: orchestrator 先裁样本再 split（train/holdout/PBO 三处口径统一）─────

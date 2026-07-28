@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import warnings
 from collections.abc import Iterable, Sequence
 
@@ -440,4 +441,52 @@ def prepare_mining_daily(
     )
     if use_cat and "ts_code" in daily.columns and daily.schema["ts_code"] != pl.Categorical:
         daily = daily.with_columns(pl.col("ts_code").cast(pl.Categorical))
+    _warn_short_warmup_prefix(daily, start, lookback_days, out_meta)
     return daily
+
+
+def _warn_short_warmup_prefix(
+    daily: pl.DataFrame, start: str, lookback_days: int, out_meta: dict | None,
+) -> None:
+    """扩窗预热是**请求**不是保证：盘上没有的历史变不出来，这里如实报账。
+
+    `FactorDataContext.expanded_start` 向前要 ``lookback_days`` 个自然日，但当 ``start``
+    落在数据湖左边界附近时（A股 ``data/raw/daily`` 最早 20160104），返回帧里
+    ``trade_date < start`` 的行可能一根都没有。后果对**所有**消费方相同：
+    `expression.warmup_bars_by_leaf` 对每个叶子都算出 ``have=0`` → 带 ts_*/delay 的
+    表达式一律被 `warmup_shortfall` 判「预热不足」丢弃。
+
+    挖掘路径（`fz mine` / `fz mine-team`）与 `factor-library rebuild` 共用本函数装帧，
+    因此共用这条曝光面——挖掘一直没踩到只是因为它用近年窗口，不是因为它免疫。
+    rebuild 侧另有 `backtest_window.clamp_eval_start_for_warmup` 把评估窗下界前推；
+    挖掘侧不改窗口语义（候选是运行中现生成的，窗口由操作者定），只在这里出声。
+
+    ``out_meta``（若给）回填 ``warmup_prefix`` 溯源字典，供调用方落 manifest。
+    """
+    if daily.is_empty() or "trade_date" not in daily.columns:
+        return
+    try:
+        cut = _dt.datetime.strptime(str(start), "%Y%m%d").date()
+    except ValueError:
+        return
+    dates = daily["trade_date"].unique().to_list()
+    have = sum(1 for d in dates if d is not None and _as_date(d) < cut)
+    if out_meta is not None:
+        out_meta["warmup_prefix"] = {"requested_bars": int(lookback_days), "available_bars": have}
+    if have >= lookback_days:
+        return
+    warnings.warn(
+        f"预热前缀不足：{start} 之前装配帧只有 {have} 根 bar（请求 {lookback_days} 根）。"
+        f"数据湖左边界晚于扩窗取数起点时无法补足；带 ts_*/delay 的表达式会被预热门"
+        f"（warmup_shortfall）整条丢弃。请把窗口起点后移，或回补更早的历史数据。",
+        stacklevel=3,
+    )
+
+
+def _as_date(v):
+    """把 trade_date 单元格（date/datetime/str）统一成 ``date`` 以便比较。"""
+    if isinstance(v, _dt.datetime):
+        return v.date()
+    if isinstance(v, _dt.date):
+        return v
+    return _dt.datetime.strptime(str(v).replace("-", "")[:8], "%Y%m%d").date()

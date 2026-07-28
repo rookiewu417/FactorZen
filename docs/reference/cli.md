@@ -590,6 +590,25 @@ pixi run -- fz factor-library rebuild --market ashare --universe csi500 --horizo
 
 **产物**：重写 `workspace/factor_library/` 下该市场的登记簿与 `{market}.md`。
 
+#### 评估窗下界会自动让开预热段
+
+装配帧向前多取 `AGENT_WARMUP_LOOKBACK`（504 交易日）作预热前缀，但**扩窗是请求不是
+保证**——盘上没有的历史变不出来。A 股 `data/raw/daily` 最早 20160104，若把 `--start`
+顶到湖左边界（如 `--start 20160104` 做「全历史」重建），装配帧第一行就是 20160104，
+预热前缀为空，于是**每个叶子**的可用预热都是 0 根，带 `ts_*` / `delay` / `delta` 的
+表达式会被预热门（`warmup_shortfall`）整条丢弃 —— 历史上表现为 `n_evaluated=0` 而
+进程 exit=0 的静默空转。
+
+现在 rebuild 会按装配帧**真实拥有的交易日**把评估窗下界前推到「它之前真有 504 根 bar」
+的那天，并在 stderr 说明。预热本就充足时（默认 6 年滚动窗口即是）**不做任何改动**。
+manifest 记 `requested_eval_start`（你传的 `--start`）/ `warmup_reserved_bars` /
+`warmup_bars_at_requested_start` / `eval_start_clamped` / `warmup_prefix_degenerate`；
+manifest 本体的 `eval_start` 与登记簿记录里的 `eval_start` 是**真实使用**的下界。
+
+前推不放松预热门（`operators._MIN = 3` 造出的截断窗口噪声照旧挡在 IC 序列与 DSR 池
+之外），也不影响 PIT。挖掘路径（`fz mine` / `fz mine-team`）共用同一套装帧与预热门，
+但**不改窗口语义**，只在预热前缀不足时发 `UserWarning`。
+
 #### 定向重估（`--only` / `--only-file`）
 
 不带 `--only`/`--only-file` 时是**全量重建**：清空该市场登记簿、重估全部历史源、

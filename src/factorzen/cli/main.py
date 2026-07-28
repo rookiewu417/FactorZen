@@ -1371,9 +1371,10 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
 
     import polars as pl
 
+    from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
     from factorzen.core.experiment import get_git_sha
     from factorzen.discovery import factor_library as fl
-    from factorzen.discovery.backtest_window import default_window
+    from factorzen.discovery.backtest_window import clamp_eval_start_for_warmup, default_window
     from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.validation.holdout import split_holdout
 
@@ -1466,6 +1467,33 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
     leaf_map = profile.factors.leaf_features() if profile is not None else None
     if not sources:
         print(f"[factor-library] 提示：未从历史产物收集到 {market} 候选（将产出空库文件）")
+    # ── 评估窗下界让开预热段（--start 撞上数据湖左边界 → 整轮静默空转的修复）──────
+    # 扩窗预热是**请求**不是保证：`_prepare_agent_mining_data` 向前多要
+    # AGENT_WARMUP_LOOKBACK 根，但盘上没有的数据变不出来。A股湖最早 20160104，
+    # `--start 20160104` 时装配帧第一行就是 20160104 → 预热前缀为空 → 每个叶
+    # `have=0` → 带 ts_*/delay 的表达式全被 `warmup_shortfall` 判「预热不足」丢弃
+    # → n_evaluated=0 而 exit=0（2026-07-28 全历史 rebuild 实测：1 条目标，0 条评估）。
+    # 这里按**装配帧真实拥有的交易日**把评估窗下界前推，让预热段有真数据；
+    # 前推不放松预热门（截断窗口噪声照旧挡在外面），也不触碰 PIT（只是把更早的截面
+    # 移出训练统计）。requested/effective 双下界进 manifest，可复现。
+    _clamp = clamp_eval_start_for_warmup(
+        daily["trade_date"].unique().to_list(), start, AGENT_WARMUP_LOOKBACK,
+    )
+    if _clamp.clamped:
+        print(
+            f"[factor-library] 评估窗下界前推 {start} → {_clamp.effective_start}："
+            f"装配帧在 {start} 之前只有 {_clamp.warm_bars_requested} 根 bar"
+            f"（数据湖左边界所致），不足预留的 {_clamp.reserved_bars} 根预热；"
+            f"不前推则所有带时序算子的表达式都会被预热门丢弃（n_evaluated=0）",
+            file=sys.stderr,
+        )
+        start = _clamp.effective_start
+    elif _clamp.degenerate:
+        print(
+            f"[factor-library] 警告：装配帧总交易日数不足 {_clamp.reserved_bars} 根，"
+            f"无法为评估窗预留预热段；带时序算子的表达式将被预热门丢弃",
+            file=sys.stderr,
+        )
     # ── prepped 单例（rebuild 帧生命周期收敛）──────────────────────────────────
     # 这条链上曾有**四份**同源全宽帧同时在世：raw 装配帧 `daily` + evaluator 内 prep
     # + 复审物化器 prep + `fl.rebuild` 内 lift 复审 ctx 的 prep，全 A × 多年实测被
@@ -1572,6 +1600,15 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
         admission_start=lift_adm_start,
         admission_end=lift_adm_end,
         only=only,
+        manifest_extra={
+            # 评估窗下界的两个口径都留档：requested = 操作者传的 --start，
+            # eval_start（manifest 本体字段）= 让开预热段后**真实使用**的下界。
+            "requested_eval_start": _clamp.requested_start,
+            "warmup_reserved_bars": _clamp.reserved_bars,
+            "warmup_bars_at_requested_start": _clamp.warm_bars_requested,
+            "eval_start_clamped": _clamp.clamped,
+            "warmup_prefix_degenerate": _clamp.degenerate,
+        },
     )
     # lift 轨复审失败时 rebuild 已恢复旧记录；CLI 必须 fail-loudly，禁止「表面成功」
     if res.lift_review_error is not None:

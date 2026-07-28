@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
@@ -160,3 +161,66 @@ def default_window(market: str, *, years: int = 6, today: date | None = None) ->
     if market == "crypto" and start < _CRYPTO_START_FLOOR:
         start = _CRYPTO_START_FLOOR
     return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+
+# ── 评估窗下界的真实预热预留 ────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class WarmupClamp:
+    """``clamp_eval_start_for_warmup`` 的结果（全部字段进 manifest，可复现）。"""
+
+    requested_start: str        # 调用方要的下界（YYYYMMDD）
+    effective_start: str        # 实际该用的下界（YYYYMMDD）；未前推时 == requested_start
+    reserved_bars: int          # 要求预留的预热 bar 数
+    warm_bars_requested: int    # requested_start 之前**帧里真有**的 bar 数
+    warm_bars_effective: int    # effective_start 之前**帧里真有**的 bar 数
+    clamped: bool               # 是否发生了前推
+    degenerate: bool            # 帧总长不足 reserved_bars，无从前推（如实报告，不前推）
+
+
+def clamp_eval_start_for_warmup(
+    frame_dates, requested_start: str, reserved_bars: int,
+) -> WarmupClamp:
+    """把评估窗下界前推到「它之前真有 ``reserved_bars`` 根 bar」的那个交易日。
+
+    动机（2026-07-28 实测缺陷）：扩窗预热是**请求**，不是保证。
+    `FactorDataContext.expanded_start` 会向前要 ``lookback_days`` 个自然日，但盘上没有
+    的数据变不出来——A股 ``data/raw/daily`` 最早 20160104，用 ``--start 20160104`` 跑
+    `factor-library rebuild` 时装配帧的第一行就是 20160104，
+    ``prepped.filter(trade_date < eval_start)`` **为空** → `warmup_bars_by_leaf` 对
+    **每个**叶子都算出 ``have=0`` → 任何带 ts_*/delay 的表达式一律被
+    `warmup_shortfall` 判「预热不足」→ ``ic_train=None`` 被丢 → ``n_evaluated=0``
+    而进程 exit=0。整轮 rebuild 静默空转，库里 90 条 active/probation 里 80 条带时序
+    算子，一条都刷不上。
+
+    修法不是放松预热门（那会把 `operators._MIN=3` 造出的截断窗口噪声灌进 IC 序列和
+    DSR 池），而是**让评估窗自己让开预热段**：下界前推到帧里第 ``reserved_bars``
+    根 bar 之后的第一天。前推后 t 日信号仍只用 ≤t 的信息（铁律#1 不受影响，前推只是
+    把更早、更脏的截面移出训练统计），且窗口口径与调用方装配帧时声明的预热预算一致。
+
+    Args:
+        frame_dates: 装配帧里出现过的交易日（``date`` / ``YYYYMMDD`` 字符串混排均可，
+            无需排序去重，本函数自己做）。
+        requested_start: 调用方要的下界（``YYYYMMDD``）。
+        reserved_bars: 要预留的预热 bar 数（rebuild 用 ``AGENT_WARMUP_LOOKBACK``，
+            与 `_prepare_agent_mining_data` 装帧时声明的预算同一个数）。
+
+    Returns:
+        `WarmupClamp`。预热已足（``warm_bars_requested >= reserved_bars``）→
+        ``clamped=False`` 且 ``effective_start == requested_start``（零回归）。
+        帧总长 ``<= reserved_bars`` → ``degenerate=True`` 且**不前推**（前推到帧外
+        等于把评估窗清空；如实报告让调用方大声抱怨，比悄悄产出空结果诚实）。
+    """
+    dates = sorted({_coerce_date(d) for d in frame_dates})
+    req = _coerce_date(requested_start)
+    req_s = req.strftime("%Y%m%d")
+    n_reserved = max(0, int(reserved_bars))
+    warm_req = sum(1 for d in dates if d < req)
+    if warm_req >= n_reserved:
+        return WarmupClamp(req_s, req_s, n_reserved, warm_req, warm_req, False, False)
+    if len(dates) <= n_reserved:
+        # 整帧都不够预留（空帧 / 极短窗口 / 测试桩）→ 无从前推
+        return WarmupClamp(req_s, req_s, n_reserved, warm_req, warm_req, False, True)
+    eff = dates[n_reserved]
+    return WarmupClamp(req_s, eff.strftime("%Y%m%d"), n_reserved,
+                       warm_req, n_reserved, True, False)

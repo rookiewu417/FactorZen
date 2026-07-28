@@ -657,6 +657,121 @@ def test_targeted_lift_track_goes_only_through_lift_review(tmp_path):
     assert lib["rank(open)"].admission_track == "lift"   # 没被 upsert 打回 single
     assert lib["rank(close)"].ic_train == 0.22
 
+
+# ── 10. 评估窗下界必须有真实预热（数据湖左边界撞上 --start 的静默空转）────────
+
+def _lakelike_daily(n_stocks=40, n_days=620, seed=7, first=date(2016, 1, 4)):
+    """左边界 = ``first`` 的合成日频帧——复刻「--start 正好是数据湖第一根 bar」。"""
+    rng = np.random.default_rng(seed)
+    days, d = [], first
+    while len(days) < n_days:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    rows = []
+    for s in [f"{i:06d}.SH" for i in range(n_stocks)]:
+        p = 10.0
+        for day in days:
+            p = float(max(p * (1 + rng.standard_normal() * 0.02), 0.1))
+            rows.append({"trade_date": day, "ts_code": s, "close": p, "close_adj": p,
+                         "open_adj": p, "high_adj": p, "low_adj": p, "open": p,
+                         "high": p, "low": p, "pre_close": p, "amount": 1e7,
+                         "vol": float(abs(rng.standard_normal()) * 1e5 + 1e4)})
+    return pl.DataFrame(rows), days
+
+
+def test_cli_rebuild_reserves_warmup_when_start_hits_lake_left_edge(tmp_path, monkeypatch):
+    """`fz factor-library rebuild --start <数据湖第一根 bar>`：不许静默空转。
+
+    真实缺陷（2026-07-28 全历史 rebuild）：A股湖最早 20160104，``--start 20160104``
+    使扩窗预热前缀物理为空 → 每个叶 ``have=0`` → 带 ts_*/delay 的表达式一律
+    「预热不足」→ ``ic_train=None`` 丢弃 → ``n_evaluated=0`` 而 exit=0。
+
+    判别力：断言的是**记录指标真的被刷新**（ic_train 从预置哨兵值变成评估器现算的
+    非哨兵值）+ manifest 如实记下 requested/effective 两个下界，而不是只看 exit code。
+    """
+    import factorzen.cli.main as cli_main
+    from factorzen.cli.main import build_parser
+    from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
+    from factorzen.discovery import factor_library as fl
+    from factorzen.discovery.factor_library import _save_library
+
+    daily, days = _lakelike_daily(n_days=AGENT_WARMUP_LOOKBACK + 120)
+    target = "delay(close, 1)"
+    sentinel = -0.999                                  # 与评估器可能算出的值绝不相等
+    _save_library("ashare", [_rec(target, ic_train=sentinel)], root=str(tmp_path))
+
+    monkeypatch.setattr(cli_main, "_prepare_agent_mining_data",
+                        lambda args: (daily, None, {}))
+    monkeypatch.setattr(fl, "collect_source_expressions", lambda market: [target])
+    monkeypatch.setattr(fl, "DEFAULT_ROOT", str(tmp_path))
+    orig_rebuild = fl.rebuild
+
+    def rebuild_to_tmp(*a, **kw):
+        kw.setdefault("root", str(tmp_path))
+        return orig_rebuild(*a, **kw)
+
+    monkeypatch.setattr(fl, "rebuild", rebuild_to_tmp)
+
+    requested = days[0].strftime("%Y%m%d")             # == 帧左边界
+    args = build_parser().parse_args([
+        "factor-library", "rebuild", "--market", "ashare", "--universe", "all_a",
+        "--start", requested, "--end", days[-1].strftime("%Y%m%d"),
+        "--only", target,
+    ])
+    assert cli_main._cmd_factor_library_rebuild(args) == 0
+
+    rec = _by_expr(tmp_path)[target]
+    assert rec.ic_train is not None
+    assert rec.ic_train != sentinel, "指标没被刷新——表达式仍被预热门丢了"
+
+    man = json.loads((tmp_path / "rebuild_ashare_manifest.json").read_text())
+    assert man["n_evaluated"] == 1
+    assert man["requested_eval_start"] == requested
+    assert man["eval_start"] > requested                # 下界被前推
+    assert man["warmup_reserved_bars"] == AGENT_WARMUP_LOOKBACK
+    # 前推后的下界之前必须真有 AGENT_WARMUP_LOOKBACK 根 bar（独立重数，不信实现自报）
+    eff = dt.datetime.strptime(man["eval_start"], "%Y%m%d").date()
+    assert sum(1 for d in days if d < eff) == AGENT_WARMUP_LOOKBACK
+    assert rec.eval_start == man["eval_start"]         # 记录写的是真实使用的窗口
+
+
+def test_cli_rebuild_keeps_start_when_warmup_already_sufficient(tmp_path, monkeypatch):
+    """零回归：预热已足（默认 6 年窗口那条路）时 ``--start`` 一个字节都不动。"""
+    import factorzen.cli.main as cli_main
+    from factorzen.cli.main import build_parser
+    from factorzen.config.constants import AGENT_WARMUP_LOOKBACK
+    from factorzen.discovery import factor_library as fl
+    from factorzen.discovery.factor_library import _save_library
+
+    daily, days = _lakelike_daily(n_days=AGENT_WARMUP_LOOKBACK + 120)
+    target = "delay(close, 1)"
+    _save_library("ashare", [_rec(target)], root=str(tmp_path))
+
+    monkeypatch.setattr(cli_main, "_prepare_agent_mining_data",
+                        lambda args: (daily, None, {}))
+    monkeypatch.setattr(fl, "collect_source_expressions", lambda market: [target])
+    monkeypatch.setattr(fl, "DEFAULT_ROOT", str(tmp_path))
+    orig_rebuild = fl.rebuild
+
+    def rebuild_to_tmp(*a, **kw):
+        kw.setdefault("root", str(tmp_path))
+        return orig_rebuild(*a, **kw)
+
+    monkeypatch.setattr(fl, "rebuild", rebuild_to_tmp)
+
+    requested = days[AGENT_WARMUP_LOOKBACK].strftime("%Y%m%d")   # 之前恰好 504 根
+    args = build_parser().parse_args([
+        "factor-library", "rebuild", "--market", "ashare", "--universe", "all_a",
+        "--start", requested, "--end", days[-1].strftime("%Y%m%d"),
+        "--only", target,
+    ])
+    assert cli_main._cmd_factor_library_rebuild(args) == 0
+    man = json.loads((tmp_path / "rebuild_ashare_manifest.json").read_text())
+    assert man["eval_start"] == requested and man["requested_eval_start"] == requested
+    assert man["n_evaluated"] == 1
+
+
 # ==== 来自 test_combine_library_cli.py ====
 # ==== 来自 test_combine_from_library.py ====
 

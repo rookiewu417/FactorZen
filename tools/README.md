@@ -56,3 +56,26 @@ tmux new-session -d -s tushare_gapfill \
 pixi run python tools/repair_raw_partition.py data/raw/<type>.bak.<timestamp> \
   --target-data-type daily_basic
 ```
+
+## 因子库负裸 IC 清算
+
+`naked_ic_cleanup.py` 按一次「统一窗口逐因子裸 RankIC」审计的 CSV 清算存量库：把判负的
+`active` 记录改成 `status="naked_negative"`（**保留在库、退出 active 的一切消费、改回
+`active` 即恢复**），并把审计窗裸 IC 回填到 `admission_ic` / `admission_start` /
+`admission_end`。**默认 dry-run**，只打印变更计划并把提案库写到旁路目录；`--apply` 才会
+先备份 `<market>.jsonl.bak.<yyyymmdd>_naked_cleanup` 再原子覆盖，并落旁车
+`naked_ic_cleanup_manifest.json`（审计产物路径 + md5、`git_sha`、剔负名单 = 回滚清单）。
+
+```bash
+# dry-run：看清单，不写库
+pixi run python tools/naked_ic_cleanup.py \
+  --csv .artifacts/r2_naked_ic_audit/naked_ic_by_factor_full.csv
+
+# 人工过目后落库
+pixi run python tools/naked_ic_cleanup.py \
+  --csv .artifacts/r2_naked_ic_audit/naked_ic_by_factor_full.csv --apply
+```
+
+退出码 0=无告警、2=有一致性告警（计划照常生成）、1=输入错误。工具幂等，重复跑 0 变更。
+注意 `status="naked_negative"` **扛不住全量 `fz factor-library rebuild`**（`fresh=True`
+清库重评会写回 `active`），跑过全量 rebuild 之后要重跑本工具；定向 `rebuild --only` 不受影响。

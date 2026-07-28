@@ -281,6 +281,7 @@ def _run_one_round(
     sleeve_gate: bool = True,
     leaf_scheduler: bool = False,
     focus_picks: dict[str, int] | None = None,
+    focus_override: list[str] | None = None,
 ) -> dict | None:
     """跑一轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -302,6 +303,14 @@ def _run_one_round(
     否则单 session 里 leaf_stats 增量太小、排序几十轮不动，焦点会锁死在同一批叶上。
     ``None``（默认）→ 不计数不衰减，纯 UCB 零回归。
 
+    ``focus_override``：**定向 campaign** 主攻叶集（已由 `run_team_agent` 经
+    `resolve_focus_override` 解析并与 ``ctx.leaf_names`` 求交，此处直接信任）。非空时：
+    ①**跳过 UCB**（不调 `ucb_focus_leaves`、不写 ``focus_picks``——pick-decay 的语义是
+    「轮换到别的方向」，与定向正相反）；②焦点恒为该叶集，分数记 ``None``（无 UCB 分可记）；
+    ③这些叶从挖穿判定里**豁免**（`recall(exempt_exhausted=...)` 单一入口，同时作用于
+    提示词与硬过滤两个消费方）。豁免**只对**这些叶，其余挖穿叶照常硬排除。
+    ``None``/空（默认）→ 一切走原 UCB 路径，逐值零回归。
+
     ``eval_start``：会话级 train 段起点（date，或 None，由 `run_team_agent` 解析一次后逐轮传入）。
     **None-gating**：为 None 时 train 段求值走裸 `evaluate_expressions(exprs, mining_df, bundle)`
     （旧调用者零回归）；非 None 时改在 ``warmup_daily``（完整帧）上求值、裁剪到
@@ -317,25 +326,40 @@ def _run_one_round(
     # library_covered 在 session 开始预构建，逐轮复用（库文件本 session 不改）。
     # library_exprs：库内全部表达式，供挖穿判定兜底（≠ library_covered，后者按族截断
     # 只为喂 LLM；拿截断列表判挖穿会漏掉绝大多数库因子，等于没兜底）。
+    # exempt_exhausted：定向 campaign 的主攻叶豁免挖穿判定。**必须在 recall 这一层**
+    # 传——`rec.leaf_guidance`（喂 prompt）与 `rec.exhausted_leaves`（喂硬过滤/调度器）
+    # 由 recall 同参产出，只豁免一侧会让 prompt 同时说「该叶已挖穿避开」和「该叶是本轮
+    # 主攻方向」，两条指令直接打架。
     rec = recall(
         index, k=5, data_window=data_window, leaf_names=list(ctx.leaf_names),
         library_covered=library_covered, library_exprs=library_exprs,
+        exempt_exhausted=focus_override or None,
     )
-    # ①½ 叶子 UCB 调度（默认关）：把探索/利用从提示词文案变成**采样决策**。
+    # ①½ 焦点叶：定向 campaign（override）优先，否则叶子 UCB 调度（默认关）
+    # ——后者把探索/利用从提示词文案变成**采样决策**。
     # stats 直接取 recall 已算好的那份——`leaf_stats` 要流式扫全量 index，一轮算两遍
     # 既浪费又会让「同参」退化成人工约定（见 Recall.leaf_stats docstring）。
     # exhausted 用 rec.exhausted_leaves：与 ③½ 的 filter_exhausted_expressions 同一份，
     # 否则会出现「调度器选中该叶 → 硬闸把它产的表达式全丢」的自相矛盾空转。
-    focus_leaves: list[tuple[str, float]] | None = None
-    if leaf_scheduler and rec.leaf_stats is not None:
+    focus_leaves: list[tuple[str, float | None]] | None = None
+    if focus_override:
+        # 定向：焦点恒为用户指定叶集（保序），不算 UCB 分 → 落盘记 null。
+        # 不写 focus_picks：pick-decay 是「几轮后轮换到别的方向」，与定向语义相反。
+        focus_leaves = [(name, None) for name in focus_override]
+        _step("  ①½ 定向 campaign ▸ 主攻叶(用户指定,豁免挖穿): "
+              + "、".join(focus_override))
+    elif leaf_scheduler and rec.leaf_stats is not None:
         from factorzen.agents.leaf_scheduler import ucb_focus_leaves
 
-        focus_leaves = ucb_focus_leaves(
+        # 显式重装成 `float | None` 元素列表：list 不变型，UCB 的
+        # `list[tuple[str, float]]` 不能直接赋给带 None 分数的 override 共用类型。
+        _ucb: list[tuple[str, float | None]] = list(ucb_focus_leaves(
             rec.leaf_stats, list(ctx.leaf_names),
             exhausted=set(rec.exhausted_leaves or []),
             crowded=dict(library_crowded or []),
             session_picks=focus_picks,
-        ) or None
+        ))
+        focus_leaves = _ucb or None
         if focus_leaves:
             # 本轮选中即计数（就地更新调用方持有的 session 级 dict）：下一轮这些叶的
             # 「利用+探索」再乘一次衰减，几轮后自动让位给后排 —— 修 focus 固化。
@@ -343,7 +367,8 @@ def _run_one_round(
                 for _leaf, _ in focus_leaves:
                     focus_picks[_leaf] = focus_picks.get(_leaf, 0) + 1
             _step("  ①½ 叶子 UCB 调度 ▸ 焦点叶: "
-                  + "、".join(f"{n}({s:.2f})" for n, s in focus_leaves))
+                  + "、".join(f"{n}({s:.2f})" for n, s in focus_leaves
+                             if s is not None))
     tasks: list[dict] = []
 
     # ②/③ Hypothesis +（任务分解）+ Coder（依据上一轮 Critic 反馈，跨轮）
@@ -383,6 +408,7 @@ def _run_one_round(
                 leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
                 lift_rejected=rec.lift_rejected, library_crowded=library_crowded,
                 focus_leaves=focus_leaves,
+                focus_override=bool(focus_override),
             )
             texts: list[str] = []
             signs: dict[str, int] = {}
@@ -401,6 +427,7 @@ def _run_one_round(
             leaf_guidance=rec.leaf_guidance, library_covered=rec.library_covered,
             lift_rejected=rec.lift_rejected, library_crowded=library_crowded,
             focus_leaves=focus_leaves,
+            focus_override=bool(focus_override),
         ), {}
 
     # 修订批 ∥ propose（互相独立）；提交序：revise（若有）→ propose
@@ -758,12 +785,15 @@ def _run_one_round(
         "n_sign_mismatch": n_sign_mismatch,
         "critic_skipped": critic_skipped,
     }
-    # UCB 焦点叶：**有选择才落键**。恒写空列表会给所有旧 run 的 rounds_log 加一个新字段，
+    # 焦点叶：**有选择才落键**。恒写空列表会给所有旧 run 的 rounds_log 加一个新字段，
     # 调度器关着时 manifest 形状就该与引入本特性前逐字节一致（零回归）。
     # 分数 round 到 4 位：进 JSON 的是决策证据，不需要 double 全精度。
+    # 定向 campaign（override）无 UCB 分 → 记 null，形状仍是 ``[名, 分]`` 二元列表，
+    # 消费方（manifest 审计）不必改；null 本身就是「这轮不是调度器选的」的证据。
     if focus_leaves:
         _round_entry["focus_leaves"] = [
-            [name, round(score, 4)] for name, score in focus_leaves
+            [name, None if score is None else round(score, 4)]
+            for name, score in focus_leaves
         ]
     rounds_log.append(_round_entry)
 
@@ -857,6 +887,9 @@ def run_team_agent(
     # 叶子 UCB 调度：每轮确定性选 K 个焦点叶注入 Hypothesis prompt + 落 rounds_log。
     # 默认 False → 不算不注入不落键，零回归。
     leaf_scheduler: bool = False,
+    # 定向 campaign：本 session 主攻叶集（``"a,b,c"`` 或列表）。非空 → 跳过 UCB、
+    # 每轮焦点恒为该集、这些叶豁免 exhausted。None（默认）→ 零回归。
+    focus_leaves: str | list[str] | None = None,
 ) -> TeamResult:
     """跨轮 feedback 流水线：每轮 Librarian→Hypothesis/Coder→Evaluator→Critic→Librarian。
 
@@ -916,6 +949,14 @@ def run_team_agent(
     ctx.leaf_names, ctx.leaf_map = apply_leaf_exclusion(
         list(ctx.leaf_names), ctx.leaf_map, excluded_leaves,
     )
+    # ── 定向 campaign：解析主攻叶集（须在 leaf_health 摘叶之后——与死叶求交没有意义，
+    # 用户指定一个本 session 根本没数据的叶，要当无效名报出来而不是静默保留）。
+    # 全无效 → ValueError 冒泡（fail loudly，见 resolve_focus_override）。
+    from factorzen.agents.leaf_scheduler import resolve_focus_override
+    _focus_override = resolve_focus_override(focus_leaves, ctx.leaf_names)
+    if _focus_override:
+        _step("定向 campaign ▸ 主攻叶(跳过 UCB,豁免挖穿): "
+              + "、".join(_focus_override))
     _eval_start_date = _to_date(eval_start) if eval_start is not None else None
     # 叶子历史预算（只算一次，逐轮复用）：在含预热前缀的完整帧上算各叶子 eval_start 前的
     # 可用预热，只保留短于预热前缀（AGENT_WARMUP_LOOKBACK）的叶子回灌 LLM——引导它别对
@@ -1149,6 +1190,7 @@ def run_team_agent(
                 sleeve_gate=sleeve_gate,
                 leaf_scheduler=leaf_scheduler,
                 focus_picks=focus_picks,
+                focus_override=_focus_override or None,
             )
         except LLMClientError as exc:
             llm_failures += 1

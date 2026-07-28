@@ -513,6 +513,21 @@ pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi
 | `intraday_scout` | false | `--intraday-scout` | `--set intraday_scout=true` |
 | `scout_k` | 4 | `--scout-k` | `--set scout_k=5` |
 | `scout_max_leaves` | 12 | `--scout-max-leaves` | `--set scout_max_leaves=16` |
+| `focus_leaves` | None | 无（新增） | `--set focus_leaves=fc_surprise,assets_yoy` |
+| `horizon` | 1 | 无（新增） | `--set horizon=5` |
+
+**定向 campaign（`focus_leaves`）**：逗号分隔叶名。非空时本 session **跳过叶子 UCB 调度**，
+每轮焦点恒为该叶集，且这些叶**豁免「挖穿」硬排除**（`rounds_log[*].focus_leaves` 记
+`[叶名, null]`——`null` 即"非调度器所选"）。用途是重攻稀疏事件叶（`fc_surprise` /
+`assets_yoy` / `express_yoy` / `fc_flag` 等）：它们在稠密单因子护栏下结构性失败被判挖穿，
+但那不等于方向被挖穿（sleeve 稀疏子集通道才是它们的评估路径）。无效叶名警告后忽略，
+**全部无效直接报错退出**。原值落 `manifest.params.focus_leaves`。
+
+**`horizon` 的消费范围**（别误以为它改挖掘 IC）：进 `campaign_key`（跨 session DSR 先验
+分组）、因子库登记行、以及 session 末 lift 裁决的前向收益面板；**不改**每轮护栏 IC
+——`quick_fitness` / `segment_daily_ic` 固定按 1 日前向收益算。落
+`manifest.params.horizon` 后，`factor-library lift-test` 才能沿用同一 horizon（此前
+team manifest 不写该键，只能回退 `DEFAULT_HORIZON`）。
 
 #### mine search 合法 KEY
 

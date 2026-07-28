@@ -105,6 +105,13 @@ _MINE_TEAM_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
     "intraday_scout": (bool, False, None),
     "scout_k": (int, 4, None),
     "scout_max_leaves": (int, 12, None),
+    # 定向 campaign：逗号分隔主攻叶名（如 fc_surprise,assets_yoy,express_yoy）。
+    # 非空 → 跳过 UCB 调度、每轮焦点恒为该集、这些叶豁免「挖穿」硬排除
+    # （稀疏事件叶在稠密护栏下结构性失败 ≠ 方向挖穿，sleeve 旁路才是它们的通道）。
+    "focus_leaves": (str, None, None),
+    # 前向收益期：进 campaign_key（跨 session DSR 分组）/ 库行 / lift 裁决收益面板；
+    # **不改**每轮挖掘护栏 IC（quick_fitness / segment_daily_ic 硬编码 horizons=[1]）。
+    "horizon": (int, 1, None),
 }
 
 _LIFT_TEST_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
@@ -1252,6 +1259,10 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         # 默认开（no_* 关闭旗标，与 no_sleeve_gate 同款）；库函数默认仍 False——
         # 生产入口默认开、库 API 显式传参，既有测试与调用方零回归。
         leaf_scheduler=not bool(getattr(args, "no_leaf_scheduler", False)),
+        # 定向 campaign：非空时 leaf_scheduler 形同虚设（override 分支优先），
+        # 但仍原样透传——manifest 要记「这次到底开没开调度器」。
+        focus_leaves=getattr(args, "focus_leaves", None),
+        horizon=int(getattr(args, "horizon", 1) or 1),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0

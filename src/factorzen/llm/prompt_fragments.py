@@ -145,17 +145,34 @@ def format_library_crowded(crowded: list[tuple[str, int]] | None) -> str:
     )
 
 
-def format_focus_leaves(focus: list[tuple[str, float]] | None) -> str:
-    """本轮 UCB 焦点叶子。None/[] → \"\"（零回归）。
+def format_focus_leaves(
+    focus: list[tuple[str, float | None]] | None, *, override: bool = False,
+) -> str:
+    """本轮焦点叶子。None/[] → \"\"（零回归）。
 
     与 `format_leaf_guidance` / `format_library_crowded` 的**背景信息**语气不同：这条是
     **明确指令**——焦点叶由 `agents.leaf_scheduler.ucb_focus_leaves` 确定性选出并落
     rounds_log，prompt 若只把它当参考，落盘的调度决策就与实际生成脱钩、无从归因。
     分数不进文案（LLM 无从校准这个尺度），只保留排序。
+
+    ``override=True``：**定向 campaign**（用户经 ``--set focus_leaves=...`` 指定，
+    见 `agents.leaf_scheduler.resolve_focus_override`）。这批叶通常正是被挖穿标记
+    死刑、又被 override 豁免放回来的**稀疏事件**叶——按稠密量价的老套路再写一遍
+    只会复现同一批失败，所以文案要额外给出事件式构造方向。默认 ``False`` 时
+    逐字节回到 UCB 文案（零回归）。
     """
     if not focus:
         return ""
     names = "、".join(str(name) for name, _score in focus)
+    if override:
+        return (
+            f"本轮定向攻坚叶子(用户指定,已豁免既有「挖穿」标记):{names}"
+            "——请让绝大部分假设围绕这些叶子展开。"
+            "这些叶多为稀疏事件类(触发日稀少、非触发日无值),"
+            "按稠密量价的写法会重复既有失败:优先事件触发/窗口型构造"
+            "(如 ts_max/ts_sum 短窗聚合、事件后 N 日累计、与量价的条件交互),"
+            "稀疏子集评估通道会兜底其覆盖率"
+        )
     return (
         f"本轮焦点叶子(按探索价值排序):{names}"
         "——请让大部分假设围绕这些叶子展开(可与其它族组合),"

@@ -8,10 +8,17 @@ ARR 14.21%，LLM 自选 0.0476 / 10.09%，随机 0.0445 / 8.97%（+11.8% IC，�
 
 本模块只做一件事：给定历史统计，**确定性**地选出本轮该重点开采的 K 个叶子。
 选择结果由调用方作为明确指令注入 Hypothesis prompt，并落 rounds_log 供复现与归因。
+
+另有一条**定向 campaign** 旁路（`resolve_focus_override`）：用户显式指定本 session 的
+主攻叶集，直接绕开 UCB。两者在 `_run_one_round` 里互斥——override 优先。
 """
 from __future__ import annotations
 
+import logging
 import math
+from collections.abc import Iterable
+
+_LOG = logging.getLogger(__name__)
 
 # 探索系数默认值。UCB1 的理论常数是 sqrt(2)≈1.414；这里取 1.4 同量级，
 # 语义是「一个从没试过的叶子，探索项约等于 |IC| 0.06~0.09 的利用项」——刻意让冷启动
@@ -28,6 +35,62 @@ DEFAULT_FOCUS_K = 3
 # 0.7 让一个领跑叶大约 3~4 轮后被后排追上（0.7^4≈0.24），既能轮换又不至于一轮就丢掉
 # 真正强的方向；`pick_decay=1.0` 即关闭衰减，回到纯 UCB。
 DEFAULT_PICK_DECAY = 0.7
+
+
+def resolve_focus_override(
+    raw: str | Iterable[str] | None,
+    leaf_names: Iterable[str],
+) -> list[str]:
+    """解析定向 campaign 的主攻叶集：``"a,b,c"`` 或 ``["a","b"]`` → 与存活叶求交。
+
+    定向 campaign 的用途：稀疏**事件**叶（``fc_surprise`` / ``assets_yoy`` /
+    ``express_yoy`` …）在稠密单因子护栏下结构性失败，会被 `raw_exhausted_leaves`
+    判「试 ≥15 次 0 过关」打成挖穿——但**结构性失败 ≠ 方向挖穿**（sleeve 旁路正是为
+    它们建的）。挖穿标记一旦贴上，UCB 硬排除 + `filter_exhausted_expressions` 硬丢弃，
+    LLM 再也碰不到。本函数解析出的叶集在调用侧同时承担两件事：**跳过 UCB** 与
+    **只对这些叶豁免 exhausted**。
+
+    - ``None`` / 空串 / 全空白 / 空列表 → ``[]``（未启用 override，调用方走 UCB，零回归）。
+    - 顺序 = **用户给定顺序**（不是 ``leaf_names`` 顺序）；重复名保序去重。
+    - 不在 ``leaf_names``（本 session leaf_health 摘除后的存活叶）里的名字 → 警告并忽略。
+    - **全部无效 → ``ValueError``**（fail loudly）。静默降级成普通 UCB 是最坏结果：
+      用户以为定向 campaign 跑过了，实际一次都没攻。
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        wanted = [part.strip() for part in raw.split(",")]
+    else:
+        wanted = [str(part).strip() for part in raw]
+    wanted = [name for name in wanted if name]
+    if not wanted:
+        return []
+
+    live = set(leaf_names or ())
+    kept: list[str] = []
+    unknown: list[str] = []
+    seen: set[str] = set()
+    for name in wanted:
+        if name not in live:
+            if name not in unknown:
+                unknown.append(name)
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        kept.append(name)
+
+    if unknown:
+        _LOG.warning(
+            "focus_leaves 含无效叶名（忽略）: %s；本 session 存活叶共 %d 个",
+            "、".join(unknown), len(live),
+        )
+    if not kept:
+        raise ValueError(
+            f"focus_leaves 全部无效: {'、'.join(unknown)}"
+            "——请对照本 session 存活叶集（leaf_health 摘除后）重填"
+        )
+    return kept
 
 
 def _direction_tries(st: dict | None) -> int:

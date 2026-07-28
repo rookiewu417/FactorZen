@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from factorzen.discovery.expression import (
@@ -92,6 +93,7 @@ def build_leaf_guidance(
     exhausted_min: int | None = None,
     unexplored_max: int | None = None,
     library_exprs: list[str] | None = None,
+    exempt_exhausted: Iterable[str] | None = None,
 ) -> dict[str, list[str]]:
     """从 leaf_stats 构建挖穿/未探索列表（只含 ``leaf_names`` 中的存活叶子）。
 
@@ -123,6 +125,11 @@ def build_leaf_guidance(
     ——那条因子一旦被降级出 active/probation，豁免自动消失。「半年前贡献过、之后一直失败」
     属于**拥挤**（``library_crowded`` 软降权通道），不是**枯竭**（硬避）。
 
+    ``exempt_exhausted``：**定向 campaign** 豁免叶（见
+    `agents.leaf_scheduler.resolve_focus_override`）——用户显式声明"我知道它标了挖穿，
+    我要再攻一次"。这些叶不进 ``exhausted``（``unexplored`` 判定不受影响）。
+    None/空 → 零回归。
+
     阈值默认读模块常量（调用时解析，便于测试 monkeypatch）。
     """
     if exhausted_min is None:
@@ -130,6 +137,7 @@ def build_leaf_guidance(
     if unexplored_max is None:
         unexplored_max = UNEXPLORED_MAX_TRIES
     in_lib = leaves_present_in_library(library_exprs, leaf_names)
+    exempt = set(exempt_exhausted or ())
     exhausted: list[str] = []
     unexplored: list[str] = []
     for name in leaf_names:
@@ -141,7 +149,8 @@ def build_leaf_guidance(
         n_cov = int(st.get("n_coverage_fail") or 0)
         best = float(st.get("best_abs_ic") or 0.0)
         direction_tries = n_exprs - n_cov
-        if direction_tries >= exhausted_min and n_passed == 0 and name not in in_lib:
+        if (direction_tries >= exhausted_min and n_passed == 0
+                and name not in in_lib and name not in exempt):
             exhausted.append(
                 f"{name}(试 {direction_tries} 次 {n_passed} 过关, best|IC|={best:.3f})"
             )
@@ -156,15 +165,18 @@ def raw_exhausted_leaves(
     *,
     exhausted_min: int | None = None,
     library_exprs: list[str] | None = None,
+    exempt_exhausted: Iterable[str] | None = None,
 ) -> list[str]:
     """挖穿叶的**裸名**列表（硬过滤用；口径与 ``build_leaf_guidance`` 一致）。
 
-    ``library_exprs`` 必须与 ``build_leaf_guidance`` 传同一份——这是**硬过滤**的输入，
-    比提示词严重：口径漂移会让 LLM 看到「未枯竭」却仍被过滤器丢弃。
+    ``library_exprs`` / ``exempt_exhausted`` 必须与 ``build_leaf_guidance`` 传同一份
+    ——这是**硬过滤**的输入，比提示词严重：口径漂移会让 LLM 看到「未枯竭」却仍被
+    过滤器丢弃（定向 campaign 下更糟：prompt 同时说"避开"和"主攻"）。
     """
     if exhausted_min is None:
         exhausted_min = EXHAUSTED_MIN_TRIES
     in_lib = leaves_present_in_library(library_exprs, leaf_names)
+    exempt = set(exempt_exhausted or ())
     out: list[str] = []
     for name in leaf_names:
         st = stats.get(name) or {
@@ -174,7 +186,8 @@ def raw_exhausted_leaves(
         n_passed = int(st.get("n_passed") or 0)
         n_cov = int(st.get("n_coverage_fail") or 0)
         direction_tries = n_exprs - n_cov
-        if direction_tries >= exhausted_min and n_passed == 0 and name not in in_lib:
+        if (direction_tries >= exhausted_min and n_passed == 0
+                and name not in in_lib and name not in exempt):
             out.append(name)
     return out
 
@@ -187,6 +200,7 @@ def recall(
     leaf_names: list[str] | None = None,
     library_covered: list[str] | None = None,
     library_exprs: list[str] | None = None,
+    exempt_exhausted: Iterable[str] | None = None,
 ) -> Recall:
     """召回本数据窗口内的历史。
 
@@ -201,6 +215,9 @@ def recall(
     ``library_exprs``：库内**全部**表达式（不限 status、不截断），供挖穿判定兜底。
     与 ``library_covered`` 是两回事——后者按族截断（per_family=2/max_total=12）只为喂
     LLM，拿它判挖穿会漏掉绝大多数库因子。
+
+    ``exempt_exhausted``：定向 campaign 的主攻叶（``--set focus_leaves=...``），对挖穿
+    判定豁免。**单一入口**：从这里同时喂提示词与硬过滤两个消费方，不许下游各改一处。
     """
     leaf_guidance = None
     exhausted_leaves: list[str] | None = None
@@ -210,9 +227,11 @@ def recall(
         # 两个消费方（提示词 / 硬过滤）必须同参，否则 LLM 看到「未枯竭」却仍被丢弃
         leaf_guidance = build_leaf_guidance(
             stats, list(leaf_names), library_exprs=library_exprs,
+            exempt_exhausted=exempt_exhausted,
         )
         raw = raw_exhausted_leaves(
             stats, list(leaf_names), library_exprs=library_exprs,
+            exempt_exhausted=exempt_exhausted,
         )
         exhausted_leaves = raw or None
     lift_rej = index.known_lift_rejects(k=k, data_window=data_window)

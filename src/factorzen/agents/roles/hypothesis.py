@@ -79,7 +79,8 @@ def propose_hypotheses(
     library_covered: list[str] | None = None,
     lift_rejected: list[dict] | None = None,
     library_crowded: list[tuple[str, int]] | None = None,
-    focus_leaves: list[tuple[str, float]] | None = None,
+    focus_leaves: list[tuple[str, float | None]] | None = None,
+    focus_override: bool = False,
 ) -> list[str]:
     """提 n 个经济直觉方向（自然语言）。解析失败 → 空列表。
 
@@ -88,7 +89,9 @@ def propose_hypotheses(
     ``library_covered``：库内 active 高 IC 表达式；None → 不注入（零回归）。
     ``lift_rejected``：组合层 lift 拒绝方向；None → 不注入（零回归）。
     ``library_crowded``：库内拥挤叶子；None → 不注入（零回归）。
-    ``focus_leaves``：UCB 调度器选出的本轮焦点叶（名+分数）；None → 不注入（零回归）。"""
+    ``focus_leaves``：本轮焦点叶（名+分数；定向 campaign 时分数为 None）；
+    None → 不注入（零回归）。
+    ``focus_override``：焦点来自用户定向指定而非 UCB → 换事件式引导文案。"""
     sys = (
         "你是量化研究员，提出有经济直觉的选股方向（自然语言，不写公式）。"
         '只输出 JSON: {"hypotheses": ["方向1", "方向2"]}。'
@@ -119,7 +122,7 @@ def propose_hypotheses(
     if lcr:
         user += "\n" + lcr
     # 焦点叶放最后：它是本轮的**指令**，前面几段都是背景/避坑清单，压在末尾更难被忽略。
-    fl = format_focus_leaves(focus_leaves)
+    fl = format_focus_leaves(focus_leaves, override=focus_override)
     if fl:
         user += "\n" + fl
     # extract_json_items 兼容包装对象与裸顶层数组两种真实形状（crypto smoke 实测后者常见）。
@@ -142,7 +145,8 @@ def propose_structured(
     library_covered: list[str] | None = None,
     lift_rejected: list[dict] | None = None,
     library_crowded: list[tuple[str, int]] | None = None,
-    focus_leaves: list[tuple[str, float]] | None = None,
+    focus_leaves: list[tuple[str, float | None]] | None = None,
+    focus_override: bool = False,
 ) -> list[dict]:
     """结构化假设（RD-Agent 步1）：每个含 direction/mechanism/expected_sign/falsification。
 
@@ -151,7 +155,9 @@ def propose_structured(
     ``library_covered``：库内 active 高 IC 表达式；None → 不注入（零回归）。
     ``lift_rejected``：组合层 lift 拒绝方向；None → 不注入（零回归）。
     ``library_crowded``：库内拥挤叶子；None → 不注入（零回归）。
-    ``focus_leaves``：UCB 调度器选出的本轮焦点叶（名+分数）；None → 不注入（零回归）。"""
+    ``focus_leaves``：本轮焦点叶（名+分数；定向 campaign 时分数为 None）；
+    None → 不注入（零回归）。
+    ``focus_override``：焦点来自用户定向指定而非 UCB → 换事件式引导文案。"""
     from factorzen.llm.prompt_fragments import market_caveats
     sys = (
         "你是量化研究员，提出结构化选股假设。每个假设含四要素："
@@ -180,7 +186,7 @@ def propose_structured(
     if lcr:
         user += "\n" + lcr
     # 焦点叶放最后：它是本轮的**指令**，前面几段都是背景/避坑清单，压在末尾更难被忽略。
-    fl = format_focus_leaves(focus_leaves)
+    fl = format_focus_leaves(focus_leaves, override=focus_override)
     if fl:
         user += "\n" + fl
     # extract_json_items 兼容包装对象与裸顶层数组两种真实形状（crypto smoke 实测后者常见）。

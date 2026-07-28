@@ -439,7 +439,9 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     _add_freq_arg(m_team)
     _add_set_arg(
         m_team,
-        help_extra="如 llm_workers/heal_rounds/objective/hypotheses_per_round；见 docs/reference/cli.md",
+        help_extra="如 llm_workers/heal_rounds/objective/hypotheses_per_round/"
+                   "focus_leaves(定向 campaign,逗号分隔叶名:跳过 UCB+豁免挖穿)/horizon；"
+                   "见 docs/reference/cli.md",
     )
     m_team.set_defaults(
         func=commands._cmd_mine_team,

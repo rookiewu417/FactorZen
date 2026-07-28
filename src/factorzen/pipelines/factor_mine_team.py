@@ -63,6 +63,12 @@ def run_team_mine(
     exec_price_col: str | None = None,
     sleeve_gate: bool = True,
     leaf_scheduler: bool = False,
+    # 定向 campaign：本 session 主攻叶集（``"a,b,c"``）。非空 → 跳过 UCB、豁免挖穿。
+    focus_leaves: str | list[str] | None = None,
+    # 前向收益期。**注意消费范围**：horizon 进 campaign_key（跨 session DSR 先验分组）、
+    # 库 upsert 行、以及 session 末 lift 裁决的收益面板；但**不改**每轮挖掘护栏的 IC
+    # ——`quick_fitness` / `segment_daily_ic` 硬编码 `horizons=[1]`。
+    horizon: int = 1,
 ) -> dict:
     """跑多 Agent 团队挖掘，每轮增量落 manifest，收尾写 candidates.csv + 导出候选。
 
@@ -100,6 +106,13 @@ def run_team_mine(
         # 叶子 UCB 调度开关：开着时每轮焦点叶落在 rounds_log[*].focus_leaves，
         # 但「这次运行到底开没开」只有这里记得住（关闭时 rounds_log 不留任何痕迹）。
         "leaf_scheduler": leaf_scheduler,
+        # 定向 campaign 的**原值**（未与存活叶求交前）：rounds_log 只记交集后的实际主攻叶，
+        # 用户到底填了什么（含被忽略的无效名）只有这里留得住 —— 复现铁律#3。
+        "focus_leaves": focus_leaves,
+        # 前向收益期：进 campaign_key / 库行 / lift 裁决收益面板。
+        # `cli/main.py::_horizon_from_manifest` 读的就是这个键（此前 team params 从不写它，
+        # 于是 `factor-library lift-test` 只能回退 DEFAULT_HORIZON，与 mining 口径脱钩）。
+        "horizon": horizon,
         # 成交口径（可复现铁律：不落盘则事后无法复现评估世界）
         "exec_lag": exec_lag,
         "exec_price_col": exec_price_col,
@@ -155,6 +168,8 @@ def run_team_mine(
         exec_price_col=exec_price_col,
         sleeve_gate=sleeve_gate,
         leaf_scheduler=leaf_scheduler,
+        focus_leaves=focus_leaves,
+        horizon=horizon,
     )
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

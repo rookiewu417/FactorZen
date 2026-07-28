@@ -25,6 +25,15 @@ POOL_COMPACT_BYTES_THRESHOLD = 4 * (1024**3)  # 4 GiB
 # 值列 f32 阈值:估算 n_factors×n_rows×8B ≥ 此值时 compact 池值列存 f32
 # (仅存储层;__getitem__/numpy 边界升回 f64)。csi800 级 ~1.25G 不触发,f64 零回归。
 POOL_VALUE_F32_BYTES_THRESHOLD = 2 * (1024**3)  # 2 GiB
+# 值列 spill 阈值(与 f32 同估算口径 n_factors×n_rows×8B):≥ 此值时 compact 构建期
+# 逐因子求值→cast→立刻写单列 parquet→释放,全部落盘后再 lazy scan 一次装配宽帧。
+# 依据:构建期峰值 = prepped 宽帧 + **已累积值列** + 单表达式求值中间量三项叠加;
+# 2026-07-28 all_a 2016-2026(10.77M 行×87 记录)实测 pool-prebuild 子进程死在
+# 第 83/87 个因子(SIGKILL),满载累积值列 87×10.77M×4B ≈ 3.5G。
+# spill 把中间那一项压到「单列」,峰值降到 ≈ 最终宽帧 + 单列。
+# 取 2 GiB 与 f32 阈值同级、同估算式:两者同时触发,超阈值大池一次性切到「f32+落盘」,
+# 阈值以下(csi800 级估算 1.6G)完全走旧内存路径,逐字节零回归。
+POOL_SPILL_BYTES_THRESHOLD = 2 * (1024**3)  # 2 GiB
 # ts_code 读回 Categorical 的行数阈值(P4c):与 discovery.preparation.
 # KEYS_CATEGORICAL_ROWS_THRESHOLD 同值对齐;本模块禁止 import discovery,
 # 故本地定义,一致性由 tests/test_pool_prebuild.py 断言防漂移。

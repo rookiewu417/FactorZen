@@ -22,6 +22,8 @@ import hashlib
 import json
 import logging
 import math
+import shutil
+import tempfile
 import warnings
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
@@ -36,7 +38,13 @@ from factorzen.config.settings import (
     MINE_TEAM_DIR,
     MINING_SESSIONS_DIR,
 )
-from factorzen.discovery.expression import evaluate_materialized, parse_expr, to_expr_string
+from factorzen.discovery.expression import (
+    LEAF_FEATURES,
+    evaluate_materialized,
+    feature_names,
+    parse_expr,
+    to_expr_string,
+)
 from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD, acceptance_reasons
 
 # 容器类落 research/combination/pool(被依赖侧,避免 discovery↔research 环);
@@ -44,6 +52,7 @@ from factorzen.discovery.guardrails import DEFAULT_LIFT_THRESHOLD, acceptance_re
 from factorzen.research.combination.pool import (  # noqa: F401
     POOL_COMPACT_BYTES_THRESHOLD,
     POOL_KEY_BYTES_PER_ROW,
+    POOL_SPILL_BYTES_THRESHOLD,
     POOL_VALUE_F32_BYTES_THRESHOLD,
     CompactLibraryPool,
     HybridLibraryPool,
@@ -59,6 +68,9 @@ DEFAULT_ROOT = str(FACTOR_LIBRARY_DIR)
 # 去相关默认参数（内存有界）：每批评估表达式数、去相关紧凑矩阵的日期采样上限。
 DEFAULT_EVAL_BATCH = 64
 DEFAULT_DECORR_MAX_DATES = 500
+
+# compact 池 spill 落盘的单列 parquet 列名（表达式含 "(),"，不宜直接当列名）。
+_SPILL_VALUE_COL = "v"
 
 # 因子值面板物化器：规范表达式 → [trade_date, ts_code, factor_value]（或 None=无法物化）。
 Materializer = Callable[[str], "pl.DataFrame | None"]
@@ -576,6 +588,42 @@ def library_covered_by_family(
     return covered, crowded
 
 
+def library_pool_required_columns(
+    market: str,
+    leaf_map: dict[str, str] | None = None,
+    *,
+    statuses: tuple[str, ...] = ("active",),
+    root: str = DEFAULT_ROOT,
+) -> set[str]:
+    """库池物化实际会读到的 daily 列集：键列 ∪ 库内表达式引用的叶列。
+
+    **输入契约来源（改 evaluate_materialized 时必须同步核对本函数）**：
+    ``expression.evaluate_materialized`` 入口自裁到
+    ``{"trade_date", "ts_code"} | {leaf_map[f] for f in feature_names(node)}``
+    （见 `discovery/expression.py`「入口裁到 over 键 + 表达式实际引用的叶列」），
+    中间列 ``__mz*`` / ``__ridx`` 全由该函数内部自造自销，**无其它隐式列依赖**
+    （无停牌掩码列、无派生列白名单——停牌掩码在 `_preprocess_daily` 阶段已写进价格列本身）。
+    python/``py::`` 记录不走表达式求值，只用 ``df.select(["trade_date","ts_code"])``
+    对齐网格（`_python_series_on_grid`），故只需键列。
+
+    表达式解析失败的记录直接跳过：``_build_library_pool_compact`` 对同一条也会抛
+    ``ValueError`` 并计入 ``n_skip``，两侧一致，不会因裁列少给了列而多跳一条。
+
+    调用方据此把大帧裁到返回列集**不改变任何求值结果**，只减少常驻字节。
+    """
+    keep = {"trade_date", "ts_code"}
+    lm = leaf_map if leaf_map is not None else LEAF_FEATURES
+    for r in load_library(market, root=root):
+        if r.status not in statuses or _is_python_record(r):
+            continue
+        try:
+            node = parse_expr(r.expression, lm)
+        except Exception:  # 与 pool 构建同口径:坏记录跳过不崩
+            continue
+        keep |= {lm[f] for f in feature_names(node) if f in lm}
+    return keep
+
+
 def build_library_pool(
     market: str,
     daily: pl.DataFrame,
@@ -589,6 +637,7 @@ def build_library_pool(
     cache_dir: str | Path | None = None,
     universe: str | None = None,
     python_materializer: Callable[[str], pl.DataFrame | None] | None = None,
+    spill_dir: str | Path | None = None,
 ) -> dict[str, pl.DataFrame] | CompactLibraryPool:
     """把库内因子物化为 mining/评估帧上的因子值面板，供搜索期库级正交去相关。
 
@@ -609,6 +658,9 @@ def build_library_pool(
     - ``cache_dir``：可选池缓存目录；非 None 时先试 ``load_pool_cache``（指纹含库 hash /
       statuses / eval_start / prepped 窗 / python 池键），命中则跳过求值直接返回；默认 None 零回归。
     - ``universe`` / ``python_materializer`` 皆空时 python 记录全部跳过（expression 不受影响）。
+    - ``spill_dir``：compact 且估算值列字节 ≥ ``POOL_SPILL_BYTES_THRESHOLD`` 时，值列逐列
+      落盘于此目录再 lazy 装配（构建期峰值内存降到「最终宽帧 + 单列」）。``None``（默认）→
+      自建临时目录并在装配后删除；显式传入则由调用方负责清理。小帧不触发，零回归。
 
     调用方负责 ``daily`` 已与挖掘同 prep（派生列/停牌掩码等）；本函数不再二次预处理。
     """
@@ -661,6 +713,7 @@ def build_library_pool(
         return _build_library_pool_compact(
             recs, df, leaf_map, eval_start=eval_start, market=market,
             universe=universe, python_materializer=python_materializer,
+            spill_dir=spill_dir,
         )
     return _build_library_pool_legacy(
         recs, df, leaf_map, eval_start=eval_start, market=market,
@@ -868,10 +921,15 @@ def _build_library_pool_compact(
     market: str = "",
     universe: str | None = None,
     python_materializer: Callable[[str], pl.DataFrame | None] | None = None,
+    spill_dir: str | Path | None = None,
 ) -> CompactLibraryPool | dict:
     """单骨架宽面板：键一份 + 每因子一列 f64；非有限→null（不丢行，消费方 scatter 处理）。
 
     求值在完整 ``df`` 上（滚动预热），``eval_start`` 只裁最终骨架与值列行。
+
+    ``spill_dir``：值列落盘目录（仅 spill 模式用）。``None``（默认）→ 触发 spill 时
+    ``tempfile.mkdtemp`` 自建并在装配后 ``rmtree``；显式传入则**由调用方负责生命周期**
+    （落盘文件保留，便于排查/测试断言）。
     """
     # 值列 f32(仅超阈值大池):87 因子×8.75M 行 f64 值列 ~5.8G 蚕食全 A 余量
     # (v14 探针死于 #78 号因子时余量已被累积吃光)。f32 仅存储层——scatter/QR 在
@@ -884,7 +942,30 @@ def _build_library_pool_compact(
             f"[library-pool] 值列 f32 模式(估算 {_est_value_bytes / (1024**3):.1f}G"
             f"≥阈值 {POOL_VALUE_F32_BYTES_THRESHOLD / (1024**3):.0f}G)", flush=True,
         )
+    # 值列 spill(仅超阈值大池):f32 之后仍 OOM——构建期峰值 = prepped 宽帧 + 已累积
+    # 值列 + 单表达式求值中间量三项叠加。2026-07-28 all_a(10.77M 行×87 记录)实测:
+    # pool-prebuild 子进程跑到 [83/87] 被 SIGKILL(exit=-9),父进程回退进程内构建
+    # 又死在 [58/87];满载累积值列 87×10.77M×4B ≈ 3.5G。
+    # spill 把「已累积值列」这一项从 O(已完成因子数) 压到 O(1):每列求值→f32→立刻写
+    # 单列 parquet→释放,全部落盘后 lazy scan 一次装配。峰值 ≈ 最终宽帧 + 单列
+    # (净收益 ≈ 单表达式中间量的最大瞬时值——最终宽帧无论如何都要存在)。
+    # 行序契约:落盘/读回都是位置对齐(parquet 天然保序),与内存路径的裸 Series 同序,
+    # 不需要 join 键——eval_start 裁剪已在列级做完,骨架同样裁过,两侧等高。
+    _spill_root: Path | None = None
+    _own_spill_dir = False
+    if _est_value_bytes >= POOL_SPILL_BYTES_THRESHOLD:
+        if spill_dir is None:
+            spill_dir = tempfile.mkdtemp(prefix="fz_pool_spill_")
+            _own_spill_dir = True
+        _spill_root = Path(spill_dir)
+        _spill_root.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[library-pool] 值列 spill 模式(估算 {_est_value_bytes / (1024**3):.1f}G"
+            f"≥阈值 {POOL_SPILL_BYTES_THRESHOLD / (1024**3):.0f}G) → {_spill_root}",
+            flush=True,
+        )
     value_cols: list[pl.Series] = []
+    spill_paths: list[Path] = []
     names: list[str] = []
     n_skip = 0
     py_recs = [r for r in recs if _is_python_record(r)]
@@ -939,7 +1020,15 @@ def _build_library_pool_compact(
                 continue
             if _use_f32:
                 col = col.cast(pl.Float32)
-            value_cols.append(col.alias(r.expression))
+            if _spill_root is not None:
+                # 单列落盘用固定列名(表达式含括号/逗号,不适合当 parquet 列名);
+                # 装配时按位置 rename 回 names[i]。
+                path = _spill_root / f"c{len(names):05d}.parquet"
+                pl.DataFrame({_SPILL_VALUE_COL: col}).write_parquet(path)
+                spill_paths.append(path)
+                del col, series
+            else:
+                value_cols.append(col.alias(r.expression))
             names.append(r.expression)
         except Exception as exc:
             n_skip += 1
@@ -955,12 +1044,28 @@ def _build_library_pool_compact(
             market, n_skip, len(names),
         )
     if not names:
+        if _spill_root is not None and _own_spill_dir:
+            shutil.rmtree(_spill_root, ignore_errors=True)
         return {}
 
     skeleton = df.select(["trade_date", "ts_code"])
     if eval_start is not None:
         skeleton = skeleton.filter(pl.col("trade_date") >= eval_start)
-    wide = skeleton.with_columns(value_cols)
+    if _spill_root is not None:
+        # 同名后者覆盖前者、位置取首次出现——逐字节复刻 with_columns 的重名语义
+        # (库以 expression 为主键,实际不该重名;此处只为两路径行为不分叉)。
+        last_by_name: dict[str, Path] = {}
+        for path, name in zip(spill_paths, names, strict=True):
+            last_by_name[name] = path
+        lazy = [skeleton.lazy()] + [
+            pl.scan_parquet(p).rename({_SPILL_VALUE_COL: n})
+            for n, p in last_by_name.items()
+        ]
+        wide = pl.concat(lazy, how="horizontal").collect()
+        if _own_spill_dir:
+            shutil.rmtree(_spill_root, ignore_errors=True)
+    else:
+        wide = skeleton.with_columns(value_cols)
     return CompactLibraryPool(wide, tuple(names))
 
 

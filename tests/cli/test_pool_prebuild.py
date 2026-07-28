@@ -810,3 +810,291 @@ def test_pool_subproc_cli_suite(tmp_path, capsys):
     _section_5_test_parser_pool_prebuild_and_pool_subproc_flag()
 
 
+# ── 10. 值列 spill 落盘（构建期 OOM 修复）──────────────────────────────────
+
+
+def _spill_lib_records() -> list[dict]:
+    """3 好 + 1 全 null(amount 被置空) + 1 解析失败 + 1 python 哨兵。"""
+    return [
+        {"expression": "rank(close)", "market": "ashare", "status": "active",
+         "ic_train": 0.05},
+        {"expression": "ts_mean(vol, 3)", "market": "ashare", "status": "active",
+         "ic_train": 0.045},
+        {"expression": "rank(amount)", "market": "ashare", "status": "active",
+         "ic_train": 0.04},          # amount 全 null → 全 null 列跳过
+        {"expression": "rank(not_a_leaf)", "market": "ashare", "status": "active",
+         "ic_train": 0.03},          # parse_expr 抛 ValueError → 单因子跳过
+        {"expression": "py::pyfac", "kind": "python", "name": "pyfac",
+         "market": "ashare", "status": "active", "ic_train": 0.02},
+        {"expression": "delta(high, 2)", "market": "ashare", "status": "active",
+         "ic_train": 0.01},
+    ]
+
+
+def _spill_daily() -> pl.DataFrame:
+    """_mk_daily + amount 全 null（构造「全 null 列跳过」分支）。"""
+    daily = _mk_daily(n_days=24, n_stocks=6)
+    return daily.with_columns(
+        pl.lit(None, dtype=pl.Float64).alias("amount"),
+    )
+
+
+def _py_materializer(daily: pl.DataFrame):
+    """py 因子面板：对 daily 网格前 2/3 行给确定性值（有覆盖也有缺口）。"""
+    def _mat(name: str):
+        if name != "pyfac":
+            return None
+        sub = daily.select(["trade_date", "ts_code"]).head(
+            int(daily.height * 2 / 3),
+        )
+        return sub.with_columns(
+            (pl.col("ts_code").str.slice(3, 3).cast(pl.Float64)
+             + pl.col("trade_date").dt.day().cast(pl.Float64)).alias("factor_value"),
+        )
+    return _mat
+
+
+def test_pool_spill_parity_suite(tmp_path, capsys):
+    """spill 落盘路径 vs 内存路径:宽帧逐值/列序/names/dtype 全等 + 落盘副产物契约。"""
+    import factorzen.discovery.factor_library as fl
+
+    daily = _spill_daily()
+    root = str(tmp_path / "lib")
+    _write_lib(Path(root), "ashare", _spill_lib_records())
+    mat = _py_materializer(daily)
+
+    def _build(*, spill: bool, eval_start=None, spill_dir=None):
+        with pytest.MonkeyPatch.context() as mp:
+            # spill 与 f32 同估算口径:两者必须一起开/一起关,否则 dtype 天然不等
+            mp.setattr(
+                fl, "POOL_SPILL_BYTES_THRESHOLD", 1 if spill else 1 << 60,
+            )
+            mp.setattr(
+                fl, "POOL_VALUE_F32_BYTES_THRESHOLD", 1 if spill else 1 << 60,
+            )
+            return fl.build_library_pool(
+                "ashare", daily, root=root, compact=True,
+                eval_start=eval_start, python_materializer=mat,
+                spill_dir=spill_dir,
+            )
+
+    # -- 10a. 基准:内存路径本身产出非平凡池(判别力前提) --
+    mem = _build(spill=False)
+    assert isinstance(mem, fl.CompactLibraryPool)
+    # 6 条记录 → 4 条应物化(rank(amount) 全 null / rank(not_a_leaf) 解析失败被跳)
+    assert mem.factor_names == (
+        "rank(close)", "ts_mean(vol, 3)", "py::pyfac", "delta(high, 2)",
+    ), mem.factor_names
+    assert list(mem.wide.columns) == ["trade_date", "ts_code", *mem.factor_names]
+    # 内存路径未触发 f32(阈值被顶到 1<<60)
+    assert mem.wide.schema["rank(close)"] == pl.Float64
+
+    # 与 spill 同 dtype 的内存基准(只开 f32,不开 spill)——parity 比对的对照组
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fl, "POOL_SPILL_BYTES_THRESHOLD", 1 << 60)
+        mp.setattr(fl, "POOL_VALUE_F32_BYTES_THRESHOLD", 1)
+        mem_f32 = fl.build_library_pool(
+            "ashare", daily, root=root, compact=True,
+            python_materializer=mat,
+        )
+    assert isinstance(mem_f32, fl.CompactLibraryPool)
+
+    # -- 10b. spill 路径逐值 parity + 落盘副产物 --
+    sdir = tmp_path / "spill"
+    spilled = _build(spill=True, spill_dir=sdir)
+    out = capsys.readouterr().out
+    assert "spill 模式" in out
+    assert isinstance(spilled, fl.CompactLibraryPool)
+    # 落盘契约:每个入池因子恰一个单列 parquet,行高=最终宽帧行高
+    files = sorted(sdir.glob("*.parquet"))
+    assert len(files) == len(spilled.factor_names) == 4
+    one = pl.read_parquet(files[0])
+    assert one.columns == ["v"]
+    assert one.height == spilled.wide.height
+    # 显式 spill_dir 由调用方持有 → 不被删
+    assert sdir.exists()
+
+    assert spilled.factor_names == mem_f32.factor_names
+    assert list(spilled.wide.columns) == list(mem_f32.wide.columns)
+    _assert_pool_wide_equal(spilled.wide, mem_f32.wide)
+    # null 位置逐列一致(不是「都非 null」这种恒真断言)
+    for n in spilled.factor_names:
+        assert spilled.wide[n].null_count() == mem_f32.wide[n].null_count()
+        assert (
+            spilled.wide[n].is_null().to_list() == mem_f32.wide[n].is_null().to_list()
+        )
+    # py 因子确实带 null(materializer 只覆盖 2/3 网格)——保证上面 null 比对非平凡
+    assert spilled.wide["py::pyfac"].null_count() > 0
+    # 值列确实是 f32(spill 与 f32 同阈值同时触发)
+    assert spilled.wide.schema["rank(close)"] == pl.Float32
+
+    # -- 10c. eval_start 裁剪语义在 spill 下一致 --
+    all_dates = sorted(daily["trade_date"].unique().to_list())
+    cut = all_dates[len(all_dates) // 2]
+    mem_cut = _build(spill=False, eval_start=cut)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fl, "POOL_SPILL_BYTES_THRESHOLD", 1 << 60)
+        mp.setattr(fl, "POOL_VALUE_F32_BYTES_THRESHOLD", 1)
+        mem_cut_f32 = fl.build_library_pool(
+            "ashare", daily, root=root, compact=True,
+            eval_start=cut, python_materializer=mat,
+        )
+    spill_cut = _build(spill=True, eval_start=cut, spill_dir=tmp_path / "spill_cut")
+    assert isinstance(mem_cut, fl.CompactLibraryPool)
+    assert isinstance(mem_cut_f32, fl.CompactLibraryPool)
+    assert isinstance(spill_cut, fl.CompactLibraryPool)
+    # 裁剪真的裁掉了行(否则下面的相等是恒真)
+    assert 0 < mem_cut.wide.height < mem.wide.height
+    assert spill_cut.wide.height == mem_cut.wide.height
+    assert spill_cut.factor_names == mem_cut_f32.factor_names
+    _assert_pool_wide_equal(spill_cut.wide, mem_cut_f32.wide)
+    assert spill_cut.wide["trade_date"].min() == cut
+
+    # -- 10d. 默认 spill_dir(自建临时目录)构建完即删 --
+    made: dict = {}
+    real_mkdtemp = fl.tempfile.mkdtemp
+
+    def fake_mkdtemp(*a, **kw):
+        d = real_mkdtemp(dir=str(tmp_path))
+        made["dir"] = d
+        return d
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fl, "POOL_SPILL_BYTES_THRESHOLD", 1)
+        mp.setattr(fl, "POOL_VALUE_F32_BYTES_THRESHOLD", 1)
+        mp.setattr(fl.tempfile, "mkdtemp", fake_mkdtemp)
+        auto = fl.build_library_pool(
+            "ashare", daily, root=root, compact=True, python_materializer=mat,
+        )
+    assert isinstance(auto, fl.CompactLibraryPool)
+    assert made["dir"] and not Path(made["dir"]).exists()
+    _assert_pool_wide_equal(auto.wide, mem_f32.wide)
+
+    # -- 10e. 小帧默认阈值不触发 spill(零回归护栏) --
+    capsys.readouterr()
+    plain = fl.build_library_pool(
+        "ashare", daily, root=root, compact=True, python_materializer=mat,
+    )
+    assert isinstance(plain, fl.CompactLibraryPool)
+    assert "spill 模式" not in capsys.readouterr().out
+    _assert_pool_wide_equal(plain.wide, mem.wide)
+
+    # -- 10f. 空池(全部跳过)也不留临时目录、仍返回 {} --
+    empty_root = str(tmp_path / "lib_bad")
+    _write_lib(Path(empty_root), "ashare", [
+        {"expression": "rank(not_a_leaf)", "market": "ashare",
+         "status": "active", "ic_train": 0.1},
+    ])
+    made.clear()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fl, "POOL_SPILL_BYTES_THRESHOLD", 1)
+        mp.setattr(fl, "POOL_VALUE_F32_BYTES_THRESHOLD", 1)
+        mp.setattr(fl.tempfile, "mkdtemp", fake_mkdtemp)
+        nothing = fl.build_library_pool(
+            "ashare", daily, root=empty_root, compact=True,
+        )
+    assert nothing == {}
+    assert made["dir"] and not Path(made["dir"]).exists()
+
+
+# ── 11. prepped 帧裁列（构建期 OOM 修复）──────────────────────────────────
+
+
+def test_pool_prebuild_prepped_trim_suite(tmp_path, monkeypatch, capsys):
+    """library_pool_required_columns 列集正确 + 裁后求值不变 + prebuild 端到端裁列。"""
+    import factorzen.discovery.factor_library as fl
+    from factorzen.discovery.expression import LEAF_FEATURES
+
+    # -- 11a. 列集 = 键列 ∪ 表达式叶列;python/坏记录不贡献列 --
+    root = str(tmp_path / "lib")
+    _write_lib(Path(root), "ashare", [
+        {"expression": "rank(close)", "market": "ashare", "status": "active",
+         "ic_train": 0.05},
+        {"expression": "ts_mean(vol, 3)", "market": "ashare", "status": "active",
+         "ic_train": 0.04},
+        {"expression": "add(delta(high, 2), low)", "market": "ashare",
+         "status": "active", "ic_train": 0.03},
+        {"expression": "rank(not_a_leaf)", "market": "ashare", "status": "active",
+         "ic_train": 0.02},
+        {"expression": "py::pyfac", "kind": "python", "name": "pyfac",
+         "market": "ashare", "status": "active", "ic_train": 0.01},
+        # 非 active → 不参与 statuses=("active",) 的列集
+        {"expression": "rank(amount)", "market": "ashare", "status": "probation",
+         "ic_train": 0.06},
+    ])
+    got = fl.library_pool_required_columns("ashare", None, root=root)
+    # 期望值由 LEAF_FEATURES 独立查表拼出(不抄实现)
+    expect = {"trade_date", "ts_code"} | {
+        LEAF_FEATURES[leaf] for leaf in ("close", "vol", "high", "low")
+    }
+    assert got == expect
+    # 判别力:probation 的 amount、坏记录的叶都不在;close 走的是映射后的 close_adj
+    assert LEAF_FEATURES["close"] == "close_adj"
+    assert "close_adj" in got and "close" not in got
+    assert LEAF_FEATURES["amount"] not in got
+    assert "not_a_leaf" not in got
+    # 显式 statuses 放开 probation 后 amount 列才进来
+    got_pro = fl.library_pool_required_columns(
+        "ashare", None, statuses=("active", "probation"), root=root,
+    )
+    assert got_pro == expect | {LEAF_FEATURES["amount"]}
+
+    # -- 11b. 裁后求值逐值不变 --
+    daily = _mk_daily(n_days=24, n_stocks=6)
+    from factorzen.discovery.evaluation import _preprocess_daily
+
+    prepped = _preprocess_daily(daily).with_columns(
+        pl.lit(1.234).alias("junk_col"),
+    )
+    keep = fl.library_pool_required_columns("ashare", None, root=root)
+    sel = [c for c in prepped.columns if c in keep]
+    # 判别力:确实裁掉了列(否则下面相等恒真)
+    assert len(sel) < len(prepped.columns)
+    assert "junk_col" in prepped.columns and "junk_col" not in sel
+    full_pool = fl.build_library_pool("ashare", prepped, root=root, compact=True)
+    trim_pool = fl.build_library_pool(
+        "ashare", prepped.select(sel), root=root, compact=True,
+    )
+    assert isinstance(full_pool, fl.CompactLibraryPool)
+    assert isinstance(trim_pool, fl.CompactLibraryPool)
+    assert full_pool.factor_names == trim_pool.factor_names
+    assert len(full_pool.factor_names) == 3
+    _assert_pool_wide_equal(trim_pool.wide, full_pool.wide)
+
+    # -- 11c. _cmd_pool_prebuild 端到端:交给 build 的帧已裁列 --
+    from factorzen.cli import main as cli
+
+    captured: dict = {}
+    real_build = fl.build_library_pool
+
+    def spy_build(market, frame, *a, **kw):
+        captured["cols"] = list(frame.columns)
+        return real_build(market, frame, *a, **kw)
+
+    def fake_prepare(args):
+        return daily.with_columns(pl.lit(9.9).alias("junk_col")), None, {
+            "membership_hash": "mh1", "membership_mode": "test",
+            "membership_n_rows": daily.height, "universe": None,
+        }
+
+    monkeypatch.setattr(cli, "_prepare_agent_mining_data", fake_prepare)
+    monkeypatch.setattr(fl, "build_library_pool", spy_build)
+
+    start, end = _iso_start_end(daily)
+    out = tmp_path / "pool_out"
+    rc = cli.main([
+        "mine", "pool-prebuild",
+        "--start", start, "--end", end,
+        "--library-root", root, "--out", str(out),
+    ])
+    assert rc == 0
+    cols = captured["cols"]
+    assert "junk_col" not in cols
+    assert set(cols) == keep & set(cols)
+    assert expect.issubset(set(cols))
+    assert "裁列" in capsys.readouterr().out
+    # 裁列后池内容与「不裁列」一致(端到端不改语义)
+    loaded = fl.CompactLibraryPool.from_parquet(out / "pool_wide.parquet")
+    assert set(loaded.factor_names) == set(full_pool.factor_names)
+
+

@@ -574,11 +574,14 @@ class LiftBaselineCache:
     ``scores_for``（sleeve 惰性路径），整锁保证只建一次。
     """
 
-    # 五组槽：panel / projector / scores / ret（各带自己的命中键）+ 一把整锁
+    # 六组槽：pool / panel / projector / scores / ret（各带自己的命中键）+ 一把整锁
     __slots__ = (
         "_lock",
         "_panel",
         "_panel_key",
+        "_pool",
+        "_pool_key",
+        "_pool_src",
         "_proj",
         "_proj_key",
         "_ret",
@@ -590,6 +593,9 @@ class LiftBaselineCache:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._pool_key: tuple | None = None
+        self._pool_src: Any = None
+        self._pool: Any = None
         self._panel_key: Any = None
         self._panel: Any = None
         self._proj_key: Any = None
@@ -600,11 +606,36 @@ class LiftBaselineCache:
         self._ret_src: Any = None
         self._ret: pl.DataFrame | None = None
 
+    def pool_for(self, src: Any, key: tuple, build: Callable[[Any], Any]) -> Any:
+        """``build_library_pool(...)``，按（源帧同一性 + 市场/库根/statuses）缓存。
+
+        为什么必须缓存**池本身**：``run_group_lift`` 与 ``run_lift_tests`` 各自
+        `active_factor_dfs is None` 时会各建一个池对象，而 ``panel_for`` 命中判定是
+        **对象同一性** —— 两个池 ⇒ 面板/QR 必然也各建一次。CLI lift-test 正是
+        「组门紧接逐条」的调用序，全 A × 79 active 上这一份重复是 池 3.2G + 面板
+        4.7G + Q，直接就是 2026-07-29 探针 exit=137 的死点。
+        """
+        with self._lock:
+            if (
+                self._pool_key is not None
+                and self._pool_key == key
+                and self._pool_src is not None
+                and self._pool_src is src
+            ):
+                return self._pool
+            # 先松手再建：旧池与新池不该在 build 期间共存
+            self._pool_key = self._pool_src = self._pool = None
+            pool = build(src)
+            self._pool_key, self._pool_src, self._pool = key, src, pool
+            return pool
+
     def panel_for(self, pool: Any, build: Callable[[Any], Any]) -> Any:
         """``build_library_panel(pool)``，按 pool 对象同一性缓存。"""
         with self._lock:
             if self._panel_key is not None and self._panel_key is pool:
                 return self._panel
+            # 换池重建时先释放旧面板：全 A 面板 ~4.7G，新旧共存过一次就是 OOM
+            self._panel_key = self._panel = None
             panel = build(pool)
             self._panel_key, self._panel = pool, panel
             return panel
@@ -614,6 +645,7 @@ class LiftBaselineCache:
         with self._lock:
             if self._proj_key is not None and self._proj_key is panel:
                 return self._proj
+            self._proj_key = self._proj = None
             proj = build(panel)
             self._proj_key, self._proj = panel, proj
             return proj
@@ -648,6 +680,48 @@ class LiftBaselineCache:
             ret = build(src)
             self._ret_key, self._ret_src, self._ret = key, src, ret
             return ret
+
+
+def _build_active_pool(
+    *,
+    ctx: Any,
+    cache: LiftBaselineCache | None,
+    market: str,
+    daily: Any,
+    leaf_map: dict[str, str] | None,
+    library_root: str,
+) -> Any:
+    """``run_group_lift`` / ``run_lift_tests`` 共用的 active 池构建（走 ctx 缓存）。
+
+    两处此前各写一遍同样的 `build_library_pool(...)`，是 CLAUDE.md 点名的双路径；
+    合并后组门与逐条拿到的是**同一个池对象**，下游 ``panel_for`` 的同一性缓存才命中。
+    """
+    from factorzen.discovery.factor_library import build_library_pool
+
+    if ctx is not None:
+        _mkt, _root, _lm = ctx.market, ctx.library_root, ctx.leaf_map
+        src = ctx.prepped
+    else:
+        _mkt, _root, _lm = market, library_root, leaf_map
+        src = daily
+
+    def _build(frame: Any) -> Any:
+        return build_library_pool(
+            _mkt, frame, _lm, root=_root, statuses=("active",),
+        )
+
+    if cache is None:
+        return _build(src)
+    return cache.pool_for(src, (_mkt, _root, ("active",)), _build)
+
+
+def _panel_builder(build_library_panel: Callable[..., Any], *, consume: bool):
+    """``panel_for`` 用的单参构建器；``consume`` 只在池由 lift 内部自建时为 True。"""
+
+    def _build(pool: Any) -> Any:
+        return build_library_panel(pool, consume=consume)
+
+    return _build
 
 
 @dataclass
@@ -1348,18 +1422,15 @@ def run_lift_tests(
     )
 
     # ── 物化：active 面板 + 收益（ctx 派生；显式注入优先） ─────────────────
+    # 基线设施走 ctx 缓存（逐条复审 / 组门紧接逐条时只建一次）；无 ctx 时原路径
+    _cache = ctx.baseline_cache if ctx is not None else None
+    # 内部自建池 = 本函数独占，此后只读键集（_baseline_hash）+ 建面板 ⇒ 可消费式建面板
+    _pool_internal = active_factor_dfs is None
     if active_factor_dfs is None:
-        from factorzen.discovery.factor_library import build_library_pool
-
-        if ctx is not None:
-            active_factor_dfs = build_library_pool(
-                ctx.market, ctx.prepped, ctx.leaf_map,
-                root=ctx.library_root, statuses=("active",),
-            )
-        else:
-            active_factor_dfs = build_library_pool(
-                market, daily, leaf_map, root=library_root, statuses=("active",),
-            )
+        active_factor_dfs = _build_active_pool(
+            ctx=ctx, cache=_cache, market=market, daily=daily,
+            leaf_map=leaf_map, library_root=library_root,
+        )
 
     baseline_hash = _baseline_hash(active_factor_dfs)
 
@@ -1396,12 +1467,11 @@ def run_lift_tests(
         _LOG.warning("lift_test: 库内无 active 因子，无法建残差投影；全部判不过")
         return _batch_error_rows("empty_active_library")
 
-    # 基线设施走 ctx 缓存（逐条复审场景下 panel/QR/ret 只建一次）；无 ctx 时原路径
-    _cache = ctx.baseline_cache if ctx is not None else None
+    _panel_build = _panel_builder(build_library_panel, consume=_pool_internal)
     panel = (
-        _cache.panel_for(active_factor_dfs, build_library_panel)
+        _cache.panel_for(active_factor_dfs, _panel_build)
         if _cache is not None
-        else build_library_panel(active_factor_dfs)
+        else _panel_build(active_factor_dfs)
     )
     if panel is None or panel.k == 0:
         _LOG.warning("lift_test: active 物化面板为空（empty_library_panel）")
@@ -1717,28 +1787,23 @@ def run_group_lift(
             ),
         }
 
+    # 与 run_lift_tests 共用同一 ctx 缓存：组门跑完紧接着逐条测，池/panel/QR/ret
+    # 本就同源，重建一次全 A 是 GB 级纯重复（CLI lift-test 与 team 钩子都这样连着调）
+    _cache = ctx.baseline_cache if ctx is not None else None
+    _pool_internal = active_factor_dfs is None
     if active_factor_dfs is None:
-        from factorzen.discovery.factor_library import build_library_pool
-
-        if ctx is not None:
-            active_factor_dfs = build_library_pool(
-                ctx.market, ctx.prepped, ctx.leaf_map,
-                root=ctx.library_root, statuses=("active",),
-            )
-        else:
-            active_factor_dfs = build_library_pool(
-                market, daily, leaf_map, root=library_root, statuses=("active",),
-            )
+        active_factor_dfs = _build_active_pool(
+            ctx=ctx, cache=_cache, market=market, daily=daily,
+            leaf_map=leaf_map, library_root=library_root,
+        )
     if not active_factor_dfs:
         return _err("empty_active_library")
 
-    # 与 run_lift_tests 共用同一 ctx 缓存：组门跑完紧接着逐条测，panel/QR/ret
-    # 本就同源，重建一次全 A 是 GB 级纯重复（CLI lift-test 与 team 钩子都这样连着调）
-    _cache = ctx.baseline_cache if ctx is not None else None
+    _panel_build = _panel_builder(build_library_panel, consume=_pool_internal)
     panel = (
-        _cache.panel_for(active_factor_dfs, build_library_panel)
+        _cache.panel_for(active_factor_dfs, _panel_build)
         if _cache is not None
-        else build_library_panel(active_factor_dfs)
+        else _panel_build(active_factor_dfs)
     )
     if panel is None or panel.k == 0:
         return _err("empty_library_panel", n_lib=0)

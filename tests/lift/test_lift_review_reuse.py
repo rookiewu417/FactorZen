@@ -234,9 +234,9 @@ def _count_baseline_builds(monkeypatch) -> dict[str, int]:
     real_ret = lt._build_ret_panel
     real_scores = lt.library_equal_weight_score_panel
 
-    def c_panel(pool):
+    def c_panel(pool, **kw):
         n["panel"] += 1
-        return real_panel(pool)
+        return real_panel(pool, **kw)
 
     class CProj(real_proj):  # type: ignore[misc, valid-type]
         def __init__(self, panel):

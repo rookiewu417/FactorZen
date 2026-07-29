@@ -51,7 +51,7 @@ class CompactLibraryPool(Mapping[str, pl.DataFrame]):
     compact 分支（一次散射到矩阵）。
     """
 
-    __slots__ = ("_names", "_wide")
+    __slots__ = ("_names", "_released", "_wide")
 
     def __init__(
         self,
@@ -64,6 +64,7 @@ class CompactLibraryPool(Mapping[str, pl.DataFrame]):
             )
         self._wide = wide
         self._names = names
+        self._released: set[str] = set()
 
     @property
     def wide(self) -> pl.DataFrame:
@@ -73,9 +74,34 @@ class CompactLibraryPool(Mapping[str, pl.DataFrame]):
     def factor_names(self) -> tuple[str, ...]:
         return self._names
 
+    def release_value_column(self, name: str) -> None:
+        """散射进矩阵后**就地**丢弃该值列（消费式面板构建）。
+
+        为什么需要：``build_library_panel`` 的 compact 分支把宽表逐列散射进一次性
+        预分配的 ``LibraryPanel.X``，两者在整个构建期共存（全 A 2016-2026 × 79 因子
+        ≈ 宽帧 3.2G + X 4.7G）。逐列释放把共存量压到「X + 单列」。
+
+        **只允许消费方在证明自己独占该池时调用**（``build_library_panel(consume=True)``，
+        由 lift 内部自建池走）。释放后 ``pool[name]`` 抛 ``KeyError`` —— 大声失败，
+        不许静默返回空面板；``factor_names`` / ``len`` / 键列全部保留，
+        ``_baseline_hash`` 等只读键集的调用方不受影响。
+        """
+        if name not in self._names:
+            raise KeyError(name)
+        if name in self._released:
+            return
+        if name in self._wide.columns:
+            self._wide = self._wide.drop(name)
+        self._released.add(name)
+
     def __getitem__(self, key: str) -> pl.DataFrame:
         if key not in self._names:
             raise KeyError(key)
+        if key in self._released:
+            raise KeyError(
+                f"{key}: 值列已被 release_value_column 释放"
+                "（消费式 build_library_panel(consume=True)）"
+            )
         # factor_value 出口恒 f64:内部可为 f32 存储(大池省内存),API dtype 契约不变
         return (
             self._wide.select(

@@ -169,8 +169,8 @@ def _ctx(prepped, root, **kw):
 
 def _queue() -> list[dict]:
     return [
-        {"expression": "rank(low_adj)", "ic_train": 0.03, "residual_ic_train": 0.02},
-        {"expression": "rank(high_adj)", "ic_train": 0.02, "residual_ic_train": 0.015},
+        {"expression": "rank(low)", "ic_train": 0.03, "residual_ic_train": 0.02},
+        {"expression": "rank(high)", "ic_train": 0.02, "residual_ic_train": 0.015},
     ]
 
 
@@ -214,6 +214,8 @@ def test_group_then_individual_builds_pool_once(tmp_path, monkeypatch):
         library_root=str(tmp_path), ctx=ctx, lift_workers=1,
     )
     assert len(rows) == len(q)
+    # 真跑出了 lift 值（不是 materialize_failed 的空壳行）——否则计数断言没判别力
+    assert all(r.get("lift") is not None for r in rows), rows
     assert n_pool["n"] == 1, f"库池构造 {n_pool['n']} 次（应 1 次）"
     assert n_panel["n"] == 1, f"库面板构造 {n_panel['n']} 次（应 1 次）"
 
@@ -247,6 +249,7 @@ def test_pool_reuse_does_not_change_lift_values(tmp_path):
         q, market=MARKET, daily=prepped, leaf_map=None,
         library_root=str(tmp_path), ctx=ctx_b, lift_workers=1,
     )
+    assert rows_a and all(r.get("lift") is not None for r in rows_a), rows_a
     for a, b in zip(rows_a, rows_b, strict=True):
         assert a["expression"] == b["expression"]
         for key in ("lift", "lift_se", "lift_second_half", "candidate_rank_ic", "passed"):

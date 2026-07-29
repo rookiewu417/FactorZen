@@ -1294,6 +1294,9 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         # 但仍原样透传——manifest 要记「这次到底开没开调度器」。
         focus_leaves=getattr(args, "focus_leaves", None),
         horizon=int(getattr(args, "horizon", 1) or 1),
+        # 默认开（no_* 关闭旗标，与 no_sleeve_gate / no_leaf_scheduler 同款）：
+        # session 末 lift 钩子换子进程，主进程 17G 常驻不再与基线重物化叠加。
+        lift_hook_subprocess=not bool(getattr(args, "no_lift_hook_subprocess", False)),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0

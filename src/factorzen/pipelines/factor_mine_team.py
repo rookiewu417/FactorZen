@@ -69,6 +69,9 @@ def run_team_mine(
     # 库 upsert 行、以及 session 末 lift 裁决的收益面板；但**不改**每轮挖掘护栏的 IC
     # ——`quick_fitness` / `segment_daily_ic` 硬编码 `horizons=[1]`。
     horizon: int = 1,
+    # session 末 lift 钩子换子进程执行（主进程常驻帧/池不与基线重物化叠加）。
+    # 与 leaf_scheduler 同款：CLI 生产入口默认开，库 API 默认关（既有调用方零回归）。
+    lift_hook_subprocess: bool = False,
 ) -> dict:
     """跑多 Agent 团队挖掘，每轮增量落 manifest，收尾写 candidates.csv + 导出候选。
 
@@ -106,6 +109,9 @@ def run_team_mine(
         # 叶子 UCB 调度开关：开着时每轮焦点叶落在 rounds_log[*].focus_leaves，
         # 但「这次运行到底开没开」只有这里记得住（关闭时 rounds_log 不留任何痕迹）。
         "leaf_scheduler": leaf_scheduler,
+        # session 末 lift 钩子跑在哪个进程里：影响峰值内存与失败降级形态，
+        # 事后排查 lift_error 时必须知道（复现铁律#3）。
+        "lift_hook_subprocess": lift_hook_subprocess,
         # 定向 campaign 的**原值**（未与存活叶求交前）：rounds_log 只记交集后的实际主攻叶，
         # 用户到底填了什么（含被忽略的无效名）只有这里留得住 —— 复现铁律#3。
         "focus_leaves": focus_leaves,
@@ -170,6 +176,7 @@ def run_team_mine(
         leaf_scheduler=leaf_scheduler,
         focus_leaves=focus_leaves,
         horizon=horizon,
+        lift_hook_subprocess=lift_hook_subprocess,
     )
     write_team_manifest(result, out_dir=out_dir, run_id=rid, params=params, partial=False)
     run_dir = Path(out_dir) / rid

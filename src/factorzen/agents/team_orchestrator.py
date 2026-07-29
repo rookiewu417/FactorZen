@@ -865,6 +865,10 @@ def run_team_agent(
     lift_materialize_candidate=None,
     lift_active_factor_dfs: dict | None = None,
     lift_ret_df=None,
+    # session 末 lift 钩子换进程执行（见 `_lift_hook_via_subprocess`）。
+    # 生产入口（CLI `fz mine team`）默认开、库 API 默认关——既有测试与调用方零回归，
+    # 与 `leaf_scheduler` 同款接线约定。有 lift_* 注入时自动退回进程内。
+    lift_hook_subprocess: bool = False,
     # 跨 session DSR N 累计：从 experiment_index 重建同 campaign 历史 trial 池。
     # CLI 旗标由主控后补；测试可关以验证零回归。
     campaign_prior_enabled: bool = True,
@@ -1291,7 +1295,18 @@ def run_team_agent(
     # 期常态)才传 lib_pool——此时两者仅差 eval_start 预热前缀裁剪,而 lift 评分
     # /build_panel 全在 admission 窗(⊆ 裁剪后窗)、baseline_hash 只依赖键集,
     # 逐值等价。键集有变 → 保持 None 让 lift 自建(语义正确优先,内存回退现状)。
-    if lift_active_factor_dfs is None and lib_pool:
+    #
+    # 子进程模式下**整段跳过**：基线在子进程里现建，主进程的池反而是要松开的负担
+    # （2026-07-29 campaign 实测就死在这个分支的 else 里：库文件已变 → 在 17G 常驻上
+    # 重新物化 79 条 → 22.85G → exit=137）。
+    _lift_subprocess = bool(lift_hook_subprocess) and (
+        lift_materialize_candidate is None
+        and lift_active_factor_dfs is None
+        and lift_ret_df is None
+    )
+    if _lift_subprocess:
+        _step("lift 基线 ▸ 子进程重建(主进程不再与基线物化叠加)")
+    elif lift_active_factor_dfs is None and lib_pool:
         try:
             from factorzen.discovery.factor_library import library_file_hash
             _lib_hash_now = library_file_hash(market, lib_root)
@@ -1303,6 +1318,34 @@ def run_team_agent(
         except Exception as exc:
             _LOG.warning("lift 基线复用检查失败,回退重物化: %s: %s",
                          type(exc).__name__, exc)
+
+    # scout 块要用 daily 的日期边界；spawn 前会把帧松开，故先取好标量
+    _scout_frame_bounds: tuple[str | None, str | None] | None = None
+    if scout_state is not None:
+        from factorzen.discovery.intraday_expr import _frame_date_bounds as _fdb
+        _scout_frame_bounds = _fdb(daily)
+
+    def _release_session_frames() -> None:
+        """spawn 前松开 session 常驻大件（prepped / 库池 / 投影 / 切分帧 / bundle）。
+
+        子进程要重物化基线池，两边同时在世正是 exit=137 的形态。这里只放开
+        ``run_team_agent`` 自己持有的引用；**调用方**（`fz mine team`）手里的原始
+        装配帧不在本函数可达范围内，那一份仍会驻留（已知残余，见 lift 钩子 docstring）。
+        """
+        nonlocal daily, session_prepped, mining_df, holdout_df, bundle
+        nonlocal lib_pool, residual_projector, health, lift_active_factor_dfs
+        import gc
+
+        daily = None  # type: ignore[assignment]
+        session_prepped = None  # type: ignore[assignment]
+        mining_df = None  # type: ignore[assignment]
+        holdout_df = None  # type: ignore[assignment]
+        bundle = None  # type: ignore[assignment]
+        lib_pool = {}
+        residual_projector = None
+        health = None
+        lift_active_factor_dfs = None
+        gc.collect()
 
     # ── session 末自动 lift 钩子（写 manifest 前；失败不杀死挖掘 session）────
     lift_meta = _session_end_auto_lift(
@@ -1328,6 +1371,8 @@ def run_team_agent(
         # 成交口径须与护栏/holdout 同源，否则准入用一个口径、lift 裁决用另一个
         exec_lag=exec_lag,
         exec_price_col=exec_price_col,
+        subprocess_mode=_lift_subprocess,
+        release_frames=_release_session_frames if _lift_subprocess else None,
     )
 
     # ── session 末：被准入/probation 因子引用的 ix_* 永久化 ─────────────────
@@ -1337,13 +1382,13 @@ def run_team_agent(
             promote_admitted_exprs,
             scout_manifest_block,
         )
-        from factorzen.discovery.intraday_expr import _frame_date_bounds
-
         admitted_exprs = [c["expression"] for c in state.candidates if c.get("expression")]
         for row in (lift_meta.get("lift_results") or []):
             if isinstance(row, dict) and row.get("passed") and row.get("expression"):
                 admitted_exprs.append(str(row["expression"]))
-        _fs, _fe = _frame_date_bounds(daily)
+        # 边界在钩子**之前**取好：子进程模式下 daily 已被 _release_session_frames 松开
+        assert _scout_frame_bounds is not None
+        _fs, _fe = _scout_frame_bounds
         full_start = (_dw0.get("start") or _fs or "")
         full_end = (_dw0.get("end") or _fe or "")
         # 优先 builtin 面板 manifest coverage（B-W1 同口径读盘）
@@ -1490,6 +1535,8 @@ def _session_end_auto_lift(
     index=None,
     exec_lag: int = 0,
     exec_price_col: str | None = None,
+    subprocess_mode: bool = False,
+    release_frames: Callable[[], None] | None = None,
 ) -> dict:
     """session 末：lift 队列 → 覆盖把关 → 组门 → 逐候选 → upsert。
 
@@ -1503,6 +1550,12 @@ def _session_end_auto_lift(
 
     ``index``：可选 ExperimentIndex；非 None 时把 lift 拒绝（组门 / below_bar）
     追加写回 experiment_index（``reject_category=lift_rejected``）。None → 零写入（零回归）。
+
+    ``subprocess_mode``：把整个钩子挪进**子进程**执行（见
+    ``_lift_hook_via_subprocess``）。有任何测试注入（materialize / 库池 / ret）时
+    自动退回进程内路径——注入物不可序列化，且注入本身就是「调用方自带基线」的语义。
+    ``release_frames``：spawn 前调用，让主进程先松开 session 常驻大帧
+    （子进程要重物化基线池，两边不能同时在世）。
     """
     queue = _collect_lift_queue(state)
     if not queue:
@@ -1513,179 +1566,441 @@ def _session_end_auto_lift(
     meta = _empty_lift_meta(n_lift_queue=len(queue))
     _step(f"lift 钩子 ▸ 队列 {len(queue)} 个候选（expression 去重）")
     try:
-        from factorzen.discovery.guardrails import (
-            DEFAULT_HOLDOUT_MIN_DAYS,
-            DEFAULT_LIFT_THRESHOLD,
-        )
-        from factorzen.discovery.lift_test import (
-            make_lift_context,
-            run_group_lift,
-            run_lift_tests,
-        )
-
         leaf_map = ctx.leaf_map if ctx is not None else None
         holdout_start = holdout_df["trade_date"].min()
         holdout_end = holdout_df["trade_date"].max()
-        # admission 窗：与 polars Date→Utf8 口径对齐（YYYY-MM-DD），供评分日 IC 裁剪
-        adm_start = _lift_admission_str(holdout_start)
-        adm_end = _lift_admission_str(holdout_end)
 
-        # 统一评估上下文：优先复用 session 同源 prepped；否则内部 prep 一次。
-        # horizon 跟随 mining session（run_team_agent 入参），禁止硬编码 DEFAULT_HORIZON
-        lift_ctx = make_lift_context(
-            market, daily,
+        _injected = (
+            materialize_candidate is not None
+            or active_factor_dfs is not None
+            or ret_df is not None
+        )
+        if subprocess_mode and not _injected:
+            _hook_frame = prepped if prepped is not None else daily
+            _outer_release = release_frames
+
+            def _release_all() -> None:
+                """spawn 前把**本函数**与调用方持有的大帧一并松开。
+
+                只 del `_lift_hook_via_subprocess` 自己那份形参远远不够：
+                `_session_end_auto_lift` 的 daily/prepped/holdout_df/ctx 与
+                `run_team_agent` 的 session 常驻件都还钉着同一批帧，漏一处就等于没松。
+                """
+                nonlocal daily, prepped, holdout_df, ctx, _hook_frame
+                daily = None
+                prepped = None
+                holdout_df = None
+                ctx = None
+                _hook_frame = None
+                if _outer_release is not None:
+                    _outer_release()
+
+            return _lift_hook_via_subprocess(
+                queue, meta,
+                prepped=_hook_frame,
+                holdout_start=holdout_start,
+                holdout_end=holdout_end,
+                leaf_map=leaf_map,
+                market=market,
+                library_root=library_root,
+                seed=seed,
+                horizon=horizon,
+                lift_se_mult=lift_se_mult,
+                lift_workers=lift_workers,
+                data_window=data_window,
+                run_id=run_id,
+                index_path=(str(index.path) if index is not None else None),
+                exec_lag=exec_lag,
+                exec_price_col=exec_price_col,
+                profile_name=(
+                    getattr(profile, "name", None) if profile is not None else None
+                ),
+                release_frames=_release_all,
+            )
+
+        return _run_lift_hook_core(
+            queue, meta,
+            daily=daily,
+            holdout_start=holdout_start,
+            holdout_end=holdout_end,
             profile=profile,
+            profile_name=None,
             leaf_map=leaf_map,
-            horizon=horizon,
-            admission_start=adm_start,
-            admission_end=adm_end,
+            market=market,
             library_root=library_root,
+            seed=seed,
+            horizon=horizon,
+            lift_se_mult=lift_se_mult,
+            lift_workers=lift_workers,
+            data_window=data_window,
             prepped=prepped,
-            # python 型候选/基线物化口径（三 lift 消费方同口径，改一查三）
-            python_universe=(data_window or {}).get("universe"),
-            python_market=market,
-            # 成交口径须与护栏/holdout 一致，否则准入用一个口径、lift 裁决用另一个
+            materialize_candidate=materialize_candidate,
+            active_factor_dfs=active_factor_dfs,
+            ret_df=ret_df,
+            run_id=run_id,
+            index=index,
             exec_lag=exec_lag,
             exec_price_col=exec_price_col,
         )
-        meta["admission_start"] = adm_start
-        meta["admission_end"] = adm_end
-        meta["horizon"] = lift_ctx.horizon
+    except Exception as exc:
+        return _lift_hook_error_meta(meta, exc)
 
-        # 物化路径：显式注入优先；否则用 ctx.prepped 的 materializer（消除 prep 不对称）
-        mat = materialize_candidate
-        if mat is None:
-            from factorzen.discovery.lift_test import _materializer_from_prepped
-            mat = _materializer_from_prepped(
-                lift_ctx.prepped, leaf_map,
-                python_universe=lift_ctx.python_universe,
-                python_market=lift_ctx.python_market,
+
+def _lift_hook_error_meta(meta: dict, exc: BaseException) -> dict:
+    """钩子失败的统一收尾：记 ``lift_error`` + 日志/进度行，**不**向上抛。
+
+    进程内与子进程执行体共用同一份，日志格式逐字保持（session 产出不因 lift 失败作废）。
+    """
+    msg = f"{type(exc).__name__}: {exc}"
+    meta["lift_error"] = msg
+    _LOG.warning("session 末 lift 钩子失败（不影响挖掘产出）: %s", msg)
+    _step(f"lift 钩子 ▸ 失败（已记 lift_error）: {msg}")
+    return meta
+
+
+def lift_hook_queue_dump_path(library_root: str, run_id: str | None) -> Path:
+    """子进程失败时队列的落盘路径（人工补跑 ``lift-test`` 的输入）。"""
+    stem = run_id or "session"
+    return Path(library_root).parent / f"lift_queue_{stem}.json"
+
+
+def _lift_hook_degraded(
+    meta: dict, queue: list[dict], queue_path: Path, reason: str,
+) -> dict:
+    """子进程路径的降级出口：队列落盘 + 提示手动 lift-test，**绝不**抛。
+
+    刻意**不**回落进程内执行——回落等于把刚刚绕开的 OOM 又原样搬回主进程
+    （session 常驻 ~17G + 基线重物化正是 exit=137 的成因），一整场挖掘产出会陪葬。
+    """
+    import json
+
+    meta["lift_error"] = f"lift_hook_subprocess: {reason}"
+    try:
+        queue_path.parent.mkdir(parents=True, exist_ok=True)
+        queue_path.write_text(
+            json.dumps(queue, ensure_ascii=False, default=str), encoding="utf-8",
+        )
+        hint = (
+            f"队列已落盘 {queue_path}；手动补跑 "
+            "`fz factor-library lift-test --session <run_dir> --apply`"
+        )
+    except Exception as exc:  # 落盘也失败：至少把队列打进日志
+        hint = f"队列落盘失败({type(exc).__name__}: {exc})，队列见 manifest.lift_queue"
+    _LOG.warning("session 末 lift 钩子子进程失败（不影响挖掘产出）: %s", reason)
+    _step(f"lift 钩子 ▸ 失败（已记 lift_error）: {reason}；{hint}")
+    return meta
+
+
+def _lift_hook_via_subprocess(
+    queue: list[dict],
+    meta: dict,
+    *,
+    prepped,
+    holdout_start,
+    holdout_end,
+    leaf_map: dict[str, str] | None,
+    market: str,
+    library_root: str,
+    seed: int,
+    horizon: int,
+    lift_se_mult: float,
+    lift_workers: int | None,
+    data_window: dict | None,
+    run_id: str | None,
+    index_path: str | None,
+    exec_lag: int,
+    exec_price_col: str | None,
+    profile_name: str | None,
+    release_frames: Callable[[], None] | None = None,
+) -> dict:
+    """把 session 末 lift 钩子整体挪进子进程执行；主进程只写一次帧、收一份摘要。
+
+    为什么必须换进程（2026-07-29 实测）：campaign 跑完 20 轮时主进程常驻 ~17G
+    （prepped 全宽帧 + 库池 + ResidualProjector + session state），钩子在**同一个**
+    进程里重新物化 79 条 active 基线 → RSS 22.85G → exit=137，整场挖掘产出全丢。
+    子进程从零起，主进程 spawn 前先 ``release_frames()`` 松手，两边不再叠加。
+
+    帧走 **Arrow IPC 文件**而不是让子进程重新 prep：重 prep 会再造一条与 session
+    不同源的预处理路径（派生叶/停牌掩码口径漂移 = 裁决口径漂移），IPC round-trip
+    是逐值同一份帧。裁决实现两边都是 ``_run_lift_hook_core``，物理单路径。
+
+    子进程内部的业务异常照旧写进 ``lift_error``（与进程内路径逐字同格式）；只有
+    **硬失败**（崩溃 / 被 OOM-kill / 无输出）才走 ``_lift_hook_degraded``。
+    """
+    import json
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+
+    queue_path = lift_hook_queue_dump_path(library_root, run_id)
+    workdir = Path(tempfile.mkdtemp(prefix="fz_lift_hook_"))
+    frame_path = workdir / "prepped.arrow"
+    payload_path = workdir / "payload.json"
+    out_path = workdir / "result.json"
+    try:
+        try:
+            prepped.write_ipc(str(frame_path), compression="lz4")
+        except Exception as exc:
+            return _lift_hook_degraded(
+                meta, queue, queue_path,
+                f"prepped 落盘失败: {type(exc).__name__}: {exc}",
             )
-
-        # 覆盖门：W1b 旁路已前置 holdout 残差覆盖；此处双保险（物化后评分窗日数）。
-        # filter_candidates_by_coverage 与 CLI lift-test 共用，语义零变化。
-        from factorzen.discovery.lift_test import (
-            filter_candidates_by_coverage,
-            group_gate_ok,
-            group_gate_short_circuit,
-            partition_lift_queue_by_sleeve,
+        payload = {
+            "prepped_path": str(frame_path),
+            "queue": queue,
+            "holdout_start": _lift_admission_str(holdout_start),
+            "holdout_end": _lift_admission_str(holdout_end),
+            "leaf_map": leaf_map,
+            "market": market,
+            "library_root": library_root,
+            "seed": int(seed),
+            "horizon": int(horizon),
+            "lift_se_mult": float(lift_se_mult),
+            "lift_workers": lift_workers,
+            "data_window": data_window,
+            "run_id": run_id,
+            "index_path": index_path,
+            "exec_lag": int(exec_lag),
+            "exec_price_col": exec_price_col,
+            "profile_name": profile_name,
+        }
+        payload_path.write_text(
+            json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8",
         )
-        kept, dropped = filter_candidates_by_coverage(
-            queue,
+        # 主进程先松手：帧已落盘，session 常驻大件此后无人消费
+        del prepped
+        if release_frames is not None:
+            try:
+                release_frames()
+            except Exception as exc:
+                _LOG.warning("lift 钩子 spawn 前释放帧失败（继续）: %s: %s",
+                             type(exc).__name__, exc)
+
+        cmd = [
+            sys.executable, "-m", "factorzen.agents.lift_hook_worker",
+            str(payload_path), str(out_path),
+        ]
+        _step(f"lift 钩子 ▸ 子进程执行（帧 {frame_path.stat().st_size / 1e9:.2f}G IPC）")
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=None, text=True, bufsize=1,
+            )
+        except Exception as exc:
+            return _lift_hook_degraded(
+                meta, queue, queue_path, f"spawn 失败: {type(exc).__name__}: {exc}",
+            )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            # 子进程用同一个 `_step` 打印 → 逐字转发即保持钩子原日志格式
+            print(line.rstrip("\n"), flush=True)
+        rc = proc.wait()
+        if rc != 0:
+            return _lift_hook_degraded(
+                meta, queue, queue_path,
+                f"子进程退出码 {rc}"
+                + ("（疑似被内核 OOM-kill）" if rc in (137, -9) else ""),
+            )
+        if not out_path.is_file():
+            return _lift_hook_degraded(meta, queue, queue_path, "子进程无结果输出")
+        try:
+            child_meta = json.loads(out_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return _lift_hook_degraded(
+                meta, queue, queue_path, f"结果解析失败: {type(exc).__name__}: {exc}",
+            )
+        if not isinstance(child_meta, dict):
+            return _lift_hook_degraded(meta, queue, queue_path, "结果不是 JSON 对象")
+        meta.update(child_meta)
+        # n_lift_queue 以主进程收集到的队列为准（去重口径在主进程侧）
+        meta["n_lift_queue"] = len(queue)
+        return meta
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _run_lift_hook_core(
+    queue: list[dict],
+    meta: dict,
+    *,
+    daily,
+    holdout_start,
+    holdout_end,
+    profile,
+    profile_name: str | None,
+    leaf_map: dict[str, str] | None,
+    market: str,
+    library_root: str,
+    seed: int,
+    horizon: int,
+    lift_se_mult: float,
+    lift_workers: int | None,
+    data_window: dict | None,
+    prepped=None,
+    materialize_candidate=None,
+    active_factor_dfs: dict | None = None,
+    ret_df=None,
+    run_id: str | None = None,
+    index=None,
+    exec_lag: int = 0,
+    exec_price_col: str | None = None,
+) -> dict:
+    """lift 钩子的**唯一**裁决实现：覆盖把关 → 组门 → 逐候选 → upsert → 写回 index。
+
+    进程内路径与 ``lift_hook_worker`` 的子进程路径调的是这同一个函数——钩子与
+    ``fz factor-library lift-test`` 的双路径（CLAUDE.md 双路径表）由此在**物理上**
+    收敛成一条：钩子不再在主进程里自己搭一套基线设施。
+
+    不含 try/except：由 ``_session_end_auto_lift`` / worker 统一走
+    ``_lift_hook_error_meta``（原「整块 try/except」语义逐字保持）。
+    """
+    from factorzen.discovery.guardrails import (
+        DEFAULT_HOLDOUT_MIN_DAYS,
+        DEFAULT_LIFT_THRESHOLD,
+    )
+    from factorzen.discovery.lift_test import (
+        make_lift_context,
+        run_group_lift,
+        run_lift_tests,
+    )
+
+    # admission 窗：与 polars Date→Utf8 口径对齐（YYYY-MM-DD），供评分日 IC 裁剪
+    adm_start = _lift_admission_str(holdout_start)
+    adm_end = _lift_admission_str(holdout_end)
+
+    # 统一评估上下文：优先复用 session 同源 prepped；否则内部 prep 一次。
+    # horizon 跟随 mining session（run_team_agent 入参），禁止硬编码 DEFAULT_HORIZON
+    lift_ctx = make_lift_context(
+        market, daily,
+        profile=profile,
+        leaf_map=leaf_map,
+        horizon=horizon,
+        admission_start=adm_start,
+        admission_end=adm_end,
+        library_root=library_root,
+        prepped=prepped,
+        # python 型候选/基线物化口径（三 lift 消费方同口径，改一查三）
+        python_universe=(data_window or {}).get("universe"),
+        python_market=market,
+        # 成交口径须与护栏/holdout 一致，否则准入用一个口径、lift 裁决用另一个
+        exec_lag=exec_lag,
+        exec_price_col=exec_price_col,
+    )
+    if profile is None and profile_name is not None:
+        # 子进程只带 prepped（不重 prep）⇒ profile 对象不过界；provenance 由主进程带过来
+        import dataclasses as _dc
+
+        lift_ctx = _dc.replace(lift_ctx, profile_name=profile_name)
+    meta["admission_start"] = adm_start
+    meta["admission_end"] = adm_end
+    meta["horizon"] = lift_ctx.horizon
+
+    # 物化路径：显式注入优先；否则用 ctx.prepped 的 materializer（消除 prep 不对称）
+    mat = materialize_candidate
+    if mat is None:
+        from factorzen.discovery.lift_test import _materializer_from_prepped
+        mat = _materializer_from_prepped(
+            lift_ctx.prepped, leaf_map,
+            python_universe=lift_ctx.python_universe,
+            python_market=lift_ctx.python_market,
+        )
+
+    # 覆盖门：W1b 旁路已前置 holdout 残差覆盖；此处双保险（物化后评分窗日数）。
+    # filter_candidates_by_coverage 与 CLI lift-test 共用，语义零变化。
+    from factorzen.discovery.lift_test import (
+        filter_candidates_by_coverage,
+        group_gate_ok,
+        group_gate_short_circuit,
+        partition_lift_queue_by_sleeve,
+    )
+    kept, dropped = filter_candidates_by_coverage(
+        queue,
+        materialize_candidate=mat,
+        holdout_start=holdout_start,
+        min_days=DEFAULT_HOLDOUT_MIN_DAYS,
+    )
+    meta["lift_dropped_coverage"] = dropped
+    if dropped:
+        _step(f"lift 钩子 ▸ 覆盖剔除 {len(dropped)} 个（OOS < {DEFAULT_HOLDOUT_MIN_DAYS} 天）")
+    if not kept:
+        _step("lift 钩子 ▸ 覆盖后队列为空，跳过组测")
+        return meta
+
+    # sleeve 不与稠密混 residual 组门（overlay 个体；CLI 同源）
+    dense_kept, sleeve_kept = partition_lift_queue_by_sleeve(kept)
+    results: list = []
+    n_eval = 0
+
+    if dense_kept:
+        # 组门：稠密批残差等权组合一次——失败则不跑稠密逐候选
+        group = run_group_lift(
+            dense_kept,
+            market=market,
+            daily=daily,
+            leaf_map=leaf_map,
+            library_root=library_root,
+            seed=seed,
+            threshold=DEFAULT_LIFT_THRESHOLD,
+            active_factor_dfs=active_factor_dfs,
+            ret_df=ret_df,
             materialize_candidate=mat,
-            holdout_start=holdout_start,
-            min_days=DEFAULT_HOLDOUT_MIN_DAYS,
+            ctx=lift_ctx,
         )
-        meta["lift_dropped_coverage"] = dropped
-        if dropped:
-            _step(f"lift 钩子 ▸ 覆盖剔除 {len(dropped)} 个（OOS < {DEFAULT_HOLDOUT_MIN_DAYS} 天）")
-        if not kept:
-            _step("lift 钩子 ▸ 覆盖后队列为空，跳过组测")
-            return meta
+        # 防御性剥离：组结果本无 base_daily；若旧 mock 注入帧则不进 JSON manifest
+        meta["lift_group"] = {
+            k: v for k, v in group.items() if k != "base_daily"
+        }
+        n_eval += 1  # 组门计 1 次（多重检验 N 记账）
 
-        # sleeve 不与稠密混 residual 组门（overlay 个体；CLI 同源）
-        dense_kept, sleeve_kept = partition_lift_queue_by_sleeve(kept)
-        results: list = []
-        n_eval = 0
-
-        if dense_kept:
-            # 组门：稠密批残差等权组合一次——失败则不跑稠密逐候选
-            group = run_group_lift(
+        group_ok, bar = group_gate_ok(
+            group,
+            threshold=float(DEFAULT_LIFT_THRESHOLD),
+            lift_se_mult=float(lift_se_mult),
+        )
+        g_lift = group.get("lift")
+        g_se = group.get("lift_se")
+        # P0a（R1 2026-07-28）：与 CLI lift-test 成对——组门不再一票否决整批
+        # （它检验批内平均，√K_eff 精确抵消 → 零功效增益），改标 group_gate_weak
+        # 继续逐条测；仅 K≤20 且组 t<0 维持旧短路。两处必须逐字段同判。
+        short_circuit = (not group_ok) and group_gate_short_circuit(
+            group, n_candidates=len(dense_kept),
+        )
+        lg_meta = meta["lift_group"]
+        if isinstance(lg_meta, dict):
+            lg_meta["group_gate_ok"] = bool(group_ok)
+            lg_meta["group_gate_bar"] = float(bar)
+            if not group_ok:
+                lg_meta["group_gate_weak"] = True
+                lg_meta["group_gate_short_circuit"] = bool(short_circuit)
+        _step(
+            f"lift 钩子 ▸ 组 lift={g_lift!r} se={g_se!r} bar={bar:.4f} "
+            f"→ {'过' if group_ok else '弱(group_gate_weak)'}"
+            f"（dense={len(dense_kept)}"
+            + ("，短路跳过逐条" if short_circuit else "，继续逐条")
+            + "）"
+        )
+        if short_circuit:
+            # 算力豁免：小批（K≤20）且组 t<0 → 维持旧短路，整批写 group_gate_fail
+            _append_lift_rejects_to_index(
+                index,
+                dense_kept,
+                lift=g_lift,
+                lift_se=g_se,
+                lift_reason="group_gate_fail",
+                data_window=data_window,
+                admission_start=adm_start,
+                admission_end=adm_end,
+                baseline_rank_ic=group.get("baseline"),
+                source="session_auto_lift",
+            )
+        else:
+            dense_results = run_lift_tests(
                 dense_kept,
                 market=market,
                 daily=daily,
                 leaf_map=leaf_map,
                 library_root=library_root,
-                seed=seed,
-                threshold=DEFAULT_LIFT_THRESHOLD,
-                active_factor_dfs=active_factor_dfs,
-                ret_df=ret_df,
-                materialize_candidate=mat,
-                ctx=lift_ctx,
-            )
-            # 防御性剥离：组结果本无 base_daily；若旧 mock 注入帧则不进 JSON manifest
-            meta["lift_group"] = {
-                k: v for k, v in group.items() if k != "base_daily"
-            }
-            n_eval += 1  # 组门计 1 次（多重检验 N 记账）
-
-            group_ok, bar = group_gate_ok(
-                group,
-                threshold=float(DEFAULT_LIFT_THRESHOLD),
-                lift_se_mult=float(lift_se_mult),
-            )
-            g_lift = group.get("lift")
-            g_se = group.get("lift_se")
-            # P0a（R1 2026-07-28）：与 CLI lift-test 成对——组门不再一票否决整批
-            # （它检验批内平均，√K_eff 精确抵消 → 零功效增益），改标 group_gate_weak
-            # 继续逐条测；仅 K≤20 且组 t<0 维持旧短路。两处必须逐字段同判。
-            short_circuit = (not group_ok) and group_gate_short_circuit(
-                group, n_candidates=len(dense_kept),
-            )
-            lg_meta = meta["lift_group"]
-            if isinstance(lg_meta, dict):
-                lg_meta["group_gate_ok"] = bool(group_ok)
-                lg_meta["group_gate_bar"] = float(bar)
-                if not group_ok:
-                    lg_meta["group_gate_weak"] = True
-                    lg_meta["group_gate_short_circuit"] = bool(short_circuit)
-            _step(
-                f"lift 钩子 ▸ 组 lift={g_lift!r} se={g_se!r} bar={bar:.4f} "
-                f"→ {'过' if group_ok else '弱(group_gate_weak)'}"
-                f"（dense={len(dense_kept)}"
-                + ("，短路跳过逐条" if short_circuit else "，继续逐条")
-                + "）"
-            )
-            if short_circuit:
-                # 算力豁免：小批（K≤20）且组 t<0 → 维持旧短路，整批写 group_gate_fail
-                _append_lift_rejects_to_index(
-                    index,
-                    dense_kept,
-                    lift=g_lift,
-                    lift_se=g_se,
-                    lift_reason="group_gate_fail",
-                    data_window=data_window,
-                    admission_start=adm_start,
-                    admission_end=adm_end,
-                    baseline_rank_ic=group.get("baseline"),
-                    source="session_auto_lift",
-                )
-            else:
-                dense_results = run_lift_tests(
-                    dense_kept,
-                    market=market,
-                    daily=daily,
-                    leaf_map=leaf_map,
-                    library_root=library_root,
-                    top_m=None,  # 全测，no silent caps
-                    seed=seed,
-                    threshold=DEFAULT_LIFT_THRESHOLD,
-                    active_factor_dfs=active_factor_dfs,
-                    ret_df=ret_df,
-                    materialize_candidate=mat,
-                    ctx=lift_ctx,
-                    lift_workers=lift_workers,
-                )
-                results.extend(dense_results)
-                n_eval += len(dense_results)
-        else:
-            meta["lift_group"] = {
-                "skipped": "no_dense_after_sleeve_split",
-                "n_sleeve": len(sleeve_kept),
-            }
-
-        if sleeve_kept:
-            _step(
-                f"lift 钩子 ▸ sleeve overlay 个体 {len(sleeve_kept)} 条"
-                f"（跳过 residual 组门）"
-            )
-            sleeve_results = run_lift_tests(
-                sleeve_kept,
-                market=market,
-                daily=daily,
-                leaf_map=leaf_map,
-                library_root=library_root,
-                top_m=None,
+                top_m=None,  # 全测，no silent caps
                 seed=seed,
                 threshold=DEFAULT_LIFT_THRESHOLD,
                 active_factor_dfs=active_factor_dfs,
@@ -1694,93 +2009,115 @@ def _session_end_auto_lift(
                 ctx=lift_ctx,
                 lift_workers=lift_workers,
             )
-            results.extend(sleeve_results)
-            n_eval += len(sleeve_results)
-
-        meta["lift_results"] = results
-        meta["n_lift_evaluated"] = n_eval
-        if not results:
-            return meta
-
-        # 延迟导入：任务 D 契约；测试 monkeypatch factor_library.upsert_lift_admissions
-        from factorzen.discovery.factor_library import upsert_lift_admissions
-        from factorzen.discovery.lift_test import lift_admission
-
-        dw = data_window or {}
-        # session 自动路径一律 cap（不传 allow_active → 默认 False）：
-        # 校准前 auto-lift 最多写 probation；要写 active 走 CLI --allow-active。
-        adm = upsert_lift_admissions(
-            results,
-            market=market,
-            root=library_root,
-            meta={
-                "eval_start": dw.get("start"),
-                "eval_end": dw.get("end"),
-                "universe": dw.get("universe"),
-                "horizon": lift_ctx.horizon,
-                "run_id": (
-                    f"{run_id}_lift" if run_id is not None else f"team_lift_{seed}"
-                ),
-                "git_sha": get_git_sha(),
-                "leaf_map": leaf_map,
-            },
-            threshold=DEFAULT_LIFT_THRESHOLD,
-            se_mult=float(lift_se_mult),
-            # W1 相关性门：复用 run_lift_tests 同一个物化器（`mat`）。
-            # 不传 = 静默漏掉去重，故此处必须接通。
-            materialize=mat,
-        )
-        meta["lift_admissions"] = {
-            "added_active": int(adm.get("added_active", 0)),
-            "added_probation": int(adm.get("added_probation", 0)),
+            results.extend(dense_results)
+            n_eval += len(dense_results)
+    else:
+        meta["lift_group"] = {
+            "skipped": "no_dense_after_sleeve_split",
+            "n_sleeve": len(sleeve_kept),
         }
+
+    if sleeve_kept:
         _step(
-            f"lift 钩子 ▸ 准入 active={meta['lift_admissions']['added_active']} "
-            f"probation={meta['lift_admissions']['added_probation']}"
+            f"lift 钩子 ▸ sleeve overlay 个体 {len(sleeve_kept)} 条"
+            f"（跳过 residual 组门）"
         )
-        # 逐候选 admission reject → 写回 index（active/probation 不写）
-        cand_by_expr = {c.get("expression"): c for c in kept if c.get("expression")}
-        reject_rows: list[dict] = []
-        for row in results:
-            if lift_admission(
-                row,
-                threshold=float(DEFAULT_LIFT_THRESHOLD),
-                se_mult=float(lift_se_mult),
-            ) != "reject":
-                continue
-            expr = row.get("expression")
-            if not expr:
-                continue
-            src = cand_by_expr.get(expr) or {}
-            reject_rows.append({
-                "expression": expr,
-                "ic_train": src.get("ic_train"),
-                "residual_ic_train": src.get("residual_ic_train"),
-                "lift": row.get("lift"),
-                "lift_se": row.get("lift_se"),
-                "baseline": row.get("baseline"),
-            })
-        if reject_rows:
-            _append_lift_rejects_to_index(
-                index,
-                reject_rows,
-                lift=None,  # per-row
-                lift_se=None,
-                lift_reason="below_bar",
-                data_window=data_window,
-                admission_start=adm_start,
-                admission_end=adm_end,
-                baseline_rank_ic=None,
-                source="session_auto_lift",
-                per_row_lift=True,
-            )
+        sleeve_results = run_lift_tests(
+            sleeve_kept,
+            market=market,
+            daily=daily,
+            leaf_map=leaf_map,
+            library_root=library_root,
+            top_m=None,
+            seed=seed,
+            threshold=DEFAULT_LIFT_THRESHOLD,
+            active_factor_dfs=active_factor_dfs,
+            ret_df=ret_df,
+            materialize_candidate=mat,
+            ctx=lift_ctx,
+            lift_workers=lift_workers,
+        )
+        results.extend(sleeve_results)
+        n_eval += len(sleeve_results)
+
+    meta["lift_results"] = results
+    meta["n_lift_evaluated"] = n_eval
+    if not results:
         return meta
-    except Exception as exc:
-        msg = f"{type(exc).__name__}: {exc}"
-        meta["lift_error"] = msg
-        _LOG.warning("session 末 lift 钩子失败（不影响挖掘产出）: %s", msg)
-        _step(f"lift 钩子 ▸ 失败（已记 lift_error）: {msg}")
-        return meta
+
+    # 延迟导入：任务 D 契约；测试 monkeypatch factor_library.upsert_lift_admissions
+    from factorzen.discovery.factor_library import upsert_lift_admissions
+    from factorzen.discovery.lift_test import lift_admission
+
+    dw = data_window or {}
+    # session 自动路径一律 cap（不传 allow_active → 默认 False）：
+    # 校准前 auto-lift 最多写 probation；要写 active 走 CLI --allow-active。
+    adm = upsert_lift_admissions(
+        results,
+        market=market,
+        root=library_root,
+        meta={
+            "eval_start": dw.get("start"),
+            "eval_end": dw.get("end"),
+            "universe": dw.get("universe"),
+            "horizon": lift_ctx.horizon,
+            "run_id": (
+                f"{run_id}_lift" if run_id is not None else f"team_lift_{seed}"
+            ),
+            "git_sha": get_git_sha(),
+            "leaf_map": leaf_map,
+        },
+        threshold=DEFAULT_LIFT_THRESHOLD,
+        se_mult=float(lift_se_mult),
+        # W1 相关性门：复用 run_lift_tests 同一个物化器（`mat`）。
+        # 不传 = 静默漏掉去重，故此处必须接通。
+        materialize=mat,
+    )
+    meta["lift_admissions"] = {
+        "added_active": int(adm.get("added_active", 0)),
+        "added_probation": int(adm.get("added_probation", 0)),
+    }
+    _step(
+        f"lift 钩子 ▸ 准入 active={meta['lift_admissions']['added_active']} "
+        f"probation={meta['lift_admissions']['added_probation']}"
+    )
+    # 逐候选 admission reject → 写回 index（active/probation 不写）
+    cand_by_expr = {c.get("expression"): c for c in kept if c.get("expression")}
+    reject_rows: list[dict] = []
+    for row in results:
+        if lift_admission(
+            row,
+            threshold=float(DEFAULT_LIFT_THRESHOLD),
+            se_mult=float(lift_se_mult),
+        ) != "reject":
+            continue
+        expr = row.get("expression")
+        if not expr:
+            continue
+        src = cand_by_expr.get(expr) or {}
+        reject_rows.append({
+            "expression": expr,
+            "ic_train": src.get("ic_train"),
+            "residual_ic_train": src.get("residual_ic_train"),
+            "lift": row.get("lift"),
+            "lift_se": row.get("lift_se"),
+            "baseline": row.get("baseline"),
+        })
+    if reject_rows:
+        _append_lift_rejects_to_index(
+            index,
+            reject_rows,
+            lift=None,  # per-row
+            lift_se=None,
+            lift_reason="below_bar",
+            data_window=data_window,
+            admission_start=adm_start,
+            admission_end=adm_end,
+            baseline_rank_ic=None,
+            source="session_auto_lift",
+            per_row_lift=True,
+        )
+    return meta
 
 
 def _append_lift_rejects_to_index(

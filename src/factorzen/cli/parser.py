@@ -435,6 +435,12 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "--pool-subproc", dest="pool_subproc", action="store_true",
         help="池构建放子进程，退出全额归还内存；等效 env FACTORZEN_POOL_SUBPROC=1",
     )
+    m_team.add_argument(
+        "--no-lift-hook-subprocess", dest="no_lift_hook_subprocess",
+        action="store_true",
+        help="session 末 lift 钩子回到主进程内执行（默认换子进程：主进程常驻帧/池不再"
+             "与基线重物化叠加；2026-07-29 全 A campaign 实测该叠加 22.85G exit=137）",
+    )
     _add_exec_convention_args(m_team)
     _add_freq_arg(m_team)
     _add_set_arg(

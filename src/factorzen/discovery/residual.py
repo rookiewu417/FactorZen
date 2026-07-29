@@ -124,18 +124,25 @@ def _cs_zscore_null0(row: np.ndarray) -> np.ndarray:
 
 def build_library_panel(
     lib_pool: Mapping[str, pl.DataFrame] | None,
+    *,
+    consume: bool = False,
 ) -> LibraryPanel | None:
     """把 ``build_library_pool`` 产物转紧凑矩阵并**一次性**做逐日 z-score + null→0。
 
     空/None → None（调用方据此把 objective 退化为 raw）。
     识别 ``CompactLibraryPool``：从单骨架宽表一次散射，避免 dict-of-frames 键副本。
+
+    ``consume``（仅对 ``CompactLibraryPool`` 生效）：每列散射进 ``X`` 后立刻
+    ``pool.release_value_column(name)``，把「宽帧 + X」的共存从全程压到单列粒度。
+    **数值零影响**（只改释放时点），但会让 ``pool[expr]`` 之后抛 ``KeyError`` ——
+    仅当调用方独占该池、且此后只读键集时才可传 True。默认 False = 逐字节零回归。
     """
     if not lib_pool:
         return None
     from factorzen.discovery.factor_library import CompactLibraryPool
 
     if isinstance(lib_pool, CompactLibraryPool):
-        return _build_library_panel_from_wide(lib_pool)
+        return _build_library_panel_from_wide(lib_pool, consume=consume)
 
     names = tuple(lib_pool.keys())
     dates: set = set()
@@ -164,8 +171,13 @@ def build_library_panel(
     )
 
 
-def _build_library_panel_from_wide(pool: object) -> LibraryPanel | None:
-    """CompactLibraryPool.wide → LibraryPanel（键并集=任因子有限值的行，对齐旧 filter 并集）。"""
+def _build_library_panel_from_wide(
+    pool: object, *, consume: bool = False,
+) -> LibraryPanel | None:
+    """CompactLibraryPool.wide → LibraryPanel（键并集=任因子有限值的行，对齐旧 filter 并集）。
+
+    ``consume=True``：每列散射完立即从池里释放该值列（见 ``build_library_panel``）。
+    """
     from factorzen.discovery.factor_library import CompactLibraryPool
 
     assert isinstance(pool, CompactLibraryPool)
@@ -182,6 +194,7 @@ def _build_library_panel_from_wide(pool: object) -> LibraryPanel | None:
         return None
     date_list = tuple(sorted(keys["trade_date"].unique().to_list()))
     stock_list = tuple(sorted(keys["ts_code"].unique().to_list()))
+    del keys  # 键轴已抽成 python tuple，过滤副本不再需要
     if not date_list or not stock_list:
         return None
     date_idx = {d: i for i, d in enumerate(date_list)}
@@ -216,15 +229,28 @@ def _build_library_panel_from_wide(pool: object) -> LibraryPanel | None:
     r = indexed["_di"].fill_null(-1).cast(pl.Int64).to_numpy()
     c = indexed["_si"].fill_null(-1).cast(pl.Int64).to_numpy()
     on_axis = (r >= 0) & (c >= 0)
+    del indexed, keys_only, date_map, stock_map  # 行位已落到 r/c，join 中间帧可回收
+    # 消费式：本地别名必须先松手，否则 pool.release_value_column 重绑 pool._wide
+    # 之后旧宽帧仍被 `wide` 钉住，一列都释放不掉（RSS 上看不出任何变化）。
+    if consume:
+        del wide
+    # raw 复用同一块 (d_n × s_n) 缓冲：全 A 一块 ~118M，逐列重分配 79 次纯 churn
+    raw = np.empty((d_n, s_n), dtype=np.float64)
     for j, name in enumerate(names):
-        raw = np.full((d_n, s_n), np.nan, dtype=np.float64)
-        v = wide[name].to_numpy()
+        raw.fill(np.nan)
+        src = pool.wide if consume else wide
         # polars null → 可能是 None 在 object；统一 isfinite
-        v64 = np.asarray(v, dtype=np.float64)
+        v64 = np.asarray(src[name].to_numpy(), dtype=np.float64)
+        del src
         keep = np.isfinite(v64) & on_axis
         raw[r[keep], c[keep]] = v64[keep]
+        del v64, keep
         for di in range(d_n):
             X[di, :, j] = _cs_zscore_null0(raw[di])
+        if consume:
+            # 该列已全量落进 X：立刻从池里丢掉，「宽帧 + X」共存降到单列粒度
+            pool.release_value_column(name)
+    del raw
     return LibraryPanel(
         dates=date_list, stocks=stock_list,
         date_idx=date_idx, stock_idx=stock_idx,

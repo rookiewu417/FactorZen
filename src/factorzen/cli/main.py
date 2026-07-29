@@ -1294,6 +1294,9 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         # 但仍原样透传——manifest 要记「这次到底开没开调度器」。
         focus_leaves=getattr(args, "focus_leaves", None),
         horizon=int(getattr(args, "horizon", 1) or 1),
+        # 默认开（no_* 关闭旗标，与 no_sleeve_gate / no_leaf_scheduler 同款）：
+        # session 末 lift 钩子换子进程，主进程 17G 常驻不再与基线重物化叠加。
+        lift_hook_subprocess=not bool(getattr(args, "no_lift_hook_subprocess", False)),
     )
     print(f"[mine-team] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
     return 0
@@ -1305,7 +1308,12 @@ def _rebuild_keep_leaves(
     market: str,
     lib_root: str,
 ) -> list[str] | None:
-    """`factor-library rebuild` 的装配帧列白名单 = 本次会被求值的表达式的叶并集。
+    """装配帧列白名单 = 本次会被求值的表达式的叶并集。
+
+    两个消费方（**改一侧必查另一侧**）：
+    - `factor-library rebuild`：`only is None` 时全量重估，`--only` 时定向；
+    - `factor-library lift-test`：本批候选当 ``only``（永远走定向分支——lift 只评
+      候选 + 库基线，不碰历史产物源）。
 
     与 `factor_library.library_pool_required_columns` 同款写法（`feature_names(parse_expr(...))`），
     区别是这里返回**叶名**（`prepare_mining_daily(keep_leaves=...)` 的口径，由
@@ -2404,7 +2412,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
         intraday_expr_leaf_names,
     )
 
-    all_exprs: list[str] = []
+    cand_exprs: list[str] = []
     for _gs, _ge, cands in groups:
         for c in cands:
             e = c.get("expression") if isinstance(c, dict) else None
@@ -2414,7 +2422,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             # py:: 哨兵不是可 parse 表达式；跳过以免误触 ix_ 词法或无意义 parse 尝试
             if fl.is_python_identity(es):
                 continue
-            all_exprs.append(es)
+            cand_exprs.append(es)
+    all_exprs: list[str] = list(cand_exprs)
     try:
         for rec in fl.load_library(market, root=lib_root):
             if getattr(rec, "status", None) == "active" and rec.expression:
@@ -2434,6 +2443,15 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     if ix_leaves:
         args.intraday_expr_leaves = ix_leaves
         args.intraday_leaves = True
+    # ── 装配帧列白名单（与 `factor-library rebuild` 同一函数、同一「宁多勿漏」口径）──
+    # 本次真正会被求值的表达式 = 本批候选 ∪ **库内全部记录**：候选走
+    # `_materializer_from_prepped`，基线池走 `build_library_pool`(active)，
+    # `--apply` 的 W1 相关性门还会物化库内非 active 记录去重 → 白名单取全库。
+    # 语义安全依据同 rebuild：`evaluate_materialized` 入口本就自裁到
+    # 「键列 ∪ 表达式引用叶列」，裁列不改变任何求值结果（见
+    # `factor_library.library_pool_required_columns` docstring）；ret 面板要的价格列
+    # 在 `preparation.MINING_MANDATORY_COLS` 里强制保留。
+    args.keep_leaves = _rebuild_keep_leaves(cand_exprs, cand_exprs, market, lib_root)
 
     daily, profile, _prep_meta = _prepare_agent_mining_data(args)
     if daily is None:

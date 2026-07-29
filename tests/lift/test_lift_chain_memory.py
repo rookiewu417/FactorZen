@@ -276,7 +276,89 @@ def test_injected_pool_is_not_consumed(tmp_path):
     assert set(pool.wide.columns) == {"trade_date", "ts_code", *_ACTIVE_EXPRS}
 
 
-# ── 3. lift-test 的装配帧列白名单 ────────────────────────────────────────────
+# ── 3. sleeve 基线等权分数：不得整块把 f32 面板升 f64 ─────────────────────────
+
+
+def _fake_panel(n_d: int, n_s: int, k: int, dtype):
+    """最小 LibraryPanel 替身（只用到 X / dates / stocks / k）。"""
+    import datetime as _dt
+
+    from factorzen.discovery.residual import LibraryPanel
+
+    rng = np.random.default_rng(3)
+    X = rng.standard_normal((n_d, n_s, k)).astype(dtype)
+    dates = tuple(_dt.date(2022, 1, 1) + _dt.timedelta(days=i) for i in range(n_d))
+    stocks = tuple(f"{i:06d}.SZ" for i in range(n_s))
+    return LibraryPanel(
+        dates=dates, stocks=stocks,
+        date_idx={d: i for i, d in enumerate(dates)},
+        stock_idx={s: i for i, s in enumerate(stocks)},
+        X=X, factor_names=tuple(f"f{i}" for i in range(k)),
+    )
+
+
+def test_equal_weight_score_panel_golden_vs_old_upcast():
+    """golden：与旧实现（先整块升 f64 再 mean + 逐格 append）逐值一致，含列序/dtype。"""
+    from factorzen.core.dates import iso_date_str
+    from factorzen.discovery.lift_test import library_equal_weight_score_panel
+
+    panel = _fake_panel(9, 7, 5, np.float32)
+    got = library_equal_weight_score_panel(panel)
+
+    # 旧实现原样复刻（golden）
+    Xo = np.asarray(panel.X, dtype=np.float64)
+    main = Xo.mean(axis=2)
+    out_d, out_c, out_v = [], [], []
+    for di in range(main.shape[0]):
+        d_iso = iso_date_str(panel.dates[di]) or str(panel.dates[di])
+        for si in range(main.shape[1]):
+            out_d.append(d_iso)
+            out_c.append(str(panel.stocks[si]))
+            out_v.append(float(main[di, si]))
+    ref = pl.DataFrame(
+        {"trade_date": out_d, "ts_code": out_c, "factor_value": out_v},
+        schema={"trade_date": pl.Utf8, "ts_code": pl.Utf8, "factor_value": pl.Float64},
+    )
+    assert got.columns == ref.columns
+    assert got.schema == ref.schema
+    assert got.equals(ref)
+
+
+def test_equal_weight_score_panel_never_upcasts_whole_panel(monkeypatch):
+    """f32 面板不得被整块 asarray 成 f64。
+
+    全 A 2550×5800×79 的一份 f64 副本 = 9.35G —— 2026-07-29 CLI 探针就是在
+    sleeve 分支第一次读 base_scores 时被这一句从 13.4G 顶到 23.5G 被 OOM-kill。
+    这里直接盯**那句调用**：任何「3 维输入 + dtype=float64」的 asarray 都判失败。
+    """
+    import numpy as _np
+
+    from factorzen.discovery.lift_test import library_equal_weight_score_panel
+
+    bad: list[tuple] = []
+    real = _np.asarray
+
+    def spy(a, dtype=None, **kw):
+        arr = real(a, dtype=dtype, **kw)
+        if (
+            dtype is not None
+            and _np.dtype(dtype) == _np.float64
+            and getattr(a, "ndim", 0) == 3
+            and getattr(a, "dtype", None) == _np.float32
+        ):
+            bad.append((getattr(a, "shape", None), str(dtype)))
+        return arr
+
+    monkeypatch.setattr(_np, "asarray", spy)
+    panel = _fake_panel(6, 5, 4, np.float32)
+    out = library_equal_weight_score_panel(panel)
+    monkeypatch.undo()
+    assert out.height == 6 * 5
+    assert not bad, f"整块升 f64 了：{bad}"
+    assert panel.X.dtype == np.float32, "不得就地改写面板 dtype"
+
+
+# ── 4. lift-test 的装配帧列白名单 ────────────────────────────────────────────
 
 
 def test_lift_test_keep_leaves_is_candidates_union_library(tmp_path):

@@ -1119,30 +1119,32 @@ def library_equal_weight_score_panel(panel: Any) -> pl.DataFrame:
     )
     if panel is None or getattr(panel, "k", 0) == 0:
         return empty
-    X = np.asarray(panel.X, dtype=np.float64)
+    X = np.asarray(panel.X)
     if X.ndim != 3 or X.shape[2] == 0:
         return empty
-    main = X.mean(axis=2)  # (n_d, n_s)
-    dates = list(panel.dates)
-    stocks = list(panel.stocks)
+    # **不**整块升 f64：大面板 X 是 f32（见 residual.RESIDUAL_PANEL_F32_CELLS），
+    # `np.asarray(X, dtype=np.float64)` 会当场复制一份全尺寸 f64——全 A
+    # 2550×5800×79 就是 9.35G，2026-07-29 CLI 探针正是在 sleeve 分支第一次读
+    # base_scores 时被这一句从 13.4G 顶到 23.5G 而 OOM-kill。
+    # `mean(axis=2, dtype=np.float64)` 用 f64 累加、直接出 (n_d, n_s) f64，
+    # 逐值与「先复制成 f64 再 mean」相同（每个 f32 精确升 f64，同一套 pairwise 求和）。
+    main = X.mean(axis=2, dtype=np.float64)  # (n_d, n_s)
     n_d, n_s = main.shape
-    # 展平；trade_date 统一 ISO 字符串，便于与 ret / cand join
-    out_dates: list[str] = []
-    out_codes: list[str] = []
-    out_vals: list[float] = []
-    for di in range(n_d):
-        d_iso = iso_date_str(dates[di])
-        if d_iso is None:
-            d_iso = str(dates[di])
-        for si in range(n_s):
-            out_dates.append(d_iso)
-            out_codes.append(str(stocks[si]))
-            out_vals.append(float(main[di, si]))
+    # 展平；trade_date 统一 ISO 字符串，便于与 ret / cand join。
+    # 键列走 gather 而不是逐格 append：(n_d × n_s) 个 python 对象在全 A 是 1.5e7 ×3 条
+    # list，光对象头就 GB 级；gather 只多两条 int64 索引数组。
+    date_iso = [
+        (iso_date_str(d) if iso_date_str(d) is not None else str(d))
+        for d in panel.dates
+    ]
+    code_str = [str(s) for s in panel.stocks]
+    idx_d = np.repeat(np.arange(n_d, dtype=np.int64), n_s)
+    idx_s = np.tile(np.arange(n_s, dtype=np.int64), n_d)
     return pl.DataFrame(
         {
-            "trade_date": out_dates,
-            "ts_code": out_codes,
-            "factor_value": out_vals,
+            "trade_date": pl.Series("trade_date", date_iso, dtype=pl.Utf8).gather(idx_d),
+            "ts_code": pl.Series("ts_code", code_str, dtype=pl.Utf8).gather(idx_s),
+            "factor_value": pl.Series("factor_value", main.reshape(-1), dtype=pl.Float64),
         },
         schema={
             "trade_date": pl.Utf8,

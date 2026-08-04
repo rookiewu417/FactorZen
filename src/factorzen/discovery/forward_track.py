@@ -119,8 +119,80 @@ def _ledger_high_watermark(rows: list[dict]) -> str | None:
 
 
 def _updated_at_key(v: Any) -> str:
-    """updated_at（常为 YYYY-MM-DD）→ YYYYMMDD，便于与 forward date 比较。"""
+    """updated_at / forward_start（常为 YYYY-MM-DD）→ YYYYMMDD，便于与 forward date 比较。"""
     return _date_str(v)
+
+
+def _iso_from_yyyymmdd(s: str) -> str:
+    """YYYYMMDD → YYYY-MM-DD；已是带横线则原样返回。"""
+    s = str(s or "").strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s
+
+
+def resolve_forward_start(
+    now: str,
+    *,
+    market: str = "ashare",
+    latest: Any = None,
+) -> str:
+    """计算 forward 观察起点（YYYY-MM-DD）。
+
+    ``forward_start = min(wall-clock ``now``, 数据湖 ``latest_data_date``)``。
+
+    墙钟超前数据时（常见于日终未补全湖），若用 ``updated_at=today`` 当 cutoff，
+    所有已有 bar 都满足 ``date ≤ latest < today`` → 永远 ``n_days=0``，
+    ``forward-review`` 无法启动。对齐数据日后，下一根新 bar 即可开始计数。
+
+    ``latest``：可注入 ``date`` / ``YYYYMMDD`` / ``YYYY-MM-DD`` 做测试；None → 探测湖。
+    湖探测失败 → 退回 ``now``（不比无数据时更糟）。
+    """
+    now_key = _date_str(now)
+    if not now_key or len(now_key) != 8:
+        # 无法解析时原样返回，调用方通常已传 ISO
+        return str(now)
+
+    latest_key: str | None = None
+    if latest is not None:
+        latest_key = _date_str(latest)
+    else:
+        try:
+            from factorzen.discovery.backtest_window import latest_data_date
+
+            d = latest_data_date(market)
+            if d is not None:
+                latest_key = d.strftime("%Y%m%d")
+        except Exception as exc:
+            _LOG.debug("resolve_forward_start: latest_data_date failed: %s", exc)
+
+    if latest_key and len(latest_key) == 8:
+        use = min(now_key, latest_key)
+    else:
+        use = now_key
+    return _iso_from_yyyymmdd(use)
+
+
+def assign_forward_start(
+    rec: Any,
+    *,
+    now: str,
+    market: str,
+    prev: Any = None,
+    latest: Any = None,
+) -> None:
+    """给记录落 ``forward_start``（原地）。
+
+    - 已有 ``forward_start``（含从 prev 继承）→ 不重置观察钟；
+    - 否则 → ``resolve_forward_start(now, market=...)``。
+    """
+    existing = getattr(rec, "forward_start", None)
+    if existing:
+        return
+    if prev is not None and getattr(prev, "forward_start", None):
+        rec.forward_start = prev.forward_start
+        return
+    rec.forward_start = resolve_forward_start(now, market=market, latest=latest)
 
 
 def _load_forward_rows(market: str, root: str) -> list[dict]:
@@ -540,10 +612,14 @@ def _ics_after_updated(
     updated_at: str | None,
     universe: str | None = None,
 ) -> list[tuple[str, float]]:
-    """该因子 updated_at（进入 probation）之后的 (date, ic) 序列；丢弃 ic=None。
+    """该因子观察起点之后的 (date, ic) 序列；丢弃 ic=None。
 
-    updated_at 缺失 → 用全部（旧记录无进入时刻，宁多勿漏；真实确认应写 updated_at）。
-    过滤条件：date > updated_at（严格晚于进入日，进入当日不计入）。
+    ``updated_at`` 参数名保留兼容：实际传入的应是 **cutoff**——
+    优先 ``FactorRecord.forward_start``，否则 ``updated_at``
+    （见 ``forward_review`` 调用处）。
+
+    cutoff 缺失 → 用全部（旧记录无进入时刻，宁多勿漏）。
+    过滤条件：date > cutoff（严格晚于起点，起点当日不计入）。
 
     ``universe``：只取同口径截面 IC。legacy 无 universe 的 row 视为 None，
     仅匹配 ``universe is None`` 的记录——避免混用错误截面 IC。
@@ -633,7 +709,9 @@ def forward_review(
         sign = _sign_from_ic_train(
             rec.admission_ic if rec.admission_ic is not None else rec.ic_train
         )
-        series = _ics_after_updated(fwd, expr, rec.updated_at, rec.universe)
+        # 观察钟：forward_start（对齐数据日）优先，旧行回退 updated_at
+        cutoff = rec.forward_start if rec.forward_start else rec.updated_at
+        series = _ics_after_updated(fwd, expr, cutoff, rec.universe)
 
         base_row: dict[str, Any] = {
             "expression": expr,

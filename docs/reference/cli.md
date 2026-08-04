@@ -420,8 +420,8 @@ LLM 单 Agent 引导的挖掘。
 
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
-| `--start` / `--end` | str | — | ✅ | 窗口 `YYYYMMDD` |
-| `--universe` | str | 无 | | 票池名 |
+| `--start` / `--end` | str | `default_window` | | 窗口 `YYYYMMDD`；都省略时约 10 年滚动到最新（A股下限 20160101） |
+| `--universe` | str | `all_a` | | 票池名 |
 | `--market` | 四选一 | `ashare` | | 市场剖面 |
 | `--symbols` | str | 无 | | crypto/futures/us 显式标的 |
 | `--top-n` | int | `50` | | 池规模 |
@@ -433,6 +433,9 @@ LLM 单 Agent 引导的挖掘。
 | `--set KEY=VALUE` | 可重复 | 无 | | 高级覆盖：`heal_rounds`/`patience`/`objective`/`intraday_*`/`scout_*` 等 |
 
 ```bash
+# 默认：all_a × default_window（约 2016–最新）
+pixi run -- fz mine agent --iterations 5
+# 显式覆盖：
 pixi run -- fz mine agent --start 20200101 --end 20241231 --universe csi500 --iterations 5
 # 高级：--set heal_rounds=0 --set patience=3 --set intraday_scout=true
 ```
@@ -445,8 +448,8 @@ pixi run -- fz mine agent --start 20200101 --end 20241231 --universe csi500 --it
 
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
-| `--start` / `--end` | str | — | ✅ | 窗口 |
-| `--universe` | str | 无 | | 票池 |
+| `--start` / `--end` | str | `default_window` | | 窗口；都省略时约 10 年滚动到最新（A股下限 20160101） |
+| `--universe` | str | `all_a` | | 票池 |
 | `--market` | 四选一 | `ashare` | | 市场 |
 | `--symbols` | str | 无 | | 非 A 股显式标的 |
 | `--top-n` | int | `50` | | 池规模 |
@@ -459,6 +462,9 @@ pixi run -- fz mine agent --start 20200101 --end 20241231 --universe csi500 --it
 | `--set KEY=VALUE` | 可重复 | 无 | | 高级覆盖（见下表） |
 
 ```bash
+# 默认：all_a × default_window
+pixi run -- fz mine team --iterations 8 --structured --pool-subproc
+# 显式覆盖：
 pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi500 \
   --iterations 8 --structured --pool-subproc \
   --set hypotheses_per_round=2 --set llm_workers=4
@@ -572,7 +578,7 @@ team manifest 不写该键，只能回退 `DEFAULT_HORIZON`）。
 | 参数 | 类型 | 默认值 | 必填 | 说明 |
 |---|---|---|---|---|
 | `--market` | `ashare` \| `crypto` \| `futures` \| `us` | `ashare` | | 市场剖面 |
-| `--start` | str | 无 | | 覆盖默认窗口起点；缺省 = 最近 6 年滚动 |
+| `--start` | str | 无 | | 覆盖默认窗口起点；缺省 = 约 10 年滚动（A股下限 20160101） |
 | `--end` | str | 无 | | 覆盖默认窗口终点；缺省 = 数据最新端 |
 | `--universe` | str | 无 | | A 股票池名（如 `csi300`） |
 | `--horizon` | int | `1` | | 前向收益持有期（交易日） |
@@ -600,7 +606,7 @@ pixi run -- fz factor-library rebuild --market ashare --universe csi500 --horizo
 进程 exit=0 的静默空转。
 
 现在 rebuild 会按装配帧**真实拥有的交易日**把评估窗下界前推到「它之前真有 504 根 bar」
-的那天，并在 stderr 说明。预热本就充足时（默认 6 年滚动窗口即是）**不做任何改动**。
+的那天，并在 stderr 说明。预热本就充足时（默认约 10 年滚动窗口即是）**不做任何改动**。
 manifest 记 `requested_eval_start`（你传的 `--start`）/ `warmup_reserved_bars` /
 `warmup_bars_at_requested_start` / `eval_start_clamped` / `warmup_prefix_degenerate`；
 manifest 本体的 `eval_start` 与登记簿记录里的 `eval_start` 是**真实使用**的下界。

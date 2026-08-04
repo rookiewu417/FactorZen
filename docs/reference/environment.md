@@ -27,11 +27,12 @@ A 股主线取数依赖 `TUSHARE_TOKEN`；LLM 挖掘另需 `FACTORZEN_LLM_*`。�
 | `FACTORZEN_LLM_ENABLED` | `false` | 见 §3 | `llm/config.py` |
 | `FACTORZEN_LLM_BASE_URL` | `https://www.aiping.cn/api/v1` | LLM 功能必需 | `llm/config.py` |
 | `FACTORZEN_LLM_API_KEY` | `your_llm_api_key_here` | LLM 功能必需 | `llm/config.py` |
-| `FACTORZEN_LLM_MODEL` | `DeepSeek-V4-Pro` | LLM 功能必需 | `llm/config.py` |
+| `FACTORZEN_LLM_MODEL` | `DeepSeek-V4-Flash-0731` | LLM 功能必需 | `llm/config.py` |
 | `FACTORZEN_LLM_TIMEOUT_SECONDS` | `30` | 可选 | `llm/config.py` |
 | `FACTORZEN_LLM_MAX_TOKENS` | `700` | 可选 | `llm/config.py` |
-| `FACTORZEN_LLM_THINKING` | `false`（示例中被注释） | 可选 | `llm/config.py` |
-| `FACTORZEN_LLM_PROVIDER` | `DeepSeek` | 可选 | `llm/config.py` |
+| `FACTORZEN_LLM_THINKING` | `true` | 可选 | `llm/config.py` |
+| `FACTORZEN_LLM_REASONING_EFFORT` | `max` | 可选（thinking 开时生效；`none`=不传 effort） | `llm/config.py` |
+| `FACTORZEN_LLM_PROVIDER` | 未设 | 可选（aiping 默认不需要；仅在要锁上游路由时再设） | `llm/config.py` |
 
 ### 1.2 代码真实读取、但 `.env.example` 未列的变量
 
@@ -74,18 +75,18 @@ A 股主线取数依赖 `TUSHARE_TOKEN`；LLM 挖掘另需 `FACTORZEN_LLM_*`。�
 
 ```text
 ENABLED  BASE_URL  API_KEY  MODEL  TIMEOUT_SECONDS  MAX_TOKENS
-THINKING  PROVIDER  MAX_RETRIES  FLAVOR  STREAM
+THINKING  REASONING_EFFORT  PROVIDER  MAX_RETRIES  FLAVOR  STREAM
 ```
 
 `.env` 写法示例（平铺默认 + 一个名为 `cockpit` 的第二 profile）：
 
 ```bash
-# 平铺默认
+# 平铺默认（aiping：模型名即可，无需 PROVIDER）
 FACTORZEN_LLM_ENABLED=true
 FACTORZEN_LLM_BASE_URL=https://www.aiping.cn/api/v1
 FACTORZEN_LLM_API_KEY=<your-key>
-FACTORZEN_LLM_MODEL=DeepSeek-V4-Pro
-FACTORZEN_LLM_PROVIDER=DeepSeek
+FACTORZEN_LLM_MODEL=DeepSeek-V4-Flash-0731
+# FACTORZEN_LLM_PROVIDER=DeepSeek  # 可选，仅在需要锁上游路由时
 
 # 第二 profile
 FACTORZEN_LLM_COCKPIT_BASE_URL=http://localhost:8080/v1

@@ -163,12 +163,14 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_A
                    eval_start: str | None = None, profile=None,
                    library_orthogonal: bool = True,
                    objective: str = "residual",
+                   pool_cache_dir: str | None = None,
                    intraday_scout: bool = False,
                    scout_k: int = 4,
                    scout_max_leaves: int = 12,
                    scout_freq: str = "5min",
                    exec_lag: int = 0,
-                   exec_price_col: str | None = None) -> dict:
+                   exec_price_col: str | None = None,
+                   mem_actions: dict | None = None) -> dict:
     """跑单 Agent 挖掘闭环，每轮增量落 manifest，收尾导出候选。
 
     ``data_window``：``{start, end, universe, market}``。落进 manifest 的 params，
@@ -191,10 +193,13 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_A
         "n_rounds": n_rounds, "seed": seed, "top_k": top_k, "holdout_ratio": holdout_ratio,
         "patience": patience, "heal_rounds": heal_rounds, "eval_start": eval_start,
         "exec_lag": exec_lag, "exec_price_col": exec_price_col,
+        "pool_cache_dir": pool_cache_dir,
         **(data_window or {}),
         "command": command,
         "llm": _llm_meta(llm_fn),
     }
+    if mem_actions is not None:
+        params["mem_actions"] = mem_actions
 
     def _checkpoint(partial_result) -> None:
         """每轮末增量落盘 + 打印进度：进程若在下一轮崩溃，已找到的候选不至于全损。"""
@@ -203,6 +208,18 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_A
         _print_round_progress(partial_result, label="mine-agent")
 
     _print_startup(daily, params, label="mine-agent", rid=rid)
+    if mem_actions is not None:
+        from factorzen.discovery.mem_budget import MemActions, format_mem_actions
+
+        if isinstance(mem_actions, MemActions):
+            print(f"[mine-agent] 内存策略 ▸ {format_mem_actions(mem_actions)}", flush=True)
+        elif isinstance(mem_actions, dict):
+            print(
+                f"[mine-agent] 内存策略 ▸ pool_subproc={mem_actions.get('use_pool_subproc')} "
+                f"| {mem_actions.get('reason', '')}",
+                flush=True,
+            )
+    _dw = data_window or {}
     result = run_llm_agent(daily, fn, n_rounds=n_rounds, seed=seed, top_k=top_k,
                            holdout_ratio=holdout_ratio, human_review=human_review,
                            patience=patience, heal_rounds=heal_rounds, eval_start=eval_start,
@@ -210,6 +227,8 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_A
                            library_orthogonal=library_orthogonal,
                            library_root=str(Path(out_dir).parent / "factor_library"),
                            objective=objective,
+                           pool_cache_dir=pool_cache_dir,
+                           universe=_dw.get("universe"),
                            intraday_scout=intraday_scout,
                            scout_k=scout_k,
                            scout_max_leaves=scout_max_leaves,
@@ -226,4 +245,5 @@ def run_agent_mine(daily, *, n_rounds: int, seed: int, out_dir: str = str(MINE_A
     _ = export
     _print_final_stats(result, str(run_dir), label="mine-agent")
     return {"run_dir": str(run_dir), "n_candidates": len(result.candidates),
-            "n_trials": result.n_trials, "candidates": result.candidates}
+            "n_trials": result.n_trials, "candidates": result.candidates,
+            "mem_actions": mem_actions}

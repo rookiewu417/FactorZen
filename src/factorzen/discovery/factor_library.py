@@ -188,6 +188,10 @@ class FactorRecord:
     # from_dict 丢弃 → 下一次 load→save 循环静默洗掉，故必须正式建字段
     forward_confirmed_at: str | None = None
     forward_n_days: int | None = None
+    # forward 观察起点：只计 date > forward_start 的 paper 日（见 forward_track）。
+    # 入库时 = min(wall-clock, latest_data_date)，避免墙钟超前数据导致永远 n_days=0。
+    # 旧 jsonl 无此字段 → None，review 回退 updated_at。
+    forward_start: str | None = None
     # 统计裁决原文（cap 前）："active"/"probation"；status 可能被运营护栏压到 probation
     admission_decision: str | None = None
     # 证据层级：legacy=历史入库；v2=新口径写入；None=未标注（语义≈legacy 但未落盘）
@@ -1276,11 +1280,13 @@ def _record_from_candidate(
         admission_ic=g("admission_ic"),  # lift 轨方向权威；旧行缺失 → None
         holdout_n_days=hnd,
         # paper forward 确认 provenance：与 added_at 同款从 prev 保留，
-        # 避免幂等重写 / 复测静默洗掉 forward_confirmed_at / forward_n_days
+        # 避免幂等重写 / 复测静默洗掉 forward_confirmed_at / forward_n_days /
+        # forward_start（观察钟不因复测重置）
         forward_confirmed_at=(
             prev.forward_confirmed_at if prev is not None else None
         ),
         forward_n_days=prev.forward_n_days if prev is not None else None,
+        forward_start=prev.forward_start if prev is not None else None,
         eval_start=eval_start,
         eval_end=eval_end,
         universe=universe,
@@ -1324,6 +1330,7 @@ def _record_from_candidate(
 _TARGETED_STATE_FIELDS = (
     "status", "admission_track", "admission_decision",
     "max_corr_in_lib", "correlated_with",
+    "forward_start", "forward_confirmed_at", "forward_n_days",
 )
 # 缺值才回填：provenance / 元数据。候选若真带了新值以新值为准，不能被 prev 顶回去
 # （典型场景：lift 轨记录经复审拿到刷新的 admission_ic / lift_metric）。
@@ -1650,6 +1657,8 @@ def upsert_probation(
         rec.lift_baseline = _as_float(
             row.get("lift_baseline", row.get("baseline"))
         )
+        from factorzen.discovery.forward_track import assign_forward_start
+        assign_forward_start(rec, now=now, market=market, prev=prev)
         if prev is None:
             res.added += 1
         else:
@@ -1881,6 +1890,9 @@ def upsert_lift_admissions(
             else:
                 rec.status = decision  # probation
                 out["added_probation"] += 1
+            # forward 观察起点：对齐数据日，避免墙钟超前导致 review 永 0 天
+            from factorzen.discovery.forward_track import assign_forward_start
+            assign_forward_start(rec, now=now, market=market, prev=prev)
             rec.evidence_tier = "v2"  # 新写入路径一律 v2
             # 裸 IC 同号门降级留痕（P0b）：单点判定复用 lift_test.naked_ic_negative，
             # 不在这里重写一遍符号判断。正裸 IC/缺失 → 显式 None（复测可翻案清标）。

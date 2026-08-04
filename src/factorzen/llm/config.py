@@ -3,10 +3,11 @@
 Supports two independent upstream profiles that can be switched at runtime:
 
 ```
-# 平铺=默认 profile(AIPing/DeepSeek)：FACTORZEN_LLM_BASE_URL=...
+# 平铺=默认 profile(AIPing)：FACTORZEN_LLM_BASE_URL=...
 #              FACTORZEN_LLM_API_KEY=sk-...
-#              FACTORZEN_LLM_MODEL=DeepSeek-V4-Pro
+#              FACTORZEN_LLM_MODEL=DeepSeek-V4-Flash-0731
 #              FACTORZEN_LLM_FLAVOR=aiping   # 缺省即 aiping
+#              # 默认无需 FACTORZEN_LLM_PROVIDER；仅在要锁上游路由时再设
 #
 # 第二 profile：FACTORZEN_LLM_SUB2API_BASE_URL=http://localhost:8080/v1
 #              FACTORZEN_LLM_SUB2API_API_KEY=sk-...
@@ -30,6 +31,10 @@ from factorzen.config.settings import ROOT
 
 _DEFAULT_ENV_FILE = ROOT / ".env"
 _VALID_FLAVORS = frozenset({"aiping", "openai"})
+# DeepSeek V4 / aiping：high 为常规，max 为最深；low/medium→high、xhigh→max 为兼容别名。
+# none = 显式不传 effort（仅 enable_thinking 开关控制）。
+_VALID_REASONING_EFFORTS = frozenset({"low", "medium", "high", "max", "xhigh", "none"})
+_DEFAULT_REASONING_EFFORT = "max"
 
 
 def _read_env_file(path: Path | None) -> dict[str, str]:
@@ -102,6 +107,19 @@ def _resolve_stream(raw: str | None) -> bool | None:
     raise ValueError(f"非法 FACTORZEN_LLM_STREAM={raw!r}；允许 true/false")
 
 
+def _resolve_reasoning_effort(raw: str | None) -> str:
+    """未设 / 空串 → 默认 max；显式值必须落在允许集合。"""
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_REASONING_EFFORT
+    effort = str(raw).strip().lower()
+    if effort not in _VALID_REASONING_EFFORTS:
+        raise ValueError(
+            f"非法 LLM reasoning_effort={raw!r}；允许值: "
+            f"{sorted(_VALID_REASONING_EFFORTS)}"
+        )
+    return effort
+
+
 @dataclass(frozen=True)
 class LLMConfig:
     enabled: bool
@@ -113,9 +131,11 @@ class LLMConfig:
     max_tokens: int = 700
     thinking: str | None = None
     provider: str | None = None
+    # 思考强度：aiping/DeepSeek 的 reasoning_effort；默认 max。thinking 关闭时不发往上游。
+    reasoning_effort: str = _DEFAULT_REASONING_EFFORT
     # 交给 OpenAI SDK 的有限重试次数；挖掘是多轮长循环，一次限流不该让整轮结果全损。
     max_retries: int = 3
-    # 上游适配风格：aiping（默认，含 provider 路由 / enable_thinking）| openai（兼容网关）
+    # 上游适配风格：aiping（默认，enable_thinking；provider 可选）| openai（兼容网关）
     flavor: str = "aiping"
     # 当前选用的配置 profile 名（审计用；None = 平铺默认）
     profile: str | None = None
@@ -218,6 +238,7 @@ def load_llm_config(
 
     flavor = _resolve_flavor(setting("FLAVOR"))
     stream = _resolve_stream(setting("STREAM"))
+    reasoning_effort = _resolve_reasoning_effort(setting("REASONING_EFFORT"))
 
     return LLMConfig(
         enabled=final_enabled,
@@ -228,6 +249,7 @@ def load_llm_config(
         max_tokens=max_tokens,
         thinking=setting("THINKING"),
         provider=setting("PROVIDER"),
+        reasoning_effort=reasoning_effort,
         max_retries=max_retries,
         flavor=flavor,
         profile=active_profile,

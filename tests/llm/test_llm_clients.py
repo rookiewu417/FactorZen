@@ -26,7 +26,8 @@ def _cfg(**kw) -> LLMConfig:
         "enabled": True,
         "base_url": "https://www.aiping.cn/api/v1",
         "api_key": "sk-super-secret-token",
-        "model": "DeepSeek-V4-Pro",
+        "model": "DeepSeek-V4-Flash-0731",
+        # 测试 pin 校验 / only 列表时显式传入 provider；默认路径不需要
         "provider": "DeepSeek",
     }
     base.update(kw)
@@ -85,7 +86,7 @@ def _install_fake(monkeypatch, result):
     return sdk, init_calls
 
 def test_aiping_sdk_client_suite(caplog):
-    """test_uses_openai_sdk_streaming_and_aiping_provider_only；test_reuses_sdk_client_for_same_config；test_full_chat_completions_url_is_normalized_for_sdk；test_empty_stream_content_raises；test_rejects_response_from_unexpected_provider；test_rejects_fallback_response；test_no_provider_pin_sends_empty_only_and_warns_once；test_sdk_status_error_is_wrapped_without_api_key；test_sdk_connection_error_is_wrapped"""
+    """test_uses_openai_sdk_streaming_and_aiping_provider_only；test_reuses_sdk_client_for_same_config；test_full_chat_completions_url_is_normalized_for_sdk；test_empty_stream_content_raises；test_rejects_response_from_unexpected_provider；test_rejects_fallback_response；test_no_provider_pin_sends_empty_only_without_warning；test_sdk_status_error_is_wrapped_without_api_key；test_sdk_connection_error_is_wrapped"""
     # -- 原 test_uses_openai_sdk_streaming_and_aiping_provider_only --
     def _section_0_test_uses_openai_sdk_streaming_and_aiping_provider_only(mp):
         client_mod._openai_client.cache_clear()
@@ -187,15 +188,12 @@ def test_aiping_sdk_client_suite(caplog):
     with pytest.MonkeyPatch.context() as mp:
         _section_5_test_rejects_fallback_response(mp)
 
-    # -- 原 test_no_provider_pin_sends_empty_only_and_warns_once --
-    def _section_6_test_no_provider_pin_sends_empty_only_and_warns_once(mp, caplog):
+    # -- 原 test_no_provider_pin_sends_empty_only（aiping 默认无需 pin，不告警）--
+    def _section_6_test_no_provider_pin_sends_empty_only_without_warning(mp, caplog):
         client_mod._openai_client.cache_clear()
         client_mod._warned_provider_unpinned = False
         client_mod._warned_openai_provider_ignored = False
         caplog.clear()
-        import factorzen.llm.client as module
-
-        mp.setattr(module, "_warned_provider_unpinned", False)
         sdk, _ = _install_fake(mp, [_chunk("ok", provider="Whoever")])
         config = _cfg(provider=None)
 
@@ -205,10 +203,10 @@ def test_aiping_sdk_client_suite(caplog):
 
         assert sdk.completions.calls[0]["extra_body"]["provider"]["only"] == []
         hits = [r for r in caplog.records if "provider.only=[]" in r.getMessage()]
-        assert len(hits) == 1
+        assert hits == []
 
     with pytest.MonkeyPatch.context() as mp:
-        _section_6_test_no_provider_pin_sends_empty_only_and_warns_once(mp, caplog)
+        _section_6_test_no_provider_pin_sends_empty_only_without_warning(mp, caplog)
 
     # -- 原 test_sdk_status_error_is_wrapped_without_api_key --
     def _section_7_test_sdk_status_error_is_wrapped_without_api_key(mp):
@@ -482,6 +480,7 @@ def test_build_payload_suite():
             model="DeepSeek-V4-Pro",
             provider="DeepSeek",
             thinking="true",
+            reasoning_effort="max",
             temperature=0.2,
             max_tokens=700,
         )
@@ -497,11 +496,16 @@ def test_build_payload_suite():
             "extra_body": {
                 "enable_thinking": True,
                 "provider": _provider_options(config),
+                "reasoning_effort": "max",
             },
             "response_format": {"type": "json_object"},
         }
         # 明确钉死 AIPing 扩展字段集合，防止悄悄漂移
-        assert set(payload["extra_body"]) == {"enable_thinking", "provider"}
+        assert set(payload["extra_body"]) == {
+            "enable_thinking",
+            "provider",
+            "reasoning_effort",
+        }
         assert set(payload["extra_body"]["provider"]) == {
             "only",
             "order",
@@ -517,6 +521,34 @@ def test_build_payload_suite():
 
     _section_3_test_aiping_payload_golden_byte_identical_shape()
 
+    # thinking 关时不传 reasoning_effort；effort=none 亦不传
+    def _section_3b_test_reasoning_effort_omitted_when_thinking_off_or_none():
+        off = LLMConfig(
+            enabled=True,
+            base_url="https://aiping.cn/api/v1",
+            api_key="secret",
+            model="DeepSeek-V4-Flash-0731",
+            thinking=None,
+            reasoning_effort="max",
+        )
+        p_off = _build_payload(off, _MSGS__llm_explain_client)
+        assert p_off["extra_body"]["enable_thinking"] is False
+        assert "reasoning_effort" not in p_off["extra_body"]
+
+        none_e = LLMConfig(
+            enabled=True,
+            base_url="https://aiping.cn/api/v1",
+            api_key="secret",
+            model="DeepSeek-V4-Flash-0731",
+            thinking="true",
+            reasoning_effort="none",
+        )
+        p_none = _build_payload(none_e, _MSGS__llm_explain_client)
+        assert p_none["extra_body"]["enable_thinking"] is True
+        assert "reasoning_effort" not in p_none["extra_body"]
+
+    _section_3b_test_reasoning_effort_omitted_when_thinking_off_or_none()
+
     # -- 原 test_openai_flavor_payload_uses_max_completion_tokens_no_temperature_no_extra_body --
     def _section_4_test_openai_flavor_payload_uses_max_completion_tokens_no_temperature_no_extra_body():
         config = LLMConfig(
@@ -526,7 +558,8 @@ def test_build_payload_suite():
             model="gpt-5.4",
             max_tokens=900,
             temperature=0.7,  # 配置可有，payload 不得发出
-            thinking="true",
+            thinking="true",  # thinking 开时 openai flavor 才带 top-level effort
+            reasoning_effort="max",
             provider="DeepSeek",  # 配置可有，openai 不得进 payload
             flavor="openai",
             profile="sub2api",
@@ -541,8 +574,10 @@ def test_build_payload_suite():
             # openai flavor 缺省非流式（本地网关 chunked 长响应不可靠;STREAM=true 可覆盖）
             "stream": False,
             "response_format": {"type": "json_object"},
+            "reasoning_effort": "max",
         }
         assert "max_tokens" not in payload
+        assert "extra_body" not in payload
         assert "temperature" not in payload
         assert "extra_body" not in payload
 

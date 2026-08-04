@@ -737,7 +737,7 @@ def test_cli_rebuild_reserves_warmup_when_start_hits_lake_left_edge(tmp_path, mo
 
 
 def test_cli_rebuild_keeps_start_when_warmup_already_sufficient(tmp_path, monkeypatch):
-    """零回归：预热已足（默认 6 年窗口那条路）时 ``--start`` 一个字节都不动。"""
+    """零回归：预热已足（默认约 10 年窗口那条路）时 ``--start`` 一个字节都不动。"""
     import factorzen.cli.main as cli_main
     from factorzen.cli.main import build_parser
     from factorzen.config.constants import AGENT_WARMUP_LOOKBACK

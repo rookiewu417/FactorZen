@@ -165,7 +165,7 @@ pixi run -- fz factor-library lift-test --market ashare \
 | `--workers` | `fz data intraday-features build` | `1` | 月级进程 | **高：约 7.6 GiB/月** |
 | `--set llm_workers=` | `fz mine team` | `4` | 轮内 LLM 调用 | 可忽略（网络等待） |
 | `--set lift_workers=` | `fz mine team` · `fz factor-library lift-test` | 自适应 | 候选级线程 | **约 5 GB/worker，上限 4** |
-| `--pool-subproc` | `fz mine team` | 关 | 池构建放子进程 | **降低**父进程峰值 |
+| `--pool-subproc` | `fz mine team` / `fz mine agent` | **自适应**（~20 GiB + all_a 大窗自动开） | 池构建放子进程 | **降低**父进程峰值；`--no-pool-subproc` 可关 |
 
 > ✅ 判断原则：**LLM 并发几乎免费，进程/线程级计算并发按内存买单。** 内存紧张时优先关掉 `intraday-features build --workers` 与压低 `--set lift_workers=`，而不是压 `--set llm_workers=`。
 
@@ -175,7 +175,7 @@ pixi run -- fz factor-library lift-test --market ashare \
 
 按顺序自查，命中前面的就不用看后面的：
 
-1. **任务被 OOM kill 了？** 先开 `--pool-subproc`（或先 `fz mine pool-prebuild`），再 `--set lift_workers=1`，最后缩票池到 `csi800`。
+1. **任务被 OOM kill 了？** `fz mine agent` / `team` 在约 20 GiB 主机 + 全 A 大窗下会**自动**开池子进程（`discovery/mem_budget.py`）；仍 OOM 时可先 `fz mine pool-prebuild`、`--set lift_workers=1`，或缩票池到 `csi800`。调试可 `--no-pool-subproc` 关断自适应。
 2. **挖掘慢得离谱？** 确认是否开着库正交检查。scout 阶段可以 `--set no_library_orthogonal=true` 快速探索，正式入库前再开回来。
 3. **单因子评估慢？** 看日志的分段计时，绝大多数情况瓶颈在预处理段而非 I/O。
 4. **补历史日内特征慢？** 确认增量跳过生效（已覆盖月应是毫秒级）；只有缺口月份才需要 `--workers`。

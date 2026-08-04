@@ -681,6 +681,22 @@ class LiftBaselineCache:
             self._ret_key, self._ret_src, self._ret = key, src, ret
             return ret
 
+    def clear(self) -> None:
+        """评分结束后松手全部基线槽（池 / 面板 / QR / 等权分数 / ret）。
+
+        CLI ``lift-test --apply`` 在 17 候选 + 79 active 全 A 上实测：评分收尾时
+        MaxRSS 已 ~22G（机器 23G），若仍持有面板再走 W1 去相关，会在
+        ``upsert_lift_admissions`` 前/中再次被 OOM-kill（exit=137，2026-07-29）。
+        评分结果行是纯 dict，不再依赖这些槽——clear 后只留 ``prepped`` 供
+        ``make_compact_materializer`` 做内存有界的 W1。
+        """
+        with self._lock:
+            self._pool_key = self._pool_src = self._pool = None
+            self._panel_key = self._panel = None
+            self._proj_key = self._proj = None
+            self._scores_key = self._scores = None
+            self._ret_key = self._ret_src = self._ret = None
+
 
 def _build_active_pool(
     *,

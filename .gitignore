@@ -91,3 +91,8 @@ dmypy.json
 # uv 误生成产物(项目统一 pixi,勿用 uv)
 uv.lock
 .hypothesis/
+
+# PPT generation deps (docs/presentations)
+docs/presentations/node_modules/
+docs/presentations/package-lock.json
+docs/presentations/slides_preview/

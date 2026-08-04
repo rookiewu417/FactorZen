@@ -315,9 +315,18 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     mine_sub = mine.add_subparsers(dest="mine_command", required=True)
 
     m_search = mine_sub.add_parser("search", help="Search candidate factor expressions")
-    m_search.add_argument("--start", required=True, help="Start date YYYYMMDD")
-    m_search.add_argument("--end", required=True, help="End date YYYYMMDD")
-    m_search.add_argument("--universe", default=None, help="Universe name (e.g. csi500)")
+    m_search.add_argument(
+        "--start", default=None,
+        help="Start date YYYYMMDD（缺省=default_window 约 10 年滚动到最新；A股下限 20160101）",
+    )
+    m_search.add_argument(
+        "--end", default=None,
+        help="End date YYYYMMDD（缺省=数据最新端）",
+    )
+    m_search.add_argument(
+        "--universe", default="all_a",
+        help="Universe name (default all_a；如 csi500/csi300/csi800)",
+    )
     m_search.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
                           help="Market profile (default ashare)")
     m_search.add_argument("--top-n", dest="top_n", type=int, default=50,
@@ -379,9 +388,18 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     m_exp.set_defaults(func=commands._cmd_mine_export_alpha)
 
     m_agent = mine_sub.add_parser("agent", help="LLM-guided agent factor mining")
-    m_agent.add_argument("--start", required=True)
-    m_agent.add_argument("--end", required=True)
-    m_agent.add_argument("--universe", default=None)
+    m_agent.add_argument(
+        "--start", default=None,
+        help="Start date YYYYMMDD（缺省=default_window 约 10 年滚动到最新；A股下限 20160101）",
+    )
+    m_agent.add_argument(
+        "--end", default=None,
+        help="End date YYYYMMDD（缺省=数据最新端）",
+    )
+    m_agent.add_argument(
+        "--universe", default="all_a",
+        help="Universe name (default all_a；如 csi500/csi300/csi800)",
+    )
     m_agent.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
                          help="Market profile (default ashare)")
     m_agent.add_argument("--symbols", default=None,
@@ -392,6 +410,15 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     m_agent.add_argument("--top-k", dest="top_k", type=int, default=5)
     m_agent.add_argument("--seed", type=int, default=42)
     m_agent.add_argument("--human-review", action="store_true", dest="human_review")
+    m_agent.add_argument(
+        "--pool-subproc", dest="pool_subproc", action="store_true",
+        help="强制库池子进程预构建（默认：按可用内存/帧规模自适应；"
+             "等效 env FACTORZEN_POOL_SUBPROC=1）",
+    )
+    m_agent.add_argument(
+        "--no-pool-subproc", dest="no_pool_subproc", action="store_true",
+        help="禁用库池子进程（即使内存策略建议开启；调试用）",
+    )
     _add_freq_arg(m_agent)
     _add_exec_convention_args(m_agent)
     _add_set_arg(
@@ -412,9 +439,18 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     )
 
     m_team = mine_sub.add_parser("team", help="Multi-agent team factor mining")
-    m_team.add_argument("--start", required=True)
-    m_team.add_argument("--end", required=True)
-    m_team.add_argument("--universe", default=None)
+    m_team.add_argument(
+        "--start", default=None,
+        help="Start date YYYYMMDD（缺省=default_window 约 10 年滚动到最新；A股下限 20160101）",
+    )
+    m_team.add_argument(
+        "--end", default=None,
+        help="End date YYYYMMDD（缺省=数据最新端）",
+    )
+    m_team.add_argument(
+        "--universe", default="all_a",
+        help="Universe name (default all_a；如 csi500/csi300/csi800)",
+    )
     m_team.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
                         help="Market profile (default ashare)")
     m_team.add_argument("--symbols", default=None,
@@ -433,7 +469,12 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     )
     m_team.add_argument(
         "--pool-subproc", dest="pool_subproc", action="store_true",
-        help="池构建放子进程，退出全额归还内存；等效 env FACTORZEN_POOL_SUBPROC=1",
+        help="强制库池子进程预构建（默认：按可用内存/帧规模自适应；"
+             "等效 env FACTORZEN_POOL_SUBPROC=1）",
+    )
+    m_team.add_argument(
+        "--no-pool-subproc", dest="no_pool_subproc", action="store_true",
+        help="禁用库池子进程（即使内存策略建议开启；调试用）",
     )
     m_team.add_argument(
         "--no-lift-hook-subprocess", dest="no_lift_hook_subprocess",
@@ -476,9 +517,18 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         "pool-prebuild",
         help="mine team 库池预构建(子进程内存隔离;产物 parquet 供 --pool-subproc 装载)",
     )
-    pool_pre.add_argument("--start", required=True)
-    pool_pre.add_argument("--end", required=True)
-    pool_pre.add_argument("--universe", default=None)
+    pool_pre.add_argument(
+        "--start", default=None,
+        help="Start date YYYYMMDD（缺省=default_window 约 10 年滚动到最新；A股下限 20160101）",
+    )
+    pool_pre.add_argument(
+        "--end", default=None,
+        help="End date YYYYMMDD（缺省=数据最新端）",
+    )
+    pool_pre.add_argument(
+        "--universe", default="all_a",
+        help="Universe name (default all_a；如 csi500/csi300/csi800)",
+    )
     pool_pre.add_argument(
         "--market", choices=["ashare", "crypto", "futures", "us"], default="ashare",
         help="Market profile (default ashare; 与 m_team 同源)",
@@ -529,9 +579,15 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
     fl_rb = fl_sub.add_parser("rebuild",
                               help="从历史产物在统一默认窗口重算并重建某市场的因子库")
     fl_rb.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
-    fl_rb.add_argument("--start", default=None, help="覆盖默认窗口起点 YYYYMMDD（缺省=最近6年滚动）")
+    fl_rb.add_argument(
+        "--start", default=None,
+        help="覆盖默认窗口起点 YYYYMMDD（缺省=约 10 年滚动到最新；A股下限 20160101）",
+    )
     fl_rb.add_argument("--end", default=None, help="覆盖默认窗口终点 YYYYMMDD（缺省=数据最新端）")
-    fl_rb.add_argument("--universe", default=None, help="A股 universe 名（如 csi300）")
+    fl_rb.add_argument(
+        "--universe", default="all_a",
+        help="A股 universe 名（default all_a；如 csi300/csi500/csi800）",
+    )
     fl_rb.add_argument("--horizon", type=int, default=1, help="前向收益持有期（默认1）")
     fl_rb.add_argument("--top-n", dest="top_n", type=int, default=50,
                        help="crypto/futures universe size (Top-N by turnover); us=S&P500 静态池截断 (default 50)")
@@ -591,9 +647,18 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
              "要求 market=ashare 且 --universe 必填",
     )
     fl_lt.add_argument("--market", choices=["ashare", "crypto", "futures", "us"], default="ashare")
-    fl_lt.add_argument("--start", required=True, help="评估窗口起点 YYYYMMDD")
-    fl_lt.add_argument("--end", required=True, help="评估窗口终点 YYYYMMDD")
-    fl_lt.add_argument("--universe", default=None, help="A股 universe 名（如 csi300）")
+    fl_lt.add_argument(
+        "--start", default=None,
+        help="评估窗口起点 YYYYMMDD（缺省=default_window 约 10 年滚动到最新；A股下限 20160101）",
+    )
+    fl_lt.add_argument(
+        "--end", default=None,
+        help="评估窗口终点 YYYYMMDD（缺省=数据最新端）",
+    )
+    fl_lt.add_argument(
+        "--universe", default="all_a",
+        help="A股 universe 名（default all_a；如 csi300/csi500/csi800）",
+    )
     fl_lt_write = fl_lt.add_mutually_exclusive_group()
     fl_lt_write.add_argument(
         "--apply", dest="apply", action="store_true",

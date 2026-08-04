@@ -182,6 +182,168 @@ def _apply_set_overrides(
     return None
 
 
+def _resolve_mining_window(args: argparse.Namespace, *, label: str) -> int | None:
+    """解析/填充挖掘类命令的 ``--start/--end``。
+
+    - 两者都给：原样使用
+    - 两者都缺：``default_window(market)``（约 10 年滚动到最新；A 股下限 20160101）
+    - 只给一个：fail-loudly（避免半窗静默成默认）
+
+    成功返回 ``None``（并可能写回 ``args.start/args.end``）；失败返回 exit code。
+    """
+    start = getattr(args, "start", None)
+    end = getattr(args, "end", None)
+    if start and end:
+        return None
+    if start or end:
+        print(
+            f"[{label}] --start 与 --end 须成对给出，或都省略以使用 default_window；"
+            f"收到 start={start!r} end={end!r}",
+            file=sys.stderr,
+        )
+        return 2
+    from factorzen.discovery.backtest_window import default_window
+
+    market = getattr(args, "market", "ashare") or "ashare"
+    try:
+        args.start, args.end = default_window(market)
+    except ValueError as exc:
+        print(f"[{label}] {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"[{label}] 使用默认窗口 {args.start}–{args.end}"
+        f"（universe={getattr(args, 'universe', None) or 'all_a'}）",
+        flush=True,
+    )
+    return None
+
+
+def _count_active_library_factors(market: str, library_root: str) -> int:
+    try:
+        from factorzen.discovery.factor_library import load_library
+
+        return sum(1 for r in load_library(market, root=library_root) if r.status == "active")
+    except Exception:
+        return 0
+
+
+def _ensure_pool_cache_subproc(
+    args: argparse.Namespace,
+    *,
+    label: str,
+    cache_root,
+    library_root: str,
+    holdout_ratio: str = "0.2",
+) -> str | None:
+    """在父进程装帧前跑 ``mine pool-prebuild`` 子进程；成功返回 cache_dir 路径。
+
+    与历史 ``mine team --pool-subproc`` 同源：缓存键 = 库 hash + 窗 + 票池 + 市场 +
+    holdout + 日内旗标。失败返回 None（调用方回退进程内构建）。
+    """
+    import hashlib
+    import subprocess
+    from pathlib import Path
+
+    from factorzen.discovery.factor_library import library_file_hash
+
+    market = getattr(args, "market", "ashare") or "ashare"
+    lib_hash = library_file_hash(market, library_root) or "nolib"
+    key_src = "|".join(
+        [
+            lib_hash,
+            str(args.start),
+            str(args.end),
+            str(getattr(args, "universe", None)),
+            market,
+            str(holdout_ratio),
+            str(bool(getattr(args, "intraday_leaves", False))),
+            str(getattr(args, "intraday_freq", "5min") or "5min"),
+        ]
+    )
+    key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
+    cache_dir = Path(cache_root) / key
+    if (cache_dir / "pool_meta.json").exists():
+        print(f"[{label}] 复用现有池缓存 {cache_dir}", flush=True)
+        return str(cache_dir)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "factorzen.cli.main",
+        "mine",
+        "pool-prebuild",
+        "--start",
+        str(args.start),
+        "--end",
+        str(args.end),
+        "--market",
+        market,
+        "--library-root",
+        library_root,
+        "--holdout-ratio",
+        str(holdout_ratio),
+        "--out",
+        str(cache_dir),
+    ]
+    # index_path 仅 pool-prebuild 日志用；缺省与 team 一致
+    idx = getattr(args, "index_path", None)
+    if idx:
+        cmd.extend(["--index-path", str(idx)])
+    if getattr(args, "universe", None) is not None:
+        cmd.extend(["--universe", str(args.universe)])
+    if getattr(args, "symbols", None):
+        cmd.extend(["--symbols", str(args.symbols)])
+    if getattr(args, "top_n", None) is not None:
+        cmd.extend(["--top-n", str(args.top_n)])
+    if bool(getattr(args, "intraday_leaves", False)):
+        cmd.append("--intraday-leaves")
+    if getattr(args, "intraday_freq", None):
+        cmd.extend(["--intraday-freq", str(args.intraday_freq)])
+    print(f"[{label}] 池预构建子进程启动:{' '.join(cmd)}", flush=True)
+    proc = subprocess.run(cmd)
+    if proc.returncode == 0 and (cache_dir / "pool_meta.json").exists():
+        return str(cache_dir)
+    print(
+        f"[{label}] 警告:池预构建子进程失败(exit={proc.returncode})→ 回退进程内构建",
+        file=sys.stderr,
+    )
+    return None
+
+
+def _plan_agent_mem_actions(args: argparse.Namespace, *, library_root: str, library_orthogonal: bool):
+    """CLI 层：用启发式行数 + 库因子数决策是否子进程建池（不装全帧）。"""
+    from factorzen.discovery.mem_budget import (
+        estimate_rows_heuristic,
+        plan_mem_actions,
+    )
+    from factorzen.discovery.operators import LEAF_FEATURES
+
+    market = getattr(args, "market", "ashare") or "ashare"
+    n_rows = estimate_rows_heuristic(
+        start=args.start,
+        end=args.end,
+        universe=getattr(args, "universe", None),
+        market=market,
+    )
+    n_lib = _count_active_library_factors(market, library_root) if library_orthogonal else 0
+    # 显式 --pool-subproc / FACTORZEN_POOL_SUBPROC=1 → force on；
+    # --no-pool-subproc → force off；否则 auto。
+    import os
+
+    force: bool | None = None
+    if bool(getattr(args, "no_pool_subproc", False)):
+        force = False
+    elif bool(getattr(args, "pool_subproc", False)) or os.environ.get("FACTORZEN_POOL_SUBPROC") == "1":
+        force = True
+    return plan_mem_actions(
+        n_rows=n_rows,
+        n_leaf_cols=len(LEAF_FEATURES),
+        n_lib_factors=n_lib,
+        library_orthogonal=library_orthogonal,
+        force_pool_subproc=force,
+    )
+
+
 def _factor_template(class_name: str, factor_name: str, frequency: str) -> str:
     base = "DailyFactor" if frequency != "intraday" else "IntradayFactor"
     import_path = (
@@ -686,6 +848,9 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
     err = _apply_set_overrides(args, _MINE_SEARCH_SET)
     if err is not None:
         return err
+    err = _resolve_mining_window(args, label="mine-search")
+    if err is not None:
+        return err
     if (
         getattr(args, "market", "ashare") not in ("crypto",)
         and getattr(args, "freq", "daily") != "daily"
@@ -943,6 +1108,9 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
     err = _apply_set_overrides(args, _MINE_AGENT_SET)
     if err is not None:
         return err
+    err = _resolve_mining_window(args, label="mine-agent")
+    if err is not None:
+        return err
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
@@ -952,17 +1120,43 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
             print("[mine] --intraday-scout 仅 ashare 支持", file=sys.stderr)
             return 2
         args.intraday_leaves = True
+
+    from pathlib import Path
+
+    from factorzen.config.settings import FACTOR_LIBRARY_DIR, MINE_AGENT_DIR
+    from factorzen.discovery.mem_budget import format_mem_actions
     from factorzen.pipelines.factor_mine_agent import run_agent_mine
+
+    library_orthogonal = not getattr(args, "no_library_orthogonal", False)
+    lib_root = str(FACTOR_LIBRARY_DIR)
+    mem = _plan_agent_mem_actions(
+        args, library_root=lib_root, library_orthogonal=library_orthogonal,
+    )
+    print(f"[mine-agent] 内存策略 ▸ {format_mem_actions(mem)}", flush=True)
+
+    # 库池子进程：父进程尚未装帧，峰值可全额归还
+    pool_cache_dir = None
+    if mem.use_pool_subproc and library_orthogonal:
+        pool_cache_dir = _ensure_pool_cache_subproc(
+            args,
+            label="mine-agent",
+            cache_root=Path(MINE_AGENT_DIR) / "_pool_cache",
+            library_root=lib_root,
+            holdout_ratio="0.2",
+        )
 
     daily, profile, prep_meta = _prepare_agent_mining_data(args)
     if daily is None:
         print("[mine-agent] crypto 挖掘帧为空（检查 --symbols 或数据湖覆盖）", file=sys.stderr)
         return 1
+    # 所有权交接：CLI 不钉住 raw daily，使 orchestrator 释放真实生效
+    _daily_holder = [daily]
+    del daily
     # eval_start = 挖掘窗口 start（预热前缀边界），与 M1 `run_mine(eval_start=start)` 同口径：
     # 缺了它预热前缀会被 split_holdout 当训练数据。
     # membership_* 并入 data_window → agent params（与 start/end/universe 平级，铁律#3）。
     res = run_agent_mine(
-        daily,
+        _daily_holder.pop(),
         n_rounds=args.iterations,
         seed=args.seed,
         top_k=args.top_k,
@@ -973,8 +1167,10 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
         command=_command_line(args),
         eval_start=args.start,
         profile=profile,
-        library_orthogonal=not getattr(args, "no_library_orthogonal", False),
+        library_orthogonal=library_orthogonal,
         objective=getattr(args, "objective", "residual"),
+        pool_cache_dir=pool_cache_dir,
+        mem_actions=mem.as_dict(),
         intraday_scout=bool(getattr(args, "intraday_scout", False)),
         scout_k=int(getattr(args, "scout_k", 4) or 4),
         scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
@@ -1010,6 +1206,10 @@ def _cmd_pool_prebuild(args: argparse.Namespace) -> int:
         log_excluded_leaves,
     )
     from factorzen.validation.holdout import holdout_boundary
+
+    err = _resolve_mining_window(args, label="pool-prebuild")
+    if err is not None:
+        return err
 
     def _to_date(s: str):
         import datetime as _dt
@@ -1145,6 +1345,9 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     err = _apply_set_overrides(args, _MINE_TEAM_SET)
     if err is not None:
         return err
+    err = _resolve_mining_window(args, label="mine-team")
+    if err is not None:
+        return err
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
@@ -1154,93 +1357,35 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
             print("[mine] --intraday-scout 仅 ashare 支持", file=sys.stderr)
             return 2
         args.intraday_leaves = True
-    # ── 库池子进程预构建（父进程此刻未载大帧）────────────────────────────────
+    # ── 库池子进程预构建（父进程此刻未载大帧；自适应或 --pool-subproc）────────
     # subprocess.run 全新解释器 exec；绝不用 multiprocessing/fork（polars 死锁风险）。
-    import hashlib
-    import os
-    import subprocess
     from pathlib import Path
 
     import factorzen.pipelines.factor_mine_team as pmt
     from factorzen.config.settings import MINE_TEAM_DIR as _mine_team_dir
-    from factorzen.discovery.factor_library import library_file_hash
+    from factorzen.discovery.mem_budget import format_mem_actions
+
+    # library_root 与 run_team_mine 硬编码同源（MINE_TEAM_DIR 同级 factor_library）
+    lib_root = str(Path(_mine_team_dir).parent / "factor_library")
+    library_orthogonal = not getattr(args, "no_library_orthogonal", False)
+    mem = _plan_agent_mem_actions(
+        args, library_root=lib_root, library_orthogonal=library_orthogonal,
+    )
+    print(f"[mine-team] 内存策略 ▸ {format_mem_actions(mem)}", flush=True)
 
     pool_cache_dir = None
-    use_subproc = (
-        bool(getattr(args, "pool_subproc", False))
-        or os.environ.get("FACTORZEN_POOL_SUBPROC") == "1"
-    )
-    if use_subproc and not getattr(args, "no_library_orthogonal", False):
-        # 与 run_team_mine 硬编码 library_root 同源（out_dir 默认 MINE_TEAM_DIR 的同级
-        # factor_library=workspace/factor_library）。若用 index_path.parent 会落到
-        # mine_team/factor_library，装载侧 hash 永不命中。
-        # 函数内 from-import：测试可 monkeypatch settings.MINE_TEAM_DIR
-        lib_root = str(Path(_mine_team_dir).parent / "factor_library")
-        market = getattr(args, "market", "ashare") or "ashare"
-        lib_hash = library_file_hash(market, lib_root) or "nolib"
-        # holdout_ratio：CLI 当前不透传 → 常量 0.2，与 run_team_agent 默认参数同源
-        _holdout_ratio_key = "0.2"
-        key_src = "|".join(
-            [
-                lib_hash,
-                args.start,
-                args.end,
-                str(getattr(args, "universe", None)),
-                market,
-                _holdout_ratio_key,
-                str(bool(getattr(args, "intraday_leaves", False))),
-                str(getattr(args, "intraday_freq", "5min") or "5min"),
-            ]
+    if mem.use_pool_subproc and library_orthogonal:
+        pool_cache_dir = _ensure_pool_cache_subproc(
+            args,
+            label="mine-team",
+            cache_root=Path(_mine_team_dir) / "_pool_cache",
+            library_root=lib_root,
+            holdout_ratio="0.2",
         )
-        key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
-        cache_dir = _mine_team_dir / "_pool_cache" / key
-        if (cache_dir / "pool_meta.json").exists():
-            print(f"[mine-team] 复用现有池缓存 {cache_dir}", flush=True)
-            pool_cache_dir = str(cache_dir)
-        else:
-            # 路径归位：顶层 pool-prebuild → mine pool-prebuild
-            cmd = [
-                sys.executable,
-                "-m",
-                "factorzen.cli.main",
-                "mine",
-                "pool-prebuild",
-                "--start",
-                args.start,
-                "--end",
-                args.end,
-                "--market",
-                market,
-                "--index-path",
-                str(args.index_path),
-                "--library-root",
-                lib_root,
-                "--holdout-ratio",
-                _holdout_ratio_key,
-                "--out",
-                str(cache_dir),
-            ]
-            # universe/symbols/top_n/intraday 旗标逐一透传（None 不传）
-            if getattr(args, "universe", None) is not None:
-                cmd.extend(["--universe", str(args.universe)])
-            if getattr(args, "symbols", None):
-                cmd.extend(["--symbols", str(args.symbols)])
-            if getattr(args, "top_n", None) is not None:
-                cmd.extend(["--top-n", str(args.top_n)])
-            if bool(getattr(args, "intraday_leaves", False)):
-                cmd.append("--intraday-leaves")
-            if getattr(args, "intraday_freq", None):
-                cmd.extend(["--intraday-freq", str(args.intraday_freq)])
-            print(f"[mine-team] 池预构建子进程启动:{' '.join(cmd)}", flush=True)
-            proc = subprocess.run(cmd)  # stdout/stderr 直通；不设 timeout
-            if proc.returncode == 0 and (cache_dir / "pool_meta.json").exists():
-                pool_cache_dir = str(cache_dir)
-            else:
-                print(
-                    f"[mine-team] 警告:池预构建子进程失败(exit={proc.returncode})→ 回退进程内构建",
-                    file=sys.stderr,
-                )
-    elif use_subproc:
+    elif (
+        bool(getattr(args, "pool_subproc", False))
+        and not library_orthogonal
+    ):
         print(
             "[mine-team] --pool-subproc 与 --no-library-orthogonal 同开:池不会被使用,跳过子进程",
             flush=True,
@@ -1276,7 +1421,11 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         llm_workers=getattr(args, "llm_workers", 4),
         auto_lift=not bool(getattr(args, "no_auto_lift", False)),
         lift_se_mult=float(getattr(args, "lift_se_mult", 1.645)),
-        lift_workers=getattr(args, "lift_workers", None),  # None→自适应(按可用内存)
+        lift_workers=(
+            mem.lift_workers
+            if getattr(args, "lift_workers", None) is None and mem.lift_workers is not None
+            else getattr(args, "lift_workers", None)
+        ),  # 显式 --set 优先；否则内存策略可压到 1/2
         campaign_prior_enabled=not bool(getattr(args, "no_campaign_prior", False)),
         intraday_scout=bool(getattr(args, "intraday_scout", False)),
         scout_k=int(getattr(args, "scout_k", 4) or 4),
@@ -1411,17 +1560,24 @@ def _cmd_factor_library_rebuild(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # A 股不带 --universe = 全 A 5000+ 只拉取，多年窗口必 OOM（实测 ~22GB 被杀）；
-    # 库的评估口径历史上一直是命名池（csi300），无池 rebuild 几乎必为误操作。
-    if market == "ashare" and not getattr(args, "universe", None):
+    # 默认 universe=all_a（约 2016–最新）；全 A × 十年窗内存极大（实测 ~22GB 被杀），
+    # 小机可显式 --universe csi500/csi300 降配。
+    if market == "ashare" and (getattr(args, "universe", None) or "all_a") == "all_a":
         print(
-            "[factor-library] 警告：未指定 --universe，将拉取全 A 股（内存开销极大，"
-            "多年窗口可能 OOM）；库的历史口径为 --universe csi300",
+            "[factor-library] 提示：universe=all_a × 默认十年窗内存开销极大，"
+            "小机可改 --universe csi500/csi300",
             file=sys.stderr,
         )
-    # 窗口：显式 --start/--end 覆盖，否则默认窗口（最近约 6 年滚动到数据最新端）
+    # 窗口：显式 --start/--end 覆盖，否则 default_window（约 10 年滚动；A股下限 20160101）
     if args.start and args.end:
         start, end = args.start, args.end
+    elif args.start or args.end:
+        print(
+            "[factor-library] --start 与 --end 须成对给出，或都省略以使用 default_window；"
+            f"收到 start={args.start!r} end={args.end!r}",
+            file=sys.stderr,
+        )
+        return 2
     else:
         try:
             start, end = default_window(market)
@@ -2247,6 +2403,9 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     err = _apply_set_overrides(args, _LIFT_TEST_SET)
     if err is not None:
         return err
+    err = _resolve_mining_window(args, label="factor-library lift-test")
+    if err is not None:
+        return err
     import json
     from datetime import date
     from pathlib import Path
@@ -2285,7 +2444,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
 
     market = args.market
 
-    # --factor：一期仅 ashare + 必填 universe；registry 存在性 fail-loudly
+    # --factor：一期仅 ashare；universe 默认 all_a；registry 存在性 fail-loudly
     py_cands: list[dict] = []
     if factor_names:
         if market != "ashare":
@@ -2297,7 +2456,8 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             return 2
         if not getattr(args, "universe", None):
             print(
-                "[factor-library lift-test] --factor 时 --universe 必填（如 csi300）",
+                "[factor-library lift-test] --factor 时 --universe 必填"
+                "（默认 all_a；也可 csi300/csi500）",
                 file=sys.stderr,
             )
             return 2
@@ -2795,6 +2955,22 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
                 r.setdefault("admission_end", g_end)
                 results.append(r)
 
+    # ── 评分后立刻松手重设施 ──────────────────────────────────────────────
+    # 全 A × 79 active 评分峰值 ~22G（23G 机）。apply 的 W1 若仍叠着基线面板 +
+    # 再走 ``_compact_of_from_panels``（先物化 79 份长表再转紧凑）会二次 OOM
+    # （2026-07-29 apply exit=137，死在最后一条 overlay 之后、入库之前）。
+    # 结果行是纯 dict，不再依赖池/面板/memo 全面板；W1 改走
+    # ``make_compact_materializer``（日期采样上限 500，单因子矩阵有界）。
+    import gc
+
+    with contextlib.suppress(Exception):
+        base_ctx.baseline_cache.clear()
+    mat_cache.clear()
+    # daily 在 make_lift_context 时已派生 prepped；评分后 daily 不再需要
+    with contextlib.suppress(NameError):
+        del daily  # 显式释放大帧
+    gc.collect()
+
     # 打印表（含 lift_se / second_half）
     print(
         f"[factor-library lift-test] 评分完成："
@@ -2830,8 +3006,18 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     scored = [r for r in results if not str(r.get("error") or "").startswith("group_gate")]
     if scored and not dry_run:
         # apply 路径：lift_admission + upsert_lift_admissions（延迟导入，契约同任务 D）
-        from factorzen.discovery.factor_library import upsert_lift_admissions
+        from factorzen.discovery.factor_library import (
+            make_compact_materializer,
+            upsert_lift_admissions,
+        )
 
+        # W1 必须走 compact 物化器：``materialize=memo_mat`` 会掉进
+        # ``_compact_of_from_panels``——先把 79+ 条 active 全建成**长表面板**再转
+        # 紧凑，全 A 上等于再造一份评分期内存峰值。compact 优先（upsert 内
+        # compact_materialize 优先于 materialize）。
+        compact_mat = make_compact_materializer(
+            base_ctx.prepped, leaf_map,
+        )
         admissions = upsert_lift_admissions(
             scored,
             market=market,
@@ -2850,10 +3036,7 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
             threshold=threshold,
             se_mult=se_mult,
             allow_active=bool(getattr(args, "allow_active", False)),
-            # W1 相关性门：复用 lift 已用的物化 memo（库侧 active 面板此前已物化过，
-            # memo 命中不重复算；只有本批准入的少数候选需要新物化）。
-            # 不传 = 静默漏掉去重，故此处必须接通。
-            materialize=memo_mat,
+            compact_materialize=compact_mat,
         )
         print(
             f"[factor-library lift-test] 入库：added_active={admissions.get('added_active', 0)} "

@@ -9,8 +9,8 @@ and lifecycle only — evaluation formulas / holdout cuts are unchanged.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 # Safety cushion left for OS / filesystem cache / LLM client / misc.
 DEFAULT_SAFETY_MARGIN_BYTES = 2 * (1024**3)  # 2 GiB

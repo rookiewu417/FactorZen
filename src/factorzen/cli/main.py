@@ -1123,7 +1123,7 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
 
     from pathlib import Path
 
-    from factorzen.config.settings import MINE_AGENT_DIR, FACTOR_LIBRARY_DIR
+    from factorzen.config.settings import FACTOR_LIBRARY_DIR, MINE_AGENT_DIR
     from factorzen.discovery.mem_budget import format_mem_actions
     from factorzen.pipelines.factor_mine_agent import run_agent_mine
 
@@ -2963,16 +2963,12 @@ def _cmd_factor_library_lift_test(args: argparse.Namespace) -> int:
     # ``make_compact_materializer``（日期采样上限 500，单因子矩阵有界）。
     import gc
 
-    try:
+    with contextlib.suppress(Exception):
         base_ctx.baseline_cache.clear()
-    except Exception:
-        pass
     mat_cache.clear()
     # daily 在 make_lift_context 时已派生 prepped；评分后 daily 不再需要
-    try:
-        del daily  # noqa: F841 — 显式释放大帧
-    except NameError:
-        pass
+    with contextlib.suppress(NameError):
+        del daily  # 显式释放大帧
     gc.collect()
 
     # 打印表（含 lift_se / second_half）

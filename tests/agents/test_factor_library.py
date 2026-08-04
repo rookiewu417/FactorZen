@@ -256,7 +256,7 @@ def test_decorrelation_upsert_suite(tmp_path):
 # ── default_window ───────────────────────────────────────────────────────────
 
 def test_default_window_suite(monkeypatch):
-    """test_default_window_end_is_latest_start_back_years；test_default_window_today_caps_end；test_default_window_crypto_floor；test_default_window_raises_when_cache_missing"""
+    """test_default_window_end_is_latest_start_back_years；test_default_window_today_caps_end；test_default_window_crypto_floor；test_default_window_raises_when_cache_missing；test_default_window_ashare_default_10y；test_default_window_ashare_floor"""
     # -- 原 test_default_window_end_is_latest_start_back_years --
     def _section_0_test_default_window_end_is_latest_start_back_years(mp):
         import factorzen.discovery.backtest_window as bw
@@ -300,6 +300,28 @@ def test_default_window_suite(monkeypatch):
     with pytest.MonkeyPatch.context() as mp:
         _section_3_test_default_window_raises_when_cache_missing(mp)
 
+    # -- 默认 10 年滚动 ≈ 2016–2026 --
+    def _section_4_test_default_window_ashare_default_10y(mp):
+        import factorzen.discovery.backtest_window as bw
+        mp.setattr(bw, "latest_data_date", lambda m: date(2026, 6, 30))
+        start, end = bw.default_window("ashare")
+        assert end == "20260630"
+        assert start == "20160630"  # years=10
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_4_test_default_window_ashare_default_10y(mp)
+
+    # -- A 股起点下限 2016-01-01（与 store / 数据湖左缘对齐）--
+    def _section_5_test_default_window_ashare_floor(mp):
+        import factorzen.discovery.backtest_window as bw
+        mp.setattr(bw, "latest_data_date", lambda m: date(2020, 6, 30))
+        start, end = bw.default_window("ashare", years=10)
+        assert end == "20200630"
+        assert start == "20160101"  # floor，而非 20100630
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_5_test_default_window_ashare_floor(mp)
+
 
 # ── 评估窗下界的真实预热预留（数据湖左边界撞上 --start 的静默空转）───────────
 
@@ -334,7 +356,7 @@ def test_clamp_eval_start_for_warmup_suite():
     assert c.requested_start == days[0].strftime(ymd)
     assert c.warm_bars_requested == 0                    # 请求起点之前一根都没有
 
-    # (2) 预热已足（默认 6 年窗口那条路）→ 逐字节不动，零回归
+    # (2) 预热已足（默认约 10 年窗口那条路）→ 逐字节不动，零回归
     req = days[25].strftime(ymd)
     c2 = clamp_eval_start_for_warmup(days, req, 20)
     assert not c2.clamped and c2.effective_start == req and c2.warm_bars_requested == 25

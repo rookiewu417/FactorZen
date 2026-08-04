@@ -1,8 +1,10 @@
 # src/factorzen/discovery/backtest_window.py
 """默认回测窗口——因子库 rebuild 与挖掘共用的枢纽。
 
-「最近约 6 年滚动到数据最新端」：``end = min(该市场缓存最新可用交易日, today?)``，
-``start = end − years``。crypto 因数据成熟度另设起点下限 20210101。返回 ``YYYYMMDD``。
+「最近约 10 年滚动到数据最新端」（约 2016–2026 当 end 在 2026）：
+``end = min(该市场缓存最新可用交易日, today?)``，``start = end − years``。
+A 股再与数据湖左缘 ``2016-01-01`` 取 max（与 store 物化口径对齐）；
+crypto 因数据成熟度另设起点下限 20210101。返回 ``YYYYMMDD``。
 """
 from __future__ import annotations
 
@@ -25,6 +27,10 @@ _CRYPTO_LAKE_ROOT = CRYPTO_LAKE
 # 美股缓存：provider 按 symbol 落 ``data/raw/us_daily/{sym}.parquet``（非 Hive 年月分区）。
 _US_DAILY_ROOT = DATA_RAW_US
 
+# 默认回看年数：10 → end≈2026 时约 2016–2026（与全 A 挖掘/store 主口径一致）。
+DEFAULT_WINDOW_YEARS = 10
+# A 股数据湖左缘 / store 物化起点（``factor_store.STORE_MATERIALIZE_START``）。
+_ASHARE_START_FLOOR = date(2016, 1, 1)
 # crypto 数据成熟度起点下限（早于此的 K 线覆盖不足，不作训练窗口）。
 _CRYPTO_START_FLOOR = date(2021, 1, 1)
 
@@ -143,9 +149,17 @@ def _minus_years(d: date, years: int) -> date:
         return d.replace(year=d.year - years, day=28)
 
 
-def default_window(market: str, *, years: int = 6, today: date | None = None) -> tuple[str, str]:
+def default_window(
+    market: str,
+    *,
+    years: int = DEFAULT_WINDOW_YEARS,
+    today: date | None = None,
+) -> tuple[str, str]:
     """(start, end) as ``YYYYMMDD``。``end = min(latest_data_date(market), today?)``，
-    ``start = end − years 年``。crypto 起点封到 ≥ 20210101。
+    ``start = end − years 年``（默认 ``DEFAULT_WINDOW_YEARS=10`` ≈ 2016–2026）。
+
+    - ashare：``start`` 再与 ``2016-01-01`` 取 max（数据湖左缘 / store 物化口径）
+    - crypto：``start`` 封到 ≥ 20210101
 
     缓存探测不到最新交易日时抛 ``ValueError``（诚实报错，不静默取 today——那会把无数据的
     未来窗口伪造成有数据）。
@@ -158,6 +172,8 @@ def default_window(market: str, *, years: int = 6, today: date | None = None) ->
         )
     end = latest if today is None else min(latest, today)
     start = _minus_years(end, years)
+    if market == "ashare" and start < _ASHARE_START_FLOOR:
+        start = _ASHARE_START_FLOOR
     if market == "crypto" and start < _CRYPTO_START_FLOOR:
         start = _CRYPTO_START_FLOOR
     return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")

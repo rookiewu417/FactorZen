@@ -43,7 +43,12 @@ def test_parser_mine_agent_team_suite():
         assert args.top_k == 5
         assert args.seed == 42
         assert args.human_review is False
-        assert args.universe is None
+        assert args.universe == "all_a"
+        # 可省略 start/end → 运行时 default_window 填充
+        args_bare = p.parse_args(["mine", "agent"])
+        assert args_bare.start is None
+        assert args_bare.end is None
+        assert args_bare.universe == "all_a"
 
     _section_1_test_parser_mine_agent_defaults()
 
@@ -140,11 +145,12 @@ def test_cmd_mine_agent_wiring_suite(capsys):
                 "--seed",
                 "99",
                 "--human-review",
+                "--no-pool-subproc",  # 接线测不走真实/自适应建池
             ]
         )
 
         assert rc == 0
-        assert prep_calls == [("20220101", "20231231", None)]  # 无 --universe
+        assert prep_calls == [("20220101", "20231231", "all_a")]  # 默认 universe=all_a
         assert len(run_calls) == 1
         call = run_calls[0]
         assert call["daily"] is fake_daily  # prepare_mining_daily 结果原样转发
@@ -154,9 +160,11 @@ def test_cmd_mine_agent_wiring_suite(capsys):
         assert call["human_review"] is True
 
         out = capsys.readouterr().out
-        assert out.splitlines()[0] == (
-            "[mine-agent] 候选 4 个 / N=30 → workspace/mine_agent/agent_42_5r"
+        assert any(
+            line == "[mine-agent] 候选 4 个 / N=30 → workspace/mine_agent/agent_42_5r"
+            for line in out.splitlines()
         )
+        assert "内存策略" in out
 
     with pytest.MonkeyPatch.context() as mp:
         _section_0_test_cmd_mine_agent_forwards_args_to_run_agent_mine(mp, capsys)
@@ -183,7 +191,10 @@ def test_cmd_mine_agent_wiring_suite(capsys):
             "factorzen.pipelines.factor_mine_agent.run_agent_mine", fake_run_agent_mine
         )
 
-        rc = cli.main(["mine", "agent", "--start", "20220101", "--end", "20231231"])
+        rc = cli.main([
+            "mine", "agent", "--start", "20220101", "--end", "20231231",
+            "--no-pool-subproc",
+        ])
         assert rc == 0
         assert captured["eval_start"] == "20220101"
 
@@ -211,7 +222,10 @@ def test_cmd_mine_agent_wiring_suite(capsys):
             lambda daily, **kw: {"n_candidates": 0, "n_trials": 0, "run_dir": "x"},
         )
 
-        rc = cli.main(["mine", "agent", "--start", "20220101", "--end", "20231231"])
+        rc = cli.main([
+            "mine", "agent", "--start", "20220101", "--end", "20231231",
+            "--no-pool-subproc",
+        ])
         assert rc == 0
         assert captured["lookback_days"] == AGENT_WARMUP_LOOKBACK
         assert search_space_max_lookback() < AGENT_WARMUP_LOOKBACK
@@ -254,6 +268,7 @@ def test_cmd_mine_agent_wiring_suite(capsys):
                 "20231231",
                 "--universe",
                 "csi500",
+                "--no-pool-subproc",
             ]
         )
 
@@ -263,6 +278,93 @@ def test_cmd_mine_agent_wiring_suite(capsys):
 
     with pytest.MonkeyPatch.context() as mp:
         _section_3_test_cmd_mine_agent_passes_universe_to_prepare(mp)
+
+
+def test_cmd_mine_agent_adaptive_pool_subproc_tight_budget(tmp_path, capsys, monkeypatch):
+    """Tight free-RAM policy → agent CLI spawns pool-prebuild and passes pool_cache_dir."""
+    import json
+    import subprocess as sp
+
+    import polars as pl
+
+    from factorzen.cli import main as cli
+    from factorzen.config import settings as settings_mod
+    from factorzen.discovery import mem_budget as mb
+
+    agent_dir = tmp_path / "mine_agent"
+    agent_dir.mkdir()
+    lib_dir = tmp_path / "factor_library"
+    lib_dir.mkdir()
+    monkeypatch.setattr(settings_mod, "MINE_AGENT_DIR", agent_dir)
+    monkeypatch.setattr(settings_mod, "FACTOR_LIBRARY_DIR", lib_dir)
+    monkeypatch.delenv("FACTORZEN_POOL_SUBPROC", raising=False)
+
+    # Force policy into the tight-budget branch regardless of host.
+    monkeypatch.setattr(
+        mb,
+        "available_memory_bytes",
+        lambda: 6 * (1024**3),
+    )
+    monkeypatch.setattr(mb, "total_memory_bytes", lambda: 20 * (1024**3))
+    # Large row heuristic so peak estimate exceeds tight budget.
+    monkeypatch.setattr(
+        mb,
+        "estimate_rows_heuristic",
+        lambda **kw: 12_000_000,
+    )
+
+    sub_calls: list = []
+
+    def fake_run(cmd, **kw):
+        sub_calls.append(list(cmd))
+        out = __import__("pathlib").Path(cmd[cmd.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "pool_meta.json").write_text(
+            json.dumps({"n_factors": 0, "market": "ashare"}), encoding="utf-8",
+        )
+        return sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(sp, "run", fake_run)
+
+    fake_daily = pl.DataFrame({"ts_code": ["000001.SZ"], "trade_date": ["2022-01-04"]})
+    monkeypatch.setattr(
+        cli,
+        "_prepare_agent_mining_data",
+        lambda args: (fake_daily, None, {
+            "membership_hash": "h", "membership_mode": "pit",
+            "membership_n_rows": 1, "universe": "all_a",
+        }),
+    )
+    captured: dict = {}
+
+    def fake_run_agent_mine(daily, **kwargs):
+        captured["kwargs"] = kwargs
+        return {
+            "n_candidates": 0, "n_trials": 0,
+            "run_dir": str(agent_dir / "x"),
+            "candidates": [],
+            "mem_actions": kwargs.get("mem_actions"),
+        }
+
+    monkeypatch.setattr(
+        "factorzen.pipelines.factor_mine_agent.run_agent_mine", fake_run_agent_mine,
+    )
+
+    rc = cli.main([
+        "mine", "agent",
+        "--start", "20160104", "--end", "20260605",
+        "--universe", "all_a",
+        "--iterations", "1",
+    ])
+    assert rc == 0
+    assert len(sub_calls) == 1
+    assert "pool-prebuild" in sub_calls[0]
+    assert captured["kwargs"].get("pool_cache_dir") is not None
+    mem = captured["kwargs"].get("mem_actions") or {}
+    assert mem.get("use_pool_subproc") is True
+    out = capsys.readouterr().out
+    assert "内存策略" in out
+    assert "pool_subproc=True" in out
 
 
 # ==== 来自 test_team_cli.py ====
@@ -323,11 +425,12 @@ def test_cmd_mine_team_wiring_suite(capsys):
                 "1",
                 "--set",
                 "index_path=workspace/mine_team/custom_index.jsonl",
+                "--no-pool-subproc",
             ]
         )
 
         assert rc == 0
-        assert prep_calls == [("20220101", "20231231", None)]  # 无 --universe
+        assert prep_calls == [("20220101", "20231231", "all_a")]  # 默认 universe=all_a
         assert len(run_calls) == 1
         call = run_calls[0]
         assert call["daily"] is fake_daily  # prepare_mining_daily 结果原样转发
@@ -337,9 +440,11 @@ def test_cmd_mine_team_wiring_suite(capsys):
         assert call["index_path"] == "workspace/mine_team/custom_index.jsonl"
 
         out = capsys.readouterr().out
-        assert out.splitlines()[0] == (
-            "[mine-team] 候选 6 个 / N=50 → workspace/mine_team/team_1_2r"
+        assert any(
+            line == "[mine-team] 候选 6 个 / N=50 → workspace/mine_team/team_1_2r"
+            for line in out.splitlines()
         )
+        assert "内存策略" in out
 
     with pytest.MonkeyPatch.context() as mp:
         _section_0_test_cmd_mine_team_forwards_args_to_run_team_mine(mp, capsys)
@@ -368,7 +473,8 @@ def test_cmd_mine_team_wiring_suite(capsys):
 
         rc = cli.main(
             ["mine", "team", "--start", "20220101", "--end", "20231231",
-             "--set", "index_path=workspace/mine_team/custom_index.jsonl"]
+             "--set", "index_path=workspace/mine_team/custom_index.jsonl",
+             "--no-pool-subproc"]
         )
         assert rc == 0
         assert captured["eval_start"] == "20220101"
@@ -398,7 +504,8 @@ def test_cmd_mine_team_wiring_suite(capsys):
         )
 
         rc = cli.main(["mine", "team", "--start", "20220101", "--end", "20231231",
-                       "--set", "index_path=workspace/mine_team/custom_index.jsonl"])
+                       "--set", "index_path=workspace/mine_team/custom_index.jsonl",
+                       "--no-pool-subproc"])
         assert rc == 0
         assert captured["lookback_days"] == AGENT_WARMUP_LOOKBACK
         assert search_space_max_lookback() < AGENT_WARMUP_LOOKBACK
@@ -441,6 +548,7 @@ def test_cmd_mine_team_wiring_suite(capsys):
                 "20231231",
                 "--universe",
                 "csi300",
+                "--no-pool-subproc",
             ]
         )
 

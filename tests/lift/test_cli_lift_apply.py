@@ -167,6 +167,14 @@ def test_lift_test_dry_apply_suite(tmp_path, capsys):
         rc = cli_main._cmd_factor_library_lift_test(args)
         assert rc == 0
         assert len(upsert_calls) == 1
+        # W1 必须走 compact 物化器，禁止 materialize 全面板路径（全 A OOM）
+        call = upsert_calls[0]
+        assert call.get("compact_materialize") is not None, (
+            "apply 必须传 compact_materialize（make_compact_materializer）"
+        )
+        assert call.get("materialize") is None, (
+            "apply 不得再传 materialize=memo_mat（会走 _compact_of_from_panels 全面板）"
+        )
         man = json.loads((run_dir / "lift_test_manifest.json").read_text(encoding="utf-8"))
         assert man["dry_run"] is False
         out = capsys.readouterr().out

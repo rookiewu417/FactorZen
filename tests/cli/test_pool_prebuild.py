@@ -719,8 +719,9 @@ def test_pool_subproc_cli_suite(tmp_path, capsys):
         lib_root = str(tmp_path / "factor_library")
         market = "ashare"
         lib_hash = library_file_hash(market, lib_root) or "nolib"
+        # CLI 默认 universe=all_a（与 key 指纹同源）
         key_src = "|".join([
-            lib_hash, "20210104", "20210331", "None", market, "0.2", "False", "5min",
+            lib_hash, "20210104", "20210331", "all_a", market, "0.2", "False", "5min",
         ])
         key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
         cache_dir = mine_dir / "_pool_cache" / key
@@ -771,7 +772,8 @@ def test_pool_subproc_cli_suite(tmp_path, capsys):
         mp.setattr(sp, "run", fake_run)
         _patch_mine_team_data_and_run(mp, cli, captured=captured)
 
-        rc = cli.main(_mine_team_base_argv())
+        # 自适应可能在 all_a 上开启子进程；显式 --no-pool-subproc 保证零回归关断
+        rc = cli.main(_mine_team_base_argv(extra=["--no-pool-subproc"]))
         assert rc == 0
         assert sub_calls == []
         assert captured["kwargs"].get("pool_cache_dir") is None

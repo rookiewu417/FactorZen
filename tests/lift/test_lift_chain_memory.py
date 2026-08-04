@@ -432,3 +432,49 @@ def test_lift_test_cli_sets_keep_leaves(tmp_path, monkeypatch):
     assert rc == 1  # 装配帧为空 → 退出 1（本用例只关心 keep_leaves 已置位）
     assert seen.get("keep_leaves") is not None, "lift-test 未置位 keep_leaves"
     assert set(seen["keep_leaves"]) == {"turnover_rate", "close"}
+
+
+def test_baseline_cache_clear_drops_all_slots():
+    """评分后 ``clear()`` 必须松手全部槽——否则 apply W1 与面板共存再爆。"""
+    from factorzen.discovery.lift_test import LiftBaselineCache
+
+    cache = LiftBaselineCache()
+    sentinel_pool = object()
+    sentinel_panel = object()
+    sentinel_proj = object()
+
+    def _build_pool(_src):
+        return sentinel_pool
+
+    def _build_panel(_pool):
+        return sentinel_panel
+
+    def _build_proj(_panel):
+        return sentinel_proj
+
+    def _build_scores(_panel):
+        import polars as pl
+        return pl.DataFrame({"trade_date": [], "ts_code": [], "score": []})
+
+    def _build_ret(_src):
+        import polars as pl
+        return pl.DataFrame({"trade_date": [], "ts_code": [], "fwd_ret": []})
+
+    cache.pool_for(object(), ("m", "r", ("active",)), _build_pool)
+    cache.panel_for(sentinel_pool, _build_panel)
+    cache.projector_for(sentinel_panel, _build_proj)
+    cache.scores_for(sentinel_panel, _build_scores)
+    cache.ret_for(object(), (1, 0, None), _build_ret)
+
+    assert cache._pool is sentinel_pool
+    assert cache._panel is sentinel_panel
+    assert cache._proj is sentinel_proj
+    assert cache._scores is not None
+    assert cache._ret is not None
+
+    cache.clear()
+    assert cache._pool is None and cache._pool_key is None and cache._pool_src is None
+    assert cache._panel is None and cache._panel_key is None
+    assert cache._proj is None and cache._proj_key is None
+    assert cache._scores is None and cache._scores_key is None
+    assert cache._ret is None and cache._ret_key is None and cache._ret_src is None

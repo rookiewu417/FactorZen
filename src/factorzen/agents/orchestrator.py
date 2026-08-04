@@ -61,6 +61,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                   library_orthogonal: bool = True,
                   library_root: str | None = None,
                   objective: str = "residual",
+                  # 库池 parquet 缓存（CLI 自适应 / pool-prebuild 子进程产物）；命中则跳过进程内物化
+                  pool_cache_dir: str | None = None,
                   # 日内 Feature Scout（与 team 共用 scout_support；默认关零回归）
                   intraday_scout: bool = False,
                   scout_k: int = 4,
@@ -68,7 +70,9 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                   scout_freq: str = "5min",
                   scout_base_dir: str | None = None,
                   exec_lag: int = 0,
-                  exec_price_col: str | None = None) -> AgentResult:
+                  exec_price_col: str | None = None,
+                  # 票池名（python 库因子物化 + 与 team 池缓存口径一致）
+                  universe: str | None = None) -> AgentResult:
     """跑 n_rounds 轮 Agent 挖掘闭环。
 
     ``on_round_end``：每个**成功**轮次结束时以当前累积结果回调，供调用方增量落盘。
@@ -88,36 +92,31 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     （默认）时退化为旧行为，对现有调用方零回归。
     """
     rng = np.random.default_rng(seed)  # noqa: F841 预留给未来随机选择，保证可复现入口
-    mining_df, holdout_df, holdout_start = _prepare_segments(
-        daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
-    # 成交口径贯穿 train bundle（与 team / mining_session 同源）
-    bundle = DataBundle.build(
-        mining_df, exec_lag=exec_lag, exec_price_col=exec_price_col,
-    )  # Agent 只见 mining 段
-    _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
-          f"holdout {holdout_df['trade_date'].n_unique()} 天")
-    # P5：holdout 长驻窄投影（与 team 路径一致）
-    holdout_df = _narrow_holdout_price_frame(holdout_df)
-    _eval_start_date = _to_date(eval_start) if eval_start is not None else None
-    _eval_end_date = mining_df["trade_date"].max() if eval_start is not None else None
-    # 叶子历史预算（算一次，逐轮复用）：在含预热前缀的完整帧上算，只留短于预热前缀
-    # （AGENT_WARMUP_LOOKBACK）的叶子回灌 LLM。须与预热门同一套 _preprocess_daily 帧算，
-    # 才能与 have 判定逐值一致（见 leaf_warmup_budgets）。eval_start=None → None，零回归。
-    # 市场上下文（profile=None → A 股默认）：叶子集/映射/市场名，供 budgets 与各 node 透传。
+    # 峰值错峰（对齐 team）：先 prep + 库池，再切分 mining/holdout 并释放 raw。
+    # 旧序「先切分再建池」会让 raw + mining + holdout + prepped + pool 同时存活。
     from factorzen.agents.nodes import AgentContext
-    ctx = AgentContext.from_profile(profile)
-    # session 级单次 prep：leaf_health / budgets / lib_pool / 每轮 evaluate 共用；
-    # scout 注入新列后重建（见循环内）。
     from factorzen.discovery.evaluation import _preprocess_daily
     from factorzen.discovery.leaf_health import (
         apply_leaf_exclusion,
         filter_leaves_by_holdout_coverage,
         log_excluded_leaves,
     )
+    from factorzen.validation.holdout import holdout_boundary
+
+    _eval_start_date = _to_date(eval_start) if eval_start is not None else None
+    ctx = AgentContext.from_profile(profile)
     session_prepped = _preprocess_daily(daily, profile)
-    # P5：scout off 时释放 raw daily，warmup 改持 session_prepped
-    if not intraday_scout:
-        daily = session_prepped
+    # holdout 边界与 _prepare_segments 同源（先裁 eval_start 再 holdout_boundary）
+    if eval_start is not None:
+        _dates_split = session_prepped["trade_date"].filter(
+            session_prepped["trade_date"] >= _eval_start_date
+        )
+    else:
+        _dates_split = session_prepped["trade_date"]
+    holdout_start = holdout_boundary(
+        sorted(_dates_split.unique().to_list()), float(holdout_ratio),
+    )
+    del _dates_split
     _kept, excluded_leaves = filter_leaves_by_holdout_coverage(
         session_prepped, list(ctx.leaf_names), holdout_start,
         leaf_map=ctx.leaf_map,
@@ -140,9 +139,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     last_cand_count = 0
     llm_failures = 0
 
-    # 库级正交 + 残差面板：session 开始物化一次。
-    # 残差目标需要 train∪holdout 库因子 → 在完整 prepped 帧上物化（不再只裁 holdout）。
-    # 空库 → objective 自动退化 raw，零回归。
+    # 库级正交：session 开始物化一次；cache_dir 命中则跳过进程内尖峰。
     lib_pool: Any = {}
     library_covered: list[str] | None = None
     library_crowded: list[tuple[str, int]] | None = None
@@ -155,10 +152,13 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             )
             market = getattr(profile, "name", None) or "ashare"
             lib_root = library_root or DEFAULT_ROOT
-            # eval_start:裁预热前缀(与 team 同理;None 不裁零回归)
+            if pool_cache_dir:
+                _step(f"库池缓存 ▸ {pool_cache_dir}")
             lib_pool = build_library_pool(
                 market, session_prepped, ctx.leaf_map, root=lib_root,
                 eval_start=_eval_start_date,
+                cache_dir=pool_cache_dir,
+                universe=universe,
             )
             covered, crowded = library_covered_by_family(
                 market, per_family=2, max_total=12, root=lib_root,
@@ -173,6 +173,40 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                          type(exc).__name__, exc)
             lib_pool, library_covered, library_crowded = {}, None, None
     state.objective = objective  # type: ignore[attr-defined]
+
+    # 池后切分 + 释放 raw（与 team 错峰同序）
+    mining_df, holdout_df, _holdout_start2 = _prepare_segments(
+        daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
+    assert _holdout_start2 == holdout_start, (
+        f"holdout 边界漂移: 预池路径 {holdout_start} vs 切分 {_holdout_start2}"
+    )
+    bundle = DataBundle.build(
+        mining_df, exec_lag=exec_lag, exec_price_col=exec_price_col,
+    )
+    _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
+          f"holdout {holdout_df['trade_date'].n_unique()} 天")
+    holdout_df = _narrow_holdout_price_frame(holdout_df)
+    _eval_end_date = mining_df["trade_date"].max() if eval_start is not None else None
+    # scout off：释放 full-width raw，warmup 改持 session_prepped
+    if not intraday_scout:
+        daily = session_prepped
+
+    # residual 模式 + 库非空：session 级 ResidualProjector 一次（与 team 同源；省重复 QR）
+    residual_projector = None
+    if objective == "residual" and lib_pool:
+        try:
+            from factorzen.discovery.residual import (
+                ResidualProjector,
+                build_library_panel,
+            )
+            _panel = build_library_panel(lib_pool)
+            if _panel is not None and _panel.k > 0:
+                residual_projector = ResidualProjector.from_panel(_panel)
+                _step(f"残差投影 ▸ ResidualProjector 就绪（k={_panel.k}）")
+        except Exception as exc:
+            _LOG.warning("ResidualProjector 构建失败（本 session 残差走 lstsq）: %s: %s",
+                         type(exc).__name__, exc)
+            residual_projector = None
 
     # 日内 Feature Scout：仅 flag-on 建状态（flag-off 零开销）
     scout_state = None
@@ -256,6 +290,7 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                                     eval_start=_eval_start_date,  # 池级 PBO 的 None-gating
                                     profile=profile, lib_pool=lib_pool,
                                     objective=objective,
+                                    residual_projector=residual_projector,
                                     prepped=session_prepped,
                                     exec_lag=exec_lag,
                                     exec_price_col=exec_price_col)

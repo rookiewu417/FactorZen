@@ -501,17 +501,20 @@ def test_forward_schema_roundtrip_suite(tmp_path):
         rec = FactorRecord(
             expression="rank(close)", market="ashare", status="active",
             admission_track="lift", forward_confirmed_at="2026-07-14",
-            forward_n_days=75, added_at="2026-07-01", updated_at="2026-07-14",
+            forward_n_days=75, forward_start="2026-07-01",
+            added_at="2026-07-01", updated_at="2026-07-14",
         )
         _save_library("ashare", [rec], root=str(tmp_path))
         back = load_library("ashare", root=str(tmp_path))
         assert back[0].forward_confirmed_at == "2026-07-14"
         assert back[0].forward_n_days == 75
+        assert back[0].forward_start == "2026-07-01"
         # 再走一轮 load→save（模拟后续 upsert/rebuild 的写盘循环）
         _save_library("ashare", back, root=str(tmp_path))
         again = load_library("ashare", root=str(tmp_path))
         assert again[0].forward_confirmed_at == "2026-07-14"
         assert again[0].forward_n_days == 75
+        assert again[0].forward_start == "2026-07-01"
 
     _tp1 = tmp_path / "_s1"
     _tp1.mkdir(exist_ok=True)
@@ -622,6 +625,81 @@ def test_review_filters_ics_before_updated_at(tmp_path):
     assert rows[0]["n_days"] == 5
     assert rows[0]["decision"] == "hold"
 
+
+def test_resolve_forward_start_aligns_to_latest_data():
+    """墙钟超前数据 → forward_start 取 latest，避免 review 永 0 天。"""
+    from factorzen.discovery.forward_track import resolve_forward_start
+
+    # now=2026-07-29, latest=2026-07-22 → 取 22 日
+    assert resolve_forward_start(
+        "2026-07-29", market="ashare", latest="2026-07-22",
+    ) == "2026-07-22"
+    assert resolve_forward_start(
+        "2026-07-29", market="ashare", latest=date(2026, 7, 22),
+    ) == "2026-07-22"
+    # 数据更晚 → 取墙钟
+    assert resolve_forward_start(
+        "2026-07-20", market="ashare", latest="2026-07-22",
+    ) == "2026-07-20"
+    # 空 latest 字符串无法解析为 8 位日 → 回退 now
+    assert resolve_forward_start("20260729", market="ashare", latest="") == "2026-07-29"
+
+
+def test_review_prefers_forward_start_over_updated_at(tmp_path):
+    """forward_start 早于 updated_at 时，从 forward_start 之后计日。"""
+    from factorzen.discovery.forward_track import forward_review
+
+    expr = "rank(vol)"
+    # 墙钟式 updated_at 很晚，但 forward_start 对齐数据日
+    _write_lib(tmp_path, "ashare", [
+        _lib_row(
+            expr, status="probation", ic_train=0.05,
+            updated_at="2024-06-01",
+            forward_start="2024-04-01",
+        ),
+    ])
+    path = tmp_path / "forward_track" / "ashare.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    # forward_start 之后、updated_at 之前的 70 天应计入
+    for i in range(70):
+        d = date(2024, 4, 2) + timedelta(days=i)
+        if d >= date(2024, 6, 1):
+            break
+        lines.append(json.dumps({
+            "date": _yyyymmdd(d), "expression": expr, "ic": 0.08,
+            "n_stocks": 50, "status_at_record": "probation",
+        }))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    rows = forward_review("ashare", root=str(tmp_path), min_days=60)
+    assert rows[0]["n_days"] >= 60
+    # 足够天数 + 正 IC → promote
+    assert rows[0]["decision"] == "promote"
+
+
+def test_assign_forward_start_preserves_existing():
+    from factorzen.discovery.factor_library import FactorRecord
+    from factorzen.discovery.forward_track import assign_forward_start
+
+    prev = FactorRecord(
+        expression="rank(close)", market="ashare",
+        forward_start="2026-01-15", updated_at="2026-07-29",
+    )
+    rec = FactorRecord(
+        expression="rank(close)", market="ashare",
+        updated_at="2026-07-29",
+    )
+    assign_forward_start(
+        rec, now="2026-07-29", market="ashare", prev=prev, latest="2026-07-22",
+    )
+    assert rec.forward_start == "2026-01-15"
+
+    rec2 = FactorRecord(expression="rank(vol)", market="ashare")
+    assign_forward_start(
+        rec2, now="2026-07-29", market="ashare", prev=None, latest="2026-07-22",
+    )
+    assert rec2.forward_start == "2026-07-22"
 
 # ── 7. CLI 透传 ──────────────────────────────────────────────────────────────
 

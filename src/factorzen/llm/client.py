@@ -14,6 +14,7 @@ from factorzen.llm.config import LLMConfig
 
 _LOG = logging.getLogger(__name__)
 
+# 兼容旧测试重置；aiping 未 pin 不再告警，此标志不再写入。
 _warned_provider_unpinned = False
 _warned_openai_provider_ignored = False
 
@@ -51,9 +52,11 @@ def _build_payload(
     """Build keyword arguments for ``chat.completions.create``.
 
     ``flavor="aiping"`` keeps the historical AIPing payload (provider pin +
-    enable_thinking).  ``flavor="openai"`` targets GPT-5.x / o-series gateways:
-    ``max_completion_tokens`` instead of ``max_tokens``, no temperature, no
-    AIPing ``extra_body``.
+    enable_thinking + optional reasoning_effort).  ``flavor="openai"`` targets
+    GPT-5.x / o-series gateways: ``max_completion_tokens`` instead of
+    ``max_tokens``, no temperature, no AIPing ``extra_body``; if
+    ``reasoning_effort`` is set (and not ``none``) it is sent top-level for
+    gateways that understand OpenAI-style effort.
     """
     if config.flavor == "openai":
         payload: dict[str, Any] = {
@@ -66,7 +69,20 @@ def _build_payload(
         }
         if include_response_format:
             payload["response_format"] = {"type": "json_object"}
+        # 仅 thinking 开启时带 effort，避免 cockpit 等不识字段的网关 400。
+        effort = (config.reasoning_effort or "").strip().lower()
+        if config.thinking_enabled and effort and effort != "none":
+            payload["reasoning_effort"] = effort
         return payload
+
+    extra_body: dict[str, Any] = {
+        "enable_thinking": config.thinking_enabled,
+        "provider": _provider_options(config),
+    }
+    # thinking 开启时带 reasoning_effort（aiping 实测透传；关 thinking 时 effort 无效）
+    effort = (config.reasoning_effort or "").strip().lower()
+    if config.thinking_enabled and effort and effort != "none":
+        extra_body["reasoning_effort"] = effort
 
     payload = {
         "model": config.model,
@@ -74,10 +90,7 @@ def _build_payload(
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
         "stream": config.stream_enabled,
-        "extra_body": {
-            "enable_thinking": config.thinking_enabled,
-            "provider": _provider_options(config),
-        },
+        "extra_body": extra_body,
     }
     if include_response_format:
         payload["response_format"] = {"type": "json_object"}
@@ -85,12 +98,16 @@ def _build_payload(
 
 
 def _warn_if_provider_unpinned(config: LLMConfig) -> None:
-    """Warn once when ``provider.only`` is empty and routing is unrestricted.
+    """Optional diagnostics for provider pin usage.
+
+    AIPing 默认不再要求 ``FACTORZEN_LLM_PROVIDER``（模型名即可路由，如
+    DeepSeek-V4-Flash-0731）；空 pin 是正常路径，不再告警。
 
     OpenAI-compatible gateways have no AIPing provider pin; if a provider is
     still configured under ``flavor=openai``, log that it is ignored.
+    若仍显式配置了 provider，请求侧会写入 ``provider.only`` 并在响应侧校验。
     """
-    global _warned_provider_unpinned, _warned_openai_provider_ignored
+    global _warned_openai_provider_ignored
     if config.flavor == "openai":
         if config.provider and not _warned_openai_provider_ignored:
             _warned_openai_provider_ignored = True
@@ -99,12 +116,7 @@ def _warn_if_provider_unpinned(config: LLMConfig) -> None:
                 config.provider,
             )
         return
-    if not config.provider and not _warned_provider_unpinned:
-        _warned_provider_unpinned = True
-        _LOG.warning(
-            "FACTORZEN_LLM_PROVIDER 未配置：AIPing provider.only=[]，实际上游由网关路由决定。"
-            "LLM 挖掘的结果强依赖模型，建议显式配置。"
-        )
+    # aiping：未 pin 不再警告；显式 pin 仍走 extra_body.provider.only + chunk 校验。
 
 
 @lru_cache(maxsize=8)

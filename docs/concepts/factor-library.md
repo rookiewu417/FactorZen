@@ -106,10 +106,13 @@ lift ≥ bar 且 second_half ≤ 0 或缺失    → probation
 lift_admission 判 probation
    （增量过门槛，但后半段未确认）
         │
+        │  落盘 forward_start = min(墙钟, latest_data_date)
+        │  （避免墙钟超前数据湖 → 永远 n_days=0）
         ▼
 fz factor-library forward-track       逐日记录 paper forward RankIC
    --max-backfill-days=10             ⚠️ 默认拒绝历史回灌
         │
+        │  只计 date > forward_start（缺字段则回退 updated_at）
         │  累积 ≥ --min-days（默认 60）个有效交易日
         ▼
 fz factor-library forward-review --apply
@@ -119,8 +122,9 @@ fz factor-library forward-review --apply
         └──→ demote  → no_lift
 ```
 
-`--max-backfill-days` 默认只允许极少量回灌，本质上是拒绝用历史数据把观察期「补」出来——如果允许无限回灌，向前确认就退化成又一次样本内检验，失去全部意义。
+`forward_start` 是观察钟，与审计用的 `updated_at`（墙钟）分开：入库瞬间若日终数据尚未到齐，观察从**已有最后一根 bar** 起算，下一根新数据即可开始攒天数。
 
+`--max-backfill-days` 默认只允许极少量回灌，本质上是拒绝用历史数据把观察期「补」出来——如果允许无限回灌，向前确认就退化成又一次样本内检验，失去全部意义。
 > ⚠️ **当前接线缺口**：`forward-track` 尚未接进 `fz ops daily` 的 8 阶段无人值守链路，probation 因子的每日记录目前需要人工执行。这是已知待办，命令的 help 文本里也标注了。
 
 ---

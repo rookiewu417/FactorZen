@@ -54,7 +54,7 @@ pl.Expr                          求值
 | **日内微观结构** | 20 | `i_rv` `i_amihud` `i_smart_money` `i_vwap_dev` … `i_limit_up_seal_share` `i_limit_up_open_count` `i_limit_up_first_touch`（见[日内叶子](#日内叶子)） |
 | 事件 / 业绩预告快报 | 4 | `fc_type_score` `fc_surprise` `fc_flag` `express_yoy` |
 
-> ⚠️ 日内的 20 个 `i_*` 叶子**默认不启用**，挖掘命令须显式加 `--set intraday_leaves=true`，且面板要先构建好。它们计入 64 这个总数，但不加该覆盖时不会出现在搜索空间里。
+> ℹ️ 日内的 20 个 `i_*` 叶子在 **`fz mine search/agent/team`（ashare）默认启用**（`intraday_leaves=true`，`intraday_freq=1min`）。面板须先 `fz data intraday-features build --freq 1min` 建好；关闭用 `--set intraday_leaves=false`。
 
 ---
 
@@ -229,13 +229,14 @@ pixi run -- fz data intraday-features build --start 20200101 --end 20241231 \
 **然后在挖掘时启用：**
 
 ```bash
+# 默认已开 intraday_leaves + 1min；可显式覆盖 freq
 pixi run -- fz mine team --start 20200101 --end 20241231 --universe csi500 \
-  --set intraday_leaves=true --set intraday_freq=5min
+  --set intraday_freq=1min
 ```
 
-> ⚠️ **`--set intraday_freq=` 必须与构建面板时的 `--freq` 一致**，否则读不到面板。注意两边的取值形态也不同：面板构建用自由字符串 `5min`，不是 `fz mine --freq` 的 `{1m,5m,15m,1h,daily}` 枚举。
+> ⚠️ **`--set intraday_freq=` 必须与构建面板时的 `--freq` 一致**，否则读不到面板。注意两边的取值形态也不同：面板构建用自由字符串 `1min`/`5min`，不是 `fz mine --freq` 的 `{1m,5m,15m,1h,daily}` 枚举。
 
-> ⚠️ `--set intraday_leaves=true` **仅 `ashare`**（`fz factor-library rebuild` / `fz mine pool-prebuild` / `fz research run` 上同名仍是真旗标，写法不同）。
+> ⚠️ `intraday_leaves` **仅 `ashare` 生效**（其它 market 会忽略）。`fz factor-library rebuild` / `fz research run` 仍用各自旗标；`fz mine pool-prebuild` 默认开，可用 `--no-intraday-leaves` 关。
 
 > ⚠️ `i_pv_corr` 在 30min 频率下样本数只有 8，恒为 null（代码里自己标注了）。日内特征的可用性随 `--freq` 变化。
 

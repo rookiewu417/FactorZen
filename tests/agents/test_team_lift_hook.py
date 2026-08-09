@@ -702,10 +702,9 @@ def test_lift_hook_session_suite(monkeypatch, tmp_path):
         res = TeamResult(state=state, candidates=[], n_trials=0)
         path = write_team_manifest(
             res, out_dir=str(tmp_path), run_id="r_exec",
-            params={"exec_lag": 1, "exec_price_col": "open_adj", "seed": 1},
+            params={"exec_price_col": "open_adj", "seed": 1},
         )
         man = json.loads(path.read_text(encoding="utf-8"))
-        assert man["params"]["exec_lag"] == 1
         assert man["params"]["exec_price_col"] == "open_adj"
 
     _tp7 = tmp_path / "_s7"

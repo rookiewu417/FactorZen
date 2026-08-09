@@ -149,7 +149,7 @@ def _make_signal(
             },
             "ic": {"ic_mean": 0.035, "ir": 0.44, "tstat": 3.5},
         },
-        meta={"exec_lag": 1, "exec_price_col": "open_adj", "dropped_days": 2},
+        meta={"exec_price_col": "open_adj", "dropped_days": 2},
     )
 
 
@@ -188,7 +188,7 @@ def test_signal_report_suite():
             f"应渲染 8 张图,实际 {html.count(chr(100)+chr(97)+chr(116)+chr(97))} 处 base64"
         )
         assert "0.0350" in html  # IC mean
-        assert "exec_lag" in html
+        assert "open_adj" in html
 
     _section_normal()
 

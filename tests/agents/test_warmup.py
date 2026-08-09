@@ -1092,7 +1092,7 @@ def test_holdout_ic_result_dense_factor_has_positive_n_days():
     fac = (
         holdout.sort(["ts_code", "trade_date"])
         .with_columns(
-            (pl.col("close_adj").shift(-1).over("ts_code") / pl.col("close_adj") - 1.0)
+            (pl.col("close_adj").shift(-2).over("ts_code") / pl.col("close_adj") - 1.0)
             .alias("factor_value")
         )
         .select(["trade_date", "ts_code", "factor_value"])

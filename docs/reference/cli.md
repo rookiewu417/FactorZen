@@ -103,8 +103,7 @@ pixi run -- fz factor list --freq daily
 | `--seed` | int | `42` | | 全局随机种子 |
 | `--set KEY=VALUE` | str，可重复 | 无 | | 覆盖任意配置字段 |
 | `--dry-run` | flag | 关 | | 只打印生效配置，不执行 |
-| `--exec-lag` | int | `1` | | 成交滞后（交易日）。默认 1=可实现口径；`0`=旧 close→close（不可实现，仅对照用） |
-| `--exec-price-col` | str | `open_adj` | | 成交价格列。默认 `open_adj`（open[t+2]/open[t+1]） |
+| `--exec-price-col` | str | `open_adj` | | 成交价格列。默认 `open_adj`（成交口径固定 t+1 成交 → open[t+2]/open[t+1]） |
 | `--n-groups` | int | `5` | | 截面分位组数；多空取最高组减最低组 |
 
 ```bash
@@ -134,8 +133,7 @@ pixi run -- fz factor eval momentum_20 --start 20220101 --end 20241231 \
 | `--seed` | int | `42` | | 全局随机种子 |
 | `--set KEY=VALUE` | str，可重复 | 无 | | 覆盖任意配置字段 |
 | `--dry-run` | flag | 关 | | 只打印生效配置，不执行 |
-| `--exec-lag` | int | `1` | | 成交滞后（交易日）。默认 1=可实现口径；`0`=旧 close→close（不可实现，仅对照用） |
-| `--exec-price-col` | str | `open_adj` | | 成交价格列。默认 `open_adj`（open[t+2]/open[t+1]） |
+| `--exec-price-col` | str | `open_adj` | | 成交价格列。默认 `open_adj`（成交口径固定 t+1 成交 → open[t+2]/open[t+1]） |
 
 ```bash
 pixi run -- fz factor backtest momentum_20 --start 20220101 --end 20241231 \
@@ -364,7 +362,7 @@ pixi run -- fz runs list --limit 20
 | `--top-k` | int | `10` | | 保留的头部候选数 |
 | `--seed` | int | `42` | | 随机种子 |
 | `--freq` | `1m` \| `5m` \| `15m` \| `1h` \| `daily` | `daily` | | crypto bar 粒度 |
-| `--exec-lag` / `--exec-price-col` | | 1 / open_adj | | 成交口径 |
+| `--exec-price-col` | | open_adj | | 成交价格列（成交口径固定 t+1 成交） |
 | `--set KEY=VALUE` | str，可重复 | 无 | | 高级覆盖（见[高级覆盖](#高级覆盖--set)） |
 
 ```bash
@@ -514,8 +512,8 @@ pixi run -- fz mine pool-prebuild --start 20200101 --end 20241231 --universe csi
 | `no_sleeve_gate` | false | `--no-sleeve-gate` | `--set no_sleeve_gate=true` |
 | `lift_se_mult` | 1.645 | `--lift-se-mult` | `--set lift_se_mult=1.5` |
 | `lift_workers` | None | `--lift-workers` | `--set lift_workers=1` |
-| `intraday_leaves` | false | `--intraday-leaves` | `--set intraday_leaves=true` |
-| `intraday_freq` | 5min | `--intraday-freq` | `--set intraday_freq=5min` |
+| `intraday_leaves` | **true**（ashare 挖掘默认） | `--intraday-leaves` | `--set intraday_leaves=false` 可关 |
+| `intraday_freq` | **1min**（挖掘默认） | `--intraday-freq` | `--set intraday_freq=5min` 可改 |
 | `intraday_scout` | false | `--intraday-scout` | `--set intraday_scout=true` |
 | `scout_k` | 4 | `--scout-k` | `--set scout_k=5` |
 | `scout_max_leaves` | 12 | `--scout-max-leaves` | `--set scout_max_leaves=16` |
@@ -556,7 +554,7 @@ team manifest 不写该键，只能回退 `DEFAULT_HORIZON`）。
 | `allow_active` | false | `--allow-active` | `--set allow_active=true` |
 | `horizon` | None（跟 session manifest） | `--horizon` | `--set horizon=1` |
 | `lift_workers` | None（自适应，上限 4） | `--lift-workers` | `--set lift_workers=1`（串行） |
-| `intraday_leaves` | false | `--intraday-leaves` | `--set intraday_leaves=true` |
+| `intraday_leaves` | false（lift-test 仍默认关；与 mine 默认不同） | `--intraday-leaves` | `--set intraday_leaves=true` |
 | `intraday_freq` | 5min | `--intraday-freq` | `--set intraday_freq=5min` |
 
 > ⚠️ `fz factor-library forward-review --se-mult` 是**真旗标**（默认 `1.645`），与 lift-test 的 `--set se_mult=`（2026-07-28 起同样默认 `1.645`）不是一回事：两个独立旋钮、作用于不同证据，改一个不影响另一个，不要混用。

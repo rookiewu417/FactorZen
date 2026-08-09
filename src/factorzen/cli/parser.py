@@ -78,30 +78,24 @@ def _add_freq_arg(p: _ArgAdder) -> None:
 
 
 def _add_exec_convention_args(p: _ArgAdder) -> None:
-    """成交口径旗标：把「信号什么时候能真的成交」变成显式选择。
+    """成交价格列旗标：把「信号什么时候能真的成交」的价列变成显式选择。
 
-    **默认 = 可实现口径** ``--exec-lag 1 --exec-price-col open_adj``
+    **默认 = 可实现口径** ``--exec-price-col open_adj``
     （open[t+2]/open[t+1]，即 t 日信号 → t+1 开盘进、t+2 开盘出）。
-    项目铁律是「t 日算 → t+1 执行」(CLAUDE.md PIT 自查第 8 条)。
+    成交滞后固定 t+1 成交（``exec_lag=1``）；项目铁律是「t 日算 → t+1 执行」
+    （CLAUDE.md PIT 自查第 8 条）。
 
     旧口径 ``close[t+1]/close[t]`` 隐含「t 日收盘成交」，而算信号需要 t 日
     收盘价，**实际不可实现**，且系统性高估可实现收益（csi500 实测隔夜段占
-    top 桶超额的 100%）。仅对照用时显式 ``--exec-lag 0``（并视需要覆盖
-    ``--exec-price-col`` 回 close 列）。
+    top 桶超额的 100%）；该逃生口已删除。
 
     注意：因子库裁决链（rebuild / lift-test / forward-track）**不**挂本组旗标，
     保持历史库口径一致性。
     """
     p.add_argument(
-        "--exec-lag", dest="exec_lag", type=int, default=1,
-        help="成交滞后(交易日)。默认 1=可实现口径 open_adj t+1→t+2；"
-             "0=旧 close→close（不可实现，仅对照用）",
-    )
-    p.add_argument(
         "--exec-price-col", dest="exec_price_col", default="open_adj",
         help="成交价格列。默认 open_adj（可实现口径）；"
-             "与 --exec-lag 1 合用 = open[t+2]/open[t+1]；"
-             "旧口径对照可显式传 close / close_adj",
+             "固定 t+1 成交 → open[t+2]/open[t+1]；可显式传 close / close_adj",
     )
 
 
@@ -353,8 +347,9 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         no_library=False,
         no_library_orthogonal=False,
         objective="residual",
-        intraday_leaves=False,
-        intraday_freq="5min",
+        # ashare 默认接入 i_*；非 ashare 运行时会忽略（见 main 拦截）
+        intraday_leaves=True,
+        intraday_freq="1min",
     )
 
     m_lb = mine_sub.add_parser("leaderboard", help="Print a mining session leaderboard")
@@ -431,8 +426,9 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         heal_rounds=2,
         no_library_orthogonal=False,
         objective="residual",
-        intraday_leaves=False,
-        intraday_freq="5min",
+        # ashare 默认接入 i_*（面板需已 build）；--set intraday_leaves=false 可关
+        intraday_leaves=True,
+        intraday_freq="1min",
         intraday_scout=False,
         scout_k=4,
         scout_max_leaves=12,
@@ -505,8 +501,9 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         no_sleeve_gate=False,
         lift_se_mult=1.645,  # P1（R1 2026-07-28）：lift_null p_active 0.155→0.064
         lift_workers=None,
-        intraday_leaves=False,
-        intraday_freq="5min",
+        # ashare 默认接入 i_*；--set intraday_leaves=false 可关
+        intraday_leaves=True,
+        intraday_freq="1min",
         intraday_scout=False,
         scout_k=4,
         scout_max_leaves=12,
@@ -554,12 +551,15 @@ def build_parser(commands: Any) -> argparse.ArgumentParser:
         help="holdout 比例（与 run_team_agent 默认同源）",
     )
     pool_pre.add_argument(
-        "--intraday-leaves", dest="intraday_leaves", action="store_true",
-        help="启用日内特征叶子 i_* 接入（仅 ashare；默认关）",
+        "--intraday-leaves",
+        dest="intraday_leaves",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="启用日内特征叶子 i_* 接入（仅 ashare；默认开；--no-intraday-leaves 关）",
     )
     pool_pre.add_argument(
-        "--intraday-freq", dest="intraday_freq", default="5min",
-        help="日内特征面板频率（默认 5min；仅 ashare + --intraday-leaves）",
+        "--intraday-freq", dest="intraday_freq", default="1min",
+        help="日内特征面板频率（默认 1min；仅 ashare + --intraday-leaves）",
     )
     pool_pre.add_argument(
         "--out", required=True,

@@ -182,10 +182,20 @@ class LLMConfig:
 
     @property
     def stream_enabled(self) -> bool:
-        """显式 stream 优先；None → flavor 缺省（aiping=True，openai=False）。"""
+        """显式 stream 优先；否则按 flavor / thinking 缺省。
+
+        - ``openai``：默认非流式（本地兼容网关 chunked 长响应不可靠）
+        - ``aiping`` + thinking：默认**非流式**——thinking 流常只推 reasoning_content，
+          content 为空或被 max_tokens 吃光，agent 挖掘会空转重试浪费一轮墙钟
+        - ``aiping`` 无 thinking：默认流式（历史行为）
+        """
         if self.stream is not None:
             return self.stream
-        return self.flavor != "openai"
+        if self.flavor == "openai":
+            return False
+        if self.thinking_enabled:
+            return False
+        return True
 
 
 def load_llm_config(

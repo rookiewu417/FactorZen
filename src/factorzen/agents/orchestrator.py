@@ -69,7 +69,6 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                   scout_max_leaves: int = 12,
                   scout_freq: str = "5min",
                   scout_base_dir: str | None = None,
-                  exec_lag: int = 0,
                   exec_price_col: str | None = None,
                   # 票池名（python 库因子物化 + 与 team 池缓存口径一致）
                   universe: str | None = None) -> AgentResult:
@@ -106,6 +105,27 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     _eval_start_date = _to_date(eval_start) if eval_start is not None else None
     ctx = AgentContext.from_profile(profile)
     session_prepped = _preprocess_daily(daily, profile)
+    # scout off：raw 与 prepped 同寿命峰值最大——立刻松手 raw，后续一律走 prepped
+    if not intraday_scout:
+        del daily
+        daily = session_prepped
+    # 大帧 Float64→Float32（全 A×1min 叶列常省 3G+；护栏阈值远大于 f32 噪声）
+    from factorzen.discovery.mem_budget import (
+        available_memory_bytes,
+        cast_float64_columns_f32,
+        should_cast_frame_f32,
+    )
+    if should_cast_frame_f32(
+        session_prepped.height, free_bytes=available_memory_bytes(),
+    ):
+        _n_f64 = sum(
+            1 for _, dt in session_prepped.schema.items()
+            if str(dt) == "Float64"
+        )
+        session_prepped = cast_float64_columns_f32(session_prepped)
+        if not intraday_scout:
+            daily = session_prepped
+        _step(f"帧 f32 压缩 ▸ Float64×{_n_f64} 列 → Float32（rows={session_prepped.height}）")
     # holdout 边界与 _prepare_segments 同源（先裁 eval_start 再 holdout_boundary）
     if eval_start is not None:
         _dates_split = session_prepped["trade_date"].filter(
@@ -143,6 +163,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
     lib_pool: Any = {}
     library_covered: list[str] | None = None
     library_crowded: list[tuple[str, int]] | None = None
+    lib_corr_panel = None
+    residual_projector = None
     if library_orthogonal:
         try:
             from factorzen.discovery.factor_library import (
@@ -150,6 +172,12 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                 build_library_pool,
                 library_covered_by_family,
             )
+            from factorzen.discovery.residual import (
+                ResidualProjector,
+                build_library_panel,
+            )
+            from factorzen.discovery.scoring import build_library_corr_panel
+
             market = getattr(profile, "name", None) or "ashare"
             lib_root = library_root or DEFAULT_ROOT
             if pool_cache_dir:
@@ -168,45 +196,38 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
             state.library_pool_size = len(lib_pool)
             if lib_pool:
                 _step(f"库级正交 ▸ 物化 {len(lib_pool)} 个 active 库因子")
+                # 先建 corr 面板（可读宽帧），再建 residual 并 consume 池值列——
+                # 避免「池 wide + residual X + corr 网格」三份同时常驻（全 A OOM 主因）。
+                lib_corr_panel = build_library_corr_panel(lib_pool)
+                if objective == "residual":
+                    _panel = build_library_panel(lib_pool, consume=True)
+                    if _panel is not None and _panel.k > 0:
+                        residual_projector = ResidualProjector.from_panel(_panel)
+                        _step(
+                            f"残差投影 ▸ ResidualProjector 就绪（k={_panel.k}，"
+                            "池值列已 consume 释放）"
+                        )
+                    del _panel
         except Exception as exc:
             _LOG.warning("库池物化失败，本 session 跳过库级正交: %s: %s",
                          type(exc).__name__, exc)
             lib_pool, library_covered, library_crowded = {}, None, None
+            lib_corr_panel, residual_projector = None, None
     state.objective = objective  # type: ignore[attr-defined]
 
-    # 池后切分 + 释放 raw（与 team 错峰同序）
+    # 池后切分：必须从 prepped 切，避免 raw mining_df 再钉住一份全宽副本
     mining_df, holdout_df, _holdout_start2 = _prepare_segments(
-        daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
+        session_prepped, eval_start=eval_start, holdout_ratio=holdout_ratio)
     assert _holdout_start2 == holdout_start, (
         f"holdout 边界漂移: 预池路径 {holdout_start} vs 切分 {_holdout_start2}"
     )
-    bundle = DataBundle.build(
-        mining_df, exec_lag=exec_lag, exec_price_col=exec_price_col,
-    )
+    bundle = DataBundle.build(mining_df, exec_price_col=exec_price_col)
     _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
     holdout_df = _narrow_holdout_price_frame(holdout_df)
     _eval_end_date = mining_df["trade_date"].max() if eval_start is not None else None
-    # scout off：释放 full-width raw，warmup 改持 session_prepped
     if not intraday_scout:
         daily = session_prepped
-
-    # residual 模式 + 库非空：session 级 ResidualProjector 一次（与 team 同源；省重复 QR）
-    residual_projector = None
-    if objective == "residual" and lib_pool:
-        try:
-            from factorzen.discovery.residual import (
-                ResidualProjector,
-                build_library_panel,
-            )
-            _panel = build_library_panel(lib_pool)
-            if _panel is not None and _panel.k > 0:
-                residual_projector = ResidualProjector.from_panel(_panel)
-                _step(f"残差投影 ▸ ResidualProjector 就绪（k={_panel.k}）")
-        except Exception as exc:
-            _LOG.warning("ResidualProjector 构建失败（本 session 残差走 lstsq）: %s: %s",
-                         type(exc).__name__, exc)
-            residual_projector = None
 
     # 日内 Feature Scout：仅 flag-on 建状态（flag-off 零开销）
     scout_state = None
@@ -291,8 +312,8 @@ def run_llm_agent(daily, llm_fn: LLMFn, *, n_rounds: int, seed: int, top_k: int 
                                     profile=profile, lib_pool=lib_pool,
                                     objective=objective,
                                     residual_projector=residual_projector,
+                                    lib_corr_panel=lib_corr_panel,
                                     prepped=session_prepped,
-                                    exec_lag=exec_lag,
                                     exec_price_col=exec_price_col)
             _print_rejections("mine-agent", state)
             _step("  ④ Critic 审计")

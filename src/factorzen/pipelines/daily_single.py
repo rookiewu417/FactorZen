@@ -367,14 +367,12 @@ def _ensure_date_column(df: pl.DataFrame, column: str) -> pl.DataFrame:
 def _build_forward_return_frame(
     daily: pl.DataFrame,
     *,
-    exec_lag: int = 0,
     exec_price_col: str | None = None,
 ) -> pl.DataFrame:
     """Build IC forward-return labels, preferring adjusted close when available.
 
-    ``exec_lag`` / ``exec_price_col`` 透传 ``compute_fwd_returns``。
-    CLI（``fz factor eval`` / ``fz factor backtest`` / daily_single）默认可实现口径 1 / open_adj；
-    本 helper 内部默认仍 0 / None，便于单测断言旧 close→close 行为。
+    ``exec_price_col`` 透传 ``compute_fwd_returns``（成交口径固定 t+1 成交）。
+    CLI（``fz factor eval`` / ``fz factor backtest`` / daily_single）默认 open_adj。
     """
     # 可实现口径：显式成交价列必须存在——缺列 fail-loudly，禁止静默退回 close→close
     if exec_price_col is not None:
@@ -395,7 +393,7 @@ def _build_forward_return_frame(
         )
         return compute_fwd_returns(
             ret_df, ret_col="ret", price_col=exec_price_col,
-            exec_lag=exec_lag, exec_price_col=None,
+            exec_price_col=None,
         )
 
     if "close_adj" not in daily.columns:
@@ -406,7 +404,7 @@ def _build_forward_return_frame(
         )
         return compute_fwd_returns(
             ret_df, ret_col="ret", price_col=price_col,
-            exec_lag=exec_lag, exec_price_col=None,
+            exec_price_col=None,
         )
 
     price_col = "_label_price"
@@ -429,7 +427,7 @@ def _build_forward_return_frame(
     )
     return compute_fwd_returns(
         ret_df, ret_col="ret", price_col=price_col,
-        exec_lag=exec_lag, exec_price_col=None,
+        exec_price_col=None,
     )
 
 
@@ -585,11 +583,6 @@ def _prepare_shared_evaluation_data(
         raise RuntimeError("empty daily data")
     ret_df = _build_forward_return_frame(
         daily,
-        exec_lag=int(
-            getattr(args, "exec_lag", 1)
-            if getattr(args, "exec_lag", None) is not None
-            else 1
-        ),
         exec_price_col=getattr(args, "exec_price_col", "open_adj"),
     )
     logger.info("[batch] 前向收益计算完成 (horizons: 1/5/10/20d)")
@@ -865,11 +858,6 @@ def _prepare_evaluation_inputs(
             raise RuntimeError("empty daily data")
         ret_df = _build_forward_return_frame(
             daily,
-            exec_lag=int(
-                getattr(args, "exec_lag", 1)
-                if getattr(args, "exec_lag", None) is not None
-                else 1
-            ),
             exec_price_col=getattr(args, "exec_price_col", "open_adj"),
         )
         logger.info("前向收益计算完成 (horizons: 1/5/10/20d)")
@@ -1023,11 +1011,6 @@ def run_factor_eval(
     # - IC：stage 在 clean_df（未翻号）上算；signal 吃 backtest_df。仅 direction=normal
     #   时两帧因子值相同可传；reversed 时 IC 会翻号，不传以免改数值。
     # - factor_col/horizons/frequency：两边均为 factor_clean / 默认[1,5,10,20] / args.frequency。
-    _sig_exec_lag = int(
-        getattr(args, "exec_lag", 1)
-        if getattr(args, "exec_lag", None) is not None
-        else 1
-    )
     _sig_exec_price_col = getattr(args, "exec_price_col", "open_adj")
     _pre_ic = (
         ic_result if not backtest_direction.get("should_reverse") else None
@@ -1041,7 +1024,6 @@ def run_factor_eval(
             frequency=args.frequency,
             factor_name=factor.name,
             meta={
-                "exec_lag": _sig_exec_lag,
                 "exec_price_col": _sig_exec_price_col,
                 "direction": backtest_direction.get("direction"),
             },
@@ -1396,10 +1378,6 @@ def main(*, track: str = "backtest") -> None:
         dest="set_overrides",
         metavar="KEY=VALUE",
         help="覆盖任意配置字段（校验前注入），可多次：--set backtest.top_n=30 --set preprocessing.neutralize=true",
-    )
-    parser.add_argument(
-        "--exec-lag", dest="exec_lag", type=int, default=1,
-        help="成交滞后(交易日)。默认 1=可实现口径；0=旧 close→close（不可实现，仅对照用）",
     )
     parser.add_argument(
         "--exec-price-col", dest="exec_price_col", default="open_adj",

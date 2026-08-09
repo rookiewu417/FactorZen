@@ -551,9 +551,9 @@ def test_factor_instantiate_and_return_frame_suite():
     def _section_1_test_prepare_return_frame_adds_ret_and_forward_returns():
         price_df = pl.DataFrame(
             {
-                "trade_date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
-                "ts_code": ["000001.SZ"] * 3,
-                "close": [100.0, 110.0, 121.0],
+                "trade_date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5)],
+                "ts_code": ["000001.SZ"] * 4,
+                "close": [100.0, 110.0, 121.0, 133.1],
             }
         )
 
@@ -561,8 +561,8 @@ def test_factor_instantiate_and_return_frame_suite():
 
         assert "ret" in out.columns
         assert "fwd_ret_1d" in out.columns
-        assert out["ret"].to_list() == pytest.approx([None, 0.10, 0.10])
-        assert out["fwd_ret_1d"].to_list() == pytest.approx([0.10, 0.10, None])
+        assert out["ret"].to_list() == pytest.approx([None, 0.10, 0.10, 0.10])
+        assert out["fwd_ret_1d"].to_list() == pytest.approx([0.10, 0.10, None, None])
 
     _section_1_test_prepare_return_frame_adds_ret_and_forward_returns()
 

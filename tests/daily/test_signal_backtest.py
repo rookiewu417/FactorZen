@@ -363,7 +363,7 @@ def test_signal_backtest_suite():
     # -- 口径透传接线（数值差异验证） --
     def _section_return_basis_passthrough():
         factor_df, fwd0 = _gold_frames()
-        # 第二套：把收益整体 shift 一日（模拟 exec_lag 改变可实现收益）
+        # 第二套：把收益整体 shift 一日（模拟成交时点改变可实现收益）
         # 手写：day0 用原 day1 ret，day1 用 day2，day2 用 day3，day3 用 0
         shifted_rets = [*_GOLD_RETS[1:], [0.0] * 6]
         r_rows = []
@@ -507,7 +507,17 @@ def test_two_track_consistency_under_controlled_conditions():
         cost_model=CostModel(commission=0, stamp_tax=0, slippage=0, borrow_annual=0),
         factor_name="consistency",
     )
-    fwd = compute_fwd_returns(price, horizons=[1], exec_lag=0, exec_price_col="close")
+    # 交易轨每日调仓：t 日信号 → t+1 执行 → t+1 当日组合收益。compute_fwd_returns
+    # 已固定 t+1 成交（lag=1，t+1→t+2），与逐日调仓轨不对拍；这里手工构造 lag=0 的
+    # close[t+1]/close[t] − 1 作信号轨输入，仅用于本测试内部的两轨一致性对拍。
+    fwd = (
+        price.sort(["ts_code", "trade_date"])
+        .with_columns(
+            (pl.col("close").shift(-1).over("ts_code") / pl.col("close") - 1.0)
+            .alias("fwd_ret_1d")
+        )
+        .select(["trade_date", "ts_code", "fwd_ret_1d"])
+    )
     sig = run_signal_backtest(
         factor, fwd, factor_col="factor_clean", n_groups=n_group,
         horizons=[1], factor_name="consistency",

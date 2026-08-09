@@ -1,5 +1,5 @@
 """
-test_exec_convention.py：可实现成交口径：`compute_fwd_returns` 的 `exec_lag` / `exec_price_col`。
+test_exec_convention.py：可实现成交口径：`compute_fwd_returns` 固定 t+1 成交 + `exec_price_col`。
 test_lift_ctx_wiring.py：F3：LiftEvalContext 三消费方接通（team hook / CLI lift-test / rebuild 复审）。
 """
 
@@ -31,35 +31,33 @@ def _px(closes: list[float], opens: list[float] | None = None) -> pl.DataFrame:
 
 
 def test_exec_convention_compute_suite():
-    """默认（exec_lag=0）必须逐位等于 close[t+h]/close[t] − 1。；exec_lag=1 ⇒ 用 price[t+2]/price[t+1] − 1。；exec_price_col='open' ⇒ 完全走 open 列，close 不参与。；h=2 且 exec_lag=1 ⇒ price[t+3]/price[t+1] − 1。；shift 必须按 ts_code 分组——跨股票串价会污染边界日。"""
-    # -- 原 test_default_unchanged_close_to_close --
-    def _section_0_test_default_unchanged_close_to_close():
+    """固定 t+1 成交（exec_lag=1）⇒ price[t+2]/price[t+1] − 1。；exec_price_col='open' ⇒ 完全走 open 列，close 不参与。；h=2 ⇒ price[t+3]/price[t+1] − 1。；shift 必须按 ts_code 分组——跨股票串价会污染边界日。"""
+    # -- 固定 t+1 成交：进场价在 t+1、出场价在 t+2 --
+    def _section_0_test_entry_at_t_plus_1():
         df = compute_fwd_returns(_px([100.0, 110.0, 121.0]), horizons=[1])
         got = df["fwd_ret_1d"].to_list()
-        assert got[0] == pytest.approx(0.10, abs=1e-12)
-        assert got[1] == pytest.approx(0.10, abs=1e-12)
-        assert got[2] is None  # 末日无前向价
+        assert got[0] == pytest.approx(0.10, abs=1e-12)   # 121/110 − 1
+        assert got[1] is None                             # 无 t+2 价
+        assert got[2] is None
 
-    _section_0_test_default_unchanged_close_to_close()
+    _section_0_test_entry_at_t_plus_1()
 
-    # -- 原 test_exec_lag_shifts_entry_and_exit --
-    def _section_1_test_exec_lag_shifts_entry_and_exit():
+    # -- 原 test_exec_lag_shifts_entry_and_exit（lag=1 已成默认） --
+    def _section_1_test_default_entry_shifts_one_day():
         px = _px([100.0, 200.0, 210.0, 420.0])
-        base = compute_fwd_returns(px, horizons=[1])["fwd_ret_1d"].to_list()
-        lag1 = compute_fwd_returns(px, horizons=[1], exec_lag=1)["fwd_ret_1d"].to_list()
+        got = compute_fwd_returns(px, horizons=[1])["fwd_ret_1d"].to_list()
 
-        assert base[0] == pytest.approx(1.00, abs=1e-12)   # 200/100 − 1
-        assert lag1[0] == pytest.approx(0.05, abs=1e-12)   # 210/200 − 1
-        assert lag1[1] == pytest.approx(1.00, abs=1e-12)   # 420/210 − 1
-        assert lag1[2] is None and lag1[3] is None         # 尾部越界
+        assert got[0] == pytest.approx(0.05, abs=1e-12)   # 210/200 − 1
+        assert got[1] == pytest.approx(1.00, abs=1e-12)   # 420/210 − 1
+        assert got[2] is None and got[3] is None          # 尾部越界
 
-    _section_1_test_exec_lag_shifts_entry_and_exit()
+    _section_1_test_default_entry_shifts_one_day()
 
     # -- 原 test_exec_price_col_uses_open --
     def _section_2_test_exec_price_col_uses_open():
         px = _px([999.0, 999.0, 999.0, 999.0], opens=[10.0, 20.0, 25.0, 50.0])
         got = compute_fwd_returns(
-            px, horizons=[1], exec_lag=1, exec_price_col="open")["fwd_ret_1d"].to_list()
+            px, horizons=[1], exec_price_col="open")["fwd_ret_1d"].to_list()
         assert got[0] == pytest.approx(0.25, abs=1e-12)   # open[2]/open[1] = 25/20
         assert got[1] == pytest.approx(1.00, abs=1e-12)   # open[3]/open[2] = 50/25
 
@@ -68,7 +66,7 @@ def test_exec_convention_compute_suite():
     # -- 原 test_horizon_and_lag_compose --
     def _section_3_test_horizon_and_lag_compose():
         px = _px([1.0, 2.0, 4.0, 6.0, 12.0])
-        got = compute_fwd_returns(px, horizons=[2], exec_lag=1)["fwd_ret_2d"].to_list()
+        got = compute_fwd_returns(px, horizons=[2])["fwd_ret_2d"].to_list()
         assert got[0] == pytest.approx(2.00, abs=1e-12)   # 6/2 − 1
         assert got[1] == pytest.approx(2.00, abs=1e-12)   # 12/4 − 1
 
@@ -77,46 +75,46 @@ def test_exec_convention_compute_suite():
     # -- 原 test_per_code_isolation --
     def _section_4_test_per_code_isolation():
         df = pl.DataFrame({
-            "ts_code": ["A", "A", "B", "B"],
-            "trade_date": ["2024-01-01", "2024-01-02"] * 2,
-            "close": [10.0, 20.0, 100.0, 300.0],
+            "ts_code": ["A", "A", "A", "B", "B", "B"],
+            "trade_date": ["2024-01-01", "2024-01-02", "2024-01-03"] * 2,
+            "close": [10.0, 20.0, 40.0, 100.0, 300.0, 600.0],
         })
         got = compute_fwd_returns(df, horizons=[1]).sort(["ts_code", "trade_date"])
         v = got["fwd_ret_1d"].to_list()
-        assert v[0] == pytest.approx(1.0)   # A: 20/10
+        assert v[0] == pytest.approx(1.0)   # A: 40/20 − 1（t+1 进场）
         assert v[1] is None                 # A 末日，**不得**借用 B 的价格
-        assert v[2] == pytest.approx(2.0)   # B: 300/100
-        assert v[3] is None
+        assert v[2] is None
+        assert v[3] == pytest.approx(1.0)   # B: 600/300 − 1
+        assert v[4] is None
+        assert v[5] is None
 
     _section_4_test_per_code_isolation()
 
 
 def test_ret_col_fallback_respects_lag():
-    """无价格列时走单日收益复利，exec_lag 须跳过前 lag 步。
+    """无价格列时走单日收益复利，固定 t+1 成交须跳过前 1 步。
 
-    ret = [0.5, 0.1, 0.2, ...]：h=1 且 lag=1 ⇒ 取 ret[t+2] 而非 ret[t+1]。
+    ret = [0.5, 0.1, 0.2, ...]：h=1 ⇒ 取 ret[t+2] 而非 ret[t+1]。
     """
     df = pl.DataFrame({
         "ts_code": ["X"] * 4,
         "trade_date": [f"2024-01-{i + 1:02d}" for i in range(4)],
         "ret_1d": [0.5, 0.1, 0.2, 0.3],
     })
-    got = compute_fwd_returns(df, horizons=[1], exec_lag=1)["fwd_ret_1d"].to_list()
+    got = compute_fwd_returns(df, horizons=[1])["fwd_ret_1d"].to_list()
     assert got[0] == pytest.approx(0.2, abs=1e-12)   # ret[2]
     assert got[1] == pytest.approx(0.3, abs=1e-12)   # ret[3]
 
 
 def test_invalid_args_raise():
-    """负 exec_lag、不存在的 exec_price_col 必须显式报错，不得静默。"""
+    """不存在的 exec_price_col 必须显式报错，不得静默。"""
     px = _px([1.0, 2.0, 3.0])
-    with pytest.raises(ValueError, match="exec_lag"):
-        compute_fwd_returns(px, horizons=[1], exec_lag=-1)
     with pytest.raises(ValueError, match="exec_price_col"):
         compute_fwd_returns(px, horizons=[1], exec_price_col="nope")
 
 
 def test_exec_wiring_signature_suite():
-    """`_build_ret_panel` 必须把两个参数透传下去，而不是吞掉。；`DataBundle.build` 必须透传，否则护栏仍在评不可实现的收益。；`make_lift_context` 必须把口径写进 ctx，供 lift 裁决读取。；`_session_end_auto_lift` 必须接住口径——它是 lift 裁决的入口。；`fz mine team` 必须暴露两个旗标，且默认值 = 历史行为。"""
+    """`_build_ret_panel` 必须把成交价格列透传下去，而不是吞掉。；`DataBundle.build` 必须透传。；`make_lift_context` 必须把价格列写进 ctx，供 lift 裁决读取。；`_session_end_auto_lift` 必须接住价格列——它是 lift 裁决的入口。；`fz mine team` 必须暴露 `--exec-price-col`，且默认值 = open_adj。"""
     # -- 原 test_lift_ret_panel_threads_exec_args --
     def _section_0_test_lift_ret_panel_threads_exec_args():
         from factorzen.discovery.lift_test import _build_ret_panel
@@ -130,7 +128,7 @@ def test_exec_wiring_signature_suite():
         base = _build_ret_panel(df, horizon=1)
         assert all(v == pytest.approx(0.0) for v in base["ret"].to_list())
 
-        got = _build_ret_panel(df, horizon=1, exec_lag=1, exec_price_col="open_adj")
+        got = _build_ret_panel(df, horizon=1, exec_price_col="open_adj")
         vals = got["ret"].to_list()
         assert vals[0] == pytest.approx(0.25, abs=1e-12)   # 25/20
         assert vals[1] == pytest.approx(1.00, abs=1e-12)   # 50/25
@@ -152,7 +150,7 @@ def test_exec_wiring_signature_suite():
         assert all(v == pytest.approx(0.0)
                    for v in base.fwd_returns["fwd_ret_1d"].drop_nulls().to_list())
 
-        got = DataBundle.build(df, exec_lag=1, exec_price_col="open_adj")
+        got = DataBundle.build(df, exec_price_col="open_adj")
         v = got.fwd_returns["fwd_ret_1d"].to_list()
         assert v[0] == pytest.approx(0.25, abs=1e-12)   # open[2]/open[1] = 25/20
         assert v[1] == pytest.approx(1.00, abs=1e-12)   # open[3]/open[2] = 50/25
@@ -169,11 +167,11 @@ def test_exec_wiring_signature_suite():
             "close": [1.0, 2.0],
         })
         d = make_lift_context("ashare", df, prepped=df)
-        assert d.exec_lag == 0 and d.exec_price_col is None      # 默认不变
+        assert d.exec_price_col is None      # 默认不变
 
         c = make_lift_context("ashare", df, prepped=df,
-                              exec_lag=1, exec_price_col="open_adj")
-        assert c.exec_lag == 1 and c.exec_price_col == "open_adj"
+                              exec_price_col="open_adj")
+        assert c.exec_price_col == "open_adj"
 
     _section_2_test_lift_context_carries_exec_args()
 
@@ -184,9 +182,8 @@ def test_exec_wiring_signature_suite():
         from factorzen.agents.team_orchestrator import _session_end_auto_lift
 
         sig = inspect.signature(_session_end_auto_lift)
-        assert "exec_lag" in sig.parameters
+        assert "exec_lag" not in sig.parameters
         assert "exec_price_col" in sig.parameters
-        assert sig.parameters["exec_lag"].default == 0
         assert sig.parameters["exec_price_col"].default is None
 
     _section_3_test_session_end_auto_lift_accepts_exec_args()
@@ -203,19 +200,16 @@ def test_exec_wiring_signature_suite():
         for cmd in ("team", "agent", "search"):
             base = ["mine", cmd, "--start", "20200101", "--end", "20201231"]
             ns = p.parse_args(base)
-            # CLI 默认可实现口径
-            assert ns.exec_lag == 1, cmd
+            # CLI 默认可实现口径（固定 t+1 成交 + open_adj）
             assert ns.exec_price_col == "open_adj", cmd
+            assert not hasattr(ns, "exec_lag"), cmd
             ns2 = p.parse_args([
-                *base, "--exec-lag", "0", "--exec-price-col", "close",
+                *base, "--exec-price-col", "close",
             ])
-            # 显式旧口径逃生口
-            assert ns2.exec_lag == 0, cmd
             assert ns2.exec_price_col == "close", cmd
             ns3 = p.parse_args([
-                *base, "--exec-lag", "1", "--exec-price-col", "open_adj",
+                *base, "--exec-price-col", "open_adj",
             ])
-            assert ns3.exec_lag == 1, cmd
             assert ns3.exec_price_col == "open_adj", cmd
 
     _section_4_test_cli_parser_exposes_exec_flags()

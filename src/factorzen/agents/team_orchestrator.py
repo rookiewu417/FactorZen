@@ -273,10 +273,9 @@ def _run_one_round(
     eval_start=None, leaf_budgets=None, hypotheses_per_round=1, profile=None, ctx=None,
     lib_pool=None, library_covered=None, library_crowded=None,
     library_exprs=None, objective: str = "residual",
-    llm_workers: int = 1, residual_projector=None,
+    llm_workers: int = 1, residual_projector=None, lib_corr_panel=None,
     run_id: str | None = None, campaign_id: str | None = None,
     prepped=None,
-    exec_lag: int = 0,
     exec_price_col: str | None = None,
     sleeve_gate: bool = True,
     leaf_scheduler: bool = False,
@@ -655,8 +654,8 @@ def _run_one_round(
         lib_pool=lib_pool,           # 库级正交 + 残差面板（全窗物化；None/空 → 零回归）
         objective=objective,
         residual_projector=residual_projector,  # session 级 QR，全量残差 train IC 快路径
+        lib_corr_panel=lib_corr_panel,  # session 级相关网格，避免每轮重建
         prepped=prepped,             # P5：session 同源 prep，跳过护栏再 prep 全帧
-        exec_lag=exec_lag,
         exec_price_col=exec_price_col,
         sleeve_gate=sleeve_gate,
     )
@@ -882,9 +881,8 @@ def run_team_agent(
     scout_freq: str = "5min",
     scout_base_dir: str | Path | None = None,  # 测试隔离 registry/缓存；生产 None
     pool_cache_dir: str | None = None,
-    # 成交口径：0 = t 日收盘成交（默认，向后兼容但**不可实现**——算信号需 t 日收盘价）；
-    # 1 + "open_adj" = t+1 开盘成交（可实现）。贯穿护栏 / holdout / lift 裁决。
-    exec_lag: int = 0,
+    # 成交价格列：默认 None（close 系）；"open_adj" = t+1 开盘成交（可实现）。
+    # 成交口径固定 t+1 成交（exec_lag=1），贯穿护栏 / holdout / lift 裁决。
     exec_price_col: str | None = None,
     # 稀疏因子 sleeve 旁路（子集 IC → lift_queue）；False=关闭，稠密路径不变。
     sleeve_gate: bool = True,
@@ -1055,18 +1053,56 @@ def run_team_agent(
             lib_pool, library_covered, library_crowded = {}, None, None
     state.objective = objective  # type: ignore[attr-defined]
 
-    # ── 池后切分(峰值错峰 v20):切分在 X+Q(各 ~4G)建成**之前**、池值列之后——
-    # 此刻基线无投影矩阵;切分完立即释放 raw daily,projector 期无 raw(-3.5G)。
-    # 顺序:pool → 切分+release raw → projector,两大块错峰,峰值 ≈-3.3G。
+    # session 级 corr 面板 + residual（consume 池值列）：先 corr 后 residual，
+    # 避免「池 wide + residual X」长期双驻（全 A OOM）。
+    lib_corr_panel = None
+    residual_projector = None
+    if lib_pool:
+        try:
+            from factorzen.discovery.residual import (
+                ResidualProjector,
+                build_library_panel,
+            )
+            from factorzen.discovery.scoring import build_library_corr_panel
+
+            lib_corr_panel = build_library_corr_panel(lib_pool)
+            if objective == "residual":
+                _panel = build_library_panel(lib_pool, consume=True)
+                if _panel is not None and _panel.k > 0:
+                    residual_projector = ResidualProjector.from_panel(_panel)
+                    _step(
+                        f"残差投影 ▸ ResidualProjector 就绪（k={_panel.k}，"
+                        "池值列已 consume 释放）"
+                    )
+                del _panel
+        except Exception as exc:
+            _LOG.warning("残差/相关面板构建失败: %s: %s", type(exc).__name__, exc)
+            residual_projector, lib_corr_panel = None, None
+
+    # 大帧 f32 压缩（在池/残差之后：池物化时仍用更高精度预热数值）
+    from factorzen.discovery.mem_budget import (
+        available_memory_bytes,
+        cast_float64_columns_f32,
+        should_cast_frame_f32,
+    )
+    if should_cast_frame_f32(
+        session_prepped.height, free_bytes=available_memory_bytes(),
+    ):
+        _n_f64 = sum(
+            1 for _, dt in session_prepped.schema.items() if str(dt) == "Float64"
+        )
+        session_prepped = cast_float64_columns_f32(session_prepped)
+        _step(f"帧 f32 压缩 ▸ Float64×{_n_f64} 列 → Float32（rows={session_prepped.height}）")
+
+    # ── 池后切分：从 prepped 切，避免 raw mining_df 再钉一份全宽副本 ─────────
     mining_df, holdout_df, _holdout_start2 = _prepare_segments(
-        daily, eval_start=eval_start, holdout_ratio=holdout_ratio)
+        session_prepped, eval_start=eval_start, holdout_ratio=holdout_ratio)
     assert _holdout_start2 == holdout_start, (
         f"holdout 边界漂移: 预池路径 {holdout_start} vs 切分 {_holdout_start2}"
     )
     # 成交口径贯穿护栏：quick_fitness / residual_ic / pool_pbo / ic_overfit
     # 全部基于 bundle.fwd_returns，故这里传错等于整轮护栏评的是另一种收益。
-    bundle = DataBundle.build(
-        mining_df, exec_lag=exec_lag, exec_price_col=exec_price_col)
+    bundle = DataBundle.build(mining_df, exec_price_col=exec_price_col)
     _step(f"数据切分 ▸ 训练 {mining_df['trade_date'].n_unique()} 天 / "
           f"holdout {holdout_df['trade_date'].n_unique()} 天")
     # P5：holdout 长驻窄投影（键+价）；因子求值走 warmup/session_prepped。
@@ -1074,29 +1110,12 @@ def run_team_agent(
     # P5：scout off 时 raw daily 无其它消费（evaluate/护栏/lift 均用 session_prepped）；
     # 释放全宽 raw。scout on 保留供注入后重建。
     if not intraday_scout:
+        del daily
         daily = session_prepped
     # 求值层诊断器只建一次;与求值同源 session_prepped
     health = make_health_check(
         mining_df, profile=profile, leaf_map=ctx.leaf_map, prepped=session_prepped,
     ) if heal_rounds > 0 else None
-
-    # residual 模式 + 库非空：session 开始建一次 ResidualProjector，整 session 复用
-    # （多候选残差 train IC 近免费）。接线点在护栏前全量写 residual_ic_train / 选槽。
-    residual_projector = None
-    if objective == "residual" and lib_pool:
-        try:
-            from factorzen.discovery.residual import (
-                ResidualProjector,
-                build_library_panel,
-            )
-            _panel = build_library_panel(lib_pool)
-            if _panel is not None and _panel.k > 0:
-                residual_projector = ResidualProjector.from_panel(_panel)
-                _step(f"残差投影 ▸ ResidualProjector 就绪（k={_panel.k}）")
-        except Exception as exc:
-            _LOG.warning("ResidualProjector 构建失败（本 session 残差走 lstsq）: %s: %s",
-                         type(exc).__name__, exc)
-            residual_projector = None
 
     # session 级唯一 run_id（同 seed 复用不再互斥排除历史）+ 完整统计问题 campaign_id
     session_run_id = run_id if run_id is not None else f"team_{seed}_{uuid.uuid4().hex[:8]}"
@@ -1193,9 +1212,10 @@ def run_team_agent(
                 library_crowded=library_crowded, library_exprs=library_exprs,
                 objective=objective, llm_workers=llm_workers,
                 residual_projector=residual_projector,
+                lib_corr_panel=lib_corr_panel,
                 run_id=session_run_id, campaign_id=session_campaign_id,
                 prepped=session_prepped,
-                exec_lag=exec_lag, exec_price_col=exec_price_col,
+                exec_price_col=exec_price_col,
                 sleeve_gate=sleeve_gate,
                 leaf_scheduler=leaf_scheduler,
                 focus_picks=focus_picks,
@@ -1368,8 +1388,7 @@ def run_team_agent(
         run_id=session_run_id,
         horizon=horizon,
         index=index,  # lift 拒绝写回 experiment_index（None-gating 在钩子内）
-        # 成交口径须与护栏/holdout 同源，否则准入用一个口径、lift 裁决用另一个
-        exec_lag=exec_lag,
+        # 成交价格列须与护栏/holdout 同源，否则准入用一个口径、lift 裁决用另一个
         exec_price_col=exec_price_col,
         subprocess_mode=_lift_subprocess,
         release_frames=_release_session_frames if _lift_subprocess else None,
@@ -1533,7 +1552,6 @@ def _session_end_auto_lift(
     ret_df=None,
     run_id: str | None = None,
     index=None,
-    exec_lag: int = 0,
     exec_price_col: str | None = None,
     subprocess_mode: bool = False,
     release_frames: Callable[[], None] | None = None,
@@ -1610,7 +1628,6 @@ def _session_end_auto_lift(
                 data_window=data_window,
                 run_id=run_id,
                 index_path=(str(index.path) if index is not None else None),
-                exec_lag=exec_lag,
                 exec_price_col=exec_price_col,
                 profile_name=(
                     getattr(profile, "name", None) if profile is not None else None
@@ -1639,7 +1656,6 @@ def _session_end_auto_lift(
             ret_df=ret_df,
             run_id=run_id,
             index=index,
-            exec_lag=exec_lag,
             exec_price_col=exec_price_col,
         )
     except Exception as exc:
@@ -1708,7 +1724,6 @@ def _lift_hook_via_subprocess(
     data_window: dict | None,
     run_id: str | None,
     index_path: str | None,
-    exec_lag: int,
     exec_price_col: str | None,
     profile_name: str | None,
     release_frames: Callable[[], None] | None = None,
@@ -1761,7 +1776,6 @@ def _lift_hook_via_subprocess(
             "data_window": data_window,
             "run_id": run_id,
             "index_path": index_path,
-            "exec_lag": int(exec_lag),
             "exec_price_col": exec_price_col,
             "profile_name": profile_name,
         }
@@ -1842,7 +1856,6 @@ def _run_lift_hook_core(
     ret_df=None,
     run_id: str | None = None,
     index=None,
-    exec_lag: int = 0,
     exec_price_col: str | None = None,
 ) -> dict:
     """lift 钩子的**唯一**裁决实现：覆盖把关 → 组门 → 逐候选 → upsert → 写回 index。
@@ -1882,8 +1895,7 @@ def _run_lift_hook_core(
         # python 型候选/基线物化口径（三 lift 消费方同口径，改一查三）
         python_universe=(data_window or {}).get("universe"),
         python_market=market,
-        # 成交口径须与护栏/holdout 一致，否则准入用一个口径、lift 裁决用另一个
-        exec_lag=exec_lag,
+        # 成交价格列须与护栏/holdout 一致，否则准入用一个口径、lift 裁决用另一个
         exec_price_col=exec_price_col,
     )
     if profile is None and profile_name is not None:

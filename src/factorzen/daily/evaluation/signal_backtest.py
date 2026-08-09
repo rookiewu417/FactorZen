@@ -5,8 +5,8 @@
 本轨刻意不提供成本参数：粗略的 bps 折算既非真实撮合、又会让人误以为这里能算净收益。
 要看成本与可实现性，走交易轨 ``fz factor backtest``。
 
-前向收益由调用方经 ``compute_fwd_returns``（含 exec_lag/exec_price_col）预计算后
-透传；本模块不调用 ``compute_fwd_returns``，遵守「四处同源」纪律。
+前向收益由调用方经 ``compute_fwd_returns``（固定 t+1 成交，可选 exec_price_col）
+预计算后透传；本模块不调用 ``compute_fwd_returns``，遵守「四处同源」纪律。
 """
 
 from __future__ import annotations

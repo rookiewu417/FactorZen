@@ -94,8 +94,6 @@ def test_pipeline_argv_forward_suite():
             "--seed",
             "42",
             "--dry-run",
-            "--exec-lag",
-            "1",
             "--exec-price-col",
             "open_adj",
             # 信号轨专属旋钮:eval 子命令独有,必须真的转发下去

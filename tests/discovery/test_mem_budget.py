@@ -118,3 +118,26 @@ def test_large_all_a_on_20g_host_auto_pool_subproc():
     )
     assert actions.use_pool_subproc is True
     assert n_rows >= 2_000_000
+
+
+def test_should_cast_frame_f32_and_cast_helper():
+    import polars as pl
+
+    from factorzen.discovery.mem_budget import (
+        cast_float64_columns_f32,
+        should_cast_frame_f32,
+    )
+
+    assert should_cast_frame_f32(3_000_000) is True
+    assert should_cast_frame_f32(10_000) is False
+    assert should_cast_frame_f32(600_000, free_bytes=8 * (1024**3)) is True
+
+    df = pl.DataFrame({
+        "ts_code": ["a", "b"],
+        "x": [1.0, 2.0],
+        "n": [1, 2],
+    })
+    out = cast_float64_columns_f32(df)
+    assert out.schema["x"] == pl.Float32
+    assert out.schema["n"] == pl.Int64
+    assert out.schema["ts_code"] == pl.Utf8

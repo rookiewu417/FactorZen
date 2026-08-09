@@ -65,7 +65,6 @@ def run_payload(payload: dict) -> dict:
             ret_df=None,
             run_id=payload.get("run_id"),
             index=index,
-            exec_lag=int(payload.get("exec_lag") or 0),
             exec_price_col=payload.get("exec_price_col"),
         )
     except Exception as exc:

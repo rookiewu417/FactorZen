@@ -123,9 +123,9 @@ def test_holdout_and_ledger_suite():
         from factorzen.validation.holdout import holdout_ic, split_holdout
         daily = _daily()
         _mining, holdout, _ = split_holdout(daily, holdout_ratio=0.2)
-        # 用「次日收益」当因子 → holdout IC 应为正
+        # 用 t+1 成交口径前向收益当因子 → holdout IC 应为正
         fac = holdout.sort(["ts_code", "trade_date"]).with_columns(
-            (pl.col("close_adj").shift(-1).over("ts_code") / pl.col("close_adj") - 1.0).alias("factor_value")
+            (pl.col("close_adj").shift(-2).over("ts_code") / pl.col("close_adj") - 1.0).alias("factor_value")
         ).select(["trade_date", "ts_code", "factor_value"]).drop_nulls()
         ic_mean, _ir, (lo, hi) = holdout_ic(fac, holdout)
         assert ic_mean > 0.05 and lo <= hi

@@ -269,8 +269,8 @@ def node_guardrails(
     lib_pool: dict | Any | None = None,
     objective: str = "residual",
     residual_projector=None,
+    lib_corr_panel=None,
     prepped=None,
-    exec_lag: int = 0,
     exec_price_col: str | None = None,
     sleeve_gate: bool = True,
 ) -> AgentState:
@@ -314,6 +314,9 @@ def node_guardrails(
     ``residual_projector``：可选 ``ResidualProjector``（session 级预计算 QR）。residual
     模式下对**全部**本轮候选算 train 残差 IC 并按 ``|residual_ic_train|`` 选 top-K 槽
     （修泄漏 A：槽位键与目标错位）；缺省时本函数现场从 ``lib_panel`` 建一次。
+
+    ``lib_corr_panel``：可选 session 级 ``build_library_corr_panel`` 产物。非 None 时
+    **不**在本轮再物化相关网格（全 A 每轮重建是 OOM 大头）；缺省时现建，零回归。
 
     ``prepped``：session 级已 ``_preprocess_daily`` 的完整帧（可选）。非 None 时 holdout
     扩窗 / 池级 PBO 复用该帧，跳过对 ``warmup_daily`` 的再 prep（P5 峰值省一份全帧）。
@@ -406,8 +409,9 @@ def node_guardrails(
     )
     eff_objective = resolve_objective(objective, lib_panel is not None)
     state.objective = eff_objective
-    # 库相关矩阵面板：session 级构建一次，本轮全部候选复用
-    lib_corr_panel = build_library_corr_panel(lib_pool) if lib_pool else None
+    # 库相关矩阵面板：优先 session 注入；缺省才现建（M5/测试零回归）
+    if lib_corr_panel is None and lib_pool:
+        lib_corr_panel = build_library_corr_panel(lib_pool)
     # train 段因子值求值帧（残差 train IC）。
     # 注意：即使 hold 用了 session prepped，train 仍对 mining-only daily 单独 prep——
     # 全帧 prepped 再 filter 会让段首 ret_1d 等与 mining-only prep 不一致（数值红线）。
@@ -486,8 +490,7 @@ def node_guardrails(
             node = parse_expr(a.expression, leaf_map)
             fdf_hold = _holdout_values(node)
             hres = holdout_ic_result(
-                fdf_hold, holdout_df,
-                exec_lag=exec_lag, exec_price_col=exec_price_col,
+                fdf_hold, holdout_df, exec_price_col=exec_price_col,
             )
             ic_h, ir_h, (ci_lo, ci_hi), n_h = hres.ic_mean, hres.ir, hres.ci, hres.n_days
             a.n_holdout_days = n_h
@@ -535,8 +538,7 @@ def node_guardrails(
                 if _hold_fwd is None:
                     # 与 train bundle / holdout 主门同源成交口径（禁止恒 close→close）
                     _hold_fwd = holdout_fwd_returns(
-                        holdout_df,
-                        exec_lag=exec_lag, exec_price_col=exec_price_col,
+                        holdout_df, exec_price_col=exec_price_col,
                     )
                 r_h = compute_residual_ic(
                     fdf_hold, lib_panel, _hold_fwd, projector=projector,
@@ -696,8 +698,7 @@ def node_guardrails(
                 fdf_hold_nk = _holdout_values(node_nk)
                 if _hold_fwd is None:
                     _hold_fwd = holdout_fwd_returns(
-                        holdout_df,
-                        exec_lag=exec_lag, exec_price_col=exec_price_col,
+                        holdout_df, exec_price_col=exec_price_col,
                     )
                 r_h_nk = compute_residual_ic(
                     fdf_hold_nk, lib_panel, _hold_fwd, projector=projector,
@@ -749,8 +750,7 @@ def node_guardrails(
                     fdf_hold_sl = _holdout_values(node_sl)
                     if _hold_fwd is None:
                         _hold_fwd = holdout_fwd_returns(
-                            holdout_df,
-                            exec_lag=exec_lag, exec_price_col=exec_price_col,
+                            holdout_df, exec_price_col=exec_price_col,
                         )
                     if mask_leaves:
                         # 掩码通道：holdout 面板叶原值并集（与 train 同源口径）

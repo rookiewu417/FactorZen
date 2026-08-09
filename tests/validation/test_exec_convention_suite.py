@@ -33,9 +33,9 @@ def _synth_exec_panel(n_stocks: int = 40, n_days: int = 50, seed: int = 7) -> pl
                 "ts_code": code,
                 "close": p,
                 "close_adj": p,
-                # 同日比例缩放：lag0 close 收益 ≠ lag1 open 收益（时间平移）
-                "open_adj": p * 1.03,
-                "open": p * 1.03,
+                # 独立噪声：固定 t+1 成交下 close 与 open_adj 前向收益不同（路径差）
+                "open_adj": p * (1.0 + 0.03 * float(rng.standard_normal())),
+                "open": p * (1.0 + 0.03 * float(rng.standard_normal())),
                 "vol": 1e5,
             })
     return pl.DataFrame(rows)
@@ -65,10 +65,10 @@ def test_holdout_ic_exec_convention_numeric_diff_and_zero_regression():
     holdout = panel
     fac = _factor_aligned_to_close_fwd(holdout)
 
-    # ── A: 两口径数值必须不同（修前恒 close→close → 同值 → FAIL）──────────────
+    # ── A: 两口径数值必须不同（close 与 open_adj 成交价列不同）──────────────
     r_default = holdout_ic_result(fac, holdout)
     r_exec = holdout_ic_result(
-        fac, holdout, exec_lag=1, exec_price_col="open_adj",
+        fac, holdout, exec_price_col="open_adj",
     )
     assert r_default.n_days > 5 and r_exec.n_days > 5
     assert abs(r_default.ic_mean - r_exec.ic_mean) > 1e-6, (
@@ -92,7 +92,7 @@ def test_holdout_ic_exec_convention_numeric_diff_and_zero_regression():
     )
     assert r_default.ic_mean == pytest.approx(float(gt.ic_mean), abs=1e-12)
     # 新签名默认参数与无参调用一致
-    r_default_kw = holdout_ic_result(fac, holdout, exec_lag=0, exec_price_col=None)
+    r_default_kw = holdout_ic_result(fac, holdout, exec_price_col=None)
     assert r_default.ic_mean == pytest.approx(r_default_kw.ic_mean, abs=1e-12)
     assert r_default.n_days == r_default_kw.n_days
 
@@ -106,7 +106,7 @@ def test_holdout_fwd_helper_exec_numeric_diff():
 
     holdout = _synth_exec_panel(n_stocks=2)
     fwd0 = holdout_fwd_returns(holdout)
-    fwd1 = holdout_fwd_returns(holdout, exec_lag=1, exec_price_col="open_adj")
+    fwd1 = holdout_fwd_returns(holdout, exec_price_col="open_adj")
     col = "fwd_ret_1d"
     joined = (
         fwd0.select(["ts_code", "trade_date", pl.col(col).alias("r0")])
@@ -119,4 +119,4 @@ def test_holdout_fwd_helper_exec_numeric_diff():
     )
     assert joined.height > 10
     diffs = (joined["r0"] - joined["r1"]).abs().to_numpy()
-    assert float(np.nanmax(diffs)) > 1e-6, "exec_lag/open_adj 须系统改变 holdout 前向收益"
+    assert float(np.nanmax(diffs)) > 1e-6, "open_adj 须系统改变 holdout 前向收益"

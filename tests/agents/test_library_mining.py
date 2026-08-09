@@ -32,16 +32,21 @@ def _mk_daily(n_days: int = 120, n_stocks: int = 40, seed: int = 7) -> pl.DataFr
     rows = []
     for c in [f"{600000 + i:06d}.SH" for i in range(n_stocks)]:
         base = rng.uniform(8, 15)
+        # 截面 AR(1) 信号 z：高自相关 → 昨日 z 预测今日收益，t+1 成交口径仍可预测；
+        # vol 与 z 同源 → rank(vol) 对 fwd_ret_1d 有真实 IC（不再靠随机噪声碰巧过门）。
+        z, px, prev_px = 0.0, base, base
         for i, dd in enumerate(days):
-            px = base * (1 + 0.001 * i) + rng.normal(0, 0.1)
+            z = 0.8 * z + rng.normal(0, 1.0)
+            px = px * (1 + 0.005 * z)
             rows.append({
                 "trade_date": dd, "ts_code": c,
                 "close": px, "open": px, "high": px * 1.01, "low": px * 0.99,
                 # LEAF_FEATURES 把 close→close_adj；与真实日线/预处理帧同口径
                 "close_adj": px, "open_adj": px, "high_adj": px * 1.01, "low_adj": px * 0.99,
-                "pre_close": px / (1 + 0.001 * max(i, 1)),
-                "vol": 1e6 + rng.normal(0, 1e4), "amount": 1e7 + rng.normal(0, 1e5),
+                "pre_close": prev_px,
+                "vol": 1e6 * np.exp(0.5 * z), "amount": 1e7 + rng.normal(0, 1e5),
             })
+            prev_px = px
     return pl.DataFrame(rows)
 
 

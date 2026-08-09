@@ -44,11 +44,22 @@ def test_parser_mine_agent_team_suite():
         assert args.seed == 42
         assert args.human_review is False
         assert args.universe == "all_a"
+        assert args.intraday_leaves is True  # ashare 挖掘默认开 i_*
+        assert args.intraday_freq == "1min"
         # 可省略 start/end → 运行时 default_window 填充
         args_bare = p.parse_args(["mine", "agent"])
         assert args_bare.start is None
         assert args_bare.end is None
         assert args_bare.universe == "all_a"
+        assert args_bare.intraday_leaves is True
+        assert args_bare.intraday_freq == "1min"
+        args_off = p.parse_args([
+            "mine", "agent", "--start", "20220101", "--end", "20231231",
+            "--set", "intraday_leaves=false",
+        ])
+        from factorzen.cli import main as cli_main
+        assert cli_main._apply_set_overrides(args_off, cli_main._MINE_AGENT_SET) is None
+        assert args_off.intraday_leaves is False
 
     _section_1_test_parser_mine_agent_defaults()
 
@@ -602,7 +613,7 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
                       library_orthogonal=True, objective="residual",
                       intraday=False, intraday_freq="5min",
                       intraday_expr_leaves=None,
-                      exec_lag=0, exec_price_col=None):
+                      exec_price_col=None):
         captured.update(
             start=start,
             end=end,
@@ -622,7 +633,6 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
             objective=objective,
             intraday=intraday,
             intraday_freq=intraday_freq,
-            exec_lag=exec_lag,
             exec_price_col=exec_price_col,
         )
         return {"session_dir": str(tmp_path / "session-1"), "candidates": [1, 2, 3]}
@@ -673,9 +683,8 @@ def test_cmd_mine_search_forwards_args_to_run_mine(monkeypatch, capsys, tmp_path
         "update_library": True,          # 默认开（未传 --no-library）
         "library_orthogonal": True,      # 默认开（未传 --no-library-orthogonal）
         "objective": "residual",         # 默认残差目标（未传 --objective）
-        "intraday": False,               # 默认关（未传 --intraday-leaves）
-        "intraday_freq": "5min",         # 默认频率（未传 --intraday-freq）
-        "exec_lag": 1,                   # CLI 默认可实现口径
+        "intraday": True,                # ashare 挖掘默认开 i_*
+        "intraday_freq": "1min",         # 默认频率
         "exec_price_col": "open_adj",
     }
 

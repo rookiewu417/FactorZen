@@ -238,12 +238,10 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
                 library_universe: str | None = None, horizon: int = 1,
                 library_orthogonal: bool = True,
                 objective: str = "residual",
-                exec_lag: int = 0,
                 exec_price_col: str | None = None) -> dict:
-    """``exec_lag`` / ``exec_price_col``：**成交口径**，贯穿护栏与 holdout。
+    """``exec_price_col``：**成交价格列**，贯穿护栏与 holdout。
 
-    默认 0 = t 日收盘成交（向后兼容，但**不可实现**——算信号需要 t 日收盘价）；
-    ``1 + "open_adj"`` = t+1 开盘成交（可实现）。
+    成交口径**固定 t+1 成交**（``exec_lag=1``）；``"open_adj"`` = t+1 开盘成交。
     见 ``daily.evaluation.ic_analysis.compute_fwd_returns`` docstring 的实测对照。
     """
     t0 = time.perf_counter()
@@ -289,8 +287,7 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
 
     daily = mining_df  # 后续挖掘全部只用 mining 段（DataBundle/搜索/去相关）
     bundle = DataBundle.build(
-        daily, train_ratio=train_ratio,
-        exec_lag=exec_lag, exec_price_col=exec_price_col,
+        daily, train_ratio=train_ratio, exec_price_col=exec_price_col,
     )
 
     # eval_cache 提到 method 分支之前，供 genetic 统计真实评估数
@@ -523,16 +520,13 @@ def run_session(daily: pl.DataFrame, *, n_trials: int, top_k: int, seed: int,
     _hold_fwd = None
     if eff_objective == "residual" and lib_panel is not None:
         from factorzen.validation.holdout import holdout_fwd_returns
-        _hold_fwd = holdout_fwd_returns(
-            holdout_df, exec_lag=exec_lag, exec_price_col=exec_price_col,
-        )
+        _hold_fwd = holdout_fwd_returns(holdout_df, exec_price_col=exec_price_col)
     for c in top:
         _maybe_gc()
         node = parse_expr(c["expression"], leaf_map)
         fdf_hold = _factor_values(node, warmup_daily, holdout_eval_start, leaf_map)
         hres = holdout_ic_result(
-            fdf_hold, holdout_df,
-            exec_lag=exec_lag, exec_price_col=exec_price_col,
+            fdf_hold, holdout_df, exec_price_col=exec_price_col,
         )
         h_ic, ci_lo, n_h = hres.ic_mean, hres.ci[0], hres.n_days
         # DSR 显著性检验须用该候选自己在 train 段的真实样本数(n_train)，

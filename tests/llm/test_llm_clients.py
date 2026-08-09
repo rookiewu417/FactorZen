@@ -154,13 +154,37 @@ def test_aiping_sdk_client_suite(caplog):
         client_mod._openai_client.cache_clear()
         client_mod._warned_provider_unpinned = False
         client_mod._warned_openai_provider_ignored = False
-        _install_fake(mp, [_chunk(None), _chunk(reasoning="reasoning only")])
+        # 纯思考无 JSON → 仍失败；流式失败后非流式同样空 → 抛原错
+        def create_empty(**kwargs):
+            if kwargs.get("stream", True):
+                return iter([_chunk(None), _chunk(reasoning="reasoning only no json")])
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=None))]
+            )
+
+        sdk = _FakeSDK([])
+        sdk.completions.create = create_empty  # type: ignore[method-assign]
+        mp.setattr(client_mod, "OpenAI", lambda **kw: sdk)
 
         with pytest.raises(LLMClientError, match=r"delta\.content"):
             request_chat(_cfg(), _MSGS__llm_client_resilience)
 
     with pytest.MonkeyPatch.context() as mp:
         _section_3_test_empty_stream_content_raises(mp)
+
+    # -- thinking 流只给 reasoning_content 但内含 JSON → 可抽取 --
+    def _section_3b_reasoning_json_extracted(mp):
+        client_mod._openai_client.cache_clear()
+        _install_fake(
+            mp,
+            [
+                _chunk(reasoning='thinking... {"ok": true} trailing'),
+            ],
+        )
+        assert request_chat(_cfg(provider=None), _MSGS__llm_client_resilience) == '{"ok": true}'
+
+    with pytest.MonkeyPatch.context() as mp:
+        _section_3b_reasoning_json_extracted(mp)
 
     # -- 原 test_rejects_response_from_unexpected_provider --
     def _section_4_test_rejects_response_from_unexpected_provider(mp):
@@ -492,7 +516,8 @@ def test_build_payload_suite():
             "messages": _MSGS__llm_explain_client,
             "temperature": 0.2,
             "max_tokens": 700,
-            "stream": True,
+            # thinking 开 → stream 默认关（避免只流 reasoning、content 空）
+            "stream": False,
             "extra_body": {
                 "enable_thinking": True,
                 "provider": _provider_options(config),
@@ -931,12 +956,15 @@ def test_llm_profile_suite(tmp_path):
         client_mod._openai_client.cache_clear()
         client_mod._warned_provider_unpinned = False
         client_mod._warned_openai_provider_ignored = False
-        for key in ("FACTORZEN_LLM_STREAM", "FACTORZEN_LLM_PROFILE"):
+        for key in ("FACTORZEN_LLM_STREAM", "FACTORZEN_LLM_PROFILE", "FACTORZEN_LLM_THINKING"):
             mp.delenv(key, raising=False)
         config = load_llm_config(enabled=True, env_file=None)
         assert config.stream is None
-        assert config.stream_enabled is True  # aiping 缺省
+        # aiping 无 thinking → 流式；thinking 开 → 非流式；openai → 非流式
+        assert config.thinking_enabled is False
+        assert config.stream_enabled is True
         from dataclasses import replace
+        assert replace(config, thinking="true").stream_enabled is False
         assert replace(config, flavor="openai").stream_enabled is False
 
     with pytest.MonkeyPatch.context() as mp:

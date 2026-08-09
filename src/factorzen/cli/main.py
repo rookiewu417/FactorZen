@@ -67,8 +67,8 @@ _MINE_SEARCH_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
     "no_library": (bool, False, None),
     "no_library_orthogonal": (bool, False, None),
     "objective": (str, "residual", ("raw", "residual")),
-    "intraday_leaves": (bool, False, None),
-    "intraday_freq": (str, "5min", None),
+    "intraday_leaves": (bool, True, None),
+    "intraday_freq": (str, "1min", None),
 }
 
 _MINE_AGENT_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
@@ -76,8 +76,8 @@ _MINE_AGENT_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
     "heal_rounds": (int, 2, None),
     "no_library_orthogonal": (bool, False, None),
     "objective": (str, "residual", ("raw", "residual")),
-    "intraday_leaves": (bool, False, None),
-    "intraday_freq": (str, "5min", None),
+    "intraday_leaves": (bool, True, None),
+    "intraday_freq": (str, "1min", None),
     "intraday_scout": (bool, False, None),
     "scout_k": (int, 4, None),
     "scout_max_leaves": (int, 12, None),
@@ -100,8 +100,8 @@ _MINE_TEAM_SET: dict[str, tuple[type, Any, tuple[str, ...] | None]] = {
     # 1.645 把它压到 0.064（R1 表 5）。lift_admission 形参默认保持 1.0 不动。
     "lift_se_mult": (float, 1.645, None),
     "lift_workers": (int, None, None),
-    "intraday_leaves": (bool, False, None),
-    "intraday_freq": (str, "5min", None),
+    "intraday_leaves": (bool, True, None),
+    "intraday_freq": (str, "1min", None),
     "intraday_scout": (bool, False, None),
     "scout_k": (int, 4, None),
     "scout_max_leaves": (int, 12, None),
@@ -257,7 +257,7 @@ def _ensure_pool_cache_subproc(
             market,
             str(holdout_ratio),
             str(bool(getattr(args, "intraday_leaves", False))),
-            str(getattr(args, "intraday_freq", "5min") or "5min"),
+            str(getattr(args, "intraday_freq", "1min") or "1min"),
         ]
     )
     key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
@@ -480,9 +480,6 @@ def _forward_factor_track(args: argparse.Namespace, *, track: str) -> int:
         forwarded.append("--no-factor-cache")
     for override in getattr(args, "set_overrides", None) or []:
         forwarded.extend(["--set", override])
-    # 成交口径：CLI 默认可实现 (1 / open_adj)；显式 --exec-lag 0 回旧口径对照
-    if getattr(args, "exec_lag", None) is not None:
-        forwarded.extend(["--exec-lag", str(int(args.exec_lag))])
     if getattr(args, "exec_price_col", None) is not None:
         forwarded.extend(["--exec-price-col", str(args.exec_price_col)])
     # 信号轨专属旋钮(仅 eval 子命令定义,backtest 轨 args 上不存在)。
@@ -857,10 +854,10 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
     ):
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
-    # --intraday-leaves 仅 ashare（在 market 分流前拦截）
+    # --intraday-leaves 仅 ashare：默认开后非 A 股静默关掉（避免 crypto 误退出）
     if getattr(args, "intraday_leaves", False) and getattr(args, "market", "ashare") != "ashare":
-        print("[mine] --intraday-leaves 仅 ashare 支持", file=sys.stderr)
-        return 2
+        print("[mine] intraday_leaves 仅 ashare 生效，本 market 已忽略", flush=True)
+        args.intraday_leaves = False
     if getattr(args, "market", "ashare") == "crypto":
         return _mine_search_crypto(args)
     if getattr(args, "market", "ashare") == "futures":
@@ -887,11 +884,8 @@ def _cmd_mine_search(args: argparse.Namespace) -> int:
         library_orthogonal=not getattr(args, "no_library_orthogonal", False),
         objective=getattr(args, "objective", "residual"),
         intraday=bool(getattr(args, "intraday_leaves", False)),
-        intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
+        intraday_freq=getattr(args, "intraday_freq", "1min") or "1min",
         intraday_expr_leaves=getattr(args, "intraday_expr_leaves", None),
-        exec_lag=int(
-            getattr(args, "exec_lag", 1) if getattr(args, "exec_lag", None) is not None else 1
-        ),
         exec_price_col=getattr(args, "exec_price_col", "open_adj"),
     )
     sd = res["session_dir"]
@@ -929,8 +923,7 @@ def _cmd_research_run(args: argparse.Namespace) -> int:
         run_id=args.run_id,
         command=["research", "run"],
         intraday=bool(getattr(args, "intraday_leaves", False)),
-        intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
-        exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
+        intraday_freq=getattr(args, "intraday_freq", "1min") or "1min",
         exec_price_col=getattr(args, "exec_price_col", "open_adj"),
     )
     print(f"[research] 完成 run_id={res['run_id']} 因子={res['expression']!r}")
@@ -1094,7 +1087,7 @@ def _prepare_agent_mining_data(args: argparse.Namespace):
         lookback_days=AGENT_WARMUP_LOOKBACK,
         out_meta=prep_meta,
         intraday=bool(getattr(args, "intraday_leaves", False)),
-        intraday_freq=getattr(args, "intraday_freq", "5min") or "5min",
+        intraday_freq=getattr(args, "intraday_freq", "1min") or "1min",
         intraday_expr_leaves=getattr(args, "intraday_expr_leaves", None),
         keep_leaves=getattr(args, "keep_leaves", None),
     )
@@ -1114,6 +1107,10 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
+    # intraday_leaves 默认开仅 ashare 有意义；非 A 股静默关
+    if getattr(args, "intraday_leaves", False) and getattr(args, "market", "ashare") != "ashare":
+        print("[mine] intraday_leaves 仅 ashare 生效，本 market 已忽略", flush=True)
+        args.intraday_leaves = False
     # --intraday-scout 仅 ashare；隐含 --intraday-leaves（reference 需要 i_*）
     if getattr(args, "intraday_scout", False):
         if getattr(args, "market", "ashare") != "ashare":
@@ -1174,8 +1171,7 @@ def _cmd_mine_agent(args: argparse.Namespace) -> int:
         intraday_scout=bool(getattr(args, "intraday_scout", False)),
         scout_k=int(getattr(args, "scout_k", 4) or 4),
         scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
-        scout_freq=getattr(args, "intraday_freq", "5min") or "5min",
-        exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
+        scout_freq=getattr(args, "intraday_freq", "1min") or "1min",
         exec_price_col=getattr(args, "exec_price_col", "open_adj"),
     )
     print(f"[mine-agent] 候选 {res['n_candidates']} 个 / N={res['n_trials']} → {res['run_dir']}")
@@ -1351,6 +1347,9 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
     if getattr(args, "market", "ashare") != "crypto" and getattr(args, "freq", "daily") != "daily":
         print("[mine] --freq 仅 crypto 支持;ashare/futures/us 只有 daily", file=sys.stderr)
         return 2
+    if getattr(args, "intraday_leaves", False) and getattr(args, "market", "ashare") != "ashare":
+        print("[mine] intraday_leaves 仅 ashare 生效，本 market 已忽略", flush=True)
+        args.intraday_leaves = False
     # --intraday-scout 仅 ashare；隐含 --intraday-leaves（reference 需要 i_*）
     if getattr(args, "intraday_scout", False):
         if getattr(args, "market", "ashare") != "ashare":
@@ -1430,10 +1429,8 @@ def _cmd_mine_team(args: argparse.Namespace) -> int:
         intraday_scout=bool(getattr(args, "intraday_scout", False)),
         scout_k=int(getattr(args, "scout_k", 4) or 4),
         scout_max_leaves=int(getattr(args, "scout_max_leaves", 12) or 12),
-        scout_freq=getattr(args, "intraday_freq", "5min") or "5min",
+        scout_freq=getattr(args, "intraday_freq", "1min") or "1min",
         pool_cache_dir=pool_cache_dir,
-        # 成交口径：CLI 默认可实现 (1 / open_adj)；--exec-lag 0 回旧口径（不可实现，仅对照）
-        exec_lag=int(args.exec_lag) if getattr(args, "exec_lag", None) is not None else 1,
         exec_price_col=getattr(args, "exec_price_col", "open_adj"),
         sleeve_gate=not bool(getattr(args, "no_sleeve_gate", False)),
         # 默认开（no_* 关闭旗标，与 no_sleeve_gate 同款）；库函数默认仍 False——

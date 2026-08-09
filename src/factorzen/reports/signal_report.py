@@ -652,7 +652,6 @@ def _generate_signal_report_inner(
     meta = _safe_attr(signal_result, "meta", {}) or {}
     if not isinstance(meta, dict):
         meta = {}
-    exec_lag = meta.get("exec_lag", "—")
     exec_price = meta.get("exec_price_col", "—")
     dropped = meta.get("dropped_days", "—")
 
@@ -779,7 +778,6 @@ def _generate_signal_report_inner(
         f"区间 {_esc(date_range or '—')}",
         f"票池 {_esc(universe or '—')}",
         f"分组数 {_esc(n_groups if n_groups is not None else '—')}",
-        f"exec_lag {_esc(exec_lag)}",
         f"成交价 {_esc(exec_price)}",
         f"dropped_days {_esc(dropped)}",
         f"频率 {_esc(frequency)}",

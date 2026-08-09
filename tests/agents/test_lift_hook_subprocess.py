@@ -92,7 +92,6 @@ def _core_kwargs(prepped, lib_root):
         data_window={"start": "20220101", "end": "20221231", "universe": None},
         run_id="t_run",
         index=None,
-        exec_lag=0,
         exec_price_col=None,
     )
 
@@ -144,7 +143,6 @@ def test_subprocess_hook_matches_inprocess(tmp_path):
         data_window={"start": "20220101", "end": "20221231", "universe": None},
         run_id="t_run",
         index_path=None,
-        exec_lag=0,
         exec_price_col=None,
         profile_name=None,
     )
@@ -198,7 +196,6 @@ def test_worker_payload_roundtrip_is_the_same_core(tmp_path):
         "data_window": {"start": "20220101", "end": "20221231", "universe": None},
         "run_id": "t_run",
         "index_path": None,
-        "exec_lag": 0,
         "exec_price_col": None,
         "profile_name": None,
     })
@@ -264,7 +261,7 @@ def test_subprocess_failure_degrades_to_queue_dump(tmp_path, monkeypatch, capsys
         leaf_map=None, market=MARKET, library_root=str(lib_root),
         seed=7, horizon=5, lift_se_mult=1.645, lift_workers=1,
         data_window=None, run_id="t_run", index_path=None,
-        exec_lag=0, exec_price_col=None, profile_name=None,
+        exec_price_col=None, profile_name=None,
     )
     assert meta["lift_error"] and "137" in meta["lift_error"]
     assert core_calls["n"] == 0, "子进程失败后不得回落进程内执行（那正是 OOM 的来源）"
@@ -306,7 +303,7 @@ def test_release_frames_runs_before_spawn(tmp_path, monkeypatch):
         leaf_map=None, market=MARKET, library_root=str(lib_root),
         seed=7, horizon=5, lift_se_mult=1.645, lift_workers=1,
         data_window=None, run_id="r", index_path=None,
-        exec_lag=0, exec_price_col=None, profile_name=None,
+        exec_price_col=None, profile_name=None,
         release_frames=lambda: order.append("release"),
     )
     assert order == ["release", "spawn"]

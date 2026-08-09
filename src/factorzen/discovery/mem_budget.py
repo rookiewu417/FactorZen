@@ -277,3 +277,37 @@ def format_mem_actions(actions: MemActions) -> str:
         f"pool_subproc={a.use_pool_subproc} lift_workers={a.lift_workers} "
         f"avail≈{avail_g:.1f}G est_peak≈{peak_g:.1f}G | {a.reason}"
     )
+
+
+# 全 A × 多年 × 多叶：f64 挖掘帧常 6G+；压到 f32 约减半，IC 相对误差远小于护栏门槛。
+_FRAME_F32_ROWS_THRESHOLD = 2_000_000
+
+
+def should_cast_frame_f32(n_rows: int, *, free_bytes: int | None = None) -> bool:
+    """是否把挖掘帧 Float64 叶列压成 Float32。
+
+    行数超过阈值，或可用内存 < 12 GiB 且行数 > 50 万时开启。
+    """
+    n_rows = int(n_rows)
+    if n_rows >= _FRAME_F32_ROWS_THRESHOLD:
+        return True
+    if free_bytes is not None and free_bytes < 12 * (1024**3) and n_rows >= 500_000:
+        return True
+    return False
+
+
+def cast_float64_columns_f32(df):
+    """将 DataFrame 中所有 Float64 列 cast 为 Float32（键列/整型不动）。
+
+    无 Float64 时原样返回（共享引用）。用于 agent/team 长帧峰值治理。
+    """
+    import polars as pl
+
+    casts = [
+        pl.col(name).cast(pl.Float32)
+        for name, dtype in df.schema.items()
+        if dtype == pl.Float64
+    ]
+    if not casts:
+        return df
+    return df.with_columns(casts)

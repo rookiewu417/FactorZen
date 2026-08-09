@@ -665,7 +665,7 @@ class LiftBaselineCache:
     ) -> pl.DataFrame:
         """``_build_ret_panel(src, ...)``，按（源帧同一性 + 口径标量）缓存。
 
-        ``key`` = ``(horizon, exec_lag, exec_price_col)``——ret 面板随这三者变，
+        ``key`` = ``(horizon, exec_price_col)``——ret 面板随这两者变，
         同一 ctx 被 ``dataclasses.replace`` 换过口径时必须重建。
         """
         with self._lock:
@@ -764,9 +764,8 @@ class LiftEvalContext:
     profile_name: str | None = None
     python_universe: str | None = None
     python_market: str = "ashare"
-    # 成交口径：0 = t 日收盘成交（默认，向后兼容但**不可实现**）；
-    # 1 + "open_adj" = t+1 开盘成交（可实现）。见 compute_fwd_returns docstring。
-    exec_lag: int = 0
+    # 成交口径固定 t+1 成交（exec_lag=1）；exec_price_col="open_adj" = t+1 开盘成交。
+    # 见 compute_fwd_returns docstring。
     exec_price_col: str | None = None
     baseline_cache: LiftBaselineCache = field(
         default_factory=LiftBaselineCache, compare=False, repr=False,
@@ -786,7 +785,6 @@ def make_lift_context(
     prepped: pl.DataFrame | None = None,
     python_universe: str | None = None,
     python_market: str = "ashare",
-    exec_lag: int = 0,
     exec_price_col: str | None = None,
 ) -> LiftEvalContext:
     """构造 ``LiftEvalContext``：``_preprocess_daily(daily, profile)`` 恰好一次并 sort。
@@ -818,7 +816,6 @@ def make_lift_context(
         profile_name=profile_name,
         python_universe=python_universe,
         python_market=python_market,
-        exec_lag=int(exec_lag),
         exec_price_col=exec_price_col,
     )
 
@@ -1528,13 +1525,12 @@ def run_lift_tests(
 
     if ret_df is None:
         ret_src = ctx.prepped if ctx is not None else daily
-        _exec_lag = ctx.exec_lag if ctx is not None else 0
         _exec_col = ctx.exec_price_col if ctx is not None else None
         _ret_build = lambda src: _build_ret_panel(  # noqa: E731
-            src, horizon=_horizon, exec_lag=_exec_lag, exec_price_col=_exec_col,
+            src, horizon=_horizon, exec_price_col=_exec_col,
         )
         ret_df = (
-            _cache.ret_for(ret_src, (_horizon, _exec_lag, _exec_col), _ret_build)
+            _cache.ret_for(ret_src, (_horizon, _exec_col), _ret_build)
             if _cache is not None
             else _ret_build(ret_src)
         )
@@ -1835,13 +1831,12 @@ def run_group_lift(
 
     if ret_df is None:
         ret_src = ctx.prepped if ctx is not None else daily
-        _exec_lag = ctx.exec_lag if ctx is not None else 0
         _exec_col = ctx.exec_price_col if ctx is not None else None
         _ret_build = lambda src: _build_ret_panel(  # noqa: E731
-            src, horizon=_horizon, exec_lag=_exec_lag, exec_price_col=_exec_col,
+            src, horizon=_horizon, exec_price_col=_exec_col,
         )
         ret_df = (
-            _cache.ret_for(ret_src, (_horizon, _exec_lag, _exec_col), _ret_build)
+            _cache.ret_for(ret_src, (_horizon, _exec_col), _ret_build)
             if _cache is not None
             else _ret_build(ret_src)
         )
@@ -1976,18 +1971,16 @@ def _build_ret_panel(
     daily: pl.DataFrame,
     *,
     horizon: int = DEFAULT_HORIZON,
-    exec_lag: int = 0,
     exec_price_col: str | None = None,
 ) -> pl.DataFrame:
     """horizon 日前向收益面板（复刻 factor_combine 口径）。
 
-    ``exec_lag`` / ``exec_price_col`` 透传给 ``compute_fwd_returns``，用于切到
-    **可实现**口径。默认 ``exec_lag=0`` 逐位等价于旧行为（close→close，
-    隐含「t 日收盘成交」）。
+    ``exec_price_col`` 透传给 ``compute_fwd_returns``；成交口径**固定 t+1 成交**
+    （``exec_lag=1``）。
 
-    ⚠️ 默认口径**系统性高估**可实现收益：实测 csi500 上 lgbm 组合 top 桶年化超额
-    +35.20% 中隔夜段占 **100%**，而隔夜段不可交易（算信号需要 t 日收盘价）；
-    切到 ``exec_lag=1, exec_price_col="open_adj"`` 后只剩 +10.08%。
+    ⚠️ 旧口径（t 日收盘成交）**系统性高估**可实现收益：实测 csi500 上 lgbm 组合
+    top 桶年化超额 +35.20% 中隔夜段占 **100%**，而隔夜段不可交易（算信号需要
+    t 日收盘价）；切到 ``exec_lag=1, exec_price_col="open_adj"`` 后只剩 +10.08%。
     详见 ``compute_fwd_returns`` docstring 与 ``.artifacts/execution-timing.md``。
     """
     from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
@@ -2004,7 +1997,7 @@ def _build_ret_panel(
     _src = daily.select([c for c in dict.fromkeys(_keep) if c in daily.columns])
     fwd = compute_fwd_returns(
         _src.sort(["ts_code", "trade_date"]), horizons=[horizon], price_col=price_col,
-        exec_lag=exec_lag, exec_price_col=exec_price_col,
+        exec_price_col=exec_price_col,
     )
     return (
         fwd.select(["trade_date", "ts_code", pl.col(f"fwd_ret_{horizon}d").alias("ret")])

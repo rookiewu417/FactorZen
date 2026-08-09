@@ -326,16 +326,16 @@ def _daily(seed=1, n_stocks=40, n_days=120):
     return pl.DataFrame(rows)
 
 def _signal_factor_df(daily: pl.DataFrame) -> pl.DataFrame:
-    """构造与次日收益正相关的因子（用于验证 IC 为正）。"""
+    """构造与 t+1 成交口径前向收益（close[t+2]/close[t+1]-1）正相关的因子。"""
     df = daily.sort(["ts_code", "trade_date"]).with_columns(
-        (pl.col("close_adj").shift(-1).over("ts_code") / pl.col("close_adj") - 1.0).alias("fwd"))
+        (pl.col("close_adj").shift(-2).over("ts_code") / pl.col("close_adj") - 1.0).alias("fwd"))
     return df.select(["trade_date", "ts_code", pl.col("fwd").alias("factor_value")]).drop_nulls()
 
 def _noisy_signal_factor_df(daily: pl.DataFrame, noise: float = 0.6, seed: int = 3) -> pl.DataFrame:
-    """与次日收益正相关但含噪的因子：日频 IC 为正但 <1、逐日波动（IR/t-stat 有限且不相等）。"""
+    """与 t+1 成交口径前向收益正相关但含噪的因子：日频 IC 为正但 <1、逐日波动。"""
     rng = np.random.default_rng(seed)
     df = (daily.sort(["ts_code", "trade_date"])
-          .with_columns((pl.col("close_adj").shift(-1).over("ts_code") / pl.col("close_adj") - 1.0).alias("fwd"))
+          .with_columns((pl.col("close_adj").shift(-2).over("ts_code") / pl.col("close_adj") - 1.0).alias("fwd"))
           .drop_nulls())
     vals = df["fwd"].to_numpy() + rng.standard_normal(df.height) * noise
     return df.select(["trade_date", "ts_code"]).with_columns(pl.Series("factor_value", vals))

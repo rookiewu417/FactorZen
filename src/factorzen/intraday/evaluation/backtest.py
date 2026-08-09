@@ -43,7 +43,6 @@ def run_intraday_backtest(
     n_groups: int = 10,
     factor_name: str = "",
     *,
-    exec_lag: int = 0,
     exec_price_col: str | None = None,
 ) -> SignalBacktestResult:
     """分钟因子聚合后做日频信号层分层评估（毛收益口径）。
@@ -57,8 +56,8 @@ def run_intraday_backtest(
         factor_col: 因子列名。
         n_groups: 分组数。
         factor_name: 因子名称。
-        exec_lag: 成交滞后（交易日），原样透传 ``compute_fwd_returns``；默认 0。
-        exec_price_col: 成交价格列，原样透传 ``compute_fwd_returns``；默认 None。
+        exec_price_col: 成交价格列，原样透传 ``compute_fwd_returns``；默认 None
+            （成交口径固定 t+1 成交）。
 
     Returns:
         SignalBacktestResult（信号层毛收益口径）。
@@ -66,7 +65,6 @@ def run_intraday_backtest(
     daily_factor = aggregate_intraday_factor(minute_factor, factor_col=factor_col)
     fwd_returns = compute_fwd_returns(
         daily_price,
-        exec_lag=exec_lag,
         exec_price_col=exec_price_col,
     )
     return run_signal_backtest(

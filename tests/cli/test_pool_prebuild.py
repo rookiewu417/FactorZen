@@ -721,7 +721,7 @@ def test_pool_subproc_cli_suite(tmp_path, capsys):
         lib_hash = library_file_hash(market, lib_root) or "nolib"
         # CLI 默认 universe=all_a（与 key 指纹同源）
         key_src = "|".join([
-            lib_hash, "20210104", "20210331", "all_a", market, "0.2", "False", "5min",
+            lib_hash, "20210104", "20210331", "all_a", market, "0.2", "True", "1min",
         ])
         key = hashlib.sha256(key_src.encode()).hexdigest()[:16]
         cache_dir = mine_dir / "_pool_cache" / key

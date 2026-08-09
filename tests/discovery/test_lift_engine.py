@@ -251,7 +251,7 @@ def test_lift_ctx_wiring_suite():
 
         mp.setattr(
             lt, "_build_ret_panel",
-            # **_kw 接住 exec_lag/exec_price_col 等后加 kwargs——桩签名写死
+            # **_kw 接住 exec_price_col 等后加 kwargs——桩签名写死
             # 会在真实签名扩展时假报错（本会话已栽过两次）
             lambda daily_df, *, horizon=5, **_kw: pl.DataFrame({
                 "trade_date": ["20240102", "20240103"],
@@ -407,9 +407,8 @@ def test_lift_ctx_wiring_suite():
 
         seen = {}
 
-        def spy_ret(daily_df, *, horizon=5, exec_lag=0, exec_price_col=None):
-            # 默认口径必须原样传下来（exec_lag=0 = 历史行为）
-            seen["exec_lag"] = exec_lag
+        def spy_ret(daily_df, *, horizon=5, exec_price_col=None):
+            # ctx 未指定成交价格列 ⇒ 必须原样传下默认 None（成交口径固定 t+1 成交）
             seen["exec_price_col"] = exec_price_col
             seen["horizon"] = horizon
             return ret
@@ -439,9 +438,7 @@ def test_lift_ctx_wiring_suite():
 
         assert seen.get("horizon") == 1
         assert rows[0]["horizon"] == 1
-        # ctx 未指定成交口径 ⇒ 必须原样传下默认值（exec_lag=0 = 历史 close→close，
-        # 见 compute_fwd_returns docstring）。若这里变成 1，等于默认行为被悄悄改了。
-        assert seen.get("exec_lag") == 0
+        # ctx 未指定成交价格列 ⇒ 必须原样传下默认值（None = 沿用价格列）。
         assert seen.get("exec_price_col") is None
 
     with pytest.MonkeyPatch.context() as mp:

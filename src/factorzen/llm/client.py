@@ -183,9 +183,64 @@ def _mentions_response_format(exc: APIStatusError) -> bool:
     return "unsupported" in text and "format" in text
 
 
+def _delta_reasoning(delta: Any) -> str | None:
+    """AIPing / DeepSeek thinking：``delta.reasoning_content`` 或 model_extra。"""
+    if delta is None:
+        return None
+    rc = getattr(delta, "reasoning_content", None)
+    if isinstance(rc, str) and rc:
+        return rc
+    extra = getattr(delta, "model_extra", None)
+    if isinstance(extra, dict):
+        rc = extra.get("reasoning_content")
+        if isinstance(rc, str) and rc:
+            return rc
+    return None
+
+
+def _extract_jsonish_payload(text: str) -> str | None:
+    """从思考链/杂文本里抠最后一段可解析 JSON 对象或数组（无 JSON 则 None）。"""
+    if not text or not text.strip():
+        return None
+    s = text.strip()
+    # 整段已是 JSON
+    try:
+        json.loads(s)
+        return s
+    except (TypeError, ValueError):
+        pass
+    # 取最后一个平衡的 {...} 或 [...]
+    for open_c, close_c in (("{", "}"), ("[", "]")):
+        end = s.rfind(close_c)
+        if end < 0:
+            continue
+        depth = 0
+        for i in range(end, -1, -1):
+            ch = s[i]
+            if ch == close_c:
+                depth += 1
+            elif ch == open_c:
+                depth -= 1
+                if depth == 0:
+                    cand = s[i : end + 1]
+                    try:
+                        json.loads(cand)
+                        return cand
+                    except (TypeError, ValueError):
+                        break
+    return None
+
+
 def _consume_stream(config: LLMConfig, stream: Any) -> str:
-    """Concatenate assistant ``delta.content`` from a streaming response."""
+    """Concatenate assistant ``delta.content`` from a streaming response.
+
+    DeepSeek V4 / aiping 在 ``enable_thinking`` 时常见**只流 reasoning_content、
+    content 为空或极晚到达**。Agent 需要可 parse 的最终 content：优先 ``content``；
+    若 content 为空则从 ``reasoning_content`` 中抽取最后一段 JSON（不把整段思考
+    链当答案，避免污染解析器）。
+    """
     parts: list[str] = []
+    reasoning_parts: list[str] = []
     for chunk in stream:
         _validate_gateway_chunk(config, chunk)
         choices = getattr(chunk, "choices", None)
@@ -195,20 +250,51 @@ def _consume_stream(config: LLMConfig, stream: Any) -> str:
         content = getattr(delta, "content", None) if delta is not None else None
         if isinstance(content, str):
             parts.append(content)
+        rc = _delta_reasoning(delta)
+        if rc:
+            reasoning_parts.append(rc)
     content = "".join(parts)
-    if not content:
-        raise LLMClientError("LLM 流式响应缺少 choices[0].delta.content")
-    return content
+    if content:
+        return content
+    # thinking-only 流：答案有时只出现在 reasoning 里
+    reasoning = "".join(reasoning_parts)
+    if reasoning:
+        extracted = _extract_jsonish_payload(reasoning)
+        if extracted:
+            _LOG.warning(
+                "流式 content 为空，已从 reasoning_content 抽取 JSON（len_reason=%d）",
+                len(reasoning),
+            )
+            return extracted
+    raise LLMClientError(
+        "LLM 流式响应缺少 choices[0].delta.content"
+        + (f"（reasoning 有 {len(reasoning)} 字符但无可用 JSON）" if reasoning else "")
+    )
 
 
 def _extract_message_content(response: Any) -> str:
-    """非流式响应：取 ``choices[0].message.content``。"""
+    """非流式响应：取 ``choices[0].message.content``；空则尝试 reasoning 抽 JSON。"""
     choices = getattr(response, "choices", None)
     message = getattr(choices[0], "message", None) if choices else None
     content = getattr(message, "content", None) if message is not None else None
-    if not isinstance(content, str) or not content:
-        raise LLMClientError("LLM 非流式响应缺少 choices[0].message.content")
-    return content
+    if isinstance(content, str) and content:
+        return content
+    # 非流式 thinking：content 空、reasoning 有答案
+    rc = None
+    if message is not None:
+        rc = getattr(message, "reasoning_content", None)
+        if not rc:
+            extra = getattr(message, "model_extra", None)
+            if isinstance(extra, dict):
+                rc = extra.get("reasoning_content")
+    if isinstance(rc, str) and rc:
+        extracted = _extract_jsonish_payload(rc)
+        if extracted:
+            _LOG.warning(
+                "非流式 content 为空，已从 message.reasoning_content 抽取 JSON"
+            )
+            return extracted
+    raise LLMClientError("LLM 非流式响应缺少 choices[0].message.content")
 
 
 def _extract_content(config: LLMConfig, result: Any) -> str:
@@ -239,23 +325,41 @@ def _stream_content(
     *,
     include_response_format: bool,
 ) -> str:
-    """Run one streaming completion and concatenate assistant content chunks.
+    """Run one chat completion and return assistant content (stream or not).
 
-    AIPing may expose ``delta.reasoning_content``.  FactorZen deliberately does
-    not mix it into the returned string because Agent callers expect the final
-    ``content`` to be parseable JSON.
+    AIPing thinking 流常把可解析答案放在 ``reasoning_content``；``_consume_stream``
+    会优先 content、再从 reasoning 抽 JSON。
 
-    For ``flavor=openai`` only: if the first request fails with HTTP 400 and the
-    body mentions ``response_format`` / unsupported format, retry once without
-    ``response_format``.  AIPing behaviour is unchanged.
+    容错：
+    - ``flavor=openai`` + HTTP 400 且 body 提到 response_format → 去 format 重试一次
+    - 流式失败且当前为 stream=True → **自动非流式重试一次**（aiping 空 content /
+      「暂无可用服务商」抖动时，非流式往往更稳）
     """
     _warn_if_provider_unpinned(config)
-    try:
-        stream = _create_stream(
-            config, messages, include_response_format=include_response_format
+
+    def _once(cfg: LLMConfig, *, with_response_format: bool) -> str:
+        result = _create_stream(
+            cfg, messages, include_response_format=with_response_format
         )
-        return _extract_content(config, stream)
-    except LLMClientError:
+        return _extract_content(cfg, result)
+
+    try:
+        return _once(config, with_response_format=include_response_format)
+    except LLMClientError as first_err:
+        # 流式空 content / 抽 JSON 失败 → 非流式再试一次
+        if config.stream_enabled:
+            from dataclasses import replace
+
+            _LOG.warning(
+                "流式完成失败，改非流式重试一次: %s", first_err,
+            )
+            try:
+                return _once(
+                    replace(config, stream=False),
+                    with_response_format=include_response_format,
+                )
+            except LLMClientError:
+                raise first_err from None
         raise
     except httpx.HTTPError as exc:
         # 传输层异常（断流/超时/连接重置）必须包成 LLMClientError——否则穿透
@@ -274,10 +378,7 @@ def _stream_content(
                 "去掉 response_format 重试一次"
             )
             try:
-                stream = _create_stream(
-                    config, messages, include_response_format=False
-                )
-                return _extract_content(config, stream)
+                return _once(config, with_response_format=False)
             except LLMClientError:
                 raise
             except httpx.HTTPError as retry_exc:
@@ -291,8 +392,38 @@ def _stream_content(
                 raise LLMClientError(
                     f"HTTP {exc.status_code}: {_error_body(exc)}"
                 ) from retry_api_err
+        # aiping 抖动：流式 HTTP 错 → 非流式再试
+        if config.stream_enabled and config.flavor == "aiping":
+            from dataclasses import replace
+
+            _LOG.warning(
+                "aiping 流式 HTTP %s，改非流式重试: %s",
+                exc.status_code, _error_body(exc)[:120],
+            )
+            try:
+                return _once(
+                    replace(config, stream=False),
+                    with_response_format=include_response_format,
+                )
+            except Exception:
+                pass
         raise LLMClientError(f"HTTP {exc.status_code}: {_error_body(exc)}") from exc
     except APIError as exc:
+        msg = str(exc)
+        # aiping「暂无可用服务商 / 所有服务商都调用失败」→ 非流式再试一次
+        if config.stream_enabled and (
+            "暂无可用" in msg or "服务商" in msg or "调用失败" in msg
+        ):
+            from dataclasses import replace
+
+            _LOG.warning("上游服务商抖动，改非流式重试: %s", msg[:160])
+            try:
+                return _once(
+                    replace(config, stream=False),
+                    with_response_format=include_response_format,
+                )
+            except Exception:
+                pass
         raise LLMClientError(f"LLM SDK 请求失败: {type(exc).__name__}: {exc}") from exc
 
 

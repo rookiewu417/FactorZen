@@ -394,10 +394,11 @@ def test_build_forward_return_frame_suite():
 
         daily = pl.DataFrame(
             {
-                "trade_date": [date(2024, 1, 2), date(2024, 1, 3)],
-                "ts_code": ["000001.SZ", "000001.SZ"],
-                "close": [10.0, 5.0],
-                "close_adj": [10.0, 10.0],
+                # 固定 t+1 成交 ⇒ fwd_ret_1d[0] = close_adj[2]/close_adj[1] − 1，需 3 天
+                "trade_date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
+                "ts_code": ["000001.SZ", "000001.SZ", "000001.SZ"],
+                "close": [10.0, 5.0, 5.0],
+                "close_adj": [10.0, 10.0, 10.0],
             }
         )
 
@@ -414,9 +415,10 @@ def test_build_forward_return_frame_suite():
 
         daily = pl.DataFrame(
             {
-                "trade_date": [date(2024, 1, 2), date(2024, 1, 3)],
-                "ts_code": ["000001.SZ", "000001.SZ"],
-                "close": [10.0, 5.0],
+                # 固定 t+1 成交 ⇒ fwd_ret_1d[0] = close[2]/close[1] − 1 = 2.5/5 − 1
+                "trade_date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
+                "ts_code": ["000001.SZ", "000001.SZ", "000001.SZ"],
+                "close": [10.0, 5.0, 2.5],
             }
         )
 
@@ -433,15 +435,19 @@ def test_build_forward_return_frame_suite():
 
         daily = pl.DataFrame(
             {
+                # 固定 t+1 成交 ⇒ fwd_ret_1d[0] 需 t+2 价，各票补第三天
                 "trade_date": [
+                    date(2024, 1, 4),
+                    date(2024, 1, 4),
                     date(2024, 1, 3),
                     date(2024, 1, 3),
                     date(2024, 1, 2),
                     date(2024, 1, 2),
                 ],
-                "ts_code": ["000002.SZ", "000001.SZ", "000002.SZ", "000001.SZ"],
-                "close": [50.0, 5.0, 100.0, 10.0],
-                "close_adj": [220.0, None, 200.0, 10.0],
+                "ts_code": ["000002.SZ", "000001.SZ", "000002.SZ", "000001.SZ",
+                            "000002.SZ", "000001.SZ"],
+                "close": [55.0, 2.5, 50.0, 5.0, 100.0, 10.0],
+                "close_adj": [242.0, None, 220.0, None, 200.0, 10.0],
             }
         )
 
@@ -469,7 +475,7 @@ def test_build_forward_return_frame_suite():
             }
         )
         with pytest.raises(ValueError, match="exec_price_col"):
-            _build_forward_return_frame(daily, exec_lag=1, exec_price_col="open_adj")
+            _build_forward_return_frame(daily, exec_price_col="open_adj")
 
     _section_3_test_exec_price_col_missing_raises()
 
@@ -480,7 +486,7 @@ def test_exec_price_col_vs_price_col_path_parity():
     A) daily_single 实现：``price_col=open_adj, exec_price_col=None``
     B) 生产/文档口径：``price_col=close_adj, exec_price_col=open_adj``
 
-    在合成价格帧上 ``exec_lag=1`` 时 ``fwd_ret_1d`` 必须逐位一致。
+    成交口径固定 t+1 成交（``exec_lag=1``）时 ``fwd_ret_1d`` 必须逐位一致。
     """
     from factorzen.daily.evaluation.ic_analysis import compute_fwd_returns
 
@@ -503,7 +509,6 @@ def test_exec_price_col_vs_price_col_path_parity():
         ),
         ret_col="ret",
         price_col="open_adj",
-        exec_lag=1,
         exec_price_col=None,
         horizons=[1],
     )
@@ -515,7 +520,6 @@ def test_exec_price_col_vs_price_col_path_parity():
         ),
         ret_col="ret",
         price_col="close_adj",
-        exec_lag=1,
         exec_price_col="open_adj",
         horizons=[1],
     )
@@ -533,7 +537,7 @@ def test_exec_price_col_vs_price_col_path_parity():
     from factorzen.pipelines.daily_single import _build_forward_return_frame
 
     via_helper = _build_forward_return_frame(
-        daily, exec_lag=1, exec_price_col="open_adj",
+        daily, exec_price_col="open_adj",
     ).sort(["ts_code", "trade_date"])["fwd_ret_1d"].to_list()
     for i, (va, vh) in enumerate(zip(a, via_helper, strict=True)):
         if va is None or (isinstance(va, float) and va != va):
@@ -1120,7 +1124,6 @@ def test_eval_backtest_track_artifacts_suite(tmp_path):
         benchmark=None,
         seed=None,
         metrics_out=None,
-        exec_lag=1,
         exec_price_col="open_adj",
     )
     cfg = RunConfig(factor=factor_name, start=start, end=end)

@@ -59,7 +59,6 @@ def run_team_mine(
     scout_max_leaves: int = 12,
     scout_freq: str = "5min",
     pool_cache_dir: str | None = None,
-    exec_lag: int = 0,
     exec_price_col: str | None = None,
     sleeve_gate: bool = True,
     leaf_scheduler: bool = False,
@@ -119,8 +118,7 @@ def run_team_mine(
         # `cli/main.py::_horizon_from_manifest` 读的就是这个键（此前 team params 从不写它，
         # 于是 `factor-library lift-test` 只能回退 DEFAULT_HORIZON，与 mining 口径脱钩）。
         "horizon": horizon,
-        # 成交口径（可复现铁律：不落盘则事后无法复现评估世界）
-        "exec_lag": exec_lag,
+        # 成交价格列（可复现铁律：不落盘则事后无法复现评估世界；成交口径固定 t+1 成交）
         "exec_price_col": exec_price_col,
         **(data_window or {}),
         "command": command,
@@ -170,7 +168,6 @@ def run_team_mine(
         scout_max_leaves=scout_max_leaves,
         scout_freq=scout_freq,
         pool_cache_dir=pool_cache_dir,
-        exec_lag=exec_lag,
         exec_price_col=exec_price_col,
         sleeve_gate=sleeve_gate,
         leaf_scheduler=leaf_scheduler,

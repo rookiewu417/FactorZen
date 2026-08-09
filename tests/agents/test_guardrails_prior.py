@@ -322,8 +322,12 @@ def _mk_daily__dsr_parity(n_days: int = 300, n_stocks: int = 30, seed: int = 7) 
     rows = []
     for c in [f"{600000 + i:06d}.SH" for i in range(n_stocks)]:
         base = rng.uniform(8, 15)
+        # 均值回归 + AR(1) 冲击：近期跌深的股票后续倾向反弹，
+        # rank(neg(ts_min(low, N))) 对 t+1 成交口径 fwd_ret_1d 有真实正 IC（不再靠噪声碰巧同号）。
+        mu, px, shock = base, base, 0.0
         for i, dd in enumerate(days):
-            px = base * (1 + 0.001 * i) + rng.normal(0, 0.1)
+            shock = 0.8 * shock + rng.normal(0, 0.01)
+            px = max(px + 0.05 * (mu - px) + shock + rng.normal(0, 0.01), 0.5)
             rows.append({"trade_date": dd, "ts_code": c, "close": px, "open": px,
                          "high": px * 1.01, "low": px * 0.99,
                          "vol": 1e6 + rng.normal(0, 1e4), "amount": 1e7})
